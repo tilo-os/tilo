@@ -1,11 +1,12 @@
 //! Interactive and headless visual fixture for the universal collaboration rail.
 
 use collab_types::{ArtifactKind, OpClass};
-use tilo_actions::ActionContext;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_actions::ActionContext;
+use ui::num::f32_of_u32;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::{PermissionContext, UserId};
 use ui::text_render::TextRenderer;
@@ -26,7 +27,9 @@ fn entry(id: u8, author: &str, at: u64, summary: &str) -> HistoryEntry {
         author: HistoryAuthor::new(author, f32::from(id) * 61.0, format!("person-{id}")),
         op_class: OpClass::Splice,
         artifact_kind: ArtifactKind::File,
-        timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(at),
+        timestamp: SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(at))
+            .unwrap_or(SystemTime::UNIX_EPOCH),
         summary: summary.into(),
         text_delta: Some((12, 2)),
         diff_payload: None,
@@ -132,7 +135,7 @@ pub fn run(args: &[String]) {
     let shot = args
         .iter()
         .position(|a| a == "--shots")
-        .and_then(|i| args.get(i + 1));
+        .and_then(|i| args.get(i.saturating_add(1)));
     if let Some(path) = shot {
         render(widget(), Path::new(path));
     } else {
@@ -151,25 +154,26 @@ fn render(mut widget: Box<dyn Widget>, out: &Path) {
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     widget.sync(&mut state.doc, &state.root);
     let child = widget.build_layout(&mut taffy, &theme, &mut map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
+    let Ok(root) = taffy.new_with_children(
+        Style {
+            size: Size {
+                width: Dimension::length(f32_of_u32(w)),
+                height: Dimension::length(f32_of_u32(h)),
             },
-            &[child],
-        )
-        .expect("fixture layout");
+            ..Default::default()
+        },
+        &[child],
+    ) else {
+        eprintln!("could not build collaboration fixture layout");
+        return;
+    };
     let measure = map.clone();
-    taffy
+    if taffy
         .compute_layout_with_measure(
             root,
             Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
+                width: AvailableSpace::Definite(f32_of_u32(w)),
+                height: AvailableSpace::Definite(f32_of_u32(h)),
             },
             |known, avail, id, _, _| {
                 if let Some(&ptr) = measure.get(&id) {
@@ -179,7 +183,11 @@ fn render(mut widget: Box<dyn Widget>, out: &Path) {
                 }
             },
         )
-        .expect("fixture measure");
+        .is_err()
+    {
+        eprintln!("could not measure collaboration fixture layout");
+        return;
+    }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
     let mut scene = Scene::new();
     widget.draw_with_presence(

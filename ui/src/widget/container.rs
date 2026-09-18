@@ -28,6 +28,9 @@ pub struct Container {
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     no_padding: bool,
+    /// Symmetric inset override. `None` follows the theme's standard
+    /// container inset; `with_no_padding` remains the explicit zero case.
+    padding_override: Option<f32>,
     /// `Some(px)` switches the taffy width to `length(px)` and disables
     /// horizontal shrink, instead of the default `percent(1.0)` fill.
     fixed_width: Option<f32>,
@@ -67,6 +70,7 @@ impl Container {
             presence_path: Vec::new(),
             permission_scope: None,
             no_padding: false,
+            padding_override: None,
             fixed_width: None,
             min_width: None,
             max_width: None,
@@ -88,6 +92,16 @@ impl Container {
     #[must_use]
     pub fn with_no_padding(mut self) -> Self {
         self.no_padding = true;
+        self
+    }
+
+    /// Override the themed default with a deliberate symmetric inset.
+    /// Useful for compact raised tracks and tool surfaces whose contents
+    /// already provide full-size interaction targets.
+    #[must_use]
+    pub fn with_padding(mut self, px: f32) -> Self {
+        self.no_padding = false;
+        self.padding_override = Some(px.max(0.0));
         self
     }
 
@@ -229,7 +243,7 @@ impl Widget for Container {
         let pad = if self.no_padding {
             0.0
         } else {
-            theme.padding_standard
+            self.padding_override.unwrap_or(theme.padding_standard)
         };
         let width = match self.fixed_width {
             Some(px) => length(px),
@@ -557,6 +571,20 @@ mod tests {
             "default container must fill the viewport width, got {}",
             rect.width()
         );
+    }
+
+    #[test]
+    fn padding_override_insets_child_without_losing_fluid_width() {
+        let (container, rect) = lay_out(
+            Container::new()
+                .with_padding(8.0)
+                .with_child(Box::new(Container::new().with_size(10.0, 10.0))),
+        );
+        let child = container.children()[0].get_rect();
+        assert!((rect.width() - 800.0).abs() < 0.5);
+        assert!((rect.height() - 26.0).abs() < 0.5);
+        assert!((child.x0 - 8.0).abs() < 0.5);
+        assert!((child.y0 - 8.0).abs() < 0.5);
     }
 
     #[test]

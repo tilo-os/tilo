@@ -80,6 +80,10 @@ exit {BUILD_INTERCEPTED}
         self.write("bin/skopeo", "#!/bin/sh\nprintf '%s\\n' '{}'\n", executable=True)
         self.write("bin/jq", """\
 #!/bin/sh
+# Drain the producer before returning fixture output. The production script
+# enables pipefail, so exiting early can otherwise SIGPIPE the tiny skopeo or
+# printf producer and make an otherwise valid inspection fail nondeterministically.
+cat >/dev/null
 case "$*" in
   *sort_by*) printf '%s\\n' '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ;;
   *Architecture*)

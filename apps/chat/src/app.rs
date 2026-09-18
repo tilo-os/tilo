@@ -281,6 +281,9 @@ pub(crate) enum Hit {
     FocusMain,
     FocusThread,
     Send,
+    /// Return a scrolled conversation to its newest message without changing
+    /// any shared document state.
+    JumpToLatest,
     ComposerEmoji(Point),
     /// Open the workspace file picker to share an attachment.
     Attach,
@@ -330,6 +333,7 @@ impl Hit {
             Self::FocusRename => "chat.rename".into(),
             Self::FocusEdit => "chat.message-edit".into(),
             Self::Send => "chat.send".into(),
+            Self::JumpToLatest => "chat.jump-to-latest".into(),
             Self::ComposerEmoji(_) => "chat.composer-emoji".into(),
             Self::Attach => "chat.attach".into(),
             Self::AttachPick(path) => format!("chat.attach-pick:{path}"),
@@ -506,9 +510,24 @@ pub struct ChatApp {
     pub(crate) inbox_open: bool,
     pub(crate) active_channel: Id,
     pub(crate) focus: Focus,
+    /// Offset from the newest edge of the timeline. Zero means the reader is
+    /// looking at the newest message; negative values move back through
+    /// history. The renderer owns its exact bounds because wrapping and media
+    /// cards determine them.
     pub(crate) scroll: f64,
+    /// A durable read watermark is only advanced while the reader can actually
+    /// see the newest edge. This flag is local presentation state, refreshed
+    /// from the measured timeline during paint.
+    pub(crate) timeline_at_end: bool,
+    /// Last measured timeline height. Keeps a reader's visual anchor stable if
+    /// new messages arrive while they are reading older messages.
+    pub(crate) timeline_total_height: f64,
     pub(crate) thread_open: Option<Id>,
     pub(crate) revealed_message: Option<Id>,
+    /// A search result needs one initial scroll into view. Keeping this
+    /// separate from `revealed_message` lets its visual accent remain while
+    /// the reader subsequently scrolls through nearby context.
+    pub(crate) reveal_scroll_pending: bool,
     pub(crate) revealed_person: Option<Id>,
     pub(crate) emoji_open: bool,
     pub(crate) emoji_target: Option<Id>,
@@ -771,8 +790,11 @@ impl ChatApp {
             active_channel: "c_crit".into(),
             focus: Focus::Main,
             scroll: 0.0,
+            timeline_at_end: true,
+            timeline_total_height: 0.0,
             thread_open: Some("m_concept".into()),
             revealed_message: None,
+            reveal_scroll_pending: false,
             revealed_person: None,
             emoji_open: false,
             emoji_target: None,
@@ -1019,6 +1041,16 @@ impl ChatApp {
                 self.right_flap.snap(false);
                 self.thread_open = None;
                 self.call = CallState::default();
+            }
+            "history" => {
+                // A reader deliberately looking above the newest message. This
+                // is the visual-review state for the local live-edge return
+                // affordance; no synthetic message or read receipt is made.
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.scroll = 220.0;
+                self.timeline_at_end = false;
             }
             "compact" => {
                 // Medium window: docked channel list, conversation reflowed,
@@ -2130,7 +2162,7 @@ impl ChatApp {
     /// navigates away. Idempotent (a no-op when nothing new arrived), so it is
     /// safe to call every frame.
     pub(crate) fn mark_active_read(&mut self, doc: &mut AutoCommit) {
-        if self.active_channel.is_empty() {
+        if self.active_channel.is_empty() || !self.timeline_at_end {
             return;
         }
         let count = ChatDoc::top_level_count(doc, &self.active_channel) as i64;
@@ -2161,8 +2193,9 @@ impl ChatApp {
         self.inbox_open = false;
         self.thread_open = None;
         self.revealed_message = None;
+        self.reveal_scroll_pending = false;
         self.revealed_person = None;
-        self.scroll = 0.0;
+        self.reset_timeline_to_latest();
         self.focus = Focus::Main;
         Ok(())
     }
@@ -2194,8 +2227,9 @@ impl ChatApp {
         self.inbox_open = false;
         self.thread_open = None;
         self.revealed_message = None;
+        self.reveal_scroll_pending = false;
         self.revealed_person = None;
-        self.scroll = 0.0;
+        self.reset_timeline_to_latest();
         self.focus = Focus::Main;
         Ok(())
     }
@@ -2558,6 +2592,7 @@ impl ChatApp {
                         false,
                     ),
                     Hit::Send => ("Send message".into(), Role::Button, false),
+                    Hit::JumpToLatest => ("Jump to latest message".into(), Role::Button, false),
                     Hit::ComposerEmoji(_) => ("Insert emoji".into(), Role::Button, false),
                     Hit::Attach => ("Attach a workspace file".into(), Role::Button, false),
                     Hit::AttachPick(path) => (
@@ -3459,8 +3494,9 @@ impl Widget for ChatApp {
                 self.inbox_open = false;
                 self.thread_open = None;
                 self.revealed_message = None;
+                self.reveal_scroll_pending = false;
                 self.revealed_person = None;
-                self.scroll = 0.0;
+                self.reset_timeline_to_latest();
                 self.focus = Focus::Main;
             }
             crate::actions::ChatOperation::OpenCategory {
@@ -3491,8 +3527,10 @@ impl Widget for ChatApp {
                 self.inbox_open = false;
                 self.thread_open = parent;
                 self.revealed_message = Some(message);
+                self.reveal_scroll_pending = true;
                 self.revealed_person = None;
-                self.scroll = 0.0;
+                self.timeline_total_height = 0.0;
+                self.timeline_at_end = false;
                 self.focus = if self.thread_open.is_some() {
                     Focus::Thread
                 } else {

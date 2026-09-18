@@ -70,7 +70,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     }
     let availability = Arc::new(Mutex::new(availability));
     let hydrator = Arc::new(Hydrator::new(endpoint, store));
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let quick_fs =
         QuickFS::new(namespace, hydrator, heuristics).with_availability(availability.clone());
     let mut config = Config::default();

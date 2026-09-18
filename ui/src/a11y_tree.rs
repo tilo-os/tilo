@@ -515,8 +515,17 @@ impl SemanticTree {
                     .name
                     .clone()
                     .unwrap_or_else(|| format!("{:?}", node.role));
+                // A semantic id may contain KEY_SEP when a control uses an
+                // encoded resource/action address as its stable key.  Keep
+                // the exact id in the operation payload for dispatch, but
+                // encode it before embedding it in a ResourceId: KEY_SEP is
+                // the action-address delimiter and is forbidden there.
+                let encoded_node_id = percent_encoding::utf8_percent_encode(
+                    node.id.as_str(),
+                    percent_encoding::NON_ALPHANUMERIC,
+                );
                 let mut resource =
-                    Resource::new(format!("ui:{}", node.id.as_str()), "tilo.ui.control", label);
+                    Resource::new(format!("ui:{encoded_node_id}"), "tilo.ui.control", label);
                 for (action, verb) in verbs {
                     let operation = SemanticOperation {
                         node: node.id.0.clone(),
@@ -592,6 +601,13 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
             name: "focus".into(),
             label: "Focus".into(),
             kind: SemanticActionKind::Verb(Action::Focus),
+        });
+    }
+    if s.context_menu && !s.disabled {
+        out.push(SemanticAction {
+            name: "show-context-menu".into(),
+            label: "Show context menu".into(),
+            kind: SemanticActionKind::Verb(Action::ShowContextMenu),
         });
     }
     if !s.disabled
@@ -1203,6 +1219,20 @@ mod tests {
     }
 
     #[test]
+    fn declared_context_menu_is_projected_as_a_view_action() {
+        let row = crate::a11y::AccessNode::new(Role::ListItem)
+            .with_state(AccessState::new().focusable(true).context_menu(true));
+        let action = verbs_for(&row)
+            .into_iter()
+            .find(|action| action.name == "show-context-menu")
+            .expect("declared context menus are discoverable");
+        assert!(matches!(
+            action.kind,
+            SemanticActionKind::Verb(Action::ShowContextMenu)
+        ));
+    }
+
+    #[test]
     fn effectful_controls_are_not_projected_without_a_domain_contract() {
         let mut button = Button::new("go", "Go", None);
         let node_map = layout(&mut button);
@@ -1254,6 +1284,28 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "set-value")
         }));
+    }
+
+    #[test]
+    fn encoded_action_keys_remain_valid_resource_ids() {
+        let mut button = Button::new("settings.section:network\u{1f}open", "Network", None);
+        let node_map = layout(&mut button);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&button, &node_map, None, &[]);
+
+        let resources = tree.action_resources();
+        assert!(
+            resources
+                .iter()
+                .all(|resource| { !resource.id.as_str().contains(tilo_actions::KEY_SEP) })
+        );
+        assert!(
+            tilo_actions::validate_surface_contracts(
+                &resources,
+                &tilo_actions::ActionRegistry::new(),
+            )
+            .is_empty()
+        );
     }
 
     #[test]

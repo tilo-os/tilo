@@ -108,6 +108,46 @@ fn cli_pack_then_verify() {
 }
 
 #[test]
+fn cli_pack_rejects_oversized_app_atomically() {
+    let workdir = tempfile::tempdir().unwrap();
+    let payload_dir = workdir.path().join("payload");
+    std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
+    std::fs::write(
+        payload_dir.join("bin/hello"),
+        vec![0x5a; usize::try_from(pkg::MAX_APP_UNPACKED_BYTES - 1024).unwrap()],
+    )
+    .unwrap();
+    let manifest_path = workdir.path().join("manifest.toml");
+    std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
+    let qpkg = workdir.path().join("example.qpkg");
+    std::fs::write(&qpkg, b"previous valid release").unwrap();
+
+    let out = Command::new(bin_path())
+        .args([
+            "pack",
+            "--manifest",
+            manifest_path.to_str().unwrap(),
+            "--payload",
+            payload_dir.to_str().unwrap(),
+            "-o",
+            qpkg.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run tilo-pkg pack");
+    assert!(!out.status.success(), "oversized qpkg unexpectedly packed");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("application qpkg is"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read(&qpkg).unwrap(),
+        b"previous valid release",
+        "a rejected build must not replace the prior release artifact"
+    );
+}
+
+#[test]
 fn cli_inspect_lists_payload() {
     let workdir = tempfile::tempdir().unwrap();
     let payload_dir = workdir.path().join("payload");

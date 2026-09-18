@@ -50,6 +50,9 @@ pub enum WordProcessorOperation {
     Find,
     ZoomIn,
     ZoomOut,
+    /// Return the page canvas to its explicit 100% scale. This matches the
+    /// percentage chip in the visible zoom stepper and Ctrl+0.
+    ZoomReset,
     ToggleSpellcheck,
     ToggleMarkup,
     ToggleStyles,
@@ -2586,6 +2589,11 @@ fn add_view_operations(root: &mut Resource) {
         ("zoom-in", "Zoom in", WordProcessorOperation::ZoomIn),
         ("zoom-out", "Zoom out", WordProcessorOperation::ZoomOut),
         (
+            "zoom-reset",
+            "Reset zoom to 100%",
+            WordProcessorOperation::ZoomReset,
+        ),
+        (
             "spellcheck",
             "Toggle spellcheck",
             WordProcessorOperation::ToggleSpellcheck,
@@ -3343,6 +3351,24 @@ mod tests {
             ActionInput::Immediate(enc) => enc.clone(),
             ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
+    }
+
+    #[test]
+    fn view_catalogue_exposes_zoom_reset_as_a_typed_operation() {
+        let mut root = document_resource();
+        add_view_operations(&mut root);
+        let spec = root
+            .actions
+            .iter()
+            .find(|spec| spec.id == "zoom-reset")
+            .expect("the visible zoom reset has a resource action");
+        let encoded = immediate_encode(spec);
+        assert_eq!(encoded.type_id, WORD_PROCESSOR_OPERATION_TYPE);
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(WordProcessorOperation::ZoomReset),
+            "the resource action decodes to the one canonical reset operation"
+        );
     }
 
     /// A `ui::State` holding a canonical document seeded from `markdown`, plus the

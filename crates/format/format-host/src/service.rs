@@ -7,8 +7,6 @@
 //! `tokio::task::spawn_blocking` so the wasmtime calls (which can block for up
 //! to the 10-s wallclock budget) don't stall the capnp event loop.
 
-use std::rc::Rc;
-
 use capnp::Error;
 
 use crate::format_router_capnp::format_router;
@@ -149,9 +147,4 @@ impl format_router::Server for FormatRouterService {
             Ok(())
         }
     }
-}
-
-#[allow(dead_code)]
-fn _ensure_rc_compat() {
-    fn _accept<T: format_router::Server + 'static>(_: Rc<T>) {}
 }

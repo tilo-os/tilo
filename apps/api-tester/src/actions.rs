@@ -82,6 +82,10 @@ pub const REQUEST_MENU_CHOICES: &[&str] = &["Save request…", "Rename request�
 pub const ENVIRONMENT_MENU_CHOICES: &[&str] =
     &["Rename environment…", "Add variable…", "Delete variable…"];
 
+#[allow(
+    clippy::expect_used,
+    reason = "menu payloads contain only strings, whose JSON serialization is infallible"
+)]
 fn menu_resource(
     id: &str,
     label: &str,

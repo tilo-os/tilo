@@ -36,8 +36,8 @@ use ui::theme::Theme;
 use ui::widget::ActionEmitter;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
-    Button, ButtonFace, CropSelection, Image, ImageCropEditor, ImageFit, Popover, SidebarDrawer,
-    Toggle, ToggleFace, Widget,
+    Button, ButtonFace, CropSelection, Image, ImageCropEditor, ImageFit, Popover, Toggle,
+    ToggleFace, Widget,
 };
 use winit::event::WindowEvent;
 
@@ -60,15 +60,8 @@ const EDGE: f64 = 18.0;
 const SCAN_PAYLOAD: &str = "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;";
 /// Single decoded-size budget for the contextual recent-capture preview.
 const THUMB: (u32, u32) = (512, 342);
-/// Below this content width the side panels fold away for a single-column
-/// layout.
+/// Below this content width the document scanner folds to a single column.
 const WIDE_MIN: f64 = 900.0;
-/// Camera's real navigation is a shared responsive drawer: a useful, docked
-/// navigator at desktop widths and an overlay that is closed by default on a
-/// narrow or high-zoom window.  Keep the capture surface immersive inside the
-/// resolved content area instead of maintaining a second bespoke rail/flap.
-const NAV_WIDTH: f64 = 232.0;
-const NAV_BREAKPOINT: f64 = 760.0;
 /// Renderer/upload admission limit for external camera data. This mirrors the
 /// capture callback limit and remains here for the feature-off/test path: no
 /// caller can smuggle malformed pixels into an `Image`.
@@ -267,12 +260,13 @@ struct Countdown {
 #[derive(Clone, Debug)]
 enum Action {
     Nav(Screen),
-    ToggleNavigation,
-    CloseNavigation,
     /// Dismiss an overlay screen (Settings) back to the viewfinder
     /// it was opened from.
     Back,
     Shutter,
+    /// Hand off browsing to Photos. Camera never renders or mutates a
+    /// collection browser itself.
+    OpenPhotos,
     OpenRecentCapture,
     SetMode(CaptureMode),
     CycleFacing,
@@ -344,10 +338,6 @@ pub struct CameraApp {
     /// The viewfinder screen the Settings overlay was opened from,
     /// so its back button returns there rather than always to Camera.
     return_to: Screen,
-    /// Shared docked/overlay navigation controller.  It is intentionally
-    /// presentation-only: opening the drawer must never move a collaborator
-    /// away from their own current camera view.
-    navigation: SidebarDrawer,
     scan_dismissed: bool,
     scanned: Option<ScannedCode>,
     scan_gen: (u32, u32),
@@ -431,6 +421,10 @@ pub struct CameraApp {
     /// application-open boundary. Camera never imports Photos or serializes a
     /// side-channel payload; Photos receives only a verified portable hash.
     photos_handoff: Option<ActionEmitter<String>>,
+    /// The unconditional Photos destination for browsing the user's library.
+    /// Unlike `photos_handoff`, it carries no capture bytes because Photos
+    /// owns its own collection and entry point.
+    photos_browse: Option<ActionEmitter<()>>,
     video_handoff: Option<ActionEmitter<String>>,
 }
 
@@ -476,11 +470,6 @@ impl CameraApp {
             scans: Vec::new(),
             captures: Vec::new(),
             return_to: Screen::Camera,
-            navigation: SidebarDrawer::new()
-                .left()
-                .docked_width(NAV_WIDTH)
-                .overlay_width(NAV_WIDTH.min(320.0))
-                .breakpoint(NAV_BREAKPOINT),
             scan_dismissed: false,
             scanned: None,
             scan_gen: (0, 0),
@@ -539,6 +528,7 @@ impl CameraApp {
             actions: ui::ActionHost::new(),
             search_provider: crate::search::CameraSearchProvider::new(),
             photos_handoff: Self::media_handoff_emitter("dev.tilo.photos", "Photos"),
+            photos_browse: Self::photos_browse_emitter(),
             video_handoff: Self::media_handoff_emitter("dev.tilo.video-player", "Video Player"),
         }
     }
@@ -592,6 +582,20 @@ impl CameraApp {
         })
         .ok()
         .map(ActionEmitter::new)
+    }
+
+    fn photos_browse_emitter() -> Option<ActionEmitter<()>> {
+        use tilo_actions::ActionBinding;
+
+        // Bind to Camera's exported capture root, which owns the routing
+        // affordance. The action payload itself delegates to Photos, but the
+        // host can still re-resolve this address against the current Camera
+        // resource surface before permitting the launch.
+        let resource = tilo_actions::Resource::new("camera.capture", "camera.capture", "Capture")
+            .with_action(crate::actions::open_photos_action());
+        ActionBinding::unit_for(&resource, "open-photos")
+            .ok()
+            .map(ActionEmitter::new)
     }
 
     /// Hand a freshly captured RGBA frame to the app (live-capture worker or
@@ -853,10 +857,9 @@ impl CameraApp {
     fn a11y_target(action: &Action) -> String {
         match action {
             Action::Nav(screen) => format!("camera.nav:{}", screen.as_str()),
-            Action::ToggleNavigation => "camera.toggle-navigation".into(),
-            Action::CloseNavigation => "camera.close-navigation".into(),
             Action::Back => "camera.back".into(),
             Action::Shutter => "camera.shutter".into(),
+            Action::OpenPhotos => "camera.open-photos".into(),
             Action::OpenRecentCapture => "camera.open-recent-capture".into(),
             Action::SetMode(mode) => format!("camera.mode:{}", mode.as_str()),
             Action::CycleFacing => "camera.facing".into(),
@@ -904,23 +907,6 @@ impl CameraApp {
                 format!("Open {}", screen.label()),
                 AccessState::new().focusable(true),
             ),
-            Action::ToggleNavigation => (
-                Role::Button,
-                if self.navigation.is_open() {
-                    "Collapse navigation"
-                } else {
-                    "Open navigation"
-                }
-                .into(),
-                AccessState::new()
-                    .focusable(true)
-                    .expanded(self.navigation.is_open()),
-            ),
-            Action::CloseNavigation => (
-                Role::Button,
-                "Close navigation".into(),
-                AccessState::new().focusable(true),
-            ),
             Action::Back => (
                 Role::Button,
                 "Back".into(),
@@ -938,6 +924,11 @@ impl CameraApp {
                     "Take photo"
                 }
                 .into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::OpenPhotos => (
+                Role::Button,
+                "Open Photos to browse your library".into(),
                 AccessState::new().focusable(true),
             ),
             Action::OpenRecentCapture => (
@@ -1326,10 +1317,9 @@ impl CameraApp {
         self.toast = None;
         match action {
             Action::Nav(s) => self.apply_nav(s, doc, root),
-            Action::ToggleNavigation => self.navigation.toggle(),
-            Action::CloseNavigation => self.navigation.close(),
             Action::Back => self.apply_back(doc, root),
             Action::Shutter => self.apply_shutter(doc, root),
+            Action::OpenPhotos => self.open_photos(),
             Action::OpenRecentCapture => self.open_recent_capture(),
             Action::SetMode(m) => self.apply_set_mode(m, doc, root),
             Action::CycleFacing => self.apply_cycle_facing(doc, root),
@@ -1378,11 +1368,6 @@ impl CameraApp {
             self.return_to = self.screen;
         }
         self.screen = s;
-        // A selected destination dismisses an overlay drawer.  This is local
-        // presentation state, never a shared navigation replay.
-        if self.navigation.is_overlay() {
-            self.navigation.close();
-        }
     }
 
     fn capture_document_page(&mut self) {
@@ -1945,6 +1930,20 @@ impl CameraApp {
         match handoff.emit(hash.to_owned()) {
             Ok(()) => self.toast = Some(format!("Opening latest capture in {destination}…")),
             Err(error) => self.toast = Some(format!("Couldn't open {destination}: {error}")),
+        }
+    }
+
+    /// Open Photos' own library entry point. This intentionally accepts no
+    /// Camera-owned media id: browsing is Photos' concern, whereas the recent
+    /// tile above is the explicit verified-capture handoff.
+    fn open_photos(&mut self) {
+        let Some(handoff) = self.photos_browse.as_mut() else {
+            self.toast = Some("Photos is unavailable in this Camera session".into());
+            return;
+        };
+        match handoff.emit(()) {
+            Ok(()) => self.toast = Some("Opening Photos…".into()),
+            Err(error) => self.toast = Some(format!("Couldn't open Photos: {error}")),
         }
     }
 
@@ -2530,9 +2529,10 @@ impl Widget for CameraApp {
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.photos_handoff
+        self.photos_browse
             .as_mut()
             .and_then(ActionEmitter::take)
+            .or_else(|| self.photos_handoff.as_mut().and_then(ActionEmitter::take))
             .or_else(|| self.video_handoff.as_mut().and_then(ActionEmitter::take))
     }
 
@@ -2557,6 +2557,13 @@ impl Widget for CameraApp {
         {
             *binding = handoff.metadata("camera.open-recent-capture");
         }
+        if let Some(handoff) = self.photos_browse.as_ref()
+            && let Some(binding) = bindings
+                .iter_mut()
+                .find(|binding| binding.control_id == "camera.open-photos")
+        {
+            *binding = handoff.metadata("camera.open-photos");
+        }
         bindings
     }
 
@@ -2565,6 +2572,9 @@ impl Widget for CameraApp {
         allowed: &HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(handoff) = self.photos_handoff.as_mut() {
+            handoff.refresh_availability(allowed);
+        }
+        if let Some(handoff) = self.photos_browse.as_mut() {
             handoff.refresh_availability(allowed);
         }
         if let Some(handoff) = self.video_handoff.as_mut() {
@@ -3040,9 +3050,6 @@ impl Widget for CameraApp {
                     mode: self.mode,
                 });
             }
-            if std::env::var_os("CAMERA_SHOT_DRAWER").is_some() {
-                self.navigation.snap(true);
-            }
         }
 
         // Offscreen fixtures may request a concrete unavailable state without
@@ -3174,40 +3181,15 @@ impl Widget for CameraApp {
     ) {
         self.regions.clear();
         p::fill_rect(scene, t, self.rect, theme.tokens.colors.surfaces.base);
-        // The shared controller owns the wide dock / narrow overlay decision,
-        // including scrim dismissal and reduced-motion settling.  The camera
-        // remains immersive *within* its content rect rather than retaining a
-        // bespoke floating rail.
-        // The shared drawer owns this width; Camera only supplies the content
-        // minimum needed by its labels.  At large text it expands to preserve
-        // readable navigation rather than clipping the destination names.
-        self.navigation
-            .set_overlay_width(if theme.text_scale >= 1.5 {
-                (self.rect.width() - 56.0).clamp(NAV_WIDTH, 320.0)
-            } else {
-                NAV_WIDTH.min(320.0)
-            });
-        self.navigation.resolve(self.rect);
-        self.navigation.tick(self.motion_reduced);
-        let full = self.navigation.content_rect();
+        // Camera is an immersive capture surface.  Nothing may reserve a rail
+        // or drawer width from its viewfinder: secondary tools are reached by
+        // the compact mode switcher and settings is a sheet over this surface.
+        let full = self.rect;
         match self.screen {
             Screen::Camera => self.draw_camera(scene, t, tr, theme, full),
             Screen::Scanner => self.draw_scanner(scene, t, tr, theme, full),
             Screen::Document => self.draw_document_scanner(scene, t, tr, theme, full),
             Screen::Settings => self.draw_settings(scene, t, tr, theme, full),
-        }
-        if self.navigation.is_overlay() && self.navigation.is_open() {
-            // An overlay drawer owns the interaction tree until dismissed;
-            // exposed controls behind it would be an accessibility trap.
-            self.regions.clear();
-            self.navigation.draw_scrim(scene, t);
-            self.push_region(self.navigation.scrim_rect(), Action::CloseNavigation);
-        } else if !self.navigation.is_docked() {
-            self.draw_navigation_summon(scene, t, theme, full);
-        }
-        let rail = self.navigation.sidebar_rect();
-        if rail.width() > 4.0 && self.navigation.reveal() > 0.001 {
-            self.draw_navigation(scene, t, tr, theme, rail);
         }
         self.draw_hover_tooltip(scene, t, tr, theme);
         self.draw_toast(scene, t, tr, theme);
@@ -3267,11 +3249,6 @@ impl Widget for CameraApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.navigation.press_dismisses(self.last_mouse) {
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
                 if self.hit(self.last_mouse, state, path) {
                     *handled = true;
                 }
@@ -3358,21 +3335,13 @@ impl Widget for CameraApp {
                     },
                 ..
             } => {
-                if matches!(logical_key, Key::Named(NamedKey::Escape))
-                    && self.navigation.is_overlay()
-                    && self.navigation.is_open()
-                {
-                    self.navigation.close();
-                    self.dirty = true;
-                    *handled = true;
-                    return;
-                }
                 let act = match logical_key {
                     Key::Character(c) => match c.as_str() {
                         "1" => Some(Action::Nav(Screen::Camera)),
                         "2" => Some(Action::Nav(Screen::Scanner)),
                         "3" | "d" | "D" => Some(Action::Nav(Screen::Document)),
                         "4" => Some(Action::Nav(Screen::Settings)),
+                        "p" | "P" => Some(Action::OpenPhotos),
                         "g" | "G" => Some(Action::ToggleGrid),
                         "f" | "F" => Some(Action::CycleFacing),
                         "r" | "R"
@@ -3488,8 +3457,7 @@ impl Widget for CameraApp {
         // it advances the elapsed indicator and drains the real camera worker.
         // Reduced-motion users receive the same capture correctness through a
         // low-frequency wake deadline below, without a continuous UI loop.
-        ((self.recording.is_some() || self.countdown.is_some()) && !self.motion_reduced)
-            || self.navigation.is_animating()
+        (self.recording.is_some() || self.countdown.is_some()) && !self.motion_reduced
     }
     fn next_wake_deadline(&self) -> Option<Instant> {
         if self.motion_reduced && (self.recording.is_some() || self.countdown.is_some()) {
@@ -3544,201 +3512,10 @@ struct EmptyStateLayout {
 }
 
 impl CameraApp {
-    /// Shared `SidebarDrawer` summon affordance for narrow/high-zoom layouts.
-    /// It is deliberately kept outside the drawer itself so a closed overlay
-    /// has one consistent, 44pt target in every Camera screen.
-    fn draw_navigation_summon(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        content: Rect,
-    ) {
-        let toggle = Rect::new(
-            content.x0 + 14.0,
-            content.y0 + 14.0,
-            content.x0 + 50.0,
-            content.y0 + 50.0,
-        );
-        self.navigation
-            .draw_toggle(scene, t, theme, toggle, toggle.contains(self.last_mouse));
-        self.push_tap_region(toggle, Action::ToggleNavigation);
-    }
-
-    /// Paint Camera's actual navigation surface from the geometry supplied by
-    /// `SidebarDrawer`.  This has no independent breakpoint, slide, scrim, or
-    /// collapse state — those semantics live in the shared primitive above.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the immediate-mode navigation surface intentionally owns its visual chrome and the exact action regions together"
-    )]
-    fn draw_navigation(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rail: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let large_type = theme.text_scale >= 1.5;
-        p::push_clip_rect(scene, t, rail);
-        p::fill_rect(scene, t, rail, c.surfaces.raised);
-        p::line(
-            scene,
-            t,
-            rail.x1 - 0.5,
-            rail.y0,
-            rail.x1 - 0.5,
-            rail.y1,
-            c.border_standard,
-            1.0,
-        );
-
-        let toggle = Rect::new(
-            rail.x1 - 48.0,
-            rail.y0 + 14.0,
-            rail.x1 - 14.0,
-            rail.y0 + 48.0,
-        );
-        self.navigation
-            .draw_toggle(scene, t, theme, toggle, toggle.contains(self.last_mouse));
-        self.push_tap_region(
-            toggle,
-            if self.navigation.is_overlay() {
-                Action::CloseNavigation
-            } else {
-                Action::ToggleNavigation
-            },
-        );
-
-        let mark = Rect::new(
-            rail.x0 + 18.0,
-            rail.y0 + 18.0,
-            rail.x0 + 42.0,
-            rail.y0 + 42.0,
-        );
-        p::fill_round(scene, t, mark, 8.0, theme.accent_primary);
-        p::icon(scene, t, "camera", shrink(mark, 5.0), white(), 1.7);
-        p::text(
-            scene,
-            tr,
-            rail.x0 + 52.0,
-            rail.y0 + 21.0,
-            "Camera",
-            17.0,
-            c.text_primary,
-        );
-        if !large_type {
-            p::text(
-                scene,
-                tr,
-                rail.x0 + 52.0,
-                rail.y0 + 42.0,
-                "Capture workspace",
-                10.5,
-                c.text_dim,
-            );
-        }
-
-        let mut y = rail.y0 + 78.0;
-        for (screen, icon) in [
-            (Screen::Camera, "camera"),
-            (Screen::Scanner, "scan"),
-            (Screen::Document, "image"),
-            (Screen::Settings, "settings"),
-        ] {
-            let row = Rect::new(rail.x0 + 10.0, y, rail.x1 - 10.0, y + 42.0);
-            let active = self.screen == screen;
-            if active {
-                p::fill_round(scene, t, row, 11.0, p::alpha(theme.accent_primary, 0.18));
-            }
-            let fg = if active {
-                theme.accent_primary
-            } else {
-                c.text_primary
-            };
-            p::icon(
-                scene,
-                t,
-                icon,
-                Rect::new(
-                    row.x0 + 12.0,
-                    row.center().y - 9.0,
-                    row.x0 + 30.0,
-                    row.center().y + 9.0,
-                ),
-                fg,
-                1.7,
-            );
-            p::text(
-                scene,
-                tr,
-                row.x0 + 42.0,
-                row.center().y - 8.0,
-                screen.label(),
-                13.5,
-                fg,
-            );
-            self.push_region(row, Action::Nav(screen));
-            y += 46.0;
-        }
-
-        let device = if self.feed_active() {
-            "Viewfinder ready"
-        } else if self.camera_issue == Some(CameraIssue::PermissionDenied) {
-            "Camera permission needed"
-        } else {
-            "No active camera"
-        };
-        let status = Rect::new(
-            rail.x0 + 14.0,
-            rail.y1 - 72.0,
-            rail.x1 - 14.0,
-            rail.y1 - 16.0,
-        );
-        p::fill_round(scene, t, status, 12.0, c.surfaces.base);
-        p::circle(
-            scene,
-            t,
-            status.x0 + 15.0,
-            status.y0 + 18.0,
-            4.0,
-            if self.feed_active() {
-                theme.status_success
-            } else {
-                c.semantic.warning
-            },
-        );
-        p::text(
-            scene,
-            tr,
-            status.x0 + 26.0,
-            status.y0 + 10.0,
-            device,
-            11.0,
-            c.text_primary,
-        );
-        p::text(
-            scene,
-            tr,
-            status.x0 + 14.0,
-            status.y0 + 31.0,
-            if large_type {
-                "Saved locally"
-            } else {
-                "Saved locally · share when you choose"
-            },
-            10.0,
-            c.text_dim,
-        );
-        p::pop(scene);
-    }
-
-    /// Horizontal centre of the window — the shutter, mode switcher, toasts and
-    /// recording badge all centre here.
+    /// Horizontal centre of the edge-to-edge stage — the shutter, mode
+    /// switcher, toasts and recording badge deliberately share this axis.
     fn stage_center_x(&self) -> f64 {
-        self.navigation.content_rect().center().x
+        self.rect.center().x
     }
 
     /// A round floating glass button (used for the settings gear, the lens
@@ -3794,7 +3571,7 @@ impl CameraApp {
     ) {
         // Keep the four capture destinations inside a narrow/high-zoom viewport
         // instead of letting the fixed desktop-width pill clip off-screen.
-        let available_w = self.navigation.content_rect().width() - EDGE * 2.0;
+        let available_w = self.rect.width() - EDGE * 2.0;
         let seg_w = if theme.text_scale >= 1.5 {
             // Four translated labels need the full compact stage at 200%
             // text. The old desktop cap made the words collide even though
@@ -3804,7 +3581,7 @@ impl CameraApp {
         } else {
             available_w.clamp(150.0, 240.0)
         };
-        let height = if theme.text_scale >= 1.5 { 48.0 } else { 34.0 };
+        let height = if theme.text_scale >= 1.5 { 64.0 } else { 34.0 };
         let seg = Rect::new(
             center_x - seg_w / 2.0,
             top_y,
@@ -4145,8 +3922,7 @@ impl CameraApp {
         // pointer- and screen-reader-only.
         if !matches!(
             action,
-            Action::ToggleNavigation
-                | Action::Nav(Screen::Settings)
+            Action::Nav(Screen::Settings)
                 | Action::Back
                 | Action::Shutter
                 | Action::CycleFacing
@@ -4350,8 +4126,19 @@ impl CameraApp {
             self.draw_no_feed(scene, t, tr, theme, full, (title, subtitle));
         }
 
+        // Output is always owned by Photos.  This is a typed cross-app launch,
+        // not a Camera gallery: the thumbnail below opens the latest capture,
+        // while this compact surface opens the library at its true owner.
+        self.glass_button(
+            scene,
+            t,
+            theme,
+            Circle::new(Point::new(full.x1 - EDGE - 58.0, full.y0 + 35.0), 16.0),
+            "image",
+            Action::OpenPhotos,
+        );
         // Settings gear, top-right — opens Settings as an overlay sheet. Drawn
-        // whether or not a feed is present so Settings is always reachable.
+        // whether or not a feed is present so device preferences stay reachable.
         self.glass_button(
             scene,
             t,
@@ -4440,7 +4227,8 @@ impl CameraApp {
             active,
         } = content;
         let colors = &theme.tokens.colors;
-        let pad = 11.0;
+        let large_type = theme.text_scale >= 1.5;
+        let pad = if large_type { 14.0 } else { 11.0 };
         let icon_w = if icon.is_some() { 17.0 } else { 0.0 };
         let tw = if label.is_empty() {
             0.0
@@ -4453,7 +4241,10 @@ impl CameraApp {
             0.0
         };
         let width = pad * 2.0 + icon_w + gap + tw;
-        let height = 30.0;
+        // Text is scaled by the system at 200%; reserve a real touch-sized
+        // logical pill instead of allowing larger glyphs to bleed through its
+        // glass edge.
+        let height = if large_type { 44.0 } else { 30.0 };
         let rect = Rect::new(pos.x, pos.y, pos.x + width, pos.y + height);
         if active {
             p::fill_round(scene, t, rect, height / 2.0, theme.accent_primary);
@@ -4492,7 +4283,15 @@ impl CameraApp {
             cx += icon_w + gap;
         }
         if !label.is_empty() {
-            p::text(scene, tr, cx, rect.center().y - 8.0, label, 12.0, fg);
+            p::text(
+                scene,
+                tr,
+                cx,
+                rect.center().y - if large_type { 12.0 } else { 8.0 },
+                label,
+                12.0,
+                fg,
+            );
         }
         rect
     }
@@ -4508,10 +4307,7 @@ impl CameraApp {
         theme: &Theme,
         full: Rect,
     ) {
-        // Keep the compact, shared drawer summon clear of the quick controls
-        // on narrow/high-zoom viewfinder layouts.
-        let compact_nav = self.navigation.is_overlay();
-        let mut x = full.x0 + EDGE + if compact_nav { 44.0 } else { 0.0 };
+        let mut x = full.x0 + EDGE;
         let y = full.y0 + 20.0;
         let gap = 9.0;
 
@@ -4608,13 +4404,13 @@ impl CameraApp {
         // recording (mode is locked; the stop-square shutter + REC badge carry
         // the state).
         if !state.recording {
-            // Large type turns the selector into a true 48pt band and reserves
-            // 18pt before the shutter ring / 13pt before the thumbnail badge.
+            // Large type turns the selector into a true 64pt band and reserves
+            // a quiet 28pt gap before the shutter ring / thumbnail badge.
             // This keeps the four bottom controls visibly separate, not just
             // semantically non-overlapping.
             let selector_top = full.y1
                 - if theme.text_scale >= 1.5 {
-                    164.0
+                    190.0
                 } else {
                     132.0
                 };
@@ -4968,18 +4764,10 @@ impl CameraApp {
         p::fill_rect(scene, t, full, c.surfaces.base);
         let compact = full.width() < WIDE_MIN;
         let content = shrink(full, EDGE);
-        // Compact app shells place their shared navigation reveal control in
-        // the upper-left 44px target. Keep only the headline clear of it; the
-        // subtitle can return to the content edge on the next line.
-        let title_x = if compact {
-            content.x0 + 52.0
-        } else {
-            content.x0
-        };
         p::text(
             scene,
             tr,
-            title_x,
+            content.x0,
             content.y0 + 4.0,
             "Scan documents",
             if compact { 25.0 } else { 30.0 },
@@ -5455,25 +5243,26 @@ impl CameraApp {
         } else {
             "No camera — pick a saved photo to scan a code from it"
         };
-        // On overlay-nav layouts the summon button occupies the top-left
-        // corner. Start the header after its 44pt target so title text is
-        // never painted underneath an interactive control.
-        let header_left = if self.navigation.is_docked() {
-            EDGE
-        } else {
-            62.0
-        };
         Self::draw_glass_header(
             scene,
             t,
             tr,
             theme,
-            Point::new(full.x0 + header_left, full.y0 + 18.0),
-            (full.width() - header_left - EDGE - 48.0).max(120.0),
+            Point::new(full.x0 + EDGE, full.y0 + 18.0),
+            (full.width() - EDGE * 2.0 - 88.0).max(120.0),
             title,
             subtitle,
         );
 
+        // Photos is a handoff to its owning app, never a gallery inside Camera.
+        self.glass_button(
+            scene,
+            t,
+            theme,
+            Circle::new(Point::new(full.x1 - EDGE - 58.0, full.y0 + 34.0), 16.0),
+            "image",
+            Action::OpenPhotos,
+        );
         // Settings gear, top-right.
         self.glass_button(
             scene,
@@ -6725,7 +6514,7 @@ mod tests {
     }
 
     #[test]
-    fn navigation_is_presentation_only() {
+    fn screen_reveals_are_presentation_only() {
         let (mut app, mut doc, root) = sample_app();
         let before = doc.get_heads();
         app.apply(Action::Nav(Screen::Settings), &mut doc, &root);
@@ -6735,39 +6524,29 @@ mod tests {
     }
 
     #[test]
-    fn shared_navigation_docks_wide_and_overlays_narrow_without_doc_writes() {
+    fn viewfinder_keeps_the_full_stage_at_wide_narrow_and_large_text_sizes() {
         let (mut app, mut doc, root) = sample_app();
         let heads = doc.get_heads();
         render_at(&mut app, &mut doc, &root, 1_100.0, 720.0);
-        assert!(app.navigation.is_docked() && app.navigation.is_open());
-        assert!(app.navigation.content_rect().x0 > app.rect.x0);
+        assert_eq!(app.rect.width(), 1_100.0);
+        assert!(
+            app.accessibility()
+                .expect("wide a11y")
+                .children
+                .iter()
+                .any(|node| { node.action_target.as_deref() == Some("camera.open-photos") })
+        );
 
         render_at(&mut app, &mut doc, &root, 390.0, 720.0);
-        assert!(app.navigation.is_overlay() && !app.navigation.is_open());
-        assert!(app.perform_semantic_action(
-            "camera.toggle-navigation",
-            &A11yAction::Activate,
-            &mut doc,
-            &root,
-        ));
-        render_at(&mut app, &mut doc, &root, 390.0, 720.0);
-        assert!(app.navigation.is_open());
-        let tree = app.accessibility().expect("drawer semantics");
-        assert!(tree.children.iter().any(|node| {
-            node.name.as_deref() == Some("Open Settings")
-                && node.action_target.as_deref() == Some("camera.nav:settings")
-        }));
-        assert!(tree.children.iter().any(|node| {
-            node.name.as_deref() == Some("Close navigation")
-                && node.action_target.as_deref() == Some("camera.close-navigation")
-        }));
+        assert_eq!(app.rect.width(), 390.0);
         assert!(
-            tree.children
+            app.accessibility()
+                .expect("narrow a11y")
+                .children
                 .iter()
-                .all(|node| { node.action_target.as_deref() != Some("camera.shutter") }),
-            "an overlay drawer must not expose controls behind its scrim"
+                .any(|node| { node.action_target.as_deref() == Some("camera.shutter") })
         );
-        assert_eq!(doc.get_heads(), heads, "navigation remains local");
+        assert_eq!(doc.get_heads(), heads, "viewfinder layout remains local");
     }
 
     #[test]
@@ -7589,6 +7368,10 @@ mod tests {
         let codes = bounds_for("camera.nav:scanner");
         let documents = bounds_for("camera.nav:document");
 
+        assert!(
+            photo.y1 - photo.y0 >= 64.0,
+            "200% text gets a full-height segmented touch target"
+        );
         assert!(photo.x1 <= video.x0);
         assert!(video.x1 <= codes.x0);
         assert!(codes.x1 <= documents.x0);
@@ -7638,14 +7421,42 @@ mod tests {
                 && node.role == Role::Button
                 && node.action_target.as_deref() == Some("camera.open-recent-capture")
         }));
+        assert!(tree.children.iter().any(|node| {
+            node.name.as_deref() == Some("Open Photos to browse your library")
+                && node.role == Role::Button
+                && node.action_target.as_deref() == Some("camera.open-photos")
+        }));
         assert!(tree.children.iter().all(|node| node.bounds.is_some()));
     }
 
     #[test]
-    fn navigation_exposes_document_capture_without_needing_a_gallery_surface() {
+    fn browse_photos_uses_the_typed_owner_handoff_without_a_gallery() {
+        let (mut app, mut doc, root) = sample_app();
+        render_at(&mut app, &mut doc, &root, 900.0, 700.0);
+        assert!(app.perform_semantic_action(
+            "camera.open-photos",
+            &A11yAction::Activate,
+            &mut doc,
+            &root,
+        ));
+        let invocation = Widget::take_control_invocation(&mut app)
+            .expect("Photos browse emits a typed external invocation");
+        assert_eq!(invocation.address.resource, "camera.capture");
+        assert_eq!(invocation.address.action, "open-photos");
+        assert!(invocation.arguments.is_empty());
+        assert!(
+            app.captures.len() <= 1,
+            "Camera still owns no gallery cache"
+        );
+    }
+
+    #[test]
+    fn capture_switcher_exposes_document_capture_without_a_gallery_surface() {
         let (mut app, mut doc, root) = sample_app();
         render_at(&mut app, &mut doc, &root, 1_200.0, 760.0);
-        let tree = app.accessibility().expect("camera has semantic navigation");
+        let tree = app
+            .accessibility()
+            .expect("camera has semantic capture controls");
         assert!(tree.children.iter().any(|node| {
             node.name.as_deref() == Some("Open Documents")
                 && node.action_target.as_deref() == Some("camera.nav:document")

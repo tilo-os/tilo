@@ -196,89 +196,17 @@ impl NearbySendState {
                 ))];
             }
         };
+        self.handle_reply(pending, reply)
+    }
+
+    fn handle_reply(
+        &mut self,
+        pending: Pending,
+        reply: &NearbyTransferReply,
+    ) -> Vec<NearbyUiEffect> {
         match (pending, reply) {
             (Pending::Snapshot { open_picker }, NearbyTransferReply::Snapshot { snapshot }) => {
-                self.snapshot = snapshot.clone();
-                self.observed_phases.retain(|handle, _| {
-                    self.snapshot
-                        .transfers
-                        .iter()
-                        .any(|transfer| transfer.handle == *handle)
-                });
-                if self.shown_offer.is_some_and(|handle| {
-                    !self
-                        .snapshot
-                        .transfers
-                        .iter()
-                        .any(|transfer| transfer.handle == handle)
-                }) {
-                    self.shown_offer = None;
-                }
-                let mut effects = Vec::new();
-                if open_picker {
-                    effects.push(NearbyUiEffect::OpenPicker(self.snapshot.targets.clone()));
-                }
-                for transfer in &self.snapshot.transfers {
-                    if matches!(
-                        transfer.phase,
-                        NearbyTransferPhase::AwaitingConsent
-                            | NearbyTransferPhase::AwaitingDestination
-                    ) && self.shown_offer != Some(transfer.handle)
-                    {
-                        self.shown_offer = Some(transfer.handle);
-                        effects.push(NearbyUiEffect::Offer {
-                            transfer: transfer.clone(),
-                            destinations: self.snapshot.destinations.clone(),
-                        });
-                    }
-                    let old = self.observed_phases.insert(transfer.handle, transfer.phase);
-                    if old == Some(transfer.phase) {
-                        continue;
-                    }
-                    if matches!(
-                        transfer.phase,
-                        NearbyTransferPhase::Completed
-                            | NearbyTransferPhase::Failed
-                            | NearbyTransferPhase::Cancelled
-                    ) {
-                        self.history.retain(|entry| entry.handle != transfer.handle);
-                        self.history.push_front(transfer.clone());
-                        self.history.truncate(MAX_VISIBLE_HISTORY);
-                    }
-                    let message = match transfer.phase {
-                        NearbyTransferPhase::Queued => Some(format!(
-                            "Queued {} for {}",
-                            transfer.name, transfer.device_label
-                        )),
-                        NearbyTransferPhase::Transferring => {
-                            let percent = transfer
-                                .transferred_bytes
-                                .saturating_mul(100)
-                                .checked_div(transfer.total_bytes)
-                                .unwrap_or(0);
-                            Some(format!("Sending {} · {percent}%", transfer.name))
-                        }
-                        NearbyTransferPhase::Completed => {
-                            Some(format!("Nearby Send completed: {}", transfer.name))
-                        }
-                        NearbyTransferPhase::Failed => {
-                            effects.push(NearbyUiEffect::Failed(transfer.clone()));
-                            Some(format!(
-                                "Nearby Send failed: {} · retry available",
-                                transfer.name
-                            ))
-                        }
-                        NearbyTransferPhase::Cancelled => {
-                            Some(format!("Nearby Send cancelled: {}", transfer.name))
-                        }
-                        NearbyTransferPhase::AwaitingConsent
-                        | NearbyTransferPhase::AwaitingDestination => None,
-                    };
-                    if let Some(message) = message {
-                        effects.push(NearbyUiEffect::Status(message));
-                    }
-                }
-                effects
+                self.apply_snapshot(snapshot.clone(), open_picker)
             }
             (Pending::Send, NearbyTransferReply::Queued { handle }) => {
                 vec![
@@ -299,6 +227,100 @@ impl NearbySendState {
             _ => vec![NearbyUiEffect::Status(
                 "Nearby Send returned an unexpected response".into(),
             )],
+        }
+    }
+
+    fn apply_snapshot(
+        &mut self,
+        snapshot: NearbyTransferSnapshot,
+        open_picker: bool,
+    ) -> Vec<NearbyUiEffect> {
+        self.snapshot = snapshot;
+        self.observed_phases.retain(|handle, _| {
+            self.snapshot
+                .transfers
+                .iter()
+                .any(|transfer| transfer.handle == *handle)
+        });
+        if self.shown_offer.is_some_and(|handle| {
+            !self
+                .snapshot
+                .transfers
+                .iter()
+                .any(|transfer| transfer.handle == handle)
+        }) {
+            self.shown_offer = None;
+        }
+        let mut effects = Vec::new();
+        if open_picker {
+            effects.push(NearbyUiEffect::OpenPicker(self.snapshot.targets.clone()));
+        }
+        for transfer in self.snapshot.transfers.clone() {
+            self.append_transfer_effects(&transfer, &mut effects);
+        }
+        effects
+    }
+
+    fn append_transfer_effects(
+        &mut self,
+        transfer: &NearbyTransferStatus,
+        effects: &mut Vec<NearbyUiEffect>,
+    ) {
+        if matches!(
+            transfer.phase,
+            NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
+        ) && self.shown_offer != Some(transfer.handle)
+        {
+            self.shown_offer = Some(transfer.handle);
+            effects.push(NearbyUiEffect::Offer {
+                transfer: transfer.clone(),
+                destinations: self.snapshot.destinations.clone(),
+            });
+        }
+        let old = self.observed_phases.insert(transfer.handle, transfer.phase);
+        if old == Some(transfer.phase) {
+            return;
+        }
+        if matches!(
+            transfer.phase,
+            NearbyTransferPhase::Completed
+                | NearbyTransferPhase::Failed
+                | NearbyTransferPhase::Cancelled
+        ) {
+            self.history.retain(|entry| entry.handle != transfer.handle);
+            self.history.push_front(transfer.clone());
+            self.history.truncate(MAX_VISIBLE_HISTORY);
+        }
+        let message = match transfer.phase {
+            NearbyTransferPhase::Queued => Some(format!(
+                "Queued {} for {}",
+                transfer.name, transfer.device_label
+            )),
+            NearbyTransferPhase::Transferring => {
+                let percent = transfer
+                    .transferred_bytes
+                    .saturating_mul(100)
+                    .checked_div(transfer.total_bytes)
+                    .unwrap_or(0);
+                Some(format!("Sending {} · {percent}%", transfer.name))
+            }
+            NearbyTransferPhase::Completed => {
+                Some(format!("Nearby Send completed: {}", transfer.name))
+            }
+            NearbyTransferPhase::Failed => {
+                effects.push(NearbyUiEffect::Failed(transfer.clone()));
+                Some(format!(
+                    "Nearby Send failed: {} · retry available",
+                    transfer.name
+                ))
+            }
+            NearbyTransferPhase::Cancelled => {
+                Some(format!("Nearby Send cancelled: {}", transfer.name))
+            }
+            NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination => None,
+        };
+        if let Some(message) = message {
+            effects.push(NearbyUiEffect::Status(message));
         }
     }
 }

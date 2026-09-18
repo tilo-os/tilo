@@ -264,6 +264,26 @@ wait_for_text() {
   return 1
 }
 
+# A lock field must be identified as a password to the actual AT-SPI client,
+# not merely be a TextInput whose value happens to be blank. This platform
+# role tells readers and braille displays to suppress credential echo while
+# preserving ordinary editable-text navigation.
+assert_password_role() {
+  local expected=$1 path role
+  path=$(editable_node_named "$expected") || {
+    echo "AT-SPI $mode tree has no editable password node named '$expected'" >&2
+    return 1
+  }
+  role=$(gdbus call --address "$atspi_address" \
+    --dest "$app_bus" \
+    --object-path "$path" \
+    --method org.a11y.atspi.Accessible.GetLocalizedRoleName)
+  [[ $role == *"password text"* ]] || {
+    echo "AT-SPI '$expected' is not exposed as password text: $role" >&2
+    return 1
+  }
+}
+
 case "$mode" in
   oobe|oobe-actions)
     wait_for_names "Use existing" "Create identity"
@@ -298,6 +318,7 @@ case "$mode" in
     ;;
   lock)
     wait_for_names "Tilo lock screen" "Password" "Type your password and press Enter"
+    assert_password_role "Password"
     ;;
 esac
 

@@ -188,7 +188,7 @@ fn future_issued_certificate_is_rejected() {
                 NOW,
             )
             .unwrap_err(),
-        PeerAuthError::CertificateNotYetValid
+        PeerAuthError::Certificate(DeviceCertError::NotYetValid)
     );
 }
 

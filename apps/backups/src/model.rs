@@ -80,7 +80,6 @@ impl SourceKind {
 
 /// How often a source is captured automatically.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Cadence {
     OnDemand,
     Hourly,

@@ -1023,6 +1023,87 @@ fn scrollback_reveals_older_lines_and_snaps_back() {
     );
 }
 
+#[test]
+fn find_in_scrollback_is_local_reveals_matches_and_reflows_at_large_text() {
+    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+    use vello::{Scene, kurbo::Affine};
+
+    let (mut widget, _writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    let viewport = Rect::new(0.0, 0.0, 390.0, 844.0);
+    widget.force_geometry(viewport, 10.0, 20.0);
+    widget.force_grid(
+        (0..120)
+            .map(|row| format!("build step {row:03}: compiling local terminal output"))
+            .collect(),
+    );
+    let heads_before = doc.get_heads();
+
+    widget.open_find();
+    widget.set_find_query("build step 020");
+    assert!(widget.find_test_state().0);
+    assert_eq!(widget.find_test_state().1, vec![20]);
+    assert!(
+        widget.scroll_offset() > 0,
+        "find reveals a distant history row"
+    );
+    assert_eq!(
+        doc.get_heads(),
+        heads_before,
+        "find text/matches stay local rather than mutating the collaborative transcript"
+    );
+
+    // The actual draw route computes the 200% compact composition: the shared
+    // input owns one row and all three explicit controls remain disjoint.
+    let mut scene = Scene::new();
+    let mut text = TextRenderer::new();
+    let theme = Theme::high_contrast().with_text_scale(2.0);
+    widget.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &theme,
+        &PresenceCtx::empty(),
+    );
+    let (panel, input, previous, next, close) = widget.find_test_geometry();
+    assert!(panel.x0 >= viewport.x0 && panel.x1 <= viewport.x1);
+    assert!(panel.y0 >= viewport.y0 && panel.y1 <= viewport.y1);
+    for control in [previous, next, close] {
+        assert!(input.intersect(control).area() <= 0.0);
+        assert!(control.width() >= 28.0 && control.height() >= 28.0);
+    }
+
+    // Assistive activation uses the same local state path and never makes a
+    // blind terminal keystroke. The target includes the shared pane id so
+    // embedded terminals do not collide.
+    let next = widget.find_test_target("next");
+    assert!(ui::widget::Widget::perform_semantic_action(
+        &mut widget,
+        &next,
+        &ui::a11y::Action::Activate,
+        &mut doc,
+        &ROOT,
+    ));
+    let query = widget.find_test_target("query");
+    assert!(ui::widget::Widget::perform_semantic_action(
+        &mut widget,
+        &query,
+        &ui::a11y::Action::SetValue("build step 042".into()),
+        &mut doc,
+        &ROOT,
+    ));
+    assert_eq!(widget.find_test_state().1, vec![42]);
+    let close = widget.find_test_target("close");
+    assert!(ui::widget::Widget::perform_semantic_action(
+        &mut widget,
+        &close,
+        &ui::a11y::Action::Activate,
+        &mut doc,
+        &ROOT,
+    ));
+    assert!(!widget.find_test_state().0);
+}
+
 // ---------------------------------------------------------------
 // Scrollbar honesty — the gutter only claims travel that exists.
 // `scrollbar_visible` is the predicate `draw_scrollbar` gates on, so
@@ -3544,6 +3625,77 @@ fn hosted_terminal_requires_ush_before_construction() {
     let result = crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices { ush: None });
     assert!(matches!(
         result,
+        Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
+    ));
+}
+
+fn private_ush_listener(runtime: &std::path::Path) -> std::os::unix::net::UnixListener {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tilo = runtime.join("tilo");
+    let services = tilo.join("services");
+    std::fs::create_dir_all(&services).unwrap();
+    for directory in [runtime, tilo.as_path(), services.as_path()] {
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let socket = services.join("ush.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    listener
+}
+
+#[test]
+fn hosted_services_discover_and_use_a_healthy_ush_socket() {
+    use std::io::{BufRead, BufReader};
+    use std::os::fd::AsRawFd;
+
+    let runtime = tempfile::tempdir().unwrap();
+    let listener = private_ush_listener(runtime.path());
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut request = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut request)
+            .unwrap();
+        assert!(request.contains("\"op\":\"open-session\""), "{request}");
+        assert!(request.contains("\"profile\":\"ush\""), "{request}");
+        let (master, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        runtime_portal::fd_transport::send_with_fd(
+            stream.as_raw_fd(),
+            b"{\"result\":\"session\",\"session\":\"test\",\"profile\":\"ush\"}\n",
+            master.as_raw_fd(),
+        )
+        .unwrap();
+    });
+
+    let services = crate::HostedProcessServices::discover_from_runtime_dir(runtime.path());
+    let widget = crate::TerminalWidget::spawn_hosted(services)
+        .expect("the discovered ush connection must use the supervisor protocol");
+    drop(widget);
+    server.join().unwrap();
+}
+
+#[test]
+fn hosted_services_leave_ush_missing_when_the_socket_is_absent() {
+    let runtime = tempfile::tempdir().unwrap();
+    let services = crate::HostedProcessServices::discover_from_runtime_dir(runtime.path());
+    assert!(services.ush.is_none());
+    assert!(matches!(
+        crate::TerminalWidget::spawn_hosted(services),
+        Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
+    ));
+}
+
+#[test]
+fn hosted_services_leave_ush_missing_when_the_socket_refuses_connections() {
+    let runtime = tempfile::tempdir().unwrap();
+    let listener = private_ush_listener(runtime.path());
+    drop(listener);
+
+    let services = crate::HostedProcessServices::discover_from_runtime_dir(runtime.path());
+    assert!(services.ush.is_none());
+    assert!(matches!(
+        crate::TerminalWidget::spawn_hosted(services),
         Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
     ));
 }

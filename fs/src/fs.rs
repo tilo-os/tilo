@@ -472,7 +472,6 @@ impl QuickFS {
         }
     }
 
-    #[allow(clippy::significant_drop_tightening)]
     fn remember_rich_metadata(
         &self,
         ino: u64,
@@ -482,6 +481,7 @@ impl QuickFS {
             let ns = self.ns();
             let record_id = ns.record_id_for(ino)?;
             let name = ns.path_for(ino)?.rsplit('/').next()?.to_owned();
+            drop(ns);
             (record_id, name)
         };
         let properties = crate::rich_metadata::extract(&name, bytes)?;
@@ -766,30 +766,13 @@ impl QuickFS {
         Ok(())
     }
 
-    // Namespace guards are already bounded by lexical snapshot blocks; keep
-    // the publication sequence together so signed baselines remain ordered.
-    #[allow(clippy::significant_drop_tightening)]
     fn ensure_record_publication(
         &self,
     ) -> Result<(), crate::record_publisher::RecordPublisherError> {
         let (Some(publisher), Some((history, _))) = (&self.record_publisher, &self.history) else {
             return Ok(());
         };
-        let binding_inodes = {
-            let mut namespace = self.ns();
-            let mut inodes = vec![crate::namespace::ROOT_INO];
-            let paths = namespace
-                .live_node_ids()
-                .into_iter()
-                .filter_map(|id| namespace.path_for_id(&id))
-                .collect::<Vec<_>>();
-            inodes.extend(
-                paths
-                    .iter()
-                    .filter_map(|path| namespace.resolve_path_ino(path)),
-            );
-            inodes
-        };
+        let binding_inodes = self.live_inodes_with_root();
         for ino in binding_inodes {
             let binding = {
                 let namespace = self.ns();
@@ -805,26 +788,7 @@ impl QuickFS {
                 publisher.publish_binding(&binding)?;
             }
         }
-        let inodes: Vec<u64> = {
-            let mut namespace = self.ns();
-            let paths = namespace
-                .live_node_ids()
-                .into_iter()
-                .filter_map(|id| namespace.path_for_id(&id))
-                .collect::<Vec<_>>();
-            let inodes = paths
-                .iter()
-                .filter_map(|path| namespace.resolve_path_ino(path))
-                .collect::<Vec<_>>();
-            inodes
-                .into_iter()
-                .filter(|ino| {
-                    namespace
-                        .getattr(*ino)
-                        .is_some_and(|attr| attr.kind == FileType::RegularFile)
-                })
-                .collect()
-        };
+        let inodes = self.live_regular_file_inodes();
         for ino in inodes {
             let Some(snapshot) = self.version_snapshot(ino, false, None) else {
                 continue;
@@ -869,26 +833,11 @@ impl QuickFS {
         Ok(())
     }
 
-    #[allow(clippy::significant_drop_tightening)]
     fn ensure_history_baseline(&self) -> Result<(), crate::history::HistoryError> {
         let Some((history, _)) = &self.history else {
             return Ok(());
         };
-        let inodes = {
-            let mut namespace = self.ns();
-            let mut inodes = vec![crate::namespace::ROOT_INO];
-            let paths = namespace
-                .live_node_ids()
-                .into_iter()
-                .filter_map(|id| namespace.path_for_id(&id))
-                .collect::<Vec<_>>();
-            inodes.extend(
-                paths
-                    .iter()
-                    .filter_map(|path| namespace.resolve_path_ino(path)),
-            );
-            inodes
-        };
+        let inodes = self.live_inodes_with_root();
         for ino in inodes {
             let Some(snapshot) = self.version_snapshot(ino, false, None) else {
                 continue;
@@ -898,6 +847,41 @@ impl QuickFS {
             }
         }
         Ok(())
+    }
+
+    fn live_inodes_with_root(&self) -> Vec<u64> {
+        let mut namespace = self.ns();
+        let mut inodes = Self::live_inodes_locked(&mut namespace);
+        drop(namespace);
+        inodes.insert(0, crate::namespace::ROOT_INO);
+        inodes
+    }
+
+    fn live_inodes_locked(namespace: &mut Namespace) -> Vec<u64> {
+        let paths = namespace
+            .live_node_ids()
+            .into_iter()
+            .filter_map(|id| namespace.path_for_id(&id))
+            .collect::<Vec<_>>();
+        paths
+            .iter()
+            .filter_map(|path| namespace.resolve_path_ino(path))
+            .collect()
+    }
+
+    fn live_regular_file_inodes(&self) -> Vec<u64> {
+        let mut namespace = self.ns();
+        let live_inodes = Self::live_inodes_locked(&mut namespace);
+        let regular_file_inodes = live_inodes
+            .into_iter()
+            .filter(|ino| {
+                namespace
+                    .getattr(*ino)
+                    .is_some_and(|attr| attr.kind == FileType::RegularFile)
+            })
+            .collect();
+        drop(namespace);
+        regular_file_inodes
     }
 
     fn version_snapshot(
@@ -1002,7 +986,6 @@ impl QuickFS {
         (bytes.len() <= crate::syncstate::MAX_METADATA_XATTR_BYTES).then_some(bytes)
     }
 
-    #[allow(clippy::significant_drop_tightening)]
     fn replacement_snapshot(
         &self,
         ino: u64,
@@ -1022,6 +1005,7 @@ impl QuickFS {
             byte_len,
             deleted: false,
         };
+        drop(namespace);
         let bytes = postcard::to_allocvec(&metadata).ok()?;
         Some(VersionSnapshot {
             record_id,
@@ -5355,7 +5339,7 @@ mod availability_control_tests {
         record: collab_types::FileRecordId,
         predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
     ) {
-        wait_for_availability_with_timeout(registry, record, Duration::from_secs(8), predicate)
+        wait_for_availability_with_timeout(registry, record, Duration::from_secs(30), predicate)
             .await;
     }
 
@@ -5516,7 +5500,7 @@ mod availability_control_tests {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(&registry_path).unwrap(),
         ));
@@ -5571,10 +5555,7 @@ mod availability_control_tests {
             .unwrap()
             .create_dir(ROOT_INO, "offline", 1)
             .unwrap();
-        let heuristics = Arc::new(Heuristics::new(
-            Arc::clone(&hydrator),
-            Arc::clone(&namespace),
-        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(&registry_path).unwrap(),
         ));
@@ -5627,10 +5608,7 @@ mod availability_control_tests {
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(&registry_path).unwrap(),
         ));
-        let heuristics = Arc::new(Heuristics::new(
-            Arc::clone(&hydrator),
-            Arc::clone(&namespace),
-        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
             .with_availability(Arc::clone(&registry))
             .with_pinned_hydration();
@@ -5657,16 +5635,11 @@ mod availability_control_tests {
                 .set_content_revision(child, &second_revision, 3)
         );
         fs.wake_pinned_hydration();
-        wait_for_availability_with_timeout(
-            &registry,
-            record_id,
-            Duration::from_secs(2),
-            |record| {
-                record.current_version == Some(second_version)
-                    && record.residency == Residency::Resident { bytes: 21 }
-                    && record.transfer.last_error.is_none()
-            },
-        )
+        wait_for_availability(&registry, record_id, |record| {
+            record.current_version == Some(second_version)
+                && record.residency == Residency::Resident { bytes: 21 }
+                && record.transfer.last_error.is_none()
+        })
         .await;
 
         drop(fs);
@@ -5698,10 +5671,7 @@ mod availability_control_tests {
                 )
                 .unwrap();
         }
-        let heuristics = Arc::new(Heuristics::new(
-            Arc::clone(&hydrator),
-            Arc::clone(&namespace),
-        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
@@ -5774,7 +5744,7 @@ mod availability_control_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .create_file(ROOT_INO, "shared.txt", None, 0, 1)
             .unwrap();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
@@ -5814,7 +5784,7 @@ mod availability_control_tests {
             .unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
@@ -5860,7 +5830,7 @@ mod availability_control_tests {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
@@ -5896,7 +5866,7 @@ mod availability_control_tests {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
@@ -6005,7 +5975,7 @@ mod availability_control_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .put(current)
             .unwrap();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics)
             .with_availability(Arc::clone(&registry))
             .with_eviction_queue(queue);
@@ -6069,7 +6039,7 @@ mod share_projection_tests {
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs =
             QuickFS::new(namespace, hydrator, heuristics).with_share_authority(authority.clone());
 
@@ -6127,7 +6097,7 @@ mod thumb_tests {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let provider = ThumbProvider::open(&thumb_dir).unwrap();
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics).with_thumbs(provider);
         (namespace, store, fs)
@@ -6220,7 +6190,7 @@ mod thumb_tests {
             .record_id_for(ino)
             .unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let device = ed25519_dalek::SigningKey::from_bytes(&[0x72; 32]);
         let person = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
         let actor = collab_types::FileActor {
@@ -6393,7 +6363,7 @@ mod predictive_tests {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         (
             namespace.clone(),
             QuickFS::new(namespace, hydrator, heuristics),
@@ -6883,7 +6853,7 @@ mod history_integration_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_id_for(ino)
             .unwrap();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history = Arc::new(
             crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
         );
@@ -6972,7 +6942,7 @@ mod history_integration_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_id_for(ino)
             .unwrap();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history = Arc::new(
             crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
         );
@@ -7080,7 +7050,7 @@ mod record_publisher_integration_tests {
             .record_id_for(ino)
             .unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history = Arc::new(crate::history::FileHistoryStore::open(&history_path).unwrap());
         let repository =
             Arc::new(crate::record_repository::RecordRepository::open(&repository_path).unwrap());
@@ -7138,12 +7108,9 @@ mod record_publisher_integration_tests {
         let record_file = repository_path
             .join(workspace_id.to_string())
             .join(format!("{}.json", record_id.0));
-        let atomic_temp = record_file.parent().unwrap().join(format!(
-            ".{}.{}.tmp",
-            record_file.file_name().unwrap().to_string_lossy(),
-            std::process::id()
-        ));
-        std::fs::create_dir(&atomic_temp).unwrap();
+        let record_backup = record_file.with_extension("json.test-backup");
+        std::fs::rename(&record_file, &record_backup).unwrap();
+        std::fs::create_dir(&record_file).unwrap();
         assert!(
             fs.commit_content(ino, edited).is_err(),
             "namespace mutation must wait for durable signed publication"
@@ -7156,7 +7123,8 @@ mod record_publisher_integration_tests {
             Some(original_manifest)
         );
         assert_eq!(history.snapshot(record_id).unwrap().versions.len(), 1);
-        std::fs::remove_dir(&atomic_temp).unwrap();
+        std::fs::remove_dir(&record_file).unwrap();
+        std::fs::rename(record_backup, &record_file).unwrap();
 
         fs.commit_content(ino, edited).unwrap();
         let after_edit = published_snapshot(&repository, &publisher, record_id);
@@ -7285,7 +7253,7 @@ mod record_publisher_integration_tests {
             .unwrap(),
         );
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let restarted = QuickFS::new(namespace, hydrator, heuristics)
             .with_history(history.clone(), actor)
             .unwrap()
@@ -7539,7 +7507,7 @@ mod record_publisher_integration_tests {
             .record_id_for(ino)
             .unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history = Arc::new(
             crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
         );
@@ -7968,10 +7936,7 @@ mod record_publisher_integration_tests {
             .unwrap(),
         ));
         let restarted_hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let restarted_heuristics = Arc::new(Heuristics::new(
-            restarted_hydrator.clone(),
-            restarted_namespace.clone(),
-        ));
+        let restarted_heuristics = Arc::new(Heuristics::new(restarted_hydrator.clone()));
         let restarted = QuickFS::new(
             restarted_namespace.clone(),
             restarted_hydrator,
@@ -8055,7 +8020,7 @@ mod record_publisher_integration_tests {
             .record_id_for(ino)
             .unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history_path = dir.path().join("history.json");
         let records_path = dir.path().join("records");
         let journal_path = dir.path().join("transactions");

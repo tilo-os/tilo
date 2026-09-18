@@ -15,8 +15,31 @@ use zeroize::Zeroizing;
 
 pub const SERVICE_NAME: &str = "model-gateway";
 pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL_GATEWAY_FD";
-pub const RPC_VERSION: u16 = 2;
+pub const RPC_VERSION: u16 = 3;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
+/// The only encoded-preview media types accepted by the local vision RPC.
+/// Keeping this vocabulary closed means a caller cannot ask the trusted
+/// gateway to fetch a URL or interpret an arbitrary document as an image.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct VisionImage {
+    /// `image/jpeg`, `image/png`, or `image/webp`.
+    pub media_type: String,
+    /// Standard base64 of a caller-decoded, downscaled preview.
+    pub data_base64: String,
+    /// SHA-256 of the original photo bytes, not of `data_base64`.
+    pub source_content_hash: String,
+}
+
+/// One deliberately small photograph reference supplied to the dedicated
+/// local face runtime.  `photo_id` is an app address, not a pathname; the
+/// runtime never receives an identity label or an instruction from Photos.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct FaceImage {
+    pub photo_id: String,
+    pub media_type: String,
+    pub data_base64: String,
+    pub source_content_hash: String,
+}
 
 /// A request that can cross the sandbox boundary. `SetApiKey` is only sent by
 /// Settings; a server also authenticates the launcher-provided app preamble.
@@ -29,6 +52,23 @@ pub enum Request {
         model_id: String,
         body: serde_json::Value,
         timeout_ms: u64,
+    },
+    /// Fixed-shape, device-local visual analysis for Photos. The gateway
+    /// owns the prompt and refuses hosted, unpinned, or non-vision profiles;
+    /// a sandboxed caller never obtains direct network access.
+    AnalyzeImage {
+        profile_id: String,
+        model_id: String,
+        image: VisionImage,
+    },
+    /// Fixed, consent-gated face detection and clustering.  The gateway owns
+    /// the request schema and admits it only for the signed local face model.
+    /// It returns opaque cluster/photo membership; no embedding, crop, face
+    /// rectangle, identity name, or raw path can cross this boundary.
+    ClusterFaces {
+        profile_id: String,
+        model_id: String,
+        images: Vec<FaceImage>,
     },
     SecretStatus {
         profile_id: String,
@@ -142,6 +182,51 @@ pub fn plan(
     response
         .output
         .ok_or_else(|| ClientError::Protocol("gateway returned no provider response".into()))
+}
+
+/// Request a fixed-schema visual analysis through the launcher-issued gateway
+/// descriptor. This operation can only be authorized for Photos by the
+/// gateway; callers cannot provide a URL, arbitrary prompt, or timeout.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] if the capability is not passed by the launcher,
+/// the gateway rejects the request, or the provider is unavailable.
+pub fn analyze_image(
+    profile_id: &str,
+    model_id: &str,
+    image: VisionImage,
+) -> Result<String, ClientError> {
+    let response = request(Request::AnalyzeImage {
+        profile_id: profile_id.to_string(),
+        model_id: model_id.to_string(),
+        image,
+    })?;
+    response
+        .output
+        .ok_or_else(|| ClientError::Protocol("gateway returned no image analysis".into()))
+}
+
+/// Run the dedicated local face model against one bounded batch.  This is not
+/// a generic multimodal request and cannot be redirected to a hosted model.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] if the launcher gateway is absent, the local model
+/// refuses the fixed protocol, or its response is unavailable.
+pub fn cluster_faces(
+    profile_id: &str,
+    model_id: &str,
+    images: Vec<FaceImage>,
+) -> Result<String, ClientError> {
+    let response = request(Request::ClusterFaces {
+        profile_id: profile_id.to_string(),
+        model_id: model_id.to_string(),
+        images,
+    })?;
+    response
+        .output
+        .ok_or_else(|| ClientError::Protocol("gateway returned no face clusters".into()))
 }
 
 /// Query whether the profile has a secret stored by the isolated gateway.

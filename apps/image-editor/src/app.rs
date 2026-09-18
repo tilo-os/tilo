@@ -1,4 +1,9 @@
 use crate::{
+    actions::{
+        ADD_ADJUSTMENT_TYPE, AddAdjustment, AdjustmentUpdate, RECONNECT_INPUT_TYPE,
+        REMOVE_ADJUSTMENT_TYPE, ReconnectInput, RemoveAdjustment, UPDATE_ADJUSTMENT_TYPE,
+        UpdateAdjustment,
+    },
     doc::ProjectDoc,
     model::{Operation, Project},
 };
@@ -103,6 +108,10 @@ pub struct ImageEditorApp {
     undo_stack: Vec<Project>,
     redo_stack: Vec<Project>,
     gesture_checkpoint: Option<Project>,
+    /// The authoritative dispatch boundary for every shared graph mutation.
+    /// Toolbar, inspector, keyboard and assistive-technology controls all use
+    /// this host, matching the actions exposed through global search.
+    actions: ui::ActionHost,
 }
 impl ImageEditorApp {
     pub fn new() -> Self {
@@ -216,6 +225,7 @@ impl ImageEditorApp {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             gesture_checkpoint: None,
+            actions: ui::ActionHost::new(),
         }
     }
     pub fn seed_shot(&mut self, doc: &mut AutoCommit, path: &std::path::Path, advanced: bool) {
@@ -406,9 +416,7 @@ impl ImageEditorApp {
             .finish_connection(&mut self.project.graph, &target.node, &target.port)
         {
             Ok(_) => {
-                ProjectDoc::write(state, &self.project);
-                ProjectDoc::sync_connections(state, &self.project);
-                self.rendered_project = None;
+                self.commit_connection(state, &target.node, &target.port);
                 self.notice = "Connection updated".into();
             }
             Err(_) => {
@@ -448,6 +456,69 @@ impl ImageEditorApp {
             self.push_undo(before);
             self.redo_stack.clear();
         }
+    }
+
+    /// Apply a shared graph edit through the same action executor used by the
+    /// resource tree and global command palette, then immediately materialize
+    /// the CRDT result.  The latter is important: an on-screen edit should
+    /// render the converged graph, never a private optimistic copy that could
+    /// overwrite a collaborator's independent parameter change on the next
+    /// frame.
+    fn dispatch_graph_action<A>(&mut self, state: &mut AutoCommit, type_id: &str, action: &A)
+    where
+        A: tilo_actions::Action + serde::Serialize,
+    {
+        self.actions.dispatch_with_context(
+            state,
+            type_id,
+            action,
+            tilo_actions::ActionContext::for_action(
+                "dev.tilo.image-editor",
+                "Image Editor",
+                action,
+            ),
+        );
+        self.project = ProjectDoc::read(state);
+        self.rendered_project = None;
+        self.rebuild_crop_editor();
+    }
+
+    /// Persist a graph position after the editor has provided fluid local drag
+    /// feedback. Only the final coordinates become a document operation, so a
+    /// drag does not flood collaboration/history while still converging with
+    /// keyboard moves and remote edits.
+    fn commit_node_position(&mut self, state: &mut AutoCommit, id: &str) {
+        let Some((x, y)) = self
+            .project
+            .graph
+            .nodes
+            .get(id)
+            .map(|node| (node.position.x, node.position.y))
+        else {
+            return;
+        };
+        self.dispatch_graph_action(
+            state,
+            UPDATE_ADJUSTMENT_TYPE,
+            &UpdateAdjustment {
+                id: id.into(),
+                update: AdjustmentUpdate::Position { x, y },
+            },
+        );
+    }
+
+    fn commit_connection(&mut self, state: &mut AutoCommit, node: &str, port: &str) {
+        let Some(edge) = self
+            .project
+            .graph
+            .edges
+            .iter()
+            .find(|edge| edge.to_node == node && edge.to_port == port)
+            .cloned()
+        else {
+            return;
+        };
+        self.dispatch_graph_action(state, RECONNECT_INPUT_TYPE, &ReconnectInput { edge });
     }
 
     fn restore_project(&mut self, state: &mut AutoCommit, project: Project, label: &str) {
@@ -499,11 +570,22 @@ impl ImageEditorApp {
             }
         }
         let id = format!("{stem}-{actor}-{}", self.serial);
-        if self.project.insert_before_output(&id, title, op) {
+        self.dispatch_graph_action(
+            state,
+            ADD_ADJUSTMENT_TYPE,
+            &AddAdjustment {
+                id: id.clone(),
+                title: title.into(),
+                operation: op,
+            },
+        );
+        if self.project.graph.nodes.contains_key(&id) {
             self.editor.select_only(id);
-            ProjectDoc::write(state, &self.project);
             self.notice = format!("Added {title}. Earlier steps remain editable.");
-            self.rendered_project = None;
+        } else {
+            // Refusal is already logged by ActionHost; don't leave a stale
+            // local undo checkpoint behind when no shared graph change landed.
+            let _ = self.undo_stack.pop();
         }
     }
     fn open_path(&mut self, state: &mut AutoCommit, path: &std::path::Path) -> bool {
@@ -760,18 +842,27 @@ impl ImageEditorApp {
             // undoable; pointer/touch drags use their coalesced checkpoint.
             self.checkpoint();
         }
-        let Some(Operation::Crop {
-            x,
-            y,
-            width,
-            height,
-        }) = self.project.operations.get_mut(&id)
-        else {
-            return;
-        };
-        (*x, *y, *width, *height) = next;
-        ProjectDoc::write(state, &self.project);
-        self.rendered_project = None;
+        // Crop is intentionally four scalar actions instead of a project
+        // replacement. This keeps a collaborator's change to (for example)
+        // the vertical bounds when this client commits a horizontal drag.
+        for (field, value) in [
+            ("x", next.0),
+            ("y", next.1),
+            ("width", next.2),
+            ("height", next.3),
+        ] {
+            self.dispatch_graph_action(
+                state,
+                UPDATE_ADJUSTMENT_TYPE,
+                &UpdateAdjustment {
+                    id: id.clone(),
+                    update: AdjustmentUpdate::Number {
+                        field: field.into(),
+                        value: f64::from(value),
+                    },
+                },
+            );
+        }
         self.notice = "Crop updated. Later steps were recomputed.".into();
     }
     fn steps(&self) -> Vec<String> {
@@ -870,10 +961,14 @@ impl ImageEditorApp {
         if id == "source" || id == self.project.output {
             return false;
         }
-        let undo_len = self.undo_stack.len();
         self.checkpoint();
-        if !self.project.remove_adjustment(&id) {
-            self.undo_stack.truncate(undo_len);
+        self.dispatch_graph_action(
+            state,
+            REMOVE_ADJUSTMENT_TYPE,
+            &RemoveAdjustment { id: id.clone() },
+        );
+        if self.project.graph.nodes.contains_key(&id) {
+            let _ = self.undo_stack.pop();
             return false;
         }
         if let Some(latest) = self.steps().last().cloned() {
@@ -881,10 +976,6 @@ impl ImageEditorApp {
         } else {
             self.editor.select_only(self.project.output.clone());
         }
-        let _ = ProjectDoc::remove_adjustment(state, &id);
-        ProjectDoc::write(state, &self.project);
-        self.rendered_project = None;
-        self.rebuild_crop_editor();
         self.notice = "Adjustment removed. Later steps remain connected.".into();
         true
     }
@@ -936,40 +1027,44 @@ impl ImageEditorApp {
         ) {
             return false;
         }
-        if self.gesture_checkpoint.is_none() {
-            self.checkpoint();
-        }
         let normalized = normalized.clamp(0.0, 1.0) as f32;
-        let Some(operation) = self.project.operations.get_mut(&id) else {
+        let Some(operation) = self.project.operations.get(&id) else {
             return false;
         };
-        let changed = match operation {
+        let (field, next, changed) = match operation {
             Operation::Exposure { stops } => {
                 let next = normalized * 10.0 - 5.0;
-                let changed = (*stops - next).abs() > 0.001;
-                *stops = next;
-                changed
+                ("stops", next, (*stops - next).abs() > 0.001)
             }
             Operation::Contrast { amount } => {
                 let next = normalized * 3.0 - 1.0;
-                let changed = (*amount - next).abs() > 0.001;
-                *amount = next;
-                changed
+                ("amount", next, (*amount - next).abs() > 0.001)
             }
             Operation::Saturation { amount } => {
                 let next = normalized * 3.0;
-                let changed = (*amount - next).abs() > 0.001;
-                *amount = next;
-                changed
+                ("amount", next, (*amount - next).abs() > 0.001)
             }
             _ => return false,
         };
-        if changed {
-            ProjectDoc::write(state, &self.project);
-            self.rendered_project = None;
-            self.notice = "Adjustment updated. Later steps were recomputed.".into();
+        if !changed {
+            return false;
         }
-        changed
+        if self.gesture_checkpoint.is_none() {
+            self.checkpoint();
+        }
+        self.dispatch_graph_action(
+            state,
+            UPDATE_ADJUSTMENT_TYPE,
+            &UpdateAdjustment {
+                id,
+                update: AdjustmentUpdate::Number {
+                    field: field.into(),
+                    value: f64::from(next),
+                },
+            },
+        );
+        self.notice = "Adjustment updated. Later steps were recomputed.".into();
+        true
     }
     fn select_relative_step(&mut self, direction: isize) {
         let mut visual = self.steps();
@@ -1004,26 +1099,36 @@ impl ImageEditorApp {
         ) {
             return;
         }
-        self.checkpoint();
-        let Some(op) = self.project.operations.get_mut(&id) else {
-            return;
-        };
-        match op {
-            Operation::Exposure { stops } => *stops = (*stops + direction * 0.1).clamp(-5.0, 5.0),
-            Operation::Contrast { amount } => {
-                *amount = (*amount + direction * 0.05).clamp(-1.0, 2.0)
+        let (field, next) = match self.project.operations.get(&id) {
+            Some(Operation::Exposure { stops }) => {
+                ("stops", (*stops + direction * 0.1).clamp(-5.0, 5.0))
             }
-            Operation::Saturation { amount } => {
-                *amount = (*amount + direction * 0.05).clamp(0.0, 3.0)
+            Some(Operation::Contrast { amount }) => {
+                ("amount", (*amount + direction * 0.05).clamp(-1.0, 2.0))
             }
-            Operation::Rotate { quarter_turns } if direction > 0.0 => {
-                *quarter_turns = (*quarter_turns + 1) % 4
+            Some(Operation::Saturation { amount }) => {
+                ("amount", (*amount + direction * 0.05).clamp(0.0, 3.0))
             }
-            Operation::Rotate { quarter_turns } => *quarter_turns = (*quarter_turns + 3) % 4,
+            Some(Operation::Rotate { quarter_turns }) if direction > 0.0 => {
+                ("quarter_turns", ((*quarter_turns + 1) % 4) as f32)
+            }
+            Some(Operation::Rotate { quarter_turns }) => {
+                ("quarter_turns", ((*quarter_turns + 3) % 4) as f32)
+            }
             _ => return,
-        }
-        ProjectDoc::write(state, &self.project);
-        self.rendered_project = None;
+        };
+        self.checkpoint();
+        self.dispatch_graph_action(
+            state,
+            UPDATE_ADJUSTMENT_TYPE,
+            &UpdateAdjustment {
+                id,
+                update: AdjustmentUpdate::Number {
+                    field: field.into(),
+                    value: f64::from(next),
+                },
+            },
+        );
     }
     fn run_toolbar(&mut self, state: &mut AutoCommit, command: ToolbarCommand) {
         if self.more_open && !matches!(command, ToolbarCommand::More) {
@@ -1474,28 +1579,29 @@ impl Widget for ImageEditorApp {
                 .iter()
                 .next()
                 .and_then(|id| self.project.graph.nodes.get(id))
-                .map(|n| n.title.as_str())
-                .unwrap_or("Select an adjustment");
-            tr.draw_text_weighted(
-                s,
-                selected,
-                13.0,
-                c.text_primary,
-                a.pre_translate(
-                    (
-                        self.inspector_rect.x0 + 12.0,
-                        self.inspector_rect.y0
-                            + if self.rect.width() < 820.0 {
-                                28.0
-                            } else {
-                                23.0
-                            },
-                    )
-                        .into(),
-                ),
-                Some((self.inspector_rect.width() - 80.0) as f32),
-                TextWeight::Semibold,
-            );
+                .map(|node| node.title.as_str());
+            if let Some(selected) = selected {
+                tr.draw_text_weighted(
+                    s,
+                    selected,
+                    13.0,
+                    c.text_primary,
+                    a.pre_translate(
+                        (
+                            self.inspector_rect.x0 + 12.0,
+                            self.inspector_rect.y0
+                                + if self.rect.width() < 820.0 {
+                                    28.0
+                                } else {
+                                    23.0
+                                },
+                        )
+                            .into(),
+                    ),
+                    Some((self.inspector_rect.width() - 80.0) as f32),
+                    TextWeight::Semibold,
+                );
+            }
             if let Some((value, label)) = self.selected_slider() {
                 let slider = self.inspector_slider_rect();
                 Slider::paint(
@@ -1550,23 +1656,22 @@ impl Widget for ImageEditorApp {
                         .ghost(),
                 );
             } else {
-                let hint = if self.crop_editor.is_some() {
-                    "Drag a corner on the image"
+                let (hint, x) = if selected.is_none() {
+                    (
+                        "Select an adjustment to edit",
+                        self.inspector_rect.x0 + 12.0,
+                    )
+                } else if self.crop_editor.is_some() {
+                    ("Drag a corner on the image", self.inspector_rect.x1 - 250.0)
                 } else {
-                    "No settings for this step"
+                    ("No settings for this step", self.inspector_rect.x1 - 250.0)
                 };
                 tr.draw_text_weighted(
                     s,
                     hint,
                     12.0,
                     c.text_dim,
-                    a.pre_translate(
-                        (
-                            self.inspector_rect.x1 - 250.0,
-                            self.inspector_rect.y0 + 22.0,
-                        )
-                            .into(),
-                    ),
+                    a.pre_translate((x, self.inspector_rect.y0 + 22.0).into()),
                     Some(186.0),
                     TextWeight::Regular,
                 );
@@ -1983,9 +2088,7 @@ impl Widget for ImageEditorApp {
                             .finish_connection(&mut self.project.graph, &node, &port)
                         {
                             Ok(_) => {
-                                ProjectDoc::write(state, &self.project);
-                                ProjectDoc::sync_connections(state, &self.project);
-                                self.rendered_project = None;
+                                self.commit_connection(state, &node, &port);
                                 self.notice = "Connection updated".into();
                             }
                             Err(_) => {
@@ -1998,8 +2101,8 @@ impl Widget for ImageEditorApp {
                         self.editor.cancel_connection();
                     }
                     *handled = true;
-                } else if self.editor.end_node_drag().is_some() {
-                    ProjectDoc::write(state, &self.project);
+                } else if let Some(id) = self.editor.end_node_drag() {
+                    self.commit_node_position(state, &id);
                     *handled = true;
                 }
                 if self.editor.end_pan() {
@@ -2271,9 +2374,7 @@ impl Widget for ImageEditorApp {
                                         &port,
                                     ) {
                                         Ok(_) => {
-                                            ProjectDoc::write(state, &self.project);
-                                            ProjectDoc::sync_connections(state, &self.project);
-                                            self.rendered_project = None;
+                                            self.commit_connection(state, &node, &port);
                                             self.notice = "Connection updated".into();
                                         }
                                         Err(_) => {
@@ -2285,8 +2386,8 @@ impl Widget for ImageEditorApp {
                                 }
                             } else if self.graph_touch == Some(touch.id) {
                                 self.graph_touch = None;
-                                if self.editor.end_node_drag().is_some() {
-                                    ProjectDoc::write(state, &self.project);
+                                if let Some(id) = self.editor.end_node_drag() {
+                                    self.commit_node_position(state, &id);
                                 }
                             }
                             if self.graph_pan_touch == Some(touch.id) {
@@ -2299,8 +2400,8 @@ impl Widget for ImageEditorApp {
                         }
                         if self.graph_touch == Some(touch.id) {
                             self.graph_touch = None;
-                            if self.editor.end_node_drag().is_some() {
-                                ProjectDoc::write(state, &self.project);
+                            if let Some(id) = self.editor.end_node_drag() {
+                                self.commit_node_position(state, &id);
                             }
                         }
                         if self.stack_touch == Some(touch.id) {
@@ -2394,13 +2495,20 @@ impl Widget for ImageEditorApp {
                     if !movable.is_empty() {
                         self.checkpoint();
                     }
-                    for id in &movable {
-                        if let Some(node) = self.project.graph.nodes.get_mut(id) {
-                            node.position.x += dx;
-                            node.position.y += dy;
-                        }
+                    for id in movable {
+                        let Some(node) = self.project.graph.nodes.get(&id) else {
+                            continue;
+                        };
+                        let (x, y) = (node.position.x + dx, node.position.y + dy);
+                        self.dispatch_graph_action(
+                            state,
+                            UPDATE_ADJUSTMENT_TYPE,
+                            &UpdateAdjustment {
+                                id,
+                                update: AdjustmentUpdate::Position { x, y },
+                            },
+                        );
                     }
-                    ProjectDoc::write(state, &self.project);
                     *handled = true;
                 } else if matches!(event.logical_key, Key::Named(NamedKey::Escape))
                     && self.more_open
@@ -2462,8 +2570,12 @@ impl Widget for ImageEditorApp {
                     }
                     let mut removed = 0usize;
                     for id in deletable {
-                        if self.project.remove_adjustment(&id) {
-                            let _ = ProjectDoc::remove_adjustment(state, &id);
+                        self.dispatch_graph_action(
+                            state,
+                            REMOVE_ADJUSTMENT_TYPE,
+                            &RemoveAdjustment { id: id.clone() },
+                        );
+                        if !self.project.graph.nodes.contains_key(&id) {
                             removed += 1;
                         }
                     }
@@ -2477,7 +2589,6 @@ impl Widget for ImageEditorApp {
                             format!("Removed {removed} adjustments. Later steps remain connected.")
                         };
                     }
-                    ProjectDoc::write(state, &self.project);
                     *handled = true;
                 }
             }
@@ -2836,6 +2947,13 @@ impl Widget for ImageEditorApp {
         bindings
     }
 
+    /// Expose the shared-action boundary to the shell so these edits appear
+    /// in the same undo/history and collaboration stream as palette and agent
+    /// operations.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -3034,6 +3152,11 @@ mod portal_tests {
         );
         assert!(app.finish_keyboard_connection(&mut state));
         assert!(!app.editor.is_connecting());
+        assert_eq!(
+            app.actions.last_dispatched().unwrap().type_id,
+            RECONNECT_INPUT_TYPE
+        );
+        assert!(app.take_committed_action().is_some());
         assert!(
             app.project
                 .graph
@@ -3062,6 +3185,38 @@ mod portal_tests {
         app.redo(&mut state);
         assert_eq!(app.project, edited);
         assert_eq!(ProjectDoc::read(&state), edited);
+    }
+
+    #[test]
+    fn direct_editor_affordances_dispatch_canonical_document_actions() {
+        let mut app = ImageEditorApp::new();
+        let mut document = AutoCommit::new();
+        ProjectDoc::seed(&mut document);
+
+        app.add(
+            &mut document,
+            Operation::Exposure { stops: 0.5 },
+            "Exposure",
+        );
+        assert_eq!(
+            app.actions.last_dispatched().unwrap().type_id,
+            ADD_ADJUSTMENT_TYPE
+        );
+        assert!(app.take_committed_action().is_some());
+
+        assert!(app.set_selected_slider(&mut document, 0.8));
+        assert_eq!(
+            app.actions.last_dispatched().unwrap().type_id,
+            UPDATE_ADJUSTMENT_TYPE
+        );
+        assert!(app.take_committed_action().is_some());
+
+        assert!(app.remove_selected(&mut document));
+        assert_eq!(
+            app.actions.last_dispatched().unwrap().type_id,
+            REMOVE_ADJUSTMENT_TYPE
+        );
+        assert!(app.take_committed_action().is_some());
     }
 
     #[test]
@@ -3203,6 +3358,7 @@ mod portal_tests {
             let mut document = AutoCommit::new();
             ProjectDoc::seed(&mut document);
             assert!(app.project.insert_before_output(id, id, operation));
+            ProjectDoc::write(&mut document, &app.project);
             app.editor.select_only(id);
             assert!(app.set_selected_slider(&mut document, 0.0));
             let low = app.selected_slider().unwrap().0;
@@ -3269,6 +3425,7 @@ mod portal_tests {
             "Contrast",
             Operation::Contrast { amount: 0.2 },
         ));
+        ProjectDoc::write(&mut document, &app.project);
         app.editor.select_only("exposure");
 
         assert!(app.perform_semantic_action(
@@ -3299,6 +3456,7 @@ mod portal_tests {
             "Contrast",
             Operation::Contrast { amount: 0.0 },
         ));
+        ProjectDoc::write(&mut document, &app.project);
         app.editor.select_only("contrast");
         assert!(app.perform_semantic_action(
             "image-editor.adjust.slider",

@@ -74,6 +74,11 @@ static WIFI_CONTINUITY_BRIDGE: std::sync::OnceLock<
 /// Invoke the shell's launcher-authenticated, sealed Wi-Fi continuity path.
 /// Callers should run this off the frame thread; the bounded timeout turns a
 /// lost broker into an ordinary unavailable result.
+///
+/// # Errors
+///
+/// Returns an unavailable message when the collaboration bridge is absent,
+/// its bounded queue rejects the command, or the broker does not reply in time.
 pub fn wifi_continuity_command(
     command: runtime_collab::WifiContinuityCommand,
 ) -> Result<runtime_collab::WifiContinuityReply, String> {
@@ -3422,6 +3427,7 @@ fn write_directory_row(
     out.set_resource(&row.resource);
     out.set_resource_kind(&row.resource_kind);
     out.set_resource_label(&row.resource_label);
+    out.set_resource_presentation_json(&row.resource_presentation_json);
     out.set_action(row.action.as_deref().unwrap_or(""));
     out.set_has_children(row.has_children);
     out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));

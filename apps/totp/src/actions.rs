@@ -33,7 +33,8 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     Availability, ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType,
-    PermissionRequirement, Resource, ResourceProvider, RetryPolicy, RiskLevel,
+    PermissionRequirement, Resource, ResourcePresentation, ResourceProvider, RetryPolicy,
+    RiskLevel,
 };
 
 use crate::doc::AuthDoc;
@@ -414,7 +415,19 @@ pub fn provide_account_resource(
 ) -> Resource {
     let id = acc.id;
     let cur_color = acc.color;
-    let mut child = Resource::new(account_resource_id(id), "totp.account", account_label(acc));
+    let mut child = Resource::new(account_resource_id(id), "totp.account", account_label(acc))
+        .with_presentation(ResourcePresentation {
+            detail: Some(if has_local_secret {
+                "Codes available on this device".into()
+            } else {
+                "Local setup required to generate codes".into()
+            }),
+            badge: Some(if has_local_secret {
+                "Ready".into()
+            } else {
+                "Set up".into()
+            }),
+        });
 
     child = child.with_action(
         account_operation(
@@ -783,6 +796,17 @@ mod tests {
         let acct = Widget::resource(&app, &state.doc, &account_resource_id(account.id))
             .expect("account lazily resolves");
         assert_eq!(acct.kind, "totp.account");
+        assert_eq!(
+            acct.presentation
+                .as_ref()
+                .and_then(|value| value.badge.as_deref()),
+            Some("Ready")
+        );
+        let presentation = serde_json::to_string(&acct.presentation).expect("presentation encodes");
+        assert!(
+            !contains_secret_shaped_text(&presentation),
+            "resource presentation must never expose authenticator secrets"
+        );
         let ids: Vec<&str> = acct.actions.iter().map(|a| a.id.as_str()).collect();
         for want in [
             "open",

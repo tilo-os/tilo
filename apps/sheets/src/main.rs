@@ -9,7 +9,7 @@
 //!   * `--viewport WxH`     — override the desktop viewport (e.g. the narrow
 //!     560x720 responsive layout).
 //!   * `--scenario NAME`    — snap a specific surface into view for the frame:
-//!     `file`, `format`, `docsettings`, `editing`,
+//!     `file`, `format`, `more`, `docsettings`, `editing`,
 //!     `pointmode`, `summary`, `multiselect`, `tabmenu`, `commandpalette`,
 //!     `loading`, `error`, `conflict`, `reducedmotion`.
 //!
@@ -64,6 +64,7 @@ const APP_ID: &str = "dev.tilo.sheets";
 const SCENARIOS: &[&str] = &[
     "file",
     "format",
+    "more",
     "docsettings",
     "editing",
     "pointmode",
@@ -120,6 +121,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let setup: Setup = match scenario {
         Some("file") => Box::new(|a, _d| a.shots_open_file_menu()),
         Some("format") => Box::new(|a, _d| a.shots_open_format_menu()),
+        Some("more") => Box::new(|a, _d| a.shots_open_more_menu()),
         Some("docsettings") => Box::new(|a, _d| a.shots_open_doc_settings()),
         Some("editing") => Box::new(|a, _d| a.shots_begin_edit()),
         Some("pointmode") => Box::new(|a, _d| a.shots_build_formula()),

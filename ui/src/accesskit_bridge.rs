@@ -1021,6 +1021,9 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     if access.state.focusable && !access.state.disabled {
         ak.add_action(AkAction::Focus);
     }
+    if access.state.context_menu && !access.state.disabled {
+        ak.add_action(AkAction::ShowContextMenu);
+    }
     // Click is gated on the roles that can actually be operated. Offering it
     // on every node — which this used to do — makes an AT read "clickable" on
     // a plain label. `ListItem` is in the list because a synthetic segmented
@@ -1548,6 +1551,24 @@ mod tests {
             .unwrap();
         assert!(node.supports_action(AkAction::Focus));
         assert!(node.supports_action(AkAction::Click));
+    }
+
+    #[test]
+    fn context_menu_is_advertised_only_when_declared() {
+        let row = TestWidget::new(Some(
+            AccessNode::new(Role::ListItem)
+                .with_name("Ada Lovelace")
+                .with_state(AccessState::new().focusable(true).context_menu(true)),
+        ));
+        let mut root = TestWidget::new(None).with_child(Box::new(row));
+        let (_taffy, node_map, _root_node) = lay_out(&mut root);
+        let update = build_tree_update(&root, &node_map, None, 1.0);
+        let (_, node) = update
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == AkRole::ListItem)
+            .expect("list item reaches AccessKit");
+        assert!(node.supports_action(AkAction::ShowContextMenu));
     }
 
     #[test]

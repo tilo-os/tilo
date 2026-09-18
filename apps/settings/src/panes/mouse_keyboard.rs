@@ -388,6 +388,8 @@ impl MouseKeyboardPane {
             .iter()
             .map(|id| self.source_label(id))
             .collect();
+        let repeat_value = self.key_repeat_slider_value();
+        let repeat_description = self.key_repeat_description();
         card(
             "Keyboard",
             rows(vec![
@@ -403,10 +405,11 @@ impl MouseKeyboardPane {
                         .with_placeholder(&self.source_label(&self.last.keyboard_layout)),
                     ),
                 ),
-                setting_row(
+                setting_row_described(
                     "Key repeat speed",
+                    &repeat_description,
                     Box::new(
-                        Slider::from_state(&ui::LocalState::new(self.last.key_repeat))
+                        Slider::from_state(&ui::LocalState::new(repeat_value))
                             .on_action(number_action("key-repeat"))
                             .with_id("input.key_repeat"),
                     ),
@@ -451,6 +454,32 @@ impl MouseKeyboardPane {
                 ),
             ]),
         )
+    }
+
+    /// The normal slider owns one linked speed/delay curve. Imported desktop
+    /// settings retain their exact physical pair until changed, so render the
+    /// imported rate rather than an unrelated legacy slider fraction.
+    fn key_repeat_slider_value(&self) -> f64 {
+        let Some((_, rate)) = self
+            .last
+            .key_repeat_delay_ms
+            .zip(self.last.key_repeat_rate_hz)
+        else {
+            return self.last.key_repeat;
+        };
+        let min = settings_store::hardware::KEY_REPEAT_SLIDER_MIN_HZ;
+        let max = settings_store::hardware::KEY_REPEAT_SLIDER_MAX_HZ;
+        (f64::from(rate.saturating_sub(min)) / f64::from(max - min)).clamp(0.0, 1.0)
+    }
+
+    fn key_repeat_description(&self) -> String {
+        match (self.last.key_repeat_delay_ms, self.last.key_repeat_rate_hz) {
+            (Some(_), Some(0)) => "Repeat is off — move the slider to turn it on".into(),
+            (Some(delay), Some(rate)) => {
+                format!("{rate} keys per second · starts after {delay} ms")
+            }
+            _ => "Faster repeat starts sooner".into(),
+        }
     }
 
     fn spell_checker_card(&self) -> Box<dyn Widget> {
@@ -1122,6 +1151,63 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+    }
+
+    #[test]
+    fn imported_repeat_settings_are_shown_as_the_live_rate_or_disabled() {
+        let disabled = MouseKeyboardPane::with_catalog(
+            InputPrefs {
+                key_repeat: 0.5,
+                key_repeat_delay_ms: Some(500),
+                key_repeat_rate_hz: Some(0),
+                ..Default::default()
+            },
+            catalog(),
+        );
+        assert_eq!(disabled.key_repeat_slider_value(), 0.0);
+        assert_eq!(
+            disabled.key_repeat_description(),
+            "Repeat is off — move the slider to turn it on"
+        );
+
+        let exact = MouseKeyboardPane::with_catalog(
+            InputPrefs {
+                key_repeat: 0.5,
+                key_repeat_delay_ms: Some(275),
+                key_repeat_rate_hz: Some(37),
+                ..Default::default()
+            },
+            catalog(),
+        );
+        assert!((exact.key_repeat_slider_value() - 0.675).abs() < f64::EPSILON);
+        assert_eq!(
+            exact.key_repeat_description(),
+            "37 keys per second · starts after 275 ms"
+        );
+
+        let partial = MouseKeyboardPane::with_catalog(
+            InputPrefs {
+                key_repeat: 0.25,
+                key_repeat_rate_hz: Some(50),
+                ..Default::default()
+            },
+            catalog(),
+        );
+        assert_eq!(partial.key_repeat_slider_value(), 0.25);
+        assert_eq!(
+            partial.key_repeat_description(),
+            "Faster repeat starts sooner"
+        );
+
+        let clamped = MouseKeyboardPane::with_catalog(
+            InputPrefs {
+                key_repeat_delay_ms: Some(200),
+                key_repeat_rate_hz: Some(1_000),
+                ..Default::default()
+            },
+            catalog(),
+        );
+        assert_eq!(clamped.key_repeat_slider_value(), 1.0);
     }
 
     #[test]

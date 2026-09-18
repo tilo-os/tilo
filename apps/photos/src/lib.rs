@@ -61,16 +61,24 @@
 )]
 
 pub mod actions;
+pub mod analysis;
 pub mod app;
 pub mod doc;
+/// Bounded, cancellation-aware real-file discovery and metadata ingestion.
+pub mod import;
 pub mod model;
+pub mod people;
 pub mod pixels;
+/// Offline-capable place grouping and map projection shared by the timeline
+/// surface and resource/action routing. This module deliberately has no tile
+/// client, so opening a Photos location never leaks it to a network provider.
+pub mod places;
 pub mod reference;
 pub mod search;
 pub mod strings;
 
 pub use app::PhotosApp;
-pub use model::{Edits, OpenImage, Rect01};
+pub use model::{Edits, LocationProvenance, OpenImage, PhotoLocation, Rect01};
 
 /// Import a Camera portable-media reference into Photos without ever trusting
 /// a machine-local path.  The content hash is verified in qdoc first; missing
@@ -154,6 +162,10 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "error",
     "opened",
     "library",
+    "people",
+    "places",
+    "selection",
+    "selection-many-albums",
     "album-manage",
     "metadata-edit",
     "cropping",
@@ -310,6 +322,20 @@ pub fn seed_scenario(
         }
     }
     app.open_path(doc, &path.to_string_lossy());
+    // The first imported photograph is part of the timeline fixture too.
+    // Give it an honest capture day so it joins the newest group instead of
+    // producing an orphaned "Undated" hero tile ahead of the collection.
+    let mut seeded_library = PhotosDoc::library(doc);
+    if let Some(active) = PhotosDoc::image(doc)
+        && let Some(photo) =
+            seeded_library.photo_mut(&crate::model::LibraryPhoto::from_image(active).id)
+    {
+        photo.captured_at = Some("2026-07-12 18:16".into());
+        photo.folder = Some("Travel 2026".into());
+        photo.people = vec!["Élodie".into(), "Sam".into()];
+        photo.tags = vec!["golden hour".into()];
+        PhotosDoc::set_library(doc, &seeded_library);
+    }
 
     match scenario {
         // A library has useful context only when it contains more than the
@@ -317,14 +343,28 @@ pub fn seed_scenario(
         // different light treatments make thumbnail, selection and metadata
         // hierarchy legible in the gallery instead of simulating a library
         // with repeated placeholder art.
-        "library" | "album-manage" | "metadata-edit" => {
+        "library"
+        | "people"
+        | "places"
+        | "selection"
+        | "selection-many-albums"
+        | "album-manage"
+        | "metadata-edit" => {
             let mut library = PhotosDoc::library(doc);
             let mut travel = Vec::new();
-            for (variant, name) in [
-                "Harbour dusk",
-                "Summer trail",
-                "Museum light",
-                "Rainy market",
+            for (variant, (name, captured_at)) in [
+                ("Harbour dusk", "2026-07-12 20:24"),
+                ("Summer trail", "2026-06-15 09:18"),
+                ("Museum light", "2026-06-15 14:42"),
+                ("Rainy market", "2026-06-16 10:06"),
+                ("Dog at the lake", "2026-07-12 17:30"),
+                ("Window cat", "2026-07-12 08:11"),
+                ("Sunset ferry", "2026-07-12 21:02"),
+                ("Garden supper", "2026-07-12 19:14"),
+                ("Paper lanterns", "2026-07-12 22:09"),
+                ("Mountain lookout", "2026-07-12 11:28"),
+                ("Studio morning", "2026-07-12 07:51"),
+                ("First swim", "2026-07-12 15:45"),
             ]
             .into_iter()
             .enumerate()
@@ -336,27 +376,45 @@ pub fn seed_scenario(
                 }
                 let image = OpenImage::from_path(&sample_path.to_string_lossy(), 1200, 800);
                 let mut photo = crate::model::LibraryPhoto::from_image(image);
-                photo.favorite = name == "Summer trail";
-                photo.folder = Some(if name.contains("Museum") {
+                photo.favorite =
+                    matches!(name, "Summer trail" | "Dog at the lake" | "Sunset ferry");
+                photo.folder = Some(if name.contains("Museum") || name.contains("Studio") {
                     "City walks".into()
                 } else {
                     "Travel 2026".into()
                 });
-                photo.people = if name.contains("Summer") {
+                photo.people = if name.contains("Summer") || name.contains("Dog") {
                     vec!["Élodie".into(), "Sam".into()]
+                } else if name.contains("cat") {
+                    vec!["Noor".into()]
                 } else {
                     vec!["Élodie".into()]
                 };
                 photo.tags = vec![if name.contains("Rainy") {
                     "rain".into()
+                } else if name.contains("Dog") || name.contains("cat") {
+                    "pets".into()
                 } else {
                     "golden hour".into()
                 }];
-                photo.captured_at = Some(if name.contains("Harbour") {
-                    "2026-06-14 20:24".into()
-                } else {
-                    "2026-06-15".into()
-                });
+                photo.captured_at = Some(captured_at.into());
+                if scenario == "places" {
+                    let locations = [
+                        (37.7749, -122.4194, "San Francisco"),
+                        (48.8566, 2.3522, "Paris"),
+                        (35.6762, 139.6503, "Tokyo"),
+                    ];
+                    let (latitude, longitude, label) = locations[variant % locations.len()];
+                    photo.location = Some(crate::model::PhotoLocation {
+                        latitude,
+                        longitude,
+                        label: Some(label.into()),
+                        provenance: crate::model::LocationProvenance {
+                            source: "user".into(),
+                            scope: "shared".into(),
+                        },
+                    });
+                }
                 travel.push(photo.id.clone());
                 library.add_photo(photo);
             }
@@ -365,11 +423,29 @@ pub fn seed_scenario(
                 name: "Travel".into(),
                 photo_ids: travel,
             });
+            if scenario == "selection-many-albums" {
+                for number in 1..=17 {
+                    library.albums.push(crate::model::Album {
+                        id: format!("photos.album:destination-{number}"),
+                        name: format!("Destination album {number}"),
+                        photo_ids: Vec::new(),
+                    });
+                }
+            }
             PhotosDoc::set_library(doc, &library);
-            if scenario == "album-manage" {
+            if matches!(scenario, "selection" | "selection-many-albums") {
+                app.show_selection_for_shot(doc);
+                if scenario == "selection-many-albums" {
+                    app.show_selection_destination_chooser_for_shot(doc);
+                }
+            } else if scenario == "album-manage" {
                 app.show_album_editor_for_shot(doc);
             } else if scenario == "metadata-edit" {
                 app.show_metadata_editor_for_shot(doc);
+            } else if scenario == "people" {
+                app.show_people();
+            } else if scenario == "places" {
+                app.show_places_for_shot();
             } else {
                 app.show_library();
             }

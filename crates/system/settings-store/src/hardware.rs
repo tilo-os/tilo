@@ -587,6 +587,13 @@ impl Default for RichInputConfig {
 /// can switch between without losing track of the active source).
 pub const MAX_KEYBOARD_INPUT_SOURCES: usize = 4;
 
+/// Slowest repeat rate selectable by Tilo's single repeat-speed control.
+/// Imported host settings may still preserve zero (repeat disabled) or a
+/// higher exact rate until the person changes that control.
+pub const KEY_REPEAT_SLIDER_MIN_HZ: u32 = 10;
+/// Fastest repeat rate selectable by Tilo's single repeat-speed control.
+pub const KEY_REPEAT_SLIDER_MAX_HZ: u32 = 50;
+
 /// A validated XKB source from the per-user settings document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyboardInputSource {
@@ -1088,7 +1095,10 @@ impl Default for ShortcutConfig {
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
             (ShortcutAction::Lock, super_chord("l")),
             (ShortcutAction::QuickSettings, super_chord("q")),
-            (ShortcutAction::ShortcutHelp, super_chord("/")),
+            // A physical question-mark press reports the shifted slash key
+            // plus Shift. Keep the stored/default chord identical to that
+            // live event rather than accepting the unshifted slash instead.
+            (ShortcutAction::ShortcutHelp, super_shift_chord("/")),
             // Spatial arrows are the always-visible desktop model. Alt+Tab
             // remains an immutable conventional ring alias in the shell.
             (ShortcutAction::FocusPreviousWindow, super_chord("left")),

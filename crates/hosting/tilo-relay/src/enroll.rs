@@ -448,48 +448,32 @@ fn public_identity_record(user: [u8; 32], display_name: &str) -> anyhow::Result<
     )?)
 }
 
-#[allow(dead_code)]
-fn legacy_install_personal_projection(
-    identity_root: &std::path::Path,
-    identity_dir: &std::path::Path,
-    payload: &ResponsePayload,
-) -> anyhow::Result<PathBuf> {
-    #[cfg(unix)]
-    let owner = {
-        use std::os::unix::fs::MetadataExt as _;
-        std::fs::metadata(identity_dir)
-            .or_else(|_| {
-                identity_dir
-                    .parent()
-                    .context("identity directory has no parent")
-                    .and_then(|p| std::fs::metadata(p).map_err(Into::into))
-            })
-            .map(|metadata| (metadata.uid(), metadata.gid()))?
-    };
-    let identity = payload
-        .public_identity_json
-        .as_ref()
-        .context("approval omitted the public identity")?;
-    let fleet = payload
-        .fleet_json
-        .as_ref()
-        .context("approval omitted the fleet")?;
-    let peers = payload
-        .home_peers_json
-        .as_ref()
-        .context("approval omitted home peers")?;
-    let user = payload.cert.user_public_key;
-    let id = hex::encode(user);
-    // Validate every transferred object before publishing any of it.
-    let projected: FleetProjection = serde_json::from_slice(fleet)?;
-    if projected.identity_id != id
-        || projected.schema_version != 1
+struct CheckedPersonalProjection {
+    identity: Vec<u8>,
+    fleet: Vec<u8>,
+    peers: Vec<u8>,
+    registry: Vec<u8>,
+}
+
+fn identity_record_path(identity_dir: &std::path::Path, user: [u8; 32]) -> PathBuf {
+    let prefix = hex::encode(user).chars().take(55).collect::<String>();
+    identity_dir.join(format!("identity-{prefix}.json"))
+}
+
+fn validate_personal_fleet(
+    bytes: &[u8],
+    identity_id: &str,
+    enrolled_device: [u8; 32],
+) -> anyhow::Result<()> {
+    let projected: FleetProjection = serde_json::from_slice(bytes)?;
+    if projected.schema_version != 1
+        || projected.identity_id != identity_id
         || projected.certificates.len() > 256
         || projected.revocations.len() > 256
         || !projected
             .certificates
             .iter()
-            .any(|cert| cert.device_public_key == payload.cert.device_public_key)
+            .any(|cert| cert.device_public_key == enrolled_device)
         || projected
             .certificates
             .iter()
@@ -497,12 +481,16 @@ fn legacy_install_personal_projection(
         || projected
             .revocations
             .iter()
-            .any(|item| verify_revocation_entry(item).is_err())
+            .any(|entry| verify_revocation_entry(entry).is_err())
     {
         bail!("approval returned an invalid device fleet");
     }
-    let identity_value: serde_json::Value = serde_json::from_slice(identity)?;
-    let threshold = identity_value
+    Ok(())
+}
+
+fn validate_public_identity(bytes: &[u8], user: [u8; 32]) -> anyhow::Result<()> {
+    let identity: serde_json::Value = serde_json::from_slice(bytes)?;
+    let threshold = identity
         .get("threshold_identity")
         .and_then(serde_json::Value::as_object)
         .context("approval returned an invalid public identity")?;
@@ -514,80 +502,49 @@ fn legacy_install_personal_projection(
     {
         bail!("approval returned an identity containing private or mismatched key material");
     }
-    let home_entries: Vec<HomePeerRegistration> = serde_json::from_slice(peers)?;
-    if home_entries.len() > 128
-        || home_entries.iter().any(|entry| {
-            entry.user_public_key != id
-                || entry.relay_workspace_ids.len() > 4096
-                || !tilo_relay::valid_home_peer_label(&entry.label)
-                || hex::decode(&entry.relay_service_node_id)
-                    .ok()
-                    .is_none_or(|bytes| bytes.len() != 32)
-                || !valid_relay_endpoint_hint(entry)
-                || entry.device_cert.as_ref().is_none_or(|cert| {
-                    verify_device_cert(cert).is_err()
-                        || cert.user_public_key != user
-                        || hex::encode(cert.device_public_key) != entry.device_node_id
-                })
+    Ok(())
+}
+
+fn valid_home_peer_registration(entry: &HomePeerRegistration) -> bool {
+    entry.schema_version <= HomePeerRegistration::CURRENT_SCHEMA
+        && entry.relay_workspace_ids.len() <= 4096
+        && tilo_relay::valid_home_peer_label(&entry.label)
+        && hex::decode(&entry.device_node_id)
+            .ok()
+            .is_some_and(|key| key.len() == 32)
+        && hex::decode(&entry.relay_service_node_id)
+            .ok()
+            .is_some_and(|key| key.len() == 32)
+        && hex::decode(&entry.user_public_key)
+            .ok()
+            .is_some_and(|key| key.len() == 32)
+        && valid_relay_endpoint_hint(entry)
+        && entry.device_cert.as_ref().is_some_and(|cert| {
+            verify_device_cert(cert).is_ok()
+                && hex::encode(cert.device_public_key) == entry.device_node_id
+                && hex::encode(cert.user_public_key) == entry.user_public_key
         })
-    {
-        bail!("approval returned an invalid home-peer registry");
+}
+
+fn read_bounded_json<T>(path: &std::path::Path, description: &str) -> anyhow::Result<Option<T>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.len() <= 1024 * 1024 => serde_json::from_slice(&bytes)
+            .with_context(|| format!("{description} is invalid"))
+            .map(Some),
+        Ok(_) => bail!("{description} exceeds 1 MiB"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
     }
-    std::fs::create_dir_all(identity_dir)?;
-    let record_path = identity_dir.join(format!("identity-{}.json", &id[..55]));
-    atomic_file::write_with_mode(&record_path, identity, 0o600)?;
-    let registry_path = identity_dir.join("registry.json");
-    let mut registry = std::fs::read(&registry_path)
-        .ok()
-        .filter(|bytes| bytes.len() <= 1024 * 1024)
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .unwrap_or_else(|| {
-            serde_json::json!({
-                "schema_version": 1,
-                "default_identity": id,
-                "identities": {},
-                "workspace_identities": {}
-            })
-        });
-    registry["default_identity"] = serde_json::json!(id);
-    registry["identities"][&id] = serde_json::json!({
-        "id": id,
-        "display_name": "My Tilo identity",
-        "record_path": record_path,
-        "user_public_key": user
-    });
-    atomic_file::write_with_mode(
-        &registry_path,
-        &serde_json::to_vec_pretty(&registry)?,
-        0o600,
-    )?;
-    atomic_file::write_creating_parent(&fleet_path(identity_dir, user), fleet)?;
-    atomic_file::write_with_mode(&identity_root.join("home-peers.json"), peers, 0o644)?;
-    #[cfg(unix)]
-    for path in [
-        identity_dir.to_path_buf(),
-        identity_dir.join("fleets"),
-        record_path.clone(),
-        registry_path,
-        fleet_path(identity_dir, user),
-        identity_root.join("home-peers.json"),
-    ] {
-        use std::os::unix::ffi::OsStrExt as _;
-        let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
-        // SAFETY: `path` is a live NUL-terminated string and uid/gid came
-        // from the user's pre-existing identity directory (or its parent).
-        if unsafe { libc::chown(path.as_ptr(), owner.0, owner.1) } != 0 {
-            return Err(std::io::Error::last_os_error()).context("restore identity file ownership");
-        }
-    }
-    Ok(record_path)
 }
 
 fn checked_personal_projection(
     identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
     payload: &ResponsePayload,
-) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
+) -> anyhow::Result<CheckedPersonalProjection> {
     let identity = payload
         .public_identity_json
         .as_ref()
@@ -601,127 +558,77 @@ fn checked_personal_projection(
         .as_ref()
         .context("approval omitted home peers")?;
     let user = payload.cert.user_public_key;
-    let id = hex::encode(user);
-    let projected: FleetProjection = serde_json::from_slice(fleet)?;
-    if projected.schema_version != 1
-        || projected.identity_id != id
-        || projected.certificates.len() > 256
-        || projected.revocations.len() > 256
-        || !projected
-            .certificates
-            .iter()
-            .any(|cert| cert.device_public_key == payload.cert.device_public_key)
-        || projected
-            .certificates
-            .iter()
-            .any(|cert| verify_device_cert(cert).is_err())
-        || projected
-            .revocations
-            .iter()
-            .any(|entry| verify_revocation_entry(entry).is_err())
-    {
-        bail!("approval returned an invalid device fleet");
-    }
-    let identity_value: serde_json::Value = serde_json::from_slice(identity)?;
-    let threshold = identity_value
-        .get("threshold_identity")
-        .and_then(serde_json::Value::as_object)
-        .context("approval returned an invalid public identity")?;
-    if threshold.get("group_public_key") != Some(&serde_json::json!(user))
-        || threshold
-            .get("secret_bytes")
-            .is_some_and(|secret| secret != &serde_json::json!([]))
-        || threshold.get("single_device") != Some(&serde_json::json!(false))
-    {
-        bail!("approval returned an identity containing private or mismatched key material");
-    }
+    let identity_id = hex::encode(user);
+
+    validate_personal_fleet(fleet, &identity_id, payload.cert.device_public_key)?;
+    validate_public_identity(identity, user)?;
+
     let incoming: Vec<HomePeerRegistration> = serde_json::from_slice(transferred_peers)?;
     if incoming.len() > 128
         || incoming.iter().any(|entry| {
-            entry.user_public_key != id
-                || entry.relay_workspace_ids.len() > 4096
-                || !tilo_relay::valid_home_peer_label(&entry.label)
-                || hex::decode(&entry.device_node_id)
-                    .ok()
-                    .is_none_or(|key| key.len() != 32)
-                || hex::decode(&entry.relay_service_node_id)
-                    .ok()
-                    .is_none_or(|key| key.len() != 32)
-                || !valid_relay_endpoint_hint(entry)
-                || entry.device_cert.as_ref().is_none_or(|cert| {
-                    verify_device_cert(cert).is_err()
-                        || cert.user_public_key != user
-                        || hex::encode(cert.device_public_key) != entry.device_node_id
-                })
+            entry.user_public_key != identity_id || !valid_home_peer_registration(entry)
         })
     {
         bail!("approval returned an invalid home-peer registry");
     }
+
     let registry_path = identity_dir.join("registry.json");
-    let mut registry = match std::fs::read(&registry_path) {
-        Ok(bytes) if bytes.len() <= 1024 * 1024 => {
-            serde_json::from_slice::<serde_json::Value>(&bytes)
-                .context("existing identity registry is invalid")?
-        }
-        Ok(_) => bail!("existing identity registry exceeds 1 MiB"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({
-            "schema_version": 1,
-            "default_identity": id,
-            "identities": {},
-            "workspace_identities": {}
-        }),
-        Err(error) => return Err(error.into()),
-    };
-    if !registry.is_object()
-        || !registry["identities"].is_object()
-        || !registry["workspace_identities"].is_object()
-    {
+    let mut registry: serde_json::Value =
+        read_bounded_json(&registry_path, "existing identity registry")?.unwrap_or_else(|| {
+            serde_json::json!({
+                "schema_version": 1,
+                "default_identity": identity_id,
+                "identities": {},
+                "workspace_identities": {}
+            })
+        });
+    let valid_registry = registry.as_object().is_some_and(|root| {
+        root.get("identities")
+            .is_some_and(serde_json::Value::is_object)
+            && root
+                .get("workspace_identities")
+                .is_some_and(serde_json::Value::is_object)
+    });
+    if !valid_registry {
         bail!("existing identity registry has an invalid schema");
     }
-    let record_path = identity_dir.join(format!("identity-{}.json", &id[..55]));
-    registry["default_identity"] = serde_json::json!(id);
-    registry["identities"][&id] = serde_json::json!({
-        "id": id,
-        "display_name": "My Tilo identity",
-        "record_path": record_path,
-        "user_public_key": user
-    });
+
+    let record_path = identity_record_path(identity_dir, user);
+    let registry_root = registry
+        .as_object_mut()
+        .context("existing identity registry has an invalid schema")?;
+    registry_root.insert(
+        "default_identity".into(),
+        serde_json::Value::String(identity_id.clone()),
+    );
+    registry_root
+        .get_mut("identities")
+        .and_then(serde_json::Value::as_object_mut)
+        .context("existing identity registry has an invalid identities map")?
+        .insert(
+            identity_id.clone(),
+            serde_json::json!({
+                "id": identity_id,
+                "display_name": "My Tilo identity",
+                "record_path": record_path,
+                "user_public_key": user
+            }),
+        );
+
     let peers_path = identity_root.join("home-peers.json");
-    let mut existing: Vec<HomePeerRegistration> = match std::fs::read(&peers_path) {
-        Ok(bytes) if bytes.len() <= 1024 * 1024 => {
-            serde_json::from_slice(&bytes).context("existing home-peer registry is invalid")?
-        }
-        Ok(_) => bail!("existing home-peer registry exceeds 1 MiB"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error.into()),
-    };
+    let mut existing: Vec<HomePeerRegistration> =
+        read_bounded_json(&peers_path, "existing home-peer registry")?.unwrap_or_default();
     if existing.len() > 128
-        || existing.iter().any(|entry| {
-            entry.schema_version > HomePeerRegistration::CURRENT_SCHEMA
-                || entry.relay_workspace_ids.len() > 4096
-                || !tilo_relay::valid_home_peer_label(&entry.label)
-                || hex::decode(&entry.device_node_id)
-                    .ok()
-                    .is_none_or(|key| key.len() != 32)
-                || hex::decode(&entry.relay_service_node_id)
-                    .ok()
-                    .is_none_or(|key| key.len() != 32)
-                || hex::decode(&entry.user_public_key)
-                    .ok()
-                    .is_none_or(|key| key.len() != 32)
-                || !valid_relay_endpoint_hint(entry)
-                || entry.device_cert.as_ref().is_none_or(|cert| {
-                    verify_device_cert(cert).is_err()
-                        || hex::encode(cert.device_public_key) != entry.device_node_id
-                        || hex::encode(cert.user_public_key) != entry.user_public_key
-                })
-        })
+        || existing
+            .iter()
+            .any(|entry| !valid_home_peer_registration(entry))
     {
         bail!("existing home-peer registry violates its bounded verified schema");
     }
+
     // A response projects routes for one identity. Do not use it as a global
     // snapshot and erase other identities' independently verified routes.
-    existing.retain(|entry| entry.user_public_key != id);
+    existing.retain(|entry| entry.user_public_key != identity_id);
     existing.extend(incoming);
     if existing.len() > 128 {
         bail!("merged home-peer registry is full");
@@ -731,12 +638,13 @@ fn checked_personal_projection(
             .cmp(&right.user_public_key)
             .then_with(|| left.device_node_id.cmp(&right.device_node_id))
     });
-    Ok((
-        identity.clone(),
-        fleet.clone(),
-        serde_json::to_vec_pretty(&existing)?,
-        serde_json::to_vec_pretty(&registry)?,
-    ))
+
+    Ok(CheckedPersonalProjection {
+        identity: identity.clone(),
+        fleet: fleet.clone(),
+        peers: serde_json::to_vec_pretty(&existing)?,
+        registry: serde_json::to_vec_pretty(&registry)?,
+    })
 }
 
 fn stage_personal_enrollment(
@@ -746,8 +654,7 @@ fn stage_personal_enrollment(
     payload: &ResponsePayload,
     requester_lease: Option<tilo_relay::ProcessLease>,
 ) -> anyhow::Result<(PathBuf, PersonalEnrollmentMarker)> {
-    let (identity, fleet, peers, registry) =
-        checked_personal_projection(identity_root, identity_dir, payload)?;
+    let projection = checked_personal_projection(identity_root, identity_dir, payload)?;
     let stage_name = format!(
         "personal-{}-{}",
         hex::encode(payload.nonce),
@@ -756,10 +663,22 @@ fn stage_personal_enrollment(
     let stage_dir = enrollment_stage_dir(identity_root).join(&stage_name);
     std::fs::create_dir_all(&stage_dir)?;
     let cert = tilo_user_identity::canonical::canonical_bytes(&payload.cert)?;
-    atomic_file::write_with_mode(&staged(&stage_dir, "record.json"), &identity, 0o600)?;
-    atomic_file::write_with_mode(&staged(&stage_dir, "registry.json"), &registry, 0o600)?;
-    atomic_file::write(&staged(&stage_dir, "fleet.json"), &fleet)?;
-    atomic_file::write_with_mode(&staged(&stage_dir, "home-peers.json"), &peers, 0o644)?;
+    atomic_file::write_with_mode(
+        &staged(&stage_dir, "record.json"),
+        &projection.identity,
+        0o600,
+    )?;
+    atomic_file::write_with_mode(
+        &staged(&stage_dir, "registry.json"),
+        &projection.registry,
+        0o600,
+    )?;
+    atomic_file::write(&staged(&stage_dir, "fleet.json"), &projection.fleet)?;
+    atomic_file::write_with_mode(
+        &staged(&stage_dir, "home-peers.json"),
+        &projection.peers,
+        0o644,
+    )?;
     atomic_file::write(
         &staged(&stage_dir, "user-pubkey.bin"),
         &payload.cert.user_public_key,
@@ -835,10 +754,7 @@ fn commit_staged_personal_enrollment(
     // that died while approval was in flight causes no publication mutation.
     checkpoint(PersonalCommitCheckpoint::Record)?;
     std::fs::create_dir_all(&marker.identity_dir)?;
-    let record = marker.identity_dir.join(format!(
-        "identity-{}.json",
-        &hex::encode(marker.user_public_key)[..55]
-    ));
+    let record = identity_record_path(&marker.identity_dir, marker.user_public_key);
     let fleet = fleet_path(&marker.identity_dir, marker.user_public_key);
     atomic_file::write_with_mode(
         &record,
@@ -931,7 +847,7 @@ fn recover_personal_enrollments(
     Ok(())
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn install_personal_projection(
     identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
@@ -1063,7 +979,8 @@ fn pairing_code(device_public_key: [u8; 32], relay_service_node_id: [u8; 32]) ->
     input.extend(device_public_key);
     input.extend(relay_service_node_id);
     let digest = blake3::hash(&input);
-    let number = u32::from_le_bytes(digest.as_bytes()[..4].try_into().expect("four bytes"));
+    let [first, second, third, fourth, ..] = *digest.as_bytes();
+    let number = u32::from_le_bytes([first, second, third, fourth]);
     format!("{:06}", number % 1_000_000)
 }
 
@@ -1091,12 +1008,13 @@ fn bind_pair_listener() -> anyhow::Result<UdpSocket> {
 fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
     let socket = bind_pair_listener()?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    let deadline = std::time::Instant::now() + socket_timeout(timeout);
-    let mut packet = [0_u8; MAX_PACKET];
+    let deadline = deadline_after(socket_timeout(timeout))?;
+    let mut packet = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         match socket.recv_from(&mut packet) {
             Ok((len, _)) => {
-                let Ok(solicitation) = postcard::from_bytes::<PairSolicitation>(&packet[..len])
+                let Ok(solicitation) =
+                    postcard::from_bytes::<PairSolicitation>(received_packet(&packet, len)?)
                 else {
                     continue;
                 };
@@ -1459,6 +1377,18 @@ fn socket_timeout(seconds: u64) -> Duration {
     Duration::from_secs(seconds.clamp(1, 300))
 }
 
+fn deadline_after(duration: Duration) -> anyhow::Result<std::time::Instant> {
+    std::time::Instant::now()
+        .checked_add(duration)
+        .context("enrollment timeout exceeds the platform clock range")
+}
+
+fn received_packet(buffer: &[u8], received: usize) -> anyhow::Result<&[u8]> {
+    buffer
+        .get(..received)
+        .context("socket reported a packet larger than its receive buffer")
+}
+
 fn validate_requester(lease: Option<tilo_relay::ProcessLease>) -> anyhow::Result<()> {
     if let Some(lease) = lease {
         lease
@@ -1469,13 +1399,13 @@ fn validate_requester(lease: Option<tilo_relay::ProcessLease>) -> anyhow::Result
 }
 
 fn join(
-    token_file: PathBuf,
-    identity_root: PathBuf,
-    label: String,
+    token_file: &std::path::Path,
+    identity_root: &std::path::Path,
+    label: &str,
     timeout: u64,
-    home_peer_output: PathBuf,
+    home_peer_output: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let token_text = std::fs::read_to_string(&token_file)
+    let token_text = std::fs::read_to_string(token_file)
         .with_context(|| format!("read {}", token_file.display()))?;
     join_with_token(
         token_text.trim(),
@@ -1489,15 +1419,19 @@ fn join(
     )
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the join state machine keeps all authenticated inputs visible at its single protocol boundary"
+)]
 fn join_with_token(
     token_text: &str,
-    identity_root: PathBuf,
-    label: String,
+    identity_root: &std::path::Path,
+    label: &str,
     timeout: u64,
     kind: EnrollmentKind,
-    home_peer_output: Option<PathBuf>,
-    identity_dir: Option<PathBuf>,
+    home_peer_output: Option<&std::path::Path>,
+    identity_dir: Option<&std::path::Path>,
     requester_lease: Option<tilo_relay::ProcessLease>,
 ) -> anyhow::Result<()> {
     validate_requester(requester_lease)?;
@@ -1513,14 +1447,12 @@ fn join_with_token(
     {
         bail!("enrollment token grants the wrong device role");
     }
-    let paths = IdentityPaths::under(&identity_root);
+    let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
     if kind == EnrollmentKind::PersonalDevice {
         recover_personal_enrollments(
-            &identity_root,
-            identity_dir
-                .as_deref()
-                .context("identity directory is required")?,
+            identity_root,
+            identity_dir.context("identity directory is required")?,
             &paths,
             |_| validate_requester(requester_lease),
         )?;
@@ -1537,15 +1469,15 @@ fn join_with_token(
     let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let deadline = std::time::Instant::now() + socket_timeout(timeout);
+    let deadline = deadline_after(socket_timeout(timeout))?;
     let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, PORT);
-    let mut reply = [0_u8; MAX_PACKET];
+    let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         validate_requester(requester_lease)?;
         socket.send_to(&bytes, destination)?;
         match socket.recv_from(&mut reply) {
             Ok((len, sender)) => {
-                let response_bytes = reply[..len].to_vec();
+                let response_bytes = received_packet(&reply, len)?.to_vec();
                 validate_requester(requester_lease)?;
                 let Ok(response) = decrypt_response(
                     &response_bytes,
@@ -1578,9 +1510,7 @@ fn join_with_token(
                     let _: fs::full_replica::HomePeerSet = toml::from_str(home_peer_toml)
                         .context("approving device returned an invalid home-peer configuration")?;
                     atomic_file::write(
-                        home_peer_output
-                            .as_ref()
-                            .context("home-peer output is required")?,
+                        home_peer_output.context("home-peer output is required")?,
                         home_peer_toml.as_bytes(),
                     )?;
                 }
@@ -1590,10 +1520,8 @@ fn join_with_token(
                 // Finalized has been authenticated.
                 let staged_personal = if kind == EnrollmentKind::PersonalDevice {
                     Some(stage_personal_enrollment(
-                        &identity_root,
-                        identity_dir
-                            .as_deref()
-                            .context("identity directory is required")?,
+                        identity_root,
+                        identity_dir.context("identity directory is required")?,
                         &paths,
                         &response.payload,
                         requester_lease,
@@ -1603,14 +1531,14 @@ fn join_with_token(
                 };
                 let ack = make_ack(&response_bytes, token.nonce, &device)?;
                 socket.set_read_timeout(Some(Duration::from_millis(300)))?;
-                let completion_deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let completion_deadline = deadline_after(Duration::from_secs(10))?;
                 while std::time::Instant::now() < completion_deadline {
                     validate_requester(requester_lease)?;
                     socket.send_to(&ack, sender)?;
                     match socket.recv_from(&mut reply) {
                         Ok((final_len, final_sender)) if final_sender == sender => {
                             if verify_finalized(
-                                &reply[..final_len],
+                                received_packet(&reply, final_len)?,
                                 &response_bytes,
                                 token.nonce,
                                 device.verifying_key().to_bytes(),
@@ -1632,7 +1560,7 @@ fn join_with_token(
                                             requester_lease,
                                         )?;
                                         Some(commit_staged_personal_enrollment(
-                                            &identity_root,
+                                            identity_root,
                                             &paths,
                                             marker_path,
                                             &marker,
@@ -1674,10 +1602,11 @@ fn join_with_token(
                                             &response.payload.cert.user_public_key,
                                         )
                                         .parent(),
-                                ] {
-                                    if let Some(directory) = directory {
-                                        restore_owner_from_directory(directory, &identity_root)?;
-                                    }
+                                ]
+                                .into_iter()
+                                .flatten()
+                                {
+                                    restore_owner_from_directory(directory, identity_root)?;
                                 }
                                 for output in [
                                     &paths.user_pubkey,
@@ -1687,10 +1616,10 @@ fn join_with_token(
                                     ),
                                     &paths.device_cert,
                                 ] {
-                                    restore_owner_from_directory(output, &identity_root)?;
+                                    restore_owner_from_directory(output, identity_root)?;
                                 }
                                 consume_nonce(
-                                    &identity_root,
+                                    identity_root,
                                     &token.nonce,
                                     device.verifying_key().to_bytes(),
                                 )?;
@@ -1731,22 +1660,26 @@ fn join_with_token(
     bail!("no approving Tilo device answered before the enrollment window closed")
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the pairing state machine keeps its UI outputs and authenticated requester lease at one boundary"
+)]
 fn pair(
-    identity_root: PathBuf,
-    label: String,
+    identity_root: &std::path::Path,
+    label: &str,
     timeout: u64,
     kind: EnrollmentKind,
-    home_peer_output: Option<PathBuf>,
-    identity_dir: Option<PathBuf>,
-    status_file: Option<PathBuf>,
+    home_peer_output: Option<&std::path::Path>,
+    identity_dir: Option<&std::path::Path>,
+    status_file: Option<&std::path::Path>,
     requester_lease: Option<tilo_relay::ProcessLease>,
 ) -> anyhow::Result<()> {
     if kind == EnrollmentKind::PersonalDevice && requester_lease.is_none() {
         bail!("personal-device pairing requires a live first-use requester");
     }
     validate_requester(requester_lease)?;
-    let paths = IdentityPaths::under(&identity_root);
+    let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
     let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)?;
     let relay_service_node_id = tilo_relay::daemon::relay_service_node_id(&device);
@@ -1762,7 +1695,7 @@ fn pair(
         kind,
     })?;
     let code = pairing_code(device.verifying_key().to_bytes(), relay_service_node_id);
-    if let Some(path) = &status_file {
+    if let Some(path) = status_file {
         atomic_file::write_with_mode(
             path,
             &serde_json::to_vec(&serde_json::json!({
@@ -1781,14 +1714,15 @@ fn pair(
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
     let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, PORT);
-    let deadline = std::time::Instant::now() + socket_timeout(timeout);
-    let mut reply = [0_u8; MAX_PACKET];
+    let deadline = deadline_after(socket_timeout(timeout))?;
+    let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         validate_requester(requester_lease)?;
         socket.send_to(&solicitation, destination)?;
         match socket.recv_from(&mut reply) {
             Ok((len, _sender)) => {
-                let Ok(token_text) = decrypt_pair_offer(&reply[..len], &device) else {
+                let Ok(token_text) = decrypt_pair_offer(received_packet(&reply, len)?, &device)
+                else {
                     continue;
                 };
                 let Ok(token) = decode_enrollment_token(token_text.trim()) else {
@@ -1808,14 +1742,14 @@ fn pair(
                 join_with_token(
                     token_text.trim(),
                     identity_root,
-                    label,
+                    &label,
                     timeout,
                     kind,
                     home_peer_output,
                     identity_dir,
                     requester_lease,
                 )?;
-                if let Some(path) = &status_file {
+                if let Some(path) = status_file {
                     atomic_file::write_with_mode(
                         path,
                         &serde_json::to_vec(&serde_json::json!({
@@ -1841,40 +1775,72 @@ fn pair(
     bail!("no trusted Tilo device approved nearby pairing before the window closed")
 }
 
-fn approve(
-    identity_root: PathBuf,
-    identity_dir: Option<PathBuf>,
+struct ApprovalOptions<'a> {
+    identity_root: &'a std::path::Path,
+    identity_dir: Option<&'a std::path::Path>,
     timeout: u64,
-    workspace_cache: PathBuf,
-    acl: PathBuf,
-    mut relay_workspace_ids: Vec<u64>,
-    expected_device: Option<String>,
-    expected_service: Option<String>,
+    workspace_cache: &'a std::path::Path,
+    acl: &'a std::path::Path,
+    relay_workspace_ids: &'a [u64],
+    expected_device: Option<&'a str>,
+    expected_service: Option<&'a str>,
     kind: EnrollmentKind,
-    ready: Option<std::sync::mpsc::Sender<()>>,
-) -> anyhow::Result<()> {
-    let expected: Option<([u8; 32], [u8; 32])> = match (expected_device, expected_service) {
-        (Some(device), Some(service)) => Some((
+    ready: Option<&'a std::sync::mpsc::Sender<()>>,
+}
+
+struct ApprovalIdentity {
+    root: ed25519_dalek::SigningKey,
+    device: ed25519_dalek::SigningKey,
+    user_public_key: [u8; 32],
+    relay_workspace_ids: Vec<u64>,
+}
+
+struct SelectedNearby {
+    solicitation: PairSolicitation,
+    token_text: String,
+    offer: Vec<u8>,
+}
+
+struct PendingApproval {
+    request: Request,
+    request_ephemeral_public_key: [u8; 32],
+    token: tilo_user_identity::EnrollmentToken,
+    sender: std::net::SocketAddr,
+}
+
+struct ApprovalProjection {
+    home_peer_toml: Option<String>,
+    public_identity_json: Option<Vec<u8>>,
+    fleet_json: Option<Vec<u8>>,
+    home_peers_json: Option<Vec<u8>>,
+}
+
+struct PreparedApproval {
+    signed: Response,
+    encrypted: Vec<u8>,
+}
+
+fn expected_pair(options: &ApprovalOptions<'_>) -> anyhow::Result<Option<([u8; 32], [u8; 32])>> {
+    match (options.expected_device, options.expected_service) {
+        (Some(device), Some(service)) => Ok(Some((
             hex::decode(device)?
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("expected device ID has the wrong length"))?,
             hex::decode(service)?
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("expected service ID has the wrong length"))?,
-        )),
-        (None, None) => None,
+        ))),
+        (None, None) => Ok(None),
         _ => bail!("expected device and service IDs must be supplied together"),
-    };
-    let paths = IdentityPaths::under(&identity_root);
+    }
+}
+
+fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<ApprovalIdentity> {
+    let paths = IdentityPaths::under(options.identity_root);
     let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("this device does not hold the identity root needed to approve enrollment")?;
     let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)?;
     let user_public_key = root.verifying_key().to_bytes();
-    if kind == EnrollmentKind::HomePeer {
-        relay_workspace_ids.push(tilo_relay::personal_continuity_workspace_id(
-            &user_public_key,
-        ));
-    }
     let issuer_cert = tilo_user_identity::persist::read_device_cert(
         &paths.device_cert_for_user(&user_public_key),
     )
@@ -1886,25 +1852,133 @@ fn approve(
     {
         bail!("this device is not authorised to approve enrollment");
     }
-    if let Some(directory) = identity_dir.as_deref()
+    if let Some(directory) = options.identity_dir
         && fleet_revokes_device(directory, user_public_key, issuer_cert.device_public_key)
             .context("verify approving device fleet")?
     {
         bail!("this device is revoked and cannot approve enrollment");
     }
-    let socket = bind_pair_listener()?;
-    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    if let Some(ready) = ready {
-        let _ = ready.send(());
+
+    let mut relay_workspace_ids = options.relay_workspace_ids.to_vec();
+    if options.kind == EnrollmentKind::HomePeer {
+        relay_workspace_ids.push(tilo_relay::personal_continuity_workspace_id(
+            &user_public_key,
+        ));
     }
-    let mut packet = [0_u8; MAX_PACKET];
-    let request_deadline = std::time::Instant::now() + socket_timeout(timeout);
-    let mut selected_nearby: Option<(PairSolicitation, String, Vec<u8>)> = None;
-    let (request, request_ephemeral_public_key, token, sender) = loop {
-        if std::time::Instant::now() >= request_deadline {
+    Ok(ApprovalIdentity {
+        root,
+        device,
+        user_public_key,
+        relay_workspace_ids,
+    })
+}
+
+fn handle_solicitation(
+    socket: &UdpSocket,
+    sender: std::net::SocketAddr,
+    solicitation: PairSolicitation,
+    kind: EnrollmentKind,
+    expected: Option<([u8; 32], [u8; 32])>,
+    identity: &ApprovalIdentity,
+    selected: &mut Option<SelectedNearby>,
+) -> anyhow::Result<()> {
+    if !valid_solicitation(&solicitation)
+        || solicitation.kind != kind
+        || expected.is_some_and(|(device, service)| {
+            solicitation.device_public_key != device
+                || solicitation.relay_service_node_id != service
+        })
+    {
+        return Ok(());
+    }
+    if selected.as_ref().is_some_and(|current| {
+        current.solicitation.device_public_key != solicitation.device_public_key
+            || current.solicitation.relay_service_node_id != solicitation.relay_service_node_id
+    }) {
+        return Ok(());
+    }
+    if selected.is_none() {
+        let mut nonce = [0_u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let issued_at_ns = now_ns()?;
+        let expires_at_ns = issued_at_ns.saturating_add(5 * 60 * 1_000_000_000);
+        let capabilities = match kind {
+            EnrollmentKind::HomePeer => DeviceCapabilities::host(),
+            EnrollmentKind::PersonalDevice => DeviceCapabilities::member(),
+        };
+        let token = mint_enrollment_token(
+            identity.user_public_key,
+            capabilities,
+            issued_at_ns,
+            expires_at_ns,
+            nonce,
+            &identity.device,
+        )?;
+        let token_text = encode_enrollment_token(&token)?;
+        let offer = encrypt_pair_offer(&token_text, solicitation.device_public_key)?;
+        let code = pairing_code(
+            solicitation.device_public_key,
+            solicitation.relay_service_node_id,
+        );
+        println!(
+            "Approving nearby device '{}' with code {code}",
+            solicitation.label
+        );
+        *selected = Some(SelectedNearby {
+            solicitation,
+            token_text,
+            offer,
+        });
+    }
+    if let Some(selection) = selected {
+        socket.send_to(&selection.offer, sender)?;
+    }
+    Ok(())
+}
+
+fn valid_pending_request(
+    request: &Request,
+    token: &tilo_user_identity::EnrollmentToken,
+    kind: EnrollmentKind,
+    identity: &ApprovalIdentity,
+    selected: Option<&SelectedNearby>,
+) -> anyhow::Result<bool> {
+    let wrong_selection = selected.is_some_and(|selection| {
+        request.device_public_key != selection.solicitation.device_public_key
+            || request.relay_service_node_id != selection.solicitation.relay_service_node_id
+            || request.label != selection.solicitation.label
+            || request.kind != selection.solicitation.kind
+            || request.token != selection.token_text
+    });
+    Ok(verify_enrollment_token(token, now_ns()?).is_ok()
+        && token.user_public_key == identity.user_public_key
+        && token.issuer_device_public_key == identity.device.verifying_key().to_bytes()
+        && request.kind == kind
+        && match kind {
+            EnrollmentKind::HomePeer => {
+                token.capabilities.can_act_as_host && token.capabilities.can_read_all_workspaces
+            }
+            EnrollmentKind::PersonalDevice => {
+                !token.capabilities.can_act_as_host && !token.capabilities.can_read_all_workspaces
+            }
+        }
+        && !wrong_selection)
+}
+
+fn receive_approval_request(
+    socket: &UdpSocket,
+    packet: &mut [u8],
+    options: &ApprovalOptions<'_>,
+    identity: &ApprovalIdentity,
+) -> anyhow::Result<PendingApproval> {
+    let expected = expected_pair(options)?;
+    let deadline = deadline_after(socket_timeout(options.timeout))?;
+    let mut selected = None;
+    loop {
+        if std::time::Instant::now() >= deadline {
             bail!("no valid matching nearby device request arrived");
         }
-        let (len, sender) = match socket.recv_from(&mut packet) {
+        let (len, sender) = match socket.recv_from(packet) {
             Ok(packet) => packet,
             Err(error)
                 if matches!(
@@ -1916,107 +1990,51 @@ fn approve(
             }
             Err(error) => return Err(error.into()),
         };
-        if let Ok(solicitation) = postcard::from_bytes::<PairSolicitation>(&packet[..len]) {
-            if !valid_solicitation(&solicitation)
-                || solicitation.kind != kind
-                || expected.is_some_and(|(device, service)| {
-                    solicitation.device_public_key != device
-                        || solicitation.relay_service_node_id != service
-                })
-            {
-                continue;
-            }
-            let selection_matches = selected_nearby.as_ref().is_none_or(|(selected, _, _)| {
-                selected.device_public_key == solicitation.device_public_key
-                    && selected.relay_service_node_id == solicitation.relay_service_node_id
-            });
-            if !selection_matches {
-                continue;
-            }
-            if selected_nearby.is_none() {
-                let mut nonce = [0_u8; 16];
-                rand::rngs::OsRng.fill_bytes(&mut nonce);
-                let issued_at_ns = now_ns()?;
-                let expires_at_ns = issued_at_ns.saturating_add(5 * 60 * 1_000_000_000);
-                let capabilities = match kind {
-                    EnrollmentKind::HomePeer => DeviceCapabilities::host(),
-                    EnrollmentKind::PersonalDevice => DeviceCapabilities::member(),
-                };
-                let token = mint_enrollment_token(
-                    user_public_key,
-                    capabilities,
-                    issued_at_ns,
-                    expires_at_ns,
-                    nonce,
-                    &device,
-                )?;
-                let token_text = encode_enrollment_token(&token)?;
-                let offer = encrypt_pair_offer(&token_text, solicitation.device_public_key)?;
-                let code = pairing_code(
-                    solicitation.device_public_key,
-                    solicitation.relay_service_node_id,
-                );
-                println!(
-                    "Approving nearby device '{}' with code {code}",
-                    solicitation.label
-                );
-                selected_nearby = Some((solicitation, token_text, offer));
-            }
-            if let Some((_, _, offer)) = &selected_nearby {
-                socket.send_to(offer, sender)?;
-            }
+        let bytes = received_packet(packet, len)?;
+        if let Ok(solicitation) = postcard::from_bytes::<PairSolicitation>(bytes) {
+            handle_solicitation(
+                socket,
+                sender,
+                solicitation,
+                options.kind,
+                expected,
+                identity,
+                &mut selected,
+            )?;
             continue;
         }
-        let Ok((request, request_ephemeral_public_key)) = decrypt_request(&packet[..len], &device)
+        let Ok((request, request_ephemeral_public_key)) = decrypt_request(bytes, &identity.device)
         else {
             continue;
         };
         let Ok(token) = decode_enrollment_token(request.token.trim()) else {
             continue;
         };
-        if verify_enrollment_token(&token, now_ns()?).is_err()
-            || token.user_public_key != user_public_key
-            || token.issuer_device_public_key != device.verifying_key().to_bytes()
-            || request.kind != kind
-            || (kind == EnrollmentKind::HomePeer
-                && (!token.capabilities.can_act_as_host
-                    || !token.capabilities.can_read_all_workspaces))
-            || (kind == EnrollmentKind::PersonalDevice
-                && (token.capabilities.can_act_as_host
-                    || token.capabilities.can_read_all_workspaces))
-        {
-            continue;
+        if valid_pending_request(&request, &token, options.kind, identity, selected.as_ref())? {
+            return Ok(PendingApproval {
+                request,
+                request_ephemeral_public_key,
+                token,
+                sender,
+            });
         }
-        if let Some((selected, selected_token, _)) = &selected_nearby {
-            if request.device_public_key != selected.device_public_key
-                || request.relay_service_node_id != selected.relay_service_node_id
-                || request.label != selected.label
-                || request.kind != selected.kind
-                || request.token != *selected_token
-            {
-                continue;
-            }
-        }
-        break (request, request_ephemeral_public_key, token, sender);
-    };
-    let mut cert = DeviceCert {
-        user_public_key,
-        device_public_key: request.device_public_key,
-        device_label: request.label,
-        capabilities: token.capabilities,
-        issued_at_ns: now_ns()?,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, &root)?;
-    let (home_peer_toml, public_identity_json, fleet_json, home_peers_json) = match kind {
+    }
+}
+
+fn approval_projection(
+    options: &ApprovalOptions<'_>,
+    identity: &ApprovalIdentity,
+    cert: &DeviceCert,
+) -> anyhow::Result<ApprovalProjection> {
+    match options.kind {
         EnrollmentKind::HomePeer => {
-            let ticket_text = std::fs::read_to_string(workspace_cache.join("workspace-ticket"))
-                .context("the local Files workspace is not ready to share")?;
+            let ticket_text =
+                std::fs::read_to_string(options.workspace_cache.join("workspace-ticket"))
+                    .context("the local Files workspace is not ready to share")?;
             let ticket = fs::Ticket::decode(ticket_text.trim())
                 .context("local workspace ticket is invalid")?;
-            let capability_json =
-                std::fs::read_to_string(&acl).with_context(|| format!("read {}", acl.display()))?;
+            let capability_json = std::fs::read_to_string(options.acl)
+                .with_context(|| format!("read {}", options.acl.display()))?;
             let capabilities = serde_json::from_str(&capability_json)
                 .context("filesystem capability export is invalid")?;
             let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
@@ -2024,8 +2042,11 @@ fn approve(
                 1,
                 capabilities,
                 false,
-                &root,
+                &identity.root,
             )?;
+            let mut relay_workspace_ids = identity.relay_workspace_ids.clone();
+            relay_workspace_ids.sort_unstable();
+            relay_workspace_ids.dedup();
             let home_peer = fs::full_replica::HomePeerSet {
                 status_file: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
                 workspaces: vec![fs::full_replica::HomePeerBundle {
@@ -2035,63 +2056,95 @@ fn approve(
                     capability_json,
                     authority: Some(authority),
                     principals: Vec::new(),
-                    relay_workspace_ids: {
-                        relay_workspace_ids.sort_unstable();
-                        relay_workspace_ids.dedup();
-                        relay_workspace_ids.clone()
-                    },
+                    relay_workspace_ids,
                 }],
             };
-            (Some(toml::to_string_pretty(&home_peer)?), None, None, None)
+            Ok(ApprovalProjection {
+                home_peer_toml: Some(toml::to_string_pretty(&home_peer)?),
+                public_identity_json: None,
+                fleet_json: None,
+                home_peers_json: None,
+            })
         }
         EnrollmentKind::PersonalDevice => {
-            let identity_dir = identity_dir
-                .as_deref()
+            let identity_dir = options
+                .identity_dir
                 .context("identity directory is required for personal-device approval")?;
-            (
-                None,
-                Some(public_identity_record(user_public_key, "My Tilo identity")?),
-                Some(project_personal_device(identity_dir, &cert)?),
-                Some(bounded_home_peer_registry(&identity_root, user_public_key)?),
-            )
+            Ok(ApprovalProjection {
+                home_peer_toml: None,
+                public_identity_json: Some(public_identity_record(
+                    identity.user_public_key,
+                    "My Tilo identity",
+                )?),
+                fleet_json: Some(project_personal_device(identity_dir, cert)?),
+                home_peers_json: Some(bounded_home_peer_registry(
+                    options.identity_root,
+                    identity.user_public_key,
+                )?),
+            })
         }
+    }
+}
+
+fn prepare_approval(
+    options: &ApprovalOptions<'_>,
+    identity: &ApprovalIdentity,
+    pending: &PendingApproval,
+) -> anyhow::Result<PreparedApproval> {
+    let mut cert = DeviceCert {
+        user_public_key: identity.user_public_key,
+        device_public_key: pending.request.device_public_key,
+        device_label: pending.request.label.clone(),
+        capabilities: pending.token.capabilities.clone(),
+        issued_at_ns: now_ns()?,
+        expires_at_ns: None,
+        signature: [0; 64],
     };
-    let signed_response = sign_response(
+    sign_device_cert(&mut cert, &identity.root)?;
+    let projection = approval_projection(options, identity, &cert)?;
+    let signed = sign_response(
         ResponsePayload {
-            nonce: token.nonce,
-            recipient_device_public_key: request.device_public_key,
-            relay_service_node_id: request.relay_service_node_id,
+            nonce: pending.token.nonce,
+            recipient_device_public_key: pending.request.device_public_key,
+            relay_service_node_id: pending.request.relay_service_node_id,
             cert,
-            home_peer_toml,
-            public_identity_json,
-            fleet_json,
-            home_peers_json,
+            home_peer_toml: projection.home_peer_toml,
+            public_identity_json: projection.public_identity_json,
+            fleet_json: projection.fleet_json,
+            home_peers_json: projection.home_peers_json,
         },
-        &root,
+        &identity.root,
     )?;
-    let response = encrypt_response(
-        &signed_response,
-        token.nonce,
-        request.device_public_key,
-        request_ephemeral_public_key,
+    let encrypted = encrypt_response(
+        &signed,
+        pending.token.nonce,
+        pending.request.device_public_key,
+        pending.request_ephemeral_public_key,
     )?;
+    Ok(PreparedApproval { signed, encrypted })
+}
+
+fn await_approval_ack(
+    socket: &UdpSocket,
+    packet: &mut [u8],
+    pending: &PendingApproval,
+    prepared: &PreparedApproval,
+) -> anyhow::Result<()> {
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    let ack_deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let mut acked = false;
-    while std::time::Instant::now() < ack_deadline {
-        socket.send_to(&response, sender)?;
-        match socket.recv_from(&mut packet) {
-            Ok((len, ack_sender)) if ack_sender == sender => {
+    let deadline = deadline_after(Duration::from_secs(10))?;
+    while std::time::Instant::now() < deadline {
+        socket.send_to(&prepared.encrypted, pending.sender)?;
+        match socket.recv_from(packet) {
+            Ok((len, sender)) if sender == pending.sender => {
                 if verify_ack(
-                    &packet[..len],
-                    &response,
-                    token.nonce,
-                    request.device_public_key,
+                    received_packet(packet, len)?,
+                    &prepared.encrypted,
+                    pending.token.nonce,
+                    pending.request.device_public_key,
                 )
                 .is_ok()
                 {
-                    acked = true;
-                    break;
+                    return Ok(());
                 }
             }
             Ok(_) => {}
@@ -2103,39 +2156,70 @@ fn approve(
             Err(error) => return Err(error.into()),
         }
     }
-    if !acked {
-        bail!("nearby device did not acknowledge its signed configuration");
-    }
-    match kind {
+    bail!("nearby device did not acknowledge its signed configuration")
+}
+
+fn commit_approval(
+    socket: &UdpSocket,
+    options: &ApprovalOptions<'_>,
+    identity: &ApprovalIdentity,
+    pending: &PendingApproval,
+    prepared: &PreparedApproval,
+) -> anyhow::Result<()> {
+    match options.kind {
         EnrollmentKind::HomePeer => register_home_peer(
-            &identity_root,
-            &signed_response.payload.cert,
-            signed_response.payload.relay_service_node_id,
-            &relay_workspace_ids,
+            options.identity_root,
+            &prepared.signed.payload.cert,
+            prepared.signed.payload.relay_service_node_id,
+            &identity.relay_workspace_ids,
         )?,
         EnrollmentKind::PersonalDevice => commit_personal_device(
-            identity_dir
-                .as_deref()
+            options
+                .identity_dir
                 .context("identity directory is required")?,
-            user_public_key,
-            signed_response
+            identity.user_public_key,
+            prepared
+                .signed
                 .payload
                 .fleet_json
                 .as_deref()
                 .context("fleet is required")?,
         )?,
     }
-    consume_nonce(&identity_root, &token.nonce, request.device_public_key)?;
-    let finalized = make_finalized(&response, token.nonce, request.device_public_key, &root)?;
+    consume_nonce(
+        options.identity_root,
+        &pending.token.nonce,
+        pending.request.device_public_key,
+    )?;
+    let finalized = make_finalized(
+        &prepared.encrypted,
+        pending.token.nonce,
+        pending.request.device_public_key,
+        &identity.root,
+    )?;
     for _ in 0..8 {
-        socket.send_to(&finalized, sender)?;
+        socket.send_to(&finalized, pending.sender)?;
         std::thread::sleep(Duration::from_millis(125));
     }
     println!(
         "approved nearby device {}",
-        hex::encode(signed_response.payload.cert.device_public_key)
+        hex::encode(prepared.signed.payload.cert.device_public_key)
     );
     Ok(())
+}
+
+fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
+    let identity = load_approval_identity(options)?;
+    let socket = bind_pair_listener()?;
+    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+    if let Some(ready) = options.ready {
+        let _ = ready.send(());
+    }
+    let mut packet = vec![0_u8; MAX_PACKET];
+    let pending = receive_approval_request(&socket, &mut packet, options, &identity)?;
+    let prepared = prepare_approval(options, &identity, &pending)?;
+    await_approval_ack(&socket, &mut packet, &pending, &prepared)?;
+    commit_approval(&socket, options, &identity, &pending, &prepared)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -2148,18 +2232,24 @@ fn main() -> anyhow::Result<()> {
             label,
             timeout,
             home_peer_output,
-        } => join(token_file, identity_root, label, timeout, home_peer_output),
+        } => join(
+            &token_file,
+            &identity_root,
+            &label,
+            timeout,
+            &home_peer_output,
+        ),
         Command::Pair {
             identity_root,
             label,
             timeout,
             home_peer_output,
         } => pair(
-            identity_root,
-            label,
+            &identity_root,
+            &label,
             timeout,
             EnrollmentKind::HomePeer,
-            Some(home_peer_output),
+            Some(&home_peer_output),
             None,
             None,
             None,
@@ -2173,13 +2263,13 @@ fn main() -> anyhow::Result<()> {
             requester_pid,
             requester_start_time,
         } => pair(
-            identity_root,
-            label,
+            &identity_root,
+            &label,
             timeout,
             EnrollmentKind::PersonalDevice,
             None,
-            Some(identity_dir),
-            status_file,
+            Some(&identity_dir),
+            status_file.as_deref(),
             Some(tilo_relay::ProcessLease::from_parts(
                 requester_pid,
                 requester_start_time,
@@ -2193,36 +2283,36 @@ fn main() -> anyhow::Result<()> {
             relay_workspace_ids,
             expected_device,
             expected_service,
-        } => approve(
-            identity_root,
-            None,
+        } => approve(&ApprovalOptions {
+            identity_root: &identity_root,
+            identity_dir: None,
             timeout,
-            workspace_cache,
-            acl,
-            relay_workspace_ids,
-            expected_device,
-            expected_service,
-            EnrollmentKind::HomePeer,
-            None,
-        ),
+            workspace_cache: &workspace_cache,
+            acl: &acl,
+            relay_workspace_ids: &relay_workspace_ids,
+            expected_device: expected_device.as_deref(),
+            expected_service: expected_service.as_deref(),
+            kind: EnrollmentKind::HomePeer,
+            ready: None,
+        }),
         Command::ApproveDevice {
             identity_root,
             identity_dir,
             timeout,
             expected_device,
             expected_service,
-        } => approve(
-            identity_root,
-            Some(identity_dir),
+        } => approve(&ApprovalOptions {
+            identity_root: &identity_root,
+            identity_dir: Some(&identity_dir),
             timeout,
-            PathBuf::new(),
-            PathBuf::new(),
-            Vec::new(),
-            expected_device,
-            expected_service,
-            EnrollmentKind::PersonalDevice,
-            None,
-        ),
+            workspace_cache: std::path::Path::new(""),
+            acl: std::path::Path::new(""),
+            relay_workspace_ids: &[],
+            expected_device: expected_device.as_deref(),
+            expected_service: expected_service.as_deref(),
+            kind: EnrollmentKind::PersonalDevice,
+            ready: None,
+        }),
     }
 }
 
@@ -2355,6 +2445,32 @@ mod tests {
             .unwrap()
             .push_str("\n# changed");
         assert!(verify_response(&response, root.verifying_key().to_bytes()).is_err());
+    }
+
+    #[test]
+    fn approval_target_requires_a_complete_pair_of_bounded_ids() {
+        let mut options = ApprovalOptions {
+            identity_root: std::path::Path::new(""),
+            identity_dir: None,
+            timeout: 1,
+            workspace_cache: std::path::Path::new(""),
+            acl: std::path::Path::new(""),
+            relay_workspace_ids: &[],
+            expected_device: None,
+            expected_service: None,
+            kind: EnrollmentKind::HomePeer,
+            ready: None,
+        };
+        assert_eq!(expected_pair(&options).unwrap(), None);
+
+        options.expected_device = Some("00");
+        assert!(expected_pair(&options).is_err());
+
+        let device = hex::encode([7; 32]);
+        let service = hex::encode([8; 32]);
+        options.expected_device = Some(&device);
+        options.expected_service = Some(&service);
+        assert_eq!(expected_pair(&options).unwrap(), Some(([7; 32], [8; 32])));
     }
 
     #[test]
@@ -2659,12 +2775,12 @@ mod tests {
         let identity_dir = tempfile::tempdir().unwrap();
         assert!(
             pair(
-                identity_root.path().to_path_buf(),
-                "New laptop".into(),
+                identity_root.path(),
+                "New laptop",
                 1,
                 EnrollmentKind::PersonalDevice,
                 None,
-                Some(identity_dir.path().to_path_buf()),
+                Some(identity_dir.path()),
                 None,
                 Some(lease),
             )
@@ -2723,7 +2839,44 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    fn home_peer_projection_rejects_future_schemas_and_forged_device_ids() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Verified home peer".into(),
+            capabilities: DeviceCapabilities::host(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        let mut registration = HomePeerRegistration {
+            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
+            device_node_id: hex::encode(cert.device_public_key),
+            relay_service_node_id: hex::encode([83; 32]),
+            relay_endpoint: None,
+            label: cert.device_label.clone(),
+            user_public_key: hex::encode(cert.user_public_key),
+            device_cert: Some(cert),
+            relay_workspace_ids: vec![7],
+        };
+        assert!(valid_home_peer_registration(&registration));
+
+        registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA.saturating_add(1);
+        assert!(!valid_home_peer_registration(&registration));
+
+        registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA;
+        registration.device_node_id = hex::encode([84; 32]);
+        assert!(!valid_home_peer_registration(&registration));
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the end-to-end test keeps the approver and joining-device setup in one auditable protocol scenario"
+    )]
     fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         let approver_root = tempfile::tempdir().unwrap();
         let approver_identities = tempfile::tempdir().unwrap();
@@ -2790,18 +2943,18 @@ mod tests {
         let server_identities = approver_identities.path().to_path_buf();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let approval = std::thread::spawn(move || {
-            approve(
-                server_root,
-                Some(server_identities),
-                15,
-                PathBuf::new(),
-                PathBuf::new(),
-                Vec::new(),
-                None,
-                None,
-                EnrollmentKind::PersonalDevice,
-                Some(ready_tx),
-            )
+            approve(&ApprovalOptions {
+                identity_root: &server_root,
+                identity_dir: Some(&server_identities),
+                timeout: 15,
+                workspace_cache: std::path::Path::new(""),
+                acl: std::path::Path::new(""),
+                relay_workspace_ids: &[],
+                expected_device: None,
+                expected_service: None,
+                kind: EnrollmentKind::PersonalDevice,
+                ready: Some(&ready_tx),
+            })
         });
         ready_rx
             .recv_timeout(Duration::from_secs(5))
@@ -2810,12 +2963,12 @@ mod tests {
         let new_identities = tempfile::tempdir().unwrap();
         let requester = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
         pair(
-            new_root.path().to_path_buf(),
-            "New laptop".into(),
+            new_root.path(),
+            "New laptop",
             15,
             EnrollmentKind::PersonalDevice,
             None,
-            Some(new_identities.path().to_path_buf()),
+            Some(new_identities.path()),
             None,
             Some(requester),
         )
@@ -2837,10 +2990,7 @@ mod tests {
         assert!(peers[0].relay_workspace_ids.contains(
             &tilo_relay::personal_continuity_workspace_id(&root.verifying_key().to_bytes())
         ));
-        let record = new_identities.path().join(format!(
-            "identity-{}.json",
-            &hex::encode(root.verifying_key().to_bytes())[..55]
-        ));
+        let record = identity_record_path(new_identities.path(), root.verifying_key().to_bytes());
         let identity = runtime_identity::load_from_path(record).unwrap();
         assert!(
             identity

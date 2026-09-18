@@ -663,6 +663,12 @@ impl Widget for MusicApp {
             }
             (
                 tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::PlayQueueItem { .. },
+            ) => {
+                return Err("queue playback requires the lifecycle-capable operation host".into());
+            }
+            (
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MusicOperation::SetPlayback { playback },
             ) => {
                 if playback.playing && self.pb.current != playback.current {
@@ -702,6 +708,18 @@ impl Widget for MusicApp {
                     self.update_device_cache(&id, CacheState::Streamed);
                     self.settle_offline_track(&id, Some("offline download cancelled".into()));
                 }
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::RemoveQueueItem { index, track },
+            ) => {
+                self.apply_resource_remove_queue_item(index, &track)?;
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::MoveQueueItem { index, track, to },
+            ) => {
+                self.apply_resource_move_queue_item(index, &track, to)?;
             }
             (
                 tilo_actions::OperationKind::View,
@@ -796,6 +814,26 @@ impl Widget for MusicApp {
                     return Err("another Music stream-start operation is still resolving".into());
                 }
                 match self.apply_resource_play_track(&id)? {
+                    Some(request_id) => {
+                        self.begin_resource_stream_invocation(invocation, request_id);
+                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+                    }
+                    None => Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput {
+                            value: Some(serde_json::json!({ "state": "playing" })),
+                            resources: Vec::new(),
+                        },
+                    ))),
+                }
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::PlayQueueItem { index, track },
+            ) => {
+                if self.resource_stream_invocation.is_some() {
+                    return Err("another Music stream-start operation is still resolving".into());
+                }
+                match self.apply_resource_play_queue_item(index, &track)? {
                     Some(request_id) => {
                         self.begin_resource_stream_invocation(invocation, request_id);
                         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
@@ -2338,7 +2376,7 @@ impl MusicApp {
         // touchable listening view.  Taking this branch before the normal
         // sidebar/table layout prevents clipped text and overlapping controls.
         if large_text {
-            self.render_large_text_frame(scene, t, tr, &c, r);
+            self.render_large_text_frame(scene, t, tr, theme, &c, r);
             // Keep the normal shared drawer semantics and an always-visible
             // keyboard/pointer affordance at 200%. The former large-text frame
             // silently omitted both, trapping users on the current screen.
@@ -2458,16 +2496,27 @@ impl MusicApp {
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         c: &Palette,
         r: Rect,
     ) {
         scene.fill(Fill::NonZero, t, c.bg, None, &r);
-        let header_h = 96.0;
+        // Search must stay directly editable at accessibility text sizes.  The
+        // former compact frame reduced it to a search icon while leaving the
+        // real TextInput focused but geometrically hidden, which made an
+        // existing query hard to inspect, change, or clear at 200%.
+        let search_screen = self.view == View::Search;
+        let header_h = if search_screen { 140.0 } else { 96.0 };
         let player_h = 116.0;
         let header = Rect::new(r.x0, r.y0, r.x1, r.y0 + header_h);
         let body = Rect::new(r.x0, header.y1, r.x1, r.y1 - player_h);
         self.body_rect = body;
-        let search = Rect::new(header.x1 - 84.0, 20.0, header.x1 - 28.0, 76.0);
+        let search = Rect::new(
+            header.x1 - 84.0,
+            header.y0 + 20.0,
+            header.x1 - 28.0,
+            header.y0 + 76.0,
+        );
         let title = elide(
             tr,
             &self.view_title(),
@@ -2481,23 +2530,61 @@ impl MusicApp {
             t,
             &title,
             header.x0 + 68.0,
-            28.0,
+            header.y0 + 28.0,
             18.0,
             c.text,
             TextWeight::Bold,
             None,
         );
-        let hovered = self.push_hit(search, Action::FocusSearch);
-        fill_rrect(
-            scene,
-            t,
-            search,
-            18.0,
-            if hovered { c.white10 } else { c.panel },
-        );
-        icon::draw(scene, t, Icon::Search, search.center(), 21.0, c.text);
-        self.search_pill_rect = search;
-        self.search_input.apply_layout_external(Rect::ZERO);
+        if search_screen {
+            // Keep the same real TextInput used by the desktop header.  Its
+            // native editing and assistive semantics stay intact; only the
+            // roomy large-text geometry changes.
+            let pill = Rect::new(
+                header.x0 + 16.0,
+                header.y0 + 82.0,
+                header.x1 - 16.0,
+                header.y1 - 14.0,
+            );
+            let hovered = self.push_hit(pill, Action::FocusSearch);
+            fill_rrect(scene, t, pill, 16.0, c.panel);
+            if self.search_input.is_focused() {
+                scene.stroke(&Stroke::new(2.0), t, c.accent, None, &rrect(pill, 16.0));
+            } else if hovered {
+                scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(pill, 16.0));
+            }
+            icon::draw(
+                scene,
+                t,
+                Icon::Search,
+                Point::new(pill.x0 + 24.0, pill.center().y),
+                20.0,
+                c.dim,
+            );
+            self.search_pill_rect = pill;
+            self.search_input.set_font_size(16.0);
+            self.search_input.apply_layout_external(Rect::new(
+                pill.x0 + 48.0,
+                pill.y0,
+                pill.x1 - 16.0,
+                pill.y1,
+            ));
+            self.search_input
+                .draw(scene, t, tr, theme, &PresenceCtx::empty());
+        } else {
+            let hovered = self.push_hit(search, Action::FocusSearch);
+            fill_rrect(
+                scene,
+                t,
+                search,
+                18.0,
+                if hovered { c.white10 } else { c.panel },
+            );
+            icon::draw(scene, t, Icon::Search, search.center(), 21.0, c.text);
+            self.search_pill_rect = search;
+            self.search_input.set_font_size(14.0);
+            self.search_input.apply_layout_external(Rect::ZERO);
+        }
         scene.fill(
             Fill::NonZero,
             t,
@@ -2806,7 +2893,7 @@ impl MusicApp {
                 View::Lyrics => ("No lyrics yet", "Play a song to find its lyrics."),
                 View::Search => (
                     "Search your music",
-                    "Use the search button to enter a query.",
+                    "Type a song, artist, album, or playlist above.",
                 ),
                 View::Artist(id) if self.failed_pages.contains(id) => (
                     "Couldn’t load this artist",
@@ -8660,13 +8747,6 @@ impl MusicApp {
 }
 
 impl TrackDisp {
-    /// Seed for procedural art — keyed to the album id so an album's tracks
-    /// share a cover with the grid/detail art.
-    #[allow(dead_code)]
-    fn album_seed(&self) -> String {
-        self.album_id.clone()
-    }
-
     /// Cover-cache key for this track: the track id (live results record a
     /// per-track cover) falling back to album art via the placeholder.
     fn cover_id(&self) -> String {

@@ -151,7 +151,7 @@ async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture 
     let shutdown_endpoint = endpoint.clone();
     let shutdown_store = store.clone();
     let hydrator = Arc::new(Hydrator::new(endpoint, store));
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let fs = QuickFS::new(namespace, hydrator, heuristics).with_acl(acl, identity);
 
     CapFixture {
@@ -347,7 +347,7 @@ async fn identity_acl_gates_the_real_fs_access_path() {
         let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
         let fs = match acl {
             Some((a, id)) => fs.with_acl(a, id),
@@ -463,7 +463,7 @@ async fn fuse_mount_enforces_identity_acl_end_to_end() {
         let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
 
         // ACL: only Bob may read /secret.txt. Alice holds nothing.
         let mut acl = WorkspaceAcl::new();
@@ -552,7 +552,7 @@ async fn fuse_projects_tree_and_reads_real_content() {
         let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
 
         let options = vec![
@@ -602,7 +602,7 @@ async fn fuse_write_create_overwrite_rename_unlink() {
         let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
 
         let mut config = Config::default();
@@ -653,7 +653,7 @@ async fn fuse_non_utf8_name_survives_rename_and_namespace_restart() {
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let shutdown_endpoint = endpoint.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_non_utf8".into())];
@@ -682,7 +682,7 @@ async fn fuse_non_utf8_name_survives_rename_and_namespace_restart() {
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let shutdown_endpoint = endpoint.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), reopened.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(reopened, hydrator, heuristics);
         let session = fuser::spawn_mount2(fs, second_mount.path(), &config).unwrap();
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -712,7 +712,7 @@ async fn fuse_replacement_rename_preserves_the_replaced_open_handle() {
         let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_replace_handle".to_string())];
@@ -771,7 +771,7 @@ async fn fuse_unlink_and_recreate_keeps_the_old_open_inode_private() {
         let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_unlink_handle".to_string())];
@@ -826,7 +826,7 @@ async fn fuse_two_writable_handles_preserve_disjoint_writes() {
         let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_two_writers".to_string())];
@@ -921,7 +921,7 @@ async fn signed_fuse_replacement_is_transactional_and_preserves_open_handles() {
         let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let quick_fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
             .with_history(history.clone(), actor)
             .unwrap()
@@ -1024,7 +1024,7 @@ async fn getxattr_reports_projected_vs_local_sync_state() {
         let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
 
         let mut config = Config::default();
@@ -1067,7 +1067,7 @@ async fn fuse_document_roundtrip_and_opaque_still_works() {
         let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
 
         let mut config = Config::default();
@@ -1109,7 +1109,7 @@ async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
         let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
 
         let mut config = Config::default();
@@ -1311,7 +1311,7 @@ async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> View
     let shutdown_endpoint = endpoint.clone();
     let shutdown_store = store.clone();
     let hydrator = Arc::new(Hydrator::new(endpoint, store));
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
     let fs = match acl {
         Some((a, id)) => fs.with_acl(a, id),
@@ -1690,7 +1690,7 @@ async fn document_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> 
     let shutdown_endpoint = endpoint.clone();
     let shutdown_store = store.clone();
     let hydrator = Arc::new(Hydrator::new(endpoint, store));
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
     let fs = match acl {
         Some((a, id)) => fs.with_acl(a, id),

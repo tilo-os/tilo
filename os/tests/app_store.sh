@@ -122,10 +122,37 @@ for m in "${manifests[@]}"; do
 done
 [ "$thin_bad" = 1 ] || ok "all ${#manifests[@]} apps opt into one ABI-matched shared runtime"
 
-if grep -q 'MAX_QPKG_BYTES="${MAX_QPKG_BYTES:-10000000}"' "$PACK"; then
-  ok "pack-apps refuses qpkgs at or above 10 MB"
+# Cargo may compile two instances of the same dependency when their feature
+# sets differ across a Rust dylib boundary. That links, but the mangled crate
+# hashes differ and the loader later reports undefined symbols. Keep the
+# runtime UI feature set at the collection-wide superset and require a loader
+# smoke test before a bundle can be signed.
+runtime_manifest="$REPO/crates/runtime/runtime-dylib/Cargo.toml"
+thin_builder="$REPO/os/scripts/build-thin-apps.sh"
+if grep -Fq 'features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"]' \
+      "$runtime_manifest" \
+   && grep -Fq 'thin app/runtime ABI mismatch' "$thin_builder" \
+   && grep -Fq 'symbol lookup error|undefined symbol|error while loading shared libraries' "$thin_builder"; then
+  ok "thin apps and the shared runtime enforce one loadable UI ABI"
 else
-  bad "pack-apps no longer enforces the strict 10 MB qpkg ceiling"
+  bad "thin app packaging can still sign a runtime/app pair with incompatible Rust crate hashes"
+fi
+
+if grep -q '^POLICY_MAX_QPKG_BYTES=5242880$' "$PACK" \
+   && grep -q 'MAX_QPKG_BYTES cannot exceed the 5 MiB application policy' "$PACK" \
+   && ! grep -q 'RECOVERY_MAX_QPKG_BYTES' "$PACK"; then
+  ok "pack-apps enforces the canonical 5 MiB ceiling without app exceptions"
+else
+  bad "pack-apps does not enforce the canonical 5 MiB qpkg ceiling uniformly"
+fi
+
+weakening_output=$(MAX_QPKG_BYTES=5242881 "$PACK" 2>&1)
+weakening_status=$?
+if [ "$weakening_status" -ne 0 ] \
+   && grep -q 'cannot exceed the 5 MiB application policy' <<<"$weakening_output"; then
+  ok "pack-apps refuses an environment override that weakens the size policy"
+else
+  bad "MAX_QPKG_BYTES can weaken the canonical application size policy"
 fi
 
 if grep -q -- '--include /out/libruntime_dylib.so' "$CONTAINERFILE" \

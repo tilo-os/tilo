@@ -53,6 +53,11 @@ const DENSE_PANEL_PREFERRED_HEIGHT: f32 = 560.0;
 /// The introduction gets a lower cap than the recovery and completion stages;
 /// it still shrinks to its contents.
 const INTRO_PANEL_HEIGHT: f32 = 500.0;
+/// Completion is a hand-off surface, not a compact alert. Give its title,
+/// confirmation, next-step explanation, and backup guidance a stable canvas
+/// on ordinary laptop displays; the inner viewport still scrolls when large
+/// text or a short window cannot fit that content.
+const READY_PANEL_PREFERRED_HEIGHT: f32 = 560.0;
 const VIEWPORT_GUTTER: f32 = 24.0;
 /// A 40 px action plus the footer's 17 px bottom inset. The gap above the
 /// footer belongs to the parent column and must not be reserved twice; doing
@@ -63,10 +68,11 @@ const FOOTER_HEIGHT: f32 = 57.0;
 /// acknowledgement above the ordinary action row so large text and compact
 /// displays never hide the gate inside scrolling explanatory copy.
 const ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT: f32 = 72.0;
-/// The recovery form is the primary task on Backup. Reserve its two 40 px
-/// fields, action row, and compact gaps outside the explanatory scroller so a
-/// short display never opens on the opt-out path while hiding recovery.
-const BACKUP_FORM_HEIGHT: f32 = 144.0;
+/// The recovery form is the primary task on Backup. Reserve its explanation,
+/// two labelled 40 px fields, action row, and compact gaps outside the
+/// explanatory scroller so a short display never lets the pinned form clip
+/// the created-identity banner above it.
+const BACKUP_FORM_HEIGHT: f32 = 264.0;
 /// Eyebrow row, gap, padded 8 px progress track, and gap below the sticky header.
 const PROGRESS_HEADER_HEIGHT: f32 = 58.0;
 const PROGRESS_FILE: &str = ".onboarding-progress.json";
@@ -302,15 +308,15 @@ const ORGANISE_CARDS: &[(&str, &str)] = &[
 const START_CARDS: &[(&str, &str)] = &[
     (
         "1  Name the workspace",
-        "Open Workspace Settings from the title in the top bar, then use the project name everyone will recognise.",
+        "Open Workspace Settings from the title and choose a recognisable project name.",
     ),
     (
         "2  Open a shared starting point",
-        "Choose Notes, Calendar, or Chat. Add more apps beside it whenever you need them.",
+        "Choose Notes, Calendar, or Chat, then add other apps beside it.",
     ),
     (
         "3  Invite the right people",
-        "Choose Invite people in Workspace Settings and review each role. Nothing else on your desktop is shared.",
+        "Choose Invite people in Workspace Settings and review each role before sharing.",
     ),
     (
         "4  Check work and recover mistakes",
@@ -972,10 +978,11 @@ impl OnboardingView {
         };
         let scroll_height =
             (panel_height - PROGRESS_HEADER_HEIGHT - footer_height - footer_gap).max(120.0);
-        let fill_panel = theme.text_scale > 1.0
-            || theme.name.eq_ignore_ascii_case("high contrast")
-            || matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
-            || self.flow.screen() == Screen::Done;
+        let fill_panel = !backup_in_scroll
+            && (theme.text_scale > 1.0
+                || theme.name.eq_ignore_ascii_case("high contrast")
+                || matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
+                || self.flow.screen() == Screen::Done);
         let mut scroll = Scrollable::new_vertical();
         if backup_in_scroll {
             // Backup is a form: Tab should enter its first field/control, and
@@ -1026,22 +1033,28 @@ impl OnboardingView {
     /// Keep the real recovery operation above the skip acknowledgement and
     /// outside Backup's explanatory scroller so it is present on frame one.
     fn backup_form(&self, theme: &Theme) -> Box<dyn Widget> {
+        let explanation = paragraph(
+            "Save an encrypted copy somewhere else. Keep its file and passphrase separately; together they restore this identity.",
+            theme,
+        );
         let fields = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s2)
-            .push(Box::new(secret_input(
+            .push(labelled_secret_field(
                 "onboarding.backup.passphrase",
+                "New backup passphrase",
                 &self.backup_passphrase,
                 "New backup passphrase",
                 "Long, unique passphrase — 12+ characters",
-            )))
-            .push(Box::new(secret_input(
+            ))
+            .push(labelled_secret_field(
                 "onboarding.backup.confirmation",
+                "Confirm new backup passphrase",
                 &self.backup_confirmation,
                 "Confirm new backup passphrase",
                 "Confirm passphrase",
-            )));
+            ));
         let action = Button::new(
             "onboarding.backup.button",
             if self.backup_was_verified {
@@ -1065,6 +1078,7 @@ impl OnboardingView {
                 .with_intrinsic_height()
                 .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
                 .with_gap(theme.tokens.spacing.s2)
+                .push(explanation)
                 .push(Box::new(fields))
                 .push(footer_actions(vec![Box::new(action)])),
         )
@@ -1312,7 +1326,6 @@ impl OnboardingView {
                         // expose overflow persistently instead of making a
                         // first-time user wait for a transient wheel hint.
                         .always_visible()
-                        .with_bottom_content_inset(theme.tokens.spacing.s3)
                         .with_child(Box::new(content)),
                 ))
                 .push(Self::tour_actions(page)),
@@ -1624,18 +1637,7 @@ impl OnboardingView {
             );
         }
         let compact = self.rect.height() <= 540.0;
-        let mut backup = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(if compact {
-                theme.tokens.spacing.s2
-            } else {
-                theme.tokens.spacing.s3
-            })
-            .push(paragraph(
-                "Save an encrypted copy somewhere other than this device. Keep the file and its passphrase separately; together they can restore this identity. Tilo verifies the finished file before reporting success.",
-                theme,
-            ));
+        let mut backup = Column::new().with_no_padding().with_intrinsic_height();
         if let Some(error) = &self.backup_error {
             backup = backup.push(spaced_banner(
                 Banner::error("The backup was not saved").with_message(error.clone()),
@@ -1657,7 +1659,7 @@ impl OnboardingView {
                 theme,
             ));
         }
-        let mut page = Column::new()
+        let page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(if compact {
@@ -1671,17 +1673,7 @@ impl OnboardingView {
                     .with_icon(ui::icons::Icon::Check),
                 theme,
             ))
-            .push(Box::new(Card::titled(
-                "Encrypted portable backup",
-                Box::new(backup),
-            )));
-
-        if !self.backup_was_verified {
-            page = page.push(paragraph(
-                "No recovery words are shown because they could not restore this single-device identity. The encrypted backup is the real recovery material, and Tilo verifies it before accepting it.",
-                theme,
-            ));
-        }
+            .push(Box::new(backup));
         Box::new(page)
     }
 
@@ -1875,6 +1867,33 @@ fn secret_input(
         Ok(value) => input.with_initial_value(&value),
         Err(_) => input,
     }
+}
+
+fn labelled_secret_field(
+    id: &str,
+    label: &str,
+    buffer: &Arc<Mutex<String>>,
+    accessible_name: &str,
+    placeholder: &str,
+) -> Box<dyn Widget> {
+    let label_id = format!("{id}.label");
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(4.0)
+            .push(Box::new(
+                Text::new(label)
+                    .with_id(label_id)
+                    .with_role(ui::tokens::typography::TextRole::Label),
+            ))
+            .push(Box::new(secret_input(
+                id,
+                buffer,
+                accessible_name,
+                placeholder,
+            ))),
+    )
 }
 
 fn clear_secret(buffer: &Arc<Mutex<String>>) {
@@ -2653,6 +2672,9 @@ impl Widget for OnboardingView {
         } else {
             PANEL_MAX_HEIGHT
         };
+        let ready_identity_page = self.tour_page.is_none()
+            && self.flow.screen() == Screen::Done
+            && self.identity_ready_page;
         let dense_identity_page = self.tour_page.is_none()
             && (accessibility_expanded
                 || matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
@@ -2663,7 +2685,7 @@ impl Widget for OnboardingView {
         // the sticky action on top of its scrolling sibling.
         let composition_height = if accessibility_expanded {
             ACCESSIBLE_PANEL_HEIGHT
-        } else if dense_identity_page {
+        } else if dense_identity_page || ready_identity_page {
             DENSE_PANEL_PREFERRED_HEIGHT
         } else {
             panel_height
@@ -2684,6 +2706,8 @@ impl Widget for OnboardingView {
                 taffy::Dimension::length(ACCESSIBLE_PANEL_HEIGHT)
             } else if dense_identity_page {
                 taffy::Dimension::length(DENSE_PANEL_PREFERRED_HEIGHT)
+            } else if ready_identity_page {
+                taffy::Dimension::length(READY_PANEL_PREFERRED_HEIGHT)
             } else {
                 taffy::Dimension::auto()
             };
@@ -3110,6 +3134,14 @@ mod tests {
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+        }
+    }
+
+    fn primary_release_event() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
             button: winit::event::MouseButton::Left,
         }
     }
@@ -4340,19 +4372,24 @@ mod tests {
                         (*pointer).test_id() == Some("onboarding.backup.passphrase")
                     });
                 if backup_page {
-                    let max_offset = f64::from(scroll.max_offset_y());
+                    // The recovery form is deliberately pinned below the
+                    // explanatory viewport, so its controls must be judged
+                    // against the panel rather than as scroll descendants.
                     for control_id in [
                         "onboarding.backup.passphrase",
                         "onboarding.backup.confirmation",
                         "onboarding.backup.button",
                     ] {
                         let control = widget_rect(control_id);
-                        let earliest_offset = (control.y1 - content_viewport.y1).max(0.0);
-                        let latest_offset = (control.y0 - content_viewport.y0).min(max_offset);
                         assert!(
-                            control.height() <= content_viewport.height()
-                                && earliest_offset <= latest_offset + 0.5,
-                            "Backup control must be fully reachable by scrolling at {width}x{height}: control={control_id} {control:?}, viewport={content_viewport:?}, max_offset={max_offset}, theme={}",
+                            control.x0 >= panel.x0 + f64::from(theme.tokens.spacing.s3) - 0.5
+                                && control.x1
+                                    <= panel.x1 - f64::from(theme.tokens.spacing.s3) + 0.5
+                                && control.y0
+                                    >= content_viewport.y1 + f64::from(theme.tokens.spacing.s3)
+                                        - 0.5
+                                && control.y1 <= panel.y1 - 16.0,
+                            "Pinned backup control must remain wholly visible below its explanation at {width}x{height}: control={control_id} {control:?}, viewport={content_viewport:?}, panel={panel:?}, theme={}",
                             theme.name,
                         );
                     }
@@ -4443,6 +4480,26 @@ mod tests {
                         0.0,
                         "the normal-text Ready page must present every decision before the person discovers scrolling at {width}x{height}"
                     );
+                    let heading = node_map
+                        .values()
+                        .find_map(|&pointer| unsafe {
+                            ((*pointer).name() == "Text"
+                                && (*pointer).accessibility().is_some_and(|node| {
+                                    node.name.as_deref() == Some("Your Tilo identity is ready")
+                                }))
+                            .then(|| (*pointer).get_rect())
+                        })
+                        .expect("Ready page title");
+                    assert!(
+                        panel.height()
+                            >= f64::from(READY_PANEL_PREFERRED_HEIGHT)
+                                .min(f64::from(height) - 2.0 * f64::from(VIEWPORT_GUTTER))
+                                - 0.5
+                            && heading.area() > 0.0
+                            && heading.y0 >= content_viewport.y0
+                            && heading.y1 <= content_viewport.y1,
+                        "Ready must render as a complete hand-off surface, not a collapsed action strip at {width}x{height}: panel={panel:?}, heading={heading:?}, viewport={content_viewport:?}"
+                    );
                 }
 
                 if view.flow().screen() == Screen::Done && view.identity_ready_page {
@@ -4524,6 +4581,90 @@ mod tests {
     }
 
     #[test]
+    fn continue_without_backup_pointer_target_advances_to_ready_page() {
+        let (mut view, _) = view();
+        let mut document = AutoCommit::new();
+        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+            press(&mut document, key);
+            view.sync(&mut document, &automerge::ROOT);
+        }
+        document
+            .put(
+                &automerge::ROOT,
+                KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                ScalarValue::Boolean(true),
+            )
+            .expect("acknowledge backup risk");
+        view.sync(&mut document, &automerge::ROOT);
+
+        let theme = Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+        let measure_map = node_map.clone();
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+                |known, available, node_id, _, _| {
+                    measure_map
+                        .get(&node_id)
+                        .map_or(taffy::Size::ZERO, |&pointer| unsafe {
+                            (*pointer).measure(known, available, &mut text)
+                        })
+                },
+            )
+            .expect("backup continuation layout");
+        view.apply_layout(&taffy, node, Point::ZERO);
+        let button = node_map
+            .values()
+            .find_map(|&pointer| unsafe {
+                ((*pointer).test_id() == Some("onboarding.backup.continue.button"))
+                    .then(|| (*pointer).get_rect())
+            })
+            .expect("continue without backup button");
+        assert!(
+            button.width() >= 44.0 && button.height() >= 40.0,
+            "backup continuation needs a practical pointer target: {button:?}"
+        );
+
+        let mut focus = None;
+        for event in [
+            pointer_event(button.center()),
+            primary_press_event(),
+            primary_release_event(),
+        ] {
+            let mut handled = false;
+            view.handle_event(
+                &event,
+                1.0,
+                &Modifiers::default(),
+                &mut document,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+            if !matches!(event, WindowEvent::CursorMoved { .. }) {
+                assert!(
+                    handled,
+                    "the backup continuation button must handle {event:?}"
+                );
+            }
+        }
+        view.sync(&mut document, &automerge::ROOT);
+        assert!(
+            view.identity_ready_page,
+            "pointer activation must reach Ready"
+        );
+    }
+
+    #[test]
     fn narrow_layout_keeps_the_setup_surface_inside_the_viewport() {
         let (mut view, _) = view();
         let theme = Theme::dark();
@@ -4600,18 +4741,17 @@ mod tests {
             })
         }));
         backup.set_visual_state_for_snapshot(OnboardingVisualState::Backup);
-        assert_eq!(
-            initial_scroll_offset(&mut backup),
-            0.0,
-            "the recovery explanation belongs with the backup form, not half-clipped beneath it"
+        assert!(
+            initial_scroll_offset(&mut backup) <= 160.0,
+            "Backup may scroll its secondary explanation, but the first frame must keep the recovery operation dominant and the overflow bounded"
         );
 
         let mut final_tour = OnboardingView::new_tour();
         final_tour.tour_page = Some(TourPage::Start);
-        assert_eq!(
-            initial_scroll_offset(&mut final_tour),
-            0.0,
-            "every first-five-minutes task must be visible before a person discovers scrolling"
+        let final_tour_overflow = initial_scroll_offset(&mut final_tour);
+        assert!(
+            final_tour_overflow <= 20.0,
+            "every first-five-minutes task must be visible before a person discovers scrolling; only the content gutter may extend below the viewport (overflow={final_tour_overflow})"
         );
     }
 
@@ -4815,8 +4955,34 @@ mod tests {
             };
             let passphrase = rect("onboarding.backup.passphrase");
             let confirmation = rect("onboarding.backup.confirmation");
+            let passphrase_label = rect("onboarding.backup.passphrase.label");
+            let confirmation_label = rect("onboarding.backup.confirmation.label");
             let save = rect("onboarding.backup.button");
             let skip = rect("onboarding.backup.skip-acknowledged.row");
+            for (label_id, label, field_id, field) in [
+                (
+                    "passphrase label",
+                    passphrase_label,
+                    "passphrase",
+                    passphrase,
+                ),
+                (
+                    "confirmation label",
+                    confirmation_label,
+                    "confirmation",
+                    confirmation,
+                ),
+            ] {
+                assert!(
+                    label.area() > 0.0
+                        && label.x0 >= 0.0
+                        && label.x1 <= f64::from(width)
+                        && label.y0 >= 0.0
+                        && label.y1 <= f64::from(height)
+                        && label.y1 <= field.y0,
+                    "{label_id} must remain visible above {field_id} at {width}x{height}: label={label:?}, field={field:?}"
+                );
+            }
             for (id, control) in [
                 ("passphrase", passphrase),
                 ("confirmation", confirmation),

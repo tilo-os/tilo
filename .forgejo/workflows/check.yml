@@ -246,7 +246,8 @@ jobs:
           cargo check --locked --all-targets ${{ matrix.packages }}
 
       # Lint the exact same reverse-dependency closure at the selected base and
-      # at HEAD. Historical diagnostics in an otherwise untouched dependant do
+      # at HEAD, including opt-in code paths such as the shipped thin-app
+      # wrappers. Historical diagnostics in an otherwise untouched dependant do
       # not make an unrelated change impossible to merge, while compiler errors
       # and every newly introduced Clippy site still fail this exact SHA.
       #
@@ -260,7 +261,7 @@ jobs:
         run: >-
           bash tools/ci-measure.sh "clippy shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "Clippy diagnostic diff (affected shard ${{ matrix.shard }})" --
-          tools/clippy-diff.sh '${{ needs.select.outputs.base }}' ${{ matrix.packages }}
+          tools/clippy-diff.sh '${{ needs.select.outputs.base }}' --all-features ${{ matrix.packages }}
 
       - name: Report remote compiler-cache effectiveness
         if: always()
@@ -299,11 +300,6 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
       - name: Record an observable CI receipt without touching a branch
-        run: |
-          git config user.name 'Tilo Forgejo CI'
-          git config user.email 'tilo@noreply.code.sandbox.example'
-          git fetch origin refs/notes/tilo-check-ci:refs/notes/tilo-check-ci || true
-          git notes --ref=tilo-check-ci add -f \
-            -m "select=$SELECT_RESULT affected=$AFFECTED_RESULT run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
-            "$GITHUB_SHA"
-          git push origin refs/notes/tilo-check-ci
+        run: >-
+          tools/ci-receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"
+          "$SELECT_RESULT" "$AFFECTED_RESULT" origin

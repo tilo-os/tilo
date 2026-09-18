@@ -200,12 +200,20 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=('list', 'fetch', 'deliver'))
     parser.add_argument('--context', required=True)
+    parser.add_argument('--broker', action='store_true', help='use existing authenticated broker API route')
     parser.add_argument('--binding', required=True, type=Path)
     parser.add_argument('--request-id')
     parser.add_argument('--directory', type=Path)
     args = parser.parse_args()
     try:
-        client = Transport(args.context, spool.document(spool.signer.trusted(args.binding)))
+        binding = spool.document(spool.signer.trusted(args.binding))
+        if args.broker:
+            from broker_signing_runner import BrokerRunner, CONTEXT
+            if args.context != CONTEXT:
+                raise ValueError('broker route requires its exact named context')
+            client = Transport(args.context, binding, runner=BrokerRunner(binding))
+        else:
+            client = Transport(args.context, binding)
         if args.operation == 'list':
             result = json.loads(client.transfer('list'), object_pairs_hook=spool.unique)
         elif args.operation == 'fetch':

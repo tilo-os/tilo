@@ -26,6 +26,7 @@ use ui::icons::{Icon, draw_icon};
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
+use ui::text_edit::{EditCore, Motion};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::text_selection::{
     Selection, clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
@@ -781,6 +782,10 @@ pub struct SlidesApp {
     /// The shared editor owns multiline layout, selection, clipboard, scrolling
     /// and IME; `editing_notes` only owns the inspector's open state.
     notes_input: TextInput,
+    /// Shared headless caret/selection/edit core for the on-canvas text box.
+    /// The canvas keeps its own typography and geometry, but no longer owns
+    /// the text-editing semantics.
+    element_edit_core: EditCore,
     /// Set when the popover opens so the next `draw` (which has the theme, hence
     /// can resolve a colour *role* to a concrete colour) seeds the picker with
     /// the selected element's current fill.
@@ -912,6 +917,7 @@ impl SlidesApp {
                 .with_plain_chrome()
                 .with_font_size(12.5)
                 .with_id("slides-speaker-notes"),
+            element_edit_core: EditCore::new(),
             demo_menu: None,
             demo_reorder: false,
             demo_delete_zone: false,
@@ -1179,8 +1185,11 @@ impl SlidesApp {
             .map(|e| e.text.clone())
             .unwrap_or_default();
         let (a, b) = word_boundaries_chars(&text, 0);
-        self.sel_anchor = a;
-        self.caret = b;
+        self.element_edit_core.set_selection(
+            Self::element_char_to_byte(&text, a),
+            Self::element_char_to_byte(&text, b),
+        );
+        self.sync_legacy_from_element_core();
         self.bootstrapped = true;
     }
 
@@ -3338,6 +3347,73 @@ impl SlidesApp {
 
     // --- text editing -------------------------------------------------------
 
+    fn element_char_to_byte(text: &str, char_idx: usize) -> usize {
+        text.char_indices()
+            .nth(char_idx)
+            .map_or(text.len(), |(byte, _)| byte)
+    }
+
+    fn sync_element_core_from_legacy(&mut self) {
+        let text = self.cur_edit_text();
+        if self.editing_text {
+            self.element_edit_core.set_selection(
+                Self::element_char_to_byte(&text, self.sel_anchor),
+                Self::element_char_to_byte(&text, self.caret),
+            );
+            self.element_edit_core.clamp_to(&text);
+        }
+    }
+
+    fn sync_legacy_from_element_core(&mut self) {
+        if !self.editing_text {
+            return;
+        }
+        let text = self.cur_edit_text();
+        let selection = self.element_edit_core.selection();
+        self.sel_anchor = text[..selection.anchor.min(text.len())].chars().count();
+        self.caret = text[..selection.cursor.min(text.len())].chars().count();
+    }
+
+    fn begin_element_edit_at_end(&mut self) {
+        self.editing_text = true;
+        self.editing_notes = false;
+        let text = self.cur_edit_text();
+        let end = text.len();
+        self.element_edit_core.set_caret(end);
+        self.sel_anchor = text.chars().count();
+        self.caret = self.sel_anchor;
+    }
+
+    fn set_element_selection_chars(&mut self, anchor: usize, cursor: usize) {
+        let text = self.cur_edit_text();
+        self.element_edit_core.set_selection(
+            Self::element_char_to_byte(&text, anchor),
+            Self::element_char_to_byte(&text, cursor),
+        );
+        self.sync_legacy_from_element_core();
+    }
+
+    fn apply_element_edit(&mut self, doc: &mut AutoCommit, edit: ui::text_edit::Edit) {
+        if edit.is_noop() || !self.editing_text {
+            return;
+        }
+        let text = self.cur_edit_text();
+        let char_at = |byte: usize| text[..byte.min(text.len())].chars().count();
+        SlidesDoc::splice_element_text(
+            doc,
+            self.cur_slide,
+            self.sel.as_deref().unwrap_or_default(),
+            char_at(edit.at),
+            text[edit.at..edit.at.saturating_add(edit.removed)]
+                .chars()
+                .count(),
+            &edit.inserted,
+        );
+        self.mark();
+        self.reload(doc);
+        self.sync_legacy_from_element_core();
+    }
+
     fn insert_text(&mut self, doc: &mut AutoCommit, s: &str) {
         if self.editing_title {
             // A title is one line — drop any embedded newlines from a paste.
@@ -3348,6 +3424,14 @@ impl SlidesApp {
             SlidesDoc::splice_title(doc, self.title_caret, 0, &s);
             self.title_caret += s.chars().count();
             self.reload(doc);
+            return;
+        }
+        // On-canvas editing uses the shared byte-safe core; the canvas only
+        // translates its edit into Automerge's character-addressed splice.
+        if self.editing_text {
+            self.sync_element_core_from_legacy();
+            let edit = self.element_edit_core.insert(s);
+            self.apply_element_edit(doc, edit);
             return;
         }
         // Typing over a selection replaces it (delete first, then insert at the
@@ -3369,6 +3453,13 @@ impl SlidesApp {
                 self.mark();
                 self.reload(doc);
             }
+            return;
+        }
+        if self.editing_text {
+            self.sync_element_core_from_legacy();
+            let text = self.cur_edit_text();
+            let edit = self.element_edit_core.delete_backward(&text, false);
+            self.apply_element_edit(doc, edit);
             return;
         }
         // A live selection is deleted whole; otherwise delete the char before.
@@ -3396,6 +3487,13 @@ impl SlidesApp {
                 self.mark();
                 self.reload(doc);
             }
+            return;
+        }
+        if self.editing_text {
+            self.sync_element_core_from_legacy();
+            let text = self.cur_edit_text();
+            let edit = self.element_edit_core.delete_forward(&text, false);
+            self.apply_element_edit(doc, edit);
             return;
         }
         if self.delete_selection(doc) {
@@ -3679,6 +3777,16 @@ impl SlidesApp {
     /// Delete the current selection from the CRDT, if any. Returns `true` when
     /// something was deleted (the caret is left at the deletion point).
     fn delete_selection(&mut self, doc: &mut AutoCommit) -> bool {
+        if self.editing_text {
+            self.sync_element_core_from_legacy();
+            if !self.element_edit_core.has_selection() {
+                return false;
+            }
+            let text = self.cur_edit_text();
+            let edit = self.element_edit_core.delete_backward(&text, false);
+            self.apply_element_edit(doc, edit);
+            return true;
+        }
         let sel = self.selection();
         if sel.is_collapsed() {
             return false;
@@ -3712,6 +3820,10 @@ impl SlidesApp {
     /// Select the whole of the active editor's text.
     fn select_all_text(&mut self) {
         let len = self.cur_text_len();
+        if self.editing_text {
+            let text = self.cur_edit_text();
+            self.element_edit_core.select_all(&text);
+        }
         self.sel_anchor = 0;
         self.set_active_caret(len);
     }
@@ -3720,6 +3832,17 @@ impl SlidesApp {
     /// is false and a selection is live, collapse to the selection edge in that
     /// direction instead of moving past it (standard editor behaviour).
     fn move_caret(&mut self, dir: i32, extend: bool) {
+        if self.editing_text {
+            self.sync_element_core_from_legacy();
+            let text = self.cur_edit_text();
+            self.element_edit_core.motion(
+                &text,
+                if dir < 0 { Motion::Left } else { Motion::Right },
+                extend,
+            );
+            self.sync_legacy_from_element_core();
+            return;
+        }
         if !extend && self.has_text_selection() {
             let sel = self.selection();
             let edge = if dir < 0 { sel.min() } else { sel.max() };
@@ -3739,6 +3862,21 @@ impl SlidesApp {
     /// Move the active caret one word left (`dir < 0`) or right, via the shared
     /// word-boundary walker (`ctrl`+arrow).
     fn move_caret_word(&mut self, dir: i32, extend: bool) {
+        if self.editing_text {
+            self.sync_element_core_from_legacy();
+            let text = self.cur_edit_text();
+            self.element_edit_core.motion(
+                &text,
+                if dir < 0 {
+                    Motion::WordLeft
+                } else {
+                    Motion::WordRight
+                },
+                extend,
+            );
+            self.sync_legacy_from_element_core();
+            return;
+        }
         let text = self.cur_edit_text();
         let cur = self.active_caret().min(text.chars().count());
         let next = if dir < 0 {
@@ -3758,6 +3896,21 @@ impl SlidesApp {
 
     /// Move the active caret to the start (`end=false`) or end of its line.
     fn move_caret_home_end(&mut self, end: bool, extend: bool) {
+        if self.editing_text {
+            self.sync_element_core_from_legacy();
+            let text = self.cur_edit_text();
+            self.element_edit_core.motion(
+                &text,
+                if end {
+                    Motion::LineEnd
+                } else {
+                    Motion::LineStart
+                },
+                extend,
+            );
+            self.sync_legacy_from_element_core();
+            return;
+        }
         let text = self.cur_edit_text();
         let next = caret_line_home_end(&text, self.active_caret(), end);
         self.place_caret(next, extend);
@@ -5044,11 +5197,14 @@ impl SlidesApp {
         if let Some(p) = self.select_word_click.take() {
             let idx = self.char_at_point_in_box(tr, &el.text, style, p);
             let (a, b) = word_boundaries_chars(&el.text, idx);
-            self.sel_anchor = a;
-            self.caret = b;
+            self.set_element_selection_chars(a, b);
         } else if let Some((p, extend)) = self.caret_click.take() {
             let idx = self.char_at_point_in_box(tr, &el.text, style, p);
-            self.place_caret(idx, extend);
+            self.element_edit_core.set_selection(
+                Self::element_char_to_byte(&el.text, if extend { self.sel_anchor } else { idx }),
+                Self::element_char_to_byte(&el.text, idx),
+            );
+            self.sync_legacy_from_element_core();
         }
     }
 
@@ -6985,12 +7141,7 @@ impl SlidesApp {
             if double && is_text {
                 // A deliberate double-click opens the text for editing and
                 // selects the word under the point.
-                self.editing_text = true;
-                let len = self
-                    .selected_element()
-                    .map_or(0, |e| e.text.chars().count());
-                self.caret = len;
-                self.sel_anchor = len;
+                self.begin_element_edit_at_end();
                 self.select_word_click = Some(p);
             } else {
                 // Single press: select AND arm a move so a selected element
@@ -7798,11 +7949,7 @@ impl SlidesApp {
                     .selected_element()
                     .is_some_and(|e| e.kind == ElementKind::Text)
                 {
-                    self.editing_text = true;
-                    self.caret = self
-                        .selected_element()
-                        .map_or(0, |e| e.text.chars().count());
-                    self.sel_anchor = self.caret;
+                    self.begin_element_edit_at_end();
                     *handled = true;
                 }
             }

@@ -37,6 +37,53 @@ pub enum UnpackError {
     Io(#[from] std::io::Error),
     #[error("payload path {0:?} escapes destination dir")]
     PathTraversal(String),
+    #[error("application payload has {found} entries; limit is {limit}")]
+    TooManyPayloadEntries { found: usize, limit: usize },
+    #[error("application payload materializes to {found} bytes; limit is {limit}")]
+    PayloadTooLarge { found: u64, limit: u64 },
+}
+
+/// Validate the filesystem work represented by a decoded payload collection.
+///
+/// This is separate from [`unpack`] so registries can reject amplification
+/// before publishing or approving a bundle, without creating a temporary
+/// destination directory.
+///
+/// # Errors
+///
+/// Returns [`UnpackError::TooManyPayloadEntries`] or
+/// [`UnpackError::PayloadTooLarge`] when an application exceeds its
+/// materialization budget, [`UnpackError::MissingPayloadBlob`] when a
+/// collection entry has no stored bytes, or [`UnpackError::Store`] when the
+/// backing store cannot be read.
+pub fn validate_materialized_payload<S: BlobStore>(
+    manifest: &Manifest,
+    collection: &Collection,
+    store: &S,
+) -> Result<(), UnpackError> {
+    if manifest.package.kind != crate::id::Kind::App {
+        return Ok(());
+    }
+    if collection.entries.len() > crate::MAX_APP_PAYLOAD_ENTRIES {
+        return Err(UnpackError::TooManyPayloadEntries {
+            found: collection.entries.len(),
+            limit: crate::MAX_APP_PAYLOAD_ENTRIES,
+        });
+    }
+    let mut materialized = 0u64;
+    for (rel_path, hash) in &collection.entries {
+        let bytes = store
+            .get(hash)?
+            .ok_or_else(|| UnpackError::MissingPayloadBlob(hash.to_hex(), rel_path.clone()))?;
+        materialized = materialized.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        if materialized > crate::MAX_APP_UNPACKED_BYTES {
+            return Err(UnpackError::PayloadTooLarge {
+                found: materialized,
+                limit: crate::MAX_APP_UNPACKED_BYTES,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Reconstruct the manifest + write the payload to `dest_dir`.
@@ -72,6 +119,11 @@ pub fn unpack<S: BlobStore>(
         .get(&signed.payload_root_hash)?
         .ok_or(UnpackError::MissingCollection)?;
     let collection = Collection::decode(&collection_bytes)?;
+
+    // Validate the complete materialized shape before creating `dest_dir`.
+    // A collection can point many paths at one blob, so archive/store size is
+    // not an upper bound on disk writes or inode consumption.
+    validate_materialized_payload(&manifest, &collection, store)?;
 
     std::fs::create_dir_all(dest_dir)?;
     let dest_dir = dest_dir.canonicalize()?;

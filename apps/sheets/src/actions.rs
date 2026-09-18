@@ -2354,7 +2354,6 @@ impl ResourceProvider for crate::app::SheetsApp {
 }
 
 /// The 1-based column letters for `col`, used in action labels/status lines.
-#[allow(dead_code)]
 pub fn column_label(col: u32) -> String {
     col_to_letters(col)
 }

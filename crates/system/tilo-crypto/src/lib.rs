@@ -398,6 +398,11 @@ pub fn generate_secure_boot_certificate(common_name: &str) -> Result<RsaCertific
 }
 
 /// Generate a constrained ephemeral CA and an IP-SAN server certificate.
+///
+/// # Errors
+///
+/// Returns an error if certificate validity bounds overflow, key generation
+/// fails, or either certificate cannot be encoded or signed.
 pub fn generate_tls_fixture(server_ip: std::net::IpAddr) -> Result<TlsFixture, String> {
     use rcgen::{
         BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
@@ -539,8 +544,13 @@ pub fn verify_rsa_sha256(
         .map_err(|_| "RSA signature verification failed".into())
 }
 
-/// Validate an RSA SubjectPublicKeyInfo PEM and return its modulus size and
+/// Validate an RSA `SubjectPublicKeyInfo` PEM and return its modulus size and
 /// canonical DER SHA-256 identity.
+///
+/// # Errors
+///
+/// Returns an error if the PEM is not a valid RSA `SubjectPublicKeyInfo` or
+/// the parsed key cannot be re-encoded canonically.
 pub fn rsa_public_key_info(public_key_pem: &str) -> Result<(u32, String), String> {
     use rsa::{
         RsaPublicKey,
@@ -557,8 +567,13 @@ pub fn rsa_public_key_info(public_key_pem: &str) -> Result<(u32, String), String
     Ok((key.n().bits(), hex::encode(Sha256::digest(der.as_bytes()))))
 }
 
-/// Validate a P-256 SubjectPublicKeyInfo PEM and return its canonical DER
+/// Validate a P-256 `SubjectPublicKeyInfo` PEM and return its canonical DER
 /// SHA-256 identity.
+///
+/// # Errors
+///
+/// Returns an error if the PEM is not a valid P-256 `SubjectPublicKeyInfo` or
+/// the parsed key cannot be re-encoded canonically.
 pub fn p256_public_key_sha256(public_key_pem: &str) -> Result<String, String> {
     use p256::{
         ecdsa::VerifyingKey,

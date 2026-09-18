@@ -123,13 +123,14 @@ bridged by a veth pair, then spawns the share host in nsA and the
 viewer in nsB. Frames flow over the veth link; input events flow back
 over a second UDP port. Real network stack, no in-process shortcuts.
 
-Requires `sudo` because `ip netns add` needs `CAP_NET_ADMIN`. Won't run
-inside rootless podman.
+Requires `sudo` because the checked-in driver uses `ip netns add` and needs
+`CAP_NET_ADMIN`. A host which permits unprivileged user namespaces can also
+run the same two test roles in child network namespaces without host root.
 
-The in-process UDP-loopback shape of the same test (`cargo test -p
-shell --test two_netns_share -- --include-ignored`) is what CI relies
-on; it exercises the framing + backpressure + decode pipeline without
-needing kernel netns.
+The always-on UDP-loopback shape of the same test (`cargo test -p shell
+--test it --locked in_process_udp_pipeline_sustains_10_fps_and_bounded_latency`)
+is what unprivileged CI relies on; it exercises the framing + backpressure +
+decode pipeline without needing kernel netns.
 
 ## The side-by-side demo
 
@@ -175,9 +176,9 @@ so you can compare configurations without a stopwatch.
   oldest per subscriber, gossip vs substream split, viewer teardown
   releases the subscription.
 - `two_netns_share` — same pipeline over real UDP loopback (in-process,
-  runs everywhere) and over an actual netns pair (self-skips without
-  the driver script's env vars, runs cleanly under `sudo
-  scripts/two-netns-share.sh`).
+  runs everywhere) and over an actual netns pair. The namespace roles compile
+  only with `--features netns-e2e`, fail closed when their driver variables
+  are absent, and run under `sudo scripts/two-netns-share.sh`.
 - `vaapi_hardware_encode` / `nvenc_hardware_encode` — real bytes come
   out on real hardware. Self-skip on hosts without an H.264 encode
   profile; the NVENC file documents the on-host runbook.

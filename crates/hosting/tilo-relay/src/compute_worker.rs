@@ -229,7 +229,7 @@ pub async fn run_production_compute_worker(
         ComputeWorkerError::Health("assignment capacity is not representable".into())
     })?;
     let (completed_tx, mut completed_rx) = tokio::sync::mpsc::channel(assignment_capacity);
-    let mut active = HashMap::<[u8; 16], ActiveJob>::new();
+    let mut active = ActiveJobs::default();
     let mut health_tick = tokio::time::interval(HEALTH_INTERVAL);
     health_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     health_tick.tick().await;
@@ -274,6 +274,51 @@ struct ActiveJob {
     cancellation: CaptureCancellation,
 }
 
+#[derive(Default)]
+struct ActiveJobs {
+    by_job_id: HashMap<[u8; 16], ActiveJob>,
+}
+
+impl ActiveJobs {
+    fn get(&self, job_id: &[u8; 16]) -> Option<&ActiveJob> {
+        self.by_job_id.get(job_id)
+    }
+
+    fn insert(&mut self, job_id: [u8; 16], job: ActiveJob) {
+        self.by_job_id.insert(job_id, job);
+    }
+
+    fn remove(&mut self, job_id: &[u8; 16]) -> Option<ActiveJob> {
+        self.by_job_id.remove(job_id)
+    }
+
+    fn len(&self) -> usize {
+        self.by_job_id.len()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.by_job_id.is_empty()
+    }
+
+    /// Revoke every in-process execution before forgetting its exact route.
+    /// `drain` makes shutdown cleanup deterministic even when a worker future
+    /// is aborted while its blocking launcher task is still unwinding.
+    fn cancel_all(&mut self) -> usize {
+        let count = self.by_job_id.len();
+        for (_, job) in self.by_job_id.drain() {
+            job.cancellation.cancel();
+        }
+        count
+    }
+}
+
+impl Drop for ActiveJobs {
+    fn drop(&mut self) {
+        self.cancel_all();
+    }
+}
+
 struct CompletedJob {
     binding: ComputeJobBinding,
     result: Result<ComputeJobResult, String>,
@@ -287,7 +332,7 @@ async fn handle_delivery(
         ComputeWorker<FileComputeContentStore, InstalledComputeCatalogue, LauncherComputeSandbox>,
     >,
     completed: &tokio::sync::mpsc::Sender<CompletedJob>,
-    active: &mut HashMap<[u8; 16], ActiveJob>,
+    active: &mut ActiveJobs,
     delivery: ComputeDelivery,
 ) -> Result<(), ComputeWorkerError> {
     match &delivery.envelope {
@@ -432,7 +477,7 @@ fn sanitize_result(result: Result<ComputeJobResult, String>) -> (ComputeJobPhase
 }
 
 fn cancel_active(
-    active: &HashMap<[u8; 16], ActiveJob>,
+    active: &ActiveJobs,
     binding: &ComputeJobBinding,
 ) -> Result<bool, ComputeWorkerError> {
     let Some(job) = active.get(&binding.job_id) else {
@@ -518,7 +563,7 @@ fn inspect_health() -> Result<WorkerHealth, ComputeWorkerError> {
             "system energy saver is active".into(),
         ));
     }
-    let power = read_power_availability()?;
+    let power = read_power_availability();
     if matches!(power, PowerAvailability::Battery(percent) if percent <= 15) {
         return Err(ComputeWorkerError::Health(
             "battery is critically constrained".into(),
@@ -565,10 +610,10 @@ fn bubblewrap_available() -> bool {
         .any(|path| Path::new(path).is_file())
 }
 
-fn read_power_availability() -> Result<PowerAvailability, ComputeWorkerError> {
+fn read_power_availability() -> PowerAvailability {
     let root = Path::new("/sys/class/power_supply");
     let Ok(entries) = fs::read_dir(root) else {
-        return Ok(PowerAvailability::External);
+        return PowerAvailability::External;
     };
     let mut battery = None;
     let mut external = false;
@@ -586,9 +631,9 @@ fn read_power_availability() -> Result<PowerAvailability, ComputeWorkerError> {
         }
     }
     match (battery, external) {
-        (Some(percent), true) => Ok(PowerAvailability::Charging(percent)),
-        (Some(percent), false) => Ok(PowerAvailability::Battery(percent)),
-        (None, _) => Ok(PowerAvailability::External),
+        (Some(percent), true) => PowerAvailability::Charging(percent),
+        (Some(percent), false) => PowerAvailability::Battery(percent),
+        (None, _) => PowerAvailability::External,
     }
 }
 
@@ -670,17 +715,79 @@ mod tests {
             worker: [10; 32],
         };
         let cancellation = CaptureCancellation::default();
-        let active = HashMap::from([(
-            binding.job_id,
-            ActiveJob {
-                binding: binding.clone(),
-                cancellation: cancellation.clone(),
-            },
-        )]);
+        let active = ActiveJobs {
+            by_job_id: HashMap::from([(
+                binding.job_id,
+                ActiveJob {
+                    binding: binding.clone(),
+                    cancellation: cancellation.clone(),
+                },
+            )]),
+        };
         let mut forged = binding.clone();
         forged.workspace_id = 11;
         assert!(cancel_active(&active, &forged).is_err());
         assert!(cancel_active(&active, &binding).unwrap());
+        assert!(cancellation.is_cancelled());
+    }
+
+    #[test]
+    fn shutdown_cancels_all_active_work_and_clears_exact_routes() {
+        let first = ComputeJobBinding {
+            workspace_id: 7,
+            job_id: [1; 16],
+            requester: [2; 32],
+            worker: [3; 32],
+        };
+        let second = ComputeJobBinding {
+            workspace_id: 8,
+            job_id: [4; 16],
+            requester: [5; 32],
+            worker: [6; 32],
+        };
+        let first_cancellation = CaptureCancellation::default();
+        let second_cancellation = CaptureCancellation::default();
+        let mut active = ActiveJobs::default();
+        active.insert(
+            first.job_id,
+            ActiveJob {
+                binding: first,
+                cancellation: first_cancellation.clone(),
+            },
+        );
+        active.insert(
+            second.job_id,
+            ActiveJob {
+                binding: second,
+                cancellation: second_cancellation.clone(),
+            },
+        );
+
+        assert_eq!(active.cancel_all(), 2);
+        assert!(active.is_empty());
+        assert!(first_cancellation.is_cancelled());
+        assert!(second_cancellation.is_cancelled());
+    }
+
+    #[test]
+    fn dropping_active_registry_revokes_running_work() {
+        let cancellation = CaptureCancellation::default();
+        {
+            let binding = ComputeJobBinding {
+                workspace_id: 9,
+                job_id: [10; 16],
+                requester: [11; 32],
+                worker: [12; 32],
+            };
+            let mut active = ActiveJobs::default();
+            active.insert(
+                binding.job_id,
+                ActiveJob {
+                    binding,
+                    cancellation: cancellation.clone(),
+                },
+            );
+        }
         assert!(cancellation.is_cancelled());
     }
 
