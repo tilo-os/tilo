@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -426,20 +426,14 @@ impl NotificationStack {
     ) -> Rect {
         let title_size = ctx.theme.tokens.typography.scale.sm;
         let card_rect = Rect::new(x0, y, x0 + width, y + TOAST_HEIGHT);
-        let shape = RoundedRect::from_rect(card_rect, radius);
-        ctx.scene.fill(
-            Fill::NonZero,
+        // The raised card with its derived rest edge (HIG §9.5): the
+        // declared border was three shades off `raised` on dark and vanished.
+        ui::surface::card(
+            ctx.scene,
             ctx.transform,
+            card_rect,
+            radius,
             ctx.theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        ctx.scene.stroke(
-            &Stroke::new(1.0),
-            ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
-            None,
-            &shape,
         );
         let label = lock_suppressed_label(count);
         // Centre on the measured line, not the font size (HIG §7a).
@@ -496,20 +490,12 @@ impl NotificationStack {
         let pill_h = SELECTOR_HEIGHT
             .max(f64::from(label_h) + f64::from(ctx.theme.tokens.spacing.s2));
         let pill_rect = Rect::new(x0, y, x0 + width, y + pill_h);
-        let shape = RoundedRect::from_rect(pill_rect, radius);
-        ctx.scene.fill(
-            Fill::NonZero,
+        ui::surface::card(
+            ctx.scene,
             ctx.transform,
+            pill_rect,
+            radius,
             ctx.theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        ctx.scene.stroke(
-            &Stroke::new(1.0),
-            ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
-            None,
-            &shape,
         );
         // A `Point` rather than two `dot_c{x,y}` locals — same value,
         // but doesn't read as two near-identical bindings in one scope.

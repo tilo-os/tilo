@@ -11,7 +11,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::WindowEvent;
 
 use ui::ColorCompat;
@@ -244,10 +244,13 @@ impl SidebarWheelChrome {
                 None,
                 &backdrop_rr,
             );
+            // The backdrop floats over the desktop ground, so its edge is
+            // derived against that ground (HIG §9.5), at the same third of
+            // the strength the declared border used to be asked for.
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 transform,
-                colors.border_standard.with_alpha_factor(0.35),
+                ui::surface::edge_on(colors.surfaces.base).with_alpha_factor(0.35),
                 None,
                 &backdrop_rr,
             );
@@ -281,7 +284,13 @@ impl SidebarWheelChrome {
 
     /// Collapsed: 4px strip against the left edge, translated 10px further
     /// left. Expanded: full inset-4 pill, centered, full opacity.
-    fn draw_pill_highlight(&self, scene: &mut Scene, transform: Affine, eased: f32) {
+    fn draw_pill_highlight(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        eased: f32,
+    ) {
         let pill_y0 = self.rect.y0 + 32.0;
         let pill_y1 = self.rect.y1 - 32.0;
         if pill_y1 <= pill_y0 {
@@ -311,7 +320,9 @@ impl SidebarWheelChrome {
         let pill = RoundedRect::from_rect(pill_rect, radius);
         // Base alpha 13/255 fill, 26/255 border, scaled by opacity — both
         // clamped to 0.0..=255.0 just above, so they always fit a
-        // non-negative u8.
+        // non-negative u8. The polarity is derived against the desktop
+        // ground (HIG §9.5): literal white lifted nothing on a light
+        // wallpaper.
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -321,17 +332,18 @@ impl SidebarWheelChrome {
             (13.0 * opacity).round().clamp(0.0, 255.0) as u8,
             (26.0 * opacity).round().clamp(0.0, 255.0) as u8,
         );
+        let ground = theme.tokens.colors.surfaces.base;
         scene.fill(
             Fill::NonZero,
             transform,
-            Color::from_rgba8(255, 255, 255, fill_a),
+            ui::tokens::colors::Colors::hairline_on(ground, fill_a),
             None,
             &pill,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            Color::from_rgba8(255, 255, 255, stroke_a),
+            ui::tokens::colors::Colors::hairline_on(ground, stroke_a),
             None,
             &pill,
         );
@@ -339,7 +351,7 @@ impl SidebarWheelChrome {
 
     /// Huge faint circle behind the cards; only the right-most sliver is
     /// visible inside the sidebar rect. Fades in with the pill.
-    fn draw_wheel_rim(&self, scene: &mut Scene, transform: Affine, eased: f32) {
+    fn draw_wheel_rim(&self, scene: &mut Scene, transform: Affine, theme: &Theme, eased: f32) {
         if eased <= 0.0 {
             return;
         }
@@ -358,7 +370,9 @@ impl SidebarWheelChrome {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            Color::from_rgba8(255, 255, 255, 13), // white/5
+            // A faint rim derived against the desktop ground (HIG §9.5) —
+            // was literal white/5, invisible over a light wallpaper.
+            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.base, 13),
             None,
             &rim,
         );
@@ -369,17 +383,16 @@ impl SidebarWheelChrome {
     fn draw_plus_card(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let plus_fill = if self.hover_plus {
-            colors.surfaces.raised
-        } else {
-            colors.neutral[0]
-        };
+        // Control-role states (HIG §9.3): the hint card rests on the quiet
+        // lift floor and hovers to the shared tier; its dashed edge is
+        // derived from the fill it outlines (§9.5).
+        let plus_fill = crate::shell::quick_settings_drill_in::control_fill(theme, self.hover_plus);
         let plus_shape = RoundedRect::from_rect(self.plus_rect, f64::from(tokens.radii.md));
         scene.fill(Fill::NonZero, transform, plus_fill, None, &plus_shape);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0]),
             transform,
-            colors.border_standard,
+            ui::surface::edge_on(plus_fill),
             None,
             &plus_shape,
         );
@@ -431,12 +444,18 @@ fn draw_card_background(
             &pill,
         );
     } else {
-        let fill = if paint.is_hover {
-            colors.surfaces.raised
-        } else {
-            colors.neutral[1]
-        };
-        scene.fill(Fill::NonZero, paint.xform, fill, None, &pill);
+        // Idle cards rest on the lift floor and hover to the shared tier
+        // (HIG §9.3), each with a derived rest edge (§9.5) so a card is a
+        // card over any wallpaper — `neutral[1]` was a ramp slot that read
+        // as bare wallpaper on a dark one.
+        let fill = crate::shell::quick_settings_drill_in::control_fill(theme, paint.is_hover);
+        ui::surface::card(
+            scene,
+            paint.xform,
+            card.rect,
+            f64::from(tokens.radii.md),
+            fill,
+        );
     }
     if paint.is_active {
         // Base transform: the active card doesn't hover-scale.
@@ -653,8 +672,8 @@ impl Widget for SidebarWheelChrome {
     ) {
         self.draw_backdrop(scene, transform, theme);
         let eased = self.advance_pill_anim();
-        self.draw_pill_highlight(scene, transform, eased);
-        self.draw_wheel_rim(scene, transform, eased);
+        self.draw_pill_highlight(scene, transform, theme, eased);
+        self.draw_wheel_rim(scene, transform, theme, eased);
 
         for (idx, card) in self.cards.iter().enumerate() {
             let is_active = self.active == Some(card.id);
