@@ -5,7 +5,7 @@ use core::sync::atomic::Ordering;
 use arrayvec::ArrayVec;
 use glow::HasContext;
 
-use super::{conv::is_layered_target, lock, Command as C, PrivateCapabilities};
+use super::{Command as C, PrivateCapabilities, conv::is_layered_target, lock};
 
 const DEBUG_ID: u32 = 0;
 
@@ -18,11 +18,7 @@ fn to_debug_str(s: &str) -> &str {
     // the implementation will access the ptr and look for a null that terminates
     // the string but some implementations will try to access the ptr even if the
     // length is 0.
-    if s.is_empty() {
-        "<empty>"
-    } else {
-        s
-    }
+    if s.is_empty() { "<empty>" } else { s }
 }
 
 fn get_2d_target(target: u32, array_layer: u32) -> u32 {
@@ -193,7 +189,14 @@ impl super::Queue {
         &self,
         gl: &glow::Context,
         command: &C,
-        #[cfg_attr(target_arch = "wasm32", allow(unused))] data_bytes: &[u8],
+        #[cfg_attr(
+            target_arch = "wasm32",
+            allow(
+                unused,
+                reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+            )
+        )]
+        data_bytes: &[u8],
         queries: &[glow::Query],
     ) {
         match *command {

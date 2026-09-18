@@ -150,10 +150,11 @@ fn main() {
             // Destroy the GL Surface and un-current the GL Context before ndk-glue releases
             // the window back to the system.
             if let Some((gl_context, ..)) = self.state.take() {
-                assert!(self
-                    .not_current_gl_context
-                    .replace(gl_context.make_not_current().unwrap())
-                    .is_none());
+                assert!(
+                    self.not_current_gl_context
+                        .replace(gl_context.make_not_current().unwrap())
+                        .is_none()
+                );
             }
         }
 

@@ -1,4 +1,7 @@
-#![allow(unused_variables)]
+#![allow(
+    unused_variables,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)]
 
 use alloc::{string::String, vec, vec::Vec};
 use core::{ptr, sync::atomic::Ordering, time::Duration};
