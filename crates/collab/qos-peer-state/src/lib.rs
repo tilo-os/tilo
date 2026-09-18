@@ -17,3 +17,5 @@ pub mod outbox;
 #[cfg(test)] mod enrollment_tests;
 
 pub mod enrollment;
+
+pub mod durability;

@@ -4,6 +4,18 @@
 mod tests {
     use super::*;
     #[test]
+    fn status_retains_exact_prior_commit_across_newer_pending_and_failed_writes() {
+        let cache=PortableStorage::new("profile","device").unwrap();
+        let key=StorageKey::Admission{workspace:"room".into()};
+        cache.put(key.clone(),vec![1],None).unwrap();let first=cache.pending_writes().remove(0);
+        cache.put(key.clone(),vec![2],None).unwrap();
+        cache.acknowledge(&first,Ok(())).unwrap();
+        let status=cache.status(&key).unwrap();assert!(!status.durable);assert_eq!(status.committed.unwrap().1.bytes,vec![1]);
+        let second=cache.pending_writes().remove(0);cache.acknowledge(&second,Err("quota".into())).unwrap();
+        let status=cache.status(&key).unwrap();assert_eq!(status.error.as_deref(),Some("quota"));assert_eq!(status.committed.unwrap().0,first.revision);
+        cache.acknowledge(&second,Ok(())).unwrap();let status=cache.status(&key).unwrap();assert!(status.durable);assert_eq!(status.committed.unwrap().1.bytes,vec![2]);
+    }
+    #[test]
     fn cache_flush_requires_matching_durable_ack_and_retains_failed_bytes() {
         let cache = PortableStorage::new("profile-a", "device-a").unwrap();
         let key = StorageKey::View {
@@ -105,11 +117,19 @@ pub struct PendingWrite {
     pub revision: u64,
     cache_id: uuid::Uuid,
 }
+#[derive(Clone, Debug)]
+pub struct StorageStatus {
+    pub revision: u64,
+    pub durable: bool,
+    pub error: Option<String>,
+    pub committed: Option<(u64, CachedBytes)>,
+}
 struct Entry {
     value: CachedBytes,
     revision: u64,
     durable: bool,
     error: Option<String>,
+    committed: Option<(u64, CachedBytes)>,
 }
 #[derive(Default)]
 struct Cache {
@@ -185,6 +205,7 @@ impl PortableStorage {
         cache.entries.insert(
             key,
             Entry {
+                committed: Some((0,CachedBytes{bytes:bytes.clone(),actor:actor.clone()})),
                 value: CachedBytes { bytes, actor },
                 revision: 0,
                 durable: true,
@@ -214,9 +235,11 @@ impl PortableStorage {
             .checked_add(1)
             .ok_or("storage revision exhausted")?;
         let revision = cache.revision;
+        let committed=cache.entries.get(&key).and_then(|entry|entry.committed.clone());
         cache.entries.insert(
             key,
             Entry {
+                committed,
                 value: CachedBytes { bytes, actor },
                 revision,
                 durable: false,
@@ -254,6 +277,11 @@ impl PortableStorage {
             .entries
             .get_mut(&write.key)
             .ok_or("unknown persistence key")?;
+        if write.revision<=entry.revision && result.is_ok() && entry.committed.as_ref().is_none_or(|(revision,_)|*revision<write.revision){
+            if write.value.actor!=entry.value.actor{return Err("acknowledgement actor differs from persistent custody".into());}
+            if write.revision==entry.revision && write.value.bytes!=entry.value.bytes{return Err("acknowledgement bytes differ from the queued write".into());}
+            entry.committed=Some((write.revision,write.value.clone()));
+        }
         if write.revision != entry.revision {
             return Ok(());
         }
@@ -271,6 +299,9 @@ impl PortableStorage {
             }
         }
         Ok(())
+    }
+    pub fn status(&self,key:&StorageKey)->Option<StorageStatus>{
+        self.cache.borrow().entries.get(key).map(|entry|StorageStatus{revision:entry.revision,durable:entry.durable,error:entry.error.clone(),committed:entry.committed.clone()})
     }
     pub fn flush(&self, key: &StorageKey) -> Result<(), String> {
         let cache = self.cache.borrow();

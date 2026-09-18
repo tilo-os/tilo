@@ -151,6 +151,17 @@ impl HostImageLoader {
         self.in_flight.extend(requests.iter().cloned());
         requests
     }
+    /// Reopen only a previously admitted failed slot; arbitrary URLs cannot enter here.
+    pub fn retry(&mut self,url:&str)->bool{
+        if !self.wake.authorize_publication()||self.in_flight.contains(url){return false;}
+        let Ok(mut slots)=self.shared.slots.lock()else{return false;};
+        let Some(entry)=slots.slots.get_mut(url)else{return false;};
+        if !matches!(entry.slot,Slot::Failed){return false;}
+        entry.slot=Slot::Loading;self.in_flight.insert(url.into());self.shared.pending.fetch_add(1,Ordering::SeqCst);true
+    }
+    pub fn loaded(&self,url:&str)->bool{
+        self.shared.slots.lock().ok().is_some_and(|slots|slots.slots.get(url).is_some_and(|entry|matches!(entry.slot,Slot::Ready(_))))
+    }
     /// Returns false for unknown/already-completed requests or a closed component.
     pub fn complete(&mut self, url: &str, bytes: Option<&[u8]>) -> bool {
         if !self.in_flight.remove(url) { return false; }
@@ -431,6 +442,14 @@ mod tests {
 
     /// Encode a solid `w`×`h` RGBA PNG in-memory (no network) so the store's
     /// fetch+decode+cache path is exercised deterministically.
+    #[test]
+    fn failed_host_image_can_retry_only_its_admitted_request_and_decode_real_bytes(){
+        let (store,mut host)=ImageStore::host_driven();store.get("retained");host.take_requests();
+        assert!(host.complete("retained",None));assert!(store.get("retained").is_none());
+        assert!(!host.retry("unknown"));assert!(host.retry("retained"));assert!(!host.retry("retained"));
+        assert!(host.complete("retained",Some(&png_bytes(9,7,[1,2,3]))));assert!(host.loaded("retained"));
+        assert_eq!((store.get("retained").unwrap().width,store.get("retained").unwrap().height),(9,7));assert_eq!(store.pending(),0);assert!(!host.retry("retained"));
+    }
     #[test]
     fn host_image_requests_decode_real_bytes_and_settle_failures() {
         let (store, mut host) = ImageStore::host_driven();

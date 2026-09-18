@@ -134,7 +134,8 @@ pub fn governance_change_allowed(
     pinned: Option<&str>,
     source: &str,
 ) -> bool {
-    governance_of(before) == governance_of(Some(after))
+    (governance_of(before) == governance_of(Some(after))
+        && before.and_then(crate::durability::governed_bytes) == crate::durability::governed_bytes(after))
         || !local && pinned.is_none_or(|pinned| pinned == source)
 }
 /// Exact native membership capability projection; a certificate alone has no role.

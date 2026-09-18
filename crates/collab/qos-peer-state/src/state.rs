@@ -593,6 +593,7 @@ impl StatePeer {
                     receipts.insert(key, bytes);
                 }
                 crate::coverage::monotonic(self.room_doc.as_ref(), &candidate)?;
+                crate::durability::monotonic(self.room_doc.as_ref(), &candidate)?;
                 let changed = self
                     .room_doc
                     .as_ref()
@@ -1016,6 +1017,40 @@ impl StatePeer {
         messages.extend(snapshots);
         *self = candidate;
         Ok(messages)
+    }
+    /// Prepare, but do not publish, a candidate bound to the next native commit.
+    /// The caller must commit this entire state and outgoing batch before exposing it.
+    pub fn durable_bootstrap_messages(&mut self,key:&SigningKey,now:SystemTime,generation:u64)->Result<Vec<NeighbourMsg>,String>{
+        let mut candidate=self.clone();
+        let snapshots=candidate.signed_snapshots(key,now)?;
+        let room=candidate.room_doc.as_mut().ok_or("missing room governance")?;
+        let receipts=crate::coverage::entries(room)?.into_iter().map(|(route,coverage)|Ok((route,crate::durability::DurableReceipt::new(coverage,generation)?))).collect::<Result<BTreeMap<_,_>,String>>()?;
+        crate::durability::put(room,receipts)?;
+        crate::durability::monotonic(self.room_doc.as_ref(),room)?;
+        let mut messages=vec![candidate.room_message()];messages.extend(snapshots);*self=candidate;Ok(messages)
+    }
+    /// A governed assertion alone is insufficient: bind it to the accepted exact checkpoint.
+    pub fn durable_coverage(&self,app:&str,record:&str)->Result<Option<crate::durability::DurableReceipt>,String>{
+        let Some(room)=self.room_doc.as_ref()else{return Ok(None)};
+        let receipts=crate::durability::entries(room)?;
+        let Some(receipt)=receipts.get(&crate::coverage::route_key(app,record))else{return Ok(None)};
+        let coverage=&receipt.coverage;
+        if coverage.room!=self.room||coverage.app!=app||coverage.record!=record||coverage.author!=self.authority.device_public_key||self.revocations.is_revoked(&coverage.author){return Err("durable receipt authority/route mismatch".into())}
+        let Some(document)=self.documents.get(&Route{app:app.into(),record:record.into()})else{return Ok(None)};
+        if document.encryption_required{return Ok(None)}
+        let Some(snapshot)=document.covered_snapshot.as_ref()else{return Ok(None)};
+        if crate::coverage::entries(room)?.get(&crate::coverage::route_key(app,record))!=Some(coverage){return Ok(None)}
+        let accepted=AutoCommit::load(snapshot).map_err(err)?;
+        let heads=accepted.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>();
+        let payload=DocumentMutation::Snapshot(snapshot.clone()).encode().map_err(err)?;
+        if heads!=coverage.heads||*blake3::hash(&payload).as_bytes()!=coverage.payload_hash||coverage.watermarks.iter().any(|(author,seq)|document.covered.get(author).copied().unwrap_or(0)<*seq){return Ok(None)}
+        Ok(Some(receipt.clone()))
+    }
+    pub fn durable_covers_current(&self,app:&str,record:&str)->Result<bool,String>{
+        if self.durable_coverage(app,record)?.is_none(){return Ok(false)}
+        let document=self.documents.get(&Route{app:app.into(),record:record.into()}).ok_or("missing record")?;
+        let mut accepted=AutoCommit::load(document.covered_snapshot.as_ref().ok_or("missing accepted checkpoint")?).map_err(err)?;
+        Ok(document.doc.base_heads().iter().all(|head|accepted.get_change_by_hash(head).is_some()))
     }
     pub fn durable(&self) -> Result<Vec<u8>, String> {
         let documents = self

@@ -24,7 +24,7 @@ export async function acquireStorage(profile,device) {
     request.onupgradeneeded=()=>request.result.createObjectStore('records',{keyPath:'id'});
     let db;try{db=await requestResult(request);}catch(error){unlock();throw error;}
     const epoch=crypto.randomUUID();
-    const lease={namespace,db,references:1,fresh:true,abortNext:false,
+    const lease={namespace,db,epoch,references:1,fresh:true,abortNext:false,
       async hydrate(){
         const tx=db.transaction('records','readonly');const done=transactionComplete(tx);
         const entries=await requestResult(tx.objectStore('records').getAll());await done;
@@ -32,6 +32,7 @@ export async function acquireStorage(profile,device) {
       },
       async commit(writes){
         if(!writes.length)return;
+        for(const write of writes)storageRevision(write.revision);
         const tx=db.transaction('records','readwrite',{durability:'strict'});
         const done=transactionComplete(tx);
         for(const write of writes){
@@ -39,7 +40,7 @@ export async function acquireStorage(profile,device) {
           const store=tx.objectStore('records');
           const previous=store.get(record.id);
           previous.onsuccess=()=>{
-            if(previous.result?.epoch===epoch&&previous.result.revision>record.revision)return;
+            if(previous.result?.epoch===epoch&&storageRevision(previous.result.revision)>storageRevision(record.revision))return;
             const request=store.put(record);
             if(lease.abortNext){lease.abortNext=false;request.onsuccess=()=>tx.abort();}
           };
@@ -66,4 +67,9 @@ export function createIdentityStore({idb=globalThis.indexedDB}={}){
   async load(key){const db=await open();try{const tx=db.transaction('identities','readonly');const done=transactionComplete(tx);const value=await requestResult(tx.objectStore('identities').get(key));await done;return value;}finally{db.close();}},
   async save(key,material){const db=await open();try{const tx=db.transaction('identities','readwrite',{durability:'strict'});const done=transactionComplete(tx);tx.objectStore('identities').put(material,key);await done;}finally{db.close();}}
  };
+}
+export function storageRevision(value){
+ if(typeof value==='number'){if(!Number.isSafeInteger(value)||value<0)throw Error('Invalid storage revision');return BigInt(value);}
+ if(typeof value!=='string'||!/^(0|[1-9][0-9]*)$/.test(value)||value.length>20)throw Error('Invalid storage revision');
+ const revision=BigInt(value);if(revision>18446744073709551615n)throw Error('Invalid storage revision');return revision;
 }

@@ -34,6 +34,7 @@ export interface DesktopMount {
   failNextWrite(): void;
   destroyDevice(): unknown;
   recover(): unknown;
+  retryAsset(assetId:string):Promise<void>;
   probePixels(): Promise<unknown>;
 }
 /** Resolves after the first actual GPU presentation. AbortSignal cancels pending initialization. */

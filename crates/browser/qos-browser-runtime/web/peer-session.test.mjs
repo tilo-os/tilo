@@ -5,18 +5,20 @@ import {recoverableClose,settleComponentClose} from './close-recovery.mjs';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
 function fixture({enroll}={}){
  let next=0,held=0,storageRefs=0,failConnect=false,failClose=false,failCommit=false,pendingWrite=false,attempts=0,gate;
- const peers=new Set(),mounts=new Set(),closed=[],rebound=[],suspended=new Set();let componentOwners=0,durableRecord;
+ const peers=new Set(),mounts=new Set(),closed=[],rebound=[],suspended=new Set();let componentOwners=0,durableRecord,statusCallback,publishFailure=false,failMount=false;
  const locks={request:async(_name,_opts,fn)=>{held++;try{return await fn({});}finally{held--;}}};
  const runtime={identity_request:()=>'{public}',identity_complete:()=>'{proof}',bind_identity:()=> 'opaque-key',peer_enrollment:()=>JSON.stringify({profile:'p',device:'d',room:'r'}),refresh_storage_lease(){},
-  async connect_peer(_raw,_identity,_bytes,status){attempts++;if(gate)await gate.promise;if(failConnect)throw Error('dial failed');const id=++next;peers.add(id);status(JSON.stringify({phase:'ready',records:[{app_id:'dev.qos.word-processor',record_id:'tab:1',heads:['h']}]}));return id;},
+  async connect_peer(_raw,_identity,_bytes,status){statusCallback=status;attempts++;if(gate)await gate.promise;if(failConnect)throw Error('dial failed');const id=++next;peers.add(id);status(JSON.stringify({phase:'ready',records:[{app_id:'dev.qos.word-processor',record_id:'tab:1',heads:['h']}]}));return id;},
+  async reconnect_peer(id){attempts++;assert(peers.has(id));if(gate)await gate.promise;if(failConnect)throw Error('dial failed');return id;},
   async close_peer(id){closed.push(id);peers.delete(id);},async disconnect_peer(id){assert(peers.has(id));},
-  peer_pending_writes(id){assert(peers.has(id),'closed peer');return JSON.stringify(pendingWrite?[{revision:1}]:[]);},acknowledge_storage(){pendingWrite=false;},peer_committed(id){assert(peers.has(id));},
+  peer_pending_writes(id){assert(peers.has(id),'closed peer');return JSON.stringify(pendingWrite?[{revision:1}]:[]);},acknowledge_storage(){pendingWrite=false;},peer_committed(id){assert(peers.has(id));if(publishFailure)throw Error('relay unavailable');},
   suspend_peer(id,value){assert(peers.has(id));value?suspended.add(id):suspended.delete(id);},
   rebind_peer(old,id){rebound.push([old,id]);for(const mount of mounts)mount.id=id;suspended.delete(old);},
  };
  const storage={fresh:true,hydrate:async()=>[],commit:async()=>{if(failCommit)throw Error('durable write failed');},release:async()=>{storageRefs--;}};
- const connect=createConnectPeer({init:async()=>{},runtime,acquireIdentity:async()=>{held++;return{material:'opaque-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:enroll??(async()=>({ok:true,text:async()=>'{raw}'})),acquireStorage:async()=>{storageRefs++;return storage;},mountDesktop:async()=>{
-  const mount={id:next,cleanupCalls:0,input(){if(!suspended.has(mount.id)){assert(peers.has(mount.id),'input addressed removed peer');}},setSuspended(){}};
+ const connect=createConnectPeer({init:async()=>{},runtime,acquireIdentity:async()=>{held++;return{material:'opaque-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:enroll??(async()=>({ok:true,text:async()=>'{raw}'})),acquireStorage:async()=>{storageRefs++;return storage;},mountDesktop:async(_target,options)=>{
+  if(failMount)throw Error('initial fonts unavailable');
+  const mount={id:next,cleanupCalls:0,flushCalls:0,async flush(){mount.flushCalls++;},state:()=>({phase:'presented',gpuGeneration:1}),recover(){options.onStatus({phase:'gpu-pending',gpuGeneration:2});},present(gpuGeneration){options.onStatus({phase:'presented',gpuGeneration});},failRenderer(){options.onStatus({phase:'failed',gpuGeneration:1,error:'GPU device lost'});},input(){if(!suspended.has(mount.id)){assert(peers.has(mount.id),'input addressed removed peer');}},setSuspended(){}};
   componentOwners++;
   const componentRuntime={prepare_close:()=>JSON.stringify({writes:[{revision:7,bytes:[1,4,9]}],errors:[]}),acknowledge_storage(){},finish_close(){componentOwners--;}};
   mount.cleanup=recoverableClose({begin:()=>{mount.cleanupCalls++;},settle:async()=>{
@@ -24,13 +26,13 @@ function fixture({enroll}={}){
   }});
   mounts.add(mount);return mount;
  }});
- return{connect,peers,mounts,closed,rebound,suspended,recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
+ return{connect,peers,mounts,closed,rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
 }
 test('failed reconnect retains durable owner; next retry rebinds same mount and disposes',async()=>{
  const f=fixture(),peer=await f.connect();const mount=await peer.mountDesktop({});
  f.setFailConnect(true);await assert.rejects(peer.reconnect(),/dial failed/);
- assert(f.suspended.has(mount.id),'input is suspended while transport is unavailable');assert.doesNotThrow(()=>mount.input());
- f.setFailConnect(false);await peer.reconnect();assert.equal(f.rebound.length,1);assert(!f.suspended.has(mount.id));assert.doesNotThrow(()=>mount.input());
+ assert(!f.suspended.has(mount.id),'admitted local input stays available while transport is unavailable');assert.doesNotThrow(()=>mount.input());
+ f.setFailConnect(false);await peer.reconnect();assert.equal(f.rebound.length,0);assert.equal(mount.id,1);assert.equal(f.closed.length,0);assert(!f.suspended.has(mount.id));assert.doesNotThrow(()=>mount.input());
  await peer.dispose();assert.deepEqual(f.counts(),{held:0,storageRefs:0,attempts:3});assert.equal(f.peers.size,0);
 });
 test('overlapping reconnects coalesce and disposal awaits attempted rebind',async()=>{
@@ -53,7 +55,7 @@ test('setup failure with retained bytes has reachable recovery and releases only
 
 test('each retry refreshes bootstrap with same client key via POST proof; setup errors release ownership',async()=>{
  let held=0,calls=[],attempt=0;
- const runtime={identity_request:()=>'{"device_public_key":"client","request_id":"stable"}',identity_complete:(_key,response)=>{assert.equal(response,'challenge');return 'proof';},bind_identity:()=> 'same-key',peer_enrollment:()=>'{"profile":"p","device":"client","room":"r"}',refresh_storage_lease(){},async connect_peer(raw,key,_rows,status){assert.equal(key,'same-key');assert.equal(raw,`bootstrap-${++attempt}`);status('{"phase":"ready","records":[]}');return attempt;},peer_pending_writes:()=> '[]',peer_committed(){},disconnect_peer(){},close_peer(){},suspend_peer(){},rebind_peer(){}};
+ const runtime={identity_request:()=>'{"device_public_key":"client","request_id":"stable"}',identity_complete:(_key,response)=>{assert.equal(response,'challenge');return 'proof';},bind_identity:()=> 'same-key',peer_enrollment:()=>'{"profile":"p","device":"client","room":"r"}',refresh_storage_lease(){},async connect_peer(raw,key,_rows,status){assert.equal(key,'same-key');assert.equal(raw,`bootstrap-${++attempt}`);status('{"phase":"ready","records":[]}');return attempt;},async reconnect_peer(id,raw,key){assert.equal(id,1);assert.equal(key,'same-key');assert.equal(raw,`bootstrap-${++attempt}`);return id;},peer_pending_writes:()=> '[]',peer_committed(){},disconnect_peer(){},close_peer(){},suspend_peer(){},rebind_peer(){}};
  const connect=createConnectPeer({init:async()=>{},runtime,mountDesktop(){},acquireStorage:async()=>({hydrate:async()=>[],release:async()=>{}}),acquireIdentity:async()=>{held++;return{material:'same-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:async(url,options)=>{calls.push([url,options.method,options.body]);return{ok:true,text:async()=>url.endsWith('/challenge')?'challenge':`bootstrap-${attempt+1}`};}});
  const peer=await connect();await peer.reconnect();assert.equal(calls.length,4);assert(calls.every(call=>call[1]==='POST'));assert.deepEqual(calls[0],calls[2]);assert.deepEqual(calls[1],calls[3]);await peer.dispose();assert.equal(held,0);
 });
@@ -65,4 +67,44 @@ test('enrollment policy failure is explicit and releases key without trying anot
 test('abort during enrollment settles constructor and releases custody before a new owner can load',async()=>{
  const gate=deferred(),entered=deferred();const f=fixture({enroll:async(_url,{signal})=>{entered.resolve();await gate.promise;if(signal.aborted)throw signal.reason;return{ok:true,text:async()=>'{raw}'};}});
  const abort=new AbortController();const pending=f.connect({signal:abort.signal});await entered.promise;abort.abort();assert.equal(f.counts().held,1);gate.resolve();await assert.rejects(pending);assert.equal(f.counts().held,0);assert.equal(f.counts().attempts,0);
+});
+
+test('committed local work survives publication failure with connection-only recovery',async()=>{
+ const f=fixture(),peer=await f.connect();f.setPublishFailure(true);await peer.retryPersistence();
+ const health=peer.getSnapshot().health;assert(health.failures.some(f=>f.scope.kind==='connection'));assert(!health.failures.some(f=>f.scope.kind==='storage'));assert.notEqual(peer.getSnapshot().persistence,'failed');
+ f.setPublishFailure(false);await peer.reconnect();assert(!peer.getSnapshot().health.failures.some(f=>f.scope.kind==='connection'));await peer.dispose();
+});
+test('health generations increase as decimal integers and storage recovery is coalesced',async()=>{
+ const f=fixture(),peer=await f.connect();const seen=[];peer.subscribe(snapshot=>seen.push(snapshot.health.generation));
+ f.setFailCommit(true);await assert.rejects(peer.retryPersistence());assert(peer.getSnapshot().health.failures.some(f=>f.scope.kind==='storage'));
+ f.setFailCommit(false);const a=peer.recover({kind:'retry-saving'}),b=peer.recover({kind:'retry-saving'});assert.equal(a,b);assert.deepEqual(await a,await b);assert(!peer.getSnapshot().health.failures.some(f=>f.scope.kind==='storage'));assert(seen.every((value,index)=>index===0||BigInt(value)>BigInt(seen[index-1])));await peer.dispose();
+});
+
+test('desktop retry settles only after newer presentation and preserves unrelated saving failure',async()=>{
+ const f=fixture(),peer=await f.connect(),mount=await peer.mountDesktop({});mount.failRenderer();f.setFailCommit(true);await assert.rejects(peer.retryPersistence());
+ const surface=peer.getSnapshot().health.surfaces[0].id;let done=false;const recovery=peer.recover({kind:'retry-desktop',surfaceId:surface}).then(value=>{done=true;return value;});
+ for(let i=0;i<4;i++)await Promise.resolve();mount.present(1);await Promise.resolve();assert.equal(done,false);mount.present(2);await recovery;
+ assert(peer.getSnapshot().health.failures.some(f=>f.scope.kind==='storage'));assert(!peer.getSnapshot().health.failures.some(f=>f.scope.kind==='renderer'));
+ f.setFailCommit(false);await peer.retryPersistence();await peer.dispose();
+});
+test('disposing during desktop recovery settles the waiter and emits no late completion',async()=>{
+ const f=fixture(),peer=await f.connect();await peer.mountDesktop({});const surface=peer.getSnapshot().health.surfaces[0].id;
+ const recovery=peer.recover({kind:'retry-desktop',surfaceId:surface});await Promise.resolve();await peer.dispose();await recovery;assert.equal(peer.getSnapshot().health.transport.phase,'closed');
+});
+
+test('saving retry clears each live host persistence latch before settling shared journal',async()=>{
+ const f=fixture(),peer=await f.connect(),mount=await peer.mountDesktop({});await peer.retryPersistence();assert.equal(mount.flushCalls,1);await peer.dispose();
+});
+
+test('initial allocation failure retains exact attempt and successful retry delivers its handle',async()=>{
+ const f=fixture(),peer=await f.connect();f.setFailMount(true);const abort=new AbortController();let surface,handle;const statuses=[];
+ await assert.rejects(peer.mountDesktop({}, {signal:abort.signal,onSurface:id=>surface=id,onMount:mount=>handle=mount,onStatus:status=>statuses.push(status)}),/fonts unavailable/);
+ assert(surface);assert(statuses.every(status=>status.surfaceId===surface));f.setFailMount(false);
+ const result=await peer.recover({kind:'retry-desktop',surfaceId:surface});assert.equal(peer.getSnapshot().health.recoveryOperations.find(op=>op.id===result.operationId).state,'succeeded');assert(handle);assert.equal(peer.getSnapshot().health.surfaces.find(row=>row.id===surface).phase,'presented');
+ abort.abort();for(let i=0;i<8;i++)await Promise.resolve();assert.equal(f.mounts.size,0);await assert.rejects(peer.recover({kind:'retry-desktop',surfaceId:surface}),/Unknown/);await peer.dispose();
+});
+test('aborting a failed initial mount prevents recovery from resurrecting its target',async()=>{
+ const f=fixture(),peer=await f.connect();f.setFailMount(true);const abort=new AbortController();let surface;
+ await assert.rejects(peer.mountDesktop({}, {signal:abort.signal,onSurface:id=>surface=id}));abort.abort();f.setFailMount(false);
+ await assert.rejects(peer.recover({kind:'retry-desktop',surfaceId:surface}),/Unknown/);assert.equal(f.mounts.size,0);await peer.dispose();
 });

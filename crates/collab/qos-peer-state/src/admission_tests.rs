@@ -1329,3 +1329,26 @@ fn governed_import_is_atomic_even_for_direct_admission() {
         "direct receive cannot partly import certificate metadata"
     );
 }
+
+#[test]
+fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
+    let (a, ac, b, bc, now) = fixtures();
+    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let mut native = StatePeer::new(room, ac.clone(), vec![ac.clone(),bc.clone()],RevocationList::new(),now).unwrap();
+    let mut doc=AutoCommit::new();doc.put(ROOT,"value",1).unwrap();doc.commit();
+    native.install_seed(SeedState{room_changes:seed_room(room,&ac,&[ac.clone(),bc.clone()]).unwrap(),documents:vec![SeedDocument{app_id:"test.app".into(),record_id:"tab:1".into(),kind:"test".into(),bytes:doc.save()}]},&a,now).unwrap();
+    let mut browser=StatePeer::new(room,ac.clone(),vec![ac.clone(),bc.clone()],RevocationList::new(),now).unwrap();
+    for message in native.bootstrap_messages(&a,now).unwrap(){browser.receive(a.verifying_key().to_bytes(),message,now).unwrap();}
+    assert!(browser.durable_coverage("test.app","tab:1").unwrap().is_none(),"legacy accepted coverage is not a durable receipt");
+    let messages=native.durable_bootstrap_messages(&a,now,7).unwrap();
+    browser.receive(a.verifying_key().to_bytes(),messages[0].clone(),now).unwrap();
+    assert!(browser.durable_coverage("test.app","tab:1").unwrap().is_none(),"receipt cannot cover a checkpoint that is not accepted yet");
+    for message in messages.into_iter().skip(1){browser.receive(a.verifying_key().to_bytes(),message,now).unwrap();}
+    let receipt=browser.durable_coverage("test.app","tab:1").unwrap().unwrap();assert_eq!(receipt.generation,7);
+    assert!(browser.durable_covers_current("test.app","tab:1").unwrap());
+    let bytes=browser.durable().unwrap();let mut browser=StatePeer::restore(&bytes,room,ac,vec![bc],RevocationList::new(),now).unwrap();
+    assert_eq!(browser.durable_coverage("test.app","tab:1").unwrap().unwrap(),receipt);
+    let mut doc=AutoCommit::load(&browser.document("test.app","tab:1").unwrap()).unwrap();let heads=doc.get_heads();doc.put(ROOT,"value",2).unwrap();doc.commit();
+    browser.publish_incremental("test.app","tab:1",doc.save_after(&heads),&b,now).unwrap();
+    assert!(!browser.durable_covers_current("test.app","tab:1").unwrap(),"an older receipt never covers a newer local edit");
+}

@@ -1,3 +1,5 @@
+import {commitPeerBatches} from './peer-persistence.mjs';
+import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import init,* as runtime from './pkg/qos_browser_runtime.js';
 import {MountRegistry,beforeInputRoute,keyboardRoute,modifierSnapshot,wheelPixels} from './host-core.mjs';
 import {acquireStorage} from './storage.mjs';
@@ -6,9 +8,12 @@ import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
 let registry=new MountRegistry();
 const closures=new Set();
 const recoveryJobs=new Set();
-let initialized,fontsPromise;
-const fonts=()=>fontsPromise??=fetch(new URL('./fonts.json',import.meta.url)).then(r=>r.json()).then(async names=>Object.fromEntries(await Promise.all(names.map(async name=>[name,new Uint8Array(await (await fetch(new URL(`./fonts/${name}`,import.meta.url))).arrayBuffer())]))));
-const ready=()=>initialized??=init();
+const fetchRequired=async url=>{const response=await fetch(url);if(!response.ok)throw Error(`asset HTTP ${response.status}`);return response;};
+const fonts=retryableMemo(async()=>{
+ const names=await (await fetchRequired(new URL('./fonts.json',import.meta.url))).json();
+ return Object.fromEntries(await Promise.all(names.map(async name=>[name,new Uint8Array(await (await fetchRequired(new URL(`./fonts/${name}`,import.meta.url))).arrayBuffer())])));
+});
+const ready=retryableMemo(()=>init());
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
   const canvas=document.createElement('canvas');canvas.className='qos-canvas';canvas.tabIndex=0;
@@ -22,6 +27,7 @@ export async function mountDesktop(target,options={}) {
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
   const report=data=>options.onStatus?.(data);
+  const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
   delete config.onStatus;delete config.signal;delete config.loadAsset;
   const semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report);
@@ -33,7 +39,8 @@ export async function mountDesktop(target,options={}) {
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;}
     if(state.phase==='presented'){surface.inert=false;editor.disabled=false;}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
-    if(state.phase==='failed')readyReject(Error(state.error));
+    if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
+    if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}
     if(state.semantics)semantic.update(state.semantics);
     if(state.ime){
       editor.style.left=`${state.ime.x}px`;editor.style.top=`${state.ime.y}px`;editor.style.height=`${Math.max(1,state.ime.height)}px`;
@@ -41,22 +48,32 @@ export async function mountDesktop(target,options={}) {
     }else if(document.activeElement===editor){canvas.focus({preventScroll:true});}
     if(state.phase==='presented'){readyResolve();void persist().catch(()=>{});void loadAssets();}
   }
+  const assets=createAssetRecovery({active,report,
+    retry:request=>runtime.retry_asset(id,request.loader,request.url),
+    complete:(request,bytes)=>runtime.complete_asset(id,request.loader,request.url,bytes),
+    load:async request=>{
+      if(options.loadAsset)return options.loadAsset(request.url,listeners.signal);
+      const url=new URL(request.url,location.href);
+      if(url.origin!==location.origin||!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
+      const response=await fetch(url,{signal:listeners.signal,credentials:'same-origin'});
+      if(!response.ok)throw Error(`asset HTTP ${response.status}`);
+      return new Uint8Array(await response.arrayBuffer());
+    }
+  });
   async function loadAssets(){
     if(!active())return;
-    for(const request of JSON.parse(runtime.asset_requests(id))){
-      try{
-        let bytes;
-        if(options.loadAsset)bytes=await options.loadAsset(request.url,listeners.signal);
-        else {
-          const url=new URL(request.url,location.href);
-          if(url.origin!==location.origin||!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
-          const response=await fetch(url,{signal:listeners.signal,credentials:'same-origin'});
-          if(!response.ok)throw Error(`asset HTTP ${response.status}`);
-          bytes=new Uint8Array(await response.arrayBuffer());
-        }
-        if(active())runtime.complete_asset(id,request.loader,request.url,bytes);
-      }catch(error){if(active()){runtime.complete_asset(id,request.loader,request.url,undefined);report({asset:'unavailable',assetUrl:request.url,error:String(error)});}}
-    }
+    await Promise.allSettled(JSON.parse(runtime.asset_requests(id)).map(request=>assets.request(request)));
+  }
+  async function retryAsset(assetId){
+    if(!active())throw Error('Asset surface disposed');
+    await assets.recover(assetId);
+    if(!active())throw Error('Asset surface disposed');
+    // Frames shown while fetching cannot prove presentation of the decoded asset.
+    const after=lastState?.frames??0;
+    await new Promise((resolve,reject)=>{
+      const timeout=setTimeout(()=>{presentationWaiters.delete(waiter);reject(Error('Asset presentation timed out'));},10000);
+      const waiter={after,resolve:()=>{clearTimeout(timeout);resolve();},reject:error=>{clearTimeout(timeout);reject(error);}};presentationWaiters.add(waiter);
+    });
   }
   async function persist(){
     if(!active()||!storage||persistenceFailed)return;
@@ -66,8 +83,12 @@ export async function mountDesktop(target,options={}) {
       const writes=JSON.parse(runtime.pending_writes(current));
       if(!writes.length)return;
       try{
-        await storage.commit(writes);
-        for(const w of writes)runtime.acknowledge_storage(config.profile,config.device,BigInt(w.revision),undefined);
+        if(config.peer!==undefined&&runtime.peer_pending_batch){
+          await commitPeerBatches({pending:()=>JSON.parse(runtime.peer_pending_batch(config.peer)),commit:batch=>storage.commit(batch),acknowledge:result=>runtime.acknowledge_peer_storage_batch(config.peer,JSON.stringify(result)),epoch:storage.epoch,publish:()=>{}});
+        }else{
+          await storage.commit(writes);
+          for(const w of writes)runtime.acknowledge_storage(config.profile,config.device,BigInt(w.revision),undefined);
+        }
         report({persistence:'committed',pendingWrites:0,error:null});
       }catch(error){
         for(const w of writes)runtime.acknowledge_storage(config.profile,config.device,BigInt(w.revision),String(error));
@@ -79,7 +100,7 @@ export async function mountDesktop(target,options={}) {
   let closeWrites=[];
   const cleanup=recoverableClose({
     begin(){
-      closed=true;listeners.abort();readyReject(Error('mount disposed'));
+      closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=JSON.parse(runtime.close(id));
       semantic.close();surface.remove();
     },
@@ -153,7 +174,7 @@ export async function mountDesktop(target,options={}) {
     },{passive:false});
     on(document,'visibilitychange',()=>{if(active())runtime.visible(id,document.visibilityState==='visible');});
     await presented;
-    return {cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
+    return {retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,editor,semantics:accessibility,
       durableState:()=>acquired.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args)};

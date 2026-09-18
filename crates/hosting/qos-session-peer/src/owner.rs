@@ -183,7 +183,7 @@ impl SessionOwner {
         )
         .map_err(anyhow::Error::msg)?;
         let outgoing = peer
-            .bootstrap_messages(&identity.native, now)
+            .durable_bootstrap_messages(&identity.native, now, 1)
             .map_err(anyhow::Error::msg)?
             .iter()
             .map(postcard::to_stdvec)
@@ -340,7 +340,7 @@ impl SessionOwner {
     pub fn refresh_checkpoint(&mut self) -> Result<CommitReceipt> {
         let mut candidate = self.peer.clone();
         let messages = candidate
-            .bootstrap_messages(&self.identity.native, SystemTime::now())
+            .durable_bootstrap_messages(&self.identity.native, SystemTime::now(), self.aggregate.generation.checked_add(1).context("session generation exhausted")?)
             .map_err(anyhow::Error::msg)?;
         let mut next = self.aggregate.clone();
         next.outgoing = messages
@@ -378,7 +378,7 @@ impl SessionOwner {
             return self.commit(next, candidate).map(Some);
         }
         let messages = candidate
-            .bootstrap_messages(&self.identity.native, SystemTime::now())
+            .durable_bootstrap_messages(&self.identity.native, SystemTime::now(), self.aggregate.generation.checked_add(1).context("session generation exhausted")?)
             .map_err(anyhow::Error::msg)?;
         // All entries here are authoritative complete checkpoints; newer committed checkpoints supersede older ones.
         next.outgoing = messages
@@ -399,7 +399,7 @@ impl SessionOwner {
         }
         self.validate_admission(&candidate, &directory)?;
         let messages = candidate
-            .bootstrap_messages(&self.identity.native, SystemTime::now())
+            .durable_bootstrap_messages(&self.identity.native, SystemTime::now(), self.aggregate.generation.checked_add(1).context("session generation exhausted")?)
             .map_err(anyhow::Error::msg)?;
         let mut next = self.aggregate.clone();
         next.directory = directory;
@@ -420,7 +420,7 @@ impl SessionOwner {
         }
         self.validate_admission(&candidate, &directory)?;
         let messages = candidate
-            .bootstrap_messages(&self.identity.native, SystemTime::now())
+            .durable_bootstrap_messages(&self.identity.native, SystemTime::now(), self.aggregate.generation.checked_add(1).context("session generation exhausted")?)
             .map_err(anyhow::Error::msg)?;
         let mut next = self.aggregate.clone();
         next.directory = directory;

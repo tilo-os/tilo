@@ -730,7 +730,7 @@ pub fn semantic(
     })
 }
 pub(crate) fn write_json(w: &PendingWrite) -> serde_json::Value {
-    serde_json::json!({"key":serde_json::to_string(&DiskKey::from(&w.key)).unwrap_or_default(),"bytes":w.value.bytes,"actor":w.value.actor,"revision":w.revision})
+    serde_json::json!({"key":serde_json::to_string(&DiskKey::from(&w.key)).unwrap_or_default(),"bytes":w.value.bytes,"actor":w.value.actor,"revision":crate::revision_wire_value(w.revision)})
 }
 #[wasm_bindgen]
 pub fn pending_writes(id: u64) -> Result<String, JsValue> {
@@ -950,11 +950,16 @@ pub fn complete_asset(
             .images
             .get_mut(loader)
             .ok_or_else(|| error("unknown image loader"))?;
-        let complete = loader.complete(url, bytes.as_deref());
+        let complete = loader.complete(url, bytes.as_deref()) && loader.loaded(url);
         m.pending = true;
         m.window.request_redraw();
         Ok(complete)
     })
+}
+
+#[wasm_bindgen]
+pub fn retry_asset(id:u64,loader:usize,url:&str)->Result<bool,JsValue>{
+    MOUNTS.with_borrow_mut(|mounts|{let mount=mounts.get_mut(&id).ok_or_else(||error("closed mount"))?;let loader=mount.images.get_mut(loader).ok_or_else(||error("unknown image loader"))?;Ok(loader.retry(url))})
 }
 
 /// Publish the DOM event's modifier snapshot before Winit dispatches its key.

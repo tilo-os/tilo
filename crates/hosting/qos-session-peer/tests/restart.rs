@@ -473,3 +473,20 @@ fn deferred_snapshot_stays_reachable_until_governed_coverage_then_commits() {
     drop(owner);
     assert_eq!(SessionOwner::open(&path).unwrap().status(), committed);
 }
+
+#[test]
+fn published_durability_receipts_bind_committed_generation_and_survive_failed_barrier() {
+    let dir=tempfile::tempdir().unwrap();let path=dir.path().join("owner");
+    let mut owner=SessionOwner::initialize(&path).unwrap();
+    let receipt=owner.refresh_checkpoint().unwrap();
+    for row in &receipt.records {
+        let proof=owner.peer().durable_coverage(&row.app_id,&row.record_id).unwrap().expect("native checkpoint must carry barrier-bound durable proof");
+        assert_eq!(proof.generation,receipt.generation);assert_eq!(proof.coverage.heads,row.heads);
+    }
+    let outgoing=owner.outgoing().to_vec();let before=owner.status();
+    fs::rename(path.join("session.bin"),path.join("saved.bin")).unwrap();fs::create_dir(path.join("session.bin")).unwrap();
+    assert!(owner.refresh_checkpoint().is_err());assert!(!owner.permits_publication());assert_eq!(owner.outgoing(),outgoing);assert_eq!(owner.status(),before);
+    fs::remove_dir(path.join("session.bin")).unwrap();fs::rename(path.join("saved.bin"),path.join("session.bin")).unwrap();drop(owner);
+    let owner=SessionOwner::open(&path).unwrap();assert_eq!(owner.outgoing(),outgoing);
+    for row in receipt.records{assert_eq!(owner.peer().durable_coverage(&row.app_id,&row.record_id).unwrap().unwrap().generation,receipt.generation);}
+}
