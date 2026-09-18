@@ -150,9 +150,11 @@ def _create_verified_disk(args):
                 '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'])
             disk.validate()
         # Source cleanup must succeed before the disk may survive this call.
+        file_identity = disk.file_identity()
         disk.retain()
     return {'schema': 1, 'purpose': 'tilo-development-unaccepted-test-disk',
             'source': verified.receipt, 'boot': boot, 'path': str(args.output),
+            'file_identity': file_identity,
             'size_bytes': args.size_bytes, 'disk_created': True,
             'installed_bytes_verified': False, 'vm_boot_verified': False, 'installable': False}
 
