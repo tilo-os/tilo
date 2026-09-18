@@ -19,8 +19,8 @@ with TiloClient.spawn_headless() as tilo:
 
     # Drive the UI:
     tilo.click("wheel_disc")
-    tilo.modifiers(ctrl=True)
-    tilo.key("k")               # Ctrl+K → palette
+    tilo.modifiers(logo=True)
+    tilo.key("k")               # Super+K → machine-wide search
     tilo.modifiers()            # release modifiers
     tilo.type_text("Files")     # type into palette
 
