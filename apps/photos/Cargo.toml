@@ -34,6 +34,7 @@ taffy.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 png.workspace = true
 tilo-ocr = { path = "../../crates/media/ocr" }
+kamadak-exif = "0.6.1"
 
 [dev-dependencies]
 tempfile.workspace = true
