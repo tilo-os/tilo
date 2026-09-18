@@ -271,11 +271,13 @@ impl PasswordsSurface {
                 .cloned()
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| item.username.clone()),
-            SecretItemKind::ApiKey => item
-                .username
-                .is_empty()
-                .then_some("API credential".to_string())
-                .unwrap_or_else(|| item.username.clone()),
+            SecretItemKind::ApiKey => {
+                if item.username.is_empty() {
+                    "API credential".into()
+                } else {
+                    item.username.clone()
+                }
+            }
             SecretItemKind::SecureNote => "Note".into(),
             SecretItemKind::Wifi => item
                 .fields
@@ -678,8 +680,8 @@ impl PasswordsSurface {
             .unwrap_or_else(|| cached.clone());
         self.editing = Some(item.id.clone());
         self.draft_kind = item.kind;
-        self.draft_title = item.title.clone();
-        self.draft_username = item.username.clone();
+        self.draft_title.clone_from(&item.title);
+        self.draft_username.clone_from(&item.username);
         self.draft_origin = item.origins.iter().cloned().collect::<Vec<_>>().join(", ");
         self.draft_password.clear();
         self.draft_notes = Zeroizing::new(item.notes);
@@ -827,17 +829,16 @@ impl PasswordsSurface {
             // custom field we do not own or understand.
             item.fields.remove("network");
         }
-        let origins = self
+        let mut origins = self
             .draft_origin
             .split([',', '\n', ';'])
             .map(str::trim)
-            .filter(|origin| !origin.is_empty())
-            .collect::<Vec<_>>();
+            .filter(|origin| !origin.is_empty());
         let valid_origin = if matches!(
             self.draft_kind,
             SecretItemKind::Login | SecretItemKind::ApiKey
         ) {
-            origins.into_iter().try_for_each(|origin| {
+            origins.try_for_each(|origin| {
                 item.add_origin(origin)
                     .map_err(|_| format!("{origin} is not a full sign-in address"))
             })
@@ -875,9 +876,8 @@ impl PasswordsSurface {
     fn secret_field_label(kind: SecretItemKind) -> &'static str {
         match kind {
             SecretItemKind::ApiKey => "API key",
-            SecretItemKind::Wifi => "Password",
+            SecretItemKind::Wifi | SecretItemKind::Login => "Password",
             SecretItemKind::Other => "Secret",
-            SecretItemKind::Login => "Password",
             SecretItemKind::SecureNote => "Note",
         }
     }
@@ -892,14 +892,14 @@ impl PasswordsSurface {
             let Some((label, value)) = line.split_once('=').or_else(|| line.split_once(':')) else {
                 return Err(format!(
                     "Custom field {} needs a label and value separated by =",
-                    index + 1
+                    index.saturating_add(1)
                 ));
             };
             let label = label.trim();
             if label.is_empty() || label.eq_ignore_ascii_case("network") {
                 return Err(format!(
                     "Choose another label for custom field {}",
-                    index + 1
+                    index.saturating_add(1)
                 ));
             }
             if fields
@@ -1131,7 +1131,7 @@ impl PasswordsSurface {
                             panel.y0 + 114.0 - self.editor_scroll,
                         )
                     } else {
-                        let left = x + f64::from(index - 3) * (second + 8.0);
+                        let left = x + f64::from(index.saturating_sub(3)) * (second + 8.0);
                         Rect::new(
                             left,
                             panel.y0 + 122.0 - self.editor_scroll,
@@ -1216,7 +1216,9 @@ impl PasswordsSurface {
                 self.revealed = Some((
                     item.id.clone(),
                     secret.to_string(),
-                    std::time::Instant::now() + std::time::Duration::from_secs(10),
+                    std::time::Instant::now()
+                        .checked_add(std::time::Duration::from_secs(10))
+                        .unwrap_or_else(std::time::Instant::now),
                 ));
             }
             Err(error) => self.status = error,
@@ -1469,10 +1471,10 @@ impl PasswordsSurface {
             Ok(items) => {
                 let count = items.len();
                 let Some(model) = &mut self.model else { return };
-                let mut restored = 0;
+                let mut restored = 0_usize;
                 for mut item in items {
                     if model.update(&mut item).is_ok() {
-                        restored += 1;
+                        restored = restored.saturating_add(1);
                     }
                 }
                 self.refresh();
@@ -1674,7 +1676,7 @@ impl PasswordsSurface {
                     && item.username.eq_ignore_ascii_case(&row.username)
                     && origins_match(item, &row.origin)
             }) {
-                skipped += 1;
+                skipped = skipped.saturating_add(1);
                 continue;
             }
             let mut item = SecretItem::login(
@@ -1684,13 +1686,13 @@ impl PasswordsSurface {
             );
             item.notes = row.notes.to_string();
             if !row.origin.is_empty() && item.add_origin(&row.origin).is_err() {
-                skipped += 1;
+                skipped = skipped.saturating_add(1);
                 continue;
             }
             if model.update(&mut item).is_ok() {
-                imported += 1;
+                imported = imported.saturating_add(1);
             } else {
-                skipped += 1;
+                skipped = skipped.saturating_add(1);
             }
         }
         self.refresh();
@@ -2745,7 +2747,9 @@ impl PasswordsSurface {
         let scroll = self.list_scroll.min(total.saturating_sub(shown.max(1)));
         for (display_index, item_index) in visible.into_iter().skip(scroll).take(shown).enumerate()
         {
-            let item = &self.items[item_index];
+            let Some(item) = self.items.get(item_index) else {
+                continue;
+            };
             let y = tabs_y + 52.0 + display_index as f64 * 76.0;
             let row = Rect::new(rect.x0, y, rect.x1, y + 66.0);
             Self::card(
@@ -2762,7 +2766,7 @@ impl PasswordsSurface {
             let accent = c
                 .accent
                 .stops
-                .get((display_index + 3).min(9))
+                .get(display_index.saturating_add(3).min(9))
                 .copied()
                 .unwrap_or(c.text_primary);
             Self::card(
@@ -4045,7 +4049,7 @@ impl Widget for PasswordsSurface {
                 && key.logical_key == Key::Named(NamedKey::Tab)
                 && !restoring
             {
-                self.backup_focus = 1 - self.backup_focus;
+                self.backup_focus = usize::from(self.backup_focus == 0);
                 self.backup_password.set_focus(self.backup_focus == 0);
                 self.backup_confirmation.set_focus(self.backup_focus == 1);
                 *handled = true;
@@ -4654,7 +4658,10 @@ impl Widget for PasswordsSurface {
                                     if backwards {
                                         index.checked_sub(1).unwrap_or(last)
                                     } else {
-                                        index.saturating_add(1) % fields.len()
+                                        index
+                                            .saturating_add(1)
+                                            .checked_rem(fields.len())
+                                            .unwrap_or(0)
                                     }
                                 },
                             );
@@ -5371,7 +5378,9 @@ impl Widget for PasswordsSurface {
             // Keep the deadline fixed until sync consumes the tick. Returning
             // now + 16 ms on every query would postpone it indefinitely.
             let deadline = self.transfer_poll_deadline.get().unwrap_or_else(|| {
-                std::time::Instant::now() + std::time::Duration::from_millis(16)
+                std::time::Instant::now()
+                    .checked_add(std::time::Duration::from_millis(16))
+                    .unwrap_or_else(std::time::Instant::now)
             });
             self.transfer_poll_deadline.set(Some(deadline));
             Some(deadline)
@@ -5699,10 +5708,11 @@ mod tests {
                 |item| item.password.is_empty() || item.password.starts_with("never-rendered-")
             )
         );
-        let visible = items
-            .iter()
-            .map(|item| format!("{} {} {:?}", item.title, item.username, item.origins))
-            .collect::<String>();
+        use std::fmt::Write as _;
+        let visible = items.iter().fold(String::new(), |mut text, item| {
+            write!(text, "{} {} {:?}", item.title, item.username, item.origins).unwrap();
+            text
+        });
         assert!(!visible.contains("never-rendered"));
     }
 
