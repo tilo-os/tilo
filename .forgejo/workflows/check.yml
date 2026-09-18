@@ -64,26 +64,16 @@ jobs:
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
-      - name: Resolve the CI builder before starting job containers
-        id: resolve
-        env:
-          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          image=code.podesta.ai/qos/tilo-builder:latest
-          if [ -n "$REQUESTED_BUILDER" ]; then
-            [[ "$REQUESTED_BUILDER" =~ ^code\.podesta\.ai/qos/tilo-builder@sha256:[0-9a-f]{64}$ ]] || {
-              echo '::error::builder_image must be an immutable tilo-builder SHA-256 reference'
-              exit 1
-            }
-            image="$REQUESTED_BUILDER"
-          fi
-          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
       - name: Checkout public-trust context fixture
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Resolve the CI builder before starting job containers
+        id: resolve
+        env:
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: python3 tools/resolve_ci_builder.py
       - name: Verify named public-trust contexts with Docker BuildKit
         env:
           DOCKER_BUILDKIT: "1"
