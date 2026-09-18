@@ -44,6 +44,7 @@ def invalidations(root, active):
             name in ('System.map','Module.symvers','modules.order','modules.builtin','modules.builtin.modinfo') or
             name.startswith(('vmlinux','.tmp_vmlinux','.tmp_kallsyms')) or
             rel.startswith('arch/arm64/boot/Image') or
+            rel in ('arch/arm64/boot/vmlinuz.efi', 'arch/arm64/boot/image.fit') or
             (rel.startswith('certs/') and (name.endswith('.o') or name in CERT_OUTPUTS))):
             removed.add(rel)
         if name.endswith('.cmd'):
@@ -184,15 +185,30 @@ def restore(directory, approval_sha):
         for name in ('signing-key.pem','signing-cert.pem','signing-cert.der'):
             os.replace(fresh/name,Path('/work/module-signing')/name)
 
-def assert_embedded():
-    cert=Path('/work/module-signing/signing-cert.der').read_bytes()
+def assert_embedded(work=Path('/work'), root=None):
+    root=Path(KSRC) if root is None else root
+    cert=(work/'module-signing/signing-cert.der').read_bytes()
     require(0<len(cert)<=65536,'certificate bound')
-    require((Path(KSRC)/'certs/signing_key.x509').read_bytes()==cert,'new cert not regenerated')
+    require((root/'certs/signing_key.x509').read_bytes()==cert,'new cert not regenerated')
     tail=b''; found=False
-    with (Path(KSRC)/'arch/arm64/boot/Image').open('rb') as image:
+    with (root/'arch/arm64/boot/Image').open('rb') as image:
         for block in iter(lambda:image.read(1024*1024),b''):
             found |= cert in tail+block; tail=(tail+block)[-len(cert):]
     require(found,'new certificate absent from kernel Image')
+    invalidations_path=work/'kernel-reconstruction-invalidations.json'
+    removed=json.loads(invalidations_path.read_bytes())
+    require(isinstance(removed,list) and all(isinstance(x,str) for x in removed), 'invalidations manifest malformed')
+    evidence=dict(schema=1, purpose='tilo-kernel-reconstruction-runtime-evidence',
+                  invalidations_sha256=sha(invalidations_path), invalidated_paths=len(removed),
+                  module_certificate_der_sha256=hashlib.sha256(cert).hexdigest(),
+                  regenerated_certificate_matches=True, embedded_certificate_verified=True)
+    (work/'kernel-reconstruction-evidence.json').write_text(json.dumps(evidence,sort_keys=True,indent=2)+'\n')
+
+EXPORT_STAGE = b'''\n# Public reconstruction evidence only; original publish and packaging stay intact.
+FROM publish AS reconstructed-publish
+COPY --from=build /work/kernel-reconstruction-evidence.json /reconstruction/runtime.json
+COPY --from=build /work/kernel-reconstruction-invalidations.json /reconstruction/invalidations.json
+'''
 
 def derive(original, approval_sha):
     require(hashlib.sha256(original).hexdigest()==RECIPE,'original recipe differs')
@@ -204,7 +220,7 @@ def derive(original, approval_sha):
     text=text[:start]+text[start:].replace('RUN set -eux; \\\n','RUN --mount=type=bind,from=kernel-checkpoint,target=/checkpoint,ro set -eux; \\\n',1)
     text=text.replace(marker,
         f'    python3 /checkpoint/kernel_checkpoint_restore.py restore --approval-sha256 {approval_sha}; \\\n    cd "$KSRC"; \\\n'+marker+'    python3 /checkpoint/kernel_checkpoint_restore.py assert-embedded; \\\n',1)
-    return text.encode()
+    return text.encode()+EXPORT_STAGE
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('action',choices=['derive','restore','assert-embedded']);p.add_argument('--approval-sha256');p.add_argument('--original',type=Path);p.add_argument('--output',type=Path);a=p.parse_args()

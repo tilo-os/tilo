@@ -64,5 +64,9 @@ if __name__ == '__main__':
         restore_helper_sha256=restore.sha(Path(restore.__file__)),
         checkpoint_reference=os.environ['CHECKPOINT_REF'],
         approval_sha256=os.environ['APPROVAL_SHA256'], kernel_build_jobs=4,
+        admitted_input_sha256={key: json.loads(os.environ['CHECKPOINT_APPROVAL'])[key]
+            for key in ('archive_sha256', 'scan_sha256', 'capture_receipt_sha256',
+                        'toolchain_evidence_sha256')},
+        original_recipe_executed_verbatim=False,
         toolchain_identity_check='required inside resumed build',
-        fresh_module_signing_identity=True), sort_keys=True, indent=2) + '\n')
+        fresh_module_signing_identity_required=True), sort_keys=True, indent=2) + '\n')
