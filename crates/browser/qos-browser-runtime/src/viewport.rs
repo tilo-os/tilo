@@ -55,6 +55,22 @@ impl ViewportState {
     pub fn did_apply(&mut self) {
         self.applied = self.requested;
     }
+    pub fn apply_for_acquired_texture<T, E>(
+        &mut self,
+        texture: Option<T>,
+        apply: impl FnOnce(Viewport) -> Result<(), E>,
+    ) -> Result<Option<T>, E> {
+        // A skipped surface acquisition must not move hit testing, caret/IME,
+        // or semantic geometry away from the image still displayed by the canvas.
+        let Some(texture) = texture else {
+            return Ok(None);
+        };
+        if self.needs_apply() {
+            apply(self.requested)?;
+            self.did_apply();
+        }
+        Ok(Some(texture))
+    }
     pub fn did_present(&mut self) {
         self.presented = Some(self.applied);
         self.outdated_reconfigured = false;
@@ -200,6 +216,66 @@ mod tests {
         state.did_present();
         assert!(!state.needs_present());
         assert!(state.recover_outdated()); // A later independent outage can recover.
+    }
+
+    #[test]
+    fn skipped_acquisition_preserves_displayed_dpr_layout_and_input_until_success() {
+        let initial = Viewport {
+            width: 1000,
+            height: 750,
+            dpr: 1.25,
+        };
+        let mut state = ViewportState::new(initial);
+        state.did_present();
+        state.request(Viewport {
+            dpr: 2.0,
+            ..initial
+        });
+        assert!(!state.needs_surface_resize(1000, 750));
+        let mut frame_viewport = initial;
+        for _ in 0..3 {
+            // Timeout/Outdated/Occluded all skip acquisition. The production
+            // transaction must leave FrameHarness's layout and input scale alone.
+            let result = state
+                .apply_for_acquired_texture(None::<()>, |viewport| {
+                    frame_viewport = viewport;
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            assert!(result.is_none());
+            assert_eq!(frame_viewport, initial);
+            assert_eq!(state.applied(), initial);
+            let pointer = state.map_pointer(500.0, 375.0);
+            assert_eq!(
+                (
+                    pointer.0 / frame_viewport.dpr,
+                    pointer.1 / frame_viewport.dpr
+                ),
+                (400.0, 300.0)
+            );
+            assert_eq!(frame_viewport.logical_size(), (800, 600));
+            assert!(state.needs_present());
+        }
+        let result = state
+            .apply_for_acquired_texture(Some(()), |viewport| {
+                frame_viewport = viewport;
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert!(result.is_some());
+        assert_eq!(frame_viewport.logical_size(), (500, 375));
+        assert_eq!(state.applied().dpr, 2.0);
+        let pointer = state.map_pointer(500.0, 375.0);
+        assert_eq!(
+            (
+                pointer.0 / frame_viewport.dpr,
+                pointer.1 / frame_viewport.dpr
+            ),
+            (250.0, 187.5)
+        );
+        assert!(state.needs_present());
+        state.did_present();
+        assert!(!state.needs_present());
     }
 
     #[test]

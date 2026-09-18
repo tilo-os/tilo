@@ -556,20 +556,16 @@ impl Mount {
         }
         let viewport = self.viewport.requested();
         self.collect_desktop();
-        if self.viewport.needs_apply() {
-            self.frame.set_input_scale(viewport.dpr)?;
-            self.frame.resize(viewport.logical_size()).map_err(|e| e.to_string())?;
-            self.viewport.did_apply();
-        }
-        self.pending |= self.viewport.needs_present();
-        self.pending |= self.frame.poll_frame().map_err(|e| e.to_string())?;
+        // Inspect wake flags without rebuilding the old viewport first. Layout
+        // and input scale may advance only after acquisition succeeds below.
+        let frame = self.frame.frame_output();
+        self.pending |= self.viewport.needs_present()
+            || frame.needs_redraw
+            || frame.needs_animation_frame
+            || frame.next_wake_deadline.is_some_and(|wake| wake <= ui::clock::Instant::now());
         if !self.pending {
             return Ok(());
         }
-        // Prepare the entire scene before touching the canvas backing store.
-        let frame = self.frame.frame_output();
-        let mut physical = vello::Scene::new();
-        physical.append(frame.scene, Some(ui::scale::composite_transform(viewport.dpr)));
         let gpu = self.gpu.as_mut().expect("GPU checked above");
         if let Some(reason) = gpu.cx.devices[gpu.surface.dev_id].loss_monitor().reason() {
             return Err(format!(
@@ -589,17 +585,27 @@ impl Mount {
         }
         let output = match acquired {
             wgpu::CurrentSurfaceTexture::Success(t)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
             wgpu::CurrentSurfaceTexture::Outdated
             | wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Occluded => {
-                // Neither pending content nor the requested viewport is acknowledged
-                // until presentation succeeds. Winit coalesces this into the next rAF.
-                self.window.request_redraw();
-                return Ok(());
-            }
+            | wgpu::CurrentSurfaceTexture::Occluded => None,
             other => return Err(format!("WebGPU surface unavailable: {other:?}")),
         };
+        let Some(output) = self.viewport.apply_for_acquired_texture(output, |viewport| {
+            self.frame.set_input_scale(viewport.dpr)?;
+            self.frame.resize(viewport.logical_size()).map_err(|e| e.to_string())
+        })? else {
+            // Keep both the old input/layout geometry and pending work on a
+            // skipped acquisition. Winit coalesces the retry into the next rAF.
+            self.window.request_redraw();
+            return Ok(());
+        };
+        // Poll only after applying the new viewport. This avoids an old-size
+        // layout merely to discover work, followed by a second resize layout.
+        self.frame.poll_frame().map_err(|e| e.to_string())?;
+        let frame = self.frame.frame_output();
+        let mut physical = vello::Scene::new();
+        physical.append(frame.scene, Some(ui::scale::composite_transform(viewport.dpr)));
         let handle = &gpu.cx.devices[gpu.surface.dev_id];
         gpu.renderer
             .render_to_texture(
