@@ -595,7 +595,9 @@ pub struct PhotosApp {
     /// This remains local UI state: collaborators should never change a
     /// person's preferred thumbnail size.
     timeline_density: u8,
-    timeline_scroll_row: usize,
+    /// Fractional row offset: pixel-wheel scrolling is smooth while the
+    /// materialised slice still advances only when its leading row changes.
+    timeline_scroll_row: f64,
     timeline_last_columns: usize,
     library_details_cards: Vec<(String, Rect)>,
     album_cards: Vec<(Option<String>, Rect)>,
@@ -763,7 +765,7 @@ impl PhotosApp {
             timeline_density_buttons: build_timeline_density_buttons(&timeline_density_pending),
             timeline_density_pending,
             timeline_density: 1,
-            timeline_scroll_row: 0,
+            timeline_scroll_row: 0.0,
             timeline_last_columns: 1,
             library_details_cards: Vec::new(),
             album_cards: Vec::new(),
@@ -1625,9 +1627,9 @@ impl PhotosApp {
     /// their resulting layout testable for parity.
     fn adjust_timeline_density(&mut self, increase: bool) -> bool {
         let before = self.timeline_density;
-        let anchor = self
-            .timeline_scroll_row
-            .saturating_mul(self.timeline_last_columns.max(1));
+        let anchor = (self.timeline_scroll_row * self.timeline_last_columns.max(1) as f64)
+            .round()
+            .max(0.0);
         if increase {
             self.timeline_density = self.timeline_density.saturating_add(1).min(4);
         } else {
@@ -1641,19 +1643,13 @@ impl PhotosApp {
             self.timeline_density,
             self.large_text_toolbar,
         );
-        self.timeline_scroll_row = anchor / columns.max(1);
+        self.timeline_scroll_row = anchor / columns.max(1) as f64;
         self.timeline_last_columns = columns;
         true
     }
 
-    fn scroll_timeline_rows(&mut self, delta: i32) {
-        if delta.is_negative() {
-            self.timeline_scroll_row = self
-                .timeline_scroll_row
-                .saturating_add(delta.unsigned_abs() as usize);
-        } else {
-            self.timeline_scroll_row = self.timeline_scroll_row.saturating_sub(delta as usize);
-        }
+    fn scroll_timeline_rows(&mut self, delta: f64) {
+        self.timeline_scroll_row = (self.timeline_scroll_row + delta).max(0.0);
     }
 
     #[allow(
@@ -4027,7 +4023,8 @@ impl PhotosApp {
             // immediate while keeping rendering and thumbnail decoding bounded.
             timeline_virtual_range(self.library_items.len(), 0, rows, columns).len()
         };
-        let mut timeline_y = top;
+        let mut timeline_y =
+            top - (self.timeline_scroll_row - self.timeline_scroll_row.floor()) * (card_h + gap);
         let mut timeline_column = columns;
         let mut previous_day = String::new();
         for item in self.library_items.iter().take(visible) {
@@ -6400,11 +6397,11 @@ impl Widget for PhotosApp {
         self.timeline_last_columns = timeline_columns;
         self.timeline_scroll_row = self
             .timeline_scroll_row
-            .min(self.library_total.saturating_sub(1) / timeline_columns.max(1));
+            .min(self.library_total.saturating_sub(1) as f64 / timeline_columns.max(1) as f64);
         let browse_offset = if self.album_editor {
             self.library_offset
         } else {
-            self.timeline_scroll_row.saturating_mul(timeline_columns)
+            (self.timeline_scroll_row.floor() as usize).saturating_mul(timeline_columns)
         };
         let mut timeline_items: Vec<_> = library
             .photos
@@ -6896,7 +6893,7 @@ impl Widget for PhotosApp {
                 if self.album_editor {
                     self.page_library(forward);
                 } else {
-                    self.scroll_timeline_rows(if forward { -3 } else { 3 });
+                    self.scroll_timeline_rows(if forward { 3.0 } else { -3.0 });
                 }
                 *handled = true;
                 return;
@@ -7101,15 +7098,13 @@ impl Widget for PhotosApp {
         if self.library_mode
             && let winit::event::WindowEvent::MouseWheel { delta, .. } = event
         {
-            let direction = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => y.signum(),
-                winit::event::MouseScrollDelta::PixelDelta(position) => position.y.signum() as f32,
+            let rows = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(y.signum()),
+                winit::event::MouseScrollDelta::PixelDelta(position) => {
+                    (-position.y / 96.0).clamp(-3.0, 3.0)
+                }
             };
-            if direction < 0.0 {
-                self.scroll_timeline_rows(-1);
-            } else if direction > 0.0 {
-                self.scroll_timeline_rows(1);
-            }
+            self.scroll_timeline_rows(rows);
             *handled = true;
             return;
         }
@@ -7485,9 +7480,12 @@ mod tests {
         app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 800.0);
         app.timeline_density = 1;
         app.timeline_last_columns = 5;
-        app.timeline_scroll_row = 6;
+        app.timeline_scroll_row = 6.0;
         assert!(app.adjust_timeline_density(true));
-        assert_eq!(app.timeline_scroll_row * app.timeline_last_columns, 30);
+        assert_eq!(
+            app.timeline_scroll_row * app.timeline_last_columns as f64,
+            30.0
+        );
     }
 
     #[test]
