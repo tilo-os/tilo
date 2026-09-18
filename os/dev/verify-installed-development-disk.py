@@ -153,7 +153,7 @@ def config_lines(raw):
     return result
 
 
-def selected_uki(esp, digest):
+def selected_uki(esp, digest, *, target_materialized=False):
     entries = hardware.trusted_path(esp, Path('loader/entries'), regular=False)
     names = list(entries.iterdir())
     if len(names) != 1 or not names[0].name.endswith('.conf'):
@@ -180,10 +180,41 @@ def selected_uki(esp, digest):
             if files != [wanted.lstrip('/')] and files:
                 raise ValueError('unexpected automatically discovered EFI payload')
     allowed_efi = {wanted.lstrip('/').lower(), 'efi/systemd/systemd-bootaa64.efi', 'efi/boot/bootaa64.efi'}
+    if target_materialized:
+        allowed_efi.add('tilo-target/tilo-target.efi')
     for path in esp.rglob('*'):
         if path.suffix.lower() == '.efi' and path.relative_to(esp).as_posix().lower() not in allowed_efi:
             raise ValueError('unexpected alternate EFI application')
     return wanted.lstrip('/')
+
+
+def verify_materialized_target(source_root, esp, prediction_receipt, generation):
+    """Authenticate each exact sidecar; no additional EFI/path allowance."""
+    expected = {'tilo-target.efi': prediction.boot.UKI_LIMIT,
+                f'predictions/generation-{generation}.json': 16384,
+                f'predictions/generation-{generation}.json.uki.sig': 1024}
+    base = hardware.trusted_path(esp, Path('tilo-target'), regular=False)
+    observed = set()
+    for directory, dirs, files in os.walk(base, followlinks=False):
+        relative = Path(directory).relative_to(esp)
+        for name in dirs:
+            hardware.trusted_path(esp, relative / name, regular=False)
+        for name in files:
+            observed.add((Path(directory) / name).relative_to(base).as_posix())
+    if observed != set(expected):
+        raise ValueError('materialized target inventory differs')
+    rows = []
+    for relative, limit in expected.items():
+        original = read(source_root, 'boot/tilo-target/' + relative, limit)
+        installed = read(esp, 'tilo-target/' + relative, limit)
+        if installed != original:
+            raise ValueError('materialized target differs from authenticated source')
+        digest = hashlib.sha256(installed).hexdigest()
+        if relative == 'tilo-target.efi' and digest != prediction_receipt['target_uki_sha256']:
+            raise ValueError('materialized target differs from predicted UKI')
+        rows.append({'path': 'tilo-target/' + relative, 'sha256': digest})
+    return {'files': rows, 'source_target_prediction_verified': True,
+            'runtime_access_verified': False}
 
 
 def origin_identity(raw, target, manifest, sections):
@@ -264,15 +295,21 @@ def source_boot_selection(root, boot, profile, live_path, architecture, generati
             'pcr_prediction_applies': False}
 
 
+def require_private_namespace():
+    if os.stat('/proc/self/ns/mnt').st_ino == os.stat('/proc/1/ns/mnt').st_ino:
+        raise ValueError('requires a separate mount namespace')
+    mounts = Path('/proc/self/mountinfo').read_text().splitlines()
+    if any('shared:' in line.split(' - ')[0] for line in mounts):
+        raise ValueError('mount namespace must have private propagation')
+
+
 def verify(args):
     if os.getuid() != 0 or os.geteuid() != 0 or args.architecture != 'aarch64':
         raise ValueError('requires root on the native ARM verification guest')
     import platform
-    if platform.machine() != args.architecture or os.stat('/proc/self/ns/mnt').st_ino == os.stat('/proc/1/ns/mnt').st_ino:
-        raise ValueError('requires native execution in a separate mount namespace')
-    mounts = Path('/proc/self/mountinfo').read_text().splitlines()
-    if any('shared:' in line.split(' - ')[0] for line in mounts):
-        raise ValueError('mount namespace must have private propagation')
+    if platform.machine() != args.architecture:
+        raise ValueError('requires native execution')
+    require_private_namespace()
     receipt = json.loads(args.creation_receipt.read_text())
     with source.verified_source(args) as verified, open_created_disk(args.disk, receipt) as fd:
         if receipt.get('source') != verified.receipt:
@@ -298,7 +335,10 @@ def verify(args):
                 command(['/usr/bin/mount', '-t', kind, '-o', options, device, str(destination)])
                 cleanup.callback(command, ['/usr/bin/umount', str(destination)])
                 readonly_mount(destination, kind)
-            uki = selected_uki(esp, args.composefs_digest)
+            target_materialization = None
+            if args.boot_profile == 'installer-media':
+                target_materialization = verify_materialized_target(verified.root, esp, boot, args.generation)
+            uki = selected_uki(esp, args.composefs_digest, target_materialized=target_materialization is not None)
             data = read(esp, uki, prediction.boot.UKI_LIMIT)
             if hashlib.sha256(data).hexdigest() != selected_boot['sha256']:
                 raise ValueError('installed selected UKI differs from verified source')
@@ -334,6 +374,7 @@ def verify(args):
     return {'schema': 1, 'purpose': 'tilo-installed-boot-and-root-verification',
         'source': verified.receipt, 'boot': boot, 'file_identity': receipt['file_identity'],
         'selected_boot': selected_boot,
+        'target_materialization': target_materialization,
         'checks': {'read_only_disk': True, 'selected_uki_matches_source': True,
                    'installed_origin': True, 'verity_mounted_root': True, 'effective_policy': True,
                    'introduced_private_material_policy': True},

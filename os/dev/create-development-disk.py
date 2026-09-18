@@ -20,13 +20,18 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
 
 import development_prediction as prediction
+import installer_target_artifacts
 from private_disk_image import PrivateDiskImage
 
 spec = importlib.util.spec_from_file_location('development_source', Path(__file__).with_name('verify-development-source.py'))
 source = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(source)
+spec = importlib.util.spec_from_file_location('installed_disk_inspector', Path(__file__).with_name('verify-installed-development-disk.py'))
+inspector = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(inspector)
 
 FLAGS = ('--via-loopback', '--generic-image', '--composefs-backend', '--bootloader',
          '--filesystem', '--source-imgref', '--target-imgref',
@@ -117,6 +122,12 @@ def create_from_supervised_controller(args, observation):
 
 
 def _create_verified_disk(args):
+    media = getattr(args, 'boot_profile', 'installed-target') == 'installer-media'
+    if getattr(args, 'boot_profile', 'installed-target') not in ('installed-target', 'installer-media'):
+        raise ValueError('unsupported disk boot profile')
+    media_receipt = None
+    if media:
+        inspector.require_private_namespace()
     with ExitStack() as disks:
         with source.verified_source(args) as verified:
             auth_args = []
@@ -126,6 +137,9 @@ def _create_verified_disk(args):
             boot = prediction.verify_prediction(verified.root, verified.public_bundle,
                 args.manifest_sha256, args.architecture, args.generation,
                 args.composefs_digest, args.systemd_version)
+            if media:
+                inspector.source_boot_selection(verified.root, boot, 'installer-media',
+                    getattr(args, 'source_live_uki', None), args.architecture, args.generation, args.composefs_digest)
             if not re.fullmatch(r'sha256:[0-9a-f]{64}', verified.image_id):
                 raise ValueError('source verifier did not return an immutable local image ID')
             run = ['/usr/bin/podman', '--remote=false', 'run', '--rm', '--pull=never']
@@ -149,14 +163,42 @@ def _create_verified_disk(args):
                 '--target-imgref=' + args.target,
                 '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'])
             disk.validate()
+            if media:
+                media_receipt = materialize_created_media(disk, verified, args)
         # Source cleanup must succeed before the disk may survive this call.
         file_identity = disk.file_identity()
         disk.retain()
     return {'schema': 1, 'purpose': 'tilo-development-unaccepted-test-disk',
             'source': verified.receipt, 'boot': boot, 'path': str(args.output),
             'file_identity': file_identity,
+            'boot_profile': getattr(args, 'boot_profile', 'installed-target'),
+            'target_materialization': media_receipt,
             'size_bytes': args.size_bytes, 'disk_created': True,
             'installed_bytes_verified': False, 'vm_boot_verified': False, 'installable': False}
+
+
+def materialize_created_media(disk, verified, args):
+    """Only the creator's held new regular file receives these ESP writes."""
+    inspector.require_private_namespace()
+    disk.validate()
+    fd = disk.fileno()
+    with tempfile.TemporaryDirectory(prefix='tilo-new-media-esp-') as directory, ExitStack() as cleanup:
+        loop = inspector.command(['/usr/sbin/losetup', '--find', '--show', '--partscan',
+                                  f'/proc/self/fd/{fd}'], pass_fds=(fd,)).decode().strip()
+        if not re.fullmatch('/dev/loop[0-9]+', loop):
+            raise ValueError('unexpected allocated media loop identity')
+        cleanup.callback(inspector.command, ['/usr/sbin/losetup', '--detach', loop])
+        table = json.loads(inspector.command(['/usr/sbin/sfdisk', '--json', loop]))
+        esp_device, _ = inspector.partitions(table, loop)
+        esp = Path(directory) / 'esp'
+        esp.mkdir()
+        inspector.command(['/usr/bin/mount', '-t', 'vfat', '-o', 'rw,nodev,nosuid,noexec', esp_device, str(esp)])
+        cleanup.callback(inspector.command, ['/usr/bin/umount', str(esp)])
+        receipt = installer_target_artifacts.materialize(verified.root, esp, verified.public_bundle,
+            args.manifest_sha256, args.architecture, args.generation, args.composefs_digest, args.systemd_version)
+    disk.validate()
+    os.fsync(fd)
+    return receipt
 
 
 def main():
@@ -170,6 +212,8 @@ def main():
         parser.add_argument('--' + name, type=int, required=True)
     parser.add_argument('--offline-key-signature', action='store_true')
     parser.add_argument('--disposable-guest', action='store_true')
+    parser.add_argument('--boot-profile', choices=('installed-target', 'installer-media'), default='installed-target')
+    parser.add_argument('--source-live-uki', help='installer-media only: authenticated source boot/EFI/Linux/*.efi')
     try:
         print(json.dumps(create(parser.parse_args()), sort_keys=True))
     except (ValueError, OSError, TypeError, KeyError) as error:
