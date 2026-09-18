@@ -332,23 +332,6 @@ def preflight_toolkit_runtime(
         terminate(process)
 
 
-def stage_qt_plugins(root: Path, env: dict[str, str]) -> None:
-    """Put Qt plugins on mmap-capable storage for virtiofs test hosts.
-
-    Qt maps plugin metadata before `dlopen`. Some VM virtiofs mounts permit
-    executable mappings but reject that metadata mapping, making every Qt
-    backend appear absent. Copying the installed files unchanged into the
-    case's private tmpfs keeps this a real toolkit/app test.
-    """
-    candidates = (Path("/usr/lib64/qt6/plugins"), Path("/usr/lib/qt6/plugins"))
-    source = next((candidate for candidate in candidates if candidate.is_dir()), None)
-    if source is None:
-        raise Failure("qt6: installed Qt plugin directory was not found")
-    destination = root / "qt-plugins"
-    shutil.copytree(source, destination)
-    env["QT_PLUGIN_PATH"] = str(destination)
-
-
 def run_case(shell: Path, case: Case, artifacts: Path) -> None:
     executable = case.executable()
     if executable is None:
@@ -389,9 +372,6 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
         })
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("DISPLAY", None)
-        if case.name == "qt6":
-            stage_qt_plugins(root, env)
-
         compositor = None
         app = None
         try:
