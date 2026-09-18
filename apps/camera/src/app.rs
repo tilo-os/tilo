@@ -942,7 +942,14 @@ impl CameraApp {
             ),
             Action::OpenRecentCapture => (
                 Role::Button,
-                "Open latest capture".into(),
+                self.captures.first().map_or_else(
+                    || "Latest capture".into(),
+                    |capture| {
+                        let (_, destination) =
+                            crate::actions::capture_destination(capture.is_video());
+                        format!("Open latest capture in {destination}")
+                    },
+                ),
                 AccessState::new().focusable(true),
             ),
             Action::SetMode(mode) => (
@@ -1923,10 +1930,11 @@ impl CameraApp {
             self.toast = Some("Latest capture bytes are unavailable on this device".into());
             return;
         }
-        let (handoff, destination) = if capture.is_video() {
-            (&mut self.video_handoff, "Video Player")
+        let (_, destination) = crate::actions::capture_destination(capture.is_video());
+        let handoff = if capture.is_video() {
+            &mut self.video_handoff
         } else {
-            (&mut self.photos_handoff, "Photos")
+            &mut self.photos_handoff
         };
         let Some(handoff) = handoff.as_mut() else {
             self.toast = Some(format!(
@@ -2514,13 +2522,11 @@ impl Widget for CameraApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        resources.push(Self::media_handoff_resource("dev.tilo.photos", "Photos"));
-        resources.push(Self::media_handoff_resource(
-            "dev.tilo.video-player",
-            "Video Player",
-        ));
-        resources
+        // Photos and Video Player are destinations, not Camera resources.
+        // Their typed launch operation is attached only to the one current
+        // capture resource, so search and agents cannot mistake Camera for a
+        // second media library.
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
@@ -2567,15 +2573,6 @@ impl Widget for CameraApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if id == "dev.tilo.photos.app" {
-            return Some(Self::media_handoff_resource("dev.tilo.photos", "Photos"));
-        }
-        if id == "dev.tilo.video-player.app" {
-            return Some(Self::media_handoff_resource(
-                "dev.tilo.video-player",
-                "Video Player",
-            ));
-        }
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
@@ -3374,7 +3371,8 @@ impl Widget for CameraApp {
                     Key::Character(c) => match c.as_str() {
                         "1" => Some(Action::Nav(Screen::Camera)),
                         "2" => Some(Action::Nav(Screen::Scanner)),
-                        "3" => Some(Action::Nav(Screen::Settings)),
+                        "3" | "d" | "D" => Some(Action::Nav(Screen::Document)),
+                        "4" => Some(Action::Nav(Screen::Settings)),
                         "g" | "G" => Some(Action::ToggleGrid),
                         "f" | "F" => Some(Action::CycleFacing),
                         "r" | "R"
@@ -3647,6 +3645,7 @@ impl CameraApp {
         for (screen, icon) in [
             (Screen::Camera, "camera"),
             (Screen::Scanner, "scan"),
+            (Screen::Document, "image"),
             (Screen::Settings, "settings"),
         ] {
             let row = Rect::new(rail.x0 + 10.0, y, rail.x1 - 10.0, y + 42.0);
@@ -3793,9 +3792,18 @@ impl CameraApp {
         center_x: f64,
         top_y: f64,
     ) {
-        // Keep the three mode targets inside a narrow/high-zoom viewport
+        // Keep the four capture destinations inside a narrow/high-zoom viewport
         // instead of letting the fixed desktop-width pill clip off-screen.
-        let seg_w = (self.navigation.content_rect().width() - EDGE * 2.0).clamp(150.0, 240.0);
+        let available_w = self.navigation.content_rect().width() - EDGE * 2.0;
+        let seg_w = if theme.text_scale >= 1.5 {
+            // Four translated labels need the full compact stage at 200%
+            // text. The old desktop cap made the words collide even though
+            // the surrounding viewport had room; retain a readable maximum
+            // on tablet/desktop widths without shrinking the phone target.
+            available_w.clamp(240.0, 360.0)
+        } else {
+            available_w.clamp(150.0, 240.0)
+        };
         let height = if theme.text_scale >= 1.5 { 48.0 } else { 34.0 };
         let seg = Rect::new(
             center_x - seg_w / 2.0,
@@ -4617,7 +4625,12 @@ impl CameraApp {
         self.draw_lens_switch(scene, t, tr, theme, full, cy);
     }
 
-    /// Recent-capture thumbnail peek, bottom-left of the capture cluster. Tap opens its owner.
+    /// One contextual capture handoff, bottom-left of the capture cluster.
+    ///
+    /// This is intentionally not a gallery tile: Camera keeps no roll or
+    /// count. At desktop widths the owner is named directly; compact layouts
+    /// retain the familiar small preview and expose the full destination to
+    /// assistive technology.
     fn draw_recent_capture_peek(
         &mut self,
         scene: &mut Scene,
@@ -4634,8 +4647,8 @@ impl CameraApp {
             full.x0 + EDGE + 8.0 + ts * 2.0,
             cy + ts,
         );
-        self.push_region(thumb, Action::OpenRecentCapture);
         if let Some(cap) = self.captures.first().cloned() {
+            self.push_region(thumb, Action::OpenRecentCapture);
             self.ensure_thumb(&cap);
             p::push_clip_round(scene, t, thumb, 14.0);
             if let Some(img) = self.thumbs.get_mut(&cap.id) {
@@ -4643,34 +4656,24 @@ impl CameraApp {
             }
             p::pop(scene);
             p::stroke_round(scene, t, thumb, 14.0, p::alpha(white(), 0.65), 1.5);
-            let n = self.captures.len();
-            let badge = Rect::new(
-                thumb.x1 - 15.0,
-                thumb.y0 - 9.0,
-                thumb.x1 + 9.0,
-                thumb.y0 + 15.0,
-            );
-            p::fill_round(scene, t, badge, 12.0, theme.accent_primary);
-            p::text_in(scene, tr, badge, &n.to_string(), 11.0, white());
-        } else {
-            let c = &theme.tokens.colors;
-            p::fill_round(scene, t, thumb, 14.0, p::alpha(c.neutral[0], 0.5));
-            p::stroke_round(
-                scene,
-                t,
-                thumb,
-                14.0,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-                1.5,
-            );
-            p::icon(
-                scene,
-                t,
-                "image",
-                shrink(thumb, 16.0),
-                p::alpha(white(), 0.7),
-                1.6,
-            );
+            // The named handoff makes Camera's ownership boundary obvious at
+            // a glance without squeezing the shutter at phone widths.
+            if full.width() >= 520.0 && theme.text_scale < 1.5 {
+                let (_, destination) = crate::actions::capture_destination(cap.is_video());
+                let label = format!("Open in {destination}");
+                let label_w = (f64::from(p::text_w(tr, &label, 11.5)) + 28.0).min(154.0);
+                let label_x = thumb.x1 + 8.0;
+                let label_rect = Rect::new(label_x, cy - 16.0, label_x + label_w, cy + 16.0);
+                // Do not let a destination label graze the shutter at the
+                // transitional tablet width. It remains a named screen-reader
+                // control even when visual density asks us to keep the preview
+                // compact.
+                if label_rect.x1 <= self.stage_center_x() - 42.0 {
+                    p::fill_round(scene, t, label_rect, 16.0, p::alpha(white(), 0.2));
+                    p::text_in(scene, tr, label_rect, &label, 11.5, white());
+                    self.push_tap_region(label_rect, Action::OpenRecentCapture);
+                }
+            }
         }
     }
 
@@ -7499,14 +7502,24 @@ mod tests {
     /// given viewport, on the caller's shared doc. CPU-only; no GPU needed
     /// (rasterization is skipped — we only exercise layout + scene build).
     fn render_at(app: &mut CameraApp, doc: &mut AutoCommit, root: &ObjId, w: f32, h: f32) {
-        let theme = Theme::dark();
+        render_with_theme(app, doc, root, w, h, &Theme::dark());
+    }
+
+    fn render_with_theme(
+        app: &mut CameraApp,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        w: f32,
+        h: f32,
+        theme: &Theme,
+    ) {
         let presence = PresenceCtx::empty();
         let perms = ui::permissions::PermissionContext::permissive();
         let mut tr = TextRenderer::new();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         app.sync(doc, root);
-        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let child = app.build_layout(&mut taffy, theme, &mut node_map);
         let rootn = taffy
             .new_with_children(
                 Style {
@@ -7545,10 +7558,41 @@ mod tests {
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
-            &theme,
+            theme,
             &presence,
             &perms,
         );
+    }
+
+    #[test]
+    fn large_text_mode_switcher_keeps_each_destination_separate() {
+        let (mut app, mut doc, root) = sample_app();
+        render_with_theme(
+            &mut app,
+            &mut doc,
+            &root,
+            390.0,
+            844.0,
+            &Theme::dark().with_text_scale(2.0),
+        );
+
+        let tree = app.accessibility().expect("camera accessibility tree");
+        let bounds_for = |target| {
+            tree.children
+                .iter()
+                .find(|node| node.action_target.as_deref() == Some(target))
+                .and_then(|node| node.bounds)
+                .expect("mode-switcher destination is exposed")
+        };
+        let photo = bounds_for("camera.mode:photo");
+        let video = bounds_for("camera.mode:video");
+        let codes = bounds_for("camera.nav:scanner");
+        let documents = bounds_for("camera.nav:document");
+
+        assert!(photo.x1 <= video.x0);
+        assert!(video.x1 <= codes.x0);
+        assert!(codes.x1 <= documents.x0);
+        assert!(documents.x1 <= app.rect.x1);
     }
 
     #[test]
@@ -7589,7 +7633,29 @@ mod tests {
                 && node.role == Role::Button
                 && node.action_target.as_deref() == Some("camera.shutter")
         }));
+        assert!(tree.children.iter().any(|node| {
+            node.name.as_deref() == Some("Open latest capture in Photos")
+                && node.role == Role::Button
+                && node.action_target.as_deref() == Some("camera.open-recent-capture")
+        }));
         assert!(tree.children.iter().all(|node| node.bounds.is_some()));
+    }
+
+    #[test]
+    fn navigation_exposes_document_capture_without_needing_a_gallery_surface() {
+        let (mut app, mut doc, root) = sample_app();
+        render_at(&mut app, &mut doc, &root, 1_200.0, 760.0);
+        let tree = app.accessibility().expect("camera has semantic navigation");
+        assert!(tree.children.iter().any(|node| {
+            node.name.as_deref() == Some("Open Documents")
+                && node.action_target.as_deref() == Some("camera.nav:document")
+        }));
+        assert!(tree.children.iter().all(|node| {
+            !node
+                .action_target
+                .as_deref()
+                .is_some_and(|target| target.contains("gallery") || target.contains("library"))
+        }));
     }
 
     #[test]
