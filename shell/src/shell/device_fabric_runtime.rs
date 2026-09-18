@@ -184,6 +184,7 @@ struct OutboundDisplaySession {
     last_offer: Option<Instant>,
     sequence: u64,
     request_keyframe: bool,
+    mirror_only: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -193,6 +194,7 @@ struct InboundDisplaySession {
     profile: DisplayStreamProfile,
     last_activity: Instant,
     last_sequence: u64,
+    mirror_only: bool,
 }
 
 #[derive(Default)]
@@ -239,6 +241,7 @@ impl PersonalDisplayState {
             session_id: session.session_id,
             source: session.source,
             profile: session.profile,
+            mirror_only: session.mirror_only,
         });
     }
 
@@ -272,6 +275,7 @@ pub enum PersonalDisplayEvent {
         session_id: [u8; 16],
         source: crate::shell::personal_continuity::DeviceId,
         profile: DisplayStreamProfile,
+        mirror_only: bool,
     },
     Frame {
         session_id: [u8; 16],
@@ -285,6 +289,101 @@ pub enum PersonalDisplayEvent {
     Ended {
         session_id: [u8; 16],
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayMirrorFailure {
+    Denied,
+    PeerOffline,
+    TimedOut,
+    Transport,
+    Policy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayMirrorPhase {
+    AwaitingConsent,
+    Starting,
+    Streaming,
+    Failed(DisplayMirrorFailure),
+    Stopped,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayMirrorConsentView {
+    pub session_id: [u8; 16],
+    pub source_label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayMirrorStatusView {
+    pub session_id: [u8; 16],
+    pub peer: crate::shell::personal_continuity::DeviceId,
+    pub peer_label: String,
+    pub outbound: bool,
+    pub phase: DisplayMirrorPhase,
+}
+
+#[derive(Clone, Debug)]
+struct DisplayMirrorSession {
+    peer: crate::shell::personal_continuity::DeviceId,
+    outbound: bool,
+    phase: DisplayMirrorPhase,
+    updated: Instant,
+}
+
+impl DisplayMirrorSession {
+    fn matches(
+        &self,
+        peer: &crate::shell::personal_continuity::DeviceId,
+        outbound: bool,
+        phase: DisplayMirrorPhase,
+    ) -> bool {
+        self.peer == *peer && self.outbound == outbound && self.phase == phase
+    }
+}
+
+#[derive(Default)]
+struct DisplayMirrorState {
+    sessions: BTreeMap<[u8; 16], DisplayMirrorSession>,
+}
+
+const MAX_DISPLAY_MIRROR_SESSIONS: usize = 8;
+const DISPLAY_MIRROR_CONSENT_TIMEOUT: Duration = Duration::from_secs(60);
+const DISPLAY_MIRROR_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+const DISPLAY_MIRROR_HISTORY_TTL: Duration = Duration::from_secs(5 * 60);
+
+impl DisplayMirrorState {
+    fn prune(&mut self) {
+        self.sessions.retain(|_, session| {
+            !matches!(
+                session.phase,
+                DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+            ) || session.updated.elapsed() < DISPLAY_MIRROR_HISTORY_TTL
+        });
+        while self.sessions.len() > MAX_DISPLAY_MIRROR_SESSIONS {
+            let Some(oldest) = self
+                .sessions
+                .iter()
+                .filter(|(_, session)| {
+                    matches!(
+                        session.phase,
+                        DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+                    )
+                })
+                .min_by_key(|(_, session)| session.updated)
+                .map(|(session_id, _)| *session_id)
+            else {
+                break;
+            };
+            self.sessions.remove(&oldest);
+        }
+    }
+}
+
+fn display_mirror_state() -> &'static Mutex<DisplayMirrorState> {
+    static STATE: OnceLock<Mutex<DisplayMirrorState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(DisplayMirrorState::default()))
 }
 
 fn personal_display_state() -> &'static Mutex<PersonalDisplayState> {
@@ -602,7 +701,10 @@ pub(crate) fn record_nearby_transfer_progress(
         state
             .progress
             .insert(transfer_id, (target, sent_bytes, total_bytes, status));
-        if status == PersonalMediaTransferStatus::Failed {
+        if matches!(
+            status,
+            PersonalMediaTransferStatus::Failed | PersonalMediaTransferStatus::Cancelled
+        ) {
             state.large_offers.remove(&transfer_id);
         }
     }
@@ -717,7 +819,7 @@ pub(crate) fn handle_nearby_transfer_frame(
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingIncomingMedia {
     received: Instant,
     request_id: [u8; 16],
@@ -730,6 +832,7 @@ struct PendingIncomingMedia {
     position_ms: u64,
     resume_playing: bool,
     has_video: bool,
+    route: crate::shell::network::AuthenticatedPersonalRoute,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -765,6 +868,14 @@ struct MediaHandoffStatus {
     target: crate::shell::personal_continuity::DeviceId,
     phase: MediaHandoffPhase,
     updated: Instant,
+    route: crate::shell::network::AuthenticatedPersonalRoute,
+    personal_transfer_id: Option<[u8; 16]>,
+}
+
+fn cancel_status_personal_transfer(network: &ShellNetwork, status: &MediaHandoffStatus) {
+    if let Some(transfer_id) = status.personal_transfer_id {
+        let _ = network.cancel_personal_media_transfer(&status.target, transfer_id);
+    }
 }
 
 fn media_handoff_statuses() -> &'static Mutex<BTreeMap<[u8; 16], MediaHandoffStatus>> {
@@ -818,6 +929,10 @@ struct SpatialInputState {
     )>,
     release_controllers: VecDeque<crate::shell::personal_continuity::DeviceId>,
     outbound: VecDeque<OutboundSpatialInput>,
+    /// Last authenticated transport-departure generation consumed from the
+    /// network's bounded history. A cursor prevents an old departure from
+    /// revoking authority freshly granted after the same device reconnects.
+    last_peer_departure_generation: u64,
     placement_override: Option<DisplayRect>,
     placement_stream_source: Option<crate::shell::personal_continuity::DeviceId>,
 }
@@ -1243,16 +1358,14 @@ pub struct DeviceFabricRuntime {
     roaming_provenance_fingerprint: Option<[u8; 32]>,
     applied_remote_settings: BTreeMap<String, Value>,
     settings_origin_initialized: bool,
-    pending_incoming_media:
-        BTreeMap<[u8; 16], (crate::shell::personal_continuity::DeviceId, String)>,
+    pending_incoming_media: BTreeMap<[u8; 16], PendingIncomingMedia>,
     waiting_incoming_media: BTreeMap<[u8; 16], PendingIncomingMedia>,
     notification_bridge: NotificationBridge,
     realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
     realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
     remote_capture: Option<crate::shell::remote_capture_runtime::SharedRemoteCaptureRuntime>,
     remote_capture_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
-    remote_capture_pending_actions:
-        VecDeque<crate::shell::device_fabric::PersonalFabricActionEnvelope>,
+    remote_capture_pending_actions: VecDeque<crate::shell::network::ReceivedPersonalFabricAction>,
     tethering: crate::shell::personal_tethering_runtime::PersonalTetheringRuntime,
     gamepad_broker: ProductionGamepadBroker,
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
@@ -1329,7 +1442,9 @@ impl DeviceFabricRuntime {
         // operation must still observe stale completion and roll hardware back.
         pump_bluetooth_handoffs(network);
         if policy.permits(ContinuityCapability::Media) {
+            self.prune_media_routes(network);
             pump_media_handoff_statuses(network);
+            self.expire_incoming_media(network);
         }
         self.maintain_gamepad_forwarding(network, policy);
         self.handle_fabric_actions(network, policy);
@@ -1352,6 +1467,7 @@ impl DeviceFabricRuntime {
         } else {
             discard_nearby_staging_results();
         }
+        pump_display_mirrors(network, policy);
         pump_personal_displays(network, policy);
         if policy.permits(ContinuityCapability::Media) {
             self.retry_waiting_media(network);
@@ -1494,8 +1610,7 @@ impl DeviceFabricRuntime {
             tear_down_nearby_transfers(network);
         }
         if newly_disabled(ContinuityCapability::Media) {
-            self.pending_incoming_media.clear();
-            self.waiting_incoming_media.clear();
+            self.tear_down_incoming_media(network, MediaHandoffFailure::Cancelled);
             tear_down_media_handoffs(network);
             tear_down_bluetooth_handoffs(network);
             if let Some(remote_capture) = self.remote_capture.as_ref()
@@ -1575,12 +1690,20 @@ impl DeviceFabricRuntime {
         if let Some(runtime) = self.remote_capture.as_ref()
             && let Ok(mut runtime) = runtime.try_lock()
         {
-            for envelope in self.remote_capture_pending_actions.drain(..) {
-                runtime.handle_action(&envelope, Instant::now());
+            for received in self.remote_capture_pending_actions.drain(..) {
+                if network.personal_route_is_current(&received.route) {
+                    runtime.handle_action(&received.envelope, Instant::now());
+                }
             }
         }
-        for envelope in network.take_personal_fabric_actions() {
+        for received in network.take_personal_fabric_actions() {
+            let crate::shell::network::ReceivedPersonalFabricAction { envelope, route } = received;
+            if !network.personal_route_is_current(&route) {
+                network.revoke_queued_personal_action_authority(&envelope);
+                continue;
+            }
             if !policy.permits_action(&envelope.action) {
+                network.revoke_queued_personal_action_authority(&envelope);
                 continue;
             }
             if crate::shell::remote_audio::handle_action(network, &envelope) {
@@ -1604,7 +1727,9 @@ impl DeviceFabricRuntime {
                 } else if self.remote_capture_pending_actions.len()
                     < crate::shell::remote_capture_device::MAX_REMOTE_CAPTURE_SESSIONS * 4
                 {
-                    self.remote_capture_pending_actions.push_back(envelope);
+                    self.remote_capture_pending_actions.push_back(
+                        crate::shell::network::ReceivedPersonalFabricAction { envelope, route },
+                    );
                 }
                 continue;
             }
@@ -1640,6 +1765,7 @@ impl DeviceFabricRuntime {
                         position_ms,
                         resume_playing,
                         has_video,
+                        route,
                     };
                     match self.try_launch_incoming_media(network, &request) {
                         IncomingMediaLaunch::Waiting
@@ -1669,16 +1795,18 @@ impl DeviceFabricRuntime {
                 } => {
                     let expected_target =
                         media_handoff_statuses().lock().ok().and_then(|statuses| {
-                            statuses
-                                .get(&request_id)
-                                .map(|status| status.target == envelope.source)
+                            statuses.get(&request_id).map(|status| {
+                                status.target == envelope.source
+                                    && status.route == route
+                                    && status.phase == MediaHandoffPhase::Pending
+                            })
                         });
                     if expected_target != Some(true) {
                         continue;
                     }
-                    let Some(report) =
+                    let Some(Some(report)) = network.with_current_personal_route(&route, || {
                         media::handoff::accept_outbound_handoff(request_id, &session_id)
-                    else {
+                    }) else {
                         continue;
                     };
                     if let Some(controller) = report.controller_bus_name {
@@ -1691,39 +1819,40 @@ impl DeviceFabricRuntime {
                     session_id,
                     failure,
                 } => {
-                    let expected_target =
-                        media_handoff_statuses().lock().ok().and_then(|statuses| {
-                            statuses
-                                .get(&request_id)
-                                .map(|status| status.target == envelope.source)
-                        });
-                    if expected_target == Some(true)
-                        && media::handoff::cancel_outbound_handoff(request_id, &session_id)
+                    let rejected = media_handoff_statuses().lock().ok().and_then(|statuses| {
+                        statuses
+                            .get(&request_id)
+                            .filter(|status| {
+                                status.target == envelope.source
+                                    && status.route == route
+                                    && status.session_id == session_id
+                                    && status.phase == MediaHandoffPhase::Pending
+                            })
+                            .cloned()
+                    });
+                    if let Some(status) = rejected {
+                        cancel_status_personal_transfer(network, &status);
+                        if media::handoff::cancel_outbound_handoff(request_id, &session_id)
                             .is_some()
-                    {
-                        finish_media_handoff_status(request_id, MediaHandoffPhase::Failed(failure));
+                        {
+                            finish_media_handoff_status(
+                                request_id,
+                                MediaHandoffPhase::Failed(failure),
+                            );
+                        }
                     }
                 }
                 PersonalFabricAction::MediaCancelled {
                     request_id,
                     session_id,
                 } => {
-                    if self
-                        .waiting_incoming_media
-                        .get(&request_id)
-                        .is_some_and(|pending| {
-                            pending.source == envelope.source && pending.session_id == session_id
-                        })
-                    {
-                        self.waiting_incoming_media.remove(&request_id);
-                    }
-                    if self.pending_incoming_media.get(&request_id).is_some_and(
-                        |(source, pending_session)| {
-                            source == &envelope.source && pending_session == &session_id
-                        },
-                    ) {
-                        self.pending_incoming_media.remove(&request_id);
-                    }
+                    let cancelled = self.take_incoming_media(|pending| {
+                        pending.request_id == request_id
+                            && pending.source == envelope.source
+                            && pending.session_id == session_id
+                            && pending.route == route
+                    });
+                    self.terminate_incoming_media(network, cancelled, None);
                 }
                 action @ (PersonalFabricAction::NearbyDrop { .. }
                 | PersonalFabricAction::NearbyDropResult { .. }
@@ -1753,6 +1882,11 @@ impl DeviceFabricRuntime {
                         &envelope.source,
                         action,
                     );
+                }
+                action @ (PersonalFabricAction::DisplayMirrorRequest { .. }
+                | PersonalFabricAction::DisplayMirrorDecision { .. }
+                | PersonalFabricAction::DisplayMirrorStop { .. }) => {
+                    handle_display_mirror_action(network, &envelope.source, action);
                 }
                 action => handle_spatial_action(envelope.source, &envelope.target, action),
             }
@@ -2410,6 +2544,9 @@ impl DeviceFabricRuntime {
         network: &ShellNetwork,
         request: &PendingIncomingMedia,
     ) -> IncomingMediaLaunch {
+        if !network.personal_route_is_current(&request.route) {
+            return IncomingMediaLaunch::Rejected(MediaHandoffFailure::DestinationUnavailable);
+        }
         let Some((local, _)) = network.local_device_fabric_identity() else {
             return IncomingMediaLaunch::Rejected(MediaHandoffFailure::DestinationUnavailable);
         };
@@ -2478,19 +2615,20 @@ impl DeviceFabricRuntime {
             },
         );
         if launch.is_ok() {
-            self.pending_incoming_media.insert(
-                request.request_id,
-                (request.source.clone(), request.session_id.clone()),
-            );
+            self.pending_incoming_media
+                .insert(request.request_id, request.clone());
             if let Some(source) = resume_source {
-                let _ =
-                    crate::shell::mpris::resume_after_launch(crate::shell::mpris::ResumeRequest {
-                        request_id: request.request_id,
-                        package_id: request.app_id.clone(),
-                        source,
-                        position_ms: request.position_ms,
-                        playing: request.resume_playing,
-                    });
+                if !crate::shell::mpris::resume_after_launch(crate::shell::mpris::ResumeRequest {
+                    request_id: request.request_id,
+                    package_id: request.app_id.clone(),
+                    source,
+                    position_ms: request.position_ms,
+                    playing: request.resume_playing,
+                }) {
+                    self.pending_incoming_media.remove(&request.request_id);
+                    let _ = crate::shell::mpris::cancel_resume_after_launch(request.request_id);
+                    return IncomingMediaLaunch::Rejected(MediaHandoffFailure::OpenFailed);
+                }
             }
             IncomingMediaLaunch::Launched
         } else {
@@ -2504,8 +2642,9 @@ impl DeviceFabricRuntime {
         request: &PendingIncomingMedia,
         failure: MediaHandoffFailure,
     ) {
-        let _ = network.send_personal_fabric_action(
-            &request.source,
+        Self::discard_incoming_media_transfer(network, request);
+        let _ = network.send_personal_fabric_action_on_route(
+            &request.route,
             PersonalFabricAction::MediaRejected {
                 request_id: request.request_id,
                 session_id: request.session_id.clone(),
@@ -2514,13 +2653,15 @@ impl DeviceFabricRuntime {
         );
     }
 
+    fn discard_incoming_media_transfer(network: &ShellNetwork, request: &PendingIncomingMedia) {
+        if let MediaSourceLocator::PersonalTransfer { transfer_id, .. } = &request.locator {
+            network.discard_personal_media_transfer(&request.source, *transfer_id);
+        }
+    }
+
     fn retry_waiting_media(&mut self, network: &ShellNetwork) {
         let waiting = std::mem::take(&mut self.waiting_incoming_media);
         for (request_id, request) in waiting {
-            if request.received.elapsed() >= INCOMING_MEDIA_WAIT {
-                self.reject_incoming_media(network, &request, MediaHandoffFailure::TimedOut);
-                continue;
-            }
             match self.try_launch_incoming_media(network, &request) {
                 IncomingMediaLaunch::Waiting => {
                     self.waiting_incoming_media.insert(request_id, request);
@@ -2535,21 +2676,118 @@ impl DeviceFabricRuntime {
 
     fn acknowledge_opened_media(&mut self, network: &ShellNetwork) {
         let mut accepted = media::handoff::accepted_handoff_requests();
-        accepted.extend(crate::shell::mpris::take_accepted_handoff_requests());
         accepted.sort_unstable();
         accepted.dedup();
         for request_id in accepted {
-            let Some((source, session_id)) = self.pending_incoming_media.remove(&request_id) else {
+            let Some(pending) = self.pending_incoming_media.remove(&request_id) else {
                 continue;
             };
-            let _ = network.send_personal_fabric_action(
-                &source,
+            Self::discard_incoming_media_transfer(network, &pending);
+            if network
+                .send_personal_fabric_action_on_route(
+                    &pending.route,
+                    PersonalFabricAction::MediaAccepted {
+                        request_id,
+                        session_id: pending.session_id,
+                    },
+                )
+                .is_err()
+            {
+                let _ = crate::shell::mpris::cancel_resume_after_launch(request_id);
+            }
+        }
+        for accepted in crate::shell::mpris::take_accepted_handoff_resumes() {
+            let Some(pending) = self.pending_incoming_media.remove(&accepted.request_id) else {
+                continue;
+            };
+            Self::discard_incoming_media_transfer(network, &pending);
+            let delivery = network.send_personal_fabric_action_on_route(
+                &pending.route,
                 PersonalFabricAction::MediaAccepted {
-                    request_id,
-                    session_id,
+                    request_id: accepted.request_id,
+                    session_id: pending.session_id,
                 },
             );
+            compensate_failed_media_acceptance(
+                &delivery,
+                accepted.controller_bus_name.as_deref(),
+                accepted.expected_uri.as_deref(),
+                crate::shell::mpris::pause_named_if_uri,
+            );
         }
+    }
+
+    fn take_incoming_media(
+        &mut self,
+        mut predicate: impl FnMut(&PendingIncomingMedia) -> bool,
+    ) -> Vec<PendingIncomingMedia> {
+        let waiting = self
+            .waiting_incoming_media
+            .iter()
+            .filter(|(_, pending)| predicate(pending))
+            .map(|(request_id, _)| *request_id)
+            .collect::<Vec<_>>();
+        let pending = self
+            .pending_incoming_media
+            .iter()
+            .filter(|(_, pending)| predicate(pending))
+            .map(|(request_id, _)| *request_id)
+            .collect::<Vec<_>>();
+        waiting
+            .into_iter()
+            .filter_map(|request_id| self.waiting_incoming_media.remove(&request_id))
+            .chain(
+                pending
+                    .into_iter()
+                    .filter_map(|request_id| self.pending_incoming_media.remove(&request_id)),
+            )
+            .collect()
+    }
+
+    fn terminate_incoming_media(
+        &self,
+        network: &ShellNetwork,
+        requests: Vec<PendingIncomingMedia>,
+        failure: Option<MediaHandoffFailure>,
+    ) {
+        for request in requests {
+            let _ = crate::shell::mpris::cancel_resume_after_launch(request.request_id);
+            Self::discard_incoming_media_transfer(network, &request);
+            if let Some(failure) = failure {
+                self.reject_incoming_media(network, &request, failure);
+            }
+        }
+    }
+
+    fn tear_down_incoming_media(&mut self, network: &ShellNetwork, failure: MediaHandoffFailure) {
+        let incoming = self.take_incoming_media(|_| true);
+        self.terminate_incoming_media(network, incoming, Some(failure));
+    }
+
+    fn prune_media_routes(&mut self, network: &ShellNetwork) {
+        let departed =
+            self.take_incoming_media(|pending| !network.personal_route_is_current(&pending.route));
+        self.terminate_incoming_media(network, departed, None);
+        if let Ok(mut statuses) = media_handoff_statuses().lock() {
+            let now = Instant::now();
+            for status in statuses.values_mut().filter(|status| {
+                status.phase == MediaHandoffPhase::Pending
+                    && !network.personal_route_is_current(&status.route)
+            }) {
+                let _ =
+                    media::handoff::cancel_outbound_handoff(status.request_id, &status.session_id);
+                cancel_status_personal_transfer(network, status);
+                status.phase =
+                    MediaHandoffPhase::Failed(MediaHandoffFailure::DestinationUnavailable);
+                status.updated = now;
+            }
+        }
+    }
+
+    fn expire_incoming_media(&mut self, network: &ShellNetwork) {
+        let expired =
+            self.take_incoming_media(|pending| pending.received.elapsed() >= INCOMING_MEDIA_WAIT);
+        self.terminate_incoming_media(network, expired, Some(MediaHandoffFailure::TimedOut));
     }
 }
 
@@ -2652,47 +2890,97 @@ fn discard_nearby_staging_results() {
     }
 }
 
+fn prune_spatial_state(
+    spatial: &mut SpatialInputState,
+    now: u64,
+    departures: &[crate::shell::network::PeerDeparture],
+    is_online: impl Fn(&crate::shell::personal_continuity::DeviceId) -> bool,
+) {
+    let unseen = departures
+        .iter()
+        .filter(|departure| departure.generation > spatial.last_peer_departure_generation)
+        .collect::<Vec<_>>();
+    let history_gap = unseen.first().is_some_and(|departure| {
+        departure.generation > spatial.last_peer_departure_generation.saturating_add(1)
+    });
+    let mut departed = unseen
+        .iter()
+        .filter_map(|departure| {
+            // Direct personal peers use the endpoint key as DeviceId. Network
+            // admission proves the device certificate key equals these
+            // endpoint bytes before recording an authenticated departure, so
+            // a relay/service endpoint cannot alias an enrolled controller.
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                departure.endpoint_id.as_bytes(),
+            ))
+            .ok()
+        })
+        .collect::<BTreeSet<_>>();
+    if history_gap {
+        // The history is intentionally bounded. If this frame missed entries,
+        // fail closed rather than leave an unknown departed controller holding
+        // local seat state.
+        departed.extend(
+            spatial
+                .issued
+                .values()
+                .map(|lease| lease.controller.clone()),
+        );
+        departed.extend(spatial.received.keys().cloned());
+    }
+    if let Some(generation) = departures
+        .last()
+        .map(|departure| departure.generation)
+        .filter(|generation| *generation > spatial.last_peer_departure_generation)
+    {
+        spatial.last_peer_departure_generation = generation;
+    }
+
+    let issued_to_release = spatial
+        .issued
+        .values()
+        .filter(|lease| {
+            lease.validate_at(now).is_err()
+                || departed.contains(&lease.controller)
+                || !is_online(&lease.controller)
+        })
+        .map(|lease| lease.controller.clone())
+        .collect::<Vec<_>>();
+    spatial.issued.retain(|_, lease| {
+        lease.validate_at(now).is_ok()
+            && !departed.contains(&lease.controller)
+            && is_online(&lease.controller)
+    });
+    spatial.received.retain(|target, lease| {
+        lease.validate_at(now).is_ok() && !departed.contains(target) && is_online(target)
+    });
+    for controller in issued_to_release {
+        if !spatial.release_controllers.contains(&controller) {
+            spatial.release_controllers.push_back(controller);
+        }
+    }
+    let received = spatial.received.clone();
+    spatial.outbound.retain(|input| {
+        received
+            .get(&input.target)
+            .is_some_and(|lease| lease.nonce == input.lease_nonce && lease.validate_at(now).is_ok())
+    });
+}
+
 fn prune_spatial_leases(network: &ShellNetwork) {
     if let Ok(mut spatial) = spatial_input_state().lock() {
-        let now = unix_ms();
         let fabric = network.device_fabric();
-        let issued_to_release = spatial
-            .issued
-            .values()
-            .filter(|lease| {
-                lease.validate_at(now).is_err()
-                    || fabric
-                        .snapshots()
-                        .get(&lease.controller)
-                        .is_none_or(|snapshot| !snapshot.presence.online)
-            })
-            .map(|lease| lease.controller.clone())
-            .collect::<Vec<_>>();
-        spatial.issued.retain(|_, lease| {
-            lease.validate_at(now).is_ok()
-                && fabric
+        prune_spatial_state(
+            &mut spatial,
+            unix_ms(),
+            &network.peer_departures(),
+            |device| {
+                fabric
                     .snapshots()
-                    .get(&lease.controller)
+                    .get(device)
                     .is_some_and(|snapshot| snapshot.presence.online)
-        });
-        spatial.received.retain(|target, lease| {
-            lease.validate_at(now).is_ok()
-                && fabric
-                    .snapshots()
-                    .get(target)
-                    .is_some_and(|snapshot| snapshot.presence.online)
-        });
-        for controller in issued_to_release {
-            if !spatial.release_controllers.contains(&controller) {
-                spatial.release_controllers.push_back(controller);
-            }
-        }
-        let received = spatial.received.clone();
-        spatial.outbound.retain(|input| {
-            received.get(&input.target).is_some_and(|lease| {
-                lease.nonce == input.lease_nonce && lease.validate_at(now).is_ok()
-            })
-        });
+            },
+        );
     }
 }
 
@@ -3093,6 +3381,9 @@ fn handle_spatial_action(
         | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
         | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
         | PersonalFabricAction::BluetoothHandoffCancel { .. }
+        | PersonalFabricAction::DisplayMirrorRequest { .. }
+        | PersonalFabricAction::DisplayMirrorDecision { .. }
+        | PersonalFabricAction::DisplayMirrorStop { .. }
         | PersonalFabricAction::NearbyDrop { .. }
         | PersonalFabricAction::NearbyDropResult { .. }
         | PersonalFabricAction::NearbyTransferOffer { .. }
@@ -4041,9 +4332,22 @@ pub fn request_media_handoff(
         resume_playing: transfer.resume_playing,
         has_video: report.session.has_video,
     };
-    let request_id = network.send_personal_fabric_action(target, action)?;
+    let route = network
+        .current_personal_route(target)
+        .ok_or_else(|| "target has no current authenticated personal route".to_string())?;
+    let request_id = network.send_personal_fabric_action_on_route(&route, action)?;
+    let personal_transfer_id = local_transfer.as_ref().map(|transfer| transfer.transfer_id);
     if let Some(transfer) = local_transfer {
-        network.start_personal_media_transfer(transfer)?;
+        if let Err(error) = network.start_personal_media_transfer(transfer) {
+            let _ = network.send_personal_fabric_action_on_route(
+                &route,
+                PersonalFabricAction::MediaCancelled {
+                    request_id,
+                    session_id: report.session.id.clone(),
+                },
+            );
+            return Err(error);
+        }
     }
     record_media_handoff_status(MediaHandoffStatus {
         request_id,
@@ -4052,6 +4356,8 @@ pub fn request_media_handoff(
         target: target.clone(),
         phase: MediaHandoffPhase::Pending,
         updated: Instant::now(),
+        route,
+        personal_transfer_id,
     });
     media::handoff::remember_outbound_handoff(request_id, report);
     Ok(request_id)
@@ -4102,10 +4408,11 @@ fn pump_media_handoff_statuses(network: &ShellNetwork) {
                             status.request_id,
                             &status.session_id,
                         );
+                        cancel_status_personal_transfer(network, status);
                         status.phase = MediaHandoffPhase::Failed(MediaHandoffFailure::TimedOut);
                         status.updated = now;
                         (
-                            status.target.clone(),
+                            status.route.clone(),
                             PersonalFabricAction::MediaCancelled {
                                 request_id: status.request_id,
                                 session_id: status.session_id.clone(),
@@ -4116,9 +4423,27 @@ fn pump_media_handoff_statuses(network: &ShellNetwork) {
                 .collect::<Vec<_>>()
         },
     );
-    for (target, action) in expired {
-        let _ = network.send_personal_fabric_action(&target, action);
+    for (route, action) in expired {
+        let _ = network.send_personal_fabric_action_on_route(&route, action);
     }
+}
+
+fn compensate_failed_media_acceptance<T>(
+    delivery: &Result<T, String>,
+    controller_bus_name: Option<&str>,
+    expected_uri: Option<&str>,
+    mut pause: impl FnMut(&str, &str) -> bool,
+) -> bool {
+    let Some((controller, expected_uri)) = controller_bus_name
+        .zip(expected_uri)
+        .filter(|_| delivery.is_err())
+    else {
+        return false;
+    };
+    // Player mutation completed before route teardown won the worker race,
+    // but its acknowledgement could not be enqueued under the same route.
+    // Pausing the exact launcher-verified controller is the compensating edge.
+    pause(controller, expected_uri)
 }
 
 fn tear_down_media_handoffs(network: &ShellNetwork) {
@@ -4133,8 +4458,9 @@ fn tear_down_media_handoffs(network: &ShellNetwork) {
     );
     for status in pending {
         let _ = media::handoff::cancel_outbound_handoff(status.request_id, &status.session_id);
-        let _ = network.send_personal_fabric_action(
-            &status.target,
+        cancel_status_personal_transfer(network, &status);
+        let _ = network.send_personal_fabric_action_on_route(
+            &status.route,
             PersonalFabricAction::MediaCancelled {
                 request_id: status.request_id,
                 session_id: status.session_id,
@@ -4158,16 +4484,17 @@ pub(crate) fn cancel_media_handoff(
     if status.phase != MediaHandoffPhase::Pending {
         return Err("that media handoff is no longer pending".into());
     }
-    network.send_personal_fabric_action(
-        &status.target,
+    let delivery = network.send_personal_fabric_action_on_route(
+        &status.route,
         PersonalFabricAction::MediaCancelled {
             request_id,
             session_id: status.session_id.clone(),
         },
-    )?;
+    );
+    cancel_status_personal_transfer(network, &status);
     let _ = media::handoff::cancel_outbound_handoff(request_id, &status.session_id);
     finish_media_handoff_status(request_id, MediaHandoffPhase::Cancelled);
-    Ok(())
+    delivery.map(|_| ())
 }
 
 /// Retry the logical session/target captured by a failed or timed-out row.
@@ -4790,7 +5117,8 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
                     PersonalMediaTransferStatus::Completed => {
                         runtime_collab::NearbyTransferPhase::Completed
                     }
-                    PersonalMediaTransferStatus::Failed => {
+                    PersonalMediaTransferStatus::Failed
+                    | PersonalMediaTransferStatus::Cancelled => {
                         runtime_collab::NearbyTransferPhase::Failed
                     }
                 };
@@ -4882,21 +5210,22 @@ fn fabric_transfer_views(
     use crate::network::actor::PersonalMediaTransferStatus;
     use crate::shell::overlay_host::{FabricTransferStatus, FabricTransferView};
 
-    let media = network
-        .outgoing_personal_media_transfers()
-        .into_iter()
-        .map(|transfer| FabricTransferView {
-            target: transfer.target,
-            sent_bytes: transfer.sent_bytes,
-            total_bytes: transfer.total_bytes,
-            status: match transfer.status {
-                PersonalMediaTransferStatus::Started | PersonalMediaTransferStatus::Progress => {
-                    FabricTransferStatus::Sending
-                }
-                PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
-                PersonalMediaTransferStatus::Failed => FabricTransferStatus::Failed,
-            },
-        });
+    let media =
+        network
+            .outgoing_personal_media_transfers()
+            .into_iter()
+            .map(|transfer| FabricTransferView {
+                target: transfer.target,
+                sent_bytes: transfer.sent_bytes,
+                total_bytes: transfer.total_bytes,
+                status: match transfer.status {
+                    PersonalMediaTransferStatus::Started
+                    | PersonalMediaTransferStatus::Progress => FabricTransferStatus::Sending,
+                    PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
+                    PersonalMediaTransferStatus::Failed
+                    | PersonalMediaTransferStatus::Cancelled => FabricTransferStatus::Failed,
+                },
+            });
     let nearby = nearby_drop_state().lock().map_or_else(
         |_| Vec::new(),
         |state| {
@@ -4915,7 +5244,10 @@ fn fabric_transfer_views(
                                 FabricTransferStatus::Sending
                             }
                             PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
-                            PersonalMediaTransferStatus::Failed => FabricTransferStatus::Failed,
+                            PersonalMediaTransferStatus::Failed
+                            | PersonalMediaTransferStatus::Cancelled => {
+                                FabricTransferStatus::Failed
+                            }
                         },
                     },
                 )
@@ -5005,6 +5337,53 @@ fn bluetooth_handoff_status_views(
             .then_with(|| left.request_id.cmp(&right.request_id))
     });
     statuses
+}
+
+fn display_mirror_views(
+    fabric: &crate::shell::device_fabric::DeviceFabric,
+) -> (Vec<DisplayMirrorConsentView>, Vec<DisplayMirrorStatusView>) {
+    let Ok(mut state) = display_mirror_state().lock() else {
+        return (Vec::new(), Vec::new());
+    };
+    state.prune();
+    let label = |peer: &crate::shell::personal_continuity::DeviceId| {
+        fabric.snapshots().get(peer).map_or_else(
+            || peer.as_str().to_string(),
+            |snapshot| snapshot.presence.label.clone(),
+        )
+    };
+    let mut consents = state
+        .sessions
+        .iter()
+        .filter(|(_, session)| {
+            !session.outbound && session.phase == DisplayMirrorPhase::AwaitingConsent
+        })
+        .map(|(session_id, session)| DisplayMirrorConsentView {
+            session_id: *session_id,
+            source_label: label(&session.peer),
+        })
+        .collect::<Vec<_>>();
+    let mut statuses = state
+        .sessions
+        .iter()
+        .filter(|(_, session)| {
+            session.outbound || session.phase != DisplayMirrorPhase::AwaitingConsent
+        })
+        .map(|(session_id, session)| DisplayMirrorStatusView {
+            session_id: *session_id,
+            peer: session.peer.clone(),
+            peer_label: label(&session.peer),
+            outbound: session.outbound,
+            phase: session.phase,
+        })
+        .collect::<Vec<_>>();
+    consents.sort_by(|left, right| left.source_label.cmp(&right.source_label));
+    statuses.sort_by(|left, right| {
+        left.peer_label
+            .cmp(&right.peer_label)
+            .then_with(|| left.session_id.cmp(&right.session_id))
+    });
+    (consents, statuses)
 }
 
 fn gamepad_authorization_views(
@@ -5221,6 +5600,18 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         (Vec::new(), Vec::new(), Vec::new())
     };
 
+    let (display_mirror_consents, display_mirrors) =
+        if policy.permits(ContinuityCapability::DisplayInput) {
+            display_mirror_views(&fabric)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+    let display_mirror_available = policy.permits(ContinuityCapability::DisplayInput)
+        && local_id.is_some()
+        && devices
+            .iter()
+            .any(|device| !device.is_local && device.online && device.video_output);
+
     DeviceFabricView {
         bluetooth_authorizations,
         bluetooth_handoffs: bluetooth_handoff_status_views(&fabric),
@@ -5237,6 +5628,9 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         revertible_calibrations,
         tethering: crate::shell::personal_tethering_runtime::tethering_statuses(),
         remote_capture: crate::shell::remote_capture_runtime::active_view(),
+        display_mirror_consents,
+        display_mirrors,
+        display_mirror_available,
     }
 }
 
@@ -5478,6 +5872,9 @@ pub fn grant_input_control(
     controller: &crate::shell::personal_continuity::DeviceId,
 ) -> Result<InputLease, String> {
     require_continuity(ContinuityCapability::DisplayInput)?;
+    // Advance the authenticated-departure cursor before minting replacement
+    // authority, so retained history cannot revoke a fresh reconnect lease.
+    prune_spatial_leases(network);
     let (target, _) = network
         .local_device_fabric_identity()
         .ok_or_else(|| "this device has no certified personal identity".to_string())?;
@@ -5667,6 +6064,379 @@ pub fn take_personal_display_events() -> Vec<PersonalDisplayEvent> {
         .map_or_else(|_| Vec::new(), |mut state| state.events.drain(..).collect())
 }
 
+fn finish_display_mirror(
+    network: &ShellNetwork,
+    session_id: [u8; 16],
+    phase: DisplayMirrorPhase,
+    send_end: bool,
+) {
+    let session = display_mirror_state().lock().ok().and_then(|mut state| {
+        let session = state.sessions.get_mut(&session_id)?;
+        if matches!(
+            session.phase,
+            DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+        ) {
+            return None;
+        }
+        session.phase = phase;
+        session.updated = Instant::now();
+        Some(session.clone())
+    });
+    let Some(session) = session else { return };
+    let local = network
+        .local_device_fabric_identity()
+        .map(|(device, _)| device);
+    if let Ok(mut display) = personal_display_state().lock() {
+        if session.outbound {
+            if display
+                .outbound
+                .get(&session.peer)
+                .is_some_and(|active| active.session_id == session_id && active.mirror_only)
+            {
+                display.outbound.remove(&session.peer);
+            }
+        } else if display
+            .inbound
+            .as_ref()
+            .is_some_and(|active| active.session_id == session_id && active.mirror_only)
+        {
+            display.inbound = None;
+            display.events.retain(|event| {
+                !matches!(event, PersonalDisplayEvent::Frame { session_id: queued, .. } if queued == &session_id)
+            });
+            display.queue_event(PersonalDisplayEvent::Ended { session_id });
+        }
+    }
+    if send_end
+        && let Some(local) = local
+        && let Some(message) = display_mirror_end_message(session_id, &local, &session)
+    {
+        let _ = network.send_personal_display(&session.peer, message);
+    }
+    network.purge_personal_display_session(session_id);
+}
+
+fn display_mirror_end_message(
+    session_id: [u8; 16],
+    local: &crate::shell::personal_continuity::DeviceId,
+    session: &DisplayMirrorSession,
+) -> Option<PersonalDisplayMessage> {
+    session.outbound.then(|| PersonalDisplayMessage::End {
+        session_id,
+        source: local.clone(),
+        target: session.peer.clone(),
+    })
+}
+
+fn display_mirror_receiver_available(
+    network: &ShellNetwork,
+    source: &crate::shell::personal_continuity::DeviceId,
+) -> bool {
+    let Some((local, _)) = network.local_device_fabric_identity() else {
+        return false;
+    };
+    let fabric = network.device_fabric();
+    fabric
+        .snapshots()
+        .get(source)
+        .is_some_and(|snapshot| snapshot.presence.online)
+        && fabric.snapshots().get(&local).is_some_and(|snapshot| {
+            snapshot.presence.online && snapshot.presence.capabilities.video_output
+        })
+}
+
+fn handle_display_mirror_action(
+    network: &ShellNetwork,
+    source: &crate::shell::personal_continuity::DeviceId,
+    action: PersonalFabricAction,
+) {
+    match action {
+        PersonalFabricAction::DisplayMirrorRequest { session_id } => {
+            if !display_mirror_receiver_available(network, source)
+                || personal_display_state()
+                    .lock()
+                    .is_ok_and(|state| state.inbound.is_some())
+            {
+                let _ = network.send_personal_fabric_action(
+                    source,
+                    PersonalFabricAction::DisplayMirrorDecision {
+                        session_id,
+                        approved: false,
+                        profile: None,
+                    },
+                );
+                return;
+            }
+            if let Ok(mut state) = display_mirror_state().lock() {
+                state.prune();
+                if state.sessions.len() >= MAX_DISPLAY_MIRROR_SESSIONS
+                    || state.sessions.contains_key(&session_id)
+                {
+                    return;
+                }
+                state.sessions.insert(
+                    session_id,
+                    DisplayMirrorSession {
+                        peer: source.clone(),
+                        outbound: false,
+                        phase: DisplayMirrorPhase::AwaitingConsent,
+                        updated: Instant::now(),
+                    },
+                );
+            }
+        }
+        PersonalFabricAction::DisplayMirrorDecision {
+            session_id,
+            approved,
+            profile,
+        } => {
+            let valid = display_mirror_state().lock().is_ok_and(|state| {
+                state.sessions.get(&session_id).is_some_and(|session| {
+                    session.matches(source, true, DisplayMirrorPhase::AwaitingConsent)
+                })
+            });
+            if !valid {
+                return;
+            }
+            if !approved {
+                finish_display_mirror(
+                    network,
+                    session_id,
+                    DisplayMirrorPhase::Failed(DisplayMirrorFailure::Denied),
+                    false,
+                );
+                return;
+            }
+            let Some(profile) = profile else { return };
+            let Some((local, _)) = network.local_device_fabric_identity() else {
+                return;
+            };
+            if network
+                .authorize_personal_display_session(session_id, local, source.clone())
+                .is_err()
+            {
+                finish_display_mirror(
+                    network,
+                    session_id,
+                    DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+                    false,
+                );
+                return;
+            }
+            if let Ok(mut display) = personal_display_state().lock() {
+                if display.outbound.contains_key(source) {
+                    drop(display);
+                    finish_display_mirror(
+                        network,
+                        session_id,
+                        DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+                        false,
+                    );
+                    let _ = network.send_personal_fabric_action(
+                        source,
+                        PersonalFabricAction::DisplayMirrorStop { session_id },
+                    );
+                    return;
+                }
+                display.outbound.insert(
+                    source.clone(),
+                    OutboundDisplaySession {
+                        session_id,
+                        profile,
+                        accepted: false,
+                        last_offer: None,
+                        sequence: 0,
+                        request_keyframe: false,
+                        mirror_only: true,
+                    },
+                );
+            }
+            if let Ok(mut state) = display_mirror_state().lock()
+                && let Some(session) = state.sessions.get_mut(&session_id)
+            {
+                session.phase = DisplayMirrorPhase::Starting;
+                session.updated = Instant::now();
+            }
+        }
+        PersonalFabricAction::DisplayMirrorStop { session_id } => {
+            let valid = display_mirror_state().lock().is_ok_and(|state| {
+                state
+                    .sessions
+                    .get(&session_id)
+                    .is_some_and(|session| session.peer == *source)
+            });
+            if valid {
+                finish_display_mirror(network, session_id, DisplayMirrorPhase::Stopped, true);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn request_display_mirror(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
+    let (local, _) = network
+        .local_device_fabric_identity()
+        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+    if target == &local {
+        return Err("this display is already local".into());
+    }
+    if personal_display_state()
+        .lock()
+        .map_err(|_| "personal display coordinator is unavailable".to_string())?
+        .outbound
+        .contains_key(target)
+    {
+        return Err("that device already has an active display stream".into());
+    }
+    let fabric = network.device_fabric();
+    if !fabric.snapshots().get(target).is_some_and(|snapshot| {
+        snapshot.presence.online && snapshot.presence.capabilities.video_output
+    }) {
+        return Err("the certified target cannot receive video".into());
+    }
+    drop(fabric);
+    let mut session_id = [0; 16];
+    while session_id == [0; 16] {
+        OsRng.fill_bytes(&mut session_id);
+    }
+    {
+        let mut state = display_mirror_state()
+            .lock()
+            .map_err(|_| "display mirror coordinator is unavailable".to_string())?;
+        state.prune();
+        if state.sessions.len() >= MAX_DISPLAY_MIRROR_SESSIONS {
+            return Err("too many display mirror sessions are active".into());
+        }
+        state.sessions.insert(
+            session_id,
+            DisplayMirrorSession {
+                peer: target.clone(),
+                outbound: true,
+                phase: DisplayMirrorPhase::AwaitingConsent,
+                updated: Instant::now(),
+            },
+        );
+    }
+    if let Err(error) = network.send_personal_fabric_action(
+        target,
+        PersonalFabricAction::DisplayMirrorRequest { session_id },
+    ) {
+        finish_display_mirror(
+            network,
+            session_id,
+            DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+            false,
+        );
+        return Err(error);
+    }
+    Ok(session_id)
+}
+
+pub fn resolve_display_mirror_consent(
+    network: &ShellNetwork,
+    session_id: [u8; 16],
+    approved: bool,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
+    let session = display_mirror_state()
+        .lock()
+        .map_err(|_| "display mirror coordinator is unavailable".to_string())?
+        .sessions
+        .get(&session_id)
+        .filter(|session| !session.outbound && session.phase == DisplayMirrorPhase::AwaitingConsent)
+        .cloned()
+        .ok_or_else(|| "that display mirror consent is no longer pending".to_string())?;
+    if approved && !display_mirror_receiver_available(network, &session.peer) {
+        finish_display_mirror(
+            network,
+            session_id,
+            DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+            false,
+        );
+        return network
+            .send_personal_fabric_action(
+                &session.peer,
+                PersonalFabricAction::DisplayMirrorDecision {
+                    session_id,
+                    approved: false,
+                    profile: None,
+                },
+            )
+            .map(|_| ());
+    }
+    if approved {
+        if personal_display_state()
+            .lock()
+            .map_err(|_| "personal display coordinator is unavailable".to_string())?
+            .inbound
+            .is_some()
+        {
+            return Err("this display is already receiving another stream".into());
+        }
+        let (local, _) = network
+            .local_device_fabric_identity()
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        network.authorize_personal_display_session(session_id, session.peer.clone(), local)?;
+        if let Ok(mut state) = display_mirror_state().lock()
+            && let Some(pending) = state.sessions.get_mut(&session_id)
+        {
+            pending.phase = DisplayMirrorPhase::Starting;
+            pending.updated = Instant::now();
+        }
+    } else {
+        finish_display_mirror(
+            network,
+            session_id,
+            DisplayMirrorPhase::Failed(DisplayMirrorFailure::Denied),
+            false,
+        );
+    }
+    let result = network.send_personal_fabric_action(
+        &session.peer,
+        PersonalFabricAction::DisplayMirrorDecision {
+            session_id,
+            approved,
+            profile: approved.then(default_display_profile),
+        },
+    );
+    if result.is_err() {
+        finish_display_mirror(
+            network,
+            session_id,
+            DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+            false,
+        );
+    }
+    result.map(|_| ())
+}
+
+pub fn stop_display_mirror(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
+    let session = display_mirror_state()
+        .lock()
+        .map_err(|_| "display mirror coordinator is unavailable".to_string())?
+        .sessions
+        .get(&session_id)
+        .filter(|session| {
+            !matches!(
+                session.phase,
+                DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+            )
+        })
+        .cloned()
+        .ok_or_else(|| "that display mirror session is no longer active".to_string())?;
+    let result = network.send_personal_fabric_action(
+        &session.peer,
+        PersonalFabricAction::DisplayMirrorStop { session_id },
+    );
+    finish_display_mirror(network, session_id, DisplayMirrorPhase::Stopped, true);
+    result.map(|_| ())
+}
+
 /// The strictest profile accepted by all active receivers. A single encoded
 /// whole-desktop packet can therefore be fanned out without exceeding any
 /// negotiated target ceiling.
@@ -5714,6 +6484,7 @@ pub fn publish_personal_display_packet(
         return false;
     };
     let mut delivered = false;
+    let mut failed_mirrors = Vec::new();
     for (target, session) in &mut state.outbound {
         if !session.accepted {
             continue;
@@ -5730,7 +6501,20 @@ pub fn publish_personal_display_packet(
             height: packet.height,
             annex_b: packet.annex_b.clone(),
         };
-        delivered |= network.send_personal_display(target, message).is_ok();
+        if network.send_personal_display(target, message).is_ok() {
+            delivered = true;
+        } else if session.mirror_only {
+            failed_mirrors.push(session.session_id);
+        }
+    }
+    drop(state);
+    for session_id in failed_mirrors {
+        finish_display_mirror(
+            network,
+            session_id,
+            DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+            false,
+        );
     }
     delivered
 }
@@ -5794,6 +6578,88 @@ pub fn take_personal_display_keyframe_request() -> bool {
     clippy::too_many_lines,
     reason = "session reconciliation and its exhaustive wire transition match stay together as one fail-closed boundary"
 )]
+fn pump_display_mirrors(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    if let Some((local, _)) = network.local_device_fabric_identity() {
+        let active = display_mirror_state().lock().map_or_else(
+            |_| Vec::new(),
+            |state| {
+                state
+                    .sessions
+                    .iter()
+                    .filter(|(_, session)| {
+                        matches!(
+                            session.phase,
+                            DisplayMirrorPhase::Starting | DisplayMirrorPhase::Streaming
+                        )
+                    })
+                    .map(|(session_id, session)| (*session_id, session.clone()))
+                    .collect::<Vec<_>>()
+            },
+        );
+        for (session_id, session) in active {
+            let (source, target) = if session.outbound {
+                (local.clone(), session.peer)
+            } else {
+                (session.peer, local.clone())
+            };
+            let _ = network.authorize_personal_display_session(session_id, source, target);
+        }
+    }
+    let online = network
+        .device_fabric()
+        .snapshots()
+        .values()
+        .filter(|snapshot| snapshot.presence.online)
+        .map(|snapshot| snapshot.owner.clone())
+        .collect::<BTreeSet<_>>();
+    let terminal = display_mirror_state().lock().map_or_else(
+        |_| Vec::new(),
+        |mut state| {
+            state.prune();
+            state
+                .sessions
+                .iter()
+                .filter_map(|(session_id, session)| {
+                    if matches!(
+                        session.phase,
+                        DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+                    ) {
+                        return None;
+                    }
+                    let failure = if !policy.permits(ContinuityCapability::DisplayInput) {
+                        DisplayMirrorFailure::Policy
+                    } else if !online.contains(&session.peer) {
+                        DisplayMirrorFailure::PeerOffline
+                    } else {
+                        let timeout = if session.phase == DisplayMirrorPhase::Streaming {
+                            DISPLAY_MIRROR_IDLE_TIMEOUT
+                        } else {
+                            DISPLAY_MIRROR_CONSENT_TIMEOUT
+                        };
+                        if session.updated.elapsed() < timeout {
+                            return None;
+                        }
+                        DisplayMirrorFailure::TimedOut
+                    };
+                    Some((*session_id, session.peer.clone(), failure))
+                })
+                .collect::<Vec<_>>()
+        },
+    );
+    for (session_id, peer, failure) in terminal {
+        let _ = network.send_personal_fabric_action(
+            &peer,
+            PersonalFabricAction::DisplayMirrorStop { session_id },
+        );
+        finish_display_mirror(
+            network,
+            session_id,
+            DisplayMirrorPhase::Failed(failure),
+            true,
+        );
+    }
+}
+
 fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
     if !policy.permits(ContinuityCapability::DisplayInput) {
         // Drain transport ingress while disabled so stale offers cannot become
@@ -5848,9 +6714,9 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
     }
     let stale_targets = state
         .outbound
-        .keys()
-        .filter(|target| !desired.contains(target))
-        .cloned()
+        .iter()
+        .filter(|(target, session)| !session.mirror_only && !desired.contains(target))
+        .map(|(target, _)| target.clone())
         .collect::<Vec<_>>();
     for target in stale_targets {
         if let Some(session) = state.outbound.remove(&target) {
@@ -5877,6 +6743,7 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                 last_offer: None,
                 sequence: 0,
                 request_keyframe: false,
+                mirror_only: false,
             }
         });
         let offer_interval = if session.accepted {
@@ -5902,6 +6769,34 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
             ));
         }
     }
+    for (target, session) in state
+        .outbound
+        .iter_mut()
+        .filter(|(_, session)| session.mirror_only)
+    {
+        let offer_interval = if session.accepted {
+            DISPLAY_KEEPALIVE
+        } else {
+            DISPLAY_OFFER_RETRY
+        };
+        if session
+            .last_offer
+            .is_none_or(|last| now.saturating_duration_since(last) >= offer_interval)
+        {
+            session.last_offer = Some(now);
+            sends.push((
+                target.clone(),
+                PersonalDisplayMessage::Offer {
+                    protocol_version: DISPLAY_STREAM_PROTOCOL_VERSION,
+                    session_id: session.session_id,
+                    source: local.clone(),
+                    target: target.clone(),
+                    profile: session.profile,
+                    issued_unix_ms: unix_ms(),
+                },
+            ));
+        }
+    }
 
     for message in network.take_personal_display_messages() {
         match message {
@@ -5912,6 +6807,21 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                 profile,
                 ..
             } if target == local => {
+                let mirror_only = display_mirror_state().lock().is_ok_and(|state| {
+                    state.sessions.get(&session_id).is_some_and(|session| {
+                        !session.outbound
+                            && session.peer == source
+                            && session.phase == DisplayMirrorPhase::Starting
+                    })
+                });
+                if !mirror_only && authorized_inbound.as_ref() != Some(&source) {
+                    continue;
+                }
+                if state.inbound.as_ref().is_some_and(|active| {
+                    active.session_id != session_id || active.source != source
+                }) {
+                    continue;
+                }
                 let negotiated = profile.negotiate(default_display_profile());
                 let Some(profile) = negotiated else { continue };
                 state.install_inbound(InboundDisplaySession {
@@ -5920,6 +6830,7 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                     profile,
                     last_activity: now,
                     last_sequence: 0,
+                    mirror_only,
                 });
                 sends.push((
                     source.clone(),
@@ -5945,6 +6856,13 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                 {
                     session.profile = profile;
                     session.accepted = true;
+                    if session.mirror_only
+                        && let Ok(mut mirrors) = display_mirror_state().lock()
+                        && let Some(mirror) = mirrors.sessions.get_mut(&session_id)
+                    {
+                        mirror.phase = DisplayMirrorPhase::Streaming;
+                        mirror.updated = now;
+                    }
                 }
             }
             PersonalDisplayMessage::Frame {
@@ -5959,6 +6877,14 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                 annex_b,
             } if target == local => {
                 if state.accept_frame(session_id, &source, sequence, width, height, now) {
+                    if let Ok(mut mirrors) = display_mirror_state().lock()
+                        && let Some(mirror) = mirrors.sessions.get_mut(&session_id)
+                        && !mirror.outbound
+                        && mirror.peer == source
+                    {
+                        mirror.phase = DisplayMirrorPhase::Streaming;
+                        mirror.updated = now;
+                    }
                     state.events.retain(|event| !matches!(event, PersonalDisplayEvent::Frame { session_id: queued, .. } if queued == &session_id));
                     state.queue_event(PersonalDisplayEvent::Frame {
                         session_id,
@@ -5983,6 +6909,12 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                     && session.session_id == session_id
                 {
                     session.request_keyframe |= request_keyframe || queue_pressure >= 80;
+                    if session.mirror_only
+                        && let Ok(mut mirrors) = display_mirror_state().lock()
+                        && let Some(mirror) = mirrors.sessions.get_mut(&session_id)
+                    {
+                        mirror.updated = now;
+                    }
                 }
             }
             PersonalDisplayMessage::End {
@@ -5993,15 +6925,46 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                     .as_ref()
                     .is_some_and(|session| session.session_id == session_id) =>
             {
+                let mirror_only = state
+                    .inbound
+                    .as_ref()
+                    .is_some_and(|session| session.mirror_only);
                 state.inbound = None;
                 state.queue_event(PersonalDisplayEvent::Ended { session_id });
+                if mirror_only {
+                    if let Ok(mut mirrors) = display_mirror_state().lock()
+                        && let Some(mirror) = mirrors.sessions.get_mut(&session_id)
+                    {
+                        mirror.phase = DisplayMirrorPhase::Stopped;
+                        mirror.updated = now;
+                    }
+                    network.purge_personal_display_session(session_id);
+                }
             }
             _ => {}
         }
     }
     drop(state);
     for (target, message) in sends {
-        let _ = network.send_personal_display(&target, message);
+        let session_id = match &message {
+            PersonalDisplayMessage::Offer { session_id, .. }
+            | PersonalDisplayMessage::Accept { session_id, .. }
+            | PersonalDisplayMessage::Frame { session_id, .. }
+            | PersonalDisplayMessage::Feedback { session_id, .. }
+            | PersonalDisplayMessage::End { session_id, .. } => *session_id,
+        };
+        if network.send_personal_display(&target, message).is_err()
+            && display_mirror_state()
+                .lock()
+                .is_ok_and(|state| state.sessions.contains_key(&session_id))
+        {
+            finish_display_mirror(
+                network,
+                session_id,
+                DisplayMirrorPhase::Failed(DisplayMirrorFailure::Transport),
+                false,
+            );
+        }
     }
 }
 
@@ -6956,6 +7919,371 @@ mod tests {
         );
     }
 
+    fn pending_media(
+        request_id: [u8; 16],
+        source: DeviceId,
+        received: Instant,
+    ) -> PendingIncomingMedia {
+        let route = crate::shell::network::AuthenticatedPersonalRoute::for_test(source.clone());
+        PendingIncomingMedia {
+            received,
+            request_id,
+            source,
+            session_id: format!("session-{}", request_id[0]),
+            app_id: "dev.tilo.music".into(),
+            workspace_id: "00000000-0000-0000-0000-000000000001".into(),
+            title: "Track".into(),
+            locator: MediaSourceLocator::RemoteStream {
+                url: "https://media.example/track.mp3".into(),
+            },
+            position_ms: 1_000,
+            resume_playing: true,
+            has_video: false,
+            route,
+        }
+    }
+
+    #[test]
+    fn source_media_cancel_uses_exact_target_and_only_personal_transfer_id() {
+        let (network, mut commands) = crate::shell::network::shell_network_for_test(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            0x4341_4e43_454c,
+        );
+        let endpoint = iroh::SecretKey::from_bytes(&[0xC1; 32]).public();
+        let target = DeviceId::new(hex::encode(endpoint.as_bytes())).unwrap();
+        let transfer_id = [0xC2; 16];
+        let status = MediaHandoffStatus {
+            request_id: [0xC3; 16],
+            session_id: "personal-file-session".into(),
+            title: "Track".into(),
+            target: target.clone(),
+            phase: MediaHandoffPhase::Pending,
+            updated: Instant::now(),
+            route: crate::shell::network::AuthenticatedPersonalRoute::for_test(target.clone()),
+            personal_transfer_id: Some(transfer_id),
+        };
+        cancel_status_personal_transfer(&network, &status);
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(crate::network::actor::NetCmd::CancelPersonalMedia {
+                target: cancelled_target,
+                transfer_id: cancelled_id,
+            }) if cancelled_target == endpoint && cancelled_id == transfer_id
+        ));
+
+        let streaming = MediaHandoffStatus {
+            personal_transfer_id: None,
+            ..status
+        };
+        cancel_status_personal_transfer(&network, &streaming);
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn incoming_media_cancel_is_exact_and_timeout_clears_late_authority() {
+        let (network, _commands) = crate::shell::network::shell_network_for_test(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            0x4d45_4449_41,
+        );
+        let mut runtime = DeviceFabricRuntime::new(&network, NotificationBridge::new());
+        let source = DeviceId::new("media-source").unwrap();
+        let exact = pending_media([31; 16], source.clone(), Instant::now());
+        let sibling = pending_media([32; 16], source, Instant::now());
+        let expired = pending_media(
+            [33; 16],
+            DeviceId::new("expired-source").unwrap(),
+            Instant::now()
+                .checked_sub(INCOMING_MEDIA_WAIT + Duration::from_secs(1))
+                .unwrap(),
+        );
+        runtime
+            .waiting_incoming_media
+            .insert(exact.request_id, exact.clone());
+        runtime
+            .pending_incoming_media
+            .insert(sibling.request_id, sibling.clone());
+        runtime
+            .waiting_incoming_media
+            .insert(expired.request_id, expired);
+
+        let cancelled = runtime.take_incoming_media(|pending| {
+            pending.request_id == exact.request_id
+                && pending.source == exact.source
+                && pending.session_id == exact.session_id
+        });
+        runtime.terminate_incoming_media(&network, cancelled, None);
+        assert!(
+            !runtime
+                .waiting_incoming_media
+                .contains_key(&exact.request_id)
+        );
+        assert_eq!(
+            runtime.pending_incoming_media.get(&sibling.request_id),
+            Some(&sibling)
+        );
+        runtime.expire_incoming_media(&network);
+        assert!(runtime.waiting_incoming_media.is_empty());
+        assert_eq!(runtime.pending_incoming_media.len(), 1);
+    }
+
+    #[test]
+    fn media_policy_teardown_revokes_waiting_and_launched_requests() {
+        let (network, _commands) = crate::shell::network::shell_network_for_test(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            0x504f_4c49_4359,
+        );
+        let mut runtime = DeviceFabricRuntime::new(&network, NotificationBridge::new());
+        let source = DeviceId::new("policy-media-source").unwrap();
+        let waiting = pending_media([34; 16], source.clone(), Instant::now());
+        let launched = pending_media([35; 16], source, Instant::now());
+        runtime
+            .waiting_incoming_media
+            .insert(waiting.request_id, waiting);
+        runtime
+            .pending_incoming_media
+            .insert(launched.request_id, launched);
+
+        runtime.tear_down_incoming_media(&network, MediaHandoffFailure::Cancelled);
+
+        assert!(runtime.waiting_incoming_media.is_empty());
+        assert!(runtime.pending_incoming_media.is_empty());
+    }
+
+    #[test]
+    fn media_route_loss_is_exact_across_workspace_and_reconnect_epochs() {
+        let (network, _commands) = crate::shell::network::shell_network_for_test(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            0x4550_4f43_48,
+        );
+        let endpoint = iroh::SecretKey::from_bytes(&[0x91; 32]).public();
+        let sibling_endpoint = iroh::SecretKey::from_bytes(&[0x92; 32]).public();
+        let old_epoch = crate::network::actor::MembershipEpoch::for_test(7);
+        let sibling_epoch = crate::network::actor::MembershipEpoch::for_test(8);
+        let route = network.install_personal_route_for_test(77, endpoint, old_epoch, [0x93; 32]);
+        let sibling_route = network.install_personal_route_for_test(
+            77,
+            sibling_endpoint,
+            sibling_epoch,
+            [0x93; 32],
+        );
+        let mut runtime = DeviceFabricRuntime::new(&network, NotificationBridge::new());
+        let mut departed = pending_media([0x94; 16], route.device().clone(), Instant::now());
+        departed.route = route.clone();
+        let mut sibling = pending_media([0x95; 16], sibling_route.device().clone(), Instant::now());
+        sibling.route = sibling_route.clone();
+        runtime
+            .pending_incoming_media
+            .insert(departed.request_id, departed.clone());
+        runtime
+            .pending_incoming_media
+            .insert(sibling.request_id, sibling.clone());
+
+        network
+            .event_tx
+            .try_send(crate::network::actor::NetEvent::PeerLeft {
+                ws: 78,
+                peer: endpoint,
+                cause: crate::network::actor::PeerDepartureCause::LivenessTimedOut,
+                membership_epoch: Some(old_epoch),
+            })
+            .unwrap();
+        network.tick();
+        runtime.prune_media_routes(&network);
+        assert!(
+            runtime
+                .pending_incoming_media
+                .contains_key(&departed.request_id)
+        );
+
+        network
+            .event_tx
+            .try_send(crate::network::actor::NetEvent::PeerLeft {
+                ws: 77,
+                peer: endpoint,
+                cause: crate::network::actor::PeerDepartureCause::LivenessTimedOut,
+                membership_epoch: Some(crate::network::actor::MembershipEpoch::for_test(6)),
+            })
+            .unwrap();
+        network.tick();
+        runtime.prune_media_routes(&network);
+        assert!(
+            runtime
+                .pending_incoming_media
+                .contains_key(&departed.request_id)
+        );
+
+        network
+            .event_tx
+            .try_send(crate::network::actor::NetEvent::PeerLeft {
+                ws: 77,
+                peer: endpoint,
+                cause: crate::network::actor::PeerDepartureCause::LivenessTimedOut,
+                membership_epoch: Some(old_epoch),
+            })
+            .unwrap();
+        network.tick();
+        runtime.prune_media_routes(&network);
+        assert!(
+            !runtime
+                .pending_incoming_media
+                .contains_key(&departed.request_id)
+        );
+        assert_eq!(
+            runtime.pending_incoming_media.get(&sibling.request_id),
+            Some(&sibling)
+        );
+    }
+
+    #[test]
+    fn failed_mpris_acceptance_ack_pauses_only_the_exact_controller() {
+        let mut paused = Vec::new();
+        assert!(compensate_failed_media_acceptance(
+            &Err::<(), _>("route departed".into()),
+            Some("org.mpris.MediaPlayer2.exact"),
+            Some("https://media.example/exact.mp3"),
+            |controller, uri| {
+                paused.push((controller.to_string(), uri.to_string()));
+                true
+            },
+        ));
+        assert_eq!(
+            paused,
+            [(
+                "org.mpris.MediaPlayer2.exact".to_string(),
+                "https://media.example/exact.mp3".to_string()
+            )]
+        );
+        assert!(!compensate_failed_media_acceptance(
+            &Ok(()),
+            Some("org.mpris.MediaPlayer2.must-not-pause"),
+            Some("https://media.example/unrelated.mp3"),
+            |_, _| true,
+        ));
+    }
+
+    #[test]
+    fn clipboard_policy_transition_clears_imports_and_never_reauthors_them() {
+        use crate::compositor::selection::{
+            SelectionStore, Target, clipboard_history, pin_history_item, set_mirror_text,
+        };
+
+        let policy = |clipboard| {
+            let document = serde_json::json!({"continuity": {
+                "enabled": true,
+                "clipboard": clipboard,
+                "notifications": true,
+                "wifi_settings": true,
+                "media": true,
+                "display_input": true,
+                "file_transfer": true,
+                "realtime_sessions": true,
+                "typed_gamepad": true,
+                "app_continuations": true
+            }});
+            ContinuityPolicySnapshot::from_document(document.as_object().unwrap())
+        };
+        let local = DeviceId::new("local-clipboard-device").unwrap();
+        let remote = DeviceId::new("remote-clipboard-device").unwrap();
+        let selection = std::sync::Arc::new(std::sync::Mutex::new(SelectionStore::default()));
+        assert!(set_mirror_text(
+            &selection,
+            Target::Clipboard,
+            "keep this local copy"
+        ));
+        let local_id = clipboard_history(&selection)[0].id;
+        assert!(pin_history_item(&selection, local_id, true));
+
+        let mut imported = ClipboardEntry::shareable(
+            ClipboardPayload::Text("remote private copy".into()),
+            remote.clone(),
+            42,
+            FabricStamp {
+                counter: 7,
+                device: remote.clone(),
+            },
+        )
+        .unwrap();
+        imported.pinned = true;
+        merge_shared_clipboard_history(&selection, std::slice::from_ref(&imported));
+        assert_eq!(clipboard_history(&selection).len(), 2);
+
+        let (network, _commands) = crate::shell::network::shell_network_for_test(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            1,
+        );
+        let mut runtime = DeviceFabricRuntime::new(&network, NotificationBridge::new());
+        let enabled = policy(true);
+        runtime.enforce_policy(&network, &selection, enabled);
+        let stamp = FabricStamp {
+            counter: 10,
+            device: local.clone(),
+        };
+        let capabilities = LocalFabricCapabilities {
+            display: None,
+            pointer: false,
+            keyboard: false,
+            audio_output: false,
+        };
+        let enabled_snapshot = build_local_snapshot(
+            &local,
+            "Local".into(),
+            capabilities,
+            &selection,
+            None,
+            &BTreeMap::new(),
+            &stamp,
+            enabled,
+        );
+        assert_eq!(enabled_snapshot.clipboard.len(), 1);
+        assert_eq!(enabled_snapshot.clipboard[0].origin, local);
+
+        let disabled = policy(false);
+        runtime.enforce_policy(&network, &selection, disabled);
+        let history = clipboard_history(&selection);
+        assert_eq!(
+            history.len(),
+            1,
+            "remote history must be revoked immediately"
+        );
+        assert_eq!(
+            history[0].id, local_id,
+            "local pinned history is device-private"
+        );
+        assert!(history[0].pinned);
+        let disabled_snapshot = build_local_snapshot(
+            &local,
+            "Local".into(),
+            capabilities,
+            &selection,
+            Some(&enabled_snapshot),
+            &BTreeMap::new(),
+            &stamp,
+            disabled,
+        );
+        assert!(disabled_snapshot.clipboard.is_empty());
+        assert!(!disabled_snapshot.presence.capabilities.clipboard);
+
+        runtime.enforce_policy(&network, &selection, enabled);
+        merge_shared_clipboard_history(&selection, std::slice::from_ref(&imported));
+        assert_eq!(clipboard_history(&selection).len(), 2);
+        let reenabled_snapshot = build_local_snapshot(
+            &local,
+            "Local".into(),
+            capabilities,
+            &selection,
+            Some(&disabled_snapshot),
+            &BTreeMap::new(),
+            &stamp,
+            enabled,
+        );
+        assert_eq!(reenabled_snapshot.clipboard.len(), 1);
+        assert_eq!(reenabled_snapshot.clipboard[0].origin, local);
+        assert_ne!(
+            reenabled_snapshot.clipboard[0].id, imported.id,
+            "an imported entry must not be re-authored after policy re-enable"
+        );
+    }
+
     #[test]
     fn nearby_drop_never_overwrites_and_rejects_a_symlinked_destination() {
         let temp = tempfile::tempdir().unwrap();
@@ -7453,6 +8781,63 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_departure_revokes_only_exact_controller_and_is_not_replayed() {
+        let departed_endpoint = iroh::SecretKey::from_bytes(&[41; 32]).public();
+        let sibling_endpoint = iroh::SecretKey::from_bytes(&[42; 32]).public();
+        let departed = DeviceId::new(hex::encode(departed_endpoint.as_bytes())).unwrap();
+        let sibling = DeviceId::new(hex::encode(sibling_endpoint.as_bytes())).unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let now = 10_000_u64;
+        let lease = |controller: DeviceId, nonce: [u8; 16]| InputLease {
+            controller,
+            target: target.clone(),
+            issued_unix_ms: now,
+            expires_unix_ms: now.saturating_add(1_000),
+            nonce,
+            allow_keyboard: true,
+            allow_pointer: true,
+        };
+        let mut spatial = SpatialInputState {
+            last_peer_departure_generation: 7,
+            ..SpatialInputState::default()
+        };
+        spatial
+            .issued
+            .insert([1; 16], lease(departed.clone(), [1; 16]));
+        spatial
+            .issued
+            .insert([2; 16], lease(sibling.clone(), [2; 16]));
+        let departures = vec![crate::shell::network::PeerDeparture {
+            generation: 8,
+            endpoint_id: departed_endpoint,
+            membership_epoch: Some(crate::network::actor::MembershipEpoch::for_test(1)),
+            session_handle: 1,
+            route: crate::shell::collab_broker::CrdtRoute::cluster("personal"),
+            cause: crate::shell::network::PeerDepartureCause::LivenessTimedOut,
+            user_public_key: Some([3; 32]),
+            participant_name: None,
+            observed_at: std::time::SystemTime::now(),
+        }];
+
+        prune_spatial_state(&mut spatial, now, &departures, |_| true);
+        assert!(!spatial.issued.contains_key(&[1; 16]));
+        assert!(spatial.issued.contains_key(&[2; 16]));
+        assert_eq!(
+            spatial.release_controllers.iter().collect::<Vec<_>>(),
+            vec![&departed]
+        );
+
+        spatial.release_controllers.clear();
+        spatial
+            .issued
+            .insert([3; 16], lease(departed.clone(), [3; 16]));
+        prune_spatial_state(&mut spatial, now, &departures, |_| true);
+        assert!(spatial.issued.contains_key(&[3; 16]));
+        assert!(spatial.issued.contains_key(&[2; 16]));
+        assert!(spatial.release_controllers.is_empty());
+    }
+
+    #[test]
     fn replacing_a_personal_display_session_ends_the_old_surface_first() {
         let profile = default_display_profile();
         let mut state = PersonalDisplayState::default();
@@ -7462,6 +8847,7 @@ mod tests {
             profile,
             last_activity: Instant::now(),
             last_sequence: 0,
+            mirror_only: false,
         });
         state.events.clear();
         state.install_inbound(InboundDisplaySession {
@@ -7470,6 +8856,7 @@ mod tests {
             profile,
             last_activity: Instant::now(),
             last_sequence: 0,
+            mirror_only: false,
         });
         assert!(matches!(
             state.events.pop_front(),
@@ -7491,11 +8878,79 @@ mod tests {
             profile: default_display_profile(),
             last_activity: Instant::now(),
             last_sequence: 0,
+            mirror_only: false,
         });
         assert!(state.accept_frame([9; 16], &source, 2, 1280, 720, Instant::now()));
         assert!(!state.accept_frame([9; 16], &source, 1, 1280, 720, Instant::now()));
         assert!(!state.accept_frame([9; 16], &source, 2, 1280, 720, Instant::now()));
         assert_eq!(state.inbound.as_ref().unwrap().last_sequence, 2);
+    }
+
+    #[test]
+    fn display_mirror_authority_is_exact_and_active_sessions_are_never_pruned() {
+        let source = DeviceId::new("source").unwrap();
+        let other = DeviceId::new("other").unwrap();
+        let session = DisplayMirrorSession {
+            peer: source.clone(),
+            outbound: false,
+            phase: DisplayMirrorPhase::AwaitingConsent,
+            updated: Instant::now() - DISPLAY_MIRROR_CONSENT_TIMEOUT - Duration::from_secs(1),
+        };
+        assert!(session.matches(&source, false, DisplayMirrorPhase::AwaitingConsent));
+        assert!(!session.matches(&other, false, DisplayMirrorPhase::AwaitingConsent));
+        assert!(!session.matches(&source, true, DisplayMirrorPhase::AwaitingConsent));
+
+        let mut state = DisplayMirrorState::default();
+        state.sessions.insert([1; 16], session);
+        state.sessions.insert(
+            [2; 16],
+            DisplayMirrorSession {
+                peer: source,
+                outbound: true,
+                phase: DisplayMirrorPhase::Stopped,
+                updated: Instant::now() - DISPLAY_MIRROR_HISTORY_TTL - Duration::from_secs(1),
+            },
+        );
+        state.prune();
+        assert!(state.sessions.contains_key(&[1; 16]));
+        assert!(!state.sessions.contains_key(&[2; 16]));
+    }
+
+    #[test]
+    fn mirror_frames_keep_exact_peer_session_and_monotonic_sequence() {
+        let source = DeviceId::new("source").unwrap();
+        let other = DeviceId::new("other").unwrap();
+        let mut state = PersonalDisplayState::default();
+        state.install_inbound(InboundDisplaySession {
+            session_id: [3; 16],
+            source: source.clone(),
+            profile: default_display_profile(),
+            last_activity: Instant::now(),
+            last_sequence: 0,
+            mirror_only: true,
+        });
+        assert!(state.accept_frame([3; 16], &source, 1, 1280, 720, Instant::now()));
+        assert!(!state.accept_frame([3; 16], &source, 1, 1280, 720, Instant::now()));
+        assert!(!state.accept_frame([4; 16], &source, 2, 1280, 720, Instant::now()));
+        assert!(!state.accept_frame([3; 16], &other, 2, 1280, 720, Instant::now()));
+    }
+
+    #[test]
+    fn only_the_mirror_source_authors_display_end() {
+        let local = DeviceId::new("local").unwrap();
+        let peer = DeviceId::new("peer").unwrap();
+        let session = |outbound| DisplayMirrorSession {
+            peer: peer.clone(),
+            outbound,
+            phase: DisplayMirrorPhase::Streaming,
+            updated: Instant::now(),
+        };
+        assert!(matches!(
+            display_mirror_end_message([5; 16], &local, &session(true)),
+            Some(PersonalDisplayMessage::End { source, target, .. })
+                if source == local && target == peer
+        ));
+        assert!(display_mirror_end_message([5; 16], &local, &session(false)).is_none());
     }
 
     fn pending_gamepad(source: &str) -> PendingGamepadAuthorization {

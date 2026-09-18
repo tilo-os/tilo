@@ -70,6 +70,16 @@ fn backup_input(label: &str) -> TextInput {
         .with_secret(true)
 }
 
+fn search_input() -> TextInput {
+    TextInput::local()
+        .with_id("passwords.search")
+        .with_accessible_name("Search passwords")
+        .with_kind(ui::widget::TextInputKind::Search)
+        .with_plain_chrome()
+        .with_font_size(14.0)
+        .with_placeholder("Search passwords")
+}
+
 impl EditorInputs {
     fn new(name: &str, username: &str, origin: &str, password: &str, notes: &str) -> Self {
         Self {
@@ -197,6 +207,7 @@ pub struct PasswordsSurface {
     app_access_scroll: f64,
     app_access_touch: Option<(u64, Point, f64)>,
     query: String,
+    search_input: TextInput,
     editing: Option<SecretId>,
     draft_title: String,
     draft_kind: SecretItemKind,
@@ -460,6 +471,7 @@ impl PasswordsSurface {
             app_access_scroll: 0.0,
             app_access_touch: None,
             query: String::new(),
+            search_input: search_input(),
             editing: None,
             draft_title: String::new(),
             draft_kind: SecretItemKind::Login,
@@ -543,6 +555,7 @@ impl PasswordsSurface {
             app_access_scroll: 0.0,
             app_access_touch: None,
             query: String::new(),
+            search_input: search_input(),
             editing,
             draft_title: "Northstar Bank".into(),
             draft_kind: SecretItemKind::Login,
@@ -641,6 +654,14 @@ impl PasswordsSurface {
             ActiveField::CustomFields => self.draft_custom_fields = Zeroizing::new(value),
             ActiveField::Search => {}
         }
+    }
+
+    fn set_search_query(&mut self, value: &str) {
+        self.query.clear();
+        self.query.push_str(value);
+        self.search_input.set_text(value);
+        self.list_scroll = 0;
+        self.refresh();
     }
 
     fn begin_add(&mut self) {
@@ -1932,7 +1953,9 @@ impl PasswordsSurface {
             }
             return false;
         }
-        if self.mode == ShowcaseMode::Vault || self.drawer.is_docked() {
+        if self.transfer_dialog.is_none()
+            && (self.mode == ShowcaseMode::Vault || self.drawer.is_docked())
+        {
             if Rect::new(
                 list.x1 - 122.0,
                 list.y0 - 10.0,
@@ -2653,7 +2676,7 @@ impl PasswordsSurface {
     }
 
     fn draw_list(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         transform: Affine,
@@ -2685,33 +2708,9 @@ impl PasswordsSurface {
             .icon(Icon::Plus),
         );
         let search = Rect::new(rect.x0, rect.y0 + 54.0, rect.x1, rect.y0 + 98.0);
-        Self::card(scene, transform, c.surfaces.raised, search, 12.0);
-        Icon::Search.draw(
-            scene,
-            transform,
-            Rect::new(
-                search.x0 + 13.0,
-                search.y0 + 13.0,
-                search.x0 + 29.0,
-                search.y0 + 29.0,
-            ),
-            c.text_dim,
-        );
-        Self::text(
-            tr,
-            scene,
-            if self.query.is_empty() {
-                "Search passwords"
-            } else {
-                &self.query
-            },
-            14.0,
-            c.text_dim,
-            transform,
-            search.x0 + 38.0,
-            search.y0 + 13.0,
-            TextWeight::Regular,
-        );
+        self.search_input.apply_layout_external(search);
+        self.search_input
+            .draw(scene, transform, tr, theme, &PresenceCtx::default());
         let tabs_y = rect.y0 + 116.0;
         let visible = self.visible_indices();
         Self::text(
@@ -4019,6 +4018,40 @@ impl Widget for PasswordsSurface {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_pointer = Point::new(position.x / scale, position.y / scale);
         }
+
+        // The vault search is a real shared text widget, so pointer selection,
+        // Unicode word motion, IME, and clipboard shortcuts follow the same path
+        // as every other application input.
+        if self.mode == ShowcaseMode::Vault || self.drawer.is_docked() {
+            Widget::set_focus(
+                &mut self.search_input,
+                self.active_field == Some(ActiveField::Search),
+            );
+            let mut search_handled = false;
+            self.search_input.handle_event(
+                event,
+                scale,
+                modifiers,
+                state,
+                path,
+                &mut search_handled,
+                focus,
+                node,
+                taffy,
+            );
+            if self.search_input.is_focused() {
+                self.active_field = Some(ActiveField::Search);
+            }
+            if let Some(value) = self.search_input.take_dirty() {
+                self.query = value;
+                self.list_scroll = 0;
+                self.refresh();
+            }
+            if search_handled {
+                *handled = true;
+                return;
+            }
+        }
         if matches!(
             self.transfer_dialog,
             Some(TransferDialog::Backup | TransferDialog::Restore { .. })
@@ -4209,6 +4242,7 @@ impl Widget for PasswordsSurface {
                         .contains(self.last_pointer)
                     {
                         self.active_field = Some(ActiveField::Search);
+                        Widget::set_focus(&mut self.search_input, true);
                         *handled = true;
                         return;
                     }
@@ -4665,22 +4699,9 @@ impl Widget for PasswordsSurface {
                         self.move_list_selection(false);
                         *handled = true;
                     }
-                    Key::Named(NamedKey::Backspace)
-                        if self.active_field == Some(ActiveField::Search) =>
-                    {
-                        self.query.pop();
-                        self.list_scroll = 0;
-                        self.refresh();
-                        *handled = true;
-                    }
-                    Key::Character(text) if self.active_field == Some(ActiveField::Search) => {
-                        self.query.push_str(text);
-                        self.list_scroll = 0;
-                        self.refresh();
-                        *handled = true;
-                    }
                     Key::Character(text) if text == "/" => {
                         self.active_field = Some(ActiveField::Search);
+                        Widget::set_focus(&mut self.search_input, true);
                         *handled = true;
                     }
                     Key::Character(text) if text.eq_ignore_ascii_case("n") => {
@@ -5205,11 +5226,12 @@ impl Widget for PasswordsSurface {
                 }
                 self.begin_plaintext_export();
             }
-            ("passwords.search", Action::Focus) => self.active_field = Some(ActiveField::Search),
+            ("passwords.search", Action::Focus) => {
+                self.active_field = Some(ActiveField::Search);
+                Widget::set_focus(&mut self.search_input, true);
+            }
             ("passwords.search", Action::SetValue(value)) => {
-                self.query.clone_from(value);
-                self.list_scroll = 0;
-                self.refresh();
+                self.set_search_query(value);
             }
             ("passwords.generate", Action::Activate) => self.generate_password(),
             ("passwords.cancel", Action::Activate) => self.cancel_edit(),

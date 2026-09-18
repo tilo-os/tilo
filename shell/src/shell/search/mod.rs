@@ -237,6 +237,10 @@ impl SearchBudget {
     };
 }
 
+const HEADLESS_MAX_PAGES: usize = 256;
+const HEADLESS_MAX_RESULTS: usize = 16_384;
+const HEADLESS_MAX_BYTES: usize = 16 * 1024 * 1024;
+
 /// An opaque provider-owned continuation.  The revision is carried alongside
 /// the provider-local payload, so a result page can never silently advance
 /// across a changed ordering.
@@ -499,6 +503,16 @@ fn i32_to_f32_lossy(n: i32) -> f32 {
     n as f32
 }
 
+fn estimated_result_bytes(result: &SearchResult) -> usize {
+    result
+        .provider_id
+        .len()
+        .saturating_add(result.id.len())
+        .saturating_add(result.title.len())
+        .saturating_add(result.subtitle.as_ref().map_or(0, String::len))
+        .saturating_add(result.params.len().saturating_mul(64))
+}
+
 /// Registry that fans a query out to every provider under the current
 /// scope, then merges + sorts.
 pub struct SearchRegistry {
@@ -521,6 +535,17 @@ impl SearchRegistry {
     /// Results are re-sorted by score before display, so registration
     /// order only affects which provider's ID wins the de-dup tiebreak.
     pub fn register(&mut self, provider: Rc<dyn SearchProvider>) {
+        self.providers.push(provider);
+    }
+
+    /// Install the current owner for a stable provider id.
+    ///
+    /// Session bridges can be rebound after login or in a headless harness.
+    /// Keeping an older provider beside its replacement would expose duplicate
+    /// rows whose callbacks still target the retired bridge.
+    pub fn register_or_replace(&mut self, provider: Rc<dyn SearchProvider>) {
+        let id = provider.id();
+        self.providers.retain(|existing| existing.id() != id);
         self.providers.push(provider);
     }
 
@@ -616,6 +641,44 @@ impl SearchRegistry {
         ))
     }
 
+    /// Resolve one current row without surveying unrelated providers.
+    pub fn query_provider_exact(
+        &self,
+        provider_id: &str,
+        id: &str,
+        args: &QueryArgs<'_>,
+    ) -> Option<SearchResult> {
+        let mut cursor = None;
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..HEADLESS_MAX_PAGES {
+            let page = self.query_provider_page(
+                provider_id,
+                args,
+                cursor.as_ref(),
+                SearchBudget::PALETTE,
+            )?;
+            if page.stale_cursor {
+                return None;
+            }
+            if let Some(found) = page
+                .results
+                .into_iter()
+                .find(|result| result.provider_id == provider_id && result.id == id)
+            {
+                return Some(found);
+            }
+            if page.exhausted {
+                return None;
+            }
+            let next = page.next_cursor?;
+            if !seen.insert(next.clone()) {
+                return None;
+            }
+            cursor = Some(next);
+        }
+        None
+    }
+
     /// Union of every registered provider's [`ResourceKind`]s, ordered by
     /// [`ResourceKind::sort_key`] — one chip per kind in the palette.
     pub fn registered_kinds(&self) -> Vec<ResourceKind> {
@@ -662,6 +725,16 @@ impl SearchRegistry {
     /// filter. `wanted_kinds` filters results by kind; empty means "any
     /// kind" so a naive caller can just pass `&[]`.
     pub fn query(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
+        self.query_inner(args, false)
+    }
+
+    /// Exhaust every provider continuation for a render-free action listing.
+    /// Interactive palette queries deliberately remain one bounded page.
+    pub fn query_exhaustive(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
+        self.query_inner(args, true)
+    }
+
+    fn query_inner(&self, args: &QueryArgs<'_>, exhaustive: bool) -> Vec<SearchResult> {
         if !query_input_is_bounded(args.needle) {
             return Vec::new();
         }
@@ -681,7 +754,17 @@ impl SearchRegistry {
         };
         let mut merged: Vec<(SearchResult, f32)> = Vec::new();
         let mut canonical_rows: HashMap<(String, String), usize> = HashMap::new();
+        let mut headless_pages = 0usize;
+        let mut headless_results = 0usize;
+        let mut headless_bytes = 0usize;
         for provider in &self.providers {
+            if exhaustive
+                && (headless_pages >= HEADLESS_MAX_PAGES
+                    || headless_results >= HEADLESS_MAX_RESULTS
+                    || headless_bytes >= HEADLESS_MAX_BYTES)
+            {
+                break;
+            }
             if !scope_allows(provider.as_ref(), scope, active_provider_id) {
                 continue;
             }
@@ -702,15 +785,53 @@ impl SearchRegistry {
                 doc_root,
             };
             let top = provider.max_score().max(1);
-            let page = provider.query_page(ctx, None, SearchBudget::PALETTE);
+            let mut page = provider.query_page(ctx, None, SearchBudget::PALETTE);
             // A source changed between the call's routing snapshot and its
-            // index read.  Treat it as unavailable for this keystroke rather
-            // than presenting a misleading empty continuation; the next
-            // input/poll retries from the fresh revision.
+            // index read.  Treat it as unavailable for this request rather
+            // than mixing generations.
             if page.stale_cursor {
                 continue;
             }
-            for r in page.results {
+            let mut provider_results = Vec::new();
+            provider_results.append(&mut page.results);
+            if exhaustive {
+                let mut seen = std::collections::HashSet::new();
+                headless_pages = headless_pages.saturating_add(1);
+                headless_results = headless_results.saturating_add(provider_results.len());
+                headless_bytes = headless_bytes.saturating_add(
+                    provider_results
+                        .iter()
+                        .map(estimated_result_bytes)
+                        .sum::<usize>(),
+                );
+                while !page.exhausted
+                    && headless_pages < HEADLESS_MAX_PAGES
+                    && headless_results < HEADLESS_MAX_RESULTS
+                    && headless_bytes < HEADLESS_MAX_BYTES
+                {
+                    let Some(cursor) = page.next_cursor.take() else {
+                        break;
+                    };
+                    if !seen.insert(cursor.clone()) {
+                        break;
+                    }
+                    page = provider.query_page(ctx, Some(&cursor), SearchBudget::PALETTE);
+                    if page.stale_cursor {
+                        // Legacy providers advertise a synthetic continuation
+                        // only to disclose truncation. Preserve their useful
+                        // first bounded page rather than withdrawing it.
+                        break;
+                    }
+                    headless_pages = headless_pages.saturating_add(1);
+                    headless_results = headless_results.saturating_add(page.results.len());
+                    headless_bytes = headless_bytes
+                        .saturating_add(page.results.iter().map(estimated_result_bytes).sum());
+                    provider_results.append(&mut page.results);
+                }
+                let already_merged = merged.len();
+                provider_results.truncate(HEADLESS_MAX_RESULTS.saturating_sub(already_merged));
+            }
+            for r in provider_results {
                 // A score above `top` exceeds strength 1.0 and silently
                 // outranks every other provider's perfect match.
                 debug_assert!(
@@ -954,6 +1075,100 @@ mod tests {
             .expect("registered provider");
         assert!(page.exhausted && page.results.is_empty());
         assert_eq!(calls.get(), 0, "direct paging has the same input gate");
+    }
+
+    #[test]
+    fn exhaustive_query_is_bounded_and_keeps_legacy_first_page() {
+        use std::cell::Cell;
+
+        struct EndlessProvider(Rc<Cell<usize>>);
+        impl SearchProvider for EndlessProvider {
+            fn id(&self) -> &'static str {
+                "endless"
+            }
+            fn name(&self) -> &'static str {
+                "Endless"
+            }
+            fn resource_kinds(&self) -> &[ResourceKind] {
+                &[ResourceKind::Action]
+            }
+            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+                Vec::new()
+            }
+            fn query_page(
+                &self,
+                _ctx: SearchContext<'_>,
+                cursor: Option<&SearchCursor>,
+                _budget: SearchBudget,
+            ) -> SearchPage {
+                let page = cursor
+                    .and_then(|cursor| cursor.token.parse::<usize>().ok())
+                    .unwrap_or_default();
+                self.0.set(self.0.get().saturating_add(1));
+                SearchPage {
+                    revision: "endless-v1".into(),
+                    results: vec![mk_result(
+                        ResourceKind::Action,
+                        "endless",
+                        &format!("row-{page}"),
+                        "row",
+                        1,
+                    )],
+                    next_cursor: Some(SearchCursor {
+                        revision: "endless-v1".into(),
+                        token: page.saturating_add(1).to_string(),
+                    }),
+                    exhausted: false,
+                    stale_cursor: false,
+                    budget_exhausted: true,
+                }
+            }
+        }
+
+        let calls = Rc::new(Cell::new(0));
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(EndlessProvider(Rc::clone(&calls))));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+
+        let rows = registry.query_exhaustive(&args);
+        assert_eq!(calls.get(), HEADLESS_MAX_PAGES);
+        assert!(rows.len() <= HEADLESS_MAX_RESULTS);
+
+        let mut legacy = SearchRegistry::new();
+        legacy.register(Rc::new(FakeProvider {
+            id: "legacy".into(),
+            kinds: vec![ResourceKind::Action],
+            results: (0..60)
+                .map(|index| {
+                    mk_result(
+                        ResourceKind::Action,
+                        "legacy",
+                        &format!("legacy-{index}"),
+                        "legacy",
+                        1,
+                    )
+                })
+                .collect(),
+            max_score: None,
+        }));
+        let rows = legacy.query_exhaustive(&args);
+        assert!(rows.iter().any(|row| row.id == "legacy-0"));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.provider_id == "legacy")
+                .count(),
+            48
+        );
     }
 
     #[test]
