@@ -43,6 +43,41 @@ class LauncherContract(unittest.TestCase):
             self.assertTrue((build / 'Containerfile').read_text().endswith(
                 '\nRUN chmod 0755 /var/lib && /usr/local/bin/cosign version\n'))
 
+    def extra_environment(self):
+        env = {}
+        entries = {}
+        for label, (_, digest) in launch.EXTRA_PARTIALS.items():
+            value = {'purpose':'tilo-development-reconstructed-partial-native-checkpoint',
+                'source_revision':launch.SOURCE,'helper_revision':'9d7a6b259c9b75b6c5031472bfed05b6461c1893',
+                'run_id':21554,'run_number':8166,'installable':False,'complete_native_builder':False,
+                'build_success':False,'resume_admitted':False,'inventory':{label:{'size':1,'sha256':'a'*64}},
+                'reference':'code.podesta.ai/qos/tilo-development-partial-native-aarch64@sha256:'+digest}
+            raw=json.dumps(value);sha=hashlib.sha256(raw.encode()).hexdigest()
+            env[label]=raw;env[label+'_SHA256']=sha;entries[sha]={'inventory':value['inventory']}
+        raw=json.dumps({'purpose':'tilo-reconstructed-partial-admission','receipts':entries})
+        env[launch.ADMISSION]=raw;env[launch.ADMISSION+'_SHA256']=hashlib.sha256(raw.encode()).hexdigest()
+        return env
+
+    def test_four_checkpoint_and_admission_arguments(self):
+        env=self.extra_environment()
+        receipts=launch.prepare_extra_partials(env,dict)
+        self.assertEqual(set(receipts),set(launch.EXTRA_PARTIALS)|{launch.ADMISSION})
+        env.update({key+'_SHA256':'a'*64 for key in ['WPE_ADOPTION','CHECKPOINT_INITIAL','CHECKPOINT_DELTA']})
+        argv=launch.driver_argv('a'*40,env)
+        self.assertEqual(argv.count('--resume-checkpoint'),4)
+        self.assertIn('--resume-reconstructed-partial-admission',argv)
+        self.assertIn('/work/reconstructed-partial-admission.json',argv)
+
+    def test_partial_opt_in_or_substitution_rejected(self):
+        env=self.extra_environment();env.pop('CHECKPOINT_WINDOWS_SHA256')
+        with self.assertRaises(ValueError):launch.prepare_extra_partials(env,dict)
+        env=self.extra_environment();env['CHECKPOINT_RELEASE_SHA256']='0'*64
+        with self.assertRaises(ValueError):launch.prepare_extra_partials(env,dict)
+        env=self.extra_environment();value=json.loads(env['CHECKPOINT_RELEASE']);value['run_id']=20866
+        env['CHECKPOINT_RELEASE']=json.dumps(value);env['CHECKPOINT_RELEASE_SHA256']=hashlib.sha256(env['CHECKPOINT_RELEASE'].encode()).hexdigest()
+        with self.assertRaises(ValueError):launch.prepare_extra_partials(env,dict)
+        self.assertEqual(launch.prepare_extra_partials({},dict),{})
+
     def test_driver_arguments_cannot_fall_back_to_full_native_compilation(self):
         values = {name + '_SHA256': str(i) * 64 for i, name in enumerate(
             ('WPE_ADOPTION', 'CHECKPOINT_INITIAL', 'CHECKPOINT_DELTA'), 1)}
