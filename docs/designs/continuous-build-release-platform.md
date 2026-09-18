@@ -57,6 +57,38 @@ Sources: `docs/release-pipeline.md`, `docs/ci-performance.md`, `docs/imager-rele
 
 ## Product and target catalog
 
+### Read-only packaging planner experiment (2026-09-19)
+
+`tools/app_packaging_report.py` now reports affected qpkg apps from Cargo metadata
+and candidate artifact identities from committed package/dependency inputs. Run
+from a clean checkout (including untracked files), using actual immutable builder
+and runtime digests, for example:
+
+```sh
+python3 tools/app_packaging_report.py --base HEAD^ \
+  --target x86_64-unknown-linux-gnu \
+  --builder "$BUILDER_DIGEST" --runtime "$RUNTIME_DIGEST"
+```
+
+The repository graph selected one app for a calculator source edit, 53 for a UI
+edit, and zero for a documentation edit. Six tests exercise real Cargo metadata
+and Git inputs, including deleted manifests, unknown native inputs, dirty and
+untracked files, architecture separation and runtime/builder identity changes.
+This is report-only: ignored/generated inputs and ambient build environment are
+not fully modeled, and no key authorizes artifact reuse or publication.
+
+`experiments/ci-build-graph/selective_compile_probe.py` compiles only a tiny offline
+fixture using the repository's pinned toolchain. Selecting one app while retaining
+another app's `--features other/feature` fails with Cargo exit 101; explicitly
+enabling the shared dependency's feature preserves that feature in the selected
+build. Consequently, removing `-p` roots from the current thin-app builder is not
+a safe standalone optimization. A next experiment must derive the exact shared
+feature union, then verify runtime crate hashes and loader compatibility before
+reusing binaries. Keep Forgejo for events and runners, Cargo for compilation
+dependencies, and artifact manifests for cross-run reuse; do not reproduce
+transitive package dependencies in workflow YAML. No workflow is enabled by this
+planner, and OS publication remains a separate manual decision.
+
 Create one versioned product/target catalog, provisionally `release/targets.toml`, consumed by planning, workflow dispatch, package verification and download manifests. Extend app collections and the installation contract; do not maintain another conflicting list by hand. Use explicit valid combinations rather than a Cartesian product of every app, OS, architecture, distro and device.
 
 | Product | Required non-macOS coverage | Reusable boundary and qualification |
