@@ -59,9 +59,10 @@ python3 os/dev/development-trust.py create \
 ```
 
 The destination must not exist. The helper accepts exactly the four public
-files and a development manifest, parses keys/certificates with OpenSSL, requires
-an RSA PCR key of at least 2048 bits, and rejects private PEM blocks, extra
-files, links and junctions. The owner input is a lowercase 64-hex public key.
+files and a development manifest, parses keys and certificates with the
+Rust-native `tilo-crypto` helper, requires an RSA PCR key of at least 2048 bits,
+and rejects private PEM blocks, extra files, links and junctions. The owner
+input is a lowercase 64-hex public key.
 Certificate parsing does not establish firmware trust or certificate validity
 for a particular signing service.
 
@@ -274,11 +275,12 @@ podman unshare python3 os/dev/verify-development-source.py \
   --manifest-sha256 "$EXPECTED_PUBLIC_BUNDLE_SHA256"
 ```
 
-The host needs local Podman, Cosign and OpenSSL. Rootful storage can run the
-same helper as root. The helper verifies the signature payload's exact repository
-and digest before pulling, validates the native OCI identity, and inspects a
-mounted filesystem with host code. It checks embedded trust, update policy,
-registry owner and any hardware profile. It never starts the image's entrypoint.
+The host needs local Podman, Cosign, and `tilo-crypto`; it does not need
+OpenSSL. Rootful storage can run the same helper as root. The helper verifies
+the signature payload's exact repository and digest before pulling, validates
+the native OCI identity, and inspects a mounted filesystem with host code. It
+checks embedded trust, update policy, registry owner and any hardware profile.
+It never starts the image's entrypoint.
 Remote Podman and redirected signature repositories are rejected. If explicitly
 provided, `REGISTRY_AUTH_FILE` is copied privately for both clients and removed
 afterward. Only literal `127.0.0.1` permits HTTP; TLS certificate verification is
@@ -477,7 +479,7 @@ bootc, sufficient disk capacity, correct installed content or bootability.
    only the public certificate:
 
    ```sh
-   openssl x509 -in release-efi.crt -outform DER | sha256sum
+   tilo-crypto certificate-sha256 release-efi.crt
    ```
 
 5. Establish and publish the independently held marketplace owner identity;
