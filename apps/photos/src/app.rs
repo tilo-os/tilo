@@ -6719,13 +6719,17 @@ impl Widget for PhotosApp {
         let matches_filter = |photo: &LibraryPhoto| {
             let query_matches = query.is_empty()
                 || format!(
-                    "{} {} {} {} {} {}",
+                    "{} {} {} {} {} {} {}",
                     photo.image.name,
                     photo.folder.as_deref().unwrap_or_default(),
                     photo.people.join(" "),
                     photo.tags.join(" "),
                     photo.captured_at.as_deref().unwrap_or_default(),
                     photo.metadata_summary(),
+                    photo
+                        .analysis
+                        .as_ref()
+                        .map_or_else(String::new, crate::model::ImageAnalysis::searchable_text),
                 )
                 .to_lowercase()
                 .contains(&query);
