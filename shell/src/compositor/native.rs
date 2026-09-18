@@ -6173,8 +6173,8 @@ pub fn run() {
                     width,
                     height,
                 });
-            let gamepad_binding = active_physical_gamepad_binding(&tree_handle.read());
-            runtime.set_local_gamepad_focus(gamepad_binding.clone());
+            let app_focus = active_physical_gamepad_binding(&tree_handle.read());
+            runtime.set_local_app_focus(app_focus.clone());
             runtime.pump(
                 net,
                 &state.selection_store(),
@@ -6185,7 +6185,7 @@ pub fn run() {
                     audio_output: system_audio,
                 },
             );
-            crate::shell::physical_gamepad::pump_physical_gamepads(net, gamepad_binding.as_ref());
+            crate::shell::physical_gamepad::pump_physical_gamepads(net, app_focus.as_ref());
             if let Some(bridge) = realtime_fabric_bridge.as_ref() {
                 bridge.pump_app_events();
             }
