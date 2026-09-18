@@ -147,6 +147,11 @@ impl SlashMenu {
                 kind: BlockKind::Heading(3),
             },
             MenuRow {
+                label: "Quote",
+                keywords: &["quote", "blockquote", "citation", ">"],
+                kind: BlockKind::Quote,
+            },
+            MenuRow {
                 label: "Bullet list",
                 keywords: &["bullet", "list", "ul", "unordered"],
                 kind: BlockKind::Bullet { indent: 0 },
@@ -168,6 +173,11 @@ impl SlashMenu {
                 label: "Code block",
                 keywords: &["code", "codeblock", "code block"],
                 kind: BlockKind::CodeBlock { lang: None },
+            },
+            MenuRow {
+                label: "Table",
+                keywords: &["table", "grid", "columns", "gfm"],
+                kind: BlockKind::Table { visual: false },
             },
             MenuRow {
                 label: "TeX formula",

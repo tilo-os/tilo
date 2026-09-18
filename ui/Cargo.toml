@@ -74,6 +74,7 @@ runtime-portal = { path = "../crates/runtime/runtime-portal" }
 app-state = { path = "../crates/system/app-state" }
 automerge.workspace = true
 spellcheck = { path = "../crates/text/spellcheck" }
+syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "parsing", "regex-fancy"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
