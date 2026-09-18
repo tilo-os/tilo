@@ -70,28 +70,41 @@ pub struct SourceIdentity {
 }
 
 impl SourceIdentity {
-    /// Capture the strongest stable identity exposed by the current host.
-    pub fn from_metadata(metadata: &std::fs::Metadata) -> Option<Self> {
+    /// Capture identity from the held source file, never by reopening its path.
+    /// Windows preserves the serialized volume serial / 64-bit file index pair;
+    /// native query failures are errors, not an absent identity.
+    pub fn from_file(file: &std::fs::File) -> std::io::Result<Option<Self>> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            Some(Self {
+            let metadata = file.metadata()?;
+            Ok(Some(Self {
                 volume: metadata.dev(),
                 file: metadata.ino(),
-            })
+            }))
         }
         #[cfg(target_os = "windows")]
         {
-            use std::os::windows::fs::MetadataExt;
-            Some(Self {
-                volume: u64::from(metadata.volume_serial_number()?),
-                file: metadata.file_index()?,
-            })
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+            };
+
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: `file` keeps its handle alive for this call, and `info`
+            // is a valid, writable output structure with the native layout.
+            if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(Some(Self {
+                volume: u64::from(info.dwVolumeSerialNumber),
+                file: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+            }))
         }
         #[cfg(not(any(unix, target_os = "windows")))]
         {
-            let _ = metadata;
-            None
+            let _ = file;
+            Ok(None)
         }
     }
 }
@@ -1116,6 +1129,36 @@ pub fn fmt_rate(bps: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
+    fn held_source_identity_survives_rename_and_distinguishes_same_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let selected = root.path().join("selected.img");
+        let renamed = root.path().join("renamed.img");
+        std::fs::write(&selected, b"same image bytes").unwrap();
+        let held = std::fs::File::open(&selected).unwrap();
+        let identity = SourceIdentity::from_file(&held)
+            .unwrap()
+            .expect("platform exposes file identity");
+
+        std::fs::rename(&selected, &renamed).unwrap();
+        std::fs::write(&selected, b"same image bytes").unwrap();
+        let replacement = std::fs::File::open(&selected).unwrap();
+        assert_eq!(
+            held.metadata().unwrap().len(),
+            replacement.metadata().unwrap().len()
+        );
+        assert_eq!(SourceIdentity::from_file(&held).unwrap(), Some(identity));
+        assert_eq!(
+            SourceIdentity::from_file(&std::fs::File::open(&renamed).unwrap()).unwrap(),
+            Some(identity)
+        );
+        assert_ne!(
+            SourceIdentity::from_file(&replacement).unwrap(),
+            Some(identity)
+        );
+    }
 
     #[test]
     fn sample_has_usb_and_nvme_targets() {
