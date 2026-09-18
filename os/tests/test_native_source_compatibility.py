@@ -24,9 +24,14 @@ class CompatibilityTests(unittest.TestCase):
         self.git('config', 'user.name', 'Fixture'); self.git('config', 'core.autocrlf', 'false')
         for name in (*c.PATHS, 'Cargo.toml', 'os/Containerfile'):
             path=self.repo/name; path.parent.mkdir(parents=True, exist_ok=True);path.write_bytes(b'original\n')
-        self.git('add','.');self.git('commit','-qm','initial');self.base=self.git('rev-parse','HEAD').decode().strip()
+        self.git('add','.')
+        with patch.dict(os.environ, {'GIT_COMMITTER_DATE':'2026-01-01T00:00:00Z'}):
+            self.git('commit','-qm','initial')
+        self.base=self.git('rev-parse','HEAD').decode().strip()
         for name in c.PATHS:(self.repo/name).write_bytes(b'corrected\n')
-        self.git('commit','-qam','validator correction');self.revision=self.git('rev-parse','HEAD').decode().strip()
+        with patch.dict(os.environ, {'GIT_COMMITTER_DATE':'2026-01-02T00:00:00Z'}):
+            self.git('commit','-qam','validator correction')
+        self.revision=self.git('rev-parse','HEAD').decode().strip()
         self.approval=self.root/'approval.json'
         self.value=dict(schema=1,purpose='tilo-windows-provider-native-source-compatibility',
             native_source_revision=self.base,assembly_source_revision=self.revision,
@@ -46,6 +51,7 @@ class CompatibilityTests(unittest.TestCase):
 
     def test_exact_two_file_correction_preserves_native_inputs_and_assembly_epoch(self):
         result=self.verify()
+        self.assertNotEqual(result['native_epoch'],result['assembly_epoch'])
         assembly=dict(revision=self.revision,epoch=result['assembly_epoch'],containerfile_sha256='c'*64,
                       architecture='aarch64',wpe_reference='unchanged',rpms='unchanged')
         with patch.object(c,'SOURCE',self.base):native=c.original_native_inputs(assembly,result)
