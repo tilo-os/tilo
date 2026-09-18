@@ -390,6 +390,31 @@ enum TimelineHit {
     ZoomIn,
 }
 
+/// The library's three primary browse destinations. This is presentation-only
+/// and deliberately separated from durable albums/metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LibraryDestination {
+    Timeline,
+    People,
+    Places,
+}
+
+#[derive(Clone)]
+struct PlaceItem {
+    photo: LibraryPhoto,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PlacesHit {
+    Timeline,
+    People,
+    Places,
+    ToggleList,
+    ZoomIn,
+    ZoomOut,
+    Marker(String),
+}
+
 /// One chooser page always fits: six chips in a desktop row or a 3×2 compact
 /// grid. The complete album collection remains available through paging.
 const SELECTION_ALBUMS_PER_PAGE: usize = 6;
@@ -696,6 +721,13 @@ pub struct PhotosApp {
     /// changing the shared `SearchField` interaction contract.
     library_search: SearchField,
     library_query: String,
+    library_destination: LibraryDestination,
+    places_list_mode: bool,
+    places_viewport: crate::places::MapViewport,
+    places_items: Vec<PlaceItem>,
+    places_hits: Vec<(PlacesHit, Rect)>,
+    places_map_bounds: Rect,
+    places_drag_origin: Option<Point>,
     /// Count for the always-addressable Favorites virtual collection. This is
     /// a scalar projection of the shared library, so paint never walks the
     /// document and the chip stays bounded even for a very large collection.
@@ -998,6 +1030,13 @@ impl PhotosApp {
                 .with_id("photos-library-search")
                 .with_placeholder("Search photos, people, places, text"),
             library_query: String::new(),
+            library_destination: LibraryDestination::Timeline,
+            places_list_mode: false,
+            places_viewport: crate::places::MapViewport::default(),
+            places_items: Vec::new(),
+            places_hits: Vec::new(),
+            places_map_bounds: Rect::ZERO,
+            places_drag_origin: None,
             library_favorite_count: 0,
             library_offset: 0,
             library_albums: Vec::new(),
@@ -1278,6 +1317,7 @@ impl PhotosApp {
     pub fn show_library(&mut self) {
         self.library_mode = true;
         self.people_mode = false;
+        self.library_destination = LibraryDestination::Timeline;
         self.active_album = None;
         self.active_folder = None;
         self.active_person = None;
@@ -1295,6 +1335,7 @@ impl PhotosApp {
     pub fn show_people(&mut self) {
         self.show_library();
         self.people_mode = true;
+        self.library_destination = LibraryDestination::People;
     }
 
     fn begin_selection(&mut self) {
@@ -1487,6 +1528,17 @@ impl PhotosApp {
         {
             self.begin_metadata_editor(doc, &id);
         }
+    }
+
+    /// Pose the offline Places destination for deterministic visual coverage.
+    pub fn show_places_for_shot(&mut self) {
+        self.show_library();
+        self.library_destination = LibraryDestination::Places;
+        self.places_viewport = crate::places::MapViewport {
+            latitude: 37.0,
+            longitude: -40.0,
+            zoom: 1.5,
+        };
     }
 
     /// Pose the ordinary selection shelf for deterministic visual coverage.
@@ -2308,6 +2360,7 @@ impl PhotosApp {
             crate::actions::PhotosOperation::ViewPeople => {
                 self.show_library();
                 self.people_mode = true;
+                self.library_destination = LibraryDestination::People;
                 self.notice = Some(
                     "People is local-first: install a signed face model, then review every suggestion before sharing labels".to_owned(),
                 );
@@ -2321,11 +2374,24 @@ impl PhotosApp {
             crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
             crate::actions::PhotosOperation::ViewPlaces => {
                 self.show_library();
-                self.notice = Some("Places is available from the Library map view".to_owned());
+                self.library_destination = LibraryDestination::Places;
+                self.notice = Some("Showing offline Places".to_owned());
             }
-            crate::actions::PhotosOperation::ViewPlace { .. } => {
+            crate::actions::PhotosOperation::ViewPlace { place_key } => {
                 self.show_library();
-                self.notice = Some("Showing shared place in the Library map view".to_owned());
+                self.library_destination = LibraryDestination::Places;
+                if let Some(photo) = PhotosDoc::library(doc).photos.iter().find(|photo| {
+                    photo
+                        .location
+                        .as_ref()
+                        .is_some_and(|location| location.place_key() == place_key)
+                }) && let Some(location) = &photo.location
+                {
+                    self.places_viewport.latitude = location.latitude;
+                    self.places_viewport.longitude = location.longitude;
+                    self.places_viewport.zoom = 12.0;
+                }
+                self.notice = Some("Showing selected place offline".to_owned());
             }
             crate::actions::PhotosOperation::ViewAlbum { .. }
             | crate::actions::PhotosOperation::ViewFolder { .. }
@@ -2697,15 +2763,52 @@ impl PhotosApp {
         };
         let canvas = if self.library_mode {
             let mut cards = Vec::new();
-            cards.extend(
-                self.library_cards
-                    .iter()
-                    .filter_map(|(id, bounds, favorite)| {
-                        let item = self.library_items.iter().find(|item| item.id == *id)?;
-                        let name = &item.name;
-                        let open_target = format!("photos:library-photo:{id}");
-                        let mut children = vec![if self.selection_mode {
-                            AccessNode::new(Role::ToggleButton)
+            if self.library_destination == LibraryDestination::Places {
+                cards.extend(self.places_hits.iter().map(|(hit, bounds)| {
+                    let (name, target) = match hit {
+                        PlacesHit::Timeline => ("Timeline", "photos:places:timeline".to_owned()),
+                        PlacesHit::People => ("People", "photos:places:people".to_owned()),
+                        PlacesHit::Places => ("Places", "photos:places:places".to_owned()),
+                        PlacesHit::ToggleList => (
+                            if self.places_list_mode {
+                                "Show map"
+                            } else {
+                                "Show list"
+                            },
+                            "photos:places:toggle-list".to_owned(),
+                        ),
+                        PlacesHit::ZoomIn => ("Zoom in", "photos:places:zoom-in".to_owned()),
+                        PlacesHit::ZoomOut => ("Zoom out", "photos:places:zoom-out".to_owned()),
+                        PlacesHit::Marker(id) => (
+                            "Open photograph at this place",
+                            format!("photos:places:photo:{id}"),
+                        ),
+                    };
+                    AccessNode::new(Role::Button)
+                        .with_name(name)
+                        .with_bounds(*bounds)
+                        .with_state(AccessState {
+                            focusable: true,
+                            ..Default::default()
+                        })
+                        .with_action_target(target)
+                }));
+                AccessNode::new(Role::Group)
+                    .with_name("Places")
+                    .with_description("Offline map of explicitly shared photo locations. Arrow keys pan; plus and minus zoom; L changes to the list.")
+                    .with_bounds(self.canvas_rect)
+                    .with_hashed_key("photos:places")
+                    .with_children(cards)
+            } else {
+                cards.extend(
+                    self.library_cards
+                        .iter()
+                        .filter_map(|(id, bounds, favorite)| {
+                            let item = self.library_items.iter().find(|item| item.id == *id)?;
+                            let name = &item.name;
+                            let open_target = format!("photos:library-photo:{id}");
+                            let mut children = vec![if self.selection_mode {
+                                AccessNode::new(Role::ToggleButton)
                                 .with_name(name.clone())
                                 .with_description(
                                     "Selected photographs receive the chosen shared batch action",
@@ -2717,328 +2820,174 @@ impl PhotosApp {
                                     ..Default::default()
                                 })
                                 .with_action_target(open_target)
-                        } else if self.album_editor {
-                            AccessNode::new(Role::ToggleButton)
-                                .with_name(name.clone())
-                                .with_description("Included in this album")
-                                .with_bounds(*bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    checked: Some(self.album_editor_members.contains(id)),
-                                    ..Default::default()
-                                })
-                                .with_action_target(open_target)
-                        } else {
-                            AccessNode::new(Role::Button)
-                                .with_name(name.clone())
-                                .with_description(tr("photos-open"))
-                                .with_bounds(*bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
-                                .with_action_target(open_target)
-                        }];
-                        if !self.album_editor && !self.selection_mode {
-                            let favorite_target = format!("photos:library-favorite:{id}");
-                            let favorite_bounds =
-                                Rect::new(bounds.x1 - 44.0, bounds.y1 - 44.0, bounds.x1, bounds.y1);
-                            children.push(
+                            } else if self.album_editor {
                                 AccessNode::new(Role::ToggleButton)
-                                    .with_name("Favorite")
-                                    .with_bounds(favorite_bounds)
+                                    .with_name(name.clone())
+                                    .with_description("Included in this album")
+                                    .with_bounds(*bounds)
                                     .with_state(AccessState {
                                         focusable: true,
-                                        checked: Some(*favorite),
+                                        checked: Some(self.album_editor_members.contains(id)),
                                         ..Default::default()
                                     })
-                                    .with_action_target(favorite_target),
-                            );
-                            let confirmed = self.library_remove_confirm.as_deref() == Some(id);
-                            children.push(
+                                    .with_action_target(open_target)
+                            } else {
                                 AccessNode::new(Role::Button)
-                                    .with_name(if confirmed {
-                                        format!("Confirm removing {name} from library")
-                                    } else {
-                                        format!("Remove {name} from library")
-                                    })
-                                    .with_description("Removes this photograph from every album")
-                                    .with_bounds(Rect::new(
-                                        bounds.x1 - 88.0,
-                                        bounds.y1 - 44.0,
-                                        bounds.x1 - 44.0,
-                                        bounds.y1,
-                                    ))
+                                    .with_name(name.clone())
+                                    .with_description(tr("photos-open"))
+                                    .with_bounds(*bounds)
                                     .with_state(AccessState {
                                         focusable: true,
                                         ..Default::default()
                                     })
-                                    .with_action_target(format!("photos:library-remove:{id}")),
-                            );
-                            children.push(
-                                AccessNode::new(Role::Button)
-                                    .with_name(format!("Edit details for {name}"))
-                                    .with_description(
-                                        "Edit shared folder, people, tags, and capture date",
-                                    )
-                                    .with_bounds(Rect::new(
-                                        bounds.x0 + 8.0,
-                                        bounds.y1 - 44.0,
-                                        (bounds.x0 + 108.0).min(bounds.x1 - 88.0),
-                                        bounds.y1,
-                                    ))
-                                    .with_state(AccessState {
-                                        focusable: true,
-                                        ..Default::default()
-                                    })
-                                    .with_action_target(format!("photos:library-details:{id}")),
-                            );
-                        }
-                        Some(
-                            AccessNode::new(Role::ListItem)
-                                .with_name(name.clone())
-                                .with_bounds(*bounds)
-                                .with_hashed_key(format!("photos:library-item:{id}"))
-                                .with_children(children),
-                        )
-                    }),
-            );
-            cards.extend(self.album_cards.iter().map(|(id, bounds)| {
-                let label = id
-                    .as_ref()
-                    .and_then(|id| {
-                        self.library_albums
-                            .iter()
-                            .find(|(album_id, _, _)| album_id == id)
-                    })
-                    .map_or_else(
-                        || "All photos".to_owned(),
-                        |(_, name, count)| format!("{name} ({count})"),
-                    );
-                let target = format!("photos:library-album:{}", id.as_deref().unwrap_or("all"));
-                AccessNode::new(Role::ToggleButton)
-                    .with_name(label)
-                    .with_bounds(*bounds)
-                    .with_state(AccessState {
-                        focusable: true,
-                        checked: Some(id.as_ref() == self.active_album.as_ref()),
-                        ..Default::default()
-                    })
-                    .with_action_target(target)
-            }));
-            cards.extend(self.metadata_filter_cards.iter().map(|card| {
-                let label = if card.favorites {
-                    "Favorites".to_owned()
-                } else {
-                    match (&card.folder, &card.person, &card.tag) {
-                        (Some(folder), None, None) => format!("Folder: {folder}"),
-                        (None, Some(person), None) => format!("People: {person}"),
-                        (None, None, Some(tag)) => format!("Tag: {tag}"),
-                        _ => "All metadata".to_owned(),
-                    }
-                };
-                AccessNode::new(Role::ToggleButton)
-                    .with_name(label)
-                    .with_bounds(card.bounds)
-                    .with_state(AccessState {
-                        focusable: true,
-                        checked: Some(
-                            card.folder.as_ref() == self.active_folder.as_ref()
-                                && card.person.as_ref() == self.active_person.as_ref()
-                                && card.tag.as_ref() == self.active_tag.as_ref()
-                                && card.favorites == self.active_favorites
-                                && self.active_album.is_none(),
-                        ),
-                        ..Default::default()
-                    })
-                    .with_action_target(if card.favorites {
-                        "photos:library-favorites".to_owned()
-                    } else {
-                        format!(
-                            "photos:library-metadata:{}",
-                            metadata_filter_id(
-                                card.folder.as_deref(),
-                                card.person.as_deref(),
-                                card.tag.as_deref()
+                                    .with_action_target(open_target)
+                            }];
+                            if !self.album_editor && !self.selection_mode {
+                                let favorite_target = format!("photos:library-favorite:{id}");
+                                let favorite_bounds = Rect::new(
+                                    bounds.x1 - 44.0,
+                                    bounds.y1 - 44.0,
+                                    bounds.x1,
+                                    bounds.y1,
+                                );
+                                children.push(
+                                    AccessNode::new(Role::ToggleButton)
+                                        .with_name("Favorite")
+                                        .with_bounds(favorite_bounds)
+                                        .with_state(AccessState {
+                                            focusable: true,
+                                            checked: Some(*favorite),
+                                            ..Default::default()
+                                        })
+                                        .with_action_target(favorite_target),
+                                );
+                                let confirmed = self.library_remove_confirm.as_deref() == Some(id);
+                                children.push(
+                                    AccessNode::new(Role::Button)
+                                        .with_name(if confirmed {
+                                            format!("Confirm removing {name} from library")
+                                        } else {
+                                            format!("Remove {name} from library")
+                                        })
+                                        .with_description(
+                                            "Removes this photograph from every album",
+                                        )
+                                        .with_bounds(Rect::new(
+                                            bounds.x1 - 88.0,
+                                            bounds.y1 - 44.0,
+                                            bounds.x1 - 44.0,
+                                            bounds.y1,
+                                        ))
+                                        .with_state(AccessState {
+                                            focusable: true,
+                                            ..Default::default()
+                                        })
+                                        .with_action_target(format!("photos:library-remove:{id}")),
+                                );
+                                children.push(
+                                    AccessNode::new(Role::Button)
+                                        .with_name(format!("Edit details for {name}"))
+                                        .with_description(
+                                            "Edit shared folder, people, tags, and capture date",
+                                        )
+                                        .with_bounds(Rect::new(
+                                            bounds.x0 + 8.0,
+                                            bounds.y1 - 44.0,
+                                            (bounds.x0 + 108.0).min(bounds.x1 - 88.0),
+                                            bounds.y1,
+                                        ))
+                                        .with_state(AccessState {
+                                            focusable: true,
+                                            ..Default::default()
+                                        })
+                                        .with_action_target(format!("photos:library-details:{id}")),
+                                );
+                            }
+                            Some(
+                                AccessNode::new(Role::ListItem)
+                                    .with_name(name.clone())
+                                    .with_bounds(*bounds)
+                                    .with_hashed_key(format!("photos:library-item:{id}"))
+                                    .with_children(children),
                             )
-                        )
-                    })
-            }));
-            for (hit, bounds) in &self.timeline_density_hits {
-                let (name, target) = match hit {
-                    TimelineHit::ZoomOut => {
-                        ("Show fewer photographs", "photos:timeline:density-out")
-                    }
-                    TimelineHit::ZoomIn => ("Show more photographs", "photos:timeline:density-in"),
-                };
-                cards.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(name)
-                        .with_description(
-                            "Changes how many photographs appear in each timeline row",
-                        )
+                        }),
+                );
+                cards.extend(self.album_cards.iter().map(|(id, bounds)| {
+                    let label = id
+                        .as_ref()
+                        .and_then(|id| {
+                            self.library_albums
+                                .iter()
+                                .find(|(album_id, _, _)| album_id == id)
+                        })
+                        .map_or_else(
+                            || "All photos".to_owned(),
+                            |(_, name, count)| format!("{name} ({count})"),
+                        );
+                    let target = format!("photos:library-album:{}", id.as_deref().unwrap_or("all"));
+                    AccessNode::new(Role::ToggleButton)
+                        .with_name(label)
                         .with_bounds(*bounds)
                         .with_state(AccessState {
                             focusable: true,
+                            checked: Some(id.as_ref() == self.active_album.as_ref()),
                             ..Default::default()
                         })
-                        .with_action_target(target),
-                );
-            }
-            for (forward, enabled, bounds) in &self.library_page_hits {
-                cards.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(if *forward {
-                            "Show next photograph"
-                        } else {
-                            "Show previous photograph"
-                        })
-                        .with_description(self.library_page_label())
-                        .with_bounds(*bounds)
-                        .with_state(AccessState {
-                            focusable: *enabled,
-                            disabled: !*enabled,
-                            ..Default::default()
-                        })
-                        .with_action_target(if *forward {
-                            "photos:library-page:next"
-                        } else {
-                            "photos:library-page:previous"
-                        }),
-                );
-            }
-            if self.selection_album_chooser {
-                // A modal needs one focus scope. Leaving the dimmed grid,
-                // filters, or card operations in the AT tree would let a
-                // screen-reader user activate controls a pointer user cannot.
-                cards.clear();
-            }
-            for (hit, bounds) in &self.selection_hits {
-                let (name, target, disabled) = match hit {
-                    SelectionHit::Start => ("Select photographs", "photos:selection:start", false),
-                    SelectionHit::SelectAll => (
-                        "Select all visible photographs",
-                        "photos:selection:all",
-                        false,
-                    ),
-                    SelectionHit::Clear => (
-                        "Clear photograph selection",
-                        "photos:selection:clear",
-                        self.selected_photo_ids.is_empty(),
-                    ),
-                    SelectionHit::Favorite => (
-                        if self.selection_all_favorite {
-                            "Remove selected photographs from Favorites"
-                        } else {
-                            "Add selected photographs to Favorites"
-                        },
-                        "photos:selection:favorite",
-                        self.selected_photo_ids.is_empty(),
-                    ),
-                    SelectionHit::ChooseAlbum => (
-                        "Choose destination album",
-                        "photos:selection:choose-album",
-                        self.selected_photo_ids.is_empty() || self.library_albums.is_empty(),
-                    ),
-                    SelectionHit::CancelDestinationChooser => (
-                        "Cancel destination choice",
-                        "photos:selection:destination-cancel",
-                        false,
-                    ),
-                    SelectionHit::ApplyDestination => (
-                        "Use selected destination album",
-                        "photos:selection:destination-apply",
-                        self.selection_destination_album.is_none(),
-                    ),
-                    SelectionHit::PreviousDestinationPage => (
-                        "Show earlier destination albums",
-                        "photos:selection:destination-previous",
-                        self.selection_album_page == 0,
-                    ),
-                    SelectionHit::NextDestinationPage => (
-                        "Show more destination albums",
-                        "photos:selection:destination-next",
-                        (self.selection_album_page + 1) * SELECTION_ALBUMS_PER_PAGE
-                            >= self.library_albums.len(),
-                    ),
-                    SelectionHit::AddToAlbum => (
-                        "Add selected photographs to selected album",
-                        "photos:selection:add-to-album",
-                        self.selected_photo_ids.is_empty()
-                            || self.selection_destination_album.is_none(),
-                    ),
-                    SelectionHit::Done => (
-                        "Finish selecting photographs",
-                        "photos:selection:done",
-                        false,
-                    ),
-                };
-                cards.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(name)
-                        .with_bounds(*bounds)
-                        .with_state(AccessState {
-                            focusable: !disabled,
-                            disabled,
-                            ..Default::default()
-                        })
-                        .with_action_target(target),
-                );
-            }
-            for (album_id, bounds) in &self.selection_destination_hits {
-                let name = self
-                    .library_albums
-                    .iter()
-                    .find(|(id, _, _)| id == album_id)
-                    .map_or_else(
-                        || "Choose destination album".to_owned(),
-                        |(_, name, _)| format!("Use {name} as destination album"),
-                    );
-                cards.push(
+                        .with_action_target(target)
+                }));
+                cards.extend(self.metadata_filter_cards.iter().map(|card| {
+                    let label = if card.favorites {
+                        "Favorites".to_owned()
+                    } else {
+                        match (&card.folder, &card.person, &card.tag) {
+                            (Some(folder), None, None) => format!("Folder: {folder}"),
+                            (None, Some(person), None) => format!("People: {person}"),
+                            (None, None, Some(tag)) => format!("Tag: {tag}"),
+                            _ => "All metadata".to_owned(),
+                        }
+                    };
                     AccessNode::new(Role::ToggleButton)
-                        .with_name(name)
-                        .with_bounds(*bounds)
+                        .with_name(label)
+                        .with_bounds(card.bounds)
                         .with_state(AccessState {
                             focusable: true,
                             checked: Some(
-                                self.selection_destination_album.as_deref()
-                                    == Some(album_id.as_str()),
+                                card.folder.as_ref() == self.active_folder.as_ref()
+                                    && card.person.as_ref() == self.active_person.as_ref()
+                                    && card.tag.as_ref() == self.active_tag.as_ref()
+                                    && card.favorites == self.active_favorites
+                                    && self.active_album.is_none(),
                             ),
                             ..Default::default()
                         })
-                        .with_action_target(format!("photos:selection:destination:{album_id}")),
-                );
-            }
-            if self.metadata_editor {
-                for (name, input) in [
-                    ("Folder", &self.metadata_folder_input),
-                    ("People", &self.metadata_people_input),
-                    ("Tags", &self.metadata_tags_input),
-                    ("Captured", &self.metadata_captured_at_input),
-                ] {
-                    cards.push(
-                        AccessNode::new(Role::TextInput)
-                            .with_name(name)
-                            .with_value(input.value())
-                            .with_bounds(input.get_rect())
-                            .with_state(AccessState {
-                                focusable: true,
-                                focused: input.is_focused(),
-                                ..Default::default()
-                            })
-                            .with_hashed_key(format!("photos:metadata:{name}")),
-                    );
-                }
-                for (hit, bounds) in &self.metadata_editor_hits {
+                        .with_action_target(if card.favorites {
+                            "photos:library-favorites".to_owned()
+                        } else {
+                            format!(
+                                "photos:library-metadata:{}",
+                                metadata_filter_id(
+                                    card.folder.as_deref(),
+                                    card.person.as_deref(),
+                                    card.tag.as_deref()
+                                )
+                            )
+                        })
+                }));
+                for (hit, bounds) in &self.timeline_density_hits {
                     let (name, target) = match hit {
-                        MetadataEditorHit::Save => ("Save photo details", "photos:metadata:save"),
-                        MetadataEditorHit::Cancel => {
-                            ("Cancel photo details", "photos:metadata:cancel")
+                        TimelineHit::ZoomOut => {
+                            ("Show fewer photographs", "photos:timeline:density-out")
+                        }
+                        TimelineHit::ZoomIn => {
+                            ("Show more photographs", "photos:timeline:density-in")
                         }
                     };
                     cards.push(
                         AccessNode::new(Role::Button)
                             .with_name(name)
+                            .with_description(
+                                "Changes how many photographs appear in each timeline row",
+                            )
                             .with_bounds(*bounds)
                             .with_state(AccessState {
                                 focusable: true,
@@ -3046,6 +2995,276 @@ impl PhotosApp {
                             })
                             .with_action_target(target),
                     );
+                }
+                for (forward, enabled, bounds) in &self.library_page_hits {
+                    cards.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(if *forward {
+                                "Show next photograph"
+                            } else {
+                                "Show previous photograph"
+                            })
+                            .with_description(self.library_page_label())
+                            .with_bounds(*bounds)
+                            .with_state(AccessState {
+                                focusable: *enabled,
+                                disabled: !*enabled,
+                                ..Default::default()
+                            })
+                            .with_action_target(if *forward {
+                                "photos:library-page:next"
+                            } else {
+                                "photos:library-page:previous"
+                            }),
+                    );
+                }
+                if self.selection_album_chooser {
+                    // A modal needs one focus scope. Leaving the dimmed grid,
+                    // filters, or card operations in the AT tree would let a
+                    // screen-reader user activate controls a pointer user cannot.
+                    cards.clear();
+                }
+                for (hit, bounds) in &self.selection_hits {
+                    let (name, target, disabled) = match hit {
+                        SelectionHit::Start => {
+                            ("Select photographs", "photos:selection:start", false)
+                        }
+                        SelectionHit::SelectAll => (
+                            "Select all visible photographs",
+                            "photos:selection:all",
+                            false,
+                        ),
+                        SelectionHit::Clear => (
+                            "Clear photograph selection",
+                            "photos:selection:clear",
+                            self.selected_photo_ids.is_empty(),
+                        ),
+                        SelectionHit::Favorite => (
+                            if self.selection_all_favorite {
+                                "Remove selected photographs from Favorites"
+                            } else {
+                                "Add selected photographs to Favorites"
+                            },
+                            "photos:selection:favorite",
+                            self.selected_photo_ids.is_empty(),
+                        ),
+                        SelectionHit::ChooseAlbum => (
+                            "Choose destination album",
+                            "photos:selection:choose-album",
+                            self.selected_photo_ids.is_empty() || self.library_albums.is_empty(),
+                        ),
+                        SelectionHit::CancelDestinationChooser => (
+                            "Cancel destination choice",
+                            "photos:selection:destination-cancel",
+                            false,
+                        ),
+                        SelectionHit::ApplyDestination => (
+                            "Use selected destination album",
+                            "photos:selection:destination-apply",
+                            self.selection_destination_album.is_none(),
+                        ),
+                        SelectionHit::PreviousDestinationPage => (
+                            "Show earlier destination albums",
+                            "photos:selection:destination-previous",
+                            self.selection_album_page == 0,
+                        ),
+                        SelectionHit::NextDestinationPage => (
+                            "Show more destination albums",
+                            "photos:selection:destination-next",
+                            (self.selection_album_page + 1) * SELECTION_ALBUMS_PER_PAGE
+                                >= self.library_albums.len(),
+                        ),
+                        SelectionHit::AddToAlbum => (
+                            "Add selected photographs to selected album",
+                            "photos:selection:add-to-album",
+                            self.selected_photo_ids.is_empty()
+                                || self.selection_destination_album.is_none(),
+                        ),
+                        SelectionHit::Done => (
+                            "Finish selecting photographs",
+                            "photos:selection:done",
+                            false,
+                        ),
+                    };
+                    cards.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_bounds(*bounds)
+                            .with_state(AccessState {
+                                focusable: !disabled,
+                                disabled,
+                                ..Default::default()
+                            })
+                            .with_action_target(target),
+                    );
+                }
+                for (album_id, bounds) in &self.selection_destination_hits {
+                    let name = self
+                        .library_albums
+                        .iter()
+                        .find(|(id, _, _)| id == album_id)
+                        .map_or_else(
+                            || "Choose destination album".to_owned(),
+                            |(_, name, _)| format!("Use {name} as destination album"),
+                        );
+                    cards.push(
+                        AccessNode::new(Role::ToggleButton)
+                            .with_name(name)
+                            .with_bounds(*bounds)
+                            .with_state(AccessState {
+                                focusable: true,
+                                checked: Some(
+                                    self.selection_destination_album.as_deref()
+                                        == Some(album_id.as_str()),
+                                ),
+                                ..Default::default()
+                            })
+                            .with_action_target(format!("photos:selection:destination:{album_id}")),
+                    );
+                }
+                if self.metadata_editor {
+                    for (name, input) in [
+                        ("Folder", &self.metadata_folder_input),
+                        ("People", &self.metadata_people_input),
+                        ("Tags", &self.metadata_tags_input),
+                        ("Captured", &self.metadata_captured_at_input),
+                    ] {
+                        cards.push(
+                            AccessNode::new(Role::TextInput)
+                                .with_name(name)
+                                .with_value(input.value())
+                                .with_bounds(input.get_rect())
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    focused: input.is_focused(),
+                                    ..Default::default()
+                                })
+                                .with_hashed_key(format!("photos:metadata:{name}")),
+                        );
+                    }
+                    for (hit, bounds) in &self.metadata_editor_hits {
+                        let (name, target) = match hit {
+                            MetadataEditorHit::Save => {
+                                ("Save photo details", "photos:metadata:save")
+                            }
+                            MetadataEditorHit::Cancel => {
+                                ("Cancel photo details", "photos:metadata:cancel")
+                            }
+                        };
+                        cards.push(
+                            AccessNode::new(Role::Button)
+                                .with_name(name)
+                                .with_bounds(*bounds)
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    ..Default::default()
+                                })
+                                .with_action_target(target),
+                        );
+                    }
+                } else if self.album_editor {
+                    cards.push(
+                        AccessNode::new(Role::TextInput)
+                            .with_name("Album name")
+                            .with_value(self.album_name_input.value())
+                            .with_bounds(self.album_name_input.get_rect())
+                            .with_state(AccessState {
+                                focusable: true,
+                                focused: self.album_name_input.is_focused(),
+                                ..Default::default()
+                            })
+                            .with_hashed_key("photos:album-editor:name"),
+                    );
+                    for (hit, button) in &self.album_page_buttons {
+                        let (name, target) = match hit {
+                            AlbumEditorHit::PreviousPage => (
+                                "Show previous photographs",
+                                "photos:album-editor:previous-page",
+                            ),
+                            AlbumEditorHit::NextPage => {
+                                ("Show next photographs", "photos:album-editor:next-page")
+                            }
+                            _ => continue,
+                        };
+                        cards.push(
+                            AccessNode::new(Role::Button)
+                                .with_name(name)
+                                .with_description(self.library_page_label())
+                                .with_bounds(button.get_rect())
+                                .with_state(AccessState {
+                                    focusable: button.is_enabled(),
+                                    focused: button.is_focused(),
+                                    disabled: !button.is_enabled(),
+                                    ..Default::default()
+                                })
+                                .with_action_target(target),
+                        );
+                    }
+                    for (hit, bounds) in &self.album_editor_hits {
+                        let (name, target) = match hit {
+                            AlbumEditorHit::Save => ("Save album", "photos:album-editor:save"),
+                            AlbumEditorHit::Cancel => {
+                                ("Cancel album editing", "photos:album-editor:cancel")
+                            }
+                            AlbumEditorHit::Delete => {
+                                ("Delete album", "photos:album-editor:delete")
+                            }
+                            AlbumEditorHit::ConfirmDelete => (
+                                "Confirm deleting album",
+                                "photos:album-editor:confirm-delete",
+                            ),
+                            AlbumEditorHit::New
+                            | AlbumEditorHit::Edit
+                            | AlbumEditorHit::PreviousPage
+                            | AlbumEditorHit::NextPage => continue,
+                        };
+                        cards.push(
+                            AccessNode::new(Role::Button)
+                                .with_name(name)
+                                .with_bounds(*bounds)
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    ..Default::default()
+                                })
+                                .with_action_target(target),
+                        );
+                    }
+                } else {
+                    for (hit, bounds) in &self.album_editor_hits {
+                        let (name, target) = match hit {
+                            AlbumEditorHit::New => ("New album", "photos:album-editor:new"),
+                            AlbumEditorHit::Edit => {
+                                ("Edit selected album", "photos:album-editor:edit")
+                            }
+                            _ => continue,
+                        };
+                        cards.push(
+                            AccessNode::new(Role::Button)
+                                .with_name(name)
+                                .with_bounds(*bounds)
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    ..Default::default()
+                                })
+                                .with_action_target(target),
+                        );
+                    }
+                }
+                if self.selection_album_chooser {
+                    AccessNode::new(Role::Dialog)
+                        .with_name("Choose destination album")
+                        .with_description("Choose one album, then use it as the destination")
+                        .with_bounds(self.canvas_rect)
+                        .with_state(AccessState::new().modal(true))
+                        .with_hashed_key("photos:destination-album-dialog")
+                        .with_children(cards)
+                } else {
+                    AccessNode::new(Role::List)
+                        .with_name(tr("photos-library"))
+                        .with_description(format!("{} photographs", self.library_total))
+                        .with_bounds(self.canvas_rect)
+                        .with_hashed_key("photos:library-grid")
+                        .with_children(cards)
                 }
             } else if self.album_editor {
                 cards.push(
@@ -4227,6 +4446,7 @@ impl PhotosApp {
         self.library_page_hits.clear();
         self.timeline_density_hits.clear();
         self.library_details_cards.clear();
+        self.places_hits.clear();
         if self.library_items.is_empty() {
             let (title, body) = if self.library_query.trim().is_empty() {
                 (
@@ -4317,6 +4537,55 @@ impl PhotosApp {
             Some((bounds.width() - f64::from(PAD * 2.0)) as f32),
             TextWeight::Medium,
         );
+        // First-class destinations use the same stable local navigation
+        // target rather than turning People/Places into a search suggestion.
+        if desktop_library {
+            let mut tab_x = masthead.x1 - 272.0;
+            for (hit, label, selected) in [
+                (
+                    PlacesHit::Timeline,
+                    "Timeline",
+                    self.library_destination == LibraryDestination::Timeline,
+                ),
+                (
+                    PlacesHit::People,
+                    "People",
+                    self.library_destination == LibraryDestination::People,
+                ),
+                (PlacesHit::Places, "Places", false),
+            ] {
+                let tab = Rect::new(tab_x, masthead.y0 + 13.0, tab_x + 78.0, masthead.y0 + 47.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    if selected {
+                        theme.tokens.colors.accent[6]
+                    } else {
+                        theme.tokens.colors.surfaces.window_card
+                    },
+                    None,
+                    &tab,
+                );
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &tab,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    label,
+                    11.0,
+                    theme.text_primary,
+                    transform * Affine::translate((tab.x0 + 9.0, tab.y0 + 10.0)),
+                    Some(60.0),
+                    TextWeight::Medium,
+                );
+                self.places_hits.push((hit, tab));
+                tab_x += 84.0;
+            }
+        }
         let count = if desktop_library {
             format!("{} photographs · shared library", self.library_total)
         } else if large_text {
@@ -5156,6 +5425,340 @@ impl PhotosApp {
         self.draw_album_editor(scene, transform, text_renderer, theme, presence);
         self.draw_metadata_editor(scene, transform, text_renderer, theme, presence);
         self.draw_selection_destination_sheet(scene, transform, text_renderer, theme, bounds);
+    }
+
+    /// Render the location library as an offline-first map or an equivalent
+    /// list. The map is a reference-grid substrate, not a disguised online
+    /// tile service: opening Places never sends coordinates off-device.
+    fn draw_places(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        use vello::peniko::Fill;
+        self.places_hits.clear();
+        let bounds = Rect::new(
+            self.canvas_rect.x0 + 10.0,
+            self.canvas_rect.y0 + 10.0,
+            self.canvas_rect.x1 - 10.0,
+            self.canvas_rect.y1 - 10.0,
+        );
+        let heading = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + 58.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &heading,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &heading,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Places",
+            22.0,
+            theme.text_primary,
+            transform * Affine::translate((heading.x0 + 14.0, heading.y0 + 12.0)),
+            Some(180.0),
+            TextWeight::Medium,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &format!(
+                "{} photos with an explicitly shared location",
+                self.places_items.len()
+            ),
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((heading.x0 + 14.0, heading.y0 + 36.0)),
+            Some((heading.width() - 310.0).max(80.0) as f32),
+            TextWeight::Regular,
+        );
+        let mut x = heading.x1 - 300.0;
+        for (hit, label) in [
+            (PlacesHit::Timeline, "Timeline"),
+            (PlacesHit::People, "People"),
+            (PlacesHit::Places, "Places"),
+        ] {
+            let active = matches!(hit, PlacesHit::Places);
+            let rect = Rect::new(x, heading.y0 + 10.0, x + 78.0, heading.y0 + 46.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if active {
+                    theme.tokens.colors.accent[6]
+                } else {
+                    theme.tokens.colors.surfaces.window_card
+                },
+                None,
+                &rect,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &rect,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                11.0,
+                theme.text_primary,
+                transform * Affine::translate((rect.x0 + 9.0, rect.y0 + 11.0)),
+                Some(60.0),
+                TextWeight::Medium,
+            );
+            self.places_hits.push((hit, rect));
+            x += 84.0;
+        }
+        if self.places_items.is_empty() {
+            self.draw_empty_state(scene, transform, text_renderer, theme, "No places yet", "Import photos with GPS metadata or add an explicit shared location in photo details. Photos does not guess or upload locations.");
+            return;
+        }
+        let map = Rect::new(bounds.x0, heading.y1 + 10.0, bounds.x1, bounds.y1);
+        self.places_map_bounds = map;
+        let toggle = Rect::new(map.x1 - 112.0, map.y0 + 12.0, map.x1 - 12.0, map.y0 + 48.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &toggle,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &toggle,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            if self.places_list_mode { "Map" } else { "List" },
+            12.0,
+            theme.text_primary,
+            transform * Affine::translate((toggle.x0 + 28.0, toggle.y0 + 11.0)),
+            Some(60.0),
+            TextWeight::Medium,
+        );
+        self.places_hits.push((PlacesHit::ToggleList, toggle));
+        if self.places_list_mode {
+            self.draw_places_list(scene, transform, text_renderer, theme, map);
+            return;
+        }
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.neutral[2],
+            None,
+            &map,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &map,
+        );
+        // Calm offline geographic grid: it retains spatial orientation while
+        // clearly avoiding a claim that live roads/tiles were downloaded.
+        for step in 1..10 {
+            let fx = map.x0 + map.width() * f64::from(step) / 10.0;
+            let fy = map.y0 + map.height() * f64::from(step) / 10.0;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.border_standard,
+                None,
+                &Rect::new(fx, map.y0, fx + 1.0, map.y1),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.border_standard,
+                None,
+                &Rect::new(map.x0, fy, map.x1, fy + 1.0),
+            );
+        }
+        text_renderer.draw_text_weighted(
+            scene,
+            "Offline map · no map provider is contacted",
+            11.0,
+            theme.text_dim,
+            transform * Affine::translate((map.x0 + 12.0, map.y1 - 22.0)),
+            Some(260.0),
+            TextWeight::Regular,
+        );
+        let zoom_out = Rect::new(map.x0 + 12.0, map.y0 + 12.0, map.x0 + 52.0, map.y0 + 52.0);
+        let zoom_in = Rect::new(map.x0 + 12.0, map.y0 + 58.0, map.x0 + 52.0, map.y0 + 98.0);
+        for (hit, rect, label) in [
+            (PlacesHit::ZoomOut, zoom_out, "−"),
+            (PlacesHit::ZoomIn, zoom_in, "+"),
+        ] {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &rect,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &rect,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                20.0,
+                theme.text_primary,
+                transform * Affine::translate((rect.x0 + 14.0, rect.y0 + 6.0)),
+                Some(16.0),
+                TextWeight::Medium,
+            );
+            self.places_hits.push((hit, rect));
+        }
+        let photos: Vec<_> = self
+            .places_items
+            .iter()
+            .map(|item| item.photo.clone())
+            .collect();
+        for cluster in crate::places::clusters(&photos, self.places_viewport.zoom) {
+            let location = crate::model::PhotoLocation {
+                latitude: cluster.latitude,
+                longitude: cluster.longitude,
+                label: Some(cluster.label.clone()),
+                provenance: crate::model::LocationProvenance::default(),
+            };
+            let Some((px, py)) = self
+                .places_viewport
+                .project(&location, map.width(), map.height())
+            else {
+                continue;
+            };
+            let point = Point::new(map.x0 + px, map.y0 + py);
+            if !map.contains(point) {
+                continue;
+            }
+            let radius = (14.0 + (cluster.count() as f64).sqrt() * 3.0).min(28.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[6],
+                None,
+                &Circle::new(point, radius),
+            );
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.surfaces.base,
+                None,
+                &Circle::new(point, radius),
+            );
+            if let Some(photo_id) = cluster.photo_ids.first()
+                && let Some(image) = self.library_thumbnails.get(photo_id)
+            {
+                let side = (radius * 1.25).max(18.0);
+                let scale = (side / f64::from(image.width)).min(side / f64::from(image.height));
+                let image_transform = transform
+                    * Affine::translate((
+                        point.x - f64::from(image.width) * scale * 0.5,
+                        point.y - f64::from(image.height) * scale * 0.5,
+                    ))
+                    * Affine::scale(scale);
+                scene.draw_image(image, image_transform);
+            }
+            text_renderer.draw_text_weighted(
+                scene,
+                &cluster.count().to_string(),
+                12.0,
+                theme.text_primary,
+                transform * Affine::translate((point.x - 4.0, point.y - 7.0)),
+                Some(16.0),
+                TextWeight::Medium,
+            );
+            let hit = Rect::new(
+                point.x - radius,
+                point.y - radius,
+                point.x + radius,
+                point.y + radius,
+            );
+            if let Some(photo_id) = cluster.photo_ids.first() {
+                self.places_hits
+                    .push((PlacesHit::Marker(photo_id.clone()), hit));
+            }
+        }
+    }
+
+    fn draw_places_list(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        map: Rect,
+    ) {
+        use vello::peniko::Fill;
+        let mut y = map.y0 + 64.0;
+        for item in self.places_items.iter().take(8) {
+            if y + 58.0 > map.y1 {
+                break;
+            }
+            let row = Rect::new(map.x0 + 12.0, y, map.x1 - 12.0, y + 50.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &row,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &row,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &item.photo.image.name,
+                14.0,
+                theme.text_primary,
+                transform * Affine::translate((row.x0 + 12.0, row.y0 + 8.0)),
+                Some((row.width() - 220.0) as f32),
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &format!(
+                    "{} · {}",
+                    item.photo.location.as_ref().map_or_else(
+                        || "Shared location".to_owned(),
+                        crate::model::PhotoLocation::display_name
+                    ),
+                    item.photo.captured_at.as_deref().unwrap_or("Undated")
+                ),
+                11.0,
+                theme.text_dim,
+                transform * Affine::translate((row.x0 + 12.0, row.y0 + 29.0)),
+                Some((row.width() - 220.0) as f32),
+                TextWeight::Regular,
+            );
+            self.places_hits
+                .push((PlacesHit::Marker(item.photo.id.clone()), row));
+            y += 58.0;
+        }
     }
 
     #[allow(
@@ -7005,6 +7608,7 @@ impl Widget for PhotosApp {
             crate::actions::PhotosOperation::ViewPeople => {
                 self.show_library();
                 self.people_mode = true;
+                self.library_destination = LibraryDestination::People;
                 self.notice = Some(
                     "People recognition is local and opt-in; install a verified face model to begin"
                         .to_owned(),
@@ -7019,11 +7623,24 @@ impl Widget for PhotosApp {
             crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
             crate::actions::PhotosOperation::ViewPlaces => {
                 self.show_library();
-                self.notice = Some("Places is available from the Library map view".to_owned());
+                self.library_destination = LibraryDestination::Places;
+                self.notice = Some("Showing offline Places".to_owned());
             }
-            crate::actions::PhotosOperation::ViewPlace { .. } => {
+            crate::actions::PhotosOperation::ViewPlace { place_key } => {
                 self.show_library();
-                self.notice = Some("Showing shared place in the Library map view".to_owned());
+                self.library_destination = LibraryDestination::Places;
+                if let Some(photo) = PhotosDoc::library(doc).photos.iter().find(|photo| {
+                    photo
+                        .location
+                        .as_ref()
+                        .is_some_and(|location| location.place_key() == place_key)
+                }) && let Some(location) = &photo.location
+                {
+                    self.places_viewport.latitude = location.latitude;
+                    self.places_viewport.longitude = location.longitude;
+                    self.places_viewport.zoom = 12.0;
+                }
+                self.notice = Some("Showing selected place offline".to_owned());
             }
             crate::actions::PhotosOperation::ViewAlbum { album_id } => {
                 self.view_album(doc, &album_id)?;
@@ -7421,6 +8038,18 @@ impl Widget for PhotosApp {
             .skip(browse_offset)
             .take(120)
             .collect();
+        self.places_items = library
+            .photos
+            .iter()
+            .filter(|photo| {
+                photo
+                    .location
+                    .as_ref()
+                    .is_some_and(crate::model::PhotoLocation::is_valid)
+            })
+            .cloned()
+            .map(|photo| PlaceItem { photo })
+            .collect();
         self.library_albums = library
             .albums
             .iter()
@@ -7464,14 +8093,23 @@ impl Widget for PhotosApp {
             .take(24)
             .filter_map(|item| library.photo(&item.id).cloned())
             .collect();
-        for cover in self.library_person_covers.values() {
-            if thumbnail_sources.iter().all(|photo| &photo.id != cover)
-                && let Some(photo) = library.photo(cover).cloned()
-            {
-                thumbnail_sources.push(photo);
+        if self.library_destination == LibraryDestination::Places {
+            thumbnail_sources = self
+                .places_items
+                .iter()
+                .take(24)
+                .map(|item| item.photo.clone())
+                .collect();
+        } else {
+            for cover in self.library_person_covers.values() {
+                if thumbnail_sources.iter().all(|photo| &photo.id != cover)
+                    && let Some(photo) = library.photo(cover).cloned()
+                {
+                    thumbnail_sources.push(photo);
+                }
             }
+            thumbnail_sources.truncate(24);
         }
-        thumbnail_sources.truncate(24);
         self.drain_thumbnail_results();
         self.schedule_library_thumbnail(thumbnail_sources, document_changed);
     }
@@ -7678,8 +8316,10 @@ impl Widget for PhotosApp {
         if self.library_mode {
             self.library_search
                 .draw(scene, transform, text_renderer, theme, presence);
-            if self.people_mode {
+            if self.library_destination == LibraryDestination::People || self.people_mode {
                 self.draw_people(scene, transform, text_renderer, theme);
+            } else if self.library_destination == LibraryDestination::Places {
+                self.draw_places(scene, transform, text_renderer, theme, presence);
             } else {
                 self.draw_library(scene, transform, text_renderer, theme, presence);
             }
@@ -7724,12 +8364,178 @@ impl Widget for PhotosApp {
         taffy: &TaffyTree<()>,
     ) {
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            let next = Point::new(position.x / scale_factor, position.y / scale_factor);
+            if self.library_mode
+                && self.library_destination == LibraryDestination::Places
+                && let Some(previous) = self.places_drag_origin.replace(next)
+            {
+                self.places_viewport = self.places_viewport.panned(
+                    next.x - previous.x,
+                    next.y - previous.y,
+                    self.places_map_bounds.width(),
+                    self.places_map_bounds.height(),
+                );
+            }
+            self.pointer = next;
+        }
+        if self.library_mode
+            && self.library_destination == LibraryDestination::Places
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && self.places_map_bounds.contains(self.pointer)
+            && !self
+                .places_hits
+                .iter()
+                .any(|(_, rect)| rect.contains(self.pointer))
+        {
+            self.places_drag_origin = Some(self.pointer);
+            *handled = true;
+            return;
+        }
+        if matches!(
+            event,
+            winit::event::WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            }
+        ) {
+            self.places_drag_origin = None;
+        }
+        if self.library_mode
+            && self.library_destination == LibraryDestination::Places
+            && let winit::event::WindowEvent::MouseWheel { delta, .. } = event
+        {
+            let amount = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+                winit::event::MouseScrollDelta::PixelDelta(point) => point.y / 80.0,
+            };
+            self.places_viewport.zoom = (self.places_viewport.zoom + amount * 0.25)
+                .clamp(crate::places::MIN_ZOOM, crate::places::MAX_ZOOM);
+            *handled = true;
+            return;
         }
         if self.library_mode
             && let Some(hit) = self.timeline_density_pending.take()
         {
             self.adjust_timeline_density(matches!(hit, TimelineHit::ZoomIn));
+            *handled = true;
+            return;
+        }
+
+        if self.library_mode
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && let Some((hit, _)) = self
+                .places_hits
+                .iter()
+                .find(|(_, rect)| rect.contains(self.pointer))
+                .cloned()
+        {
+            match hit {
+                PlacesHit::Timeline => {
+                    self.people_mode = false;
+                    self.library_destination = LibraryDestination::Timeline;
+                }
+                PlacesHit::People => {
+                    self.people_mode = true;
+                    self.library_destination = LibraryDestination::People;
+                }
+                PlacesHit::Places => {
+                    self.people_mode = false;
+                    self.library_destination = LibraryDestination::Places;
+                }
+                PlacesHit::ToggleList => self.places_list_mode = !self.places_list_mode,
+                PlacesHit::ZoomIn => {
+                    self.places_viewport.zoom =
+                        (self.places_viewport.zoom + 1.0).min(crate::places::MAX_ZOOM)
+                }
+                PlacesHit::ZoomOut => {
+                    self.places_viewport.zoom =
+                        (self.places_viewport.zoom - 1.0).max(crate::places::MIN_ZOOM)
+                }
+                PlacesHit::Marker(id) => {
+                    let _ = self.actions.try_dispatch_with_context(
+                        doc,
+                        crate::actions::PHOTOS_ACTION_TYPE,
+                        &crate::actions::PhotosAction::SelectPhoto {
+                            photo_id: id.clone(),
+                        },
+                        tilo_actions::ActionContext::for_action(
+                            "org.tilo.Photos",
+                            "Photos",
+                            &crate::actions::PhotosAction::SelectPhoto { photo_id: id },
+                        ),
+                    );
+                    self.library_mode = false;
+                }
+            }
+            *handled = true;
+            return;
+        }
+        if self.library_mode
+            && self.library_destination == LibraryDestination::Places
+            && let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+        {
+            match &key.logical_key {
+                Key::Named(NamedKey::ArrowLeft) => {
+                    self.places_viewport = self.places_viewport.panned(
+                        44.0,
+                        0.0,
+                        self.canvas_rect.width(),
+                        self.canvas_rect.height(),
+                    )
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    self.places_viewport = self.places_viewport.panned(
+                        -44.0,
+                        0.0,
+                        self.canvas_rect.width(),
+                        self.canvas_rect.height(),
+                    )
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    self.places_viewport = self.places_viewport.panned(
+                        0.0,
+                        44.0,
+                        self.canvas_rect.width(),
+                        self.canvas_rect.height(),
+                    )
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    self.places_viewport = self.places_viewport.panned(
+                        0.0,
+                        -44.0,
+                        self.canvas_rect.width(),
+                        self.canvas_rect.height(),
+                    )
+                }
+                Key::Character(key) if key == "+" || key == "=" => {
+                    self.places_viewport.zoom =
+                        (self.places_viewport.zoom + 1.0).min(crate::places::MAX_ZOOM)
+                }
+                Key::Character(key) if key == "-" => {
+                    self.places_viewport.zoom =
+                        (self.places_viewport.zoom - 1.0).max(crate::places::MIN_ZOOM)
+                }
+                Key::Character(key) if key.eq_ignore_ascii_case("l") => {
+                    self.places_list_mode = !self.places_list_mode
+                }
+                _ => return,
+            }
             *handled = true;
             return;
         }
