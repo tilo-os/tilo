@@ -264,6 +264,32 @@ impl RelayCoeditSession {
         self.client.recv_action().await
     }
 
+    /// Attach an already healthy durable broker to this private lane.
+    pub fn register_action_broker(
+        &self,
+        room: uuid::Uuid,
+        host: uuid::Uuid,
+    ) -> Result<(), crate::client::ClientError> {
+        if crate::room_workspace_id(&room.to_string()).ok() != Some(self.workspace_id)
+            || host.is_nil()
+        {
+            return Err(crate::client::ClientError::Codec(
+                "invalid broker room or host".into(),
+            ));
+        }
+        self.client
+            .send_action(crate::transport_v2::EnvelopeV2::RegisterBroker { room, host })
+    }
+    /// Receive opaque source evidence using this connection's authenticated demultiplexer.
+    pub async fn recv_certified_action(&self) -> Option<crate::client::CertifiedActionEvent> {
+        self.client.recv_certified_action().await
+    }
+
+    /// Close both lanes when an attached native broker loses its bounded path.
+    pub async fn close(&self) {
+        self.client.disconnect().await;
+    }
+
     /// The workspace this session is bound to.
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id

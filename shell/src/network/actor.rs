@@ -164,6 +164,11 @@ pub enum NetCmd {
     DisconnectHost {
         id: EndpointId,
     },
+    AttachActionBroker {
+        queue: crate::shell::peer_actions::PeerActionQueue,
+        host: uuid::Uuid,
+        rooms: Vec<uuid::Uuid>,
+    },
 }
 
 /// Concrete data-plane route for one workspace-control session.
@@ -213,6 +218,11 @@ pub enum PeerDepartureCause {
 }
 
 enum InternalEvent {
+    ActionClosed {
+        ws: WorkspaceId,
+        peer: EndpointId,
+        session: std::sync::Weak<RelayCoeditSession>,
+    },
     Topic {
         ws: WorkspaceId,
         event: GossipEvent,
@@ -258,6 +268,7 @@ struct TopicRuntime {
 }
 
 struct HostRuntime {
+    actions: Option<tokio::task::JoinHandle<()>>,
     session: Arc<RelayCoeditSession>,
     pump: tokio::task::JoinHandle<()>,
 }
@@ -367,6 +378,11 @@ struct ActorState {
     peers: HashMap<EndpointId, EndpointAddr>,
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    action_broker: Option<(
+        crate::shell::peer_actions::PeerActionQueue,
+        uuid::Uuid,
+        HashMap<WorkspaceId, uuid::Uuid>,
+    )>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     peers_seen: HashMap<(WorkspaceId, EndpointId), Instant>,
@@ -377,11 +393,34 @@ struct ActorState {
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
 }
 
+impl Drop for HostRuntime {
+    fn drop(&mut self) {
+        self.pump.abort();
+        if let Some(task) = &self.actions {
+            task.abort();
+        }
+    }
+}
+
 impl ActorState {
     /// Handle one [`NetCmd`]. Returns `false` once the command channel has
     /// closed, so [`run`]'s loop should stop.
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
         match command {
+            Some(NetCmd::AttachActionBroker { queue, host, rooms }) => {
+                let rooms: HashMap<_, _> = rooms
+                    .into_iter()
+                    .filter_map(|room| {
+                        qos_relay::room_workspace_id(&room.to_string())
+                            .ok()
+                            .map(|ws| (ws, room))
+                    })
+                    .collect();
+                self.action_broker = Some((queue, host, rooms));
+                // Reconnect existing state-only subscriptions once. There is
+                // never a competing same-device private subscriber.
+                self.host_sessions.clear();
+            }
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
                 self.handle_join_workspace(ws, on_event).await;
             }
@@ -478,6 +517,9 @@ impl ActorState {
                         &self.host_sessions,
                         &mut self.connecting_hosts,
                         &mut self.content_discovery_tasks,
+                        self.action_broker
+                            .as_ref()
+                            .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
                     );
                 }
             }
@@ -703,6 +745,9 @@ impl ActorState {
                     &self.host_sessions,
                     &mut self.connecting_hosts,
                     &mut self.content_discovery_tasks,
+                    self.action_broker
+                        .as_ref()
+                        .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
                 );
             }
         }
@@ -712,6 +757,13 @@ impl ActorState {
     /// channel has closed, so [`run`]'s loop should stop.
     async fn handle_internal(&mut self, internal: Option<InternalEvent>) -> bool {
         match internal {
+            Some(InternalEvent::ActionClosed { ws, peer, session }) => {
+                if self.host_sessions.get(&(ws, peer)).is_some_and(|runtime| {
+                    std::sync::Weak::ptr_eq(&session, &Arc::downgrade(&runtime.session))
+                }) {
+                    self.handle_host_event(ws, peer, HostEvent::Closed).await;
+                }
+            }
             Some(InternalEvent::Topic { ws, event }) => {
                 self.handle_topic_event(ws, event).await;
             }
@@ -838,8 +890,49 @@ impl ActorState {
                 let session = Arc::new(session);
                 let pump =
                     spawn_host_pump(ws, peer, Arc::clone(&session), self.internal_tx.clone());
-                self.host_sessions
-                    .insert((ws, peer), HostRuntime { session, pump });
+                self.host_sessions.insert(
+                    (ws, peer),
+                    HostRuntime {
+                        actions: self
+                            .action_broker
+                            .as_ref()
+                            .and_then(|(queue, host, rooms)| {
+                                // State-only/pinned compatibility and relay-role
+                                // certificates never advertise an effect endpoint.
+                                if self
+                                    .hosts
+                                    .get(&peer)
+                                    .and_then(|(_, expected)| expected.as_ref())
+                                    .is_none()
+                                    || self.host_identity.as_ref().is_none_or(|identity| {
+                                        identity.material_for(ws).0.capabilities.can_act_as_host
+                                    })
+                                {
+                                    return None;
+                                }
+                                let room = *rooms.get(&ws)?;
+                                let (queue, host, session, tx) = (
+                                    queue.clone(),
+                                    *host,
+                                    session.clone(),
+                                    self.internal_tx.clone(),
+                                );
+                                Some(tokio::spawn(async move {
+                                    let generation = Arc::downgrade(&session);
+                                    let _ = queue.serve(session, room, host).await;
+                                    let _ = tx
+                                        .send(InternalEvent::ActionClosed {
+                                            ws,
+                                            peer,
+                                            session: generation,
+                                        })
+                                        .await;
+                                }))
+                            }),
+                        session,
+                        pump,
+                    },
+                );
             }
             Err(error) => {
                 tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
@@ -927,6 +1020,9 @@ impl ActorState {
                         &self.host_sessions,
                         &mut self.connecting_hosts,
                         &mut self.content_discovery_tasks,
+                        self.action_broker
+                            .as_ref()
+                            .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
                     );
                 }
             }
@@ -1018,6 +1114,7 @@ async fn run(
         peers: HashMap::new(),
         hosts: HashMap::new(),
         host_sessions: HashMap::new(),
+        action_broker: None,
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
         peers_seen: HashMap::new(),
@@ -1155,6 +1252,7 @@ fn schedule_host_topic(
     sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting: &mut HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: &mut HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
+    action_v2: bool,
 ) {
     let host = addr.id;
     if let Some(expectation) = expectation.clone()
@@ -1218,6 +1316,7 @@ fn schedule_host_topic(
     let endpoint = endpoint.clone();
     let identity = identity.clone();
     let (device_cert, revocation_entries) = identity.material_for(ws);
+    let action_v2 = action_v2 && !device_cert.capabilities.can_act_as_host;
     let mut revocations = RevocationList::new();
     for entry in revocation_entries {
         if revocations.insert(entry).is_err() {
@@ -1265,18 +1364,31 @@ fn schedule_host_topic(
     };
     let tx = internal_tx.clone();
     tokio::spawn(async move {
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            RelayClient::connect_to_enrolled_home_peer(
-                endpoint,
-                addr.clone(),
-                expectation.user_public_key,
-                expectation.device_public_key,
-                device_cert,
-                identity.device_signing_key.clone(),
-                revocations,
-            ),
-        )
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            if action_v2 {
+                RelayClient::connect_v2_to_enrolled_home_peer(
+                    endpoint,
+                    addr.clone(),
+                    expectation.user_public_key,
+                    expectation.device_public_key,
+                    device_cert,
+                    identity.device_signing_key.clone(),
+                    revocations,
+                )
+                .await
+            } else {
+                RelayClient::connect_to_enrolled_home_peer(
+                    endpoint,
+                    addr.clone(),
+                    expectation.user_public_key,
+                    expectation.device_public_key,
+                    device_cert,
+                    identity.device_signing_key.clone(),
+                    revocations,
+                )
+                .await
+            }
+        })
         .await
         .map_err(|_| "workspace host connection timed out".to_string())
         .and_then(|result| result.map_err(|error| error.to_string()))
@@ -2035,6 +2147,7 @@ mod tests {
                     &HashMap::new(),
                     &mut connecting,
                     &mut discoveries,
+                    false,
                 );
                 let rejected = matches!(
                     timeout(Duration::from_secs(5), rx.recv()).await,

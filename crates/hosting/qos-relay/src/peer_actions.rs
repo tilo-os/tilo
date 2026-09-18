@@ -27,6 +27,32 @@ pub struct DirectedAction {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActionMessage {
     CatalogueRefresh,
+    BrokerCatalogue {
+        host: Uuid,
+        catalogue: serde_json::Value,
+    },
+    InvokeBound {
+        host: Uuid,
+        invocation: InvocationId,
+        app_peer: String,
+        app_id: String,
+        record_id: String,
+        resource: String,
+        action: String,
+        argument: Option<serde_json::Value>,
+        confirmation: Option<Confirmation>,
+        revision: Option<String>,
+    },
+    Observation {
+        host: Uuid,
+        invocation: InvocationId,
+        update: Option<InvocationUpdate>,
+        uncertain: bool,
+        cancellation_requested: bool,
+    },
+    Rejected {
+        code: String,
+    },
     /// Existing broker JSON {version:1,surfaces:[...]}, without translation.
     Catalogue {
         catalogue: serde_json::Value,
@@ -76,12 +102,17 @@ pub enum UnavailableReason {
 impl ActionMessage {
     pub fn invocation(&self) -> Option<InvocationId> {
         match self {
-            Self::Invoke { invocation, .. }
+            Self::InvokeBound { invocation, .. }
+            | Self::Observation { invocation, .. }
+            | Self::Invoke { invocation, .. }
             | Self::Status { invocation }
             | Self::Cancel { invocation }
             | Self::CancellationRequested { invocation } => Some(*invocation),
             Self::Update { update } => Some(update.invocation()),
-            Self::CatalogueRefresh | Self::Catalogue { .. } => None,
+            Self::CatalogueRefresh
+            | Self::Catalogue { .. }
+            | Self::BrokerCatalogue { .. }
+            | Self::Rejected { .. } => None,
         }
     }
 
@@ -94,6 +125,27 @@ impl ActionMessage {
         }
         let identifier = |value: &str| !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES;
         match self {
+            Self::InvokeBound {
+                host,
+                invocation,
+                app_peer,
+                app_id,
+                record_id,
+                resource,
+                action,
+                confirmation,
+                revision,
+                ..
+            } => {
+                !host.is_nil()
+                    && !invocation.0.is_nil()
+                    && [app_peer, app_id, resource, action]
+                        .iter()
+                        .all(|s| identifier(s))
+                    && record_id.len() <= MAX_IDENTIFIER_BYTES
+                    && revision.as_ref().is_none_or(|v| identifier(v))
+                    && !matches!(confirmation, Some(Confirmation::Phrase(v)) if v.len() > MAX_CONFIRMATION_BYTES)
+            }
             Self::Invoke {
                 invocation,
                 app_peer,

@@ -492,6 +492,16 @@ impl AppActionBroker {
         self.state.action_directory_request_queue()
     }
 
+    /// Reusable native broker attachment for an ordinary standalone peer.
+    pub fn peer_action_attachment(
+        &self,
+    ) -> Result<(crate::shell::peer_actions::PeerActionQueue, uuid::Uuid), String> {
+        Ok((
+            self.state.peer_action_queue(),
+            self.state.invocation_host()?,
+        ))
+    }
+
     pub fn surfaces(&self) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
         self.state.published_surfaces()
     }
@@ -835,6 +845,7 @@ pub fn spawn_native(
         &publisher,
         Some(membership),
         None,
+        None,
     )
 }
 
@@ -855,6 +866,32 @@ pub fn spawn_native_harness(
         &publisher,
         Some(membership),
         Some(Arc::new(trusted_devices)),
+        None,
+    )
+}
+
+/// Start the ordinary native service inside an independently owned peer.
+/// No global identity registry, Secret Service store or desktop network actor
+/// is opened. The explicit authority, journal and real signed-document publisher
+/// remain owned by the calling application's session.
+pub fn spawn_native_peer(
+    capnp_socket_path: PathBuf,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    publisher: Arc<PeerPublisher>,
+    config: crate::shell::peer_actions::NativePeerBrokerConfig,
+) -> std::io::Result<BrokerHandle> {
+    if !publisher.is_wired() {
+        return Err(std::io::Error::other(
+            "peer broker requires an attached signed-document publisher",
+        ));
+    }
+    spawn_inner(
+        capnp_socket_path,
+        None,
+        &publisher,
+        Some(membership),
+        None,
+        Some(&config),
     )
 }
 
@@ -1174,6 +1211,7 @@ fn spawn_inner(
     publisher: &Arc<PeerPublisher>,
     membership: Option<crate::shell::state::WorkspaceTreeHandle>,
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+    config: Option<&crate::shell::peer_actions::NativePeerBrokerConfig>,
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
@@ -1182,26 +1220,28 @@ fn spawn_inner(
     #[cfg(test)]
     let mls_authority = None;
     #[cfg(not(test))]
-    match crate::shell::collab_mls_authority::SecretServiceMlsVault::open_for_session() {
-        Ok(vault) => {
-            let vault = Arc::new(vault);
-            if let Ok(mut state) = channels.lock() {
-                state.install_mls_vault(Arc::clone(&vault));
-            }
-            if let Some(workspaces) = membership.clone() {
-                match crate::shell::collab_mls_authority::MlsAuthorityCoordinator::open(
-                    vault.authority_root(),
-                    vault,
-                    workspaces,
-                    Arc::clone(&channels),
-                ) {
-                    Ok(authority) => mls_authority = Some(Arc::new(Mutex::new(authority))),
-                    Err(error) => tracing::warn!(%error, "MLS lifecycle authority unavailable"),
+    if config.is_none() {
+        match crate::shell::collab_mls_authority::SecretServiceMlsVault::open_for_session() {
+            Ok(vault) => {
+                let vault = Arc::new(vault);
+                if let Ok(mut state) = channels.lock() {
+                    state.install_mls_vault(Arc::clone(&vault));
+                }
+                if let Some(workspaces) = membership.clone() {
+                    match crate::shell::collab_mls_authority::MlsAuthorityCoordinator::open(
+                        vault.authority_root(),
+                        vault,
+                        workspaces,
+                        Arc::clone(&channels),
+                    ) {
+                        Ok(authority) => mls_authority = Some(Arc::new(Mutex::new(authority))),
+                        Err(error) => tracing::warn!(%error, "MLS lifecycle authority unavailable"),
+                    }
                 }
             }
-        }
-        Err(error) => {
-            tracing::warn!(%error, "MLS collaboration unavailable: Secret Service provider was not installed");
+            Err(error) => {
+                tracing::warn!(%error, "MLS collaboration unavailable: Secret Service provider was not installed");
+            }
         }
     }
     // Who is waiting on a cooperative scrollback answer, keyed by
@@ -1251,7 +1291,7 @@ fn spawn_inner(
 
     // Typed RPC interface, attached to the shared fanout state.
     let capnp_quit = Arc::new(AtomicBool::new(false));
-    let capnp_thread = crate::shell::collab_broker_capnp::spawn(
+    let capnp_thread = crate::shell::collab_broker_capnp::spawn_configured(
         capnp_socket_path.clone(),
         &table,
         Arc::clone(&channels),
@@ -1260,6 +1300,7 @@ fn spawn_inner(
         trusted_devices,
         peer_sync.cloned(),
         Arc::clone(&capnp_quit),
+        config,
     )?;
 
     Ok(BrokerHandle {

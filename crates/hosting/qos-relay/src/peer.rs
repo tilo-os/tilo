@@ -798,6 +798,8 @@ mod autobind_tests {
 /// A private queue belongs to one authenticated state session and exact room.
 #[derive(Clone)]
 pub(crate) struct ActionTarget {
+    broker_host: Option<uuid::Uuid>,
+    broker_protocol: bool,
     room: uuid::Uuid,
     peer: AuthenticatedPeer,
     state_tx: mpsc::Sender<Envelope>,
@@ -809,7 +811,9 @@ pub(crate) enum PrivateOutbound {
     Delivery(PrivateDelivery),
 }
 
+#[derive(Clone)]
 pub(crate) struct PrivateDelivery {
+    certified: bool,
     action: DirectedAction,
     source: AuthenticatedPeer,
     source_tx: mpsc::Sender<Envelope>,
@@ -878,6 +882,8 @@ async fn handle_private(
             wr.action_targets.insert(
                 peer.device_public_key,
                 ActionTarget {
+                    broker_host: None,
+                    broker_protocol: false,
                     room,
                     peer: peer.clone(),
                     state_tx: session.outbound.clone(),
@@ -887,6 +893,64 @@ async fn handle_private(
             Ok(Some(EnvelopeV2::ActionsReady {
                 room,
                 capability: ActionCapability::TransportOnly,
+            }))
+        }
+        EnvelopeV2::EnableBrokerClient { room } => {
+            if !current_cert(peer, session) {
+                return Err(PeerError::Protocol("broker protocol not authorised".into()));
+            }
+            let id = crate::room_workspace_id(&room.to_string())
+                .map_err(|_| PeerError::Protocol("invalid room".into()))?;
+            let ws = session
+                .workspaces
+                .lock()
+                .await
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| PeerError::Protocol("room not subscribed".into()))?;
+            let mut wr = ws.lock().await;
+            let members = wr.store.load_membership()?;
+            wr.membership.set(members);
+            if !current_member(&wr, peer) || !current_session(&wr, peer, session.outbound) {
+                return Err(PeerError::Protocol("broker protocol not authorised".into()));
+            }
+            let target = wr
+                .action_targets
+                .get_mut(&peer.device_public_key)
+                .filter(|t| t.room == room && t.state_tx.same_channel(session.outbound))
+                .ok_or_else(|| PeerError::Protocol("private lane not enabled".into()))?;
+            target.broker_protocol = true;
+            Ok(None)
+        }
+        EnvelopeV2::RegisterBroker { room, host } => {
+            if host.is_nil() || !current_cert(peer, session) {
+                return Err(PeerError::Protocol("broker not authorised".into()));
+            }
+            let id = crate::room_workspace_id(&room.to_string())
+                .map_err(|_| PeerError::Protocol("invalid room".into()))?;
+            let ws = session
+                .workspaces
+                .lock()
+                .await
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| PeerError::Protocol("room not subscribed".into()))?;
+            let mut wr = ws.lock().await;
+            let members = wr.store.load_membership()?;
+            wr.membership.set(members);
+            if !current_member(&wr, peer) || !current_session(&wr, peer, session.outbound) {
+                return Err(PeerError::Protocol("broker not authorised".into()));
+            }
+            let target = wr
+                .action_targets
+                .get_mut(&peer.device_public_key)
+                .filter(|t| t.room == room && t.state_tx.same_channel(session.outbound))
+                .ok_or_else(|| PeerError::Protocol("private lane not enabled".into()))?;
+            target.broker_host = Some(host);
+            target.broker_protocol = true;
+            Ok(Some(EnvelopeV2::ActionsReady {
+                room,
+                capability: ActionCapability::DurableBroker { host },
             }))
         }
         EnvelopeV2::Directed(action) => {
@@ -947,10 +1011,28 @@ async fn route_private(
     {
         return Ok(Some(U::NotAuthorised));
     }
-    // This transport slice deliberately cannot claim or admit external
-    // effects. A later native broker+journal integration must open this gate.
-    if matches!(action.message, ActionMessage::Invoke { .. }) {
+    // Legacy unbound invokes never acquire authority. Extended invocations
+    // require the exact attached host identity advertised by the recipient.
+    if matches!(action.message, ActionMessage::Invoke { .. })
+        || matches!(&action.message, ActionMessage::InvokeBound { host, .. } if target.broker_host != Some(*host))
+    {
         return Ok(Some(U::AdmissionUnavailable));
+    }
+    let source_extended = wr
+        .action_targets
+        .get(&peer.device_public_key)
+        .is_some_and(|t| t.broker_protocol);
+    let extension = matches!(
+        action.message,
+        ActionMessage::InvokeBound { .. }
+            | ActionMessage::BrokerCatalogue { .. }
+            | ActionMessage::Observation { .. }
+            | ActionMessage::Rejected { .. }
+    );
+    if (target.broker_host.is_some() && !source_extended)
+        || (extension && (!source_extended || !target.broker_protocol))
+    {
+        return Ok(Some(U::UnsupportedPeer));
     }
     let delivery = PrivateDelivery {
         action: action.clone(),
@@ -958,6 +1040,7 @@ async fn route_private(
         source_tx: session.outbound.clone(),
         reply: session.private_tx.clone(),
         source_disconnect: session.disconnect.clone(),
+        certified: target.broker_host.is_some(),
     };
     Ok(target
         .tx
@@ -977,12 +1060,26 @@ async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
 ) -> Result<(), PeerError> {
     match authorize_delivery(delivery, recipient, session).await {
         Ok(()) => {
-            write
-                .write_all(&crate::transport_v2::encode(&EnvelopeV2::Delivered {
+            let frame = if delivery.certified {
+                EnvelopeV2::CertifiedDelivered {
+                    action: delivery.action.clone(),
+                    source_certificate: serde_json::to_vec(&delivery.source.cert)
+                        .map_err(|_| PeerError::Protocol("certificate encoding failed".into()))?,
+                }
+            } else {
+                EnvelopeV2::Delivered {
                     action: delivery.action.clone(),
                     source_user: delivery.source.user_public_key,
-                })?)
-                .await?
+                }
+            };
+            let bytes = match crate::transport_v2::encode(&frame) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    let _ = delivery.source_disconnect.try_send(());
+                    return Ok(());
+                }
+            };
+            write.write_all(&bytes).await?
         }
         Err(reason) => {
             if delivery
@@ -1060,7 +1157,7 @@ mod private_transport_tests {
         root: &ed25519_dalek::SigningKey,
         user: [u8; 32],
         label: &str,
-    ) -> AuthenticatedPeer {
+    ) -> (AuthenticatedPeer, ed25519_dalek::SigningKey) {
         let (key, device) = DeviceIdentity::generate(label, 1);
         let mut cert = DeviceCert {
             user_public_key: user,
@@ -1088,14 +1185,14 @@ mod private_transport_tests {
         .unwrap();
         let proof = crate::auth::build_hello_ack2(&key, &[1; 32]);
         crate::auth::verify_hello_ack2(&proof, &peer.device_public_key, &[1; 32]).unwrap();
-        peer
+        (peer, key)
     }
 
     #[tokio::test]
     async fn bounded_private_queue_and_delivery_recheck_never_retain_traffic() {
         let (root, user) = UserIdentity::generate("alice", 1);
-        let a = certified_device(&root, user.public_key, "a");
-        let b = certified_device(&root, user.public_key, "b");
+        let (a, a_key) = certified_device(&root, user.public_key, "a");
+        let (b, _) = certified_device(&root, user.public_key, "b");
         let room = uuid::Uuid::from_u128(7);
         let id = crate::room_workspace_id(&room.to_string()).unwrap();
         let tmp = tempfile::tempdir().unwrap();
@@ -1127,6 +1224,8 @@ mod private_transport_tests {
             wr.action_targets.insert(
                 peer.device_public_key,
                 ActionTarget {
+                    broker_host: None,
+                    broker_protocol: false,
                     room,
                     peer: peer.clone(),
                     state_tx: tx.clone(),
@@ -1166,6 +1265,25 @@ mod private_transport_tests {
             target: b.device_public_key,
             message: ActionMessage::CatalogueRefresh,
         };
+        // An old-v2 caller never receives an unknown broker message, even
+        // when it targets an endpoint that installed the extended facade.
+        wr.lock()
+            .await
+            .action_targets
+            .get_mut(&b.device_public_key)
+            .unwrap()
+            .broker_host = Some(uuid::Uuid::from_u128(99));
+        assert_eq!(
+            route_private(&action, &a, &session).await.unwrap(),
+            Some(UnavailableReason::UnsupportedPeer)
+        );
+        assert!(bpr.try_recv().is_err());
+        wr.lock()
+            .await
+            .action_targets
+            .get_mut(&b.device_public_key)
+            .unwrap()
+            .broker_host = None;
         // State resubscribe is idempotent on the same connection. It must not
         // silently withdraw a separately negotiated private capability.
         wr.lock().await.add_subscriber(Subscriber {
@@ -1183,6 +1301,119 @@ mod private_transport_tests {
             panic!("expected private delivery")
         };
         assert_eq!(authorize_delivery(&delivery, &b, &receiver).await, Ok(()));
+        // Sender removal also invalidates an already queued private result.
+        wr.lock()
+            .await
+            .store
+            .save_membership(&[b.device_public_key])
+            .unwrap();
+        let mut sender_removed_wire = Vec::new();
+        write_private_delivery(&delivery, &b, &receiver, &mut sender_removed_wire)
+            .await
+            .unwrap();
+        assert!(sender_removed_wire.is_empty());
+        assert!(matches!(
+            apr.recv().await,
+            Some(PrivateOutbound::Reply(EnvelopeV2::Unavailable {
+                reason: UnavailableReason::NotAuthorised,
+                ..
+            }))
+        ));
+        wr.lock()
+            .await
+            .store
+            .save_membership(&[a.device_public_key, b.device_public_key])
+            .unwrap();
+
+        // Root-signed revocation between dispatch and actual writer delivery.
+        let mut entry = qos_user_identity::RevocationEntry {
+            user_public_key: user.public_key,
+            revoked_device_public_key: a.device_public_key,
+            revoked_at_ns: 1,
+            reason: qos_user_identity::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+        revocations.write().unwrap().insert(entry).unwrap();
+        let mut revoked_wire = Vec::new();
+        write_private_delivery(&delivery, &b, &receiver, &mut revoked_wire)
+            .await
+            .unwrap();
+        assert!(revoked_wire.is_empty());
+        assert!(matches!(
+            apr.recv().await,
+            Some(PrivateOutbound::Reply(EnvelopeV2::Unavailable {
+                reason: UnavailableReason::NotAuthorised,
+                ..
+            }))
+        ));
+        *revocations.write().unwrap() = RevocationList::new();
+
+        // Expiry is rechecked at the writer, after the authenticated source's
+        // queued delivery was created. Re-sign the short-lived certificate so
+        // the fixture still uses a valid root-issued chain.
+        let mut expiring = delivery.clone();
+        expiring.source.cert.expires_at_ns = Some(now_ns().saturating_add(100_000_000));
+        sign_device_cert(&mut expiring.source.cert, &root).unwrap();
+        expiring.source = crate::auth::accept_hello(
+            &crate::auth::Hello {
+                cert: expiring.source.cert.clone(),
+                client_nonce: [9; 32],
+            },
+            &user.public_key,
+            &crate::policy::TrustPolicy::AllowMatchingUser,
+            &RevocationList::new(),
+            now_ns(),
+        )
+        .unwrap();
+        crate::auth::verify_hello_ack2(
+            &crate::auth::build_hello_ack2(&a_key, &[8; 32]),
+            &expiring.source.device_public_key,
+            &[8; 32],
+        )
+        .unwrap();
+        assert_eq!(authorize_delivery(&expiring, &b, &receiver).await, Ok(()));
+        tokio::time::sleep(std::time::Duration::from_millis(110)).await;
+        let mut expired_wire = Vec::new();
+        write_private_delivery(&expiring, &b, &receiver, &mut expired_wire)
+            .await
+            .unwrap();
+        assert!(expired_wire.is_empty());
+        assert!(matches!(
+            apr.recv().await,
+            Some(PrivateOutbound::Reply(EnvelopeV2::Unavailable {
+                reason: UnavailableReason::NotAuthorised,
+                ..
+            }))
+        ));
+
+        // Host certificates retain their PeerRelay role; no facade exception.
+        let mut relay_peer = a.clone();
+        relay_peer.cert.capabilities = DeviceCapabilities::host();
+        sign_device_cert(&mut relay_peer.cert, &root).unwrap();
+        relay_peer = crate::auth::accept_hello(
+            &crate::auth::Hello {
+                cert: relay_peer.cert.clone(),
+                client_nonce: [7; 32],
+            },
+            &user.public_key,
+            &crate::policy::TrustPolicy::AllowMatchingUser,
+            &RevocationList::new(),
+            now_ns(),
+        )
+        .unwrap();
+        crate::auth::verify_hello_ack2(
+            &crate::auth::build_hello_ack2(&a_key, &[6; 32]),
+            &relay_peer.device_public_key,
+            &[6; 32],
+        )
+        .unwrap();
+        assert_eq!(relay_peer.role, crate::auth::PeerRole::PeerRelay);
+        assert_eq!(
+            route_private(&action, &relay_peer, &session).await.unwrap(),
+            Some(UnavailableReason::NotAuthorised)
+        );
+
         // Removal after dispatch but before recipient wire delivery fails closed.
         wr.lock()
             .await

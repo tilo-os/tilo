@@ -13,6 +13,9 @@ pub const ALPN_V2: &[u8] = b"qos-relay/2";
 pub enum ActionCapability {
     /// Private routing exists; durable effect admission is not available.
     TransportOnly,
+    DurableBroker {
+        host: Uuid,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -38,6 +41,17 @@ pub enum EnvelopeV2 {
     Delivered {
         action: DirectedAction,
         source_user: [u8; 32],
+    },
+    EnableBrokerClient {
+        room: Uuid,
+    },
+    RegisterBroker {
+        room: Uuid,
+        host: Uuid,
+    },
+    CertifiedDelivered {
+        action: DirectedAction,
+        source_certificate: Vec<u8>,
     },
 }
 
@@ -268,6 +282,85 @@ mod tests {
             .concat();
             assert_eq!(encode(&frame).unwrap(), expected);
             assert_eq!(decode(&payload).unwrap(), frame);
+        }
+    }
+
+    #[test]
+    fn broker_extensions_keep_an_actual_frozen_v2_reader_compatible() {
+        #[allow(dead_code)]
+        #[derive(Deserialize)]
+        enum OldCapability {
+            TransportOnly,
+        }
+        #[allow(dead_code)]
+        #[derive(Deserialize)]
+        enum OldV2 {
+            State(Envelope),
+            EnableActions {
+                room: Uuid,
+            },
+            ActionsReady {
+                room: Uuid,
+                capability: OldCapability,
+            },
+            Directed(DirectedAction),
+            Unavailable {
+                room: Uuid,
+                request_id: Uuid,
+                target: [u8; 32],
+                invocation: Option<InvocationId>,
+                reason: UnavailableReason,
+            },
+            Delivered {
+                action: DirectedAction,
+                source_user: [u8; 32],
+            },
+        }
+        let room = Uuid::from_u128(7);
+        for frame in [
+            EnvelopeV2::State(Envelope::Ping),
+            EnvelopeV2::ActionsReady {
+                room,
+                capability: ActionCapability::TransportOnly,
+            },
+            EnvelopeV2::Unavailable {
+                room,
+                request_id: Uuid::from_u128(8),
+                target: [2; 32],
+                invocation: None,
+                reason: UnavailableReason::UnsupportedPeer,
+            },
+        ] {
+            let wire = encode(&frame).unwrap();
+            assert!(postcard::from_bytes::<OldV2>(&wire[4..]).is_ok());
+        }
+        let host = Uuid::from_u128(9);
+        let room_bytes = [vec![16], vec![0; 15], vec![7]].concat();
+        let host_bytes = [vec![16], vec![0; 15], vec![9]].concat();
+        for (frame, frozen) in [
+            (
+                EnvelopeV2::EnableBrokerClient { room },
+                [vec![6], room_bytes.clone()].concat(),
+            ),
+            (
+                EnvelopeV2::RegisterBroker { room, host },
+                [vec![7], room_bytes.clone(), host_bytes.clone()].concat(),
+            ),
+            (
+                EnvelopeV2::ActionsReady {
+                    room,
+                    capability: ActionCapability::DurableBroker { host },
+                },
+                [vec![2], room_bytes, vec![1], host_bytes].concat(),
+            ),
+        ] {
+            let wire = encode(&frame).unwrap();
+            assert_eq!(wire[4..], frozen);
+            assert!(
+                postcard::from_bytes::<OldV2>(&wire[4..]).is_err(),
+                "requires explicit broker opt-in"
+            );
+            assert_eq!(decode(&wire[4..]).unwrap(), frame);
         }
     }
 

@@ -278,7 +278,7 @@ impl InvocationJournal {
         self.persist()
     }
 
-    fn check(&self) -> Result<(), String> {
+    pub(super) fn check(&self) -> Result<(), String> {
         if self.poisoned {
             Err("invocation journal requires recovery after a failed barrier".into())
         } else {

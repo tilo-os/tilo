@@ -20,6 +20,7 @@
 //! - A simulated remote cursor floats over the active tile.
 
 pub mod actions;
+pub mod peer_actions;
 pub mod catalogue;
 pub mod chrome_state;
 pub mod collab_broker;

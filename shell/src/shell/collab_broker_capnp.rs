@@ -92,6 +92,7 @@ struct VerifiedJoinIdentity {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AdmittedJoinIdentity {
+    certificate: Option<qos_user_identity::DeviceCert>,
     verified: VerifiedJoinIdentity,
     principal_id: String,
     /// Informational display label announced by this authenticated session.
@@ -175,6 +176,7 @@ fn admit_verified_join(
         return Err("certified collaboration identity is blocked in this workspace".into());
     }
     Ok(AdmittedJoinIdentity {
+        certificate: None,
         verified,
         principal_id,
         role,
@@ -262,6 +264,7 @@ fn verify_join_identity(
     identity_bytes: &[u8],
     membership: Option<&WorkspaceTreeHandle>,
     trusted_devices: Option<&[[u8; 32]]>,
+    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
 ) -> Result<AdmittedJoinIdentity, String> {
     let Some(presentation) = runtime_collab::CertifiedJoinIdentity::decode(identity_bytes)
         .map_err(|error| format!("certified join presentation is malformed: {error}"))?
@@ -271,7 +274,14 @@ fn verify_join_identity(
     let cert: qos_user_identity::DeviceCert =
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
-    let (expected_root, revoked, enrolled) = if let Some(devices) = trusted_devices {
+    let (expected_root, revoked, enrolled) = if let Some(authority) = authority {
+        let room = uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid exact room")?;
+        authority.authorize(room, &cert)?;
+        if cert.capabilities.can_act_as_host {
+            return Err("device authority required".into());
+        }
+        (cert.user_public_key, false, true)
+    } else if let Some(devices) = trusted_devices {
         (
             cert.user_public_key,
             false,
@@ -309,7 +319,9 @@ fn verify_join_identity(
     )?;
     let membership = membership
         .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
-    admit_verified_join(&membership.read(), route, verified)
+    let mut admitted = admit_verified_join(&membership.read(), route, verified)?;
+    admitted.certificate = Some(cert);
+    Ok(admitted)
 }
 
 /// Envelope pushed onto an [`OpStreamServer`]'s queue. `kind` is what
@@ -434,6 +446,7 @@ pub struct InvocationJob {
 }
 
 struct PendingInvocation {
+    network_evidence: Option<qos_relay::client::CertifiedAction>,
     journal_key: Option<InvocationKey>,
     peer_id: u64,
     tx: std::sync::mpsc::Sender<InvocationCompletion>,
@@ -461,6 +474,7 @@ struct PendingInvocation {
 pub(crate) struct VerifiedActionCaller {
     room: String,
     presentation: Vec<u8>,
+    network: Option<qos_relay::client::CertifiedAction>,
     admitted: AdmittedJoinIdentity,
 }
 
@@ -486,13 +500,22 @@ pub(crate) struct CallerInvocation {
     pub resource: String,
     pub action: String,
     pub argument: Option<String>,
+    pub revision: Option<String>,
+    pub recipient: Option<[u8; 32]>,
 }
 
 impl CallerInvocation {
     fn intent(&self) -> serde_json::Value {
-        serde_json::json!({ "peer_id": self.peer_id, "app_id": self.app_id,
+        let mut intent = serde_json::json!({ "peer_id": self.peer_id, "app_id": self.app_id,
             "record_id": self.record_id, "resource": self.resource,
-            "action": self.action, "argument": self.argument })
+            "action": self.action, "argument": self.argument });
+        if let Some(revision) = &self.revision {
+            intent["revision"] = serde_json::json!(revision);
+        }
+        if let Some(recipient) = &self.recipient {
+            intent["recipient"] = serde_json::json!(recipient);
+        }
+        intent
     }
 }
 
@@ -512,6 +535,9 @@ impl PendingInvocation {
     }
 }
 
+#[path = "peer_action_broker.rs"]
+mod peer_action_broker;
+
 impl CapnpBrokerState {
     pub(crate) fn invocation_host(&self) -> Result<uuid::Uuid, String> {
         self.journal
@@ -520,8 +546,11 @@ impl CapnpBrokerState {
             .as_ref()
             .map_err(Clone::clone)?
             .as_ref()
-            .map(InvocationJournal::host)
-            .ok_or_else(|| "durable admission unavailable".into())
+            .ok_or_else(|| "durable admission unavailable".to_string())
+            .and_then(|journal| {
+                journal.check()?;
+                Ok(journal.host())
+            })
     }
 
     pub(crate) fn verify_action_caller(
@@ -539,10 +568,12 @@ impl CapnpBrokerState {
             presentation,
             self.membership.as_ref(),
             self.trusted_devices.as_deref().map(Vec::as_slice),
+            self.certificate_authority.get().map(Arc::as_ref),
         )?;
         Ok(VerifiedActionCaller {
             room: room.into(),
             presentation: presentation.into(),
+            network: None,
             admitted,
         })
     }
@@ -551,7 +582,11 @@ impl CapnpBrokerState {
         &self,
         caller: &VerifiedActionCaller,
     ) -> Result<AdmittedJoinIdentity, String> {
-        let current = self.verify_action_caller(&caller.room, &caller.presentation)?;
+        let current = if let Some(evidence) = &caller.network {
+            self.verify_network_action_caller(evidence)?
+        } else {
+            self.verify_action_caller(&caller.room, &caller.presentation)?
+        };
         if current.owner() != caller.owner() {
             return Err("certified caller changed".into());
         }
@@ -773,7 +808,10 @@ impl CapnpBrokerState {
                 .map_err(|e| e.clone())?
                 .as_mut()
                 .ok_or("durable admission unavailable")?
-                .update(key, update, uncertain)?;
+                .update(key, update.clone(), uncertain)?;
+            if let Some(evidence) = &pending.network_evidence {
+                self.peer_action_queue.publish(evidence.clone(), update);
+            }
         }
         Ok(())
     }
@@ -1329,6 +1367,7 @@ pub struct CapnpBrokerState {
     /// certified join fails closed when they have no authority to consult.
     membership: Option<WorkspaceTreeHandle>,
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+    certificate_authority: std::sync::OnceLock<Arc<dyn super::peer_actions::CertificateAuthority>>,
     /// Latest complete action surface per live connection.
     surfaces: Mutex<HashMap<u64, PublishedSurface>>,
     /// Monotonic generation for shell-side retained action projections.
@@ -1341,6 +1380,8 @@ pub struct CapnpBrokerState {
     /// capability after disconnect would make a stale live-only row look
     /// executable.
     action_directory_bridge: ActionDirectoryRequestQueue,
+    peer_action_queue: super::peer_actions::PeerActionQueue,
+    peer_action_rx: Mutex<Option<tokio::sync::mpsc::Receiver<super::peer_actions::Request>>>,
     action_directory_roots: Mutex<HashMap<u64, ActionDirectoryRoot>>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
     /// Directed invocation stream registered by each application connection.
@@ -1528,16 +1569,44 @@ impl CapnpBrokerState {
         Arc<Self>,
         std::sync::mpsc::Receiver<ActionDirectoryBridgeRequest>,
     ) {
+        Self::new_configured(
+            fanout,
+            broker_channels,
+            publisher,
+            membership,
+            trusted_devices,
+            None,
+        )
+    }
+
+    fn new_configured(
+        fanout: &Arc<FanoutState>,
+        broker_channels: Arc<Mutex<BrokerChannels>>,
+        publisher: Arc<PeerPublisher>,
+        membership: Option<WorkspaceTreeHandle>,
+        trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+        config: Option<&super::peer_actions::NativePeerBrokerConfig>,
+    ) -> (
+        Arc<Self>,
+        std::sync::mpsc::Receiver<ActionDirectoryBridgeRequest>,
+    ) {
         let (bridge_tx, bridge_rx) =
             std::sync::mpsc::sync_channel(ActionDirectoryRequestQueue::CAPACITY);
-        let journal = membership
-            .as_ref()
-            .and_then(|tree| tree.read().persist_path.clone())
-            .map(|path| {
-                let mut name = path.into_os_string();
-                name.push(".invocations");
-                InvocationJournal::open(&PathBuf::from(name))
-            })
+        let (peer_action_queue, peer_action_rx) = super::peer_actions::PeerActionQueue::channel();
+        let journal_root = config
+            .map(|config| config.journal_root.clone())
+            .or_else(|| {
+                membership
+                    .as_ref()
+                    .and_then(|tree| tree.read().persist_path.clone())
+                    .map(|path| {
+                        let mut name = path.into_os_string();
+                        name.push(".invocations");
+                        PathBuf::from(name)
+                    })
+            });
+        let journal = journal_root
+            .map(|path| InvocationJournal::open(&path))
             .transpose();
         let next_invocation = journal
             .as_ref()
@@ -1552,10 +1621,15 @@ impl CapnpBrokerState {
                 publisher,
                 membership,
                 trusted_devices,
+                certificate_authority: config.map_or_else(std::sync::OnceLock::new, |config| {
+                    std::sync::OnceLock::from(config.certificate_authority.clone())
+                }),
                 surfaces: Mutex::new(HashMap::new()),
                 surface_generation: AtomicU64::new(0),
                 archived_surfaces: Mutex::new(HashMap::new()),
                 action_directory_bridge: ActionDirectoryRequestQueue { sender: bridge_tx },
+                peer_action_queue,
+                peer_action_rx: Mutex::new(Some(peer_action_rx)),
                 action_directory_roots: Mutex::new(HashMap::new()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 invocation_subscribers: Mutex::new(HashMap::new()),
@@ -2735,6 +2809,7 @@ impl CapnpBrokerState {
             .insert(
                 id,
                 PendingInvocation {
+                    network_evidence: durable.and_then(|(caller, _)| caller.network.clone()),
                     journal_key: journal_key.clone(),
                     peer_id,
                     tx,
@@ -3268,6 +3343,22 @@ impl CapnpBrokerState {
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
     ) -> Result<AdmittedJoinIdentity, capnp::Error> {
+        if let Some(cert) = &admitted.certificate {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| capnp::Error::failed("clock unavailable".into()))?
+                .as_nanos()
+                .min(u128::from(u64::MAX)) as u64;
+            qos_user_identity::verify_device_cert_at(cert, now)
+                .map_err(|_| capnp::Error::failed("certificate no longer valid".into()))?;
+            if let Some(authority) = self.certificate_authority.get() {
+                let room = uuid::Uuid::parse_str(&route.cluster_id)
+                    .map_err(|_| capnp::Error::failed("invalid exact room".into()))?;
+                authority
+                    .authorize(room, cert)
+                    .map_err(capnp::Error::failed)?;
+            }
+        }
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
@@ -3277,6 +3368,7 @@ impl CapnpBrokerState {
                     "certified collaboration session is no longer admitted: {error}"
                 ))
             })?;
+        current.certificate = admitted.certificate.clone();
         if let Some(agent_id) = &admitted.agent_id {
             admit_agent_delegation(&membership.read(), route, &mut current, agent_id).map_err(
                 |error| {
@@ -3669,6 +3761,7 @@ impl collab_service::Server for CapnpCollabService {
                     .trusted_devices
                     .as_ref()
                     .map(|devices| devices.as_slice()),
+                state.certificate_authority.get().map(Arc::as_ref),
             )
             .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
@@ -6752,13 +6845,38 @@ pub fn spawn(
     workspace_control_network: Option<Arc<crate::shell::network::ShellNetwork>>,
     quit: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
-    let wired = publisher.is_wired();
-    let (state, bridge_rx) = CapnpBrokerState::new(
+    spawn_configured(
+        socket_path,
         fanout,
         broker_channels,
         publisher,
         membership,
         trusted_devices,
+        workspace_control_network,
+        quit,
+        None,
+    )
+}
+
+pub(crate) fn spawn_configured(
+    socket_path: PathBuf,
+    fanout: &Arc<FanoutState>,
+    broker_channels: Arc<Mutex<BrokerChannels>>,
+    publisher: Arc<PeerPublisher>,
+    membership: Option<WorkspaceTreeHandle>,
+    trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+    workspace_control_network: Option<Arc<crate::shell::network::ShellNetwork>>,
+    quit: Arc<AtomicBool>,
+    config: Option<&super::peer_actions::NativePeerBrokerConfig>,
+) -> std::io::Result<JoinHandle<()>> {
+    let wired = publisher.is_wired();
+    let (state, bridge_rx) = CapnpBrokerState::new_configured(
+        fanout,
+        broker_channels,
+        publisher,
+        membership,
+        trusted_devices,
+        config,
     );
     {
         let journal = state
@@ -6772,6 +6890,24 @@ pub fn spawn(
     let _ = std::fs::remove_file(&socket_path);
     if let Some(network) = workspace_control_network.as_ref() {
         state.attach_workspace_control_network(network);
+        if let (Ok(host), Some(tree)) = (state.invocation_host(), state.membership.as_ref()) {
+            let rooms = tree
+                .read()
+                .workspaces
+                .iter()
+                .filter_map(|w| uuid::Uuid::parse_str(&w.room.to_string()).ok())
+                .collect();
+            network
+                .cmd_tx
+                .try_send(crate::network::actor::NetCmd::AttachActionBroker {
+                    queue: state.peer_action_queue.clone(),
+                    host,
+                    rooms,
+                })
+                .map_err(|_| {
+                    std::io::Error::other("action broker network attachment unavailable")
+                })?;
+        }
     }
     fanout.attach_capnp(Arc::clone(&state));
 
@@ -6807,6 +6943,7 @@ pub fn spawn(
             let local = tokio::task::LocalSet::new();
             local.block_on(&rt, async move {
                 let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
+                state.start_peer_action_bridge(Rc::clone(&directories));
                 let listener = match tokio::net::UnixListener::from_std(std_listener) {
                     Ok(l) => l,
                     Err(e) => {
@@ -7227,6 +7364,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) struct LocalDirectoryFixture {
+        _fanout: Arc<FanoutState>,
         state: Arc<CapnpBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
         directory: action_directory::Client,
@@ -7255,6 +7393,7 @@ pub(crate) mod tests {
                 channel_id: self.route.channel_key(),
                 peer_id: self.peer_id,
                 verified_identity: AdmittedJoinIdentity {
+                    certificate: None,
                     verified: VerifiedJoinIdentity {
                         user_public_key: [0; 32],
                         device_public_key: [0; 32],
@@ -7399,7 +7538,9 @@ pub(crate) mod tests {
             .lock()
             .expect("invocation subscribers")
             .insert(peer_id, invocation_tx);
+        fanout.attach_capnp(Arc::clone(&state));
         LocalDirectoryFixture {
+            _fanout: fanout,
             broker: crate::shell::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(
                 &state,
             )),
@@ -8813,6 +8954,7 @@ pub(crate) mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let invocation = qos_actions::InvocationId::new();
         let pending = PendingInvocation {
+            network_evidence: None,
             journal_key: None,
             peer_id: 7,
             tx,
@@ -8912,6 +9054,9 @@ pub(crate) mod tests {
         assert_eq!(invocation_target_peer(7, 41), 7);
     }
     mod durable_admission_tests {
+        mod peer_integration {
+            include!("peer_action_integration_tests.rs");
+        }
         use super::super::invocation_journal::BarrierFailure;
         use super::*;
 
@@ -8996,6 +9141,8 @@ pub(crate) mod tests {
                 )
                 .unwrap();
             let request = CallerInvocation {
+                recipient: None,
+                revision: None,
                 invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID)),
                 host: fixture.state.invocation_host().unwrap(),
                 peer_id: 71,

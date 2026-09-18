@@ -28,6 +28,31 @@ use crate::transport::{
 
 use crate::transport_v2::{EnvelopeV2, SessionReader};
 
+/// Authenticated relay delivery, never constructible from application payloads.
+#[derive(Clone, Debug)]
+pub struct CertifiedAction {
+    action: crate::peer_actions::DirectedAction,
+    certificate: DeviceCert,
+}
+impl CertifiedAction {
+    /// Exact source-bound private request.
+    pub fn action(&self) -> &crate::peer_actions::DirectedAction {
+        &self.action
+    }
+    /// Certificate retained from the relay's mutually authenticated source.
+    pub fn certificate(&self) -> &DeviceCert {
+        &self.certificate
+    }
+}
+/// Private session control or opaque authenticated delivery.
+#[derive(Debug)]
+pub enum CertifiedActionEvent {
+    /// Verified source and recipient from the authenticated session.
+    Delivered(CertifiedAction),
+    /// Relay control response.
+    Control(EnvelopeV2),
+}
+
 /// A live authenticated session with a relay. Handles are cheap;
 /// dropping the client tears down the connection.
 pub struct RelayClient {
@@ -41,6 +66,7 @@ pub struct RelayClient {
     /// explicit unsubscribe for each one before gracefully finishing the
     /// stream, so the host can begin offline delivery without a QUIC timeout.
     subscriptions: Mutex<HashSet<u64>>,
+    own_device: [u8; 32],
     action_outbound: Option<mpsc::Sender<EnvelopeV2>>,
     action_inbound: Arc<AsyncMutex<mpsc::Receiver<EnvelopeV2>>>,
     /// Kept alive so the connection is not dropped.
@@ -656,6 +682,7 @@ impl RelayClient {
             outbound: outbound_tx,
             inbound: Arc::new(AsyncMutex::new(inbound_rx)),
             subscriptions: Mutex::new(HashSet::new()),
+            own_device: own_cert.device_public_key,
             action_outbound: v2.then_some(action_tx),
             action_inbound: Arc::new(AsyncMutex::new(action_inbound_rx)),
             connection: conn,
@@ -709,8 +736,34 @@ impl RelayClient {
             .map_err(|_| ClientError::Codec("private queue unavailable".into()))
     }
 
-    /// Receive private frames from the session's single wire demultiplexer.
-    /// Returns None on v1 sessions or when the transport ends.
+    /// Receive authenticated source evidence from this exact relay session.
+    /// Only this method can construct the evidence; peer control frames cannot.
+    pub async fn recv_certified_action(&self) -> Option<CertifiedActionEvent> {
+        match self.recv_action().await? {
+            EnvelopeV2::CertifiedDelivered {
+                action,
+                source_certificate,
+            } => {
+                let cert: DeviceCert = serde_json::from_slice(&source_certificate).ok()?;
+                if action.target != self.own_device
+                    || action.source != cert.device_public_key
+                    || !action.validate()
+                    || cert.capabilities.can_act_as_host
+                    || qos_user_identity::verify_device_cert_at(&cert, crate::clock::now_ns())
+                        .is_err()
+                {
+                    return None;
+                }
+                Some(CertifiedActionEvent::Delivered(CertifiedAction {
+                    action,
+                    certificate: cert,
+                }))
+            }
+            other => Some(CertifiedActionEvent::Control(other)),
+        }
+    }
+
+    /// Receive private frames; None means disconnected or v1.
     pub async fn recv_action(&self) -> Option<EnvelopeV2> {
         self.action_outbound.as_ref()?;
         self.action_inbound.lock().await.recv().await
@@ -719,6 +772,13 @@ impl RelayClient {
     /// Convenience: recv the next envelope.
     pub async fn recv(&self) -> Option<Envelope> {
         self.inbound.lock().await.recv().await
+    }
+
+    /// Disconnect this session without closing an endpoint shared with state peers.
+    pub(crate) async fn disconnect(&self) {
+        self.connection
+            .close(0u32.into(), b"broker lane disconnected");
+        self.connection.closed().await;
     }
 
     /// Disconnect, waiting until the relay has been told.
@@ -736,6 +796,7 @@ impl RelayClient {
     /// client owns it. A caller that kept a clone and is still using it — the
     /// daemon's federation dial loop passes the relay's own endpoint — must
     /// drop the handle instead.
+    /// Close this connection and its owned endpoint. Do not use with a shared endpoint.
     pub async fn close(self) {
         self.connection.close(0u32.into(), b"client closed");
         self.connection.closed().await;
