@@ -155,6 +155,9 @@ for required in \
   fragment_has "$required" \
     || bad "required kernel setting missing: $required"
 done
+
+grep -Fq '"preempt=full"' "$repo/os/usr/lib/bootc/kargs.d/03-boot.toml" \
+  || bad 'signed UKI command line does not pin full dynamic preemption'
 [ "$fail" -ne 0 ] || ok 'required kernel self-protection options are pinned'
 
 if grep -Eq '^CONFIG_(X86_|DEVPORT=|IA32_EMULATION=|USELIB=|LEGACY_VSYSCALL_|RANDOMIZE_MEMORY=|SCHED_MC_PRIO=|SND_SOC_INTEL_AVS_MACH_I2S_TEST=)' "$kernel_config" "$arm64_kernel_config"; then
