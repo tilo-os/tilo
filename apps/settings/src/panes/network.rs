@@ -110,6 +110,10 @@ fn profile_forget_key(uuid: &str) -> String {
     format!("network.profile.forget.{uuid}")
 }
 
+fn profile_share_key(uuid: &str) -> String {
+    format!("network.profile.share.{uuid}")
+}
+
 fn ipv4_key(uuid: &str, field: &str) -> String {
     format!("network.ipv4.{field}.{uuid}")
 }
@@ -187,9 +191,63 @@ type ToolOpener = Arc<dyn Fn(ToolIntent) -> Result<(), String> + Send + Sync>;
 #[derive(Debug)]
 enum NetworkJob {
     Wifi(String),
+    ShareProfile,
     MobileProfile,
     SimUnlock,
     EnterpriseWifi,
+}
+
+enum NetworkJobSuccess {
+    Connected { continuity_notice: Option<String> },
+    PasswordRequired { continuity_warning: Option<String> },
+    ProfileShared { ssid: String },
+    OperationCompleted { notice: String },
+}
+
+fn portable_security(
+    security: os_actions::WifiSecurity,
+) -> Option<ui::collaboration::PortableWifiSecurity> {
+    match security {
+        os_actions::WifiSecurity::Wpa2 => Some(ui::collaboration::PortableWifiSecurity::Wpa2),
+        os_actions::WifiSecurity::Wpa3 => Some(ui::collaboration::PortableWifiSecurity::Wpa3),
+        _ => None,
+    }
+}
+
+trait WifiContinuityClient: Send + Sync {
+    fn command(
+        &self,
+        command: ui::collaboration::WifiContinuityCommand,
+    ) -> Result<ui::collaboration::WifiContinuityReply, String>;
+}
+
+struct ProductionWifiContinuityClient;
+
+impl WifiContinuityClient for ProductionWifiContinuityClient {
+    fn command(
+        &self,
+        command: ui::collaboration::WifiContinuityCommand,
+    ) -> Result<ui::collaboration::WifiContinuityReply, String> {
+        ui::collaboration::wifi_continuity_command(command)
+    }
+}
+
+struct EmptyWifiContinuityClient;
+
+impl WifiContinuityClient for EmptyWifiContinuityClient {
+    fn command(
+        &self,
+        command: ui::collaboration::WifiContinuityCommand,
+    ) -> Result<ui::collaboration::WifiContinuityReply, String> {
+        match command {
+            ui::collaboration::WifiContinuityCommand::Lookup { .. } => {
+                Ok(ui::collaboration::WifiContinuityReply::NotFound)
+            }
+            _ => Ok(ui::collaboration::WifiContinuityReply::Rejected {
+                reason: "not configured in this test".into(),
+            }),
+        }
+    }
 }
 
 fn initial_secret_buffers() -> HashMap<String, Arc<Mutex<String>>> {
@@ -286,8 +344,9 @@ pub struct NetworkPane {
     /// Track which `network.join.<ssid>` keys we already dispatched
     /// for, so a single button press doesn't re-fire on every frame.
     dispatched_connects: Vec<String>,
-    connection_tx: std::sync::mpsc::Sender<(NetworkJob, Result<(), String>)>,
-    connection_rx: std::sync::mpsc::Receiver<(NetworkJob, Result<(), String>)>,
+    connection_tx: std::sync::mpsc::Sender<(NetworkJob, Result<NetworkJobSuccess, String>)>,
+    connection_rx: std::sync::mpsc::Receiver<(NetworkJob, Result<NetworkJobSuccess, String>)>,
+    wifi_continuity: Arc<dyn WifiContinuityClient>,
     connection_notice: Option<String>,
     ca_picker_rx: Option<std::sync::mpsc::Receiver<Result<Option<String>, String>>>,
     hotspot_password: Arc<Mutex<String>>,
@@ -379,6 +438,7 @@ impl NetworkPane {
             dispatched_connects: Vec::new(),
             connection_tx,
             connection_rx,
+            wifi_continuity: Arc::new(ProductionWifiContinuityClient),
             connection_notice: None,
             ca_picker_rx: None,
             hotspot_password: Arc::new(Mutex::new(String::new())),
@@ -434,6 +494,7 @@ impl NetworkPane {
             dispatched_connects: Vec::new(),
             connection_tx,
             connection_rx,
+            wifi_continuity: Arc::new(EmptyWifiContinuityClient),
             connection_notice: None,
             ca_picker_rx: None,
             hotspot_password: Arc::new(Mutex::new(String::new())),
@@ -484,6 +545,7 @@ impl NetworkPane {
             dispatched_connects: Vec::new(),
             connection_tx,
             connection_rx,
+            wifi_continuity: Arc::new(ProductionWifiContinuityClient),
             connection_notice: None,
             ca_picker_rx: None,
             hotspot_password: Arc::new(Mutex::new(String::new())),
@@ -951,6 +1013,11 @@ impl NetworkPane {
                     .push(Box::new(Text::new(&profile.name).with_size(13.0)))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(Button::new(
+                        &format!("settings.network.profile.share.{}", profile.uuid),
+                        "Share with my devices",
+                        Some(&profile_share_key(&profile.uuid)),
+                    )))
+                    .push(Box::new(Button::new(
                         &format!("settings.network.profile.forget.{}", profile.uuid),
                         "Forget",
                         Some(&profile_forget_key(&profile.uuid)),
@@ -965,7 +1032,7 @@ impl NetworkPane {
             ));
         }
         rows_out.push(caption(
-            "Auto-connect and Forget modify the NetworkManager profile itself; Settings keeps no duplicate profile database.",
+            "Sharing is opt-in and seals only the network name, security mode, and passphrase for your certified devices. Interface, MAC, IP, DNS, proxy, and auto-connect settings stay on this device.",
         ));
         self.push_advanced_profile_rows(&wifi_profiles, &mut rows_out);
         rows_out
@@ -1479,7 +1546,13 @@ impl NetworkPane {
 
     /// Dispatch a Wi-Fi connection, deduplicated per SSID so a single
     /// button press doesn't re-fire on every frame.
-    fn do_connect(&mut self, ssid: &str, password: Option<&str>) {
+    fn do_connect(
+        &mut self,
+        ssid: &str,
+        security: os_actions::WifiSecurity,
+        password: Option<&str>,
+        lookup_shared: bool,
+    ) {
         if self.dispatched_connects.iter().any(|s| s == ssid) {
             return;
         }
@@ -1489,8 +1562,83 @@ impl NetworkPane {
         let tx = self.connection_tx.clone();
         let ssid = ssid.to_string();
         let password = password.map(|value| Zeroizing::new(value.to_string()));
+        let continuity = Arc::clone(&self.wifi_continuity);
         std::thread::spawn(move || {
-            let result = dispatcher.connect_wifi(&ssid, password.as_deref().map(String::as_str));
+            let portable = portable_security(security);
+            let result = if lookup_shared {
+                let Some(mode) = portable else {
+                    let _ = tx.send((
+                        NetworkJob::Wifi(ssid),
+                        Ok(NetworkJobSuccess::PasswordRequired {
+                            continuity_warning: None,
+                        }),
+                    ));
+                    return;
+                };
+                match continuity.command(ui::collaboration::WifiContinuityCommand::Lookup {
+                    ssid: ssid.clone(),
+                    security: mode,
+                }) {
+                    Ok(ui::collaboration::WifiContinuityReply::Password { password }) => {
+                        let password = Zeroizing::new(password);
+                        dispatcher
+                            .connect_wifi(&ssid, Some(password.as_str()))
+                            .map(|()| NetworkJobSuccess::Connected {
+                                continuity_notice: Some(
+                                    "Used the sealed password from your certified devices.".into(),
+                                ),
+                            })
+                    }
+                    Ok(ui::collaboration::WifiContinuityReply::NotFound) => {
+                        Ok(NetworkJobSuccess::PasswordRequired {
+                            continuity_warning: None,
+                        })
+                    }
+                    Ok(ui::collaboration::WifiContinuityReply::Rejected { reason }) => {
+                        Ok(NetworkJobSuccess::PasswordRequired {
+                            continuity_warning: Some(reason),
+                        })
+                    }
+                    Ok(_) => Ok(NetworkJobSuccess::PasswordRequired {
+                        continuity_warning: Some(
+                            "the Wi-Fi continuity service returned an invalid lookup reply".into(),
+                        ),
+                    }),
+                    Err(error) => Ok(NetworkJobSuccess::PasswordRequired {
+                        continuity_warning: Some(error),
+                    }),
+                }
+            } else {
+                dispatcher
+                    .connect_wifi(&ssid, password.as_deref().map(String::as_str))
+                    .map(|()| {
+                        let continuity_notice = password.as_ref().map(|password| {
+                            let mode = portable?;
+                            match continuity.command(
+                                ui::collaboration::WifiContinuityCommand::Share {
+                                    ssid: ssid.clone(),
+                                    security: mode,
+                                    password: password.to_string(),
+                                },
+                            ) {
+                                Ok(ui::collaboration::WifiContinuityReply::Shared { .. }) => Some(
+                                    "Password sealed for your certified devices.".into(),
+                                ),
+                                Ok(ui::collaboration::WifiContinuityReply::Rejected { reason }) => {
+                                    Some(format!("Password could not be shared: {reason}"))
+                                }
+                                Ok(_) => Some(
+                                    "Password could not be shared: the continuity service returned an invalid reply."
+                                        .into(),
+                                ),
+                                Err(error) => {
+                                    Some(format!("Password could not be shared: {error}"))
+                                }
+                            }
+                        }).flatten();
+                        NetworkJobSuccess::Connected { continuity_notice }
+                    })
+            };
             let _ = tx.send((NetworkJob::Wifi(ssid), result));
         });
     }
@@ -1521,28 +1669,50 @@ impl NetworkPane {
 
     /// Drain completed background connection/profile jobs and report their
     /// outcome via `connection_notice`.
-    fn sync_connection_jobs(&mut self) {
+    fn sync_connection_jobs(&mut self, state: &mut AutoCommit, root: &ObjId) {
         while let Ok((job, result)) = self.connection_rx.try_recv() {
-            let (subject, success) = match &job {
-                NetworkJob::Wifi(ssid) => (ssid.as_str(), format!("Connected to {ssid}.")),
-                NetworkJob::MobileProfile => ("mobile profile", "Mobile profile created.".into()),
-                NetworkJob::SimUnlock => ("SIM", "SIM unlocked.".into()),
-                NetworkJob::EnterpriseWifi => {
-                    ("enterprise Wi-Fi", "Enterprise Wi-Fi connected.".into())
-                }
+            let subject = match &job {
+                NetworkJob::Wifi(ssid) => ssid.as_str(),
+                NetworkJob::ShareProfile => "saved Wi-Fi profile",
+                NetworkJob::MobileProfile => "mobile profile",
+                NetworkJob::SimUnlock => "SIM",
+                NetworkJob::EnterpriseWifi => "enterprise Wi-Fi",
             };
             if let NetworkJob::Wifi(ssid) = &job {
                 self.dispatched_connects.retain(|pending| pending != ssid);
             }
             match result {
-                Ok(()) => {
-                    self.connection_notice = Some(success);
+                Ok(NetworkJobSuccess::Connected { continuity_notice }) => {
+                    self.connection_notice = Some(continuity_notice.map_or_else(
+                        || format!("Connected to {subject}."),
+                        |notice| format!("Connected to {subject}. {notice}"),
+                    ));
                     if let Ok(networks) = (self.lister)() {
                         self.networks = networks;
                     }
                     self.profiles = os_actions::list_saved_network_profiles()
                         .unwrap_or_else(|_| self.profiles.clone());
                     self.profile_settings = load_profile_settings(&self.profiles);
+                    if matches!(job, NetworkJob::Wifi(_)) {
+                        self.set_expanded(state, root, None);
+                    }
+                }
+                Ok(NetworkJobSuccess::PasswordRequired { continuity_warning }) => {
+                    if let NetworkJob::Wifi(ssid) = &job {
+                        self.set_expanded(state, root, Some(ssid.clone()));
+                        self.connection_notice = continuity_warning.map_or_else(
+                            || Some(format!("Enter the password for {ssid}.")),
+                            |warning| Some(format!("Enter the password for {ssid}. Shared password unavailable: {warning}")),
+                        );
+                    }
+                }
+                Ok(NetworkJobSuccess::ProfileShared { ssid }) => {
+                    self.connection_notice = Some(format!(
+                        "{ssid} is sealed for your certified devices. Device-specific profile settings were not shared."
+                    ));
+                }
+                Ok(NetworkJobSuccess::OperationCompleted { notice }) => {
+                    self.connection_notice = Some(notice);
                 }
                 Err(error) => {
                     self.connection_notice =
@@ -1690,6 +1860,7 @@ impl NetworkPane {
                 profile.autoconnect,
             );
             let _ = state.put(root, profile_forget_key(&profile.uuid), false);
+            let _ = state.put(root, profile_share_key(&profile.uuid), false);
             let Some(settings) = self.profile_settings.get(&profile.uuid) else {
                 continue;
             };
@@ -1957,6 +2128,42 @@ impl NetworkPane {
         }
     }
 
+    fn sync_profile_shares(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        for profile in self
+            .profiles
+            .iter()
+            .filter(|profile| profile.kind == "802-11-wireless")
+        {
+            let key = profile_share_key(&profile.uuid);
+            if !read_bool(state, root, &key) {
+                continue;
+            }
+            let _ = state.put(root, key, false);
+            self.connection_notice = Some(format!("Sealing {} for your devices…", profile.name));
+            let continuity = Arc::clone(&self.wifi_continuity);
+            let tx = self.connection_tx.clone();
+            let uuid = profile.uuid.clone();
+            std::thread::spawn(move || {
+                let result = continuity
+                    .command(
+                        ui::collaboration::WifiContinuityCommand::ShareSavedProfile {
+                            profile_uuid: uuid.clone(),
+                        },
+                    )
+                    .and_then(|reply| match reply {
+                        ui::collaboration::WifiContinuityReply::Shared { ssid } => {
+                            Ok(NetworkJobSuccess::ProfileShared { ssid })
+                        }
+                        ui::collaboration::WifiContinuityReply::Rejected { reason } => Err(reason),
+                        _ => Err(
+                            "the Wi-Fi continuity service returned an invalid profile reply".into(),
+                        ),
+                    });
+                let _ = tx.send((NetworkJob::ShareProfile, result));
+            });
+        }
+    }
+
     fn sync_hotspot_apply(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if !read_bool(state, root, HOTSPOT_APPLY_KEY) {
             return;
@@ -2093,7 +2300,12 @@ impl NetworkPane {
         self.connection_notice = Some("Creating mobile profile…".into());
         std::thread::spawn(move || {
             let result = os_actions::create_mobile_profile(&name, &apn);
-            let _ = tx.send((NetworkJob::MobileProfile, result));
+            let _ = tx.send((
+                NetworkJob::MobileProfile,
+                result.map(|()| NetworkJobSuccess::OperationCompleted {
+                    notice: "Mobile profile created.".into(),
+                }),
+            ));
         });
     }
 
@@ -2254,7 +2466,12 @@ impl NetworkPane {
             let result = selected
                 .ok_or_else(|| "No SIM is available".to_string())
                 .and_then(|sim| os_actions::unlock_mobile_sim_on(&sim, &pin));
-            let _ = tx.send((NetworkJob::SimUnlock, result));
+            let _ = tx.send((
+                NetworkJob::SimUnlock,
+                result.map(|()| NetworkJobSuccess::OperationCompleted {
+                    notice: "SIM unlocked.".into(),
+                }),
+            ));
         });
         self.structure_dirty = true;
     }
@@ -2298,7 +2515,12 @@ impl NetworkPane {
         self.connection_notice = Some("Connecting to enterprise Wi-Fi…".into());
         std::thread::spawn(move || {
             let result = os_actions::connect_enterprise_wifi(&config, &password);
-            let _ = tx.send((NetworkJob::EnterpriseWifi, result));
+            let _ = tx.send((
+                NetworkJob::EnterpriseWifi,
+                result.map(|()| NetworkJobSuccess::OperationCompleted {
+                    notice: "Enterprise Wi-Fi connected.".into(),
+                }),
+            ));
         });
         self.structure_dirty = true;
     }
@@ -2451,15 +2673,15 @@ impl NetworkPane {
 
         // Snapshot the network attributes we need without holding a borrow
         // across the mutating `state` calls below.
-        let nets: Vec<(String, bool)> = self
+        let nets: Vec<(String, bool, os_actions::WifiSecurity)> = self
             .networks
             .iter()
-            .map(|n| (n.ssid.clone(), n.secure))
+            .map(|n| (n.ssid.clone(), n.secure, n.security))
             .collect();
 
         // Per-network "Connect" buttons. Open networks connect immediately;
         // secure networks toggle the inline password prompt instead.
-        for (ssid, secure) in &nets {
+        for (ssid, secure, security) in &nets {
             let key = connect_key(ssid);
             let pressed = read_bool(state, root, &key);
             if !pressed {
@@ -2467,24 +2689,21 @@ impl NetworkPane {
             }
             let _ = state.put(root, key.as_str(), automerge::ScalarValue::Boolean(false));
             if *secure {
-                // Toggle this network's prompt: collapse if it's already
-                // the open one, otherwise open it (closing any other).
-                let now = if self.expanded_ssid.as_deref() == Some(ssid.as_str()) {
-                    None
+                if self.expanded_ssid.as_deref() == Some(ssid.as_str()) {
+                    self.set_expanded(state, root, None);
                 } else {
-                    Some(ssid.clone())
-                };
-                self.set_expanded(state, root, now);
+                    self.do_connect(ssid, *security, None, true);
+                }
             } else {
                 // Open network — connect with no password.
-                self.do_connect(ssid, None);
+                self.do_connect(ssid, *security, None, false);
                 self.set_expanded(state, root, None);
             }
         }
 
         // Per-network "Join" buttons in the expanded password prompt:
         // connect with the typed password, then collapse the prompt.
-        for (ssid, _secure) in &nets {
+        for (ssid, _secure, security) in &nets {
             let jk = join_key(ssid);
             if !read_bool(state, root, &jk) {
                 continue;
@@ -2496,7 +2715,7 @@ impl NetworkPane {
                 .and_then(|buffer| buffer.lock().ok().map(|value| value.clone()))
                 .unwrap_or_default();
             let password = (!pw.is_empty()).then_some(pw.as_str());
-            self.do_connect(ssid, password);
+            self.do_connect(ssid, *security, password, false);
             pw.zeroize();
             if let Some(buffer) = self.secret_buffers.get(ssid)
                 && let Ok(mut value) = buffer.lock()
@@ -2522,7 +2741,7 @@ impl Widget for NetworkPane {
         };
         let root = automerge::ROOT;
         self.sync_ca_picker_result(&mut state, &root);
-        self.sync_connection_jobs();
+        self.sync_connection_jobs(&mut state, &root);
         self.seed_if_needed(&mut state, &root);
         if let Some(crate::actions::LocalPaneCommand::Network(operation)) = self.command_state.get()
         {
@@ -2533,6 +2752,7 @@ impl Widget for NetworkPane {
         self.sync_radio_toggles(&mut state, &root);
         self.sync_vpn_toggles(&mut state, &root);
         self.sync_profile_autoconnect_and_forget(&mut state, &root);
+        self.sync_profile_shares(&mut state, &root);
         self.sync_hotspot_apply(&mut state, &root);
         self.sync_hotspot_qr(&mut state, &root);
         self.sync_profile_selectors(&state, &root);
@@ -2716,6 +2936,40 @@ mod tests {
                 connected: false,
             },
         ]
+    }
+
+    fn wait_for_password_prompt(pane: &mut NetworkPane, doc: &mut AutoCommit, root: &ObjId) {
+        for _ in 0..50 {
+            pane.sync(doc, root);
+            if pane.expanded_ssid.is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    struct SharedPasswordClient {
+        commands: Arc<Mutex<Vec<ui::collaboration::WifiContinuityCommand>>>,
+    }
+
+    impl WifiContinuityClient for SharedPasswordClient {
+        fn command(
+            &self,
+            command: ui::collaboration::WifiContinuityCommand,
+        ) -> Result<ui::collaboration::WifiContinuityReply, String> {
+            self.commands.lock().unwrap().push(command.clone());
+            match command {
+                ui::collaboration::WifiContinuityCommand::Lookup { .. } => {
+                    Ok(ui::collaboration::WifiContinuityReply::Password {
+                        password: "shared-secret".into(),
+                    })
+                }
+                ui::collaboration::WifiContinuityCommand::Share { ssid, .. }
+                | ui::collaboration::WifiContinuityCommand::ShareSavedProfile {
+                    profile_uuid: ssid,
+                } => Ok(ui::collaboration::WifiContinuityReply::Shared { ssid }),
+            }
+        }
     }
 
     /// The signal indicator must use the Material Design Icons `wifi-strength`
@@ -2955,6 +3209,7 @@ mod tests {
         // Press Connect on the secure "Neighbour_5G".
         let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
         pane.sync(&mut doc, &root);
+        wait_for_password_prompt(&mut pane, &mut doc, &root);
         assert_eq!(pane.expanded_ssid.as_deref(), Some("Neighbour_5G"));
         assert_eq!(
             read_str(&doc, &root, EXPANDED_KEY).as_deref(),
@@ -2963,6 +3218,85 @@ mod tests {
         );
         assert!(rec.calls().is_empty(), "no connect dispatched before Join");
         assert!(pane.take_structure_dirty(), "expanding requests a rebuild");
+    }
+
+    #[test]
+    fn secure_connect_uses_shared_password_before_prompting() {
+        let rec = Arc::new(PwRecorder::default());
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let mut pane = NetworkPane::with_dispatcher(
+            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            sample_networks(),
+        );
+        pane.wifi_continuity = Arc::new(SharedPasswordClient {
+            commands: Arc::clone(&commands),
+        });
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, connect_key("Neighbour_5G"), true);
+        pane.sync(&mut doc, &root);
+        for _ in 0..50 {
+            pane.sync(&mut doc, &root);
+            if !rec.calls.lock().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            rec.calls.lock().unwrap().as_slice(),
+            ["connect_wifi(Neighbour_5G, pw=shared-secret)"]
+        );
+        assert!(pane.expanded_ssid.is_none());
+        assert!(matches!(
+            commands.lock().unwrap().as_slice(),
+            [ui::collaboration::WifiContinuityCommand::Lookup { ssid, .. }]
+                if ssid == "Neighbour_5G"
+        ));
+    }
+
+    #[test]
+    fn saved_wifi_profile_share_is_explicit_and_uses_only_local_handle() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let mut pane = NetworkPane::with_dispatcher(
+            rec as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            sample_networks(),
+        );
+        pane.profiles = vec![SavedNetworkProfile {
+            name: "Studio".into(),
+            uuid: "12345678-1234-1234-1234-123456789abc".into(),
+            kind: "802-11-wireless".into(),
+            autoconnect: true,
+        }];
+        pane.wifi_continuity = Arc::new(SharedPasswordClient {
+            commands: Arc::clone(&commands),
+        });
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+
+        assert!(commands.lock().unwrap().is_empty(), "sharing is opt-in");
+        let _ = doc.put(
+            &root,
+            profile_share_key("12345678-1234-1234-1234-123456789abc"),
+            true,
+        );
+        pane.sync(&mut doc, &root);
+        for _ in 0..50 {
+            pane.sync(&mut doc, &root);
+            if !commands.lock().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(matches!(
+            commands.lock().unwrap().as_slice(),
+            [ui::collaboration::WifiContinuityCommand::ShareSavedProfile { profile_uuid }]
+                if profile_uuid == "12345678-1234-1234-1234-123456789abc"
+        ));
     }
 
     /// Pressing "Join" in the prompt connects WITH the typed password and
@@ -2981,6 +3315,7 @@ mod tests {
         // Open the prompt, type a password, press Join.
         let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
         pane.sync(&mut doc, &root);
+        wait_for_password_prompt(&mut pane, &mut doc, &root);
         *pane
             .secret_buffers
             .get("Neighbour_5G")
@@ -3018,6 +3353,7 @@ mod tests {
         pane.sync(&mut doc, &root);
         let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
         pane.sync(&mut doc, &root);
+        wait_for_password_prompt(&mut pane, &mut doc, &root);
         assert_eq!(pane.expanded_ssid.as_deref(), Some("Neighbour_5G"));
         let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
         pane.sync(&mut doc, &root);
