@@ -3404,6 +3404,18 @@ fn install_device_fabric_bridge(
                         approved,
                     )?;
                 }
+                DeviceFabricUiAction::CancelBluetoothHandoff { request_id } => {
+                    crate::shell::device_fabric_runtime::cancel_bluetooth_handoff(
+                        &fabric_net,
+                        request_id,
+                    )?;
+                }
+                DeviceFabricUiAction::RetryBluetoothHandoff { request_id } => {
+                    let _ = crate::shell::device_fabric_runtime::retry_bluetooth_handoff(
+                        &fabric_net,
+                        request_id,
+                    )?;
+                }
                 DeviceFabricUiAction::AuthorizeGamepadForwarding {
                     forwarding_id,
                     approved,
