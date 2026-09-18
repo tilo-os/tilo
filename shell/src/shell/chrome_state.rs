@@ -183,39 +183,7 @@ pub struct ActivityFocus {
     pub resource_version: Option<[u8; 16]>,
 }
 
-/// Seeded by which chord opened the palette: `Ctrl+K` →
-/// [`SearchScope::ActiveApp`]; `Super+K` / `Super+Space` / `Alt+Space` →
-/// [`SearchScope::All`] (`Alt+Space` because a nested Wayland client can't
-/// claim Super from the host DE). Degrades rather than empties: no
-/// provider claiming the focused tab widens `ActiveApp` to every
-/// provider; nothing focused widens the palette to `All`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SearchScope {
-    ActiveApp,
-    #[default]
-    Workspace,
-    All,
-}
-
-impl SearchScope {
-    /// `ActiveApp` renders the tab's title instead of this static
-    /// string. Must not share a word with the kind-filter chips —
-    /// those name result sorts, this names places.
-    pub fn label(self) -> &'static str {
-        match self {
-            SearchScope::ActiveApp => "This app",
-            SearchScope::Workspace => "Workspace",
-            SearchScope::All => "Everywhere",
-        }
-    }
-
-    /// The pill renders a narrowing scope with an explicit `Only …`
-    /// prefix so an empty result list is attributable to the scope,
-    /// not the query.
-    pub fn narrows_results(self) -> bool {
-        matches!(self, SearchScope::ActiveApp)
-    }
-}
+pub use ui::search::system::SearchScope;
 
 /// Normally decided by
 /// [`crate::shell::placement::placement_for_new_window`].

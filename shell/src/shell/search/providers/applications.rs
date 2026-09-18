@@ -1056,77 +1056,7 @@ impl ApplicationsProvider {
     }
 }
 
-/// Case-insensitive, first matching band wins in the order written below:
-/// name prefix 100, id in full or last segment 100, name substring 50, id
-/// prefix 60, id substring 25, category substring 20, description 15,
-/// fuzzy subsequence on the name 10. Multi-word queries may span metadata
-/// fields, so `office spreadsheet` can find an app whose category and
-/// description carry one word each. Empty needle matches everything at 0, so an empty palette
-/// lists installed apps. Category ranks below the id because it's a bucket,
-/// not an identity. Package ids score by how completely they were named,
-/// not flat "contains" — `hex-editor` typed for `dev.qos.hex-editor` is the
-/// app's identity in full and must outrank an incidental substring.
-pub(crate) fn match_score(
-    needle: &str,
-    name: &str,
-    package_id: &str,
-    category: Option<&str>,
-    description: Option<&str>,
-) -> Option<i32> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    if name.starts_with(needle) {
-        return Some(100);
-    }
-    // The id in full, or its last segment — both identify exactly one app.
-    if package_id == needle || package_id.rsplit('.').next() == Some(needle) {
-        return Some(100);
-    }
-    if name.contains(needle) {
-        return Some(50);
-    }
-    if package_id.starts_with(needle) {
-        return Some(60);
-    }
-    if package_id.contains(needle) {
-        return Some(25);
-    }
-    if category.is_some_and(|c| c.contains(needle)) {
-        return Some(20);
-    }
-    if description.is_some_and(|d| d.contains(needle)) {
-        return Some(15);
-    }
-    let terms: Vec<&str> = needle.split_whitespace().collect();
-    if terms.len() > 1
-        && terms.iter().all(|term| {
-            name.contains(term)
-                || package_id.contains(term)
-                || category.is_some_and(|value| value.contains(term))
-                || description.is_some_and(|value| value.contains(term))
-        })
-    {
-        return Some(15);
-    }
-    if fuzzy_subsequence(needle, name) {
-        return Some(10);
-    }
-    None
-}
-
-fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
-    let mut hi = hay.chars();
-    'ch: for nc in needle.chars() {
-        for hc in hi.by_ref() {
-            if hc == nc {
-                continue 'ch;
-            }
-        }
-        return false;
-    }
-    true
-}
+pub(crate) use ui::search::system::application_match_score as match_score;
 
 #[cfg(test)]
 mod tests {

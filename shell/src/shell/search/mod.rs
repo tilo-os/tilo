@@ -13,8 +13,6 @@ pub mod files_index;
 pub mod providers;
 pub mod visibility;
 
-use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
@@ -22,86 +20,11 @@ use automerge::{AutoCommit, ObjId};
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 use action_api::{ActionArgs, ActionError, ActionParam};
 
-/// Keep shell-only providers (including network directories) behind the same
-/// per-keystroke Unicode input ceiling as app-side [`ui::search::SearchCatalog`]
-/// providers.  The check happens before provider routing, so no provider gets
-/// to lower-case or otherwise allocate from an arbitrarily pasted query.
-fn query_input_is_bounded(needle: &str) -> bool {
-    needle
-        .chars()
-        .take(ui::search::MAX_SEARCH_QUERY_SCALARS.saturating_add(1))
-        .count()
-        <= ui::search::MAX_SEARCH_QUERY_SCALARS
-}
-
-/// One well-known category a result can belong to — the domain vocabulary
-/// the chip strip and grouping use. Providers pick from it or, via
-/// [`ResourceKind::Custom`], mint a new one.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ResourceKind {
-    /// A palette-registered chrome action (e.g. "Open workspace settings").
-    Action,
-    /// An installed qOS application. Enter launches it, sandboxed, into
-    /// the workspace you are looking at.
-    Application,
-    /// An app qOS did not package (Flatpak, distro binary). Its own kind
-    /// because a qOS app runs sandboxed in a room; a host app runs unconfined.
-    HostApplication,
-    /// A note document (title + body). Enter opens/focuses the note tab.
-    Note,
-    /// A record an app made, collected or imported. Enter brings it into
-    /// the current room (a reference, not a copy) and opens it if openable.
-    Record,
-    File,
-    Folder,
-    /// A creator/channel-style entity — pre-declared so a future provider
-    /// plugs into the same registry without teaching the palette a new kind.
-    Creator,
-    Video,
-    Playlist,
-    /// Escape hatch for provider-specific kinds, shown verbatim in the chip strip.
-    Custom(String),
-}
-
-impl ResourceKind {
-    /// Human-readable label used in the filter chip strip and group
-    /// headers. `Custom` variants surface their own string verbatim.
-    pub fn label(&self) -> &str {
-        match self {
-            ResourceKind::Action => "Actions",
-            ResourceKind::Application => "Applications",
-            ResourceKind::HostApplication => "Host Apps",
-            ResourceKind::Note => "Notes",
-            ResourceKind::Record => "Records",
-            ResourceKind::File => "Files",
-            ResourceKind::Folder => "Folders",
-            ResourceKind::Creator => "Creators",
-            ResourceKind::Video => "Videos",
-            ResourceKind::Playlist => "Playlists",
-            ResourceKind::Custom(s) => s.as_str(),
-        }
-    }
-
-    /// Stable sort key pinning the well-known kinds to a fixed palette
-    /// order. Applications rank above content kinds because Enter
-    /// activates the top row — a typed app name must launch the app, not
-    /// surface a source file that merely contains the word.
-    fn sort_key(&self) -> (u8, String) {
-        match self {
-            ResourceKind::Action => (0, String::new()),
-            ResourceKind::Application => (1, String::new()),
-            ResourceKind::HostApplication => (2, String::new()),
-            ResourceKind::Note => (3, String::new()),
-            ResourceKind::Record => (4, String::new()),
-            ResourceKind::File => (5, String::new()),
-            ResourceKind::Folder => (6, String::new()),
-            ResourceKind::Creator => (7, String::new()),
-            ResourceKind::Video => (8, String::new()),
-            ResourceKind::Playlist => (9, String::new()),
-            ResourceKind::Custom(s) => (10, s.clone()),
-        }
-    }
-}
+use ui::search::system::{self, query_input_is_bounded};
+/// Portable search vocabulary and provider page contract, retained at the native API path.
+pub use ui::search::system::{ResourceKind, SearchBudget, SearchCursor};
+pub type SearchPage = system::SearchPage<SearchResult>;
+pub type KindGroup = system::KindGroup<SearchResult>;
 
 /// Fired by the shell after the user picks a result, with the live
 /// Automerge doc, its root, and the chrome handle to mutate persisted state
@@ -181,85 +104,6 @@ pub struct SearchResult {
     /// Used only when admission itself is asynchronous. It must not claim an
     /// accepted action until its retained ticket resolves current authority.
     pub on_begin_invoke: Option<Rc<BeginInvokeFn>>,
-}
-
-/// Hard ceilings for one provider page.  These are deliberately expressed in
-/// the protocol rather than as palette constants: the same limits protect the
-/// visual palette, headless agents, and a future remote directory source.
-/// A provider may stop sooner, but must never exceed any non-zero ceiling.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SearchBudget {
-    pub max_results: usize,
-    pub max_bytes: usize,
-    pub max_work: usize,
-}
-
-impl SearchBudget {
-    pub const PALETTE: Self = Self {
-        max_results: 48,
-        max_bytes: 48 * 1024,
-        max_work: 4_096,
-    };
-}
-
-/// An opaque provider-owned continuation.  The revision is carried alongside
-/// the provider-local payload, so a result page can never silently advance
-/// across a changed ordering.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SearchCursor {
-    pub revision: String,
-    pub token: String,
-}
-
-/// One bounded answer from a [`SearchProvider`].  `stale_cursor` is a
-/// protocol outcome rather than an empty page: callers restart explicitly,
-/// preserving the distinction between "there are no more hits" and "the
-/// source changed while you were paging".
-#[derive(Clone)]
-pub struct SearchPage {
-    pub revision: String,
-    pub results: Vec<SearchResult>,
-    pub next_cursor: Option<SearchCursor>,
-    pub exhausted: bool,
-    pub stale_cursor: bool,
-    pub budget_exhausted: bool,
-}
-
-impl std::fmt::Debug for SearchPage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SearchPage")
-            .field("revision", &self.revision)
-            .field("results", &self.results)
-            .field("next_cursor", &self.next_cursor)
-            .field("exhausted", &self.exhausted)
-            .field("stale_cursor", &self.stale_cursor)
-            .field("budget_exhausted", &self.budget_exhausted)
-            .finish()
-    }
-}
-
-impl SearchPage {
-    pub fn exhausted(revision: impl Into<String>, results: Vec<SearchResult>) -> Self {
-        Self {
-            revision: revision.into(),
-            results,
-            next_cursor: None,
-            exhausted: true,
-            stale_cursor: false,
-            budget_exhausted: false,
-        }
-    }
-
-    pub fn stale(revision: impl Into<String>) -> Self {
-        Self {
-            revision: revision.into(),
-            results: Vec::new(),
-            next_cursor: None,
-            exhausted: false,
-            stale_cursor: true,
-            budget_exhausted: false,
-        }
-    }
 }
 
 impl SearchResult {
@@ -464,19 +308,6 @@ pub struct QueryArgs<'a> {
     pub chrome: &'a ChromeState,
     pub doc: &'a AutoCommit,
     pub doc_root: &'a ObjId,
-}
-
-/// A [`SearchResult::score`]/[`SearchProvider::max_score`] value as a
-/// fraction of `[0.0, 1.0]`-scale `f32`. Provider score scales are
-/// small (files top out at 120, apps at 100 — see `max_score`'s doc),
-/// well under `f32`'s 24-bit mantissa, so the precision this cast could
-/// otherwise lose cannot happen for a real provider.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "provider score scales are small integers (<=120 by convention); exact precision isn't needed for a 0..1 strength ratio"
-)]
-fn i32_to_f32_lossy(n: i32) -> f32 {
-    n as f32
 }
 
 /// Registry that fans a query out to every provider under the current
@@ -690,97 +521,24 @@ impl SearchRegistry {
     /// filter. `wanted_kinds` filters results by kind; empty means "any
     /// kind" so a naive caller can just pass `&[]`.
     pub fn query(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
-        if !query_input_is_bounded(args.needle) {
-            return Vec::new();
+        let adapters: Vec<_> = self
+            .providers
+            .iter()
+            .map(|p| NativeProvider(p.as_ref()))
+            .collect();
+        let mut registry = system::Registry::new();
+        for adapter in &adapters {
+            registry.register(adapter);
         }
-        let QueryArgs {
-            needle,
-            scope,
-            active_provider_id,
-            wanted_kinds,
-            chrome,
-            doc,
-            doc_root,
-        } = *args;
-        let effective_wanted: Vec<ResourceKind> = if wanted_kinds.is_empty() {
-            self.registered_kinds()
-        } else {
-            wanted_kinds.to_vec()
-        };
-        let mut merged: Vec<(SearchResult, f32)> = Vec::new();
-        for provider in &self.providers {
-            if !scope_allows(provider.as_ref(), scope, active_provider_id) {
-                continue;
-            }
-            let provider_kinds: Vec<ResourceKind> = provider
-                .resource_kinds()
-                .iter()
-                .filter(|k| effective_wanted.contains(k))
-                .cloned()
-                .collect();
-            if provider_kinds.is_empty() {
-                continue;
-            }
-            let ctx = SearchContext {
-                needle,
-                wanted: &provider_kinds,
-                chrome,
-                doc,
-                doc_root,
-            };
-            let top = provider.max_score().max(1);
-            let page = provider.query_page(ctx, None, SearchBudget::PALETTE);
-            // A source changed between the call's routing snapshot and its
-            // index read.  Treat it as unavailable for this keystroke rather
-            // than presenting a misleading empty continuation; the next
-            // input/poll retries from the fresh revision.
-            if page.stale_cursor {
-                continue;
-            }
-            for r in page.results {
-                // A score above `top` exceeds strength 1.0 and silently
-                // outranks every other provider's perfect match.
-                debug_assert!(
-                    r.score <= top,
-                    "provider {:?} returned {} but declares max_score() = {top}; \
-                     raise max_score() or bound the score",
-                    provider.id(),
-                    r.score,
-                );
-                let strength = i32_to_f32_lossy(r.score) / i32_to_f32_lossy(top);
-                merged.push((r, strength));
-            }
-        }
-        // Order groups by how well their best member matched, then the
-        // fixed kind order: Enter activates the top row, so an app's name
-        // must not open an action that merely mentions the word.
-        let mut best: HashMap<(u8, String), f32> = HashMap::new();
-        for (r, strength) in &merged {
-            let slot = best.entry(r.kind.sort_key()).or_insert(f32::MIN);
-            *slot = slot.max(*strength);
-        }
-        merged.sort_by(|(a, a_strength), (b, b_strength)| {
-            // Every key looked up here was inserted by the loop above
-            // (it walks the same `merged`), but `.get()` + a matching
-            // fallback avoids an avoidable panic in a sort comparator
-            // rather than relying on that invariant holding forever.
-            let a_group = best.get(&a.kind.sort_key()).copied().unwrap_or(f32::MIN);
-            let b_group = best.get(&b.kind.sort_key()).copied().unwrap_or(f32::MIN);
-            b_group
-                .partial_cmp(&a_group)
-                .unwrap_or(Ordering::Equal)
-                // Equally strong groups fall back to the fixed kind order.
-                .then_with(|| a.kind.sort_key().cmp(&b.kind.sort_key()))
-                .then_with(|| {
-                    b_strength
-                        .partial_cmp(a_strength)
-                        .unwrap_or(Ordering::Equal)
-                })
-            // No further tiebreak: `sort_by` is stable, so equally strong
-            // results keep the provider's own order rather than being
-            // re-alphabetised by title.
-        });
-        merged.into_iter().map(|(r, _)| r).collect()
+        registry.query(
+            args,
+            &system::Query {
+                needle: args.needle,
+                scope: args.scope,
+                active_provider_id: args.active_provider_id,
+                wanted_kinds: args.wanted_kinds,
+            },
+        )
     }
 
     /// [`Self::query`], arranged into contiguous per-kind groups and
@@ -789,52 +547,8 @@ impl SearchRegistry {
     /// push a correctly-ranked app off the bottom. A lone group is exempt
     /// — narrowing to one kind means "show me all of these".
     pub fn query_grouped(&self, args: &QueryArgs<'_>, row_budget: usize) -> Vec<KindGroup> {
-        let ranked = self.query(args);
-        let mut groups: Vec<KindGroup> = Vec::new();
-        for r in ranked {
-            match groups.last_mut() {
-                Some(g) if g.kind == r.kind => {
-                    g.total = g.total.saturating_add(1);
-                    g.results.push(r);
-                }
-                _ => groups.push(KindGroup {
-                    kind: r.kind.clone(),
-                    total: 1,
-                    results: vec![r],
-                }),
-            }
-        }
-        if row_budget == 0
-            || groups.len() < 2
-            || groups.iter().map(|g| g.total).sum::<usize>() <= row_budget
-        {
-            return groups;
-        }
-        // Fair share, front to back: each group takes an equal cut of
-        // whatever budget remains, and what it can't fill rolls forward
-        // (never backward, or later headers push further down the card).
-        let n = groups.len();
-        let mut remaining = row_budget;
-        for (i, g) in groups.iter_mut().enumerate() {
-            let groups_left = n.saturating_sub(i).max(1);
-            let share = remaining.checked_div(groups_left).unwrap_or(1).max(1);
-            let keep = share.min(g.total);
-            g.results.truncate(keep);
-            remaining = remaining.saturating_sub(keep);
-        }
-        groups
+        system::group(self.query(args), row_budget)
     }
-}
-
-/// One contiguous run of same-kind results, as
-/// [`SearchRegistry::query_grouped`] arranges them.
-#[derive(Debug)]
-pub struct KindGroup {
-    pub kind: ResourceKind,
-    /// The rows to render — at most the cap the caller asked for.
-    pub results: Vec<SearchResult>,
-    /// How many results this kind actually had, before the cap.
-    pub total: usize,
 }
 
 fn scope_allows(
@@ -842,12 +556,84 @@ fn scope_allows(
     scope: SearchScope,
     active_provider_id: Option<&str>,
 ) -> bool {
-    match scope {
-        SearchScope::All | SearchScope::Workspace => true,
-        SearchScope::ActiveApp => match active_provider_id {
-            Some(id) => provider.id() == id || provider.available_in_active_app_scope(),
-            None => true,
-        },
+    system::scope_allows(
+        scope,
+        provider.id(),
+        active_provider_id,
+        provider.available_in_active_app_scope(),
+    )
+}
+
+impl system::SearchRow for SearchResult {
+    fn kind(&self) -> &ResourceKind {
+        &self.kind
+    }
+    fn score(&self) -> i32 {
+        self.score
+    }
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn subtitle(&self) -> Option<&str> {
+        self.subtitle.as_deref()
+    }
+    fn shortcut(&self) -> Option<&str> {
+        (self.id == "room.activity.open").then_some("Super+H")
+    }
+}
+struct NativeProvider<'a>(&'a dyn SearchProvider);
+impl system::Provider<QueryArgs<'_>, SearchResult> for NativeProvider<'_> {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+    fn resource_kinds(&self) -> &[ResourceKind] {
+        self.0.resource_kinds()
+    }
+    fn max_score(&self) -> i32 {
+        self.0.max_score()
+    }
+    fn available_in_active_app_scope(&self) -> bool {
+        self.0.available_in_active_app_scope()
+    }
+    fn revision(&self, host: &QueryArgs<'_>, query: &system::Query<'_>) -> String {
+        self.0.search_revision(&SearchContext { needle: query.needle, wanted: query.wanted_kinds,
+            chrome: host.chrome, doc: host.doc, doc_root: host.doc_root })
+    }
+    fn query_page(
+        &self,
+        host: &QueryArgs<'_>,
+        query: &system::Query<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        self.0.query_page(
+            SearchContext {
+                needle: query.needle,
+                wanted: query.wanted_kinds,
+                chrome: host.chrome,
+                doc: host.doc,
+                doc_root: host.doc_root,
+            },
+            cursor,
+            budget,
+        )
+    }
+    fn resolve(
+        &self,
+        host: &QueryArgs<'_>,
+        id: &str,
+        query: &system::Query<'_>,
+    ) -> Option<SearchResult> {
+        self.0.resolve(
+            id,
+            SearchContext {
+                needle: query.needle,
+                wanted: query.wanted_kinds,
+                chrome: host.chrome,
+                doc: host.doc,
+                doc_root: host.doc_root,
+            },
+        )
     }
 }
 
