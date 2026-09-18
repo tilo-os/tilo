@@ -5,7 +5,7 @@
 //! Application manifests normally rename this package to `ui`:
 //!
 //! ```toml
-//! ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+//! ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 //! ```
 //!
 //! Shell and framework internals may depend on the lower `ui` package directly;

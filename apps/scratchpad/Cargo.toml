@@ -9,7 +9,7 @@ license.workspace = true
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Persistent blob storage is portable; the app does not mount filesystems.
 fs = { path = "../../crates/system/fs", default-features = false }
