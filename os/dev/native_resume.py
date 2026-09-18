@@ -17,6 +17,7 @@ PURPOSE = 'tilo-development-reconstructed-native-builder'
 PARTIAL = 'tilo-development-partial-native-checkpoint'
 REPOSITORY = 'code.podesta.ai/qos/tilo-development-reconstructed-native-aarch64'
 WINDOWS = {'tilo-windows-vm-control', 'tilo-windows-rail'}
+THIN_CACHE_EVIDENCE = 'out/thin-cache-restoration.json'
 
 
 def load_native(repo):
@@ -64,7 +65,26 @@ def derive_recipe(original, retained, required, *, thin_cache_approval_sha256=No
     before = '       cargo build --release -p windows-vm \\\n         --bin tilo-windows-vm-control --bin tilo-windows-rail'
     command = 'cargo build --release -p windows-vm ' + ' '.join('--bin ' + name for name in windows) if windows else 'true'
     text = replace_once(text, before, '       ' + command)
+    if thin_cache_approval_sha256 is not None:
+        # The selected target is a scratch payload, not the builder filesystem.
+        # Carry only the public restoration receipt across that stage boundary.
+        payload = ('FROM scratch AS native-builder-payload\n'
+                   'COPY --from=builder /out/ /out/\n'
+                   'COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/\n'
+                   'COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/\n')
+        text = replace_once(text, payload, payload +
+            f'COPY --from=builder /build/thin-cache-restoration.json /{THIN_CACHE_EVIDENCE}\n')
     return text, {'release': release, 'windows': windows}
+
+
+def read_thin_cache_evidence(tools, root, approval_sha256):
+    raw = tools.read_bounded(root / THIN_CACHE_EVIDENCE, 65536)
+    runtime = tools.strict_json(raw)
+    require(runtime['purpose'] == 'tilo-incomplete-thin-cache-restored' and
+            runtime['approval_sha256'] == approval_sha256 and
+            runtime['cargo_revalidation_required'] is True and runtime['complete'] is False,
+            'actual thin cache restoration evidence differs')
+    return raw, runtime
 
 
 def derive_driver(original, source_path, derived_recipe_path, seed_image_id):

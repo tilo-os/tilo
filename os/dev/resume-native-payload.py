@@ -193,12 +193,7 @@ def main():
         t.inspect_local(identity, 'aarch64', identity)
         with t.mounted(identity) as root:
             if thin_provenance is not None:
-                runtime_raw = t.read_bounded(root / 'build/thin-cache-restoration.json', 65536)
-                runtime = t.strict_json(runtime_raw)
-                resume.require(runtime['purpose'] == 'tilo-incomplete-thin-cache-restored' and
-                               runtime['approval_sha256'] == args.thin_cache_approval[1] and
-                               runtime['cargo_revalidation_required'] is True and runtime['complete'] is False,
-                               'actual thin cache restoration evidence differs')
+                runtime_raw, runtime = resume.read_thin_cache_evidence(t, root, args.thin_cache_approval[1])
                 reconstruction['thin_cache']['runtime_evidence'] = runtime
                 reconstruction['thin_cache']['runtime_evidence_sha256'] = t.sha(runtime_raw)
                 (args.evidence / 'thin-cache-restoration.json').write_bytes(runtime_raw)
