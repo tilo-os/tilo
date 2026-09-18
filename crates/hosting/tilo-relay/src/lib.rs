@@ -75,6 +75,7 @@ pub mod coedit;
 pub mod compute;
 pub mod compute_session;
 pub mod compute_transport;
+pub mod compute_worker;
 pub mod config;
 pub mod daemon;
 pub mod home_peer;
@@ -101,6 +102,10 @@ pub use compute_session::{ComputeClient, ComputeDelivery, ComputeSessionError};
 pub use compute_transport::{
     ComputeEnvelope, ComputeJobBinding, ComputeResultUpdate, ComputeRouteOutcome,
     ComputeStatusUpdate, ComputeTransportError, ComputeWorkerAdvertisement,
+};
+pub use compute_worker::{
+    ComputeWorkerError, FileComputeContentStore, ProductionComputeWorkerConfig,
+    run_production_compute_worker,
 };
 pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
