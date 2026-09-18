@@ -558,15 +558,35 @@ impl NotesDoc {
                     let kind = block_kind_value(doc, &block).unwrap_or_default();
                     ui::widget::legacy_block_id(&list, index, &kind, &text)
                 });
-                let marks = doc
+                let mut marks = doc
                     .marks(&text_obj)
                     .ok()?
                     .iter()
                     .filter_map(|mark| inline_mark_span(&text, mark))
-                    .collect();
+                    .collect::<Vec<_>>();
+                marks.sort_by(|a, b| {
+                    (a.start, a.end, inline_mark_rank(&a.mark)).cmp(&(
+                        b.start,
+                        b.end,
+                        inline_mark_rank(&b.mark),
+                    ))
+                });
                 Some((id, marks))
             })
             .collect()
+    }
+}
+
+fn inline_mark_rank(mark: &InlineMark) -> u8 {
+    match mark {
+        InlineMark::Bold => 0,
+        InlineMark::Italic => 1,
+        InlineMark::Underline => 2,
+        InlineMark::Strikethrough => 3,
+        InlineMark::Code => 4,
+        InlineMark::Link { .. } => 5,
+        InlineMark::Transclusion { .. } => 6,
+        InlineMark::ExternalLink { .. } => 7,
     }
 }
 
@@ -747,9 +767,23 @@ fn durable_mark_value(mark: &InlineMark) -> Result<(String, automerge::ScalarVal
                 .map_err(|_| "link target is invalid".to_string())?;
             format!("link:{page}")
         }
+        InlineMark::Transclusion { page } => {
+            page.parse::<PageId>()
+                .map_err(|_| "transclusion target is invalid".to_string())?;
+            format!("transclusion:{page}")
+        }
+        InlineMark::ExternalLink { url } => {
+            if !crate::markdown::safe_external_url(url) {
+                return Err("external link target is invalid".into());
+            }
+            "external-link".to_string()
+        }
     };
     let value = match mark {
-        InlineMark::Link { page } => automerge::ScalarValue::Str(page.clone().into()),
+        InlineMark::Link { page } | InlineMark::Transclusion { page } => {
+            automerge::ScalarValue::Str(page.clone().into())
+        }
+        InlineMark::ExternalLink { url } => automerge::ScalarValue::Str(url.clone().into()),
         _ => automerge::ScalarValue::Boolean(true),
     };
     Ok((format!("{NOTE_MARK_PREFIX}{name}"), value))
@@ -788,6 +822,21 @@ fn inline_mark_span(text: &str, mark: &Mark) -> Option<InlineMarkSpan> {
             };
             page.parse::<PageId>().ok()?;
             InlineMark::Link { page }
+        }
+        transclusion if transclusion.starts_with("transclusion:") => {
+            let page = match &mark.value {
+                automerge::ScalarValue::Str(value) => value.to_string(),
+                _ => transclusion.strip_prefix("transclusion:")?.to_string(),
+            };
+            page.parse::<PageId>().ok()?;
+            InlineMark::Transclusion { page }
+        }
+        "external-link" => {
+            let automerge::ScalarValue::Str(value) = &mark.value else {
+                return None;
+            };
+            let url = value.to_string();
+            crate::markdown::safe_external_url(&url).then_some(InlineMark::ExternalLink { url })?
         }
         _ => return None,
     };
@@ -1334,7 +1383,7 @@ mod tests {
                 block_id: block.clone(),
                 after: None,
                 kind: "paragraph".into(),
-                text: "café link".into(),
+                text: "café link web".into(),
             }],
         )
         .unwrap();
@@ -1350,6 +1399,13 @@ mod tests {
                 end: 10,
                 mark: InlineMark::Link {
                     page: target.to_string(),
+                },
+            },
+            InlineMarkSpan {
+                start: 11,
+                end: 14,
+                mark: InlineMark::ExternalLink {
+                    url: "https://example.test".into(),
                 },
             },
         ];
@@ -1396,6 +1452,12 @@ mod tests {
                 .1
                 .iter()
                 .any(|span| matches!(span.mark, InlineMark::Link { .. }))
+        );
+        assert!(
+            after[0]
+                .1
+                .iter()
+                .any(|span| matches!(span.mark, InlineMark::ExternalLink { .. }))
         );
 
         // A late-joining peer's text edit merges back without turning the
