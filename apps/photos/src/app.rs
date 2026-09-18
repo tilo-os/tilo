@@ -11092,8 +11092,17 @@ fn build_button(
     } else {
         item_width(face, &label)
     };
-    Button::new(key, shown, None)
-        .with_icon(icon)
+    let button = Button::new(key, shown, None);
+    // The large-text overflow face paints a deliberately smaller “More”
+    // caption below. An icon-only Button centres its glyph in the entire
+    // word-sized slot, so retaining the ellipsis here would paint it through
+    // that caption instead of beside it.
+    let button = if matches!(face, Face::LargeOverflow) {
+        button
+    } else {
+        button.with_icon(icon)
+    };
+    button
         .with_size(width, BTN_H)
         .tooltip(label.clone())
         .with_accessible_name(&label)
