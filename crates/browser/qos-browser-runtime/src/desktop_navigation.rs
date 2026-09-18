@@ -15,6 +15,9 @@ impl Route {
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) enum Command {
     Close { generation: String, route: Route },
+    Workspace { generation: String, workspace: String },
+    WorkspaceActivity { generation: String, workspace: String, view: qos_desktop::activity::ActivityView },
+    CloseWorkspaceActivity { generation: String, workspace: String },
     History { generation: String, route: Route, target: String },
     Select { generation: String, route: Route },
     Strip { generation: String, workspace: String, strip: String },
@@ -24,7 +27,7 @@ pub(crate) enum Command {
     Scroll { generation: String, region: String, action: ScrollAction },
 }
 impl Command {
-    pub fn generation(&self) -> &str { match self { Self::Close {generation,..}|Self::Pan {generation,..}|Self::History {generation,..}|Self::Select {generation,..}|Self::Strip{generation,..}|Self::Width{generation,..}|Self::Maximize{generation,..}|Self::Scroll{generation,..} => generation } }
+    pub fn generation(&self) -> &str { match self { Self::Close {generation,..}|Self::Workspace {generation,..}|Self::WorkspaceActivity {generation,..}|Self::CloseWorkspaceActivity {generation,..}|Self::Pan {generation,..}|Self::History {generation,..}|Self::Select {generation,..}|Self::Strip{generation,..}|Self::Width{generation,..}|Self::Maximize{generation,..}|Self::Scroll{generation,..} => generation } }
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "kebab-case", deny_unknown_fields)]
@@ -35,6 +38,18 @@ impl From<ScrollAction> for PrimaryScrollAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workspace_wire_commands_are_additive_and_generation_bound() {
+        for kind in ["workspace", "workspace-activity", "close-workspace-activity"] {
+            let mut wire = serde_json::json!({"kind":kind,"generation":"mount-1","workspace":"9007199254740993"});
+            if kind == "workspace-activity" { wire["view"] = "catch-up".into(); }
+            let command: Command = serde_json::from_value(wire.clone()).expect("new workspace command");
+            assert_eq!(command.generation(), "mount-1");
+            wire["workspace"] = 1.into();
+            assert!(serde_json::from_value::<Command>(wire).is_err());
+        }
+        assert!(serde_json::from_str::<Command>(r#"{"kind":"workspace-activity","generation":"mount-1","workspace":"1","view":"catchUp"}"#).is_err());
+    }
     #[test]
     fn route_round_trips_full_u64_and_rejects_numeric_ids() {
         let route = Route{workspace:u64::MAX.to_string(),strip:"9007199254740993".into(),group:"3".into(),tab:"4".into()};

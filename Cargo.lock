@@ -11396,11 +11396,13 @@ name = "qos-desktop"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "blake3",
  "chat",
  "collab-types",
  "desktop-policy",
  "notes",
  "parking_lot",
+ "qdoc",
  "qos-actions",
  "qos-peer-state",
  "serde",

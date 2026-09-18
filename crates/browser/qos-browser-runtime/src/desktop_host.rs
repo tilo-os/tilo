@@ -51,9 +51,15 @@ pub(crate) struct DesktopHandle {
     pub navigation_result: Rc<RefCell<Option<Result<Option<String>, String>>>>,
     pub(crate) generation: String,
     pub search: Rc<RefCell<crate::system_search::SearchState>>,
+    history_available: Rc<std::cell::Cell<bool>>,
 
 }
 impl DesktopHandle {
+    pub(crate) fn invalidate_history(&self) {
+        self.history_available.set(false);
+        // A pre-revocation admission must never restore a withdrawn read grant.
+        self.inbox.borrow_mut().take();
+    }
     pub fn admit(
         &self,
         state: &qos_peer_state::StatePeer,
@@ -199,6 +205,14 @@ impl LocalView {
 }
 pub(crate) struct DesktopRoot {
     source_heads: Vec<[u8; 32]>,
+    admitted_room: AutoCommit,
+    required_records: Vec<desktop::Requirement>,
+    unsupported_apps: Vec<String>,
+    pub(crate) activity: Option<crate::desktop_activity::BrowserActivity>,
+    pub(crate) activity_close_reason: Option<crate::desktop_activity::ActivityCloseReason>,
+    pending_view_request: Option<activity::WorkspaceViewRequest>,
+    surface_node: Option<NodeId>,
+    activity_node: Option<NodeId>,
     surface: DesktopSurface,
     handle: DesktopHandle,
     resolver: ApplicationCatalogTileResolver<Contexts>,
@@ -249,6 +263,7 @@ impl DesktopRoot {
             navigation_revision: Rc::default(), navigation_command: Rc::default(), navigation_result: Rc::default(),
             generation: uuid::Uuid::new_v4().to_string(),
             search: Rc::default(),
+            history_available: Rc::new(std::cell::Cell::new(true)),
         };
         let chrome_intents: Rc<RefCell<Vec<qos_desktop::chrome::ChromeIntent>>> = Rc::default();
         let chrome = Rc::new(ChromeSource {
@@ -290,6 +305,14 @@ impl DesktopRoot {
         drop(tree);
         let mut root = Self {
             source_heads: admission.source_heads,
+            admitted_room: admission.admitted_room,
+            required_records: admission.required,
+            unsupported_apps: admission.unsupported,
+            activity: None,
+            activity_close_reason: None,
+            pending_view_request: None,
+            surface_node: None,
+            activity_node: None,
             surface,
             handle: handle.clone(),
             resolver,
@@ -394,6 +417,172 @@ impl DesktopRoot {
             }
         }
     }
+    pub(crate) fn activity_snapshot(&self) -> Result<activity::ActivitySnapshot, String> {
+        if !self.handle.history_available.get() {
+            return Err("Workspace history admission unavailable".into());
+        }
+        if !self
+            .handle
+            .permissions
+            .borrow()
+            .check(&ui::permissions::PermissionScope::workspace(
+                ui::permissions::Verb::Read,
+            ))
+        {
+            return Err("Workspace history access unavailable".into());
+        }
+        activity::ActivitySnapshot::new(
+            self.handle.tree.borrow().clone(),
+            self.admitted_room.clone(),
+        )
+    }
+    fn close_activity(&mut self, reason: crate::desktop_activity::ActivityCloseReason) {
+        if let Some(mut activity) = self.activity.take() {
+            activity.finish();
+            self.activity_close_reason = Some(reason);
+            self.dirty = true;
+        }
+    }
+    /// External operations are inert until update: a frame must capture its
+    /// current focus before any widget referenced by the layout map is retired.
+    pub(crate) fn queue_view_request(&mut self, request: activity::WorkspaceViewRequest) -> Result<(), String> {
+        request.validate(&self.handle.tree.borrow())?;
+        if let activity::WorkspaceViewRequest::OpenActivity { workspace, .. } = &request {
+            if self.handle.tree.borrow().active != *workspace { return Err("Workspace is no longer active".into()); }
+            self.activity_snapshot()?;
+        }
+        self.pending_view_request = Some(request);
+        self.dirty = true;
+        (self.notify)();
+        Ok(())
+    }
+    // Only call during update, after the runner has captured outgoing focus.
+    pub(crate) fn apply_view_request(
+        &mut self,
+        request: activity::WorkspaceViewRequest,
+    ) -> Result<(), String> {
+        request.validate(&self.handle.tree.borrow())?;
+        match request {
+            activity::WorkspaceViewRequest::Select { workspace } => {
+                if self.handle.tree.borrow().active != workspace {
+                    self.close_activity(
+                        crate::desktop_activity::ActivityCloseReason::WorkspaceChanged,
+                    );
+                }
+                Self::local(
+                    &mut self.handle.tree.borrow_mut(),
+                    LocalViewIntent::Workspace(workspace),
+                );
+                self.view_changed = true;
+            }
+            activity::WorkspaceViewRequest::OpenActivity { workspace, view } => {
+                if self.handle.tree.borrow().active != workspace {
+                    return Err("Workspace is no longer active".into());
+                }
+                let snapshot = self.activity_snapshot()?;
+                self.close_activity(crate::desktop_activity::ActivityCloseReason::Dismissed);
+                self.activity_close_reason = None;
+                let mut activity = crate::desktop_activity::BrowserActivity::new(
+                    snapshot,
+                    view,
+                    self.storage.clone(),
+                );
+                activity.refresh(
+                    crate::desktop_activity::capture_records(
+                        &self.required_records,
+                        &self.handle.records.borrow(),
+                    ),
+                    &self.unsupported_apps,
+                );
+                self.activity = Some(activity);
+            }
+            activity::WorkspaceViewRequest::CloseActivity { workspace } => {
+                if self
+                    .activity
+                    .as_ref()
+                    .is_some_and(|a| a.workspace == workspace)
+                {
+                    self.close_activity(crate::desktop_activity::ActivityCloseReason::Dismissed);
+                }
+            }
+        }
+        self.dirty = true;
+        (self.notify)();
+        Ok(())
+    }
+    fn refresh_activity(&mut self, admission_changed: bool) {
+        use crate::desktop_activity::ActivityCloseReason;
+        let Some(activity) = &self.activity else {
+            return;
+        };
+        let close = if activity.workspace != self.handle.tree.borrow().active {
+            Some(ActivityCloseReason::WorkspaceChanged)
+        } else if self.activity_snapshot().is_err() {
+            Some(ActivityCloseReason::AccessChanged)
+        } else if activity.close_requested {
+            Some(ActivityCloseReason::Dismissed)
+        } else {
+            None
+        };
+        if let Some(reason) = close {
+            self.close_activity(reason);
+            return;
+        }
+        if admission_changed {
+            let snapshot = self
+                .activity_snapshot()
+                .expect("validated admitted history");
+            self.activity.as_mut().unwrap().snapshot = snapshot;
+        }
+        let records = crate::desktop_activity::capture_records(
+            &self.required_records,
+            &self.handle.records.borrow(),
+        );
+        let activity = self.activity.as_mut().unwrap();
+        activity.refresh(records, &self.unsupported_apps);
+        if let Some(target) = activity.open_target.take() {
+            // Open only an existing admitted app/record route. Never launch an
+            // application or replay an effect from a historical row.
+            let destination = self
+                .handle
+                .tree
+                .borrow()
+                .workspaces
+                .iter()
+                .filter(|w| w.id == activity.workspace)
+                .flat_map(|w| &w.strips)
+                .flat_map(|s| &s.window_groups)
+                .flat_map(|g| g.tabs.iter().map(move |t| (g.id, t)))
+                .find_map(|(group, tab)| {
+                    let app = qos_desktop::resolver::canonical_app_id(&tab.tile)?;
+                    if target.app_id.as_deref() != Some(&app) {
+                        return None;
+                    }
+                    let checkout = desktop::checkout(
+                        desktop::definition(&app)?,
+                        tab.id,
+                        &self.resolver.host.routes,
+                    )
+                    .ok()?;
+                    (checkout.id.as_str() == target.id && checkout.kind.as_str() == target.kind)
+                        .then_some((group, tab.id))
+                });
+            if let Some((group, tab)) = destination {
+                self.close_activity(ActivityCloseReason::ResourceOpened);
+                Self::local(
+                    &mut self.handle.tree.borrow_mut(),
+                    LocalViewIntent::Tab { group, tab },
+                );
+                self.view_changed = true;
+            } else {
+                self.handle
+                    .errors
+                    .borrow_mut()
+                    .push("Historical resource is not currently available".into());
+            }
+        }
+    }
+
     fn active_route(&self) -> Option<crate::desktop_navigation::Route> {
         let tree = self.handle.tree.borrow();
         let w = tree.active_workspace()?;
@@ -444,6 +633,18 @@ impl DesktopRoot {
         if snapshot["desktopPan"] != pan { snapshot["desktopPan"] = pan; changed = true; }
         let history = self.history_target().map(|target| json!({"target":target})).unwrap_or(serde_json::Value::Null);
         if snapshot["history"] != history { snapshot["history"] = history; changed = true; }
+        let available = self.activity_snapshot().is_ok();
+        let capabilities = json!({"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true,
+            "workspaceSelect":!self.handle.tree.borrow().workspaces.is_empty(),"workspaceHistory":available,"workspaceReplay":available});
+        let activity = self.activity.as_ref().filter(|_| available).map(|activity| json!({
+            "workspace":activity.workspace.0.to_string(), "view":activity.pane.view(),
+            "playing":activity.pane.replay_is_playing(),
+            "coverage":if activity.pane.feed_coverage().is_complete() { "complete" } else { "partial" }
+        })).unwrap_or(serde_json::Value::Null);
+        for (key, value) in [("capabilities", capabilities), ("workspaceActivity", activity),
+            ("workspaceActivityCloseReason", json!(self.activity_close_reason))] {
+            if snapshot[key] != value { snapshot[key] = value; changed = true; }
+        }
         if changed { self.handle.navigation_revision.set(self.handle.navigation_revision.get().wrapping_add(1)); }
     }
     fn navigate(&mut self, command: crate::desktop_navigation::Command, doc: &AutoCommit, path: &ObjId) -> Result<(bool, Option<String>), String> {
@@ -463,6 +664,23 @@ impl DesktopRoot {
                 .ok_or("Close action unavailable")?;
             return output.value.and_then(|value| value.as_str().map(str::to_owned)).map(|invocation|(false,Some(invocation))).ok_or_else(|| "Close request identity unavailable".into());
         }
+        let request = match &command {
+            Command::Workspace { workspace, .. } | Command::WorkspaceActivity { workspace, .. }
+            | Command::CloseWorkspaceActivity { workspace, .. } => {
+                let id = workspace.parse::<u64>().ok().filter(|id| id.to_string() == *workspace)
+                    .map(WorkspaceId).ok_or("Invalid navigation identity")?;
+                Some(match &command {
+                    Command::Workspace { .. } => activity::WorkspaceViewRequest::Select { workspace: id },
+                    Command::WorkspaceActivity { view, .. } => activity::WorkspaceViewRequest::OpenActivity { workspace: id, view: *view },
+                    _ => {
+                        if self.handle.tree.borrow().active != id { return Err("Workspace is no longer active".into()); }
+                        activity::WorkspaceViewRequest::CloseActivity { workspace: id }
+                    }
+                })
+            }
+            _ => None,
+        };
+        if let Some(request) = request { self.queue_view_request(request)?; return Ok((false,None)); }
         if let Command::Pan {workspace,strip,offset,..} = &command {
             if !offset.is_finite() { return Err("Invalid pan offset".into()); }
             let tree = self.handle.tree.borrow();
@@ -475,7 +693,11 @@ impl DesktopRoot {
             if self.active_route().as_ref() != Some(&route) || self.history_target().as_ref() != Some(&target) { return Err("Document history target is no longer active".into()); }
             let (_,s,g,t) = route.ids()?;
             let host = self.surface.row(s).and_then(|row|row.groups.iter().find(|group|group.id==g && group.active_tab_id()==t)).and_then(|group|group.active_host()).ok_or("Document history unavailable")?;
-            return host.request_document_history(&target).then_some((false,None)).ok_or_else(|| "Document history unavailable".into());
+            if !host.request_document_history(&target) { return Err("Document history unavailable".into()); }
+            // navigate runs during update, after outgoing layout focus capture.
+            // The exact document request must succeed before retiring its overlay.
+            self.close_activity(crate::desktop_activity::ActivityCloseReason::ResourceOpened);
+            return Ok((false,None));
         }
         if let Command::Scroll {region,action,..} = command {
             self.refresh_navigation(false);
@@ -526,6 +748,7 @@ impl DesktopRoot {
         let intents = self.surface.take_intents();
         let chrome = std::mem::take(&mut *self.chrome_intents.borrow_mut());
         let inbox = self.handle.inbox.borrow_mut().take();
+        let admission_changed = inbox.is_some();
         let mut tree = self.handle.tree.borrow_mut();
         let mut changed = std::mem::take(&mut self.view_changed) || !intents.is_empty() || !chrome.is_empty() || inbox.is_some();
         // Explicit workspace switches are newer than gestures harvested from the
@@ -562,13 +785,23 @@ impl DesktopRoot {
             }
         }
         if let Some((admission, permissions)) = inbox {
+            self.handle.history_available.set(true);
             self.source_heads = admission.source_heads;
+            self.admitted_room = admission.admitted_room;
+            self.required_records = admission.required;
+            self.unsupported_apps = admission.unsupported;
             let local = LocalView::from_tree(&tree);
             *tree = admission.tree;
             local.apply(&mut tree);
             self.resolver.host.routes = admission.routes;
             *self.resolver.host.permissions.borrow_mut() = permissions;
         }
+        drop(tree);
+        // Pane resource navigation must select its destination before mounting
+        // and restoring focus, so the outgoing editor is no longer eligible.
+        self.refresh_activity(admission_changed);
+        changed |= std::mem::take(&mut self.view_changed);
+        let tree = self.handle.tree.borrow();
         if changed {
             let factory = Self::image_factory(&self.handle);
             let result = ui::ImageStore::with_host_factory(factory.clone(), || {
@@ -612,8 +845,14 @@ impl DesktopRoot {
 }
 
 impl Widget for DesktopRoot {
-    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> { self.resources(doc) }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] { &["qos.desktop.request"] }
+    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        let mut resources = self.resources(doc);
+        let mut views = qos_actions::Resource::new(activity::view_actions::RESOURCE_ID, "desktop", "Workspace views");
+        for descriptor in activity::view_actions::workspace_view_descriptors(&self.handle.tree.borrow(), self.activity_snapshot().is_ok()) { views = views.with_action(descriptor.action()); }
+        resources.push(views);
+        resources
+    }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] { &["qos.desktop.request", activity::view_actions::OPERATION_TYPE] }
     fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         use qos_desktop::session_commands::*;
         use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
@@ -681,6 +920,11 @@ impl Widget for DesktopRoot {
         vec![resource]
     }
     fn invoke_resource_operation_v2(&mut self, kind: qos_actions::OperationKind, type_id: &str, payload: &[u8], _doc: &AutoCommit, _path: &ObjId) -> Result<Option<qos_actions::ActionOutput>, String> {
+        if kind == qos_actions::OperationKind::View && type_id == activity::view_actions::OPERATION_TYPE {
+            let request = serde_json::from_slice(payload).map_err(|e| format!("Invalid workspace view request: {e}"))?;
+            self.queue_view_request(request)?;
+            return Ok(Some(Default::default()));
+        }
         if kind != qos_actions::OperationKind::View || type_id != "qos.desktop.request" { return Ok(None); }
         let command: qos_desktop::session_commands::BoundCommand = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         let mut queue = self.handle.session_requests.borrow_mut();
@@ -701,7 +945,12 @@ impl Widget for DesktopRoot {
         self.surface.sync(doc, path);
     }
     fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
+        // Process the current admission before validating a queued local view.
         let mut changed = self.reconcile();
+        if let Some(request) = self.pending_view_request.take() {
+            if let Err(error) = self.apply_view_request(request) { self.handle.errors.borrow_mut().push(error); }
+            changed |= self.reconcile();
+        }
         let command = self.handle.navigation_command.borrow_mut().take();
         if let Some(command) = command {
             let result = self.navigate(command, doc, path);
@@ -713,7 +962,9 @@ impl Widget for DesktopRoot {
         changed || updated
     }
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.handle.inbox.borrow().is_some() || self.surface.needs_redraw()
+        // Composition consumes structural dirtiness before a queued navigation
+        // request reaches the next update. Keep that deferred work scheduled.
+        self.pending_view_request.is_some() || self.dirty || (self.activity.is_some() && !self.handle.history_available.get()) || self.handle.inbox.borrow().is_some() || self.activity.as_ref().is_some_and(Widget::needs_redraw) || self.surface.needs_redraw()
     }
     fn build_layout(
         &mut self,
@@ -721,10 +972,18 @@ impl Widget for DesktopRoot {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.surface.build_layout(tree, theme, map)
+        let surface = self.surface.build_layout(tree, theme, map);
+        self.surface_node = Some(surface);
+        self.activity_node = self.activity.as_mut().map(|activity| activity.build_layout(tree, theme, map));
+        if let Some(activity) = self.activity_node {
+            tree.new_with_children(taffy::Style { size: taffy::Size { width: taffy::Dimension::percent(1.0), height: taffy::Dimension::percent(1.0) }, ..Default::default() }, &[activity, surface]).unwrap()
+        } else {
+            tree.new_with_children(taffy::Style { size: taffy::Size { width: taffy::Dimension::percent(1.0), height: taffy::Dimension::percent(1.0) }, ..Default::default() }, &[surface]).unwrap()
+        }
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.surface.apply_layout(tree, node, origin);
+        self.surface.apply_layout(tree, self.surface_node.unwrap_or(node), origin);
+        if let (Some(activity), Some(node)) = (&mut self.activity, self.activity_node) { activity.apply_layout(tree, node, origin); }
     }
     fn draw(
         &mut self,
@@ -735,6 +994,7 @@ impl Widget for DesktopRoot {
         presence: &PresenceCtx,
     ) {
         self.surface.draw(scene, transform, text, theme, presence);
+        if let Some(activity) = &mut self.activity { activity.draw(scene, transform, text, theme, presence); }
         self.refresh_navigation(false);
     }
     fn handle_event(
@@ -749,15 +1009,19 @@ impl Widget for DesktopRoot {
         node: NodeId,
         tree: &TaffyTree<()>,
     ) {
+        if let Some(activity) = &mut self.activity {
+            activity.handle_event(event, scale, modifiers, doc, path, handled, focus, self.activity_node.unwrap_or(node), tree);
+            return;
+        }
         self.surface.handle_event(
             event, scale, modifiers, doc, path, handled, focus, node, tree,
         );
     }
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.surface]
+        if let Some(activity) = &self.activity { vec![activity] } else { vec![&self.surface] }
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.surface]
+        if let Some(activity) = &mut self.activity { vec![activity] } else { vec![&mut self.surface] }
     }
     fn name(&self) -> &str {
         "CertifiedDesktop"
@@ -766,12 +1030,13 @@ impl Widget for DesktopRoot {
         self.surface.get_rect()
     }
     fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.dirty) | self.surface.take_structure_dirty()
+        std::mem::take(&mut self.dirty) | self.surface.take_structure_dirty() | self.activity.as_mut().is_some_and(Widget::take_structure_dirty)
     }
     fn wants_pointer_capture(&self) -> bool {
         self.surface.wants_pointer_capture()
     }
     fn close_components(&mut self) -> Vec<ComponentCloseReport> {
+        self.close_activity(crate::desktop_activity::ActivityCloseReason::Disposed);
         self.reports.extend(self.surface.close_components());
         std::mem::take(&mut self.reports)
     }
@@ -784,6 +1049,16 @@ impl Widget for DesktopRoot {
 mod tests {
     use automerge::transaction::Transactable;
     use super::*;
+    fn history_document(tree: &WorkspaceTree) -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        if let Some(workspace) = tree.active_workspace() {
+            doc.put(automerge::ROOT, "room", workspace.room.to_string()).unwrap();
+            doc.put(automerge::ROOT, "name", &workspace.name).unwrap();
+            qos_desktop::projection::RoomProjection::project_owned_contents(&mut doc, &workspace.strips, 5, None);
+            doc.commit();
+        }
+        doc
+    }
     fn fixture_with_topology(
         configure: impl FnOnce(&mut WorkspaceTree),
     ) -> (DesktopRoot, DesktopHandle, PortableStorage) {
@@ -858,6 +1133,7 @@ mod tests {
             vec![],
         );
         let admission = Admission {
+            admitted_room: history_document(&tree),
                 source_heads: vec![[7; 32]],
             tree,
             routes,
@@ -883,6 +1159,541 @@ mod tests {
             handle.errors.borrow()
         );
         (root, handle, cache)
+    }
+
+    #[test]
+    fn workspace_activity_actions_are_local_and_select_empty_workspaces() {
+        use qos_desktop::activity::{ActivityView, view_actions::*};
+        let (mut root, handle, _) = fixture();
+        let other = WorkspaceId(u64::MAX - 1);
+        handle
+            .tree
+            .borrow_mut()
+            .workspaces
+            .push(Workspace::new(other, "Work"));
+        let actions = root.caller_view_resources(&AutoCommit::new());
+        assert!(actions.iter().any(|r| r.id.0 == RESOURCE_ID));
+        let doc = AutoCommit::new();
+        for view in [
+            ActivityView::CatchUp,
+            ActivityView::Explore,
+            ActivityView::Replay,
+        ] {
+            let request = WorkspaceViewRequest::OpenActivity {
+                workspace: WorkspaceId(1),
+                view,
+            };
+            let previous_view = root.activity.as_ref().map(|activity| activity.pane.view());
+            root.invoke_resource_operation_v2(
+                qos_actions::OperationKind::View,
+                OPERATION_TYPE,
+                &serde_json::to_vec(&request).unwrap(),
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(root.activity.as_ref().map(|activity| activity.pane.view()), previous_view, "operations must defer structural changes until the frame captures focus");
+            root.update(&mut AutoCommit::new(), &automerge::ROOT);
+            assert_eq!(root.activity.as_ref().unwrap().pane.view(), view);
+            assert!(!root.activity.as_ref().unwrap().pane.replay_is_playing());
+            assert!(handle.session_requests.borrow().is_empty());
+        }
+        let remembered = LocalView::from_tree(&handle.tree.borrow());
+        root.apply_view_request(WorkspaceViewRequest::Select { workspace: other })
+            .unwrap();
+        assert_eq!(handle.tree.borrow().active, other);
+        assert!(root.activity.is_none());
+        assert!(
+            root.apply_view_request(WorkspaceViewRequest::Select {
+                workspace: WorkspaceId(999)
+            })
+            .is_err()
+        );
+        assert_eq!(handle.tree.borrow().active, other);
+        root.apply_view_request(WorkspaceViewRequest::Select {
+            workspace: WorkspaceId(1),
+        })
+        .unwrap();
+        let returned = LocalView::from_tree(&handle.tree.borrow());
+        assert_eq!(returned.tabs, remembered.tabs);
+        assert_eq!(returned.strips, remembered.strips);
+        assert!(handle.session_requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn workspace_activity_capture_never_settles_pending_edits_and_filters_stale_owners() {
+        use crate::desktop_activity::capture_records;
+        let (_root, handle, storage) = fixture();
+        let owners = handle.records.borrow();
+        let writer = owners
+            .values()
+            .find(|r| r.app == "dev.qos.word-processor")
+            .unwrap();
+        let required = vec![desktop::Requirement {
+            app_id: writer.app.clone(),
+            record_id: writer.checkout.id.as_str().into(),
+        }];
+        writer.store.with(&writer.checkout.id, |doc| {
+            doc.commit();
+        });
+        assert!(capture_records(&required, &owners)[0].document.is_some());
+        writer.store.with(&writer.checkout.id, |doc| {
+            doc.put(automerge::ROOT, "pending-history-test", "unfinished")
+                .unwrap();
+        });
+        let pending = writer
+            .store
+            .read(&writer.checkout.id, |doc| {
+                (doc.pending_ops(), doc.base_heads().to_vec())
+            })
+            .unwrap();
+        assert!(pending.0 > 0);
+        let generation = writer.store.action_generation(&writer.checkout.id).unwrap();
+        let writes = storage.pending_writes().len();
+        assert!(capture_records(&required, &owners)[0].document.is_none());
+        assert_eq!(
+            writer
+                .store
+                .read(&writer.checkout.id, |doc| (
+                    doc.pending_ops(),
+                    doc.base_heads().to_vec()
+                ))
+                .unwrap(),
+            pending
+        );
+        assert_eq!(
+            writer.store.action_generation(&writer.checkout.id).unwrap(),
+            generation
+        );
+        assert_eq!(storage.pending_writes().len(), writes);
+        assert!(
+            capture_records(&[], &owners).is_empty(),
+            "obsolete owners cannot enter a newer admission"
+        );
+        let missing = vec![desktop::Requirement {
+            app_id: writer.app.clone(),
+            record_id: ui::record::RecordId::for_tab(98765).as_str().into(),
+        }];
+        assert!(capture_records(&missing, &owners)[0].document.is_none());
+    }
+
+    #[test]
+    fn workspace_activity_modal_retains_desktop_and_closes_on_access_loss() {
+        use activity::{ActivityView, WorkspaceViewRequest};
+        let (mut root, handle, _) = fixture();
+        let writer = root.surface.row(StripId(2)).unwrap().groups[0]
+            .active_host()
+            .unwrap() as *const _;
+        root.apply_view_request(WorkspaceViewRequest::OpenActivity {
+            workspace: WorkspaceId(1),
+            view: ActivityView::Replay,
+        })
+        .unwrap();
+        assert!(
+            root.children()
+                .iter()
+                .all(|child| child.name() == "WorkspaceActivity")
+        );
+        assert!(root.activity.as_ref().unwrap().traps_focus());
+        let mut boxed = Box::new(root);
+        let root_ptr = std::ptr::from_mut(boxed.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            boxed,
+            (1000, 700),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        assert!(
+            frame
+                .inspection_json()
+                .unwrap()
+                .contains("Workspace activity")
+        );
+        // SAFETY: frame owns the stable boxed root; no harness operation
+        // overlaps the temporary borrow used to find the real pane control.
+        let play = unsafe {
+            (&*root_ptr)
+                .activity
+                .as_ref()
+                .unwrap()
+                .pane
+                .accessibility_snapshot()
+                .children
+                .into_iter()
+                .find(|node| node.name.as_deref() == Some("Play replay"))
+                .unwrap()
+                .bounds
+                .unwrap()
+                .to_rect()
+                .center()
+        };
+        frame.click_at(play.x, play.y);
+        assert!(unsafe {
+            (&*root_ptr)
+                .activity
+                .as_ref()
+                .unwrap()
+                .pane
+                .replay_is_playing()
+        });
+        let before = handle
+            .records
+            .borrow()
+            .values()
+            .map(|r| {
+                r.store
+                    .read(&r.checkout.id, |doc| {
+                        (doc.base_heads().to_vec(), doc.pending_ops())
+                    })
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        frame.type_text("must not reach the editor");
+        assert_eq!(
+            before,
+            handle
+                .records
+                .borrow()
+                .values()
+                .map(|r| r
+                    .store
+                    .read(&r.checkout.id, |doc| (
+                        doc.base_heads().to_vec(),
+                        doc.pending_ops()
+                    ))
+                    .unwrap())
+                .collect::<Vec<_>>()
+        );
+        frame.key("Escape");
+        frame.relayout();
+        assert!(frame.inspection_json().unwrap().contains("WordProcessor"));
+        assert!(handle.session_requests.borrow().is_empty());
+        // Permission updates retire the modal before another event can use it.
+        let (mut root, handle, _) = fixture();
+        assert!(unsafe { (&*root_ptr).activity.is_none() });
+        assert_eq!(writer, unsafe {
+            (&*root_ptr).surface.row(StripId(2)).unwrap().groups[0]
+                .active_host()
+                .unwrap() as *const _
+        });
+        root.apply_view_request(WorkspaceViewRequest::OpenActivity {
+            workspace: WorkspaceId(1),
+            view: ActivityView::Explore,
+        })
+        .unwrap();
+        *handle.permissions.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(None, "revoked"),
+            vec![],
+        );
+        root.reconcile();
+        assert!(root.activity.is_none());
+        assert!(
+            root.apply_view_request(WorkspaceViewRequest::OpenActivity {
+                workspace: WorkspaceId(1),
+                view: ActivityView::Explore
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn workspace_activity_admission_replaces_sources_and_reports_unsupported_coverage() {
+        use activity::{ActivityView, WorkspaceViewRequest};
+        let (mut root, handle, _) = fixture();
+        let requirements = handle
+            .records
+            .borrow()
+            .values()
+            .map(|r| desktop::Requirement {
+                app_id: r.app.clone(),
+                record_id: if r.checkout.id.is_package_primary() {
+                    String::new()
+                } else {
+                    r.checkout.id.as_str().into()
+                },
+            })
+            .collect::<Vec<_>>();
+        root.required_records = requirements.clone();
+        root.apply_view_request(WorkspaceViewRequest::OpenActivity {
+            workspace: WorkspaceId(1),
+            view: ActivityView::Explore,
+        })
+        .unwrap();
+        assert_eq!(
+            root.activity
+                .as_ref()
+                .unwrap()
+                .pane
+                .feed_coverage()
+                .referenced_records,
+            4
+        );
+        let writer = requirements
+            .into_iter()
+            .find(|r| r.app_id == "dev.qos.word-processor")
+            .unwrap();
+        let mut source = root.admitted_room.clone();
+        source
+            .put(automerge::ROOT, "name", "Updated admission")
+            .unwrap();
+        source.commit();
+        let heads = source.get_heads();
+        let topology = handle.tree.borrow().clone();
+        *handle.inbox.borrow_mut() = Some((
+            Admission {
+                admitted_room: source,
+                source_heads: heads.iter().map(|head| head.0).collect(),
+                tree: topology,
+                routes: root.resolver.host.routes.clone(),
+                required: vec![writer],
+                missing: vec![],
+                unsupported: vec!["unsupported.actual.app".into()],
+                pending: 0,
+            },
+            handle.permissions.borrow().clone(),
+        ));
+        root.reconcile();
+        assert_eq!(
+            handle.records.borrow().len(),
+            4,
+            "old live owners deliberately remain mounted"
+        );
+        let activity = root.activity.as_mut().unwrap();
+        assert_eq!(activity.snapshot.doc.get_heads(), heads);
+        assert_eq!(activity.pane.feed_coverage().referenced_records, 1);
+        assert_eq!(
+            activity.pane.feed_coverage().excluded_apps,
+            ["unsupported.actual.app"]
+        );
+        assert!(!activity.pane.feed_coverage().is_complete());
+        assert_eq!(
+            root.source_heads,
+            heads.iter().map(|head| head.0).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn workspace_activity_revoked_admission_and_resource_opening_use_current_authority() {
+        use crate::desktop_activity::ActivityCloseReason;
+        use activity::{ActivityView, WorkspaceViewRequest};
+        let (mut root, handle, _) = fixture();
+        let request = WorkspaceViewRequest::OpenActivity {
+            workspace: WorkspaceId(1),
+            view: ActivityView::Explore,
+        };
+        root.apply_view_request(request.clone()).unwrap();
+        let writer = handle
+            .records
+            .borrow()
+            .values()
+            .find(|r| r.app == "dev.qos.word-processor")
+            .unwrap()
+            .clone();
+        let target = ui::HistoryResourceTarget {
+            app_id: Some(writer.app.clone()),
+            app_label: None,
+            id: writer.checkout.id.as_str().into(),
+            kind: writer.checkout.kind.as_str().into(),
+            label: "untrusted label".into(),
+        };
+        root.activity.as_mut().unwrap().open_target = Some(ui::HistoryResourceTarget {
+            app_id: Some("dev.qos.notes".into()),
+            ..target.clone()
+        });
+        root.refresh_activity(false);
+        assert!(
+            root.activity.is_some(),
+            "a record ID in the wrong app must not resolve"
+        );
+        root.activity.as_mut().unwrap().open_target = Some(target);
+        root.refresh_activity(false);
+        assert!(root.activity.is_none());
+        assert_eq!(
+            root.activity_close_reason,
+            Some(ActivityCloseReason::ResourceOpened)
+        );
+        root.apply_view_request(request.clone()).unwrap();
+        handle.invalidate_history();
+        root.reconcile();
+        assert!(root.activity.is_none());
+        assert_eq!(
+            root.activity_close_reason,
+            Some(ActivityCloseReason::AccessChanged)
+        );
+        assert!(root.apply_view_request(request).is_err());
+        assert!(handle.session_requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn workspace_activity_real_palette_uses_local_handler_and_restores_editor_focus() {
+        let (root, handle, _) = fixture();
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(ui::State::new(), root, (1000, 700), ui::Theme::dark(), ui::TextRenderer::new(), ui::permissions::UserId("author".into()));
+        frame.set_platform_conventions(ui::platform::PlatformConventions::new(ui::platform::Platform::Linux));
+        frame.click_at(200.0, 180.0);
+        let focused = frame.focused_access_node().unwrap();
+        frame.set_modifiers(&["ctrl".into()]); frame.key("k"); frame.set_modifiers(&[]);
+        frame.type_text("Replay workspace activity"); frame.key("Enter");
+        assert!(frame.inspection_json().unwrap().contains("Workspace activity"));
+        assert!(unsafe { (&*root_ptr).activity.as_ref().is_some_and(|activity| activity.pane.view() == activity::ActivityView::Replay) });
+        assert!(handle.session_requests.borrow().is_empty());
+        assert!(frame.take_caller_operation().is_none(), "workspace views must not enter the certified broker");
+        frame.key("Escape"); frame.relayout();
+        assert_eq!(frame.focused_access_node().unwrap().name, focused.name);
+        frame.open_caller_search("Explore workspace activity").unwrap(); frame.key("Enter");
+        let chat = handle.records.borrow().values().find(|record| record.app == "dev.qos.chat").unwrap().clone();
+        // A pane outcome is processed during update, after outgoing focus capture.
+        unsafe { (&mut *root_ptr).activity.as_mut().unwrap().open_target = Some(ui::HistoryResourceTarget { app_id: Some(chat.app), app_label: None, id: chat.checkout.id.as_str().into(), kind: chat.checkout.kind.as_str().into(), label: "Chat".into() }); }
+        frame.relayout();
+        assert_eq!(unsafe { (&*root_ptr).activity_close_reason }, Some(crate::desktop_activity::ActivityCloseReason::ResourceOpened));
+        assert_eq!(handle.navigation.borrow()["active"]["tab"], ((5_u64 << 48) | 11).to_string());
+        assert_ne!(frame.focused_access_node().and_then(|node| node.name), focused.name);
+    }
+
+    #[test]
+    fn workspace_activity_and_system_search_preserve_modal_and_editor_focus_ownership() {
+        let (root, handle, _) = fixture();
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(), Box::new(root), (1000, 700), ui::Theme::dark(),
+            ui::TextRenderer::new(), ui::permissions::UserId("author".into()),
+        );
+        frame.click_at(200.0, 180.0);
+        let owner = frame.inspection().keyboard_focus_owner.expect("retained editor owner");
+        let route = handle.navigation.borrow()["active"].clone();
+        *handle.navigation_command.borrow_mut() = Some(crate::desktop_navigation::Command::WorkspaceActivity {
+            generation: handle.generation.clone(), workspace: "1".into(), view: activity::ActivityView::Replay,
+        });
+        frame.relayout(); frame.poll_frame().unwrap(); frame.relayout();
+        assert_eq!(handle.navigation.borrow()["workspaceActivity"]["view"], "replay");
+        assert!(handle.open_global_search(&mut frame, &handle.generation, "").is_err(), "history modal must keep input ownership");
+        frame.key("Escape"); frame.relayout();
+        assert!(handle.navigation.borrow()["workspaceActivity"].is_null());
+        assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some(owner.as_str()));
+        handle.open_global_search(&mut frame, &handle.generation, "Notes").unwrap();
+        assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some("system-search"));
+        frame.key("Escape"); frame.relayout();
+        assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some(owner.as_str()));
+        assert_eq!(handle.navigation.borrow()["active"], route);
+        assert!(handle.session_requests.borrow().is_empty());
+        assert!(frame.take_caller_operation().is_none());
+    }
+
+    #[test]
+    fn workspace_activity_queued_views_revalidate_admission_and_destination() {
+        use activity::{ActivityView, WorkspaceViewRequest};
+        let (mut root, handle, _) = fixture();
+        let open = WorkspaceViewRequest::OpenActivity { workspace: WorkspaceId(1), view: ActivityView::Explore };
+        root.queue_view_request(open.clone()).unwrap();
+        assert!(root.activity.is_none());
+        // An admission captured before revocation cannot later re-enable history.
+        *handle.inbox.borrow_mut() = Some((Admission {
+            admitted_room: root.admitted_room.clone(), tree: handle.tree.borrow().clone(),
+            routes: root.resolver.host.routes.clone(), source_heads: root.source_heads.clone(),
+            required: root.required_records.clone(), missing: vec![], unsupported: vec![], pending: 0,
+        }, handle.permissions.borrow().clone()));
+        handle.invalidate_history();
+        root.update(&mut AutoCommit::new(), &automerge::ROOT);
+        assert!(root.activity.is_none());
+        assert!(handle.errors.borrow().iter().any(|error| error.contains("admission unavailable")));
+        let (mut root, handle, _) = fixture();
+        root.queue_view_request(open).unwrap();
+        handle.tree.borrow_mut().workspaces.push(Workspace::new(WorkspaceId(2), "Other"));
+        handle.tree.borrow_mut().active = WorkspaceId(2);
+        root.update(&mut AutoCommit::new(), &automerge::ROOT);
+        assert!(root.activity.is_none());
+        assert_eq!(handle.tree.borrow().active, WorkspaceId(2));
+        assert!(handle.session_requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn workspace_navigation_idle_accepted_request_wakes_queued_transition() {
+        let (root, handle, _) = fixture_with_topology(|tree| {
+            tree.workspaces[0].strips.clear();
+        });
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(), Box::new(root), (1000, 600), ui::Theme::dark(),
+            ui::TextRenderer::new(), ui::permissions::UserId("author".into()),
+        );
+        assert_external_frame_idle(&mut frame, "empty workspace before navigation");
+        *handle.navigation_command.borrow_mut() = Some(crate::desktop_navigation::Command::WorkspaceActivity {
+            generation: handle.generation.clone(), workspace: "1".into(),
+            view: activity::ActivityView::Replay,
+        });
+        // Match desktop_navigate: one synchronous acceptance/layout pass, then
+        // only the ordinary host frame clock. No input or second relayout.
+        frame.relayout();
+        assert!(handle.navigation_result.borrow_mut().take().unwrap().is_ok());
+        assert!(handle.navigation.borrow()["workspaceActivity"].is_null(), "acceptance must leave replacement queued");
+        assert!(frame.poll_frame().unwrap(), "accepted queued transition must request a frame while the desktop is idle");
+        assert_eq!(handle.navigation.borrow()["workspaceActivity"]["view"], "replay");
+        assert!(frame.inspection_json().unwrap().contains("Workspace activity"));
+        assert!(handle.session_requests.borrow().is_empty());
+        assert_external_frame_idle(&mut frame, "paused replay after queued transition");
+    }
+
+    #[test]
+    fn workspace_navigation_refresh_preserves_search_close_and_history_capabilities() {
+        let (mut root, handle, _) = fixture();
+        for topology in [false, true, false] {
+            root.refresh_navigation(topology);
+            for capability in ["globalSearch", "close", "workspaceSelect", "workspaceHistory", "workspaceReplay"] {
+                assert_eq!(handle.navigation.borrow()["capabilities"][capability], true, "missing {capability} after topology={topology}");
+            }
+        }
+        handle.invalidate_history();
+        root.reconcile();
+        for capability in ["globalSearch", "close", "workspaceSelect"] {
+            assert_eq!(handle.navigation.borrow()["capabilities"][capability], true, "history revocation removed {capability}");
+        }
+        for capability in ["workspaceHistory", "workspaceReplay"] {
+            assert_eq!(handle.navigation.borrow()["capabilities"][capability], false);
+        }
+        assert!(handle.session_requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn workspace_navigation_admitted_state_and_queued_commands() {
+        let (mut root, handle, _) = fixture_with_topology(|tree| {
+            tree.workspaces.push(Workspace::new(WorkspaceId(9_007_199_254_740_993), "Empty"));
+        });
+        assert_eq!(handle.navigation.borrow()["capabilities"]["workspaceHistory"], true);
+        let command = |kind: &str, workspace: &str, view: Option<&str>| {
+            let mut wire = serde_json::json!({"kind":kind,"generation":handle.generation,"workspace":workspace});
+            if let Some(view) = view { wire["view"] = view.into(); }
+            serde_json::from_value(wire).unwrap()
+        };
+        root.navigate(command("workspace-activity", "1", Some("replay")), &AutoCommit::new(), &automerge::ROOT).unwrap();
+        assert!(root.activity.is_none(), "bridge acceptance must only queue the pane");
+        root.update(&mut AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(handle.navigation.borrow()["workspaceActivity"], serde_json::json!({"workspace":"1","view":"replay","playing":false,"coverage":"complete"}));
+        root.activity.as_mut().unwrap().pane.set_view(activity::ActivityView::Tasks);
+        root.refresh_navigation(false);
+        assert_eq!(handle.navigation.borrow()["workspaceActivity"]["view"], "tasks");
+        for workspace in ["01", "-1", "18446744073709551616", "2", "9007199254740993"] {
+            assert!(root.navigate(command("workspace-activity", workspace, Some("explore")), &AutoCommit::new(), &automerge::ROOT).is_err());
+        }
+        let mut stale = serde_json::json!({"kind":"close-workspace-activity","generation":"old","workspace":"1"});
+        assert!(root.navigate(serde_json::from_value(stale.clone()).unwrap(), &AutoCommit::new(), &automerge::ROOT).is_err());
+        stale["kind"] = "workspace".into();
+        assert!(root.navigate(serde_json::from_value(stale).unwrap(), &AutoCommit::new(), &automerge::ROOT).is_err());
+        root.navigate(command("close-workspace-activity", "1", None), &AutoCommit::new(), &automerge::ROOT).unwrap();
+        assert!(root.activity.is_some());
+        root.update(&mut AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(handle.navigation.borrow()["workspaceActivityCloseReason"], "dismissed");
+        root.navigate(command("workspace", "9007199254740993", None), &AutoCommit::new(), &automerge::ROOT).unwrap();
+        assert_eq!(handle.tree.borrow().active, WorkspaceId(1));
+        root.update(&mut AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(handle.navigation.borrow()["activeWorkspace"], "9007199254740993");
+        assert!(handle.navigation.borrow()["active"].is_null());
+        handle.invalidate_history(); root.reconcile();
+        assert_eq!(handle.navigation.borrow()["capabilities"]["workspaceHistory"], false);
+        assert_eq!(handle.navigation.borrow()["capabilities"]["workspaceReplay"], false);
+        assert!(root.navigate(command("workspace-activity", "9007199254740993", Some("replay")), &AutoCommit::new(), &automerge::ROOT).is_err());
+        assert!(handle.session_requests.borrow().is_empty());
     }
 
     fn fixture() -> (DesktopRoot, DesktopHandle, PortableStorage) {
@@ -1012,6 +1823,7 @@ mod tests {
         let refreshed = handle.tree.borrow().clone();
         *handle.inbox.borrow_mut() = Some((
             Admission {
+            admitted_room: history_document(&refreshed),
                 source_heads: vec![[8; 32]],
                 tree: refreshed,
                 routes,
@@ -1572,6 +2384,38 @@ mod tests {
         assert_eq!(serde_json::to_string(&*handle.tree.borrow()).unwrap(),before);
     }
     #[test]
+    fn workspace_navigation_document_history_interlock_preserves_exact_owner() {
+        use crate::desktop_navigation::Command;
+        let (root, handle, _) = fixture();
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(ui::State::new(), Box::new(root), (1000,600), ui::Theme::dark(), ui::TextRenderer::new(), ui::permissions::UserId("author".into()));
+        frame.poll_frame().unwrap();
+        let notes = handle.navigation.borrow()["entries"].as_array().unwrap().iter().find(|e| e["label"] == "Notes").unwrap()["route"].clone();
+        *handle.navigation_command.borrow_mut() = Some(Command::Select { generation:handle.generation.clone(),route:serde_json::from_value(notes).unwrap() });
+        frame.relayout(); frame.poll_frame().unwrap();
+        let nav = handle.navigation.borrow().clone();
+        *handle.navigation_command.borrow_mut() = Some(serde_json::from_value(serde_json::json!({"kind":"workspace-activity","generation":handle.generation,"workspace":"1","view":"replay"})).unwrap());
+        frame.relayout(); frame.poll_frame().unwrap(); frame.relayout();
+        assert_eq!(handle.navigation.borrow()["workspaceActivity"]["view"], "replay");
+        let mut route: crate::desktop_navigation::Route = serde_json::from_value(nav["active"].clone()).unwrap();
+        route.workspace = "9007199254740993".into();
+        *handle.navigation_command.borrow_mut() = Some(Command::History { generation:handle.generation.clone(), route, target:nav["history"]["target"].as_str().unwrap().into() });
+        frame.relayout();
+        assert!(handle.navigation_result.borrow_mut().take().unwrap().is_err());
+        assert!(!handle.navigation.borrow()["workspaceActivity"].is_null());
+        let before = handle.records.borrow().values().map(|r| r.store.read(&r.checkout.id, |doc|doc.base_heads().to_vec()).unwrap()).collect::<Vec<_>>();
+        *handle.navigation_command.borrow_mut() = Some(Command::History { generation:handle.generation.clone(),route:serde_json::from_value(nav["active"].clone()).unwrap(),target:nav["history"]["target"].as_str().unwrap().into() });
+        frame.relayout(); frame.poll_frame().unwrap();
+        assert!(handle.navigation_result.borrow_mut().take().unwrap().is_ok());
+        assert!(handle.navigation.borrow()["workspaceActivity"].is_null());
+        assert_eq!(handle.navigation.borrow()["workspaceActivityCloseReason"], "resource-opened");
+        assert!(frame.inspection_json().unwrap().contains("ActivityTimeline"));
+        assert!(!frame.inspection_json().unwrap().contains("Workspace activity"));
+        let after = handle.records.borrow().values().map(|r| r.store.read(&r.checkout.id, |doc|doc.base_heads().to_vec()).unwrap()).collect::<Vec<_>>();
+        assert_eq!(before, after);
+        assert!(handle.session_requests.borrow().is_empty());
+    }
+
+    #[test]
     fn external_history_opens_retained_framework_without_changing_heads() {
         use crate::desktop_navigation::Command;
         let (root,handle,_) = fixture();
@@ -1601,7 +2445,7 @@ mod tests {
         let mut topology=handle.tree.borrow().clone();
         let notes=topology.workspaces[0].strips[0].window_groups[0].tabs.remove(2);
         topology.workspaces[0].strips.push(Strip{id:StripId(9),name:"Notes strip".into(),window_groups:vec![WindowGroup{id:90,active_tab:notes.id,tabs:vec![notes],width:WindowWidth::Normal,maximized:false}]});
-        *handle.inbox.borrow_mut()=Some((Admission{source_heads:vec![[7;32]],tree:topology,routes:root.resolver.host.routes.clone(),required:vec![],missing:vec![],unsupported:vec![],pending:0},handle.permissions.borrow().clone()));
+        *handle.inbox.borrow_mut()=Some((Admission{admitted_room:history_document(&topology),source_heads:vec![[7;32]],tree:topology,routes:root.resolver.host.routes.clone(),required:vec![],missing:vec![],unsupported:vec![],pending:0},handle.permissions.borrow().clone()));
         root.reconcile();
         let mut root=Box::new(root);let ptr=std::ptr::from_mut(root.as_mut());
         let mut frame=ui::headless::FrameHarness::new_with_controlled_inputs(ui::State::new(),root,(1000,420),ui::Theme::dark(),ui::TextRenderer::new(),ui::permissions::UserId("author".into()));
@@ -1680,6 +2524,7 @@ mod tests {
         topology.active_group.insert(StripId(2), 3);
         *handle.inbox.borrow_mut() = Some((
             Admission {
+            admitted_room: history_document(&topology),
                 source_heads: vec![[7; 32]],
                 tree: topology,
                 routes: root.resolver.host.routes.clone(),
@@ -1756,6 +2601,7 @@ mod tests {
             topology.active_group.insert(StripId(2), 3);
             *handle.inbox.borrow_mut() = Some((
                 Admission {
+            admitted_room: history_document(&topology),
                 source_heads: vec![[7; 32]],
                     tree: topology,
                     routes: root.resolver.host.routes.clone(),
@@ -1959,6 +2805,7 @@ mod tests {
         topology.active_group.insert(StripId(2), 4);
         *handle.inbox.borrow_mut() = Some((
             Admission {
+            admitted_room: history_document(&topology),
                 source_heads: vec![[7; 32]],
                 tree: topology,
                 routes: root.resolver.host.routes.clone(),
@@ -2151,6 +2998,7 @@ mod tests {
         });
         *handle.inbox.borrow_mut() = Some((
             Admission {
+            admitted_room: history_document(&refreshed),
                 source_heads: vec![[7; 32]],
                 tree: refreshed,
                 routes: unsafe { (&*root_ptr).resolver.host.routes.clone() },
@@ -2216,6 +3064,7 @@ mod tests {
         });
         *handle.inbox.borrow_mut() = Some((
             Admission {
+            admitted_room: history_document(&topology),
                 source_heads: vec![[7; 32]],
                 tree: topology,
                 routes: root.resolver.host.routes.clone(),
@@ -2417,7 +3266,7 @@ mod tests {
         let writer = handle.records.borrow().values().find(|r|r.app == "dev.qos.word-processor").unwrap().clone();
         topology.workspaces[0].strips[0].window_groups[0].tabs.remove(0);
         topology.workspaces[0].strips[0].window_groups[0].active_tab = (5 << 48) | 11;
-        *handle.inbox.borrow_mut() = Some((Admission { source_heads: vec![[8;32]], tree: topology, routes, required: vec![], missing: vec![], unsupported: vec![], pending: 0 }, handle.permissions.borrow().clone()));
+        *handle.inbox.borrow_mut() = Some((Admission { admitted_room: history_document(&topology), source_heads: vec![[8;32]], tree: topology, routes, required: vec![], missing: vec![], unsupported: vec![], pending: 0 }, handle.permissions.borrow().clone()));
         frame.poll_frame().unwrap();
         let mut reports = frame.take_component_close_reports();
         assert!(!reports.is_empty(), "admitted close transfers real component custody");
@@ -2446,6 +3295,7 @@ mod tests {
             window_groups: vec![],
         });
         let admission = Admission {
+            admitted_room: history_document(&refreshed),
                 source_heads: vec![[7; 32]],
             tree: refreshed,
             routes: root.resolver.host.routes.clone(),
@@ -2733,6 +3583,7 @@ mod tests {
         )]);
         *handle.inbox.borrow_mut() = Some((
             Admission {
+                admitted_room: history_document(&tree),
                 source_heads: vec![[8; 32]],
                 tree,
                 routes,

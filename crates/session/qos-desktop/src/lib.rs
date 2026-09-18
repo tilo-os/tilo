@@ -34,3 +34,6 @@ pub mod resolver;
 pub mod topbar;
 
 pub mod projection;
+
+extern crate self as qos_desktop;
+pub mod activity;
