@@ -18,9 +18,11 @@ use std::path::PathBuf;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
 use taffy::{NodeId, TaffyTree};
+use ui::ColorCompat;
 use ui::presence::PresenceCtx;
+use ui::text_edit::{Edit, EditCore, Motion};
 use ui::text_render::TextRenderer;
-use ui::text_selection::line_boundaries;
+use ui::text_selection::{clipboard_copy, clipboard_paste, line_boundaries};
 use ui::theme::Theme;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
@@ -84,8 +86,9 @@ pub struct EditorApp {
     focused: bool,
     /// CRDT-backed body plus the caret arithmetic over it.
     body: CrdtTextBody,
-    /// Byte offset into `body.text` for the caret.
-    cursor_pos: usize,
+    /// Shared caret/selection model. Byte offsets are applied to the CRDT
+    /// through [`CrdtTextBody::splice`].
+    edit: EditCore,
     last_mouse: Point,
     source: Option<SourceDocument>,
     disk_conflict: Option<String>,
@@ -105,7 +108,7 @@ impl EditorApp {
             hovered: false,
             focused: false,
             body: CrdtTextBody::new(BODY_KEY),
-            cursor_pos: 0,
+            edit: EditCore::new(),
             last_mouse: Point::ZERO,
             source: None,
             disk_conflict: None,
@@ -116,7 +119,7 @@ impl EditorApp {
     pub fn with_seed(text: impl Into<String>) -> Self {
         let mut app = Self::new();
         app.body = CrdtTextBody::with_seed(BODY_KEY, text);
-        app.cursor_pos = app.body.text.len();
+        app.edit.set_caret(app.body.text.len());
         app
     }
 
@@ -136,7 +139,7 @@ impl EditorApp {
     }
 
     fn clamp_cursor(&mut self) {
-        self.cursor_pos = self.body.clamp(self.cursor_pos);
+        self.edit.clamp_to(&self.body.text);
     }
 
     fn reconcile_disk(&mut self, state: &mut AutoCommit, root: &ObjId) {
@@ -170,7 +173,8 @@ impl EditorApp {
             }
             Some(base) if self.body.text == base => {
                 let end = self.body.text.len();
-                self.cursor_pos = self.body.splice(state, root, 0..end, &disk_text);
+                let caret = self.body.splice(state, root, 0..end, &disk_text);
+                self.edit.set_caret(caret);
                 let _ = state.put(root, DISK_BASE_KEY, disk_text);
                 self.disk_conflict = None;
             }
@@ -184,17 +188,36 @@ impl EditorApp {
     }
 
     fn insert_text(&mut self, state: &mut AutoCommit, root: &ObjId, s: &str) {
-        let at = self.cursor_pos;
-        self.cursor_pos = self.body.splice(state, root, at..at, s);
+        let edit = self.edit.insert(s);
+        self.apply_edit(state, root, edit);
     }
 
     fn delete_before(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let cur = self.cursor_pos;
-        if cur == 0 {
+        let edit = self.edit.delete_backward(&self.body.text, false);
+        self.apply_edit(state, root, edit);
+    }
+
+    fn delete_word_before(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let edit = self.edit.delete_backward(&self.body.text, true);
+        self.apply_edit(state, root, edit);
+    }
+
+    fn delete_word_after(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let edit = self.edit.delete_forward(&self.body.text, true);
+        self.apply_edit(state, root, edit);
+    }
+
+    fn apply_edit(&mut self, state: &mut AutoCommit, root: &ObjId, edit: Edit) {
+        if edit.is_noop() {
             return;
         }
-        let prev = self.body.prev_boundary(cur);
-        self.cursor_pos = self.body.splice(state, root, prev..cur, "");
+        let caret = self.body.splice(
+            state,
+            root,
+            edit.at..edit.at.saturating_add(edit.removed),
+            &edit.inserted,
+        );
+        self.edit.set_caret(caret);
     }
 
     /// Byte offset of the start of the line `pos` sits on.
@@ -207,53 +230,47 @@ impl EditorApp {
         line_boundaries(&self.body.text, pos).1
     }
 
-    /// Steps the caret one grapheme left. Returns whether it moved.
-    fn move_left(&mut self) -> bool {
-        if self.cursor_pos == 0 {
-            return false;
-        }
-        self.cursor_pos = self.body.prev_boundary(self.cursor_pos);
-        true
-    }
-
-    /// Steps the caret one grapheme right. Returns whether it moved.
-    fn move_right(&mut self) -> bool {
-        if self.cursor_pos >= self.body.text.len() {
-            return false;
-        }
-        self.cursor_pos = self.body.next_boundary(self.cursor_pos);
-        true
-    }
-
     /// Same column, previous line. Returns whether it moved. Columns are
     /// byte offsets within the line — fine for ASCII, "close enough" for
     /// mixed UTF-8 given the clamp.
-    fn move_line_up(&mut self) -> bool {
-        let line_start = self.line_start(self.cursor_pos);
+    fn move_line_up(&mut self, extend: bool) -> bool {
+        let line_start = self.line_start(self.edit.caret());
         if line_start == 0 {
             return false;
         }
-        let col = self.cursor_pos.saturating_sub(line_start);
+        let col = self.edit.caret().saturating_sub(line_start);
         let prev_line_end = line_start.saturating_sub(1); // the `\n`
         let prev_line_start = self.line_start(prev_line_end);
         let prev_len = prev_line_end.saturating_sub(prev_line_start);
-        self.cursor_pos = prev_line_start.saturating_add(col.min(prev_len));
+        let target = prev_line_start.saturating_add(col.min(prev_len));
+        if extend {
+            let anchor = self.edit.selection().anchor;
+            self.edit.set_selection(anchor, target);
+        } else {
+            self.edit.set_caret(target);
+        }
         self.clamp_cursor();
         true
     }
 
     /// Same column, next line. Returns whether it moved.
-    fn move_line_down(&mut self) -> bool {
-        let line_start = self.line_start(self.cursor_pos);
-        let col = self.cursor_pos.saturating_sub(line_start);
-        let line_end = self.line_end(self.cursor_pos);
+    fn move_line_down(&mut self, extend: bool) -> bool {
+        let line_start = self.line_start(self.edit.caret());
+        let col = self.edit.caret().saturating_sub(line_start);
+        let line_end = self.line_end(self.edit.caret());
         if line_end >= self.body.text.len() {
             return false;
         }
         let next_line_start = line_end.saturating_add(1);
         let next_line_end = self.line_end(next_line_start);
         let next_len = next_line_end.saturating_sub(next_line_start);
-        self.cursor_pos = next_line_start.saturating_add(col.min(next_len));
+        let target = next_line_start.saturating_add(col.min(next_len));
+        if extend {
+            let anchor = self.edit.selection().anchor;
+            self.edit.set_selection(anchor, target);
+        } else {
+            self.edit.set_caret(target);
+        }
         self.clamp_cursor();
         true
     }
@@ -461,6 +478,7 @@ struct EditorPalette {
     punct: Color,
     ident: Color,
     caret: Color,
+    selection: Color,
 }
 
 impl EditorPalette {
@@ -480,6 +498,7 @@ impl EditorPalette {
             punct: ink.ink_dim,
             ident: ink.ink,
             caret: tokens.colors.accent[5],
+            selection: tokens.colors.accent[5].with_alpha_factor(0.22),
         }
     }
 }
@@ -548,13 +567,13 @@ impl EditorApp {
         let cursor_line = self
             .body
             .text
-            .get(..self.cursor_pos)
+            .get(..self.edit.caret())
             .map_or(0, |s| s.matches('\n').count());
         let cursor_col_prefix: &str = {
-            let line_start = self.line_start(self.cursor_pos);
+            let line_start = self.line_start(self.edit.caret());
             self.body
                 .text
-                .get(line_start..self.cursor_pos)
+                .get(line_start..self.edit.caret())
                 .unwrap_or("")
         };
 
@@ -581,6 +600,41 @@ impl EditorApp {
                 ),
                 None,
             );
+
+            let line_start = self
+                .body
+                .text
+                .split_inclusive('\n')
+                .take(row)
+                .map(str::len)
+                .sum::<usize>();
+            let (sel_start, sel_end) = {
+                let range = self.edit.range();
+                (
+                    range.start.max(line_start),
+                    range.end.min(line_start + line.len()),
+                )
+            };
+            if sel_start < sel_end {
+                let prefix = line.get(..sel_start - line_start).unwrap_or("");
+                let selected = line
+                    .get(sel_start - line_start..sel_end - line_start)
+                    .unwrap_or("");
+                let (prefix_w, _) = tr.measure(prefix, TEXT_SIZE, None);
+                let (selected_w, _) = tr.measure(selected, TEXT_SIZE, None);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    palette.selection,
+                    None,
+                    &Rect::new(
+                        content_x + f64::from(prefix_w),
+                        y - 2.0,
+                        content_x + f64::from(prefix_w + selected_w),
+                        y + f64::from(LINE_HEIGHT) - 2.0,
+                    ),
+                );
+            }
 
             let tokens_on_line = tokenize(line);
             let mut pen_x = content_x;
@@ -939,12 +993,12 @@ impl Widget for EditorApp {
     }
 
     fn get_state(&self) -> Option<String> {
-        Some(self.cursor_pos.to_string())
+        Some(self.edit.caret().to_string())
     }
 
     fn set_state(&mut self, s: &str) {
         if let Ok(pos) = s.parse::<usize>() {
-            self.cursor_pos = pos;
+            self.edit.set_caret(pos);
             self.clamp_cursor();
         }
     }
@@ -963,12 +1017,91 @@ impl EditorApp {
             return;
         }
         let mods = modifiers.state();
-        if mods.control_key() || mods.super_key() {
+        if mods.super_key() {
+            return;
+        }
+        if mods.control_key() {
+            match &key_event.logical_key {
+                Key::Named(NamedKey::Backspace) => {
+                    self.delete_word_before(state, root);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Delete) => {
+                    self.delete_word_after(state, root);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::ArrowLeft) => {
+                    self.edit
+                        .motion(&self.body.text, Motion::WordLeft, mods.shift_key());
+                    *handled = true;
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    self.edit
+                        .motion(&self.body.text, Motion::WordRight, mods.shift_key());
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Home) => {
+                    self.edit
+                        .motion(&self.body.text, Motion::DocStart, mods.shift_key());
+                    *handled = true;
+                }
+                Key::Named(NamedKey::End) => {
+                    self.edit
+                        .motion(&self.body.text, Motion::DocEnd, mods.shift_key());
+                    *handled = true;
+                }
+                Key::Character(value) => match value.to_lowercase().as_str() {
+                    "a" => {
+                        self.edit.select_all(&self.body.text);
+                        *handled = true;
+                    }
+                    "c" => {
+                        if let Some(selected) = self.body.text.get(self.edit.range()) {
+                            clipboard_copy(selected);
+                        }
+                        *handled = true;
+                    }
+                    "x" => {
+                        if self.edit.has_selection() {
+                            if let Some(selected) = self.body.text.get(self.edit.range()) {
+                                clipboard_copy(selected);
+                            }
+                            let edit = self.edit.delete_backward(&self.body.text, false);
+                            self.apply_edit(state, root, edit);
+                        }
+                        *handled = true;
+                    }
+                    "v" => {
+                        if let Some(paste) = clipboard_paste() {
+                            let cleaned: String = paste
+                                .chars()
+                                .filter(|character| {
+                                    !character.is_control()
+                                        || *character == '\n'
+                                        || *character == '\t'
+                                })
+                                .collect();
+                            if !cleaned.is_empty() {
+                                let edit = self.edit.insert(&cleaned);
+                                self.apply_edit(state, root, edit);
+                            }
+                        }
+                        *handled = true;
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
             return;
         }
         match &key_event.logical_key {
             Key::Named(NamedKey::Backspace) => {
                 self.delete_before(state, root);
+                *handled = true;
+            }
+            Key::Named(NamedKey::Delete) => {
+                let edit = self.edit.delete_forward(&self.body.text, false);
+                self.apply_edit(state, root, edit);
                 *handled = true;
             }
             Key::Named(NamedKey::Enter) => {
@@ -984,31 +1117,33 @@ impl EditorApp {
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                if self.move_left() {
-                    *handled = true;
-                }
+                self.edit
+                    .motion(&self.body.text, Motion::Left, mods.shift_key());
+                *handled = true;
             }
             Key::Named(NamedKey::ArrowRight) => {
-                if self.move_right() {
-                    *handled = true;
-                }
+                self.edit
+                    .motion(&self.body.text, Motion::Right, mods.shift_key());
+                *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
-                if self.move_line_up() {
+                if self.move_line_up(mods.shift_key()) {
                     *handled = true;
                 }
             }
             Key::Named(NamedKey::ArrowDown) => {
-                if self.move_line_down() {
+                if self.move_line_down(mods.shift_key()) {
                     *handled = true;
                 }
             }
             Key::Named(NamedKey::Home) => {
-                self.cursor_pos = self.line_start(self.cursor_pos);
+                self.edit
+                    .motion(&self.body.text, Motion::LineStart, mods.shift_key());
                 *handled = true;
             }
             Key::Named(NamedKey::End) => {
-                self.cursor_pos = self.line_end(self.cursor_pos);
+                self.edit
+                    .motion(&self.body.text, Motion::LineEnd, mods.shift_key());
                 *handled = true;
             }
             _ => {
@@ -1093,9 +1228,140 @@ mod tests {
         app.sync(&mut doc, &tile);
         app.insert_text(&mut doc, &tile, "abc");
         assert_eq!(app.body.text, "abc");
-        assert_eq!(app.cursor_pos, 3);
+        assert_eq!(app.edit.caret(), 3);
         app.delete_before(&mut doc, &tile);
         assert_eq!(app.body.text, "ab");
+    }
+
+    #[test]
+    fn control_word_editing_matches_code_editor_expectations() {
+        let (mut doc, tile) = bind();
+        let mut app = EditorApp::with_seed("hello world");
+        app.sync(&mut doc, &tile);
+
+        app.delete_word_before(&mut doc, &tile);
+        assert_eq!(app.body.text, "hello ");
+        assert_eq!(app.edit.caret(), "hello ".len());
+
+        app.edit.set_caret(0);
+        app.delete_word_after(&mut doc, &tile);
+        assert_eq!(app.body.text, "");
+        assert_eq!(app.edit.caret(), 0);
+    }
+
+    #[test]
+    fn control_arrows_jump_between_words_and_document_extremes() {
+        let mut app = EditorApp::with_seed("hello world");
+        app.edit.set_caret(0);
+        app.edit.motion(&app.body.text, Motion::WordRight, false);
+        assert_eq!(app.edit.caret(), "hello ".len());
+        app.edit.motion(&app.body.text, Motion::WordLeft, false);
+        assert_eq!(app.edit.caret(), 0);
+        app.edit.set_caret("hello".len());
+        app.edit.motion(&app.body.text, Motion::WordLeft, false);
+        assert_eq!(app.edit.caret(), 0);
+        app.edit.set_caret(0);
+        app.edit.motion(&app.body.text, Motion::WordRight, false);
+        assert_eq!(app.edit.caret(), "hello ".len());
+    }
+
+    #[test]
+    fn focused_editor_dispatch_consumes_ctrl_backspace() {
+        let (mut doc, tile) = bind();
+        let mut app = EditorApp::with_seed("hello world");
+        app.sync(&mut doc, &tile);
+        app.focused = true;
+        let mut key: KeyEvent = unsafe { std::mem::zeroed() };
+        key.logical_key = Key::Named(NamedKey::Backspace);
+        key.state = ElementState::Pressed;
+        let modifiers = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        let mut handled = false;
+
+        app.handle_keyboard_input(&key, modifiers, &mut doc, &tile, &mut handled);
+
+        assert!(handled);
+        assert_eq!(app.body.text, "hello ");
+    }
+
+    #[test]
+    fn focused_editor_dispatch_selects_and_replaces_text() {
+        let (mut doc, tile) = bind();
+        let mut app = EditorApp::with_seed("hello");
+        app.sync(&mut doc, &tile);
+        app.focused = true;
+
+        let mut select_all: KeyEvent = unsafe { std::mem::zeroed() };
+        select_all.logical_key = Key::Character("a".into());
+        select_all.state = ElementState::Pressed;
+        let control = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        let mut handled = false;
+        app.handle_keyboard_input(&select_all, control, &mut doc, &tile, &mut handled);
+        assert!(handled);
+        assert_eq!(app.edit.range(), 0.."hello".len());
+
+        let mut replacement: KeyEvent = unsafe { std::mem::zeroed() };
+        replacement.logical_key = Key::Character("x".into());
+        replacement.text = Some("x".into());
+        replacement.state = ElementState::Pressed;
+        handled = false;
+        app.handle_keyboard_input(
+            &replacement,
+            Modifiers::default(),
+            &mut doc,
+            &tile,
+            &mut handled,
+        );
+        assert!(handled);
+        assert_eq!(app.body.text, "x");
+        assert_eq!(app.edit.caret(), 1);
+    }
+
+    #[test]
+    fn focused_editor_dispatch_extends_selection_with_shift_and_control() {
+        let (mut doc, tile) = bind();
+        let mut app = EditorApp::with_seed("hello world");
+        app.sync(&mut doc, &tile);
+        app.focused = true;
+
+        let mut left: KeyEvent = unsafe { std::mem::zeroed() };
+        left.logical_key = Key::Named(NamedKey::ArrowLeft);
+        left.state = ElementState::Pressed;
+        let shift = Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
+        let mut handled = false;
+        app.handle_keyboard_input(&left, shift, &mut doc, &tile, &mut handled);
+        assert!(handled);
+        assert_eq!(
+            app.edit.range(),
+            "hello world".len() - 1.."hello world".len()
+        );
+
+        let control_shift = Modifiers::from(
+            winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
+        );
+        handled = false;
+        app.handle_keyboard_input(&left, control_shift, &mut doc, &tile, &mut handled);
+        assert!(handled);
+        assert_eq!(app.edit.range(), "hello ".len().."hello world".len());
+    }
+
+    #[test]
+    fn focused_editor_dispatch_extends_vertical_selection() {
+        let (mut doc, tile) = bind();
+        let mut app = EditorApp::with_seed("one\ntwo\nthree");
+        app.sync(&mut doc, &tile);
+        app.focused = true;
+
+        let mut up: KeyEvent = unsafe { std::mem::zeroed() };
+        up.logical_key = Key::Named(NamedKey::ArrowUp);
+        up.state = ElementState::Pressed;
+        let shift = Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
+        let mut handled = false;
+        app.handle_keyboard_input(&up, shift, &mut doc, &tile, &mut handled);
+
+        assert!(handled);
+        assert_eq!(app.edit.selection().anchor, "one\ntwo\nthree".len());
+        assert_eq!(app.edit.caret(), "one\ntwo".len());
+        assert_eq!(app.edit.range(), "one\ntwo".len().."one\ntwo\nthree".len());
     }
 
     #[test]
