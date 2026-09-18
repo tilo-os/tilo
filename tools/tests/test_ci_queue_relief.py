@@ -35,11 +35,12 @@ class QueueReliefTests(unittest.TestCase):
         quality = section(workflow("lint"), "quality", 2)
         expected = section(quality, "container", 4)
         self.assertRegex(expected, r"image: code\.podesta\.ai/qos/ci-fast@sha256:[0-9a-f]{64}")
-        for name in ("checks", "report-check-result"):
+        for name in ("select", "checks", "report-check-result"):
             with self.subTest(job=name):
                 job = section(workflow("check"), name, 2)
                 self.assertEqual(section(job, "container", 4), expected)
-                self.assertIn("runs-on: runner-quality", job)
+                if name != "select":
+                    self.assertIn("runs-on: runner-quality", job)
 
     def test_every_main_commit_keeps_checks_without_serializing_revisions(self):
         for name in ("check", "lint"):
