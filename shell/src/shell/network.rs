@@ -3384,12 +3384,56 @@ impl ShellNetwork {
         (routes.get(&(route.workspace_topic, route.endpoint_id)) == Some(route)).then(operation)
     }
 
+    #[cfg(test)]
+    pub(crate) fn install_personal_route_for_test(
+        &self,
+        workspace_topic: u64,
+        endpoint_id: iroh::EndpointId,
+        membership_epoch: crate::network::actor::MembershipEpoch,
+        user_public_key: [u8; 32],
+    ) -> AuthenticatedPersonalRoute {
+        let route = AuthenticatedPersonalRoute {
+            workspace_topic,
+            endpoint_id,
+            membership_epoch,
+            user_public_key,
+            device: crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                endpoint_id.as_bytes(),
+            ))
+            .expect("endpoint id is a valid test device"),
+        };
+        self.authenticated_personal_routes
+            .lock()
+            .expect("test personal routes")
+            .insert((workspace_topic, endpoint_id), route.clone());
+        route
+    }
+
     /// Drain validated actions. They are never persisted or included in the
     /// convergent snapshot, so a stale command cannot execute after restart.
     pub(crate) fn take_personal_fabric_actions(&self) -> Vec<ReceivedPersonalFabricAction> {
         self.personal_fabric_actions
             .lock()
             .map_or_else(|_| Vec::new(), |mut actions| actions.drain(..).collect())
+    }
+
+    pub(crate) fn revoke_queued_personal_action_authority(
+        &self,
+        envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    ) {
+        if let crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
+            locator:
+                crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer {
+                    transfer_id, ..
+                },
+            ..
+        } = &envelope.action
+            && let Ok(mut transfers) = self.personal_media_transfers.lock()
+        {
+            transfers
+                .authorized
+                .remove(&(envelope.source.clone(), *transfer_id));
+        }
     }
 
     /// Install one exact mirror route after target-local consent.
@@ -4402,13 +4446,37 @@ impl ShellNetwork {
             return;
         }
         drop(replays);
-        if let crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
-            locator:
-                crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer {
-                    transfer_id, ..
-                },
-            ..
-        } = &envelope.action
+        let transfer_authorization =
+            if let crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
+                locator:
+                    crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer {
+                        transfer_id,
+                        ..
+                    },
+                ..
+            } = &envelope.action
+            {
+                Some((envelope.source.clone(), *transfer_id))
+            } else {
+                None
+            };
+        let Ok(mut actions) = self.personal_fabric_actions.lock() else {
+            return;
+        };
+        let outcome = queue_personal_fabric_action(
+            &mut actions,
+            ReceivedPersonalFabricAction { envelope, route },
+        );
+        if outcome == PersonalFabricQueueOutcome::Saturated {
+            tracing::warn!(
+                peer = %peer,
+                "personal fabric action queue saturated; rejecting action without evicting control"
+            );
+            return;
+        }
+        drop(actions);
+        if outcome == PersonalFabricQueueOutcome::Queued
+            && let Some(key) = transfer_authorization
             && let Ok(mut transfers) = self.personal_media_transfers.lock()
         {
             if transfers.authorized.len() >= MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS
@@ -4416,22 +4484,7 @@ impl ShellNetwork {
             {
                 discard_personal_media_transfer(&mut transfers, &oldest);
             }
-            transfers
-                .authorized
-                .insert((envelope.source.clone(), *transfer_id));
-        }
-        let Ok(mut actions) = self.personal_fabric_actions.lock() else {
-            return;
-        };
-        if queue_personal_fabric_action(
-            &mut actions,
-            ReceivedPersonalFabricAction { envelope, route },
-        ) == PersonalFabricQueueOutcome::Saturated
-        {
-            tracing::warn!(
-                peer = %peer,
-                "personal fabric action queue saturated; rejecting action without evicting control"
-            );
+            transfers.authorized.insert(key);
         }
     }
 
@@ -4590,6 +4643,12 @@ impl ShellNetwork {
         }
         let origin = crate::shell::state::PeerOrigin::peer(&peer);
         if let NeighbourMsg::IdentityHello { cert, revocations } = &msg {
+            // A new hello is a full replacement attempt for this exact route.
+            // Purge first so a wrong-user/revoked replacement can never leave
+            // the old same-user authority alive.
+            if let Ok(mut routes) = self.authenticated_personal_routes.lock() {
+                routes.remove(&(ws, peer));
+            }
             self.accept_identity_hello(ws, &origin, &peer, cert, revocations);
             if self.peer_identities.get(&origin).is_some()
                 && let Ok(mut direct) = self.workspace_control_direct.lock()
@@ -4597,9 +4656,6 @@ impl ShellNetwork {
                 direct.insert((ws, peer));
             }
             if self.peer_identities.get(&origin).is_none() {
-                if let Ok(mut routes) = self.authenticated_personal_routes.lock() {
-                    routes.remove(&(ws, peer));
-                }
                 self.notify_workspace_control(WorkspaceControlNetworkEvent::PeerRevoked {
                     workspace_topic: ws,
                     peer,
@@ -6107,6 +6163,22 @@ mod tests {
         device: &iroh::SecretKey,
         membership_epoch: crate::network::actor::MembershipEpoch,
     ) {
+        authenticated_personal_peer_on_topic(
+            net,
+            root,
+            device,
+            membership_epoch,
+            personal_continuity_topic_id(&root.verifying_key().to_bytes()),
+        );
+    }
+
+    fn authenticated_personal_peer_on_topic(
+        net: &ShellNetwork,
+        root: &ed25519_dalek::SigningKey,
+        device: &iroh::SecretKey,
+        membership_epoch: crate::network::actor::MembershipEpoch,
+        topic: u64,
+    ) {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let mut cert = DeviceCert {
@@ -6120,7 +6192,7 @@ mod tests {
         };
         sign_device_cert(&mut cert, root).expect("valid personal device certificate");
         net.dispatch_neighbour_msg(
-            personal_continuity_topic_id(&cert.user_public_key),
+            topic,
             device.public(),
             Some(membership_epoch),
             NeighbourMsg::IdentityHello {
@@ -6668,7 +6740,13 @@ mod tests {
         let peer = iroh::SecretKey::generate();
         let (net, _commands) = personal_continuity_network_for_test(local_user);
         let epoch = crate::network::actor::MembershipEpoch::for_test(51);
-        authenticated_personal_peer_at(&net, &other_root, &peer, epoch);
+        authenticated_personal_peer_on_topic(
+            &net,
+            &other_root,
+            &peer,
+            epoch,
+            personal_continuity_topic_id(&local_user),
+        );
         let peer_device =
             crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
                 .unwrap();
@@ -6676,6 +6754,21 @@ mod tests {
         net.peer_identities
             .remove(&crate::shell::state::PeerOrigin::peer(&peer.public()));
 
+        authenticated_personal_peer_at(&net, &local_root, &peer, epoch);
+        assert!(net.current_personal_route(&peer_device).is_some());
+        authenticated_personal_peer_on_topic(
+            &net,
+            &other_root,
+            &peer,
+            epoch,
+            personal_continuity_topic_id(&local_user),
+        );
+        assert!(
+            net.current_personal_route(&peer_device).is_none(),
+            "a rejected replacement hello must purge the prior route"
+        );
+        net.peer_identities
+            .remove(&crate::shell::state::PeerOrigin::peer(&peer.public()));
         authenticated_personal_peer_at(&net, &local_root, &peer, epoch);
         let admitted = net.current_personal_route(&peer_device).unwrap();
         net.dispatch_net_event(NetEvent::PeerLeft {
