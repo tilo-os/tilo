@@ -644,6 +644,7 @@ impl ApplicationsProvider {
                 id: format!("app:{}", app.package_id),
                 title: format!("View {} in App Store", app.display_name),
                 subtitle: Some(subtitle),
+                badge: None,
                 score: presentation_score(needle, &app.package_id, score)
                     .saturating_sub(NOT_INSTALLED_TIEBREAK),
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {

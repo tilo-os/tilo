@@ -15,7 +15,7 @@ use crate::shell::search::ActionReceipt;
 use crate::shell::search::action_api::{ActionError, ActionParam, ParamType};
 use crate::shell::search::{
     InvocationDisposition, PendingInvocation, ResourceKind, SearchBudget, SearchContext,
-    SearchCursor, SearchPage, SearchProvider, SearchResult,
+    SearchCursor, SearchPage, SearchProvider, SearchProximity, SearchResult,
 };
 
 use crate::shell::collab_broker_capnp::{
@@ -123,6 +123,7 @@ pub struct LiveAppActionsProvider {
     /// Keeping previous query terms made rapid typing retain unbounded pages
     /// and receivers even though no result could ever be rendered again.
     directory_query: RefCell<Option<String>>,
+    resource_kinds: Vec<ResourceKind>,
     directory_invalidations: Rc<RefCell<HashSet<DirectoryCacheKey>>>,
     directory_epoch: AtomicU64,
     surface_snapshot: RefCell<Option<SurfaceSnapshot>>,
@@ -131,6 +132,8 @@ pub struct LiveAppActionsProvider {
     projection: Cell<QueryProjection>,
     #[cfg(test)]
     build_probe: Arc<BuildProbe>,
+    #[cfg(test)]
+    directory_query_probe: RefCell<Option<runtime_collab::ActionDirectoryQuery>>,
 }
 
 struct SurfaceSnapshot {
@@ -181,6 +184,10 @@ enum AuxiliaryEntry {
         descriptor: runtime_collab::ExportedAction,
         actor: String,
         cursor: Vec<u8>,
+    },
+    Resource {
+        root: crate::shell::collab_broker_capnp::ActionDirectoryRoot,
+        row: runtime_collab::ActionDirectoryRow,
     },
 }
 
@@ -325,6 +332,13 @@ fn invocation_argument(
 }
 
 impl LiveAppActionsProvider {
+    fn wants_resource_rows(wanted: &[ResourceKind]) -> bool {
+        wanted.is_empty()
+            || wanted
+                .iter()
+                .any(|kind| matches!(kind, ResourceKind::Custom(label) if label == "Resources"))
+    }
+
     pub fn new(broker: AppActionBroker) -> Self {
         let directory_queue = broker.action_directory_request_queue();
         Self {
@@ -333,6 +347,10 @@ impl LiveAppActionsProvider {
             directory_pages: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
             directory_query: RefCell::new(None),
+            resource_kinds: vec![
+                ResourceKind::Action,
+                ResourceKind::Custom("Resources".into()),
+            ],
             directory_invalidations: Rc::new(RefCell::new(HashSet::new())),
             directory_epoch: AtomicU64::new(0),
             surface_snapshot: RefCell::new(None),
@@ -341,6 +359,8 @@ impl LiveAppActionsProvider {
             projection: Cell::new(QueryProjection::All),
             #[cfg(test)]
             build_probe: Arc::new(BuildProbe::default()),
+            #[cfg(test)]
+            directory_query_probe: RefCell::new(None),
         }
     }
 
@@ -352,7 +372,15 @@ impl LiveAppActionsProvider {
             .map(|workspace| workspace.room.to_string())
             .unwrap_or_default();
         let app = ctx.chrome.active_app_id().unwrap_or_default();
-        format!("{:?}\u{1f}{room}\u{1f}{app}", ctx.chrome.search_scope)
+        let resource = ctx
+            .chrome
+            .search_resource_scope
+            .as_ref()
+            .map_or("", |scope| scope.resource.as_str());
+        format!(
+            "{:?}\u{1f}{room}\u{1f}{app}\u{1f}{resource}",
+            ctx.chrome.search_scope
+        )
     }
 
     /// Return only indexed local actions in the current scope.  The broker
@@ -610,6 +638,18 @@ impl LiveAppActionsProvider {
         self.directory_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn set_directory_context(&self, ctx: &SearchContext<'_>, needle: &str) {
+        let scoped_query = if let Some(scope) = &ctx.chrome.search_resource_scope {
+            format!(
+                "{needle}{ID_SEPARATOR}{}{ID_SEPARATOR}{}",
+                scope.peer_id, scope.resource
+            )
+        } else {
+            needle.to_string()
+        };
+        self.set_directory_query(&scoped_query);
+    }
+
     fn apply_directory_invalidations(&self) {
         let invalidated = std::mem::take(&mut *self.directory_invalidations.borrow_mut());
         if invalidated.is_empty() {
@@ -660,16 +700,30 @@ impl LiveAppActionsProvider {
             root_limit.min(MAX_DIRECTORY_ROOTS_PER_QUERY),
         );
         let root_next_after = root_page.next_after_peer;
-        let roots = resume
+        let mut roots = resume
             .directory
             .as_ref()
             .map(|directory| vec![directory.root.clone()])
             .unwrap_or(root_page.roots);
+        if let Some(resource_scope) = &ctx.chrome.search_resource_scope {
+            roots.retain(|root| {
+                root.peer_id == resource_scope.peer_id
+                    && root.cluster_id == resource_scope.cluster_id
+                    && root.app_id == resource_scope.app_id
+            });
+        }
+        let parent_resource = ctx
+            .chrome
+            .search_resource_scope
+            .as_ref()
+            .map_or("", |scope| scope.resource.as_str());
         let mut entries = Vec::new();
         let mut pending_directory = Vec::new();
         let mut next_resume = None;
         let actor = ctx.chrome.active_local_user();
-        if needle.is_empty() || "jobs status progress".contains(needle) {
+        if ctx.chrome.search_resource_scope.is_none()
+            && (needle.is_empty() || "jobs status progress".contains(needle))
+        {
             for (id, update) in self
                 .broker
                 .statuses(&actor)
@@ -756,6 +810,7 @@ impl LiveAppActionsProvider {
                     &root_actor,
                     needle,
                     &remote_cursor,
+                    parent_resource,
                 );
                 let page = self
                     .directory_pages
@@ -784,13 +839,18 @@ impl LiveAppActionsProvider {
                         break;
                     }
                     consumed = consumed.saturating_add(1);
-                    if let Some(descriptor) = row.descriptor {
+                    if let Some(descriptor) = row.descriptor.clone() {
                         entries.push(AuxiliaryEntry::Directory {
                             root: root.clone(),
                             revision: page.revision.clone(),
                             descriptor,
                             actor: root_actor.clone(),
                             cursor: remote_cursor.clone(),
+                        });
+                    } else if row.has_children {
+                        entries.push(AuxiliaryEntry::Resource {
+                            root: root.clone(),
+                            row,
                         });
                     }
                 }
@@ -862,6 +922,7 @@ impl LiveAppActionsProvider {
                 id: job_cancel_id(id),
                 title: format!("Cancel action job {id}"),
                 subtitle: Some("Requests cooperative cancellation".into()),
+                badge: None,
                 score: 5,
                 params: Vec::new(),
                 contract: None,
@@ -890,6 +951,7 @@ impl LiveAppActionsProvider {
             id: job_status_id(id),
             title: format!("Action job {id}"),
             subtitle: Some(state.into()),
+            badge: None,
             score: -10,
             params: Vec::new(),
             contract: None,
@@ -1044,6 +1106,7 @@ impl LiveAppActionsProvider {
         actor: &str,
         needle: &str,
         cursor: &[u8],
+        parent_resource: &str,
     ) {
         let key = (
             peer_id,
@@ -1061,12 +1124,14 @@ impl LiveAppActionsProvider {
             revision: String::new(),
             cursor: cursor.to_vec(),
             needle: needle.to_string(),
-            parent_resource: String::new(),
+            parent_resource: parent_resource.to_string(),
             max_results: 48,
             max_bytes: 48 * 1024,
             max_work: 4_096,
             max_depth: 1,
         };
+        #[cfg(test)]
+        self.directory_query_probe.replace(Some(query.clone()));
         if let Ok(receiver) =
             self.directory_queue
                 .try_query(BrokerActor::person(actor), cluster_id, query)
@@ -1249,6 +1314,7 @@ impl LiveAppActionsProvider {
                 .description
                 .clone()
                 .or_else(|| Some(format!("{} · {}", descriptor.resource_label, root.app_id))),
+            badge: None,
             score,
             params,
             contract: Some(contract),
@@ -1297,6 +1363,81 @@ impl LiveAppActionsProvider {
             })),
         })
     }
+
+    fn directory_resource_result(
+        root: &crate::shell::collab_broker_capnp::ActionDirectoryRoot,
+        row: &runtime_collab::ActionDirectoryRow,
+        needle: &str,
+    ) -> Option<SearchResult> {
+        let presentation = serde_json::from_str::<tilo_actions::ResourcePresentation>(
+            &row.resource_presentation_json,
+        )
+        .ok()
+        .filter(tilo_actions::ResourcePresentation::is_valid);
+        let presentation_text = presentation
+            .as_ref()
+            .into_iter()
+            .flat_map(|value| [value.detail.as_deref(), value.badge.as_deref()])
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let searchable = format!(
+            "{} {} {}",
+            row.resource_label, row.resource, presentation_text
+        )
+        .to_lowercase();
+        let score = if needle.is_empty() {
+            0
+        } else if row.resource_label.to_lowercase().starts_with(needle) {
+            100
+        } else if searchable.contains(needle) {
+            50
+        } else {
+            return None;
+        };
+        let scope = crate::shell::chrome_state::SearchResourceScope {
+            peer_id: root.peer_id,
+            cluster_id: root.cluster_id.clone(),
+            app_id: root.app_id.clone(),
+            resource: row.resource.clone(),
+            label: row.resource_label.clone(),
+        };
+        let title = row.resource_label.clone();
+        Some(SearchResult {
+            kind: ResourceKind::Custom(if row.resource_kind.is_empty() {
+                "Resources".into()
+            } else {
+                row.resource_kind.clone()
+            }),
+            provider_id: PROVIDER_ID.into(),
+            id: format!(
+                "directory-resource{ID_SEPARATOR}{}{ID_SEPARATOR}{}",
+                root.peer_id, row.resource
+            ),
+            title,
+            subtitle: Some(
+                presentation
+                    .as_ref()
+                    .and_then(|value| value.detail.as_deref())
+                    .map_or_else(
+                        || format!("{} · contains resources", root.app_id),
+                        |detail| format!("{} · {detail}", root.app_id),
+                    ),
+            ),
+            badge: presentation.and_then(|value| value.badge),
+            score,
+            params: Vec::new(),
+            contract: None,
+            on_open: Rc::new(move |_, _, chrome, _| {
+                let mut state = chrome.borrow_mut();
+                state.search_resource_scope = Some(scope.clone());
+                state.bump();
+                Ok(())
+            }),
+            on_invoke: None,
+            on_begin_invoke: None,
+        })
+    }
 }
 
 impl SearchProvider for LiveAppActionsProvider {
@@ -1305,11 +1446,11 @@ impl SearchProvider for LiveAppActionsProvider {
     }
 
     fn name(&self) -> &'static str {
-        "Application actions"
+        "Application resources and actions"
     }
 
     fn resource_kinds(&self) -> &[ResourceKind] {
-        &[ResourceKind::Action]
+        &self.resource_kinds
     }
 
     fn available_in_active_app_scope(&self) -> bool {
@@ -1330,6 +1471,31 @@ impl SearchProvider for LiveAppActionsProvider {
             })
     }
 
+    fn proximity(
+        &self,
+        result: &SearchResult,
+        chrome: &crate::shell::chrome_state::ChromeState,
+    ) -> SearchProximity {
+        let current_room = chrome
+            .tree()
+            .active_workspace()
+            .map(|workspace| workspace.room.to_string());
+        if Self::hierarchy(&result.id)
+            .is_some_and(|(_, cluster, _, _, _)| current_room.as_deref() == Some(cluster))
+        {
+            return SearchProximity::CurrentWorkspace;
+        }
+        // Directory result ids are intentionally opaque and omit route data,
+        // but the provider admits those rows in Workspace scope only after
+        // matching their authenticated root's cluster to `current_room`.
+        if chrome.search_scope == crate::shell::chrome_state::SearchScope::Workspace
+            && result.id.starts_with("directory\u{1f}")
+        {
+            return SearchProximity::CurrentWorkspace;
+        }
+        SearchProximity::Global
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the query constructs paired palette/headless callbacks from one captured action contract; splitting them would duplicate or desynchronise confirmation, launch, and job lifecycle state"
@@ -1347,7 +1513,7 @@ impl SearchProvider for LiveAppActionsProvider {
         let actor = ctx.chrome.active_local_user();
         let mut results = Vec::new();
         if self.projection.get() != QueryProjection::LocalOnly {
-            self.set_directory_query(&needle);
+            self.set_directory_context(&ctx, &needle);
             self.apply_directory_invalidations();
             self.poll_directory_pages();
         }
@@ -1357,6 +1523,13 @@ impl SearchProvider for LiveAppActionsProvider {
                 .action_directory_root_page(None, MAX_DIRECTORY_ROOTS_PER_QUERY)
                 .roots
             {
+                if let Some(resource_scope) = &ctx.chrome.search_resource_scope
+                    && (root.peer_id != resource_scope.peer_id
+                        || root.cluster_id != resource_scope.cluster_id
+                        || root.app_id != resource_scope.app_id)
+                {
+                    continue;
+                }
                 if !matches!(
                     ctx.chrome.search_scope,
                     crate::shell::chrome_state::SearchScope::All
@@ -1389,6 +1562,10 @@ impl SearchProvider for LiveAppActionsProvider {
                     &root_actor,
                     &needle,
                     &[],
+                    ctx.chrome
+                        .search_resource_scope
+                        .as_ref()
+                        .map_or("", |scope| scope.resource.as_str()),
                 );
                 let page = self
                     .directory_pages
@@ -1432,6 +1609,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     id: job_status_id(id),
                     title: format!("Action job {id}"),
                     subtitle: Some(state.into()),
+                    badge: None,
                     score: -10,
                     params: Vec::new(),
                     contract: None,
@@ -1458,6 +1636,7 @@ impl SearchProvider for LiveAppActionsProvider {
                         id: job_cancel_id(id),
                         title: format!("Cancel action job {id}"),
                         subtitle: Some("Requests cooperative cancellation".into()),
+                        badge: None,
                         score: 5,
                         params: Vec::new(),
                         contract: None,
@@ -1552,6 +1731,7 @@ impl SearchProvider for LiveAppActionsProvider {
                             }
                         })
                     })),
+                    badge: None,
                     score,
                     params,
                     contract: Some(action.contract.clone()),
@@ -1814,12 +1994,14 @@ impl SearchProvider for LiveAppActionsProvider {
     ) -> SearchPage {
         if budget.max_results == 0
             || budget.max_work == 0
-            || (!ctx.wanted.is_empty() && !ctx.wanted.contains(&ResourceKind::Action))
+            || (!ctx.wanted.is_empty()
+                && !ctx.wanted.contains(&ResourceKind::Action)
+                && !Self::wants_resource_rows(ctx.wanted))
         {
             return SearchPage::exhausted(self.search_revision(&ctx), Vec::new());
         }
         let needle = ctx.needle.trim().to_lowercase();
-        self.set_directory_query(&needle);
+        self.set_directory_context(&ctx, &needle);
         self.apply_directory_invalidations();
         self.poll_directory_pages();
         let revision = self.search_revision(&ctx);
@@ -1917,7 +2099,14 @@ impl SearchProvider for LiveAppActionsProvider {
                         state,
                         cancel,
                         actor,
-                    } => self.job_result(*id, state, *cancel, actor),
+                    } => {
+                        if !ctx.wanted.is_empty() && !ctx.wanted.contains(&ResourceKind::Action) {
+                            position = position.saturating_add(1);
+                            work = work.saturating_add(1);
+                            continue;
+                        }
+                        self.job_result(*id, state, *cancel, actor)
+                    }
                     AuxiliaryEntry::Directory {
                         root,
                         revision,
@@ -1925,9 +2114,28 @@ impl SearchProvider for LiveAppActionsProvider {
                         actor,
                         cursor,
                     } => {
+                        if !ctx.wanted.is_empty() && !ctx.wanted.contains(&ResourceKind::Action) {
+                            position = position.saturating_add(1);
+                            work = work.saturating_add(1);
+                            continue;
+                        }
                         if let Some(row) = self.directory_action_result(
                             root, revision, descriptor, &needle, actor, cursor,
                         ) {
+                            row
+                        } else {
+                            position = position.saturating_add(1);
+                            work = work.saturating_add(1);
+                            continue;
+                        }
+                    }
+                    AuxiliaryEntry::Resource { root, row } => {
+                        if !Self::wants_resource_rows(ctx.wanted) {
+                            position = position.saturating_add(1);
+                            work = work.saturating_add(1);
+                            continue;
+                        }
+                        if let Some(row) = Self::directory_resource_result(root, row, &needle) {
                             row
                         } else {
                             position = position.saturating_add(1);
@@ -1970,6 +2178,10 @@ impl SearchProvider for LiveAppActionsProvider {
                     &next.actor,
                     &needle,
                     &next.cursor,
+                    ctx.chrome
+                        .search_resource_scope
+                        .as_ref()
+                        .map_or("", |scope| scope.resource.as_str()),
                 );
                 return Self::live_aux_page(
                     revision,
@@ -1989,6 +2201,10 @@ impl SearchProvider for LiveAppActionsProvider {
             if results.len() == budget.max_results || work == budget.max_work {
                 return Self::live_page(revision, results, "local", usize::MAX, &needle, &scope);
             }
+        }
+
+        if ctx.chrome.search_resource_scope.is_some() {
+            return SearchPage::exhausted(revision, results);
         }
 
         let local_after = (stage == "local" && after != usize::MAX).then_some(after);
@@ -2055,7 +2271,7 @@ mod tests {
 
     use super::{
         AuxiliaryEntry, AuxiliaryResume, AuxiliarySnapshot, DIRECTORY_PAGE_REPLY_TIMEOUT,
-        DirectoryCacheKey, ID_SEPARATOR, LiveAppActionsProvider, PendingDirectoryPage,
+        DirectoryCacheKey, ID_SEPARATOR, LiveAppActionsProvider, PROVIDER_ID, PendingDirectoryPage,
         SurfaceSnapshot, directory_start_ticket, invalidates_directory_cache,
     };
     use crate::shell::chrome_state::ChromeState;
@@ -2064,7 +2280,9 @@ mod tests {
     use crate::shell::collab_broker_capnp::{
         ActionDirectoryRoot, PublishedAction, PublishedInput, PublishedSurface,
     };
-    use crate::shell::search::{ResourceKind, SearchBudget, SearchContext, SearchProvider};
+    use crate::shell::search::{
+        ResourceKind, SearchBudget, SearchContext, SearchProvider, SearchProximity, SearchResult,
+    };
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
     use parking_lot::RwLock;
@@ -2364,6 +2582,7 @@ mod tests {
             resource: format!("resource:{action}"),
             resource_kind: "fixture".into(),
             resource_label: "Fixture".into(),
+            resource_presentation_json: String::new(),
             action: Some(action.into()),
             descriptor: Some(exported(label, action)),
             has_children: false,
@@ -2633,5 +2852,151 @@ mod tests {
             ))
         );
         assert!(LiveAppActionsProvider::hierarchy("display.id#rename").is_none());
+    }
+
+    #[test]
+    fn live_action_proximity_uses_the_authenticated_resource_room() {
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = LiveAppActionsProvider::new(broker);
+        let chrome = chrome();
+        let chrome = chrome.borrow();
+        let room = chrome.tree().workspaces[0].room.to_string();
+        let result = |cluster: &str| SearchResult {
+            kind: ResourceKind::Action,
+            provider_id: PROVIDER_ID.into(),
+            id: [
+                "dev.tilo.files",
+                "write",
+                cluster,
+                "file:/Brief.md",
+                "files.entry:/Brief.md",
+                "rename",
+            ]
+            .join(&ID_SEPARATOR.to_string()),
+            title: "Rename".into(),
+            subtitle: None,
+            badge: None,
+            score: 100,
+            params: Vec::new(),
+            contract: None,
+            on_open: Rc::new(|_, _, _, _| Ok(())),
+            on_invoke: None,
+            on_begin_invoke: None,
+        };
+
+        assert_eq!(
+            provider.proximity(&result(&room), &chrome),
+            SearchProximity::CurrentWorkspace
+        );
+        assert_eq!(
+            provider.proximity(&result("another-room"), &chrome),
+            SearchProximity::Global
+        );
+    }
+
+    #[test]
+    fn resource_only_directory_row_enters_an_authenticated_child_scope() {
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = LiveAppActionsProvider::new(broker.clone());
+        let chrome = chrome();
+        let cluster_id = chrome.borrow().tree().workspaces[0].room.to_string();
+        let actor = chrome
+            .borrow()
+            .local_user_for_room(&chrome.borrow().tree().workspaces[0].room);
+        let root = ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: "dev.tilo.reader".into(),
+            cluster_id: cluster_id.clone(),
+            record_id: "library".into(),
+        };
+        broker.replace_action_directory_roots_for_test(vec![root]);
+        provider.directory_pages.borrow_mut().insert(
+            (9, actor, "book".into(), Vec::new()),
+            runtime_collab::ActionDirectoryPage {
+                revision: "r1".into(),
+                rows: vec![runtime_collab::ActionDirectoryRow {
+                    parent_resource: String::new(),
+                    resource: "book:42".into(),
+                    resource_kind: "book".into(),
+                    resource_label: "Book of Tilo".into(),
+                    resource_presentation_json: serde_json::to_string(
+                        &tilo_actions::ResourcePresentation {
+                            detail: Some("Chapter 7".into()),
+                            badge: Some("2 collaborators".into()),
+                        },
+                    )
+                    .unwrap(),
+                    action: None,
+                    descriptor: None,
+                    has_children: true,
+                    visibility_action: None,
+                    visibility_contract_json: String::new(),
+                }],
+                next_cursor: Vec::new(),
+                exhausted: true,
+                stale_cursor: false,
+                budget_exhausted: false,
+            },
+        );
+        let doc = AutoCommit::new();
+        let wanted = [ResourceKind::Custom("Resources".into())];
+        let chrome_ref = chrome.borrow();
+        let page = provider.query_page(
+            SearchContext {
+                needle: "book",
+                wanted: &wanted,
+                chrome: &chrome_ref,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            },
+            None,
+            SearchBudget::PALETTE,
+        );
+        drop(chrome_ref);
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].title, "Book of Tilo");
+        assert_eq!(
+            page.results[0].subtitle.as_deref(),
+            Some("dev.tilo.reader · Chapter 7")
+        );
+        assert_eq!(page.results[0].badge.as_deref(), Some("2 collaborators"));
+        (page.results[0].on_open)(
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+            &chrome,
+            &crate::shell::search::action_api::ActionArgs::none(),
+        )
+        .unwrap();
+        assert_eq!(
+            chrome.borrow().search_resource_scope,
+            Some(crate::shell::chrome_state::SearchResourceScope {
+                peer_id: 9,
+                cluster_id,
+                app_id: "dev.tilo.reader".into(),
+                resource: "book:42".into(),
+                label: "Book of Tilo".into(),
+            })
+        );
+        let chrome_ref = chrome.borrow();
+        let _ = provider.query_page(
+            SearchContext {
+                needle: "",
+                wanted: &wanted,
+                chrome: &chrome_ref,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            },
+            None,
+            SearchBudget::PALETTE,
+        );
+        assert_eq!(
+            provider
+                .directory_query_probe
+                .borrow()
+                .as_ref()
+                .map(|query| query.parent_resource.as_str()),
+            Some("book:42"),
+            "the child fetch must carry the selected stable resource address"
+        );
     }
 }

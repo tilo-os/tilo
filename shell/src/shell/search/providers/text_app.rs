@@ -81,6 +81,31 @@ pub fn owns_tab_of(chrome: &ChromeState, tab_id: u64, app: &str) -> bool {
     found
 }
 
+/// Resolve a text result's opaque tab id back to actual workspace
+/// membership for contextual ranking.
+pub fn proximity_of(
+    chrome: &ChromeState,
+    result: &SearchResult,
+) -> crate::shell::search::SearchProximity {
+    let Ok(tab_id) = result.id.parse::<u64>() else {
+        return crate::shell::search::SearchProximity::Global;
+    };
+    let tree = chrome.tree();
+    let is_here = tree.active_workspace().is_some_and(|workspace| {
+        workspace.strips.iter().any(|strip| {
+            strip
+                .window_groups
+                .iter()
+                .any(|group| group.tabs.iter().any(|tab| tab.id == tab_id))
+        })
+    });
+    if is_here {
+        crate::shell::search::SearchProximity::CurrentWorkspace
+    } else {
+        crate::shell::search::SearchProximity::Global
+    }
+}
+
 /// [`crate::shell::search::SearchProvider::query`] for a text app.
 /// `body_key` must match the Automerge key
 /// [`CrdtTextBody`](crate::shell::crdt_text::CrdtTextBody) writes under,

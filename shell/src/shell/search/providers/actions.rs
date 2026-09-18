@@ -64,6 +64,37 @@ const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[ActionParam::required(
     "The identity's 64-character public-key fingerprint.",
 )];
 
+const SEARCH_PROVIDER_SET_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "provider",
+        ParamType::Text,
+        "Stable provider id returned by search/action enumeration.",
+    ),
+    ActionParam::required(
+        "enabled",
+        ParamType::Boolean,
+        "Whether this source participates in search, indexing, and agent paging.",
+    ),
+];
+
+const PRESENCE_FOLLOW_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "collaborator",
+    ParamType::Text,
+    "Stable collaborator id returned by the workspace roster.",
+)];
+
+const PRESENCE_STATUS_PARAMS: &[ActionParam] = &[ActionParam::optional(
+    "text",
+    ParamType::Text,
+    "Manual status visible to this workspace; empty clears it.",
+)];
+
+const PRESENCE_SHARING_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "mode",
+    ParamType::Text,
+    "off, manual, or automatic.",
+)];
+
 const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "device",
@@ -830,6 +861,87 @@ impl Action {
                 Ok(())
             },
         ),
+        Action {
+            id: "presence.follow",
+            label: "Follow a collaborator",
+            subtitle: "Keep this view attached to a connected person or visible agent",
+            params: PRESENCE_FOLLOW_PARAMS,
+            apply: |st, args| {
+                let id = args.text("collaborator").unwrap_or_default().trim();
+                let followable = crate::shell::overlay_host::collaborator_roster_rows(&st.tree())
+                    .into_iter()
+                    .any(|row| row.id == id && row.followable);
+                if !followable {
+                    return Err(ActionError::Refused(format!(
+                        "`{id}` is not a connected, followable collaborator in this workspace"
+                    )));
+                }
+                st.push_presence_request(crate::shell::chrome_state::PresenceRequest::Follow(
+                    id.to_string(),
+                ));
+                Ok(())
+            },
+        },
+        chrome(
+            "presence.follow.stop",
+            "Stop following",
+            "Return this view to local navigation",
+            |st, _| {
+                st.push_presence_request(
+                    crate::shell::chrome_state::PresenceRequest::StopFollowing,
+                );
+                Ok(())
+            },
+        ),
+        Action {
+            id: "presence.status.set",
+            label: "Set workspace status",
+            subtitle: "Publish an explicit status, or clear it with an empty value",
+            params: PRESENCE_STATUS_PARAMS,
+            apply: |st, args| {
+                let text = args.text("text").unwrap_or_default().trim();
+                if text.chars().count() > ui::live_collaboration::MAX_STATUS_CHARS {
+                    return Err(ActionError::Refused(format!(
+                        "status must be at most {} characters",
+                        ui::live_collaboration::MAX_STATUS_CHARS
+                    )));
+                }
+                st.push_presence_request(
+                    crate::shell::chrome_state::PresenceRequest::SetManualStatus(
+                        (!text.is_empty()).then(|| text.to_string()),
+                    ),
+                );
+                Ok(())
+            },
+        },
+        Action {
+            id: "presence.status-sharing.set",
+            label: "Set status privacy",
+            subtitle: "Choose whether status is off, explicit-only, or automatically inferred",
+            params: PRESENCE_SHARING_PARAMS,
+            apply: |st, args| {
+                let mode = match args
+                    .text("mode")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "off" => ui::StatusSharing::Off,
+                    "manual" | "manual-only" => ui::StatusSharing::ManualOnly,
+                    "automatic" => ui::StatusSharing::Automatic,
+                    _ => {
+                        return Err(ActionError::Refused(
+                            "status privacy must be off, manual, or automatic".into(),
+                        ));
+                    }
+                };
+                st.push_presence_request(
+                    crate::shell::chrome_state::PresenceRequest::SetStatusSharing(mode),
+                );
+                Ok(())
+            },
+        },
         chrome(
             "room.activity.open",
             "Show workspace activity",
@@ -1065,11 +1177,36 @@ impl Action {
     ];
 }
 
-pub struct ActionsProvider;
+pub struct ActionsProvider {
+    search_preferences: Option<crate::shell::search::SearchPreferencesHandle>,
+    provider_catalog: Option<crate::shell::search::SearchProviderCatalogHandle>,
+}
 
 impl ActionsProvider {
     pub fn new() -> Self {
-        Self
+        Self {
+            search_preferences: None,
+            provider_catalog: None,
+        }
+    }
+
+    pub fn with_preferences(
+        search_preferences: crate::shell::search::SearchPreferencesHandle,
+    ) -> Self {
+        Self {
+            search_preferences: Some(search_preferences),
+            provider_catalog: None,
+        }
+    }
+
+    pub fn with_preferences_and_catalog(
+        search_preferences: crate::shell::search::SearchPreferencesHandle,
+        provider_catalog: crate::shell::search::SearchProviderCatalogHandle,
+    ) -> Self {
+        Self {
+            search_preferences: Some(search_preferences),
+            provider_catalog: Some(provider_catalog),
+        }
     }
 }
 
@@ -1123,6 +1260,7 @@ impl SearchProvider for ActionsProvider {
                     id: action.id.to_string(),
                     title: action.label.to_string(),
                     subtitle: Some(action.subtitle.to_string()),
+                    badge: None,
                     score,
                     params: action.params.to_vec(),
                     contract: None,
@@ -1138,6 +1276,105 @@ impl SearchProvider for ActionsProvider {
                     on_invoke: None,
                     on_begin_invoke: None,
                 });
+            }
+        }
+        if let Some(preferences) = &self.search_preferences {
+            let id = "search.provider.set";
+            let label = "Enable or disable a search source";
+            let subtitle = "Customize which providers appear in search and agent results";
+            if let Some(score) = match_score(
+                &needle_lower,
+                &label.to_lowercase(),
+                &subtitle.to_lowercase(),
+                id,
+            ) {
+                let preferences = Rc::clone(preferences);
+                out.push(SearchResult {
+                    kind: ResourceKind::Action,
+                    provider_id: self.id().to_string(),
+                    id: id.to_string(),
+                    title: label.to_string(),
+                    subtitle: Some(subtitle.to_string()),
+                    badge: None,
+                    score,
+                    params: SEARCH_PROVIDER_SET_PARAMS.to_vec(),
+                    contract: None,
+                    on_open: Rc::new(move |_doc, _root, chrome: &Chrome, args: &ActionArgs| {
+                        let provider = args.text("provider").unwrap_or_default().trim();
+                        let enabled = args.boolean("enabled").unwrap_or(true);
+                        if provider.is_empty() {
+                            return Err(ActionError::Refused(
+                                "a search provider id is required".into(),
+                            ));
+                        }
+                        if provider == "actions" && !enabled {
+                            return Err(ActionError::Refused(
+                                "the Actions source cannot be disabled because it is the shared accessibility and automation door".into(),
+                            ));
+                        }
+                        let mut next = preferences.borrow().clone();
+                        next.set_provider_enabled(provider, enabled);
+                        next.save().map_err(|error| {
+                            ActionError::Refused(format!(
+                                "could not save the search-source preference: {error}"
+                            ))
+                        })?;
+                        *preferences.borrow_mut() = next;
+                        chrome.borrow_mut().bump();
+                        Ok(())
+                    }),
+                    on_invoke: None,
+                    on_begin_invoke: None,
+                });
+            }
+            if let Some(catalog) = &self.provider_catalog {
+                for (provider_id, provider_name) in catalog.borrow().iter() {
+                    if provider_id == "actions" {
+                        continue;
+                    }
+                    let enabled = preferences.borrow().provider_enabled(provider_id);
+                    let verb = if enabled { "Disable" } else { "Enable" };
+                    let label = format!("{verb} {provider_name} search");
+                    let subtitle = format!(
+                        "{} the `{provider_id}` source in search and agent discovery",
+                        if enabled { "Hide" } else { "Show" },
+                    );
+                    let Some(score) = match_score(
+                        &needle_lower,
+                        &label.to_lowercase(),
+                        &subtitle.to_lowercase(),
+                        "search.provider.toggle",
+                    ) else {
+                        continue;
+                    };
+                    let preferences = Rc::clone(preferences);
+                    let provider_id = provider_id.clone();
+                    out.push(SearchResult {
+                        kind: ResourceKind::Action,
+                        provider_id: self.id().to_string(),
+                        id: format!("search.provider.toggle:{provider_id}"),
+                        title: label,
+                        subtitle: Some(subtitle),
+                        badge: Some(if enabled { "ON" } else { "OFF" }.into()),
+                        score,
+                        params: Vec::new(),
+                        contract: None,
+                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args| {
+                            let mut next = preferences.borrow().clone();
+                            next.set_provider_enabled(&provider_id, !enabled);
+                            next.save().map_err(|error| {
+                                ActionError::Refused(format!(
+                                    "could not save the search-source preference: {error}"
+                                ))
+                            })?;
+                            *preferences.borrow_mut() = next;
+                            chrome.borrow_mut().bump();
+                            Ok(())
+                        }),
+                        on_invoke: None,
+                        on_begin_invoke: None,
+                    });
+                }
             }
         }
         let actor = ctx.chrome.active_local_user();
@@ -1166,6 +1403,7 @@ impl SearchProvider for ActionsProvider {
                         id: format!("{}#{}", resource.id.as_str(), action.id),
                         title: action.label,
                         subtitle: Some(subtitle),
+                        badge: None,
                         score,
                         params,
                         contract: Some(action.contract),
@@ -1216,6 +1454,7 @@ impl SearchProvider for ActionsProvider {
                         id: format!("{}#{}", resource_id, action.id),
                         title: action.label,
                         subtitle: Some(subtitle),
+                        badge: None,
                         score,
                         params,
                         contract: Some(action.contract),
@@ -1388,6 +1627,65 @@ mod tests {
     }
 
     #[test]
+    fn search_source_customization_is_a_typed_exported_action() {
+        let preferences = Rc::new(std::cell::RefCell::new(
+            crate::shell::search::SearchPreferences::default(),
+        ));
+        let catalog = Rc::new(std::cell::RefCell::new(vec![
+            ("actions".to_string(), "Actions".to_string()),
+            ("files".to_string(), "Files".to_string()),
+        ]));
+        let provider =
+            ActionsProvider::with_preferences_and_catalog(Rc::clone(&preferences), catalog);
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let results = provider.query(SearchContext {
+            needle: "search source",
+            wanted: &[ResourceKind::Action],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        let action = results
+            .iter()
+            .find(|result| result.id == "search.provider.set")
+            .expect("search customization must be reachable without clicking settings UI");
+        assert_eq!(action.params, SEARCH_PROVIDER_SET_PARAMS);
+        assert_eq!(action.params[0].ty, ParamType::Text);
+        assert_eq!(action.params[1].ty, ParamType::Boolean);
+        let direct = results
+            .iter()
+            .find(|result| result.id == "search.provider.toggle:files")
+            .expect("people can customize a named source without knowing its opaque id");
+        assert_eq!(direct.title, "Disable Files search");
+        assert_eq!(direct.badge.as_deref(), Some("ON"));
+        assert!(direct.params.is_empty());
+        assert!(
+            results
+                .iter()
+                .all(|result| result.id != "search.provider.toggle:actions"),
+            "the accessibility and automation source cannot offer a disable affordance"
+        );
+
+        preferences
+            .borrow_mut()
+            .set_provider_enabled("files", false);
+        let disabled = provider.query(SearchContext {
+            needle: "files search",
+            wanted: &[ResourceKind::Action],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        let direct = disabled
+            .iter()
+            .find(|result| result.id == "search.provider.toggle:files")
+            .expect("a disabled source remains directly re-enableable");
+        assert_eq!(direct.title, "Enable Files search");
+        assert_eq!(direct.badge.as_deref(), Some("OFF"));
+    }
+
+    #[test]
     fn action_ids_and_out_of_order_terms_are_searchable() {
         assert_eq!(
             match_score(
@@ -1436,6 +1734,46 @@ mod tests {
         assert_eq!(
             state.ws_settings_tab,
             crate::shell::workspace_settings::WsTab::Permissions
+        );
+    }
+
+    #[test]
+    fn status_privacy_is_a_typed_semantic_action() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let results = {
+            let state = chrome.borrow();
+            provider.query(SearchContext {
+                needle: "status privacy",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let action = results
+            .iter()
+            .find(|result| result.id == "presence.status-sharing.set")
+            .expect("agents must be able to control the same status privacy setting");
+        let args = ActionArgs::bind(
+            &action.params,
+            [(
+                "mode".to_string(),
+                tilo_actions::ArgValue::Text("off".into()),
+            )],
+        )
+        .unwrap();
+
+        (action.on_open)(&mut doc, &automerge::ROOT, &chrome, &args).unwrap();
+
+        assert_eq!(
+            chrome.borrow_mut().take_presence_requests(),
+            vec![
+                crate::shell::chrome_state::PresenceRequest::SetStatusSharing(
+                    ui::StatusSharing::Off
+                )
+            ]
         );
     }
 
