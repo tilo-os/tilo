@@ -35,6 +35,7 @@ const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const SURFACE_STREAM_ALPN: &[u8] = b"tilo-surface-stream/1";
 const PERSONAL_FABRIC_ALPN: &[u8] = b"tilo-personal-fabric/1";
 pub const PERSONAL_MEDIA_CHUNK_BYTES: usize = 256 * 1024;
+const MAX_ACTIVE_PERSONAL_MEDIA_TRANSFERS: usize = 8;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SurfaceWireFrame {
@@ -1179,6 +1180,11 @@ impl ActorState {
         let key = (target, transfer_id);
         if self.active_personal_media.contains_key(&key) {
             tracing::warn!(peer = %target, "refusing duplicate active personal media transfer");
+            return;
+        }
+        if self.active_personal_media.len() >= MAX_ACTIVE_PERSONAL_MEDIA_TRANSFERS {
+            tracing::warn!(peer = %target, "refusing media transfer while source streams are full");
+            report(PersonalMediaTransferStatus::Failed, 0);
             return;
         }
         self.next_personal_media_generation = self.next_personal_media_generation.wrapping_add(1);
