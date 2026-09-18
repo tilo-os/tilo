@@ -267,7 +267,7 @@ impl ApplicationHandler<u64> for Runner {
                         }
                         _ => {}
                     }
-                    m.frame.send_host_event(&event);
+                    crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
                     m.pending = true;
                     m.window.request_redraw();
                 }
@@ -708,9 +708,9 @@ pub fn semantic(
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
         if m.peer_suspended { return Ok(false); }
-        m.frame
-            .perform_semantic_named(path, target.as_deref(), &action)
-            .map_err(error)?;
+        crate::clipboard::during_input(&m.status, || {
+            m.frame.perform_semantic_named(path, target.as_deref(), &action)
+        }).map_err(error)?;
         m.pending = true;
         m.window.request_redraw();
         Ok(true)

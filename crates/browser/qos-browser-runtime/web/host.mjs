@@ -34,6 +34,7 @@ export async function mountDesktop(target,options={}) {
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
   const report=data=>{
+    if(data.clipboard==='copied'||data.clipboard==='failed'){commandStatus.style.display='block';commandStatus.textContent=data.clipboard==='copied'?'Copied to system clipboard':`Could not copy to system clipboard: ${data.clipboardError??'browser access denied'}`;}
     if(data.desktopCommand){const row=data.desktopCommand;commandStatus.style.display='block';commandStatus.textContent=row.state==='succeeded'?'Desktop change saved':row.state==='submitting'||row.state==='accepted'?'Saving desktop change…':row.state==='failed'||row.state==='rejected'?`Desktop change refused: ${row.error??'unavailable'}`:`Desktop change awaiting confirmation: ${row.error??row.state}`;}
     if(data.desktopErrors?.length){commandStatus.style.display='block';commandStatus.textContent=`Desktop request unavailable: ${data.desktopErrors.at(-1)}`;}
     options.onStatus?.(data);
@@ -52,12 +53,13 @@ export async function mountDesktop(target,options={}) {
   function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined;}
   function update(raw){
     if(closed||!registry.current(token))return;
+    const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
     if(desktopCommands)void desktopCommands.pump();
     if(actionPalette){
       const request=runtime.take_caller_action(id);
       if(request)void actionPalette.submit(JSON.parse(request)).catch(error=>{if(active())report({actionError:String(error)});});
     }
-    const state=JSON.parse(raw);lastState={...lastState,...state};report(state);
+    lastState={...lastState,...state};report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;}
     if(state.phase==='presented'){surface.inert=false;editor.disabled=false;}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);

@@ -1,8 +1,29 @@
-//! Clipboard data exists only for the current trusted DOM event.
+//! Keyboard transfers and clicked Copy share the browser system clipboard.
 use js_sys::{Function, Reflect};
 use std::{cell::RefCell, sync::Arc};
 use ui::clipboard::{ClipboardBackend, ClipboardTarget};
 use wasm_bindgen::{JsCast, prelude::*};
+#[wasm_bindgen(module = "/web/clipboard.mjs")]
+extern "C" {
+    #[wasm_bindgen(js_name = writeClipboardText)]
+    fn write_clipboard_text(text: &str, report: &Function) -> bool;
+}
+
+thread_local! {static INPUT_STATUS:RefCell<Option<Function>>=const{RefCell::new(None)};}
+
+/// Bind a write to the originating mount for this input only. No clipboard
+/// payload survives the event, and late completion only reports to that mount.
+pub fn during_input<R>(status: &Function, run: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Function>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            INPUT_STATUS.with_borrow_mut(|slot| *slot = self.0.take());
+        }
+    }
+    let _restore = Restore(INPUT_STATUS.with_borrow_mut(|slot| slot.replace(status.clone())));
+    run()
+}
+
 struct Transfer {
     value: JsValue,
     read: bool,
@@ -20,7 +41,9 @@ impl ClipboardBackend for BrowserClipboard {
         }
         TRANSFER.with_borrow_mut(|slot| {
             let Some(t) = slot.as_mut() else {
-                return false;
+                return INPUT_STATUS.with_borrow(|status| {
+                    status.as_ref().is_some_and(|report| write_clipboard_text(text, report))
+                });
             };
             if t.copied {
                 return true;
