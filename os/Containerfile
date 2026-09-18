@@ -1586,8 +1586,8 @@ RUN chmod 0755 /usr/libexec/tilo-secureboot \
                         tilo-secureboot-sign-shutdown.service
 
 # Runtime tunables: no cross-process debugging, no kernel pointers or ring
-# buffer for unprivileged readers, no unprivileged BPF or userfaultfd, plus the
-# /tmp symlink-race and LAN-spoofing settings. Under
+# buffer for unprivileged readers, no unprivileged BPF, plus the /tmp
+# symlink-race and LAN-spoofing settings. Under
 # /usr/lib because it is part of the image; /etc/sysctl.d/ with a higher number
 # still wins for a machine that needs to differ. The file's header explains why
 # unprivileged user namespaces are NOT disabled — bubblewrap, hence the whole
