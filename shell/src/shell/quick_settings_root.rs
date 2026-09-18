@@ -6,8 +6,12 @@
 
 use crate::shell::chrome_state::QuickSettingsState;
 use crate::shell::quick_settings::{PowerProfile, QsLevel};
+use crate::shell::quick_settings_drill_in::{
+    CONTROL_INSET, CONTROL_PAD, GLYPH, PANEL_PAD, RELATED_GAP, ROW_HEIGHT, SECTION_GAP,
+    SIBLING_GAP, TARGET, TOGGLE_H, TOGGLE_W, centred_text_top, control_radius, leading_glyph,
+    paint_control, trailing_glyph, trailing_toggle, type_size,
+};
 use settings_store::hardware::{QuickSettingsConfig, QuickSettingsControl};
-use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::drag::{DragController, ListMetrics};
@@ -20,14 +24,6 @@ fn n(value: usize) -> f64 {
     f64::from(u32::try_from(value).unwrap_or(u32::MAX))
 }
 
-/// Theme typography tokens are already resolved logical sizes (they carry
-/// the user's text scale), and the renderer applies its own accessibility
-/// scale to every authored size it is handed. Dividing once here applies
-/// the scale exactly once (HIG §7a) — the immediate-mode popover otherwise
-/// painted 4× type at 200 % while its rows were sized for 2×.
-fn type_size(text: &TextRenderer, resolved: f32) -> f32 {
-    resolved / text.text_scale()
-}
 fn f32v(value: f64) -> f32 {
     #[allow(clippy::cast_possible_truncation)]
     {
@@ -98,42 +94,24 @@ impl Default for QuickSettingsRoot {
 }
 
 impl QuickSettingsRoot {
-    const PAD: f64 = 16.0;
-    // Root-page rhythm: every major section is separated by 8px, and every
-    // control has a 16px leading/trailing inset. These are intentionally
-    // shared rather than nudged per widget so 1:1 rendering stays aligned.
-    const HEADER: f64 = 40.0;
-    // Utilities deliberately remain in a labelled top action area.  A
-    // footer of bare glyphs made core actions (especially Power) hard to
-    // discover and visually disconnected from the controls they affect.
-    // The compact icon-over-label treatment keeps their meaning visible
-    // without turning them into a second dashboard.
-    const ACTIONS: f64 = 58.0;
-    /// The slider block: two pointer bands inside a `SLIDER_INSET` at each
-    /// end, i.e. `2 · SLIDER_INSET + 2 · SLIDER_PITCH` — derived so the
-    /// block can never be shorter than the faces it holds.
-    const SLIDERS: f64 = 2.0 * Self::SLIDER_INSET + 2.0 * Self::SLIDER_PITCH;
+    // One rhythm for the page (HIG §7b, §9.6), shared with every drill-in
+    // through `quick_settings_drill_in`: the same relationship always gets
+    // the same step, and every value is a token expression.
+    /// The title band (HIG §9.6: the Bar height); the Edit button sits in it.
+    const HEADER: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
+    /// The gap under a tile's glyph before its caption (`icon_label_gap`).
+    const GLYPH_GAP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
     /// Each slider's band is one minimum pointer target (HIG §9.6).
     const SLIDER_PITCH: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
-    /// Air above the first and below the last slider band (`spacing.s1`).
-    const SLIDER_INSET: f64 = ui::tokens::Spacing::BASE.s1 as f64;
-    /// Track thickness, centred in its band.
-    const SLIDER_BAR_H: f64 = 6.0;
-    const CARD: f64 = 70.0;
-    const GAP: f64 = 8.0;
-    const POWER: f64 = 50.0;
-    const EDIT_ROW: f64 = 46.0;
-    const EDIT_HELP: f64 = 28.0;
-    const EDIT_FOOTER: f64 = 38.0;
-    // Where each row's type starts, from the row's top edge. The row's
-    // minimum height is the chrome constant above; its real height is the
-    // larger of that and this offset plus the lines it must hold, so large
-    // text grows the row instead of running past it into the next one.
-    const ACTION_LABEL_TOP: f64 = 46.0;
-    const CARD_LABEL_TOP: f64 = 40.0;
-    const CARD_BOTTOM: f64 = 2.0;
-    const POWER_LABEL_TOP: f64 = 17.0;
-    const POWER_BOTTOM: f64 = 5.0;
+    /// The slider block: two bands on the control padding, one related step
+    /// apart — derived, so the block can never be shorter than the faces it
+    /// holds and the faces can never touch.
+    const SLIDERS: f64 = 2.0 * CONTROL_PAD + 2.0 * Self::SLIDER_PITCH + RELATED_GAP;
+    /// The edit-mode footer buttons: the shared `Button` height.
+    const EDIT_FOOTER: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
+    /// How far the dragged ghost lifts off its slot, and its rail's width
+    /// (`s1`).
+    const LIFT: f64 = ui::tokens::Spacing::BASE.s1 as f64;
 
     /// Single-line height of a chrome type role at the user's text scale.
     ///
@@ -156,31 +134,59 @@ impl QuickSettingsRoot {
     fn caption_line_height(&self) -> f64 {
         self.line_height(ui::tokens::TypeScale::default().xs)
     }
+    /// Tile: glyph, `icon_label_gap` and caption on the control padding.
+    fn action_height_at(&self, layout_scale: f64) -> f64 {
+        (2.0 * CONTROL_PAD + GLYPH + Self::GLYPH_GAP) * layout_scale
+            + self.caption_line_height()
+    }
     fn action_height(&self) -> f64 {
-        self.scaled(Self::ACTIONS)
-            .max(self.scaled(Self::ACTION_LABEL_TOP) + self.caption_line_height())
+        self.action_height_at(self.layout_scale)
+    }
+    /// Card: the icon row (glyph or switch, whichever is taller), one
+    /// related step, then the measured label and sub-line, on the control
+    /// padding.
+    fn card_height_at(&self, layout_scale: f64) -> f64 {
+        (2.0 * CONTROL_PAD + GLYPH.max(TOGGLE_H) + RELATED_GAP) * layout_scale
+            + self.label_line_height()
+            + self.caption_line_height()
     }
     fn card_height(&self) -> f64 {
-        self.scaled(Self::CARD).max(
-            self.scaled(Self::CARD_LABEL_TOP)
+        self.card_height_at(self.layout_scale)
+    }
+    /// Power row: label and detail on the control padding, never under the
+    /// Control height.
+    fn power_height_at(&self, layout_scale: f64) -> f64 {
+        (ROW_HEIGHT * layout_scale).max(
+            2.0 * CONTROL_PAD * layout_scale
                 + self.label_line_height()
-                + self.caption_line_height()
-                + self.scaled(Self::CARD_BOTTOM),
+                + self.caption_line_height(),
         )
     }
     fn power_height(&self) -> f64 {
-        self.scaled(Self::POWER).max(
-            self.scaled(Self::POWER_LABEL_TOP)
-                + self.label_line_height()
-                + self.caption_line_height()
-                + self.scaled(Self::POWER_BOTTOM),
-        )
+        self.power_height_at(self.layout_scale)
+    }
+    /// Edit-mode row: its label on the control padding, never under the
+    /// Control height.
+    fn edit_row_height_at(&self, layout_scale: f64) -> f64 {
+        (ROW_HEIGHT * layout_scale)
+            .max(2.0 * CONTROL_PAD * layout_scale + self.label_line_height())
+    }
+    fn edit_row_height(&self) -> f64 {
+        self.edit_row_height_at(self.layout_scale)
+    }
+    /// A section caption band in edit mode ("ACTIVE CONTROLS", "AVAILABLE"):
+    /// control padding above the caption line, one related step below it.
+    fn caption_band_at(&self, layout_scale: f64) -> f64 {
+        (CONTROL_PAD + RELATED_GAP) * layout_scale + self.caption_line_height()
+    }
+    fn caption_band(&self) -> f64 {
+        self.caption_band_at(self.layout_scale)
     }
     /// The title band: panel padding down to the first action tile. The
     /// Edit button lives inside it, so a title centred here shares its
     /// centre line (HIG §9.6: Bar/Panel header height 40).
     fn header_rect(&self) -> Rect {
-        let pad = self.scaled(Self::PAD);
+        let pad = self.scaled(PANEL_PAD);
         Rect::new(
             self.panel.x0 + pad,
             self.panel.y0 + pad,
@@ -194,7 +200,7 @@ impl QuickSettingsRoot {
     /// Takes the panel explicitly because the compatibility geometry helpers
     /// are called before `self.panel` is laid out.
     fn header_bottom(&self, panel: Rect) -> f64 {
-        panel.y0 + self.scaled(Self::PAD + Self::HEADER)
+        panel.y0 + self.scaled(PANEL_PAD + Self::HEADER)
     }
 
     pub fn load_persisted() -> Self {
@@ -241,16 +247,7 @@ impl QuickSettingsRoot {
     /// leaving text itself at the user's full theme scale. The same effective
     /// factor drives drawing and hit testing through every geometry helper.
     pub fn fit_root_layout_to_height(&mut self, state: &QuickSettingsState, height: f64) {
-        let controls = self.visible_controls(state).len();
-        let rows = controls.div_ceil(2);
-        let unscaled = Self::PAD * 2.0
-            + Self::HEADER
-            + Self::ACTIONS
-            + Self::SLIDERS
-            + Self::POWER
-            + Self::GAP * 4.0
-            + n(rows) * Self::CARD
-            + n(rows.saturating_sub(1)) * Self::GAP;
+        let unscaled = self.preferred_height_at(state, 1.0);
         self.layout_scale = self.layout_scale.min((height / unscaled).clamp(0.88, 1.2));
         // Rows that had to grow for their type do not shrink with the chrome
         // scale, so the proportional estimate above can still overshoot.
@@ -286,12 +283,7 @@ impl QuickSettingsRoot {
         let row = self.card(panel, 1, true);
         let start = Point::new(row.x0 + 20.0, row.center().y);
         self.edit_drag.begin(control, 1, start.y - row.y0, start);
-        let metrics = ListMetrics::uniform(
-            self.edit_grid_top(panel),
-            self.scaled(Self::EDIT_ROW),
-            self.scaled(6.0),
-            self.config.controls.len(),
-        );
+        let metrics = self.edit_list_metrics(panel, self.config.controls.len());
         let _ = self
             .edit_drag
             // Stop part-way through the destination slot rather than exactly
@@ -299,7 +291,10 @@ impl QuickSettingsRoot {
             // rail and sibling reflow a person sees while dragging, instead
             // of making a visual regression scene resemble mere focus.
             .pointer_moved(
-                Point::new(start.x, start.y + metrics.pitch() + self.scaled(8.)),
+                Point::new(
+                    start.x,
+                    start.y + metrics.pitch() + self.scaled(RELATED_GAP),
+                ),
                 &metrics,
             );
     }
@@ -376,37 +371,37 @@ impl QuickSettingsRoot {
         self.visible_controls(state).len()
     }
     pub fn preferred_height(&self, state: &QuickSettingsState) -> f64 {
-        let count = if self.edit_mode {
-            self.edit_controls(state).len()
-        } else {
-            self.visible_controls(state).len()
-        };
-        let rows = if self.edit_mode {
-            self.active_edit_controls(state).len()
-        } else {
-            count.div_ceil(2)
-        };
+        self.preferred_height_at(state, self.layout_scale)
+    }
+    /// The panel height the page wants at `layout_scale`: one definition for
+    /// the fit-to-height estimate (at 1×) and the live geometry, so the two
+    /// can never disagree about a section gap.
+    fn preferred_height_at(&self, state: &QuickSettingsState, layout_scale: f64) -> f64 {
+        let scaled = |value: f64| value * layout_scale;
         if self.edit_mode {
-            self.scaled(
-                Self::PAD * 2.0
-                    + Self::HEADER
-                    + Self::EDIT_HELP
-                    + Self::GAP * 2.0
-                    + n(rows) * Self::EDIT_ROW
-                    + n(rows.saturating_sub(1)) * 6.0
-                    + if self.available_edit_controls(state).is_empty() {
-                        0.0
-                    } else {
-                        68.0
-                    }
-                    + Self::EDIT_FOOTER,
-            )
+            let rows = n(self.active_edit_controls(state).len());
+            let available = if self.available_edit_controls(state).is_empty() {
+                0.0
+            } else {
+                self.caption_band_at(layout_scale) + scaled(TARGET + SECTION_GAP)
+            };
+            scaled(PANEL_PAD * 2.0 + Self::HEADER)
+                + self.caption_band_at(layout_scale)
+                + rows * self.edit_row_height_at(layout_scale)
+                + (rows - 1.0).max(0.0) * scaled(RELATED_GAP)
+                + scaled(SECTION_GAP)
+                + available
+                + scaled(Self::EDIT_FOOTER)
         } else {
-            self.scaled(Self::PAD * 2.0 + Self::HEADER + Self::SLIDERS + Self::GAP * 4.0)
-                + self.action_height()
-                + self.power_height()
-                + n(rows) * self.card_height()
-                + n(rows.saturating_sub(1)) * self.scaled(Self::GAP)
+            let rows = n(self.visible_controls(state).len().div_ceil(2));
+            // Title band → tiles → sliders → cards → power: one section gap
+            // before each section that exists on this machine.
+            let sections = if rows > 0.0 { 4.0 } else { 3.0 };
+            scaled(PANEL_PAD * 2.0 + Self::HEADER + SECTION_GAP * sections + Self::SLIDERS)
+                + self.action_height_at(layout_scale)
+                + rows * self.card_height_at(layout_scale)
+                + (rows - 1.0).max(0.0) * scaled(SIBLING_GAP)
+                + self.power_height_at(layout_scale)
         }
     }
     fn save_config(&mut self) {
@@ -421,51 +416,101 @@ impl QuickSettingsRoot {
             tracing::warn!(%error, "could not persist Quick Settings layout");
         }
     }
+    /// Top of the action tiles: one section gap under the title band.
+    fn actions_top(&self, panel: Rect) -> f64 {
+        self.header_bottom(panel) + self.scaled(SECTION_GAP)
+    }
+    /// Top of the slider block: one section gap under the tiles.
+    fn sliders_top(&self, panel: Rect) -> f64 {
+        self.actions_top(panel) + self.action_height() + self.scaled(SECTION_GAP)
+    }
+    /// The slider block: both bands on the panel padding.
+    fn sliders_rect(&self, panel: Rect) -> Rect {
+        let top = self.sliders_top(panel);
+        Rect::new(
+            panel.x0 + self.scaled(PANEL_PAD),
+            top,
+            panel.x1 - self.scaled(PANEL_PAD),
+            top + self.scaled(Self::SLIDERS),
+        )
+    }
+    /// Top of the control cards: one section gap under the slider block.
     fn grid_top(&self, panel: Rect) -> f64 {
-        self.header_bottom(panel)
-            + self.scaled(Self::GAP)
-            + self.action_height()
-            + self.scaled(Self::GAP)
-            + self.scaled(Self::SLIDERS)
-            + self.scaled(Self::GAP)
+        self.sliders_top(panel) + self.scaled(Self::SLIDERS) + self.scaled(SECTION_GAP)
     }
     fn edit_grid_top(&self, panel: Rect) -> f64 {
-        self.header_bottom(panel)
-            + self.scaled(Self::EDIT_HELP)
-            + self.scaled(Self::GAP)
+        self.header_bottom(panel) + self.caption_band()
     }
+    /// Edit rows as the shared drag controller sees them: Control-height
+    /// rows one related step apart.
+    fn edit_list_metrics(&self, panel: Rect, count: usize) -> ListMetrics {
+        ListMetrics::uniform(
+            self.edit_grid_top(panel),
+            self.edit_row_height(),
+            self.scaled(RELATED_GAP),
+            count,
+        )
+    }
+    /// Top of the "AVAILABLE" section: one section gap under the last row.
     fn available_edit_top(&self, state: &QuickSettingsState) -> f64 {
-        let active = self.active_edit_controls(state).len();
+        let active = n(self.active_edit_controls(state).len());
         self.edit_grid_top(self.panel)
-            + n(active) * self.scaled(Self::EDIT_ROW + 6.0)
-            + self.scaled(10.0)
+            + active * self.edit_row_height()
+            + (active - 1.0).max(0.0) * self.scaled(RELATED_GAP)
+            + self.scaled(SECTION_GAP)
+    }
+    /// The add-chips under the "AVAILABLE" caption: pointer-floor tall,
+    /// siblings one sibling gap apart across the panel padding. One helper
+    /// feeds paint, hit-testing and the tests.
+    fn available_chips(&self, state: &QuickSettingsState) -> Vec<(QuickSettingsControl, Rect)> {
+        let available = self.available_edit_controls(state);
+        if available.is_empty() {
+            return Vec::new();
+        }
+        let top = self.available_edit_top(state) + self.caption_band();
+        let gap = self.scaled(SIBLING_GAP);
+        let x0 = self.panel.x0 + self.scaled(PANEL_PAD);
+        let width = (self.panel.width()
+            - self.scaled(PANEL_PAD * 2.0)
+            - gap * n(available.len().saturating_sub(1)))
+            / n(available.len());
+        available
+            .into_iter()
+            .enumerate()
+            .map(|(i, control)| {
+                let x = x0 + n(i) * (width + gap);
+                (
+                    control,
+                    Rect::new(x, top, x + width, top + self.scaled(TARGET)),
+                )
+            })
+            .collect()
     }
     fn card(&self, panel: Rect, i: usize, edit: bool) -> Rect {
-        let top = self.grid_top(panel);
         if edit {
-            let top = self.edit_grid_top(panel);
-            let y = top + n(i) * self.scaled(Self::EDIT_ROW + 6.0);
+            let row_h = self.edit_row_height();
+            let y = self.edit_grid_top(panel) + n(i) * (row_h + self.scaled(RELATED_GAP));
             return Rect::new(
-                panel.x0 + self.scaled(Self::PAD),
+                panel.x0 + self.scaled(PANEL_PAD),
                 y,
-                panel.x1 - self.scaled(Self::PAD),
-                y + self.scaled(Self::EDIT_ROW),
+                panel.x1 - self.scaled(PANEL_PAD),
+                y + row_h,
             );
         }
         let col = i % 2;
         let row = i / 2;
-        let pad = self.scaled(Self::PAD);
-        let gap = self.scaled(Self::GAP);
+        let pad = self.scaled(PANEL_PAD);
+        let gap = self.scaled(SIBLING_GAP);
         let card = self.card_height();
         let w = (panel.width() - 2.0 * pad - gap) / 2.0;
         let x = panel.x0 + pad + n(col) * (w + gap);
-        let y = top + n(row) * (card + gap);
+        let y = self.grid_top(panel) + n(row) * (card + gap);
         Rect::new(x, y, x + w, y + card)
     }
     fn control_card(&self, panel: Rect, i: usize, count: usize) -> Rect {
         let row = i / 2;
-        let pad = self.scaled(Self::PAD);
-        let gap = self.scaled(Self::GAP);
+        let pad = self.scaled(PANEL_PAD);
+        let gap = self.scaled(SIBLING_GAP);
         let card = self.card_height();
         let y = self.grid_top(panel) + n(row) * (card + gap);
         if count % 2 == 1 && i.checked_add(1) == Some(count) {
@@ -475,6 +520,34 @@ impl QuickSettingsRoot {
         let x = panel.x0 + pad + n(i % 2) * (w + gap);
         Rect::new(x, y, x + w, y + card)
     }
+    /// A card's icon row: the band its glyph and its switch or chevron are
+    /// centred on, on the control padding.
+    fn card_icon_row(&self, card: Rect) -> Rect {
+        let pad = self.scaled(CONTROL_PAD);
+        Rect::new(
+            card.x0,
+            card.y0 + pad,
+            card.x1,
+            card.y0 + pad + self.scaled(GLYPH.max(TOGGLE_H)),
+        )
+    }
+    /// The drill-in target on a card: the chevron's slot widened to the
+    /// pointer floor, clipped to the card.
+    fn card_drill_in_rect(&self, card: Rect) -> Rect {
+        let chevron = trailing_glyph(
+            self.card_icon_row(card),
+            self.scaled(CONTROL_INSET),
+            self.scaled(GLYPH),
+        );
+        let target = self.scaled(TARGET);
+        Rect::from_center_size(chevron.center(), (target, target)).intersect(card)
+    }
+    /// The drag handle on an edit row: the grip's glyph slot and its insets,
+    /// the row's full height.
+    fn edit_grip_rect(&self, row: Rect) -> Rect {
+        let slot = leading_glyph(row, self.scaled(CONTROL_INSET), self.scaled(GLYPH));
+        Rect::new(row.x0, row.y0, slot.x1 + self.scaled(CONTROL_INSET), row.y1)
+    }
     /// Compatibility geometry for integration tests; the renderer uses the
     /// current control vector above.
     pub fn toggle_geometry(panel: Rect, index: usize) -> Rect {
@@ -483,46 +556,28 @@ impl QuickSettingsRoot {
     pub fn slider_geometry(panel: Rect, i: usize) -> (Rect, f64) {
         Self::default().slider_geometry_for(panel, i)
     }
-    /// Top of the slider block: one gap under the action tiles.
-    fn sliders_top(&self, panel: Rect) -> f64 {
-        self.header_bottom(panel)
-            + self.scaled(Self::GAP)
-            + self.action_height()
-            + self.scaled(Self::GAP)
-    }
-    /// Slider `i`'s track and the top of the pointer band it sits in. The
-    /// two sliders share the 72 px block as two full pointer targets
-    /// (`SLIDER_PITCH`, HIG §9.6 minimum 32) inside `SLIDER_INSET` — the old
-    /// 30 px faces on a 28 px pitch overlapped each other by 2 px and were
-    /// under the minimum target.
-    fn slider_geometry_for(&self, panel: Rect, i: usize) -> (Rect, f64) {
-        let y = self.sliders_top(panel)
-            + self.scaled(Self::SLIDER_INSET)
-            + n(i) * self.scaled(Self::SLIDER_PITCH);
-        let bar_h = self.scaled(Self::SLIDER_BAR_H);
-        let bar_y = y + (self.scaled(Self::SLIDER_PITCH) - bar_h) / 2.0;
-        (
-            Rect::new(
-                panel.x0 + self.scaled(52.0),
-                bar_y,
-                panel.x1 - self.scaled(28.0),
-                bar_y + bar_h,
-            ),
-            y,
-        )
-    }
-    /// The whole slider control — track plus the room around it that the
-    /// shared `Slider` face paints and the pointer may press. One helper
-    /// feeds paint, hit-testing and the accessibility tree. Exactly one
-    /// pointer band tall, so the two faces tile the block without overlap.
+    /// Slider `i`'s face: after the leading glyph slot, the rest of the
+    /// block's width, one pointer band tall (`SLIDER_PITCH`, HIG §9.6). The
+    /// two faces sit one related step apart inside the control padding, so
+    /// neither touches the other or the block's edge. One helper feeds
+    /// paint, hit-testing and the accessibility tree.
     fn slider_face_rect(&self, panel: Rect, i: usize) -> Rect {
-        let (bar, y) = self.slider_geometry_for(panel, i);
+        let block = self.sliders_rect(panel);
+        let y = block.y0
+            + self.scaled(CONTROL_PAD)
+            + n(i) * self.scaled(Self::SLIDER_PITCH + RELATED_GAP);
         Rect::new(
-            bar.x0 - self.scaled(5.),
+            block.x0 + self.scaled(CONTROL_INSET + GLYPH + CONTROL_INSET),
             y,
-            bar.x1 + self.scaled(5.),
+            block.x1 - self.scaled(CONTROL_INSET),
             y + self.scaled(Self::SLIDER_PITCH),
         )
+    }
+    /// Slider `i`'s painted track — the shared face's own `track_rect`, so
+    /// value-from-pointer maths and paint agree — and the top of its band.
+    fn slider_geometry_for(&self, panel: Rect, i: usize) -> (Rect, f64) {
+        let face = self.slider_face_rect(panel, i);
+        (SliderFace::new(face, 0.0).track_rect(), face.y0)
     }
     pub(crate) fn power_geometry(&self, panel: Rect, state: &QuickSettingsState) -> Rect {
         let count = if self.edit_mode {
@@ -535,31 +590,43 @@ impl QuickSettingsRoot {
         } else {
             count.div_ceil(2)
         };
-        let y = self.grid_top(panel)
-            + n(rows) * self.card_height()
-            + n(rows.saturating_sub(1)) * self.scaled(Self::GAP)
-            + self.scaled(Self::GAP);
+        // One section gap under the cards — or straight under the sliders
+        // when this machine has no controls to show.
+        let grid_top = self.grid_top(panel);
+        let y = if rows == 0 {
+            grid_top
+        } else {
+            grid_top
+                + n(rows) * self.card_height()
+                + n(rows.saturating_sub(1)) * self.scaled(SIBLING_GAP)
+                + self.scaled(SECTION_GAP)
+        };
         Rect::new(
-            panel.x0 + self.scaled(Self::PAD),
+            panel.x0 + self.scaled(PANEL_PAD),
             y,
-            panel.x1 - self.scaled(Self::PAD),
+            panel.x1 - self.scaled(PANEL_PAD),
             y + self.power_height(),
         )
     }
     fn action(&self, i: usize) -> Rect {
-        let pad = self.scaled(Self::PAD);
-        let gap = self.scaled(Self::GAP);
+        let pad = self.scaled(PANEL_PAD);
+        let gap = self.scaled(SIBLING_GAP);
         let w = (self.panel.width() - 2.0 * pad - 3.0 * gap) / 4.0;
         let x = self.panel.x0 + pad + n(i) * (w + gap);
-        let y = self.header_bottom(self.panel);
+        let y = self.actions_top(self.panel);
         Rect::new(x, y, x + w, y + self.action_height())
     }
+    /// The Edit button: a pointer-floor square on the trailing panel
+    /// padding, centred in the title band.
     fn edit_rect(&self) -> Rect {
+        let pad = self.scaled(PANEL_PAD);
+        let target = self.scaled(TARGET);
+        let y = self.panel.y0 + pad + (self.scaled(Self::HEADER) - target) / 2.0;
         Rect::new(
-            self.panel.x1 - self.scaled(Self::PAD + 32.0),
-            self.panel.y0 + self.scaled(Self::PAD + 4.0),
-            self.panel.x1 - self.scaled(Self::PAD),
-            self.panel.y0 + self.scaled(Self::PAD + 36.0),
+            self.panel.x1 - pad - target,
+            y,
+            self.panel.x1 - pad,
+            y + target,
         )
     }
     fn label(c: QuickSettingsControl) -> &'static str {
@@ -903,8 +970,7 @@ impl QuickSettingsRoot {
                     c,
                     QuickSettingsControl::Bluetooth | QuickSettingsControl::Vpn
                 ))
-                && Rect::new(card.x1 - 36., card.y0 + 8., card.x1 - 4., card.y0 + 40.)
-                    .contains(point)
+                && self.card_drill_in_rect(card).contains(point)
             {
                 return RootAction::Enter(match c {
                     QuickSettingsControl::Wifi => QsLevel::Wifi,
@@ -920,26 +986,29 @@ impl QuickSettingsRoot {
         }
         RootAction::None
     }
+    /// The footer's two buttons: one section gap under the last section,
+    /// one sibling gap apart.
     fn edit_reset(&self, state: &QuickSettingsState) -> Rect {
-        let available = self.available_edit_controls(state);
-        let y = if available.is_empty() {
+        let y = if self.available_edit_controls(state).is_empty() {
             self.available_edit_top(state)
         } else {
-            self.available_edit_top(state) + self.scaled(68.0)
+            self.available_edit_top(state)
+                + self.caption_band()
+                + self.scaled(TARGET + SECTION_GAP)
         };
         Rect::new(
-            self.panel.x0 + self.scaled(Self::PAD),
+            self.panel.x0 + self.scaled(PANEL_PAD),
             y,
-            self.panel.center().x - self.scaled(4.),
+            self.panel.center().x - self.scaled(SIBLING_GAP) / 2.0,
             y + self.scaled(Self::EDIT_FOOTER),
         )
     }
     fn edit_done(&self, state: &QuickSettingsState) -> Rect {
         let reset = self.edit_reset(state);
         Rect::new(
-            self.panel.center().x + self.scaled(4.),
+            self.panel.center().x + self.scaled(SIBLING_GAP) / 2.0,
             reset.y0,
-            self.panel.x1 - self.scaled(Self::PAD),
+            self.panel.x1 - self.scaled(PANEL_PAD),
             reset.y1,
         )
     }
@@ -951,9 +1020,7 @@ impl QuickSettingsRoot {
                 continue;
             }
             let present = self.config.controls.contains(&c);
-            if present
-                && Rect::new(row.x0 + 8., row.y0 + 4., row.x0 + 38., row.y1 - 4.).contains(point)
-            {
+            if present && self.edit_grip_rect(row).contains(point) {
                 self.edit_drag.begin(c, i, point.y - row.y0, point);
                 return RootAction::None;
             }
@@ -968,27 +1035,11 @@ impl QuickSettingsRoot {
             }
             return RootAction::None;
         }
-        let available = self.available_edit_controls(state);
-        if !available.is_empty() {
-            let gap = self.scaled(6.0);
-            let x0 = self.panel.x0 + self.scaled(Self::PAD);
-            let width = (self.panel.width()
-                - self.scaled(Self::PAD * 2.0)
-                - gap * n(available.len().saturating_sub(1)))
-                / n(available.len());
-            for (i, control) in available.into_iter().enumerate() {
-                let x = x0 + n(i) * (width + gap);
-                let chip = Rect::new(
-                    x,
-                    self.available_edit_top(state) + self.scaled(26.0),
-                    x + width,
-                    self.available_edit_top(state) + self.scaled(60.0),
-                );
-                if chip.contains(point) {
-                    self.config.controls.push(control);
-                    self.save_config();
-                    return RootAction::LayoutChanged;
-                }
+        for (control, chip) in self.available_chips(state) {
+            if chip.contains(point) {
+                self.config.controls.push(control);
+                self.save_config();
+                return RootAction::LayoutChanged;
             }
         }
         if self.edit_reset(state).contains(point) {
@@ -1022,12 +1073,7 @@ impl QuickSettingsRoot {
         if self.edit_drag.is_pending() {
             return self.edit_drag.pointer_moved(
                 point,
-                &ListMetrics::uniform(
-                    self.edit_grid_top(panel),
-                    self.scaled(Self::EDIT_ROW),
-                    self.scaled(6.),
-                    self.edit_controls(state).len(),
-                ),
+                &self.edit_list_metrics(panel, self.edit_controls(state).len()),
             );
         }
         false
@@ -1069,19 +1115,11 @@ impl QuickSettingsRoot {
         state: &QuickSettingsState,
     ) {
         self.panel = panel;
-        let colors = &theme.tokens.colors;
-        // Panel role (HIG §9.1): the host paints the same outline, so the
-        // two corners must resolve to the same token or a seam shows.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(
-                panel,
-                ui::chrome::ChromeRole::Panel.radius(theme, panel.height()),
-            ),
-        );
+        // Panel role (HIG §9.1/§9.2): the host paints the one Panel surface
+        // — `panel_ground` with its derived `panel_border` — and the root
+        // paints nothing under its controls. A second fill here (formerly
+        // `surfaces.raised`) covered the inner half of that border and made
+        // the tiles' own `raised` faces vanish into it.
         self.header(scene, transform, text, theme, cursor);
         if self.edit_mode {
             self.draw_edit(scene, transform, text, theme, cursor, state);
@@ -1133,17 +1171,15 @@ impl QuickSettingsRoot {
                 &ButtonFace::new(r, "")
                     .ghost()
                     .hovered(cursor.is_some_and(|p| r.contains(p)))
+                    .focused(self.keyboard_focus == Some(0))
                     .accessible_name(name),
             );
+            // The standard glyph centred in the pointer-floor button.
+            let glyph = self.scaled(GLYPH);
             ui::icons::draw_icon(
                 scene,
                 transform,
-                Rect::new(
-                    r.x0 + self.scaled(8.),
-                    r.y0 + self.scaled(8.),
-                    r.x1 - self.scaled(8.),
-                    r.y1 - self.scaled(8.),
-                ),
+                Rect::from_center_size(r.center(), (glyph, glyph)),
                 icon,
                 colors.text_primary,
                 1.5,
@@ -1164,54 +1200,42 @@ impl QuickSettingsRoot {
         state: &QuickSettingsState,
     ) {
         let colors = &theme.tokens.colors;
+        let glyph = self.scaled(GLYPH);
+        let inset = self.scaled(CONTROL_INSET);
         // Destinations remain at the top, in the place established by the
         // original GNOME-inspired shell, rather than becoming unexplained
         // footer glyphs.  The visible label is part of the control: a
         // tooltip or accessibility tree is not sufficient discoverability.
-        for (i, (icon, accessible, label)) in [
-            (ui::icons::Icon::Settings2, "Open Settings", "Settings"),
-            (ui::icons::Icon::Shield, "Privacy controls", "Privacy"),
-            (ui::icons::Icon::History, "Notification history", "History"),
-            (ui::icons::Icon::Power, "Power menu", "Power"),
+        for (i, (icon, label)) in [
+            (ui::icons::Icon::Settings2, "Settings"),
+            (ui::icons::Icon::Shield, "Privacy"),
+            (ui::icons::Icon::History, "History"),
+            (ui::icons::Icon::Power, "Power"),
         ]
         .into_iter()
         .enumerate()
         {
             let r = self.action(i);
             let power = i == 3;
-            let hovered = cursor.is_some_and(|p| r.contains(p));
-            Button::paint(
+            // Focus index 0 is the Edit button and the tiles follow it
+            // (`activate_focused`), so tile `i` lights at `i + 1`.
+            paint_control(
                 scene,
                 transform,
-                text,
                 theme,
-                &ButtonFace::new(r, "")
-                    .hovered(hovered)
-                    .focused(self.keyboard_focus == Some(i))
-                    .accessible_name(accessible),
+                r,
+                cursor.is_some_and(|p| r.contains(p)),
+                self.keyboard_focus == Some(i.saturating_add(1)),
             );
             let color = if power {
                 colors.semantic.danger
             } else {
                 colors.text_primary
             };
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(
-                    r.center().x - 9.,
-                    r.y0 + self.scaled(8.),
-                    r.center().x + 9.,
-                    r.y0 + self.scaled(26.),
-                ),
-                icon,
-                color,
-                1.5,
-            );
             // These four labels are fixed, high-value shell destinations.
             // Keep every word intact; at an unusually large text scale we
             // reduce this one caption before we truncate its meaning.
-            let max_label_width = (r.width() - self.scaled(8.)).max(1.);
+            let max_label_width = (r.width() - 2.0 * inset).max(1.);
             let label_size = type_size(text, theme.tokens.typography.scale.xs);
             let (unscaled_label_width, _) =
                 text.measure_weighted(label, label_size, None, TextWeight::Medium);
@@ -1220,8 +1244,27 @@ impl QuickSettingsRoot {
             } else {
                 label_size
             };
-            let (label_width, _) =
+            let (label_width, label_height) =
                 text.measure_weighted(label, label_size, None, TextWeight::Medium);
+            // Glyph, `icon_label_gap`, caption: one measured block centred
+            // in the tile (HIG §7), never a glyph pinned to the top edge
+            // with the caption riding the bottom one.
+            let gap = self.scaled(Self::GLYPH_GAP);
+            let block_h = glyph + gap + f64::from(label_height);
+            let block_top = r.y0 + (r.height() - block_h) / 2.0;
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(
+                    r.center().x - glyph / 2.0,
+                    block_top,
+                    r.center().x + glyph / 2.0,
+                    block_top + glyph,
+                ),
+                icon,
+                color,
+                1.5,
+            );
             text.draw_text_weighted(
                 scene,
                 label,
@@ -1230,7 +1273,7 @@ impl QuickSettingsRoot {
                 transform.pre_translate(
                     (
                         r.center().x - f64::from(label_width) / 2.,
-                        r.y0 + self.scaled(46.),
+                        block_top + glyph + gap,
                     )
                         .into(),
                 ),
@@ -1238,36 +1281,17 @@ impl QuickSettingsRoot {
                 TextWeight::Medium,
             );
         }
-        let sliders_top = self.sliders_top(self.panel);
-        let sliders = Rect::new(
-            self.panel.x0 + self.scaled(Self::PAD),
-            sliders_top,
-            self.panel.x1 - self.scaled(Self::PAD),
-            sliders_top + self.scaled(Self::SLIDERS),
-        );
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &ButtonFace::new(sliders, "")
-                .radius(12.)
-                .accessible_name("Brightness and volume"),
-        );
+        // The slider block is one Control surface holding two pointer
+        // bands, each with its glyph on the leading inset of the band.
+        let sliders = self.sliders_rect(self.panel);
+        paint_control(scene, transform, theme, sliders, false, false);
         for i in 0..2 {
             let face = self.slider_face_rect(self.panel, i);
-            // The glyph is centred on the slider's band, so it shares the
-            // track's centre line whatever the band's height.
-            let glyph = self.scaled(16.);
+            let band = Rect::new(sliders.x0, face.y0, sliders.x1, face.y1);
             ui::icons::draw_icon(
                 scene,
                 transform,
-                Rect::new(
-                    self.panel.x0 + self.scaled(28.),
-                    face.center().y - glyph / 2.0,
-                    self.panel.x0 + self.scaled(28.) + glyph,
-                    face.center().y + glyph / 2.0,
-                ),
+                leading_glyph(band, inset, glyph),
                 if i == 0 {
                     ui::icons::Icon::Sun
                 } else {
@@ -1307,73 +1331,83 @@ impl QuickSettingsRoot {
                 c,
             );
         }
+        // The power row: battery glyph, profile and detail, chevron — all
+        // on the row's centre line.
         let r = self.power_geometry(self.panel, state);
-        let power_focus = 7_usize.saturating_add(self.visible_controls(state).len());
-        Button::paint(
+        let power_focus = 7_usize.saturating_add(controls.len());
+        paint_control(
             scene,
             transform,
-            text,
             theme,
-            &ButtonFace::new(r, "")
-                .hovered(cursor.is_some_and(|p| r.contains(p)))
-                .focused(self.keyboard_focus == Some(power_focus))
-                .accessible_name("Change power profile"),
+            r,
+            cursor.is_some_and(|p| r.contains(p)),
+            self.keyboard_focus == Some(power_focus),
         );
+        let battery = leading_glyph(r, inset, glyph);
         ui::icons::draw_icon(
             scene,
             transform,
-            Rect::new(
-                r.x0 + self.scaled(12.),
-                r.y0 + self.scaled(15.),
-                r.x0 + self.scaled(30.),
-                r.y0 + self.scaled(33.),
-            ),
+            battery,
             ui::icons::Icon::Battery,
             colors.semantic.success,
             1.5,
         );
-        let power_label = state.power_profile.label();
-        let power_label_size = type_size(text, theme.tokens.typography.scale.sm);
-        let power_label_y = r.y0 + self.scaled(Self::POWER_LABEL_TOP);
-        let (_, power_label_h) =
-            text.measure_weighted(power_label, power_label_size, None, TextWeight::Semibold);
-        text.draw_text_weighted(
+        let chevron = trailing_glyph(r, inset, glyph);
+        ui::icons::draw_icon(
             scene,
-            power_label,
+            transform,
+            chevron,
+            ui::icons::Icon::ChevronRight,
+            colors.text_dim,
+            1.5,
+        );
+        let text_x = battery.x1 + inset;
+        let text_width = (chevron.x0 - self.scaled(RELATED_GAP) - text_x).max(1.0);
+        let power_label_size = type_size(text, theme.tokens.typography.scale.sm);
+        let detail_size = type_size(text, theme.tokens.typography.scale.xs);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
+        )]
+        let power_label = text.elide_to_width(
+            state.power_profile.label(),
             power_label_size,
-            colors.text_primary,
-            transform.pre_translate((r.x0 + self.scaled(42.), power_label_y).into()),
-            None,
-            TextWeight::Semibold,
+            text_width as f32,
         );
         let battery_detail = if state.battery.present {
             format!("{}% battery", state.battery.capacity)
         } else {
             "AC power".to_string()
         };
-        // The detail follows the measured label line, never a fixed offset
-        // the label can outgrow (HIG §7a: measure and draw with one style).
-        let detail_y = (r.y0 + self.scaled(33.)).max(power_label_y + f64::from(power_label_h));
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
+        )]
+        let battery_detail =
+            text.elide_to_width(&battery_detail, detail_size, text_width as f32);
+        let (_, power_label_h) =
+            text.measure_weighted(&power_label, power_label_size, None, TextWeight::Semibold);
+        let (_, detail_h) = text.measure(&battery_detail, detail_size, None);
+        // Label and detail are one measured block on the row's centre line
+        // (HIG §7a: measure and draw with one style; the detail follows the
+        // label line, never a fixed offset the label can outgrow).
+        let block_top = centred_text_top(r, f64::from(power_label_h) + f64::from(detail_h));
+        text.draw_text_weighted(
+            scene,
+            &power_label,
+            power_label_size,
+            colors.text_primary,
+            transform.pre_translate((text_x, block_top).into()),
+            None,
+            TextWeight::Semibold,
+        );
         text.draw_text(
             scene,
             &battery_detail,
-            type_size(text, theme.tokens.typography.scale.xs),
+            detail_size,
             colors.text_dim,
-            transform.pre_translate((r.x0 + self.scaled(42.), detail_y).into()),
+            transform.pre_translate((text_x, block_top + f64::from(power_label_h)).into()),
             None,
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::new(
-                r.x1 - self.scaled(28.),
-                r.y0 + self.scaled(17.),
-                r.x1 - self.scaled(12.),
-                r.y0 + self.scaled(33.),
-            ),
-            ui::icons::Icon::ChevronRight,
-            colors.text_dim,
-            1.5,
         );
     }
     #[allow(
@@ -1395,25 +1429,23 @@ impl QuickSettingsRoot {
         let colors = &theme.tokens.colors;
         let r = self.control_card(self.panel, i, count);
         let on = Self::on(c, s);
-        Button::paint(
+        paint_control(
             scene,
             transform,
-            text,
             theme,
-            &ButtonFace::new(r, "")
-                .hovered(cursor.is_some_and(|p| r.contains(p)))
-                .focused(self.keyboard_focus == Some(7_usize.saturating_add(i)))
-                .accessible_name(Self::rendered_label(c, s)),
+            r,
+            cursor.is_some_and(|p| r.contains(p)),
+            self.keyboard_focus == Some(7_usize.saturating_add(i)),
         );
+        let inset = self.scaled(CONTROL_INSET);
+        let glyph = self.scaled(GLYPH);
+        // Glyph and switch (or chevron) share the icon row's centre line;
+        // label and sub-line follow one related step below it (HIG §7).
+        let icon_row = self.card_icon_row(r);
         ui::icons::draw_icon(
             scene,
             transform,
-            Rect::new(
-                r.x0 + self.scaled(14.),
-                r.y0 + self.scaled(11.),
-                r.x0 + self.scaled(32.),
-                r.y0 + self.scaled(29.),
-            ),
+            leading_glyph(icon_row, inset, glyph),
             Self::icon(c, s),
             if on {
                 colors.accent[5]
@@ -1422,38 +1454,38 @@ impl QuickSettingsRoot {
             },
             1.5,
         );
-        let label = Self::rendered_label(c, s);
         let label_size = type_size(text, theme.tokens.typography.scale.sm);
-        let label_y = r.y0 + self.scaled(Self::CARD_LABEL_TOP);
-        let (_, label_h) = text.measure_weighted(label, label_size, None, TextWeight::Semibold);
-        text.draw_text_weighted(
-            scene,
-            label,
-            label_size,
-            colors.text_primary,
-            transform.pre_translate((r.x0 + self.scaled(14.), label_y).into()),
-            None,
-            TextWeight::Semibold,
-        );
+        let sub_size = type_size(text, theme.tokens.typography.scale.xs);
+        let text_width = (r.width() - 2.0 * inset).max(1.0);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
         )]
-        let sub = text.elide_to_width(
-            Self::subline(c, s),
-            type_size(text, theme.tokens.typography.scale.xs),
-            (r.width() - self.scaled(70.)) as f32,
+        let label = text.elide_to_width(Self::rendered_label(c, s), label_size, text_width as f32);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
+        )]
+        let sub = text.elide_to_width(Self::subline(c, s), sub_size, text_width as f32);
+        let label_y = icon_row.y1 + self.scaled(RELATED_GAP);
+        let (_, label_h) = text.measure_weighted(&label, label_size, None, TextWeight::Semibold);
+        text.draw_text_weighted(
+            scene,
+            &label,
+            label_size,
+            colors.text_primary,
+            transform.pre_translate((r.x0 + inset, label_y).into()),
+            None,
+            TextWeight::Semibold,
         );
         // The sub-line sits under the measured label rather than at a fixed
         // offset the label outgrows at large text (HIG §7a).
         text.draw_text(
             scene,
             &sub,
-            type_size(text, theme.tokens.typography.scale.xs),
+            sub_size,
             colors.text_dim,
-            transform.pre_translate(
-                (r.x0 + self.scaled(14.), label_y + f64::from(label_h)).into(),
-            ),
+            transform.pre_translate((r.x0 + inset, label_y + f64::from(label_h)).into()),
             None,
         );
         if (matches!(c, QuickSettingsControl::Wifi) && s.radios.wifi_available)
@@ -1465,12 +1497,7 @@ impl QuickSettingsRoot {
             ui::icons::draw_icon(
                 scene,
                 transform,
-                Rect::new(
-                    r.x1 - self.scaled(30.),
-                    r.y0 + self.scaled(13.),
-                    r.x1 - self.scaled(14.),
-                    r.y0 + self.scaled(29.),
-                ),
+                trailing_glyph(icon_row, inset, glyph),
                 ui::icons::Icon::ChevronRight,
                 colors.text_dim,
                 1.5,
@@ -1481,11 +1508,11 @@ impl QuickSettingsRoot {
                 transform,
                 theme,
                 &ToggleFace::new(
-                    Rect::new(
-                        r.x1 - self.scaled(50.),
-                        r.y0 + self.scaled(11.),
-                        r.x1 - self.scaled(14.),
-                        r.y0 + self.scaled(31.),
+                    trailing_toggle(
+                        icon_row,
+                        inset,
+                        self.scaled(TOGGLE_W),
+                        self.scaled(TOGGLE_H),
                     ),
                     on,
                 ),
@@ -1506,27 +1533,25 @@ impl QuickSettingsRoot {
         state: &QuickSettingsState,
     ) {
         let colors = &theme.tokens.colors;
+        let pad = self.scaled(PANEL_PAD);
+        let caption_size = type_size(text, theme.tokens.typography.scale.xs);
+        // Section caption on the control padding under the title band.
         text.draw_text(
             scene,
             "ACTIVE CONTROLS",
-            type_size(text, theme.tokens.typography.scale.xs),
+            caption_size,
             colors.text_dim,
             transform.pre_translate(
                 (
-                    self.panel.x0 + self.scaled(Self::PAD),
-                    self.header_bottom(self.panel) + self.scaled(11.),
+                    self.panel.x0 + pad,
+                    self.header_bottom(self.panel) + self.scaled(CONTROL_PAD),
                 )
                     .into(),
             ),
             None,
         );
         let all = self.active_edit_controls(state);
-        let metrics = ListMetrics::uniform(
-            self.edit_grid_top(self.panel),
-            self.scaled(Self::EDIT_ROW),
-            self.scaled(6.),
-            all.len(),
-        );
+        let metrics = self.edit_list_metrics(self.panel, all.len());
         self.edit_drag.sync_insertion(&metrics);
         for (i, c) in all.iter().copied().enumerate() {
             // The dragged control is represented by the elevated ghost
@@ -1538,129 +1563,68 @@ impl QuickSettingsRoot {
             }
             let mut r = self.card(self.panel, i, true);
             r = r.with_origin((r.x0, r.y0 + self.edit_drag.item_shift(i, &metrics)));
-            let present = self.config.controls.contains(&c);
-            Button::paint(
+            // Edit rows are indexed from 0 in the focus order
+            // (`activate_focused`, `reorder_focused`), so row `i` lights at `i`.
+            paint_control(
                 scene,
                 transform,
-                text,
                 theme,
-                &ButtonFace::new(r, "")
-                    .hovered(cursor.is_some_and(|p| r.contains(p)))
-                    .focused(self.keyboard_focus == Some(i.saturating_add(1)))
-                    .accessible_name(Self::label(c)),
+                r,
+                cursor.is_some_and(|p| r.contains(p)),
+                self.keyboard_focus == Some(i),
             );
-            // A six-dot grip is a familiar, intentional reorder affordance;
-            // the old horizontal ellipsis read as accidental punctuation.
-            for x in [r.x0 + self.scaled(15.), r.x0 + self.scaled(21.)] {
-                for y in [
-                    r.center().y - self.scaled(6.),
-                    r.center().y,
-                    r.center().y + self.scaled(6.),
-                ] {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        colors.text_dim,
-                        None,
-                        &Circle::new(Point::new(x, y), 1.25),
-                    );
-                }
-            }
-            let action = Rect::new(
-                r.x1 - self.scaled(40.),
-                r.y0 + self.scaled(7.),
-                r.x1 - self.scaled(6.),
-                r.y1 - self.scaled(7.),
-            );
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
-            )]
-            let label = text.elide_to_width(
-                Self::label(c),
-                type_size(text, theme.tokens.typography.scale.sm),
-                (action.x0 - r.x0 - self.scaled(50.)).max(1.0) as f32,
-            );
-            text.draw_text_weighted(
-                scene,
-                &label,
-                type_size(text, theme.tokens.typography.scale.sm),
-                colors.text_primary,
-                transform.pre_translate((r.x0 + self.scaled(42.), r.y0 + self.scaled(25.)).into()),
-                None,
-                TextWeight::Medium,
-            );
-            let action_face = ButtonFace::new(action, "")
-                .hovered(cursor.is_some_and(|p| action.contains(p)))
-                .accessible_name(if c.required() {
-                    "Required Quick Settings control"
-                } else if present {
-                    "Remove Quick Settings control"
-                } else {
-                    "Add Quick Settings control"
-                })
-                .text_size(type_size(text, theme.tokens.typography.scale.xs));
-            let action_face = if c.required() {
-                action_face.ghost()
-            } else {
-                action_face.icon(ui::icons::Icon::X)
-            };
-            Button::paint(scene, transform, text, theme, &action_face);
+            self.draw_edit_row_content(scene, transform, text, theme, cursor, r, c);
         }
-        if let Some(ghost) = self.edit_drag.ghost_rect(
-            self.panel.x0 + self.scaled(Self::PAD),
-            self.panel.x1 - self.scaled(Self::PAD),
-            &metrics,
-        ) {
+        if let Some(ghost) =
+            self.edit_drag
+                .ghost_rect(self.panel.x0 + pad, self.panel.x1 - pad, &metrics)
+        {
             // The floating item retains its identity, not merely a coloured
-            // insertion hole. A small physical shadow and a restrained
-            // accent wash make it read as an object lifted above the list,
-            // not a keyboard-focus outline that happened to move.
+            // insertion hole: it is the one lifted control (the active
+            // selection tier, HIG §9.3) casting the `e4` a dragged object
+            // casts, with a live accent rail on its leading edge.
             // Offset the presentation very slightly from the pointer's
             // exact hit geometry. Otherwise a slow vertical drag can land
-            // exactly on a row and look indistinguishable from focus even
-            // with a border. The controller and drop calculation retain the
+            // exactly on a row and look indistinguishable from a resting
+            // row. The controller and drop calculation retain the
             // unmodified ghost rectangle above.
+            let lift = self.scaled(Self::LIFT);
             let destination_top = self
                 .edit_drag
                 .insertion()
-                .map(|index| metrics.slot_lead(index) + self.scaled(4.));
-            let ghost_y0 = destination_top.map_or_else(
-                || ghost.y0 - self.scaled(6.),
-                |top| (ghost.y0 - self.scaled(6.)).max(top),
-            );
+                .map(|index| metrics.slot_lead(index) + lift);
+            let ghost_y0 = destination_top
+                .map_or_else(|| ghost.y0 - lift, |top| (ghost.y0 - lift).max(top));
             let ghost = Rect::new(
-                ghost.x0 + self.scaled(6.),
+                ghost.x0 + lift,
                 ghost_y0,
-                ghost.x1 - self.scaled(6.),
+                ghost.x1 - lift,
                 ghost_y0 + metrics.item_extent,
             );
-            let shadow = ghost
-                .inflate(self.scaled(5.), self.scaled(5.))
-                .with_origin((ghost.x0 + self.scaled(4.), ghost.y0 + self.scaled(8.)));
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.surfaces.base.with_alpha_factor(0.96),
-                None,
-                &RoundedRect::from_rect(shadow, self.scaled(10.)),
-            );
-            Button::paint(
-                scene,
-                transform,
-                text,
-                theme,
-                &ButtonFace::new(ghost, "")
-                    .focused(true)
-                    .accessible_name("Quick Settings control being reordered"),
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.accent[5].with_alpha_factor(0.20),
-                None,
-                &RoundedRect::from_rect(ghost, self.scaled(10.)),
-            );
+            let radius = control_radius(theme, ghost);
+            ui::surface::shadow(scene, transform, ghost, radius, &theme.tokens.elevation.e4);
+            let tier =
+                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true));
+            let shape = RoundedRect::from_rect(ghost, radius);
+            scene.fill(Fill::NonZero, transform, tier.fill, None, &shape);
+            if let Some(border) = tier.border {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    border,
+                    None,
+                    &shape,
+                );
+            }
+            if let Some(glow) = tier.inner_glow {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    glow,
+                    None,
+                    &RoundedRect::from_rect(ghost.inset(1.0), (radius - 1.0).max(0.0)),
+                );
+            }
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1669,68 +1633,15 @@ impl QuickSettingsRoot {
                 &RoundedRect::from_rect(
                     Rect::new(
                         ghost.x0,
-                        ghost.y0 + self.scaled(10.),
-                        ghost.x0 + self.scaled(4.),
-                        ghost.y1 - self.scaled(10.),
+                        ghost.y0 + self.scaled(RELATED_GAP),
+                        ghost.x0 + lift,
+                        ghost.y1 - self.scaled(RELATED_GAP),
                     ),
-                    self.scaled(1.5),
+                    lift / 2.0,
                 ),
             );
             if let Some(control) = self.edit_drag.dragged_id().copied() {
-                for x in [ghost.x0 + self.scaled(15.), ghost.x0 + self.scaled(21.)] {
-                    for y in [
-                        ghost.center().y - self.scaled(6.),
-                        ghost.center().y,
-                        ghost.center().y + self.scaled(6.),
-                    ] {
-                        scene.fill(
-                            Fill::NonZero,
-                            transform,
-                            colors.text_dim,
-                            None,
-                            &Circle::new(Point::new(x, y), 1.25),
-                        );
-                    }
-                }
-                let action = Rect::new(
-                    ghost.x1 - self.scaled(40.),
-                    ghost.y0 + self.scaled(7.),
-                    ghost.x1 - self.scaled(6.),
-                    ghost.y1 - self.scaled(7.),
-                );
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
-                )]
-                let label = text.elide_to_width(
-                    Self::label(control),
-                    type_size(text, theme.tokens.typography.scale.sm),
-                    (action.x0 - ghost.x0 - self.scaled(50.)).max(1.0) as f32,
-                );
-                text.draw_text_weighted(
-                    scene,
-                    &label,
-                    type_size(text, theme.tokens.typography.scale.sm),
-                    colors.text_primary,
-                    transform.pre_translate(
-                        (ghost.x0 + self.scaled(42.), ghost.y0 + self.scaled(25.)).into(),
-                    ),
-                    None,
-                    TextWeight::Medium,
-                );
-                let ghost_face = ButtonFace::new(action, "")
-                    .text_size(type_size(text, theme.tokens.typography.scale.xs))
-                    .accessible_name(if control.required() {
-                        "Required Quick Settings control"
-                    } else {
-                        "Remove Quick Settings control"
-                    });
-                let ghost_face = if control.required() {
-                    ghost_face.ghost()
-                } else {
-                    ghost_face.icon(ui::icons::Icon::X)
-                };
-                Button::paint(scene, transform, text, theme, &ghost_face);
+                self.draw_edit_row_content(scene, transform, text, theme, cursor, ghost, control);
             }
             if let Some(insertion) = self.edit_drag.insertion().filter(|index| *index > 0) {
                 // A drop seam is a second, independent cue: the lifted
@@ -1741,6 +1652,7 @@ impl QuickSettingsRoot {
                 // large-text regression where it crossed the action button.
                 let y = metrics.slot_lead(insertion) - metrics.gap / 2.0;
                 let rail_half = (metrics.gap * 0.22).clamp(1.0, 2.0);
+                let inset = self.scaled(RELATED_GAP);
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -1748,9 +1660,9 @@ impl QuickSettingsRoot {
                     None,
                     &RoundedRect::from_rect(
                         Rect::new(
-                            self.panel.x0 + self.scaled(Self::PAD + 8.),
+                            self.panel.x0 + pad + inset,
                             y - rail_half,
-                            self.panel.x1 - self.scaled(Self::PAD + 8.),
+                            self.panel.x1 - pad - inset,
                             y + rail_half,
                         ),
                         rail_half,
@@ -1758,37 +1670,20 @@ impl QuickSettingsRoot {
                 );
             }
         }
-        let available = self.available_edit_controls(state);
-        if !available.is_empty() {
+        let chips = self.available_chips(state);
+        if !chips.is_empty() {
             let top = self.available_edit_top(state);
             text.draw_text(
                 scene,
                 "AVAILABLE",
-                type_size(text, theme.tokens.typography.scale.xs),
+                caption_size,
                 colors.text_dim,
                 transform.pre_translate(
-                    (
-                        self.panel.x0 + self.scaled(Self::PAD),
-                        top + self.scaled(12.0),
-                    )
-                        .into(),
+                    (self.panel.x0 + pad, top + self.scaled(CONTROL_PAD)).into(),
                 ),
                 None,
             );
-            let gap = self.scaled(6.0);
-            let x0 = self.panel.x0 + self.scaled(Self::PAD);
-            let width = (self.panel.width()
-                - self.scaled(Self::PAD * 2.0)
-                - gap * n(available.len().saturating_sub(1)))
-                / n(available.len());
-            for (i, control) in available.into_iter().enumerate() {
-                let x = x0 + n(i) * (width + gap);
-                let chip = Rect::new(
-                    x,
-                    top + self.scaled(26.0),
-                    x + width,
-                    top + self.scaled(60.0),
-                );
+            for (control, chip) in chips {
                 Button::paint(
                     scene,
                     transform,
@@ -1796,7 +1691,7 @@ impl QuickSettingsRoot {
                     theme,
                     &ButtonFace::new(chip, Self::label(control))
                         .icon(ui::icons::Icon::Plus)
-                        .text_size(type_size(text, theme.tokens.typography.scale.xs))
+                        .text_size(caption_size)
                         .hovered(cursor.is_some_and(|point| chip.contains(point)))
                         .accessible_name(Self::label(control)),
                 );
@@ -1826,6 +1721,94 @@ impl QuickSettingsRoot {
                 .focused(self.keyboard_focus == Some(edit_count.saturating_add(1)))
                 .accessible_name("Finish editing Quick Settings"),
         );
+    }
+    /// The grip, label and add/remove button of an edit row, shared by the
+    /// resting rows and the drag ghost so the two cannot drift apart. Every
+    /// element sits on the row's centre line (HIG §7).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the row painter receives the scene, transform, text, theme, pointer, row rect and control together to paint one coherent row"
+    )]
+    fn draw_edit_row_content(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        cursor: Option<Point>,
+        r: Rect,
+        c: QuickSettingsControl,
+    ) {
+        let colors = &theme.tokens.colors;
+        let inset = self.scaled(CONTROL_INSET);
+        let glyph = self.scaled(GLYPH);
+        let present = self.config.controls.contains(&c);
+        // A six-dot grip is a familiar, intentional reorder affordance;
+        // the old horizontal ellipsis read as accidental punctuation. It is
+        // centred in the row's leading glyph slot.
+        let slot = leading_glyph(r, inset, glyph);
+        let dot_pitch = glyph * 0.3;
+        for x in [
+            slot.center().x - dot_pitch / 2.0,
+            slot.center().x + dot_pitch / 2.0,
+        ] {
+            for y in [
+                slot.center().y - dot_pitch,
+                slot.center().y,
+                slot.center().y + dot_pitch,
+            ] {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.text_dim,
+                    None,
+                    &Circle::new(Point::new(x, y), 1.25),
+                );
+            }
+        }
+        let action = trailing_toggle(
+            r,
+            inset,
+            self.scaled(TARGET),
+            self.scaled(TARGET),
+        );
+        let label_size = type_size(text, theme.tokens.typography.scale.sm);
+        let label_x = slot.x1 + inset;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
+        )]
+        let label = text.elide_to_width(
+            Self::label(c),
+            label_size,
+            (action.x0 - self.scaled(RELATED_GAP) - label_x).max(1.0) as f32,
+        );
+        let (_, label_h) = text.measure_weighted(&label, label_size, None, TextWeight::Medium);
+        text.draw_text_weighted(
+            scene,
+            &label,
+            label_size,
+            colors.text_primary,
+            transform.pre_translate((label_x, centred_text_top(r, f64::from(label_h))).into()),
+            None,
+            TextWeight::Medium,
+        );
+        let action_face = ButtonFace::new(action, "")
+            .hovered(cursor.is_some_and(|point| action.contains(point)))
+            .accessible_name(if c.required() {
+                "Required Quick Settings control"
+            } else if present {
+                "Remove Quick Settings control"
+            } else {
+                "Add Quick Settings control"
+            })
+            .text_size(type_size(text, theme.tokens.typography.scale.xs));
+        let action_face = if c.required() {
+            action_face.ghost()
+        } else {
+            action_face.icon(ui::icons::Icon::X)
+        };
+        Button::paint(scene, transform, text, theme, &action_face);
     }
     pub fn accessibility_snapshot(&self, state: &QuickSettingsState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
@@ -2058,27 +2041,13 @@ mod tests {
         assert!(root.reorder_focused(&state, 1));
         assert_eq!(root.config.controls[1], QuickSettingsControl::Wifi);
         root.panel = PANEL;
-        let airplane = root
-            .available_edit_controls(&state)
-            .iter()
-            .position(|c| *c == QuickSettingsControl::AirplaneMode)
-            .unwrap_or_default();
-        let available = root.available_edit_controls(&state);
-        let gap = root.scaled(6.0);
-        let width = (PANEL.width()
-            - root.scaled(QuickSettingsRoot::PAD * 2.0)
-            - gap * n(available.len().saturating_sub(1)))
-            / n(available.len());
-        let x = PANEL.x0 + root.scaled(QuickSettingsRoot::PAD) + n(airplane) * (width + gap);
-        let top = root.available_edit_top(&state);
-        let row = Rect::new(
-            x,
-            top + root.scaled(18.0),
-            x + width,
-            top + root.scaled(52.0),
-        );
+        let (_, chip) = root
+            .available_chips(&state)
+            .into_iter()
+            .find(|(c, _)| *c == QuickSettingsControl::AirplaneMode)
+            .expect("Airplane mode is offered while a radio exists");
         assert_eq!(
-            root.edit_click(row.center(), &state),
+            root.edit_click(chip.center(), &state),
             RootAction::LayoutChanged
         );
         assert!(
@@ -2124,8 +2093,8 @@ mod tests {
         let panel = Rect::new(0., 48., 400., 520.);
         let root = QuickSettingsRoot::default();
         let full = root.control_card(panel, 2, 3);
-        assert_eq!(full.x0, panel.x0 + QuickSettingsRoot::PAD);
-        assert_eq!(full.x1, panel.x1 - QuickSettingsRoot::PAD);
+        assert_eq!(full.x0, panel.x0 + PANEL_PAD);
+        assert_eq!(full.x1, panel.x1 - PANEL_PAD);
         assert_eq!(full.width(), 368.);
     }
     #[allow(
@@ -2155,11 +2124,21 @@ mod tests {
         state.bluetooth_available = true;
         root.set_layout_text_scale(1.3);
         // The panel begins below the 48px top bar and must leave the shell's
-        // 16px lower margin intact.  This catches accidental scaling of
-        // whitespace that hides the power profile at common laptop sizes.
-        assert!(root.preferred_height(&state) <= 536.);
+        // 16px lower margin intact: the host fits the root's chrome to that
+        // budget (`fit_root_layout_to_height`) exactly as it does per frame.
+        // This catches accidental growth of whitespace that would hide the
+        // power profile at common laptop sizes — the fit must succeed
+        // without shrinking the chrome below its 1× rhythm.
+        let available = 600.0 - 48.0 - 16.0;
+        root.fit_root_layout_to_height(&state, available);
+        assert!(
+            root.layout_scale >= 1.0,
+            "chrome stays at or above 1×: {}",
+            root.layout_scale
+        );
+        assert!(root.preferred_height(&state) <= available + f64::EPSILON);
         let panel = Rect::new(0., 48., 400., 48. + root.preferred_height(&state));
-        assert!(root.power_geometry(panel, &state).y1 <= panel.y1);
+        assert!(root.power_geometry(panel, &state).y1 <= panel.y1 + f64::EPSILON);
     }
     #[test]
     fn large_text_fits_every_root_control_on_a_960_by_540_desktop() {
@@ -2196,18 +2175,28 @@ mod tests {
         // Rects are built as `y + height`, so compare to within an ulp.
         let eps = 1e-6;
         let count = root.visible_controls(&state).len();
+        let pad = root.scaled(CONTROL_PAD);
         for i in 0..count {
             let card = root.control_card(panel, i, count);
+            let icon_row = root.card_icon_row(card);
             assert!(
-                card.height() + eps >= root.scaled(QuickSettingsRoot::CARD_LABEL_TOP) + label + caption,
-                "card {i} must hold icon, label and caption: {card:?}"
+                card.height() + eps
+                    >= (icon_row.y1 - card.y0)
+                        + root.scaled(RELATED_GAP)
+                        + label
+                        + caption
+                        + pad,
+                "card {i} must hold icon row, label and caption: {card:?}"
             );
         }
         for i in 0..4 {
             let tile = root.action(i);
             assert!(
-                tile.height() + eps >= root.scaled(QuickSettingsRoot::ACTION_LABEL_TOP) + caption,
-                "tile {i} must hold its caption: {tile:?}"
+                tile.height() + eps
+                    >= 2.0 * pad
+                        + root.scaled(GLYPH + QuickSettingsRoot::GLYPH_GAP)
+                        + caption,
+                "tile {i} must hold glyph, gap and caption: {tile:?}"
             );
         }
         let header = root.header_rect();
@@ -2220,9 +2209,7 @@ mod tests {
             "the title band ends before the action tiles begin"
         );
         let power = root.power_geometry(panel, &state);
-        assert!(
-            power.height() + eps >= root.scaled(QuickSettingsRoot::POWER_LABEL_TOP) + label + caption
-        );
+        assert!(power.height() + eps >= 2.0 * pad + label + caption);
         assert!(power.y1 <= panel.y1 + f64::EPSILON, "the last control ends inside the panel");
         // Rows still never overlap once they have grown.
         let mut rows: Vec<Rect> = (0..count).map(|i| root.control_card(panel, i, count)).collect();
@@ -2236,14 +2223,100 @@ mod tests {
         }
     }
 
+    /// One rhythm at 1× (HIG §7b, §9.6): every adjacent pair in the root
+    /// keeps its token step — sections `s4`, grid siblings `s3`, the two
+    /// slider bands and a card's icon row `s2` — nothing touches, glyphs and
+    /// switches share their row's centre line, and the power row rests at
+    /// the Control height because its two lines fit inside it.
     #[test]
-    fn default_text_scale_keeps_the_authored_row_heights() {
-        let root = QuickSettingsRoot::default();
-        // At 100 % the measured type fits the chrome constants, so nothing
-        // moves: the text-aware minimum only bites when type outgrows them.
-        assert!(root.card_height() - QuickSettingsRoot::CARD <= 0.5);
-        assert!(root.power_height() - QuickSettingsRoot::POWER <= 0.5);
-        assert!(root.action_height() - QuickSettingsRoot::ACTIONS <= 0.5);
+    fn root_geometry_keeps_one_rhythm_at_one_x() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+        state.radios.wifi_available = true;
+        state.bluetooth_available = true;
+        let panel = Rect::new(0., 48., 400., 48. + root.preferred_height(&state));
+        root.panel = panel;
+        let s2 = f64::from(ui::tokens::Spacing::BASE.s2);
+        let s3 = f64::from(ui::tokens::Spacing::BASE.s3);
+        let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
+        let eps = 1e-6;
+        let close = |a: f64, b: f64| (a - b).abs() < eps;
+        let tiles: Vec<Rect> = (0..4).map(|i| root.action(i)).collect();
+        assert!(
+            close(tiles[0].y0 - root.header_rect().y1, s4),
+            "title band → tiles is s4"
+        );
+        assert!(
+            root.edit_rect().y1 + s2 <= tiles[0].y0 + eps,
+            "the Edit button clears the tiles by at least s2"
+        );
+        for pair in tiles.windows(2) {
+            assert!(close(pair[1].x0 - pair[0].x1, s3), "tile ↔ tile is s3: {pair:?}");
+        }
+        let sliders = root.sliders_rect(panel);
+        assert!(close(sliders.y0 - tiles[0].y1, s4), "tiles → sliders is s4");
+        let (b, v) = (
+            root.slider_face_rect(panel, 0),
+            root.slider_face_rect(panel, 1),
+        );
+        assert!(
+            close(b.y0 - sliders.y0, s2) && close(sliders.y1 - v.y1, s2),
+            "the bands sit on s2 of padding"
+        );
+        assert!(
+            close(v.y0 - b.y1, s2),
+            "the two slider bands are s2 apart, never touching"
+        );
+        assert!(close(sliders.x1 - b.x1, s3), "a band ends on the block's s3 inset");
+        let count = root.visible_controls(&state).len();
+        let cards: Vec<Rect> = (0..count)
+            .map(|i| root.control_card(panel, i, count))
+            .collect();
+        assert!(close(cards[0].y0 - sliders.y1, s4), "sliders → cards is s4");
+        assert!(close(cards[1].x0 - cards[0].x1, s3), "card ↔ card is s3");
+        assert!(close(cards[2].y0 - cards[0].y1, s3), "card row ↔ card row is s3");
+        let power = root.power_geometry(panel, &state);
+        assert!(close(power.y0 - cards[2].y1, s4), "cards → power is s4");
+        assert!(
+            close(panel.y1 - power.y1, s4),
+            "power → panel edge is the panel padding"
+        );
+        assert!(
+            close(
+                power.height(),
+                f64::from(ui::tokens::Metrics::BASE.panel_row_height)
+            ),
+            "the power row rests at the Control height at 1×"
+        );
+        // Inside a card: the icon row's glyph and switch share the row's
+        // centre line, sit on the s3 inset and never meet.
+        let icon_row = root.card_icon_row(cards[0]);
+        let glyph = leading_glyph(icon_row, s3, GLYPH);
+        let toggle = trailing_toggle(icon_row, s3, TOGGLE_W, TOGGLE_H);
+        assert!(
+            close(glyph.center().y, icon_row.center().y)
+                && close(toggle.center().y, icon_row.center().y)
+        );
+        assert!(close(glyph.x0 - cards[0].x0, s3) && close(cards[0].x1 - toggle.x1, s3));
+        assert!(glyph.x1 + s3 < toggle.x0, "glyph and switch never meet");
+        assert!(
+            close(icon_row.y0 - cards[0].y0, s2),
+            "the icon row sits on s2 of padding"
+        );
+        // Nothing overlaps.
+        let mut all = tiles.clone();
+        all.push(sliders);
+        all.extend(cards.iter().copied());
+        all.push(power);
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[..i] {
+                let o = a.intersect(*b);
+                assert!(
+                    o.width() <= 0.0 || o.height() <= 0.0,
+                    "{a:?} overlaps {b:?}"
+                );
+            }
+        }
     }
 
     #[test]

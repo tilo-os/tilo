@@ -63,6 +63,7 @@ use crate::shell::portal_dialog::PortalDialogController;
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::quick_settings_bluetooth::QuickSettingsBluetoothPane;
+use crate::shell::quick_settings_drill_in as qs;
 use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
 use crate::shell::quick_settings_root::{QuickSettingsRoot, RootAction, SliderCommit};
 use crate::shell::quick_settings_vpn::QuickSettingsVpnPane;
@@ -888,6 +889,12 @@ pub struct ShellOverlayHost {
     /// `ChromeState`, while this only says which retained records the compact
     /// Quick Settings pane is currently showing.
     qs_notification_history_start: usize,
+    /// The resolved caption (`xs`) and label (`sm`) sizes the Quick Settings
+    /// pages paint with, captured from the theme at the top of each frame so
+    /// the notification-history geometry — resolved before a frame has a
+    /// theme, like the root's — measures the type it actually draws, with
+    /// the ui scale and the text scale both included.
+    qs_type_px: (f32, f32),
     /// Fractional touchpad-wheel movement waiting to become a whole history
     /// row. Keeping it here makes pixel scrolling work without a tiny motion
     /// either leaking into the desktop or jumping a full card at a time.
@@ -2098,6 +2105,10 @@ impl ShellOverlayHost {
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
             qs_notification_history_start: 0,
+            qs_type_px: (
+                ui::tokens::TypeScale::default().xs,
+                ui::tokens::TypeScale::default().sm,
+            ),
             qs_notification_wheel_remainder: 0.0,
             power_menu: PowerMenu::default(),
             tab_menu: TabContextMenu::default(),
@@ -7038,9 +7049,12 @@ impl ShellOverlayHost {
 
     /// A drill-in is a compact continuation of Quick Settings, not a blank
     /// fixed-height sheet. Its height follows the actual rows and grows only
-    /// when discovery gives us something to show. This keeps an empty Wi-Fi
-    /// scan, Bluetooth list or VPN list from visually swallowing the desktop
-    /// while retaining room for a useful bounded set of results.
+    /// when discovery gives us something to show, so an empty Wi-Fi scan,
+    /// Bluetooth list or VPN list never swallows the desktop. The one cap on
+    /// every page is the popover's available height in
+    /// [`Self::quick_settings_rect`] — the bar above and the desktop inset
+    /// below — the same budget the root page is fitted to; rows past it are
+    /// clipped by the panel, never painted over the desktop.
     fn quick_settings_preferred_height(
         &self,
         state: &crate::shell::chrome_state::ChromeState,
@@ -7054,44 +7068,47 @@ impl ShellOverlayHost {
                     // footer for Cancel/Connect.
                     244.0
                 } else {
+                    // The Hotspot row, then discovery rows on the shared
+                    // list rhythm (`DrillInList`).
                     let rows = state.quick_settings.wifi_networks.len();
-                    // The Hotspot card occupies 56..108, then discovery rows
-                    // are 52 high on a 56px rhythm.
-                    (124.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
-                        .clamp(192.0, 552.0)
+                    DrillInList::list_height(
+                        crate::shell::quick_settings_wifi::QuickSettingsWifiPane::LIST_TOP,
+                        rows,
+                    )
                 }
             }
             QsLevel::Bluetooth | QsLevel::BluetoothDetails(_) => {
                 let rows = state.quick_settings.bt_devices.len();
-                (68.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
-                    .clamp(160.0, 552.0)
+                DrillInList::list_height(qs::LIST_TOP, rows)
             }
             QsLevel::Vpn => {
                 let rows = state.quick_settings.vpns.len();
-                (68.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
-                    .clamp(160.0, 552.0)
+                DrillInList::list_height(qs::LIST_TOP, rows)
             }
             QsLevel::Notifications => {
-                let rows = state.notification_history().len().min(7);
-                (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
-                    .clamp(160.0, 552.0)
+                let total = state.notification_history().len();
+                NotificationHistoryLayout::preferred_height(total.min(7), total, self.qs_type_px)
             }
         }
     }
 
     /// Number of complete notification cards the current compact pane can
-    /// show. The status/footer band is reserved even when the history is
-    /// short, so its position and keyboard hint never overlap the final body
-    /// line on small displays or at enlarged text sizes.
+    /// show of the retained history. When the history overflows, the pager
+    /// band's room is reserved so its position and keyboard hint never
+    /// overlap the final body line on small displays or at enlarged text
+    /// sizes; a history that fits ends on the panel padding instead.
     fn qs_notification_visible_rows(&self) -> usize {
-        const HEADER_AND_STATUS_HEIGHT: f64 = 76.0;
-        const FOOTER_HEIGHT: f64 = 52.0;
-        const ROW_HEIGHT: f64 = 70.0;
-        f64_floor_to_usize_saturating(
-            (self.quick_settings_rect().height() - HEADER_AND_STATUS_HEIGHT - FOOTER_HEIGHT)
-                / ROW_HEIGHT,
-        )
-        .max(1)
+        let total = self
+            .chrome
+            .as_ref()
+            .map_or(0, |chrome| chrome.borrow().notification_history().len());
+        self.qs_notification_layout().visible_rows(total)
+    }
+
+    /// The notification-history page's geometry for the current panel and
+    /// text scale — the one oracle paint, hit-testing and sizing read.
+    fn qs_notification_layout(&self) -> NotificationHistoryLayout {
+        NotificationHistoryLayout::new(self.quick_settings_rect(), self.qs_type_px)
     }
 
     /// Largest valid newest-first notification offset for the current pane.
@@ -12454,6 +12471,10 @@ impl Widget for ShellOverlayHost {
         // geometry is resolved below; otherwise a first frame at large type
         // has a default-height card and clips its two-line controls.
         self.qs_root.set_layout_text_scale(theme.text_scale);
+        self.qs_type_px = (
+            theme.tokens.typography.scale.xs,
+            theme.tokens.typography.scale.sm,
+        );
         if let Some(chrome) = self.chrome.as_ref() {
             let state = chrome.borrow();
             let available_height = (self.rect.height() - 64.0).max(1.0);
@@ -13791,6 +13812,124 @@ fn panel_surface(theme: &Theme, alpha: f32) -> Color {
     ui::chrome::shell::panel_ground(theme).with_alpha_factor(alpha)
 }
 
+/// Geometry of the Quick Settings notification-history page, resolved from
+/// the panel rect and the type scale so paint, hit-testing, the visible-row
+/// count and the preferred height read one oracle (HIG §7b: one rhythm).
+/// Every step is the panel's shared rhythm (`quick_settings_drill_in`).
+#[derive(Clone, Copy, Debug)]
+struct NotificationHistoryLayout {
+    panel: Rect,
+    /// Line boxes of a caption (`xs`) and a label (`sm`) at the text scale.
+    caption_lh: f64,
+    label_lh: f64,
+}
+
+impl NotificationHistoryLayout {
+    /// Space the pager band claims under the last row: a related step, the
+    /// band, the panel padding.
+    const FOOTER_RESERVE: f64 = qs::RELATED_GAP + qs::TARGET + qs::PANEL_PAD;
+
+    /// `type_px` are the resolved caption and label sizes the page paints
+    /// with (`ShellOverlayHost::qs_type_px`).
+    fn new(panel: Rect, type_px: (f32, f32)) -> Self {
+        let line = |px: f32| f64::from(ui::text_render::TextStyle::new(px).line_height_px());
+        Self {
+            panel,
+            caption_lh: line(type_px.0),
+            label_lh: line(type_px.1),
+        }
+    }
+    /// The "Back" chip: two pointer floors wide, on the panel padding,
+    /// centred in the title band.
+    fn back(&self) -> Rect {
+        let p = self.panel;
+        Rect::new(
+            p.x0 + qs::PANEL_PAD,
+            p.y0 + qs::RELATED_GAP,
+            p.x0 + qs::PANEL_PAD + 2.0 * qs::TARGET,
+            p.y0 + qs::RELATED_GAP + qs::TARGET,
+        )
+    }
+    /// The "Clear" chip, mirroring [`Self::back`] on the trailing padding.
+    fn clear(&self) -> Rect {
+        let p = self.panel;
+        Rect::new(
+            p.x1 - qs::PANEL_PAD - 2.0 * qs::TARGET,
+            p.y0 + qs::RELATED_GAP,
+            p.x1 - qs::PANEL_PAD,
+            p.y0 + qs::RELATED_GAP + qs::TARGET,
+        )
+    }
+    /// Top of the position line ("Newest 1–4 of 9"): where a list starts.
+    fn position_y(&self) -> f64 {
+        self.panel.y0 + qs::LIST_TOP
+    }
+    /// Top of the first row: one related step under the position line.
+    fn rows_top(&self) -> f64 {
+        self.position_y() + self.caption_lh + qs::RELATED_GAP
+    }
+    /// One row: source/time, title and body lines on the control padding.
+    fn row_h(&self) -> f64 {
+        2.0 * qs::CONTROL_PAD + 2.0 * self.caption_lh + self.label_lh
+    }
+    fn pitch(&self) -> f64 {
+        self.row_h() + qs::RELATED_GAP
+    }
+    fn row(&self, index: usize) -> Rect {
+        let y0 = self.rows_top() + usize_to_f64_lossy(index) * self.pitch();
+        Rect::new(
+            self.panel.x0 + qs::PANEL_PAD,
+            y0,
+            self.panel.x1 - qs::PANEL_PAD,
+            y0 + self.row_h(),
+        )
+    }
+    /// The pager band at the panel's foot, on the panel padding.
+    fn footer(&self) -> Rect {
+        let p = self.panel;
+        Rect::new(
+            p.x0 + qs::PANEL_PAD,
+            p.y1 - qs::PANEL_PAD - qs::TARGET,
+            p.x1 - qs::PANEL_PAD,
+            p.y1 - qs::PANEL_PAD,
+        )
+    }
+    /// Complete rows that fit above `bottom_reserve` at the panel's foot.
+    fn rows_that_fit(&self, bottom_reserve: f64) -> usize {
+        let available = self.panel.y1 - bottom_reserve - self.rows_top() + qs::RELATED_GAP;
+        f64_floor_to_usize_saturating(available / self.pitch())
+    }
+    /// Complete rows the panel shows of `total` retained records. A history
+    /// that fits ends on the panel padding and has no pager; only one that
+    /// overflows gives the pager band up its room — the same rule
+    /// [`Self::preferred_height`] sizes the panel by, so the two can never
+    /// leave a blank band or draw the pager over the last row.
+    fn visible_rows(&self, total: usize) -> usize {
+        if total <= self.rows_that_fit(qs::PANEL_PAD) {
+            return total.max(1);
+        }
+        self.rows_that_fit(Self::FOOTER_RESERVE).max(1)
+    }
+    /// The height the page wants to show `rows` of `total` records: the
+    /// pager band is reserved only when there is something to page to. An
+    /// empty page keeps the drill-in's one-row band for its message.
+    fn preferred_height(rows: usize, total: usize, type_px: (f32, f32)) -> f64 {
+        if rows == 0 {
+            return DrillInList::list_height(qs::LIST_TOP, 0);
+        }
+        let l = Self::new(Rect::ZERO, type_px);
+        let foot = if total > rows {
+            Self::FOOTER_RESERVE
+        } else {
+            qs::PANEL_PAD
+        };
+        l.rows_top()
+            + usize_to_f64_lossy(rows) * l.row_h()
+            + usize_to_f64_lossy(rows - 1) * qs::RELATED_GAP
+            + foot
+    }
+}
+
 /// Pick the [`crate::shell::search::SearchProvider`] that owns the
 /// currently focused tab, if any. Seeds `active_provider_id` for
 /// [`crate::shell::search::SearchRegistry::query`] under
@@ -14978,16 +15117,17 @@ impl ShellOverlayHost {
                         let hovered = self.last_cursor.is_some_and(|point| reset.contains(point));
                         let focused = self.shortcut_guide_focus
                             == Some(ShortcutGuideFocus::Reset(*previous, *next));
-                        scene.fill(
-                            Fill::NonZero,
+                        // A Control (HIG §9.1/§9.5): the shared lift floor
+                        // with a derived edge, the hover tier under the
+                        // pointer or focus — never a ramp slot at an
+                        // off-scale radius.
+                        qs::paint_control(
+                            scene,
                             transform,
-                            if hovered || focused {
-                                colors.neutral[3]
-                            } else {
-                                colors.neutral[2]
-                            },
-                            None,
-                            &RoundedRect::from_rect(reset, 6.0),
+                            theme,
+                            reset,
+                            hovered || focused,
+                            false,
                         );
                         if focused {
                             scene.stroke(
@@ -15066,12 +15206,14 @@ impl ShellOverlayHost {
                         (x + f64::from(chord_width) + 22.0).min(x + cell_width - 12.0),
                         y + 15.0 + f64::from(chord_height) + 8.0,
                     );
-                    scene.fill(
-                        Fill::NonZero,
+                    // A keycap is a detail inside the guide (`radii.sm`) on
+                    // the Control floor with its derived edge (HIG §9.5).
+                    ui::surface::card(
+                        scene,
                         transform,
-                        colors.neutral[2],
-                        None,
-                        &RoundedRect::from_rect(pill, 5.0),
+                        pill,
+                        f64::from(theme.tokens.radii.sm),
+                        qs::control_fill(theme, false),
                     );
                     text_renderer.draw_text_weighted(
                         scene,
@@ -15089,12 +15231,17 @@ impl ShellOverlayHost {
                     + usize_to_f64_lossy(reference_rows) * reference_step
                     + 6.0;
                 if pointer_y + 30.0 <= body.y1 {
-                    scene.fill(
-                        Fill::NonZero,
+                    // A separator inside a Panel is derived against the
+                    // panel ground (HIG §9.5); `body` is already inside the
+                    // padding, so it needs no further inset.
+                    ui::surface::separator(
+                        scene,
                         transform,
-                        colors.neutral[3],
-                        None,
-                        &Rect::new(body.x0, pointer_y, body.x1, pointer_y + 1.0),
+                        body.x0,
+                        body.x1,
+                        pointer_y + 0.5,
+                        0.0,
+                        ui::chrome::ChromeRole::Panel.surface(theme),
                     );
                     text_renderer.draw_text(
                         scene,
@@ -15684,12 +15831,13 @@ impl ShellOverlayHost {
         ui::surface::shadow(scene, transform, panel, m.panel_radius, &tokens.elevation.e4);
         let card_rr = RoundedRect::from_rect(panel, m.panel_radius);
         scene.fill(Fill::NonZero, transform, ground, None, &card_rr);
+        // A Panel's edge is derived (HIG §9.5), never `border_standard`.
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
-            &card_rr,
+            &ui::surface::edge_outline(panel, m.panel_radius),
         );
 
         let content = self.overview_content_rect();
@@ -17051,21 +17199,33 @@ impl ShellOverlayHost {
         let rect = self.quick_settings_rect();
         Self::draw_quick_settings_card_background(scene, transform, theme, rect);
 
+        // Every page paints inside the Panel: a discovery list taller than
+        // the popover's height budget ends at the panel's edge instead of
+        // running on over the desktop inset below it.
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &RoundedRect::from_rect(
+                rect,
+                ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
+            ),
+        );
         // Root level renders the action row + sliders + toggles; Wifi/
         // Bluetooth levels replace the body with a header + list.
-        if self.draw_quick_settings_drill_in(scene, transform, text_renderer, theme, &qs) {
-            return;
+        if !self.draw_quick_settings_drill_in(scene, transform, text_renderer, theme, &qs) {
+            self.qs_root.draw(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                self.last_cursor,
+                &qs,
+            );
         }
-
-        self.qs_root.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            self.last_cursor,
-            &qs,
-        );
+        scene.pop_layer();
     }
 
     /// The quick-settings popover's elevated card: shadow, fill and
@@ -17078,20 +17238,9 @@ impl ShellOverlayHost {
         theme: &Theme,
         rect: Rect,
     ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let card = RoundedRect::from_rect(
-            rect,
-            ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
-        );
-        ui::chrome::shell::panel_shadow(
-            scene,
-            transform,
-            rect,
-            ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
-            theme,
-            1.0,
-        );
+        let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
+        let card = RoundedRect::from_rect(rect, radius);
+        ui::chrome::shell::panel_shadow(scene, transform, rect, radius, theme, 1.0);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -17099,12 +17248,16 @@ impl ShellOverlayHost {
             None,
             &card,
         );
+        // The Panel edge is derived (HIG §9.5): `border_standard` sat three
+        // shades off the ground on dark and vanished. Stroked half a pixel
+        // inside the outline so the 1 px edge is crisp and stays the
+        // panel's own outermost pixel row.
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
-            &card,
+            &ui::surface::edge_outline(rect, radius),
         );
     }
 
@@ -17221,16 +17374,14 @@ impl ShellOverlayHost {
     }
 
     fn qs_notification_clear_rect(&self) -> Rect {
-        let r = self.quick_settings_rect();
-        Rect::new(r.x1 - 88.0, r.y0 + 8.0, r.x1 - 12.0, r.y0 + 40.0)
+        self.qs_notification_layout().clear()
     }
 
     /// Notifications is a dense, scrollable history, so it uses a textual
     /// Back button instead of depending on a small icon surviving an enlarged
     /// text scale. The hit target intentionally matches the painted control.
     fn qs_notification_back_rect(&self) -> Rect {
-        let r = self.quick_settings_rect();
-        Rect::new(r.x0 + 12.0, r.y0 + 8.0, r.x0 + 78.0, r.y0 + 40.0)
+        self.qs_notification_layout().back()
     }
 
     /// Render the shell-owned, bounded session history. History deliberately
@@ -17248,44 +17399,56 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        const ROW_HEIGHT: f64 = 70.0;
-        let rect = self.quick_settings_rect();
+        let layout = self.qs_notification_layout();
+        let rect = layout.panel;
         let colors = &theme.tokens.colors;
-        let back = self.qs_notification_back_rect();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.lift(0.35),
-            None,
-            &RoundedRect::from_rect(back, 10.0),
-        );
-        let (back_w, back_h) =
-            text_renderer.measure("Back", theme.tokens.typography.scale.xs, None);
-        text_renderer.draw_text(
-            scene,
-            "Back",
-            theme.tokens.typography.scale.xs,
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    back.center().x - f64::from(back_w) / 2.0,
-                    back.center().y - f64::from(back_h) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-        );
+        let cursor = self.last_cursor;
+        let caption_size = qs::type_size(text_renderer, theme.tokens.typography.scale.xs);
+        let label_size = qs::type_size(text_renderer, theme.tokens.typography.scale.sm);
+        // Header chips are Controls (HIG §9.1/§9.5): the lift floor with a
+        // derived edge, the hover tier under the pointer, their labels
+        // centred on the measured line.
+        let chip = |scene: &mut Scene,
+                    text_renderer: &mut TextRenderer,
+                    r: Rect,
+                    label: &str,
+                    ink: Color| {
+            qs::paint_control(
+                scene,
+                transform,
+                theme,
+                r,
+                cursor.is_some_and(|p| r.contains(p)),
+                false,
+            );
+            let (w, h) = text_renderer.measure(label, caption_size, None);
+            text_renderer.draw_text(
+                scene,
+                label,
+                caption_size,
+                ink,
+                transform.pre_translate(
+                    (
+                        r.center().x - f64::from(w) / 2.0,
+                        r.center().y - f64::from(h) / 2.0,
+                    )
+                        .into(),
+                ),
+                None,
+            );
+        };
+        chip(scene, text_renderer, layout.back(), "Back", colors.text_primary);
         let (title_w, title_h) =
-            text_renderer.measure("Notifications", theme.tokens.typography.scale.sm, None);
+            text_renderer.measure_weighted("Notifications", label_size, None, TextWeight::Semibold);
         text_renderer.draw_text_weighted(
             scene,
             "Notifications",
-            theme.tokens.typography.scale.sm,
+            label_size,
             colors.text_primary,
             transform.pre_translate(
                 (
                     rect.center().x - f64::from(title_w) / 2.0,
-                    rect.y0 + 24.0 - f64::from(title_h) / 2.0,
+                    rect.y0 + (qs::HEADER_HEIGHT - f64::from(title_h)) / 2.0,
                 )
                     .into(),
             ),
@@ -17309,35 +17472,12 @@ impl ShellOverlayHost {
             return;
         }
 
-        let visible_rows = self.qs_notification_visible_rows();
+        let visible_rows = layout.visible_rows(history.len());
         let _ = self.clamp_qs_notification_history_start(history.len());
         let start = self.qs_notification_history_start;
         let shown = visible_rows.min(history.len().saturating_sub(start));
 
-        let clear = self.qs_notification_clear_rect();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.lift(0.35),
-            None,
-            &RoundedRect::from_rect(clear, 10.0),
-        );
-        let (clear_w, clear_h) =
-            text_renderer.measure("Clear", theme.tokens.typography.scale.xs, None);
-        text_renderer.draw_text(
-            scene,
-            "Clear",
-            theme.tokens.typography.scale.xs,
-            colors.text_dim,
-            transform.pre_translate(
-                (
-                    clear.center().x - f64::from(clear_w) / 2.0,
-                    clear.center().y - f64::from(clear_h) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-        );
+        chip(scene, text_renderer, layout.clear(), "Clear", colors.text_dim);
 
         let position = if history.len() > visible_rows {
             let first = start.saturating_add(1);
@@ -17353,10 +17493,10 @@ impl ShellOverlayHost {
         text_renderer.draw_text(
             scene,
             &position,
-            theme.tokens.typography.scale.xs,
+            caption_size,
             colors.text_dim,
-            transform.pre_translate((rect.x0 + 12.0, rect.y0 + 52.0).into()),
-            Some(f64_to_f32_lossy(rect.width() - 24.0)),
+            transform.pre_translate((rect.x0 + qs::PANEL_PAD, layout.position_y()).into()),
+            Some(f64_to_f32_lossy(rect.width() - 2.0 * qs::PANEL_PAD)),
         );
 
         let now = Instant::now();
@@ -17367,19 +17507,25 @@ impl ShellOverlayHost {
             .take(visible_rows)
             .enumerate()
         {
-            let y0 = rect.y0 + 76.0 + usize_to_f64_lossy(index) * ROW_HEIGHT;
-            let row = Rect::new(rect.x0 + 12.0, y0, rect.x1 - 12.0, y0 + ROW_HEIGHT - 6.0);
-            scene.fill(
-                Fill::NonZero,
+            let row = layout.row(index);
+            // A history row is a resting Control surface (HIG §9.5): the
+            // lift floor with its derived edge, never a ramp-slot wash.
+            ui::surface::card(
+                scene,
                 transform,
-                colors.neutral[2].with_alpha_factor(0.62),
-                None,
-                &RoundedRect::from_rect(row, 12.0),
+                row,
+                qs::control_radius(theme, row),
+                qs::control_fill(theme, false),
             );
             // Keep severity scannable without taking another line in the
             // fixed-height responsive card. The accessibility description
             // also names it, so colour is not the only signal.
-            let severity_rail = Rect::new(row.x0, row.y0 + 8.0, row.x0 + 3.0, row.y1 - 8.0);
+            let severity_rail = Rect::new(
+                row.x0,
+                row.y0 + qs::CONTROL_PAD,
+                row.x0 + 3.0,
+                row.y1 - qs::CONTROL_PAD,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -17393,42 +17539,50 @@ impl ShellOverlayHost {
                 .or(notification.app_id.as_deref())
                 .unwrap_or("System");
             let relative_time = notification_history_relative_time(notification, now);
-            let (time_width, _) =
-                text_renderer.measure(&relative_time, theme.tokens.typography.scale.xs, None);
+            let (time_width, _) = text_renderer.measure(&relative_time, caption_size, None);
+            // Source/time, title, body: three measured lines on the control
+            // padding, inset `s3` like every row glyph in the panel.
+            let x = row.x0 + qs::CONTROL_INSET;
+            let inner_w = row.width() - 2.0 * qs::CONTROL_INSET;
+            let source_y = row.y0 + qs::CONTROL_PAD;
             text_renderer.draw_text(
                 scene,
                 source,
-                theme.tokens.typography.scale.xs,
+                caption_size,
                 colors.text_dim,
-                transform.pre_translate((row.x0 + 12.0, row.y0 + 7.0).into()),
-                Some(f64_to_f32_lossy(row.width() - f64::from(time_width) - 32.0)),
+                transform.pre_translate((x, source_y).into()),
+                Some(f64_to_f32_lossy(
+                    inner_w - f64::from(time_width) - qs::RELATED_GAP,
+                )),
             );
             text_renderer.draw_text(
                 scene,
                 &relative_time,
-                theme.tokens.typography.scale.xs,
+                caption_size,
                 colors.text_dim,
-                transform
-                    .pre_translate((row.x1 - 12.0 - f64::from(time_width), row.y0 + 7.0).into()),
+                transform.pre_translate(
+                    (row.x1 - qs::CONTROL_INSET - f64::from(time_width), source_y).into(),
+                ),
                 None,
             );
+            let title_y = source_y + layout.caption_lh;
             text_renderer.draw_text_weighted(
                 scene,
                 &notification.title,
-                theme.tokens.typography.scale.sm,
+                label_size,
                 colors.text_primary,
-                transform.pre_translate((row.x0 + 12.0, row.y0 + 24.0).into()),
-                Some(f64_to_f32_lossy(row.width() - 24.0)),
+                transform.pre_translate((x, title_y).into()),
+                Some(f64_to_f32_lossy(inner_w)),
                 TextWeight::Semibold,
             );
             if notification.show_preview && !notification.body.is_empty() {
                 text_renderer.draw_text(
                     scene,
                     &notification.body,
-                    theme.tokens.typography.scale.xs,
+                    caption_size,
                     colors.text_dim,
-                    transform.pre_translate((row.x0 + 12.0, row.y0 + 44.0).into()),
-                    Some(f64_to_f32_lossy(row.width() - 24.0)),
+                    transform.pre_translate((x, title_y + layout.label_lh).into()),
+                    Some(f64_to_f32_lossy(inner_w)),
                 );
             }
         }
@@ -17444,26 +17598,20 @@ impl ShellOverlayHost {
             } else {
                 "At oldest"
             };
-            let footer = Rect::new(
-                rect.x0 + 12.0,
-                rect.y1 - 44.0,
-                rect.x1 - 12.0,
-                rect.y1 - 10.0,
-            );
-            scene.fill(
-                Fill::NonZero,
+            let footer = layout.footer();
+            ui::surface::card(
+                scene,
                 transform,
-                colors.lift(0.22),
-                None,
-                &RoundedRect::from_rect(footer, 9.0),
+                footer,
+                qs::control_radius(theme, footer),
+                qs::control_fill(theme, false),
             );
             let hint = format!("{newer}   \u{00b7}   {older}");
-            let (hint_w, hint_h) =
-                text_renderer.measure(&hint, theme.tokens.typography.scale.xs, None);
+            let (hint_w, hint_h) = text_renderer.measure(&hint, caption_size, None);
             text_renderer.draw_text(
                 scene,
                 &hint,
-                theme.tokens.typography.scale.xs,
+                caption_size,
                 colors.text_primary,
                 transform.pre_translate(
                     (
@@ -17472,7 +17620,7 @@ impl ShellOverlayHost {
                     )
                         .into(),
                 ),
-                Some(f64_to_f32_lossy(footer.width() - 16.0)),
+                Some(f64_to_f32_lossy(footer.width() - 2.0 * qs::CONTROL_INSET)),
             );
         }
     }
@@ -17481,8 +17629,7 @@ impl ShellOverlayHost {
     /// pops `nav_stack`. Sized 32×32 with a small expansion for forgiving
     /// touch targets — the painted glyph is 24×24 inside.
     fn qs_back_chevron_rect(&self) -> Rect {
-        let r = self.quick_settings_rect();
-        Rect::new(r.x0 + 8.0, r.y0 + 8.0, r.x0 + 40.0, r.y0 + 40.0)
+        DrillInList::back_rect(self.quick_settings_rect())
     }
 
     /// Raise the passphrase prompt for `ssid`.
@@ -17858,6 +18005,18 @@ impl ShellOverlayHost {
     /// Root toggle geometry exposed for integration click routing tests.
     pub fn quick_settings_toggle_geometry(&self, i: usize) -> Rect {
         QuickSettingsRoot::toggle_geometry(self.quick_settings_rect(), i)
+    }
+
+    /// Wi-Fi drill-in discovery row `index`, exposed for integration click
+    /// routing tests so they read the list's rhythm instead of restating it.
+    pub fn quick_settings_wifi_row_rect_for_tests(&self, index: usize) -> Rect {
+        let mut list = DrillInList::default();
+        list.layout_from(
+            self.quick_settings_rect(),
+            index.saturating_add(1),
+            crate::shell::quick_settings_wifi::QuickSettingsWifiPane::LIST_TOP,
+        );
+        list.rows()[index]
     }
 
     /// Root power-profile geometry exposed for integration click routing tests.
@@ -23118,8 +23277,9 @@ mod overlay_event_absorb_tests {
                 panel.y1 <= f64::from(height) - 16.0,
                 "{layout}: panel must stay above the desktop bottom inset: {panel:?}"
             );
+            let rows = h.host.qs_notification_layout();
             assert!(
-                panel.y0 + 76.0 + usize_to_f64_lossy(visible) * 70.0 <= panel.y1 - 52.0,
+                rows.row(visible.saturating_sub(1)).y1 + qs::RELATED_GAP <= rows.footer().y0,
                 "{layout}: cards must leave the visible navigation footer clear"
             );
             for (position, start) in [
@@ -23138,6 +23298,269 @@ mod overlay_event_absorb_tests {
             }
         }
         println!("notification-history review PNGs: {}", root.display());
+    }
+
+    /// S1 review fixtures (1× polish, 2026-09-17): the Quick Settings pages
+    /// the ux-bench cannot reach by a named click on macOS — the Wi-Fi,
+    /// Bluetooth and VPN drill-ins and the notification history — plus the
+    /// shortcut guide, the room overview and the palette, photographed from
+    /// the production draw path at 1× on the dark and light presets. The
+    /// pixels are asserted, not just the files: a drill-in row's interior
+    /// is the Control floor and the panel padding beside it is the Panel
+    /// ground, so a row is a surface on the panel on both presets (HIG
+    /// §9.5); the same holds for a notification-history row.
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "a review fixture must fail loudly for a missing GPU or output directory"
+    )]
+    fn s1_review_fixtures_are_written_in_dark_and_light() {
+        use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
+        use ui::offscreen::OffscreenRenderer;
+
+        fn net(ssid: &str, signal: u8, secure: bool, connected: bool) -> WifiNetwork {
+            WifiNetwork {
+                ssid: ssid.into(),
+                signal,
+                secure,
+                connected,
+            }
+        }
+        fn vpn(name: &str, active: bool) -> os_actions::VpnConnectionInfo {
+            os_actions::VpnConnectionInfo {
+                name: name.into(),
+                uuid: format!("s1-{name}"),
+                active,
+                kind: "wireguard".into(),
+            }
+        }
+        fn quick_settings_open(h: &mut AbsorbHarness, level: QsLevel) {
+            let mut st = h.chrome.borrow_mut();
+            st.overlays.quick_settings = true;
+            st.quick_settings.push_level(level);
+            st.bump();
+        }
+        let scenes: [(&str, fn(&mut AbsorbHarness)); 5] = [
+            ("qs-wifi-drillin", |h| {
+                {
+                    let mut st = h.chrome.borrow_mut();
+                    st.quick_settings.radios.wifi_available = true;
+                    st.quick_settings.wifi_networks = vec![
+                        net("Home Fibre", 4, true, true),
+                        net("Coffee shop guest network with a very long name", 3, false, false),
+                        net("Neighbour", 1, true, false),
+                    ];
+                }
+                quick_settings_open(h, QsLevel::Wifi);
+            }),
+            ("qs-bt-drillin", |h| {
+                {
+                    let mut st = h.chrome.borrow_mut();
+                    st.quick_settings.bluetooth_available = true;
+                    st.quick_settings.bt_devices = vec![
+                        BtDevice {
+                            name: "Headphones".into(),
+                            battery: 73,
+                            connected: true,
+                        },
+                        BtDevice {
+                            name: "Keyboard".into(),
+                            battery: 15,
+                            connected: false,
+                        },
+                    ];
+                }
+                quick_settings_open(h, QsLevel::Bluetooth);
+            }),
+            ("qs-vpn-long-labels", |h| {
+                {
+                    let mut st = h.chrome.borrow_mut();
+                    st.quick_settings.vpns = vec![
+                        vpn("Corporate WireGuard tunnel for the Berlin office", true),
+                        vpn("Home", false),
+                    ];
+                }
+                quick_settings_open(h, QsLevel::Vpn);
+            }),
+            ("shortcut-guide", |h| {
+                let mut st = h.chrome.borrow_mut();
+                st.overlays.shortcut_help = true;
+                st.bump();
+            }),
+            ("overview", |h| {
+                {
+                    let mut st = h.chrome.borrow_mut();
+                    st.overlays.overview = true;
+                    st.bump();
+                }
+                h.host.force_overview_settled(true);
+            }),
+        ];
+
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/ux1x/s1/fixtures");
+        let (w, h) = (1280_u32, 800_u32);
+        let (vw, vh) = (f64::from(w), f64::from(h));
+        let mut renderer = OffscreenRenderer::new(w, h);
+        let sample = |rgba: &[u8], p: Point| -> [u8; 3] {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "probe points are inside a positive viewport"
+            )]
+            let i = ((p.y as u32 * w + p.x as u32) * 4) as usize;
+            [rgba[i], rgba[i + 1], rgba[i + 2]]
+        };
+        let expect = |rgba: &[u8], p: Point, c: Color, what: &str| {
+            let got = sample(rgba, p);
+            let e = c.to_rgba8();
+            assert!(
+                got[0].abs_diff(e.r) <= 2 && got[1].abs_diff(e.g) <= 2 && got[2].abs_diff(e.b) <= 2,
+                "{what} at {p:?}: got {got:?} expected ({},{},{})",
+                e.r,
+                e.g,
+                e.b
+            );
+        };
+        for (theme_name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+            let dir = out.join(theme_name);
+            std::fs::create_dir_all(&dir).expect("fixture directory");
+            let ground = theme.tokens.colors.surfaces.base;
+            let floor = qs::control_fill(&theme, false);
+            let panel_ground = panel_surface(&theme, POPOVER_SURFACE_ALPHA);
+            for (name, arrange) in scenes {
+                let mut harness = build_harness_sized(vw, vh);
+                arrange(&mut harness);
+                harness.host.force_quick_settings_settled();
+                settle_with_theme(&mut harness, vw, vh, &theme);
+                let scene = paint_scene(&mut harness, &theme);
+                let path = dir.join(format!("{name}.png"));
+                renderer.render_png(&scene, ground, &path);
+                assert!(path.is_file(), "fixture missing: {}", path.display());
+                if name.starts_with("qs-") {
+                    // The first list row rests on the Control floor; the
+                    // panel padding beside it is the Panel ground.
+                    let panel = harness.host.quick_settings_rect();
+                    let list_top = if name == "qs-wifi-drillin" {
+                        crate::shell::quick_settings_wifi::QuickSettingsWifiPane::LIST_TOP
+                    } else {
+                        qs::LIST_TOP
+                    };
+                    let mut list = DrillInList::default();
+                    list.layout_from(panel, 1, list_top);
+                    let row = list.rows()[0];
+                    let rgba = renderer.render_rgba_resilient(&scene);
+                    expect(
+                        &rgba,
+                        Point::new(row.x0 + row.width() * 0.55, row.y0 + 3.0),
+                        floor,
+                        &format!("{theme_name}/{name}: a drill-in row's interior is the Control floor"),
+                    );
+                    expect(
+                        &rgba,
+                        Point::new(panel.x0 + qs::PANEL_PAD / 2.0, row.center().y),
+                        panel_ground,
+                        &format!("{theme_name}/{name}: the padding beside a row is the Panel ground"),
+                    );
+                }
+            }
+            // The notification history, with more records than fit.
+            let mut harness = build_harness_sized(vw, vh);
+            open_notification_history(&mut harness, 18, vw, vh);
+            settle_with_theme(&mut harness, vw, vh, &theme);
+            let scene = paint_scene(&mut harness, &theme);
+            let path = dir.join("qs-notifications.png");
+            renderer.render_png(&scene, ground, &path);
+            assert!(path.is_file(), "fixture missing: {}", path.display());
+            let layout = harness.host.qs_notification_layout();
+            let row = layout.row(0);
+            let rgba = renderer.render_rgba_resilient(&scene);
+            expect(
+                &rgba,
+                Point::new(row.x0 + row.width() * 0.55, row.y0 + 3.0),
+                floor,
+                &format!("{theme_name}: a history row's interior is the Control floor"),
+            );
+            expect(
+                &rgba,
+                Point::new(layout.panel.x0 + qs::PANEL_PAD / 2.0, row.center().y),
+                panel_ground,
+                &format!("{theme_name}: the padding beside a history row is the Panel ground"),
+            );
+            // A history that fits: every record shown, no pager, the page
+            // ends on the panel padding under the last row (no blank band).
+            let mut harness = build_harness_sized(vw, vh);
+            {
+                let mut st = harness.chrome.borrow_mut();
+                // Dismissed toasts retire into the history through the
+                // same path a real dismissal takes.
+                for index in 0..3 {
+                    let id = st.push_notification_full(
+                        crate::shell::notification::Notification::new(
+                            format!("Backup {index} finished"),
+                            format!("Snapshot {index} is on the workspace host."),
+                        ),
+                    );
+                    st.dismiss_notification(id);
+                }
+                assert_eq!(st.notification_history().len(), 3);
+                st.overlays.quick_settings = true;
+                st.quick_settings.push_level(QsLevel::Notifications);
+                st.bump();
+            }
+            harness.host.force_quick_settings_settled();
+            settle_with_theme(&mut harness, vw, vh, &theme);
+            let scene = paint_scene(&mut harness, &theme);
+            let path = dir.join("qs-notifications-short.png");
+            renderer.render_png(&scene, ground, &path);
+            assert!(path.is_file(), "fixture missing: {}", path.display());
+            let layout = harness.host.qs_notification_layout();
+            assert_eq!(harness.host.qs_notification_visible_rows(), 3);
+            assert!(
+                (layout.panel.y1 - layout.row(2).y1 - qs::PANEL_PAD).abs() < 1e-6,
+                "{theme_name}: a history that fits ends on the panel padding, not a pager band: {:?}",
+                layout.panel
+            );
+            // The palette over the desktop.
+            let mut harness = directory_palette_fixture(vw, vh);
+            settle_with_theme(&mut harness, vw, vh, &theme);
+            let scene = paint_scene(&mut harness, &theme);
+            let path = dir.join("palette.png");
+            renderer.render_png(&scene, ground, &path);
+            assert!(path.is_file(), "fixture missing: {}", path.display());
+        }
+    }
+
+    /// The notification page sizes itself and counts its rows by one rule:
+    /// the pager band exists only when there is something to page to. A
+    /// history that fits ends on the panel padding and shows every record;
+    /// one that overflows gives the pager its room and shows exactly the
+    /// rows above it.
+    #[test]
+    fn notification_history_reserves_the_pager_only_when_it_overflows() {
+        let theme = Theme::dark();
+        let type_px = (
+            theme.tokens.typography.scale.xs,
+            theme.tokens.typography.scale.sm,
+        );
+        let fits = NotificationHistoryLayout::preferred_height(3, 3, type_px);
+        let short = NotificationHistoryLayout::new(Rect::new(0.0, 0.0, 400.0, fits), type_px);
+        assert_eq!(short.visible_rows(3), 3, "every record fits, none is paged");
+        assert!(
+            (short.panel.y1 - short.row(2).y1 - qs::PANEL_PAD).abs() < 1e-6,
+            "no pager band under a history that fits"
+        );
+        let overflows = NotificationHistoryLayout::preferred_height(7, 18, type_px);
+        let long =
+            NotificationHistoryLayout::new(Rect::new(0.0, 0.0, 400.0, overflows), type_px);
+        assert_eq!(long.visible_rows(18), 7, "the seven sized-for rows are the visible ones");
+        assert!(
+            long.row(6).y1 + qs::RELATED_GAP <= long.footer().y0,
+            "the last visible row clears the pager band"
+        );
+        assert!(
+            overflows - fits > 4.0 * long.row_h(),
+            "the overflow page is taller by its extra rows and the pager"
+        );
     }
 
     #[test]

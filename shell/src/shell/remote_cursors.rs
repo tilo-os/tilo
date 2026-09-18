@@ -169,7 +169,9 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         text_renderer.set_text_scale(1.0);
         let label_size = theme.tokens.typography.scale.sm;
         let chip_bg = theme.tokens.colors.surfaces.raised;
-        let chip_border = theme.tokens.colors.border_standard;
+        // The chip's edge derives from its own fill (HIG §9.5): the declared
+        // border was three shades off `raised` on dark and vanished.
+        let chip_border = ui::surface::edge_on(chip_bg);
         let label_color = theme.tokens.colors.text_primary;
         let chip_radius = f64::from(theme.tokens.radii.sm);
 
