@@ -10,7 +10,6 @@
 //! to the wrapped content, and an open palette gets first crack at every
 //! event so typing and Enter work without the desktop stealing focus.
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
 
@@ -26,8 +25,16 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+mod history;
 mod shortcuts;
 
+#[cfg(test)]
+use history::notification_severity_label;
+use history::{
+    HistoryTargetAddress, clipboard_history_matches_query, clipboard_history_relative_time,
+    clipboard_history_source_label, history_target_address,
+    notification_history_accessible_description, notification_history_relative_time, unix_time_ms,
+};
 #[cfg(test)]
 use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
@@ -36,6 +43,8 @@ use shortcuts::{
     shortcut_guide_chord, shortcut_reference_columns, shortcut_reference_group_height,
     shortcut_reference_rows, shortcut_reference_step,
 };
+#[cfg(test)]
+use std::path::PathBuf;
 
 #[cfg(test)]
 #[path = "../../../tests/support/offscreen.rs"]
@@ -64,7 +73,7 @@ use crate::shell::collaborators_overlay::{
 pub use crate::shell::collaborators_overlay::{RosterRow, collaborator_roster_rows};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
-use crate::shell::notification::{Notification, NotificationSeverity, NotificationStack};
+use crate::shell::notification::NotificationStack;
 use crate::shell::peer_sync_overlay::{
     EventOutcome as PeerSyncEventOutcome, InviteContext, PeerSyncOverlay,
 };
@@ -87,13 +96,6 @@ pub use crate::shell::workspace_settings_overlay::GrantComposerRects;
 use crate::shell::workspace_settings_overlay::{
     EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum HistoryTargetAddress {
-    File(PathBuf),
-    Uri(String),
-    App,
-}
 
 #[derive(Debug)]
 struct SessionActionResult {
@@ -1156,111 +1158,6 @@ mod idle_io_animation_tests {
         );
         release_tx.send(()).expect("release test worker");
     }
-}
-
-fn notification_history_relative_time(notification: &Notification, now: Instant) -> String {
-    let seconds = now
-        .saturating_duration_since(notification.created_at)
-        .as_secs();
-    ui::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX))
-}
-
-fn clipboard_history_relative_time(created_unix_ms: u64, now_unix_ms: u64) -> String {
-    let seconds = now_unix_ms.saturating_sub(created_unix_ms) / 1_000;
-    ui::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX))
-}
-
-fn clipboard_history_source_label(
-    item: &crate::compositor::selection::ClipboardHistorySnapshot,
-    fabric: Option<&DeviceFabricView>,
-) -> String {
-    let Some(source) = item.source_device.as_ref() else {
-        return "This device".to_string();
-    };
-    fabric
-        .and_then(|fabric| fabric.devices.iter().find(|device| &device.id == source))
-        .map_or_else(
-            || source.as_str().to_string(),
-            |device| device.label.clone(),
-        )
-}
-
-fn clipboard_history_matches_query(
-    item: &crate::compositor::selection::ClipboardHistorySnapshot,
-    query: &str,
-    fabric: Option<&DeviceFabricView>,
-) -> bool {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return true;
-    }
-    let source = clipboard_history_source_label(item, fabric);
-    let mut searchable = source.to_lowercase();
-    for mime in &item.mime_types {
-        searchable.push(' ');
-        searchable.push_str(&mime.to_lowercase());
-    }
-    if let Some(preview) = item.text_preview.as_deref() {
-        searchable.push(' ');
-        searchable.push_str(&preview.to_lowercase());
-    }
-    query
-        .split_whitespace()
-        .all(|term| searchable.contains(term))
-}
-
-fn unix_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
-fn notification_severity_label(severity: NotificationSeverity) -> &'static str {
-    match severity {
-        NotificationSeverity::Info => "Information",
-        NotificationSeverity::Warning => "Warning",
-        NotificationSeverity::Error => "Error",
-    }
-}
-
-/// Screen-reader description for one retained notification card. Kept beside
-/// the visual card's source/age helpers so both presentations expose the same
-/// hierarchy even when a busy compositor crosses a relative-time boundary.
-fn notification_history_accessible_description(
-    notification: &Notification,
-    now: Instant,
-) -> String {
-    let source = notification
-        .app_name
-        .as_deref()
-        .or(notification.app_id.as_deref())
-        .unwrap_or("System");
-    let severity = notification_severity_label(notification.severity);
-    let relative_time = notification_history_relative_time(notification, now);
-    if notification.body.is_empty() {
-        format!("{severity}. From {source}. {relative_time}")
-    } else {
-        format!(
-            "{severity}. From {source}. {relative_time}. {}",
-            notification.body
-        )
-    }
-}
-
-/// Resolve only addresses the action explicitly declared. Semantic resource
-/// ids such as `notes.page:abc` are labels within an app, not record ids or
-/// URIs; treating them as either would make History's Open control navigate
-/// somewhere other than the selected action.
-fn history_target_address(target: &ui::HistoryResourceTarget) -> HistoryTargetAddress {
-    if let Some(path) = target.id.strip_prefix("file:") {
-        return HistoryTargetAddress::File(PathBuf::from(path));
-    }
-    if target.id.contains("://") && crate::shell::uri_open::resource_for_uri(&target.id).is_ok() {
-        return HistoryTargetAddress::Uri(target.id.clone());
-    }
-    HistoryTargetAddress::App
 }
 
 /// Draw a relationship line with a visible head at the followed person. This
