@@ -497,6 +497,12 @@ pub fn accept_outbound_handoff(request_id: [u8; 16], session_id: &str) -> Option
     pending.remove(&request_id)
 }
 
+/// Forget one exact outbound request after a typed rejection or local cancel.
+/// A mismatched session cannot consume another pending handoff.
+pub fn cancel_outbound_handoff(request_id: [u8; 16], session_id: &str) -> Option<PlaybackReport> {
+    accept_outbound_handoff(request_id, session_id)
+}
+
 fn handoff_source(source: &Source) -> HandoffSource {
     match source {
         Source::LocalFile(path) => HandoffSource::LocalFile { path: path.clone() },
