@@ -77,10 +77,10 @@ fn offered_selection(
         .filter(|release| release.architecture() == host_architecture);
     let release = host
         .next()
-        .ok_or("No Full qOS download is offered for this computer.")?;
+        .ok_or("No Full Tilo download is offered for this computer.")?;
     if host.next().is_some() {
         return Err(
-            "More than one Full qOS download is offered for this computer; selection policy is unresolved."
+            "More than one Full Tilo download is offered for this computer; selection policy is unresolved."
                 .into(),
         );
     }
@@ -103,8 +103,8 @@ impl Default for DownloadPresentation {
     fn default() -> Self {
         Self {
             phase: None,
-            title: "Full qOS download".into(),
-            details: "Choose Download qOS after reviewing this setup.".into(),
+            title: "Full Tilo download".into(),
+            details: "Choose Download Tilo after reviewing this setup.".into(),
             pending: false,
         }
     }
@@ -264,7 +264,7 @@ impl InternalDownloadFlow {
 
     fn resolve(&mut self, key: &SelectionKey) -> Result<InternalRelease, String> {
         if !self.capabilities.supports(Experience::FullOs) {
-            return Err("Full qOS download is not supported on this computer.".into());
+            return Err("Full Tilo download is not supported on this computer.".into());
         }
         let architecture = self.host_architecture().to_string();
         let mut releases = self
@@ -273,16 +273,16 @@ impl InternalDownloadFlow {
             .filter(|release| release.architecture() == architecture);
         let release = releases
             .next()
-            .ok_or("The selected Full qOS download is no longer offered.")?;
+            .ok_or("The selected Full Tilo download is no longer offered.")?;
         if releases.next().is_some() {
             return Err(
-                "More than one Full qOS download is offered for this computer; selection policy is unresolved."
+                "More than one Full Tilo download is offered for this computer; selection policy is unresolved."
                     .into(),
             );
         }
         if !key.matches(&release) {
             return Err(
-                "The selected Full qOS download changed. Review the current download before continuing."
+                "The selected Full Tilo download changed. Review the current download before continuing."
                     .into(),
             );
         }
@@ -376,7 +376,7 @@ impl InternalDownloadFlow {
 
     pub(super) fn start_selected(&mut self, key: SelectionKey) -> Result<(), String> {
         if !self.can_start() {
-            return Err("A Full qOS download cannot start in its current state.".into());
+            return Err("A Full Tilo download cannot start in its current state.".into());
         }
         let release = self.resolve(&key)?;
         self.preference.save(&key)?;
@@ -580,16 +580,16 @@ fn presentation_from_facts(
 ) -> DownloadPresentation {
     let (title, summary) = match phase {
         WorkerPhase::Authenticating => (
-            "Downloading qOS",
-            "Checking the selected qOS release against this signed app catalog.",
+            "Downloading Tilo",
+            "Checking the selected Tilo release against this signed app catalog.",
         ),
         WorkerPhase::Acquiring | WorkerPhase::Preparing => (
-            "Downloading qOS",
+            "Downloading Tilo",
             "Checking retained download data before continuing.",
         ),
         WorkerPhase::Downloading => (
-            "Downloading qOS",
-            "Downloading verified qOS installation data.",
+            "Downloading Tilo",
+            "Downloading verified Tilo installation data.",
         ),
         WorkerPhase::Ready => (
             "Download ready",
@@ -955,7 +955,7 @@ mod tests {
 
         assert_eq!(
             duplicate.unwrap_err(),
-            "A Full qOS download cannot start in its current state."
+            "A Full Tilo download cannot start in its current state."
         );
         assert_eq!(token_after, token);
         assert_eq!(preference_inode_after, preference_inode);
@@ -1006,7 +1006,7 @@ mod tests {
 
         assert_eq!(
             flow.start_selected(key).unwrap_err(),
-            "A Full qOS download cannot start in its current state."
+            "A Full Tilo download cannot start in its current state."
         );
         assert_eq!(flow.token.as_ref(), Some(&token));
         assert_eq!(

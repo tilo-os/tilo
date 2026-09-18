@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 pub(crate) fn launch_request() -> crate::shell::host_apps::QueuedLaunch {
     crate::shell::host_apps::QueuedLaunch {
         desktop_id: "tilo-import-folders".into(),
-        display_name: "Add folders to qOS".into(),
+        display_name: "Add folders to Tilo".into(),
         placement: crate::shell::tab_binding::Placement::NewGroup,
         portal_workspace_id: None,
     }
@@ -192,7 +192,7 @@ mod tests {
         fs::write(
             temp.path().join("tilo-import-folders.desktop"),
             format!(
-                "[Desktop Entry]\nType=Application\nName=Add folders to qOS\n\
+                "[Desktop Entry]\nType=Application\nName=Add folders to Tilo\n\
                  Exec={} --import-folders\nTryExec={}\n",
                 executable.display(),
                 executable.display(),

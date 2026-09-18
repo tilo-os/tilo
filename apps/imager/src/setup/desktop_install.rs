@@ -475,7 +475,8 @@ mod native {
                 };
                 if result.code != 0 || !result.stderr.is_empty() || result.stdout != expected {
                     return Err(
-                        "The qOS session entry or wrapper is not exclusively package-owned.".into(),
+                        "The Tilo session entry or wrapper is not exclusively package-owned."
+                            .into(),
                     );
                 }
             }
@@ -634,7 +635,7 @@ mod native {
             })
         {
             return Err(
-                "Installed session does not use the reviewed qOS host-session wrapper contract."
+                "Installed session does not use the reviewed Tilo host-session wrapper contract."
                     .into(),
             );
         }
