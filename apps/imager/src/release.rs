@@ -160,6 +160,30 @@ fn parse_catalog(raw: &str) -> Result<Catalog, String> {
     if raw.len() > 1024 * 1024 {
         return Err("Release catalog exceeds size limit.".into());
     }
+    // Derived record/enum deserializers admit sequence records and object
+    // unit-enum tags. Constrain the published JSON shapes before decoding the
+    // ORIGINAL bytes, preserving duplicate-key checks and authenticated input.
+    {
+        let shape: serde_json::Value =
+            serde_json::from_str(raw).map_err(|error| error.to_string())?;
+        let valid = shape.is_object()
+            && shape
+                .get("releases")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|entries| {
+                    entries.iter().all(|entry| {
+                        entry.is_object()
+                            && ["purpose", "layout"]
+                                .iter()
+                                .all(|key| entry.get(*key).is_none_or(serde_json::Value::is_string))
+                    })
+                });
+        if !valid {
+            return Err(
+                "Catalog records must be JSON objects with string purpose/layout tags.".into(),
+            );
+        }
+    }
     let catalog: Catalog = serde_json::from_str(raw).map_err(|error| error.to_string())?;
     if catalog.schema != 1 {
         return Err("Unsupported release catalog schema.".into());
@@ -940,5 +964,106 @@ mod internal_catalog_tests {
         assert!(bundled_releases().unwrap().is_empty());
         let raw = catalog(media()).replacen("\"arch\":", "\"arch\":\"x86_64\",\"arch\":", 1);
         assert!(parse_catalog(&raw).is_err());
+    }
+    fn positional_record(value: &Value, fields: &str) -> Value {
+        Value::Array(
+            fields
+                .split_whitespace()
+                .map(|key| value[key].clone())
+                .collect(),
+        )
+    }
+    #[test]
+    fn representation_catalog_must_be_an_object() {
+        let raw = catalog(media());
+        assert!(parse_catalog(&raw).is_ok());
+        let value: Value = serde_json::from_str(&raw).unwrap();
+        let array = positional_record(&value, "schema tag releases");
+        assert!(parse_catalog(&array.to_string()).is_err());
+    }
+    #[test]
+    fn representation_media_entry_must_be_an_object() {
+        let mut value = media();
+        value["purpose"] = json!("removable-media");
+        value["layout"] = json!("whole-disk-image");
+        assert!(parse_catalog(&catalog(value.clone())).is_ok());
+        let array = positional_record(
+            &value,
+            "purpose layout name version channel arch url archive_sha256 archive_size image_sha256 image_size",
+        );
+        assert!(parse_catalog(&catalog(array)).is_err());
+    }
+    #[test]
+    fn representation_internal_entry_must_be_an_object() {
+        let bytes = crate::setup::internal_bundle::tests::bytes(
+            &crate::setup::internal_bundle::tests::fixture(),
+        );
+        let value = internal(&bytes);
+        assert!(parse_catalog(&catalog(value.clone())).is_ok());
+        let array = positional_record(
+            &value,
+            "purpose layout release_id arch manifest_url manifest_sha256 manifest_size",
+        );
+        assert!(parse_catalog(&catalog(array)).is_err());
+    }
+    #[test]
+    fn representation_internal_purpose_and_layout_must_be_strings() {
+        let bytes = crate::setup::internal_bundle::tests::bytes(
+            &crate::setup::internal_bundle::tests::fixture(),
+        );
+        let entry = internal(&bytes);
+        assert!(parse_catalog(&catalog(entry.clone())).is_ok());
+        let accepted: Vec<_> = ["purpose", "layout"]
+            .into_iter()
+            .filter(|field| {
+                let mut value = entry.clone();
+                value[*field] = json!({entry[*field].as_str().unwrap():null});
+                parse_catalog(&catalog(value)).is_ok()
+            })
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "accepted object-shaped tags: {accepted:?}"
+        );
+    }
+    #[test]
+    fn representation_media_purpose_and_layout_must_be_strings() {
+        let mut entry = media();
+        entry["purpose"] = json!("removable-media");
+        entry["layout"] = json!("whole-disk-image");
+        assert!(parse_catalog(&catalog(entry.clone())).is_ok());
+        let accepted: Vec<_> = ["purpose", "layout"]
+            .into_iter()
+            .filter(|field| {
+                let mut value = entry.clone();
+                value[*field] = json!({entry[*field].as_str().unwrap():null});
+                parse_catalog(&catalog(value)).is_ok()
+            })
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "accepted object-shaped tags: {accepted:?}"
+        );
+    }
+    #[test]
+    fn representation_checks_do_not_collapse_duplicate_catalog_keys() {
+        let bytes = crate::setup::internal_bundle::tests::bytes(
+            &crate::setup::internal_bundle::tests::fixture(),
+        );
+        for entry in [media(), internal(&bytes)] {
+            let raw = catalog(entry);
+            assert!(parse_catalog(&raw).is_ok());
+            for (marker, replacement) in [
+                ("\"schema\":1", "\"schema\":1,\"schema\":1"),
+                (
+                    "\"arch\":\"x86_64\"",
+                    "\"arch\":\"x86_64\",\"arch\":\"x86_64\"",
+                ),
+            ] {
+                let changed = raw.replacen(marker, replacement, 1);
+                assert_ne!(changed, raw);
+                assert!(parse_catalog(&changed).is_err());
+            }
+        }
     }
 }
