@@ -987,3 +987,230 @@ fn bootstrap_hint_checks_selection_size_and_leaf_without_minting_ownership() {
         );
     }
 }
+
+/// Ordinary-file lifecycle observer. No native security or Linux publication
+/// behavior is substituted: this checks the real Session's callback ordering.
+#[cfg(unix)]
+struct LifecycleProvider<'a> {
+    disk: DiskProvider,
+    selected: &'a SelectedManifest,
+    events: Vec<&'static str>,
+    complete: bool,
+    expected_length: u64,
+    reject_receipt: bool,
+}
+#[cfg(unix)]
+impl Provider for &mut LifecycleProvider<'_> {
+    fn revoke_preparation(&mut self) {
+        self.complete = false;
+        self.events.push("revoke");
+    }
+    fn prepared(&mut self, proof: PreparationComplete<'_>) -> Result<(), String> {
+        assert!(proof.authorizes(self.selected, 0, &self.disk.own)?);
+        assert!(!proof.authorizes(self.selected, 1, &self.disk.own)?);
+        let payload = self.disk.dir.parent().unwrap().join(&self.disk.own.leaf);
+        // Successful preparation must already have trimmed the uncommitted tail
+        // and normalized any third survivor before issuing the receipt.
+        assert_eq!(fs::metadata(payload).unwrap().len(), self.expected_length);
+        assert!(fs::read_dir(&self.disk.dir).unwrap().count() <= 2);
+        self.events.push("complete");
+        self.complete = true;
+        if self.reject_receipt {
+            Err("receipt callback failure".into())
+        } else {
+            Ok(())
+        }
+    }
+    fn ownership(&self) -> Ownership {
+        self.disk.ownership()
+    }
+    fn verify(&mut self, file: &File, own: &Ownership) -> Result<(), String> {
+        self.disk.verify(file, own)
+    }
+    fn scan(&mut self, visit: &mut dyn FnMut(&[u8]) -> Result<(), String>) -> Result<(), String> {
+        self.disk.scan(visit)?;
+        self.events.push("scan");
+        Ok(())
+    }
+    fn retain(&mut self, keep: &[u64]) -> Result<(), String> {
+        self.disk.retain(keep)?;
+        self.events.push("retain");
+        Ok(())
+    }
+    fn publish(&mut self, g: u64, bytes: &[u8], keep: &[u64]) -> Result<(), String> {
+        self.disk.publish(g, bytes, keep)
+    }
+}
+#[cfg(unix)]
+fn lifecycle_records(selected: &SelectedManifest, dir: &Path) -> (DiskProvider, File) {
+    let (disk, mut file) = DiskProvider::new(dir);
+    let own = disk.ownership();
+    let mut session = Session::new(selected, 0, 1, disk).unwrap();
+    let mut prepared = session
+        .prepare(selected, &mut file, &AtomicBool::new(false))
+        .unwrap();
+    let zero = fs::read(dir.join("journal/record-1")).unwrap();
+    start_prefix(&mut prepared, b"EE");
+    prefix(&mut prepared, b"EE").unwrap();
+    drop(prepared);
+    drop(session);
+    // Emulate the durable uncertain third successor that recovery normalizes.
+    fs::write(dir.join("journal/record-1"), zero).unwrap();
+    let (disk, mut file) = DiskProvider::reopen(dir, own);
+    file.seek(std::io::SeekFrom::End(0)).unwrap();
+    file.write_all(b"TAIL").unwrap();
+    file.sync_all().unwrap();
+    (disk, file)
+}
+#[cfg(unix)]
+fn record_snapshot(dir: &Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
+    let mut records: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (e.file_name(), fs::read(e.path()).unwrap())
+        })
+        .collect();
+    records.sort();
+    records
+}
+#[cfg(unix)]
+#[test]
+fn preparation_receipt_follows_real_history_hash_normalization_trim_and_seek() {
+    let selected = selected();
+    let dir = tempfile::tempdir().unwrap();
+    let (disk, mut file) = lifecycle_records(&selected, dir.path());
+    let mut provider = LifecycleProvider {
+        disk,
+        selected: &selected,
+        events: vec![],
+        complete: false,
+        expected_length: 4,
+        reject_receipt: false,
+    };
+    clear_reads();
+    {
+        let mut session = Session::new(&selected, 0, 2, &mut provider).unwrap();
+        let prepared = session
+            .prepare(&selected, &mut file, &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(prepared.committed(), 4);
+        assert_eq!(prepared.file.stream_position().unwrap(), 4);
+    }
+    assert!(provider.complete);
+    assert_eq!(
+        provider.events,
+        vec!["revoke", "revoke", "scan", "retain", "complete"]
+    );
+    assert_eq!(
+        fs::read(dir.path().join(&provider.disk.own.leaf)).unwrap(),
+        b"EEEE"
+    );
+    assert_eq!(fs::read_dir(&provider.disk.dir).unwrap().count(), 2);
+    assert_eq!(read_totals("restart"), (4, 4));
+    // Failed construction must revoke a prior success before it can return Err.
+    assert!(Session::new(&selected, 0, 0, &mut provider).is_err());
+    assert!(!provider.complete);
+}
+#[cfg(unix)]
+#[test]
+fn post_scan_preparation_failures_revoke_without_mutating_rejected_evidence() {
+    for corrupt_prefix in [false, true] {
+        let selected = selected();
+        let dir = tempfile::tempdir().unwrap();
+        let (disk, mut file) = lifecycle_records(&selected, dir.path());
+        let mut provider = LifecycleProvider {
+            disk,
+            selected: &selected,
+            events: vec![],
+            complete: false,
+            expected_length: 4,
+            reject_receipt: false,
+        };
+        {
+            let mut session = Session::new(&selected, 0, 2, &mut provider).unwrap();
+            drop(
+                session
+                    .prepare(&selected, &mut file, &AtomicBool::new(false))
+                    .unwrap(),
+            );
+        }
+        assert!(provider.complete);
+        let journal = dir.path().join("journal");
+        if corrupt_prefix {
+            let path = journal.join("record-3");
+            let mut bytes = fs::read(&path).unwrap();
+            bytes[179] ^= 1;
+            rewrite_checksum(&mut bytes);
+            fs::write(path, bytes).unwrap();
+        } else {
+            let path = journal.join("record-3");
+            let mut bytes = fs::read(&path).unwrap();
+            bytes[147..155].copy_from_slice(&4u64.to_le_bytes());
+            rewrite_checksum(&mut bytes);
+            fs::remove_file(path).unwrap();
+            fs::write(journal.join("record-4"), bytes).unwrap();
+        }
+        file.seek(std::io::SeekFrom::End(0)).unwrap();
+        file.write_all(b"TAIL").unwrap();
+        let payload = fs::read(dir.path().join(&provider.disk.own.leaf)).unwrap();
+        let records = record_snapshot(&journal);
+        provider.events.clear();
+        {
+            let mut session = Session::new(&selected, 0, 3, &mut provider).unwrap();
+            assert!(
+                session
+                    .prepare(&selected, &mut file, &AtomicBool::new(false))
+                    .is_err()
+            );
+        }
+        assert!(!provider.complete);
+        assert_eq!(provider.events, vec!["revoke", "revoke", "scan", "revoke"]);
+        assert_eq!(
+            fs::read(dir.path().join(&provider.disk.own.leaf)).unwrap(),
+            payload
+        );
+        assert_eq!(record_snapshot(&journal), records);
+    }
+}
+#[cfg(unix)]
+#[test]
+fn failed_receipt_callback_and_cancelled_reprepare_do_not_leave_success() {
+    let selected = selected();
+    let dir = tempfile::tempdir().unwrap();
+    let (disk, mut file) = lifecycle_records(&selected, dir.path());
+    let mut provider = LifecycleProvider {
+        disk,
+        selected: &selected,
+        events: vec![],
+        complete: false,
+        expected_length: 4,
+        reject_receipt: true,
+    };
+    {
+        let mut session = Session::new(&selected, 0, 2, &mut provider).unwrap();
+        assert!(
+            session
+                .prepare(&selected, &mut file, &AtomicBool::new(false))
+                .is_err()
+        );
+    }
+    assert!(!provider.complete);
+    assert!(provider.events.contains(&"complete"));
+    assert_eq!(provider.events.last(), Some(&"revoke"));
+    provider.reject_receipt = false;
+    {
+        let mut session = Session::new(&selected, 0, 3, &mut provider).unwrap();
+        drop(
+            session
+                .prepare(&selected, &mut file, &AtomicBool::new(false))
+                .unwrap(),
+        );
+        assert!(
+            session
+                .prepare(&selected, &mut file, &AtomicBool::new(true))
+                .is_err()
+        );
+    }
+    assert!(!provider.complete);
+}
