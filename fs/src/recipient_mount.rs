@@ -541,15 +541,15 @@ mod tests {
     #[test]
     fn concurrent_start_is_rejected_before_a_duplicate_child_can_launch() {
         let temp = tempfile::tempdir().unwrap();
-        let entered_path = temp.path().join("entered");
+        let release_path = temp.path().join("release");
         let calls_path = temp.path().join("calls");
         let script = temp.path().join("fake-fs");
         write_executable_script(
             &script,
             &format!(
-                "#!/bin/sh\nprintf 'call\\n' >> '{}'\nprintf 'entered\\n' > '{}'\n/bin/cat >/dev/null\nsleep 1\nprintf '%s\\n' '{}'\nsleep 30\n",
+                "#!/bin/sh\nprintf 'call\\n' >> '{}'\n/bin/cat >/dev/null\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nprintf '%s\\n' '{}'\nsleep 30\n",
                 calls_path.display(),
-                entered_path.display(),
+                release_path.display(),
                 RECIPIENT_MOUNT_READY_LINE,
             ),
         );
@@ -564,21 +564,30 @@ mod tests {
             let supervisor = Arc::clone(&supervisor);
             std::thread::spawn(move || supervisor.start(&subscribed))
         };
-        let deadline = std::time::Instant::now()
-            .checked_add(Duration::from_secs(2))
-            .unwrap();
-        while !entered_path.exists() && std::time::Instant::now() < deadline {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !supervisor
+            .starting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&subscribed.key)
+            && std::time::Instant::now() < deadline
+        {
             std::thread::park_timeout(Duration::from_millis(5));
         }
         assert!(
-            entered_path.exists(),
-            "mount child did not reach its fixture barrier"
+            supervisor
+                .starting
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&subscribed.key),
+            "mount start did not acquire its reservation"
         );
 
         assert!(matches!(
             supervisor.start(&subscribed),
             Err(RecipientMountError::StartInProgress)
         ));
+        std::fs::write(release_path, b"release").unwrap();
         let info = starter.join().unwrap().unwrap();
         assert_eq!(std::fs::read_to_string(calls_path).unwrap(), "call\n");
         assert_eq!(info.key, subscribed.key);
