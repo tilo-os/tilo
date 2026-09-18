@@ -545,14 +545,16 @@ fn validate_rotation_continuity(
 }
 
 fn required_marker_is_armed(path: &Path) -> Result<bool, String> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
+    let file = match open_readonly_without_symlinks(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("cannot inspect {}: {error}", path.display())),
+        Err(error) => return Err(format!("cannot open {}: {error}", path.display())),
     };
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
     // SAFETY: geteuid takes no arguments and cannot fail.
     if !metadata.is_file()
-        || metadata.file_type().is_symlink()
         || metadata.uid() != unsafe { libc::geteuid() }
         || metadata.mode() & 0o777 != 0o600
         || metadata.nlink() != 1
@@ -562,7 +564,11 @@ fn required_marker_is_armed(path: &Path) -> Result<bool, String> {
                 .into(),
         );
     }
-    if read_bounded(path)? != b"armed\n" {
+    let mut contents = Vec::with_capacity(7);
+    file.take(7)
+        .read_to_end(&mut contents)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    if contents != b"armed\n" {
         return Err("image-trust required marker has invalid contents".into());
     }
     Ok(true)
@@ -1052,6 +1058,9 @@ mod tests {
 
         atomic_file::write_with_mode(&marker, b"armed\n", 0o600).expect("valid marker");
         assert!(required_marker_is_armed(&marker).expect("valid marker accepted"));
+        let linked_parent = temp.path().join("linked-parent");
+        std::os::unix::fs::symlink(temp.path(), &linked_parent).expect("marker parent symlink");
+        assert!(required_marker_is_armed(&linked_parent.join("required")).is_err());
 
         fs::write(&marker, b"wrong\n").expect("corrupt marker contents");
         assert!(required_marker_is_armed(&marker).is_err());
