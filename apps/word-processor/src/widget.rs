@@ -61,8 +61,17 @@ use crate::zoom_control::MAX as ZOOM_MAX;
 use crate::zoom_control::{MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
 use ui::portal;
 
+mod block_layout;
 mod image_layout;
 
+#[cfg(test)]
+use block_layout::LIST_MARKER_TEXT_GAP;
+use block_layout::{
+    LIST_INDENT_STEP, align as block_align, bullet_glyph, cell_rc, cell_table, font as parse_font,
+    indent as block_indent_attr, line_spacing as block_line_spacing, line_spacing_label,
+    list_level, list_marker_x, next_line_spacing, page_break_before as block_page_break_before,
+    style_align, style_key as block_style_key,
+};
 #[cfg(test)]
 use image_layout::PaintOptions as ImagePaintOptions;
 use image_layout::{
@@ -924,107 +933,6 @@ fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
     ])
 }
 
-/// Whether a block forces a page break before it (the `page_break_before`
-/// block attr). Honoured by the pagination cursor so the block starts a fresh
-/// page even when it would otherwise fit on the current one.
-fn block_page_break_before(b: &BlockView) -> bool {
-    matches!(b.attrs.get("page_break_before"), Some(AttrVal::Bool(true)))
-}
-
-/// A block's line-spacing multiplier (the `line_spacing` Float attr), defaulting
-/// to `1.0` when unset. Fed to `RichTextLayout::shape` as `line_height_mult`,
-/// scaling the line advance (1.5 = one-and-a-half, 2.0 = double).
-fn block_line_spacing(b: &BlockView) -> f32 {
-    match b.attrs.get("line_spacing") {
-        Some(AttrVal::Float(f)) if *f > 0.0 => num::f32_of_f64(*f),
-        Some(AttrVal::Int(n)) if *n > 0 => num::f32_of_i64(*n),
-        _ => 1.0,
-    }
-}
-
-/// The cycle of presented line-spacing multipliers.
-const LINE_SPACINGS: [f64; 4] = [1.0, 1.15, 1.5, 2.0];
-
-/// Next multiplier in the line-spacing cycle (wraps 2.0 → 1.0). The nearest
-/// preset to `cur` is the anchor, so an imported odd value still cycles cleanly.
-/// `cur` may be a non-finite value from a malformed import or a remote peer's
-/// action; `partial_cmp` returning `None` for a NaN distance falls back to
-/// `Equal` rather than panicking, so the cycle just anchors on the first preset.
-fn next_line_spacing(cur: f64) -> f64 {
-    let idx = LINE_SPACINGS
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| {
-            (**a - cur)
-                .abs()
-                .partial_cmp(&(**b - cur).abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map_or(0, |(i, _)| i);
-    LINE_SPACINGS
-        .get((idx + 1) % LINE_SPACINGS.len())
-        .copied()
-        .unwrap_or(1.0)
-}
-
-/// A short label for a line-spacing multiplier (the toolbar chip text).
-fn line_spacing_label(mult: f64) -> String {
-    if (mult - mult.round()).abs() < 0.005 {
-        format!("⇕ {}", num::i64_of_f64(mult.round()))
-    } else {
-        format!("⇕ {mult:.2}")
-    }
-}
-
-/// A block's own left/hanging indent (px) from its `indent` attr — added on top
-/// of the style indent by the layout pass. `0.0` when unset.
-fn block_indent_attr(b: &BlockView) -> f64 {
-    match b.attrs.get("indent") {
-        Some(AttrVal::Float(f)) => *f,
-        Some(AttrVal::Int(n)) => num::f64_of_i64(*n),
-        _ => 0.0,
-    }
-}
-
-/// Pick a block's horizontal alignment from its `align` attribute.
-fn block_align(b: &BlockView, default: TextAlign) -> TextAlign {
-    match b.attrs.get("align") {
-        Some(AttrVal::Str(s)) if s == "center" => TextAlign::Center,
-        Some(AttrVal::Str(s)) if s == "right" => TextAlign::Right,
-        Some(AttrVal::Str(s)) if s == "left" => TextAlign::Left,
-        _ => default,
-    }
-}
-
-/// Map a style's font / align strings to the ui enums.
-fn parse_font(name: &str) -> FontFamily {
-    match name {
-        "serif" => FontFamily::Serif,
-        "mono" => FontFamily::Mono,
-        _ => FontFamily::Sans,
-    }
-}
-fn style_align(s: &str) -> TextAlign {
-    match s {
-        "center" => TextAlign::Center,
-        "right" => TextAlign::Right,
-        _ => TextAlign::Left,
-    }
-}
-
-/// Resolve the style id for a block from its kind / level / explicit `style` attr.
-fn block_style_key(b: &BlockView) -> String {
-    let level = match b.attrs.get("level") {
-        Some(AttrVal::Int(n)) => Some(*n),
-        _ => None,
-    };
-    let explicit = match b.attrs.get("style") {
-        Some(AttrVal::Str(s)) => Some(s.as_str()),
-        _ => None,
-    };
-    crate::styles::style_key_for(&b.kind, level, explicit)
-}
-
 /// A block's styled runs plus its underline and strikethrough byte ranges:
 /// `(runs, underline_ranges, strike_ranges)`.
 type BlockRuns = (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>);
@@ -1594,53 +1502,11 @@ struct RegionLaid {
     layout: RichTextLayout,
 }
 
-/// A list item's 0-based nesting level (absent attr → 0).
-fn list_level(b: &BlockView) -> usize {
-    match b.attrs.get("level") {
-        Some(AttrVal::Int(n)) if *n > 0 => num::usize_of_i64(*n),
-        _ => 0,
-    }
-}
-
-/// Per-nesting-level extra indent (px) added on top of the list style's indent.
-const LIST_INDENT_STEP: f64 = 24.0;
-/// Minimum logical gap between a list marker's measured ink advance and text.
-const LIST_MARKER_TEXT_GAP: f64 = 8.0;
-
-/// Right-align a list marker in the hanging-indent gutter. Numbering grows to
-/// the left so crossing 9 → 10 never consumes paragraph text space.
-fn list_marker_x(text_x: f64, measured_width: f64) -> f64 {
-    text_x - LIST_MARKER_TEXT_GAP - measured_width
-}
 /// US-Letter page height in inches (width is 8.5in → `MAX_PAGE_W` px).
 const LETTER_RATIO: f64 = 11.0 / 8.5;
 /// Gap between a floated image's edge and the text column that wraps beside
 /// it, in [`WordProcessorWidget::paginate_blocks`]'s float-reserve math.
 const FLOAT_GUTTER: f64 = 12.0;
-
-/// The bullet glyph for an unordered item at `level` (cycles by depth).
-fn bullet_glyph(level: usize) -> &'static str {
-    match level % 3 {
-        0 => "•",
-        1 => "◦",
-        _ => "▪",
-    }
-}
-
-fn cell_table(b: &BlockView) -> Option<String> {
-    match b.attrs.get("table") {
-        Some(AttrVal::Str(s)) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn cell_rc(b: &BlockView) -> (usize, usize) {
-    let get = |k: &str| match b.attrs.get(k) {
-        Some(AttrVal::Int(n)) if *n >= 0 => num::usize_of_i64(*n),
-        _ => 0,
-    };
-    (get("row"), get("col"))
-}
 
 struct EditorLifecycle {
     focused: bool,
