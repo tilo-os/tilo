@@ -13,7 +13,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
@@ -445,10 +445,6 @@ fn is_binary(path: &Path) -> bool {
     };
     let ext = ext.to_ascii_lowercase();
     BINARY_EXTS.contains(&ext.as_str())
-}
-
-fn _unused_duration() -> Duration {
-    Duration::from_secs(COMMIT_INTERVAL_SECS)
 }
 
 #[cfg(test)]
