@@ -1325,9 +1325,15 @@ impl Session {
             )));
         }
         if let Some(run) = &mut self.chat_run {
-            run.uncertain = matches!(&update, qos_actions::InvocationUpdate::Failed { error, .. }
-                if run.observed_mutation || error.code == "action_outcome_unknown" ||
-                (error.code == "action_failed" && error.message == "application disconnected before completing the action"));
+            // Cancellation acknowledges stopping, not an untouched document
+            // or rollback. Any observed mutation also survives an unsuccessful
+            // terminal receipt; neither case can truthfully become Refused.
+            run.uncertain = !matches!(&update, qos_actions::InvocationUpdate::Succeeded { .. })
+                && (run.observed_mutation
+                    || matches!(&update, qos_actions::InvocationUpdate::Cancelled { .. })
+                    || matches!(&update, qos_actions::InvocationUpdate::Failed { error, .. }
+                        if error.code == "action_outcome_unknown" ||
+                        (error.code == "action_failed" && error.message == "application disconnected before completing the action")));
         }
         match update {
             qos_actions::InvocationUpdate::Failed { error, .. } => {

@@ -89,6 +89,34 @@ fn peer(path: &std::path::Path, app: &str) -> TypedPeer {
     p.set_read_timeout(Some(Duration::from_millis(20)));
     p
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OwnerOutcome {
+    Complete,
+    Disconnect,
+    CancelAfterMutation,
+}
+
+fn scenario_resources(doc: &AutoCommit, outcome: OwnerOutcome) -> Vec<qos_actions::Resource> {
+    fn allow_cancellation(resources: &mut [qos_actions::Resource]) {
+        for resource in resources {
+            for action in &mut resource.actions {
+                if action.id == "insert-table" {
+                    action.contract.execution =
+                        qos_actions::ExecutionMode::Background { cancellable: true };
+                    action.contract.result = qos_actions::ResultSpec::Job;
+                    assert!(action.contract.validate_declaration().is_empty());
+                }
+            }
+            allow_cancellation(&mut resource.children);
+        }
+    }
+    let mut resources = resources(doc);
+    if outcome == OwnerOutcome::CancelAfterMutation {
+        allow_cancellation(&mut resources);
+    }
+    resources
+}
+
 #[allow(
     clippy::too_many_arguments,
     clippy::fn_params_excessive_bools,
@@ -101,7 +129,7 @@ fn scenario_outcome(
     allowed: bool,
     record: Option<&str>,
     expected_reply: bool,
-    disconnect: bool,
+    outcome: OwnerOutcome,
     wait_for_owner: bool,
     requests: usize,
 ) {
@@ -188,7 +216,7 @@ fn scenario_outcome(
         let mut owner_released = !wait_for_owner || restart;
         // A live action catalogue is not the owner's document snapshot.
         // The waiting case advertises the real action before releasing state.
-        typed_peer::publish_actions(&mut owner, WP, &resources(&document));
+        typed_peer::publish_actions(&mut owner, WP, &scenario_resources(&document, outcome));
         let mut cfg = config(socket.clone());
         cfg.once = requests == 1;
         let (tx, rx) = std::sync::mpsc::channel();
@@ -240,7 +268,7 @@ fn scenario_outcome(
                     } => {
                         invocations += 1;
                         assert_eq!(actor, "agent:Scribe");
-                        let tree = resources(&document);
+                        let tree = scenario_resources(&document, outcome);
                         let before = document.get_heads();
                         let update = typed_peer::service_document_invocation(
                             &mut owner,
@@ -259,12 +287,22 @@ fn scenario_outcome(
                                 .iter()
                                 .any(|change| { change.actor_id().to_bytes() == actor.as_bytes() })
                         );
-                        if disconnect {
+                        if outcome == OwnerOutcome::Disconnect {
                             // The action changed its real owner document, then the
                             // actual endpoint disappears before a terminal receipt.
                             owner = TypedPeer::connect(&socket);
                             owner_online = false;
                         } else {
+                            let update = if outcome == OwnerOutcome::CancelAfterMutation {
+                                qos_actions::InvocationUpdate::Cancelled {
+                                    invocation: update.invocation(),
+                                    message: Some(
+                                        "Owner stopped after changing the document".into(),
+                                    ),
+                                }
+                            } else {
+                                update
+                            };
                             send(&mut owner, &CollabRequest::UpdateInvocation { id, update })
                                 .unwrap();
                         }
@@ -290,7 +328,11 @@ fn scenario_outcome(
                     .any(|work| matches!(work.state, AgentWorkState::Waiting { .. }))
             {
                 owner_released = true;
-                typed_peer::publish_actions(&mut owner, WP, &resources(&document));
+                typed_peer::publish_actions(
+                    &mut owner,
+                    WP,
+                    &scenario_resources(&document, outcome),
+                );
                 send(
                     &mut owner,
                     &CollabRequest::DocumentSnapshot {
@@ -373,10 +415,10 @@ fn scenario_outcome(
         assert!(!reply.text.is_empty());
         return;
     }
-    if disconnect {
+    if outcome != OwnerOutcome::Complete {
         assert!(
             !work.finished(),
-            "lost receipt cannot claim completion or refusal: {work:?}"
+            "mutation with an inconclusive terminal outcome cannot claim completion or refusal: {work:?}"
         );
         assert_eq!(work.trace.len(), 1);
         assert_eq!(work.trace[0].outcome, AgentStepOutcome::Asked);
@@ -454,7 +496,7 @@ fn scenario(
         allowed,
         record,
         expected_reply,
-        false,
+        OwnerOutcome::Complete,
         false,
         1,
     );
@@ -467,7 +509,7 @@ fn owner_disconnect_after_mutation_is_unconfirmed_and_restart_never_repeats() {
         true,
         None,
         true,
-        true,
+        OwnerOutcome::Disconnect,
         false,
         1,
     );
@@ -481,7 +523,7 @@ fn missing_owner_state_waits_then_reuses_same_reply_and_executes() {
         true,
         None,
         true,
-        false,
+        OwnerOutcome::Complete,
         true,
         1,
     );
@@ -495,7 +537,7 @@ fn multiple_addressed_messages_are_pumped_oldest_first_without_new_traffic() {
         true,
         None,
         true,
-        false,
+        OwnerOutcome::Complete,
         false,
         2,
     );
@@ -518,8 +560,22 @@ fn permitted_view_operation_is_explicitly_refused_before_dispatch() {
         true,
         None,
         true,
-        false,
+        OwnerOutcome::Complete,
         false,
         0,
+    );
+}
+
+#[test]
+fn owner_mutation_then_cancelled_is_unconfirmed_and_restart_never_repeats() {
+    scenario_outcome(
+        "@Scribe insert a table",
+        Some("Scribe"),
+        true,
+        None,
+        true,
+        OwnerOutcome::CancelAfterMutation,
+        false,
+        1,
     );
 }
