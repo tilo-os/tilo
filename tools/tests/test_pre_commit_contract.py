@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HOOK = ROOT / ".githooks" / "pre-commit"
 CHECK_WORKFLOW = ROOT / ".forgejo" / "workflows" / "check.yml"
+CLIPPY_DIFF = ROOT / "tools" / "clippy-diff.sh"
 
 
 class PreCommitContractTests(unittest.TestCase):
@@ -35,6 +36,16 @@ class PreCommitContractTests(unittest.TestCase):
 
         self.assertIn('if [ -z "$base" ] \\', workflow)
         self.assertIn("base=HEAD^", workflow)
+
+    def test_broken_clippy_base_uses_partial_diagnostic_baseline(self) -> None:
+        script = CLIPPY_DIFF.read_text(encoding="utf-8")
+
+        head_compile = 'run_clippy "$root" "$head_json"'
+        base_compile = 'run_clippy "$base_tree" "$base_json"'
+        self.assertLess(script.index(head_compile), script.index(base_compile))
+        self.assertIn("using its partial diagnostic baseline", script)
+        self.assertNotIn("refusing a false baseline", script)
+        self.assertNotIn("accepting the base-repair path", script)
 
 
 if __name__ == "__main__":

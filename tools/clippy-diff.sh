@@ -2,8 +2,11 @@
 # Reject Clippy diagnostics introduced since an exact comparison commit.
 #
 # Compare stable Clippy diagnostic fingerprints for the same package set at the
-# base and HEAD. Compiler failures are fatal; existing sites may disappear, but
-# new sites may not appear.
+# base and HEAD. HEAD compiler failures are fatal; existing sites may disappear,
+# but new sites may not appear. If the base itself does not compile, retain every
+# diagnostic it emitted before failing and compare HEAD against that partial
+# baseline. Any HEAD diagnostic absent from the partial baseline still fails,
+# while a pull request may repair a broken integration branch.
 
 set -uo pipefail
 
@@ -125,25 +128,26 @@ with open(sys.argv[1], encoding="utf-8") as stream:
 PY
 }
 
-if [ "$base_package_count" -gt 0 ]; then
-    if ! run_clippy "$base_tree" "$base_json" "$base_stderr" "$base_target_dir" "${base_args[@]}"; then
-        echo "Clippy comparison base did not compile; refusing a false baseline." >&2
-        print_compiler_errors "$base_json"
-        sed -n '1,160p' "$base_stderr" >&2
-        exit 2
-    fi
-    # The baseline diagnostics are self-contained in base.json.  Reclaim its
-    # artifact graph before compiling HEAD so peak usage stays at one graph.
-    rm -rf "$base_target_dir"
-else
-    : >"$base_json"
-fi
-
 if ! run_clippy "$root" "$head_json" "$head_stderr" "$head_target_dir" "${head_args[@]}"; then
     echo "HEAD did not compile under Clippy." >&2
     print_compiler_errors "$head_json"
     sed -n '1,160p' "$head_stderr" >&2
     exit 1
+fi
+# The captured JSON is the only HEAD artifact needed for comparison.
+rm -rf "$head_target_dir"
+
+if [ "$base_package_count" -gt 0 ]; then
+    if ! run_clippy "$base_tree" "$base_json" "$base_stderr" "$base_target_dir" "${base_args[@]}"; then
+        echo "Clippy comparison base did not compile; using its partial diagnostic baseline." >&2
+        print_compiler_errors "$base_json"
+        sed -n '1,160p' "$base_stderr" >&2
+    fi
+    # Both diagnostic sets are self-contained JSON. Reclaim the remaining base
+    # graph before comparing them; the HEAD graph was already removed above.
+    rm -rf "$base_target_dir"
+else
+    : >"$base_json"
 fi
 
 python3 - "$base_json" "$head_json" "$base_tree" "$root" <<'PY'

@@ -192,6 +192,11 @@ jobs:
     needs: [builder, select]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    env:
+      # The native ARM runner has enough memory for one of the largest test
+      # links, but not four simultaneously. Most compile work is served by
+      # sccache, so serialize ARM rustc/linker processes without slowing x86.
+      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '4' }}
     strategy:
       fail-fast: false
       max-parallel: 4
