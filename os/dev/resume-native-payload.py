@@ -140,15 +140,13 @@ def main():
         seed = seed_iid.read_text().strip()
         t.inspect_local(seed, 'aarch64', seed)
         original_driver = (source / 'os/dev/build-image.sh').read_text()
-        driver = resume.replace_once(original_driver, 'source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"',
-            'source ' + shlex.quote(str(source / 'os/dev/_common.sh')))
-        driver = resume.replace_once(driver, 'build -f "$TILO_OS_DIR/Containerfile"',
-            'build -f ' + shlex.quote(str(recipe)) + ' --build-context tilo-resume=container-image://' + seed)
+        driver = resume.derive_driver(original_driver, str(source), str(recipe), seed)
         script = work / 'build-resumed.sh'
         script.write_text(driver)
         reconstruction = {'schema': 1, 'purpose': 'tilo-native-reconstruction', 'source_revision': resume.SOURCE,
             'original_recipe_sha256': digest(source / 'os/Containerfile'), 'derived_recipe_sha256': digest(recipe),
             'original_driver_sha256': digest(source / 'os/dev/build-image.sh'), 'derived_driver_sha256': digest(script),
+            'source_path': str(source), 'derived_recipe_path': str(recipe), 'seed_image_id': seed,
             'resume_helper_sha256': digest(Path(__file__).with_name('native_resume.py')),
             'producer_sha256': digest(__file__), 'checkpoints': checkpoints, 'reused_inventory': union,
             'missing_targets': missing, 'run_id': args.run_id, 'attempt': args.attempt,

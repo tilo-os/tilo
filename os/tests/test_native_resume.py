@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Exercise exact frozen recipe surgery; no engine, compiler or downloads."""
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 import unittest
@@ -50,6 +52,21 @@ class ResumeRecipe(unittest.TestCase):
                 resume.derive_recipe(self.original, retained, REQUIRED)
         with self.assertRaises(ValueError):
             resume.derive_recipe(self.original.replace('cargo clean --profile thin-app', 'true'), {'shell'}, REQUIRED)
+
+    def test_driver_hash_reproduced_from_exported_public_parameters(self):
+        original = subprocess.check_output(['git', '-C', str(ROOT), 'show', resume.SOURCE + ':os/dev/build-image.sh']).decode()
+        record = {'source_path': '/work/frozen source',
+                  'derived_recipe_path': '/work/tilo-native-resume-random/Containerfile.resumed',
+                  'seed_image_id': 'sha256:' + 'a' * 64}
+        # JSON roundtrip models independent use of the exported receipt after
+        # the temporary directory and seed image have been removed.
+        derived = resume.derive_driver(original, **record)
+        record['derived_driver_sha256'] = hashlib.sha256(derived.encode()).hexdigest()
+        loaded = json.loads(json.dumps(record))
+        expected = loaded.pop('derived_driver_sha256')
+        self.assertEqual(hashlib.sha256(resume.derive_driver(original, **loaded).encode()).hexdigest(), expected)
+        loaded['seed_image_id'] = 'sha256:' + 'b' * 64
+        self.assertNotEqual(hashlib.sha256(resume.derive_driver(original, **loaded).encode()).hexdigest(), expected)
 
 
 if __name__ == '__main__':

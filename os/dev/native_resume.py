@@ -6,9 +6,10 @@ independently pinned reconstruction hash and still verify the complete inventory
 import hashlib
 import importlib.util
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
+import shlex
 import struct
 
 SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
@@ -57,6 +58,16 @@ def derive_recipe(original, retained, required):
     command = 'cargo build --release -p windows-vm ' + ' '.join('--bin ' + name for name in windows) if windows else 'true'
     text = replace_once(text, before, '       ' + command)
     return text, {'release': release, 'windows': windows}
+
+
+def derive_driver(original, source_path, derived_recipe_path, seed_image_id):
+    """Every variable substitution is public and retained in reconstruction proof."""
+    require(PurePosixPath(source_path).is_absolute() and PurePosixPath(derived_recipe_path).is_absolute(), 'absolute reconstruction paths required')
+    require(re.fullmatch(r'sha256:[0-9a-f]{64}', seed_image_id), 'immutable seed image required')
+    text = replace_once(original, 'source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"',
+        'source ' + shlex.quote(str(PurePosixPath(source_path) / 'os/dev/_common.sh')))
+    return replace_once(text, 'build -f "$TILO_OS_DIR/Containerfile"',
+        'build -f ' + shlex.quote(str(derived_recipe_path)) + ' --build-context tilo-resume=container-image://' + seed_image_id)
 
 
 def validate_partial(native, receipt, expected, builder, destination, union):
