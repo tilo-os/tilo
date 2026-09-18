@@ -255,6 +255,11 @@ pub struct NavSplit {
     /// children on the cached tree instead, letting the inner `Scrollable`
     /// push its new offset down with no rebuild and no re-measure.
     solved_rects: Option<(Rect, Rect)>,
+    /// Effective theme captured by the outer layout pass. `NavSplit` lays its
+    /// children out in a private Taffy tree from `apply_layout`, where the
+    /// `Widget` API no longer carries a theme; retaining it keeps inner text
+    /// measurement faithful to large-text and UI-scale preferences.
+    layout_theme: Theme,
     /// `true` while the reveal/push animation is settling — read by
     /// `needs_animation_frame`.
     animating: bool,
@@ -289,6 +294,7 @@ impl NavSplit {
             sidebar_node: None,
             content_node: None,
             solved_rects: None,
+            layout_theme: Theme::dark(),
             animating: false,
             dirty: false,
             last_tick: None,
@@ -522,8 +528,9 @@ impl NavSplit {
         ) else {
             // Shouldn't happen on a reposition, but be safe: fall back to a
             // full solve, paying for the `TextRenderer` only here.
+            let theme = self.layout_theme.clone();
             let mut tr = TextRenderer::new();
-            let theme = Theme::dark();
+            tr.set_text_scale(theme.text_scale);
             self.place_children(&theme, &mut tr);
             return;
         };
@@ -591,9 +598,10 @@ impl Widget for NavSplit {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = theme.clone();
         // The split occupies its whole allocation; children are laid out in
         // an isolated inner tree (their rects escape normal flow in overlay
         // mode). Same approach as ModalDialog / PopoverWidget.
@@ -633,8 +641,9 @@ impl Widget for NavSplit {
             || self.sidebar.layout_needs_measure()
             || split_cache_disabled();
         if needs_resolve {
+            let theme = self.layout_theme.clone();
             let mut tr = TextRenderer::new();
-            let theme = Theme::dark();
+            tr.set_text_scale(theme.text_scale);
             self.place_children(&theme, &mut tr);
         } else {
             self.reapply_children();
@@ -976,10 +985,17 @@ mod tests {
         reason = "test viewport dimensions are small literals, never near f32::MAX"
     )]
     fn lay_out(ns: &mut NavSplit, w: f64, h: f64) {
-        let theme = Theme::dark();
+        lay_out_with_theme(ns, w, h, &Theme::dark());
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "test viewport dimensions are small literals, never near f32::MAX"
+    )]
+    fn lay_out_with_theme(ns: &mut NavSplit, w: f64, h: f64, theme: &Theme) {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = ns.build_layout(&mut taffy, &theme, &mut node_map);
+        let node = ns.build_layout(&mut taffy, theme, &mut node_map);
         taffy
             .compute_layout(
                 node,
@@ -990,6 +1006,22 @@ mod tests {
             )
             .unwrap();
         ns.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn private_child_layout_preserves_the_active_text_scale() {
+        let mut ns = NavSplit::new(
+            Box::new(Text::new("Sidebar")),
+            Box::new(Text::new("Scaled content").with_scaled_size(20.0)),
+        )
+        .with_mode(SplitMode::AlwaysDocked);
+        lay_out_with_theme(&mut ns, 1000.0, 600.0, &Theme::dark().with_text_scale(2.0));
+
+        assert!(
+            ns.content.get_rect().height() >= 49.0,
+            "inner text must reserve its 200% line height, got {:?}",
+            ns.content.get_rect()
+        );
     }
 
     #[test]
