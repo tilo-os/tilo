@@ -1,0 +1,28 @@
+[
+  {
+    "id": 22799,
+    "index_in_repo": 16,
+    "workflow_id": "dispatch-ref.yml",
+    "commit_sha": "cb30bcdcd5b9872b8c985c10f6d39b77886b6ae1",
+    "prettyref": "cb30bcdcd5b9872b8c985c10f6d39b77886b6ae1",
+    "event": "",
+    "trigger_event": "workflow_dispatch",
+    "status": "success",
+    "created": "2026-09-18T23:25:01Z",
+    "started": "2026-09-18T23:25:20Z",
+    "stopped": "2026-09-18T23:25:40Z"
+  },
+  {
+    "id": 22800,
+    "index_in_repo": 17,
+    "workflow_id": "dispatch-ref.yml",
+    "commit_sha": "0db8e250dede46da649942d66d2418bf1ff38dce",
+    "prettyref": "probe-dispatch-ref",
+    "event": "",
+    "trigger_event": "workflow_dispatch",
+    "status": "success",
+    "created": "2026-09-18T23:25:02Z",
+    "started": "2026-09-18T23:25:25Z",
+    "stopped": "2026-09-18T23:25:49Z"
+  }
+]

@@ -1,0 +1,36 @@
+{
+  "repository": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "branch": "probe-dispatch-ref",
+  "workflow": "dispatch-ref.yml",
+  "immutable_requested_sha": "cb30bcdcd5b9872b8c985c10f6d39b77886b6ae1",
+  "branch_head_when_dispatching": "0db8e250dede46da649942d66d2418bf1ff38dce",
+  "sha_dispatch": {
+    "request": {
+      "ref": "cb30bcdcd5b9872b8c985c10f6d39b77886b6ae1",
+      "return_run_info": true
+    },
+    "http_status": 201,
+    "response": {
+      "id": 22799,
+      "run_number": 16,
+      "jobs": [
+        "identify"
+      ]
+    }
+  },
+  "branch_dispatch": {
+    "request": {
+      "ref": "probe-dispatch-ref",
+      "return_run_info": true
+    },
+    "http_status": 201,
+    "response": {
+      "id": 22800,
+      "run_number": 17,
+      "jobs": [
+        "identify"
+      ]
+    }
+  },
+  "branch_head_after_dispatch": "66b6c27deff467eae8d77475da90e3e8e512052c"
+}

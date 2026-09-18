@@ -1,0 +1,15 @@
+name: Isolated immutable dispatch ref probe
+on:
+  workflow_dispatch:
+jobs:
+  identify:
+    runs-on: runner-quality
+    timeout-minutes: 2
+    container:
+      image: docker.io/library/python:3.13-alpine
+    steps:
+      - name: Report dispatched source identity
+        env:
+          PROBE_SHA: ${{ github.sha }}
+          PROBE_REF: ${{ github.ref }}
+        run: python3 -c "import json,os; print('DISPATCH_IDENTITY='+json.dumps({k:os.environ[k] for k in ('PROBE_SHA','PROBE_REF')}))"
