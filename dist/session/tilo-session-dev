@@ -98,6 +98,26 @@ XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 
 echo "tilo-session-dev: starting $TARGET_REAL" >&2
+# Leave a launch-time attestation for the VM iteration verifier. Fedora's
+# hidepid/procptrace policy can prevent a later SSH session owned by this same
+# user from resolving or statting /proc/$pid/exe. The wrapper has already
+# completed every ownership, mode, and build-marker check above, so recording
+# the exact canonical path and digest here is stronger than guessing from a
+# process name or a journal line. A later atomic deploy changes the on-disk
+# digest without changing this record, which correctly reports that the active
+# session is still the previous build.
+RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$ME}
+ATTEST_DIR="$RUNTIME_DIR/tilo-dev-session"
+install -d -m 700 -- "$ATTEST_DIR" || die "cannot prepare developer-session runtime state"
+ATTEST_TMP="$ATTEST_DIR/active.$$"
+TARGET_SHA256=$(sha256sum -- "$TARGET_REAL" | cut -d' ' -f1)
+{
+    printf 'pid=%s\n' "$$"
+    printf 'path=%s\n' "$TARGET_REAL"
+    printf 'sha256=%s\n' "$TARGET_SHA256"
+} >"$ATTEST_TMP" || die "cannot record developer-session attestation"
+chmod 600 -- "$ATTEST_TMP" || die "cannot protect developer-session attestation"
+mv -f -- "$ATTEST_TMP" "$ATTEST_DIR/active" || die "cannot publish developer-session attestation"
 # --firstboot for the same reason as the production wrapper: a host has no
 # unit that prepares the user's config directories. Identity creation remains
 # an interactive compositor-owned step.
