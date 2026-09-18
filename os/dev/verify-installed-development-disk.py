@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Read-only installed boot/root verification in a private mount namespace.
 
-This is one acceptance stage, not a private-material audit or VM boot test.
+This verifies an installed normal target, not an installer/live medium. Its
+selected UKI must equal the independently verified /boot/tilo-target UKI.
+This is one acceptance stage, not a complete source-layer audit or VM boot test.
 Only reopen the exact regular file recorded by the disk creator. Never select
 an existing device. Run with: unshare --mount --propagation private -- PROGRAM.
 """
