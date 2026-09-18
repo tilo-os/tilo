@@ -48,8 +48,10 @@ def stage_tools_context(source, build, cosign):
     staged.chmod(0o755)
     # Run in the actual image during its existing build, before allocating a
     # worker or pulling application inputs. The frozen source remains untouched.
+    # The provisional signer requires non-writable ancestors. Provision that
+    # property in our disposable tools image instead of relying on RPM modes.
     with (build / 'Containerfile').open('a') as recipe:
-        recipe.write('\nRUN /usr/local/bin/cosign version\n')
+        recipe.write('\nRUN chmod 0755 /var/lib && /usr/local/bin/cosign version\n')
 
 
 def prepare_receipts(environment):
