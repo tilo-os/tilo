@@ -1618,6 +1618,8 @@ mod tests {
 
     #[test]
     fn semantic_alarm_toggle_clears_the_previous_occurrence() {
+        use ui::widget::Widget;
+
         let mut app = ClocksApp::scenario("empty");
         let doc = automerge::AutoCommit::new();
         let create = crate::actions::ClockOperation::NewAlarm {
