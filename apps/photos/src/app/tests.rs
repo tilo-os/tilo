@@ -1031,6 +1031,49 @@ fn synchronized_app_registers_the_canonical_photo_search_provider() {
 }
 
 #[test]
+fn albums_destination_materializes_bounded_covers_and_semantic_routes() {
+    let mut app = PhotosApp::new();
+    let mut doc = AutoCommit::new();
+    PhotosDoc::seed(&mut doc);
+    let photo = LibraryPhoto::from_image(OpenImage::from_path("/pictures/cover.png", 800, 600));
+    let photo_id = photo.id.clone();
+    let album_id = "photos.album:weekend".to_owned();
+    PhotosDoc::set_library(
+        &mut doc,
+        &crate::model::PhotoLibrary {
+            photos: vec![photo],
+            albums: vec![crate::model::Album {
+                id: album_id.clone(),
+                name: "Weekend".to_owned(),
+                photo_ids: vec![photo_id.clone(), "missing".to_owned()],
+            }],
+        },
+    );
+    app.show_albums();
+    app.sync(&mut doc, &ROOT);
+    assert_eq!(app.library_destination, LibraryDestination::Albums);
+    assert_eq!(
+        app.library_album_covers.get(&album_id),
+        Some(&vec![photo_id])
+    );
+
+    assert!(app.perform_library_semantic_action(
+        &format!("photos:album-edit:{album_id}"),
+        &AccessAction::Activate,
+        &mut doc,
+    ));
+    assert!(app.album_editor);
+    app.cancel_album_editor();
+    assert!(app.perform_library_semantic_action(
+        &format!("photos:library-album:{album_id}"),
+        &AccessAction::Activate,
+        &mut doc,
+    ));
+    assert_eq!(app.active_album.as_deref(), Some(album_id.as_str()));
+    assert_eq!(app.library_destination, LibraryDestination::Timeline);
+}
+
+#[test]
 fn a_large_library_fills_a_bounded_background_thumbnail_queue() {
     let mut app = PhotosApp::new();
     let mut doc = AutoCommit::new();
