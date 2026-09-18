@@ -1,12 +1,15 @@
 //! Loopback-only real Iroh packet relay + certified qOS relay/1 fixture.
 //! Credentials are test-only, returned in response bodies, never URLs or logs.
+#[path = "browser-peer-harness/replica.rs"]
+mod replica;
 use anyhow::{Context, Result, bail};
 use ed25519_dalek::SigningKey;
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use iroh_base::{EndpointAddr, RelayUrl};
 use iroh_relay::server::{RelayConfig as PacketConfig, Server, ServerConfig};
 use qos_relay::{
-    Envelope, Relay, RelayClient, RelayConfig, WorkspaceBinding, daemon::RelayIdentity,
+    Inbound, Relay, RelayClient, RelayCoeditSession, RelayConfig, WorkspaceBinding,
+    daemon::RelayIdentity,
 };
 use qos_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
@@ -18,13 +21,13 @@ use std::{
     net::Ipv4Addr,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 
@@ -63,6 +66,7 @@ async fn serve(
     routes: Arc<HashMap<String, Value>>,
     received: Arc<AtomicU64>,
     connected: Arc<AtomicBool>,
+    app_status: Arc<RwLock<Value>>,
 ) -> Result<()> {
     // This serves enrollment fixtures only. Application state travels over the
     // authenticated Iroh QUIC stream; there is no HTTP/JSON sync gateway.
@@ -100,10 +104,19 @@ async fn serve(
     } else if method != "GET" {
         (405, json!({"error":"GET required"}))
     } else if path == "/status" {
-        (
-            200,
-            json!({"native_peer":if connected.load(Ordering::Relaxed) { "subscribed" } else { "disconnected" }, "received_envelopes":received.load(Ordering::Relaxed), "application_state":"phase B integration pending"}),
-        )
+        (200, {
+            let mut status = app_status
+                .read()
+                .map_err(|_| anyhow::anyhow!("status unavailable"))?
+                .clone();
+            status["native_peer"] = json!(if connected.load(Ordering::Relaxed) {
+                "subscribed"
+            } else {
+                "disconnected"
+            });
+            status["received_envelopes"] = json!(received.load(Ordering::Relaxed));
+            status
+        })
     } else if let Some(value) = routes.get(path) {
         (200, value.clone())
     } else {
@@ -217,13 +230,18 @@ async fn main() -> Result<()> {
         RevocationList::new(),
     )
     .await?;
-    native_client
-        .send(Envelope::Subscribe { workspace_id })
-        .map_err(|_| anyhow::anyhow!("native subscribe failed"))?;
-    let ready = tokio::time::timeout(Duration::from_secs(15), native_client.recv()).await?;
-    if !matches!(ready, Some(Envelope::Ready { workspace_id: id, .. }) if id == workspace_id) {
+    let session =
+        RelayCoeditSession::join(native_client, workspace_id, native.cert.device_public_key)?;
+    let ready = tokio::time::timeout(Duration::from_secs(15), session.recv()).await?;
+    if !matches!(ready, Some(Inbound::Ready { .. })) {
         bail!("native peer did not receive workspace Ready");
     }
+    let roster = vec![native.cert.clone(), a.cert.clone(), b.cert.clone()];
+    let mut application = replica::seeded(&room, &native.cert, &roster, &native.key)?;
+    let initial = application
+        .bootstrap_messages(&native.key, web_time::SystemTime::now())
+        .map_err(anyhow::Error::msg)?;
+    replica::publish(&session, initial)?;
     let mut directory = WorkspaceDirectory::new(user.public_key, native.cert.device_public_key);
     directory.add_workspace(workspace_id, "Shared browser workspace")?;
     directory.set_member_devices(
@@ -236,9 +254,8 @@ async fn main() -> Result<()> {
     )?;
     directory.set_host_devices(workspace_id, &[host.cert.device_public_key])?;
     let signed_directory = directory.sync_incremental(&native.key, qos_relay::clock::now_ns())?;
-    // Stable, signed bootstrap metadata within this process. Phase B must still
-    // admit shell governance and signed app records before applying app state.
-    let bootstrap = json!({"directory_update":signed_directory, "directory_author":native.cert, "certified_roster":[native.cert,a.cert,b.cert], "room":room, "workspace_id":workspace_id.to_string(), "writer_tab_id":1, "chat_package_primary":true});
+    // Stable signed enrollment namespace; all app state arrives through the relay.
+    let bootstrap = json!({"directory_update":signed_directory, "directory_author":native.cert, "certified_roster":[native.cert,a.cert,b.cert], "room":room, "workspace_id":workspace_id.to_string(), "writer_tab_id":1, "chat_package_primary":true, "records":application.rows()});
     let mut routes = HashMap::new();
     for (name, browser) in [("browser-a", a), ("browser-b", b)] {
         routes.insert(format!("/enrollment/{name}"), json!({
@@ -251,23 +268,15 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let fixture_addr = listener.local_addr()?;
     let received = Arc::new(AtomicU64::new(0));
-    let count = received.clone();
     let connected = Arc::new(AtomicBool::new(true));
-    let native_connected = connected.clone();
-    let native_task = tokio::spawn(async move {
-        while let Some(envelope) = native_client.recv().await {
-            if matches!(envelope, Envelope::NotAuthorised { .. }) {
-                break;
-            }
-            count.fetch_add(1, Ordering::Relaxed);
-        }
-        native_connected.store(false, Ordering::Relaxed);
-    });
+    let app_status = Arc::new(RwLock::new(replica::status(&application, None)));
+    let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    let mut stdin_open = true;
     let metadata = json!({"version":1,"status":"native-peer-subscribed", "pid":std::process::id(), "platform":std::env::consts::OS,
         "fixture_origin":format!("http://{fixture_addr}"), "enrollments":["/enrollment/browser-a","/enrollment/browser-b"],
         "status_path":"/status", "packet_relay":packet_url, "relay_address":addr, "room":room,
         "workspace_id":workspace_id.to_string(), "chat_package_primary":true,
-        "application_state":"phase B integration pending", "state_root":state.path() });
+        "application_state":"admitted", "records":application.rows(), "state_root":state.path() });
     if let Some(parent) = ready_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -276,18 +285,53 @@ async fn main() -> Result<()> {
         "Native certified peer and loopback packet relay ready; metadata: {}",
         ready_path.display()
     );
+    println!(
+        "Native control: writer-insert <text> applies one actual Writer action; Ctrl+C stops this fixture."
+    );
     let routes = Arc::new(routes);
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
+            inbound = session.recv(), if connected.load(Ordering::Relaxed) => {
+                match inbound {
+                    Some(Inbound::Ready { .. }) => {},
+                    Some(inbound) => {
+                        received.fetch_add(1, Ordering::Relaxed);
+                        let (origin, bytes) = match inbound {
+                            Inbound::Delta { author, data } => (qos_peer_state::TransportOrigin::RelayDelta(author), data),
+                            Inbound::Presence { author, payload } => (qos_peer_state::TransportOrigin::UntrustedPresence(author), payload),
+                            Inbound::Ready { .. } => unreachable!(),
+                        };
+                        let result = postcard::from_bytes(&bytes).map_err(anyhow::Error::from)
+                            .and_then(|message| replica::handle(&mut application, &native.key, origin, message))
+                            .and_then(|messages| replica::publish(&session, messages));
+                        *app_status.write().map_err(|_|anyhow::anyhow!("status unavailable"))? = replica::status(&application, result.err().map(|error|error.to_string()));
+                    }
+                    None => { connected.store(false, Ordering::Relaxed); }
+                }
+            }
+            line = stdin.next_line(), if stdin_open => {
+                match line? {
+                    None => stdin_open = false,
+                    Some(line) => {
+                        let result = if let Some(text) = line.strip_prefix("writer-insert ") {
+                            qos_browser_runtime::fixture_writer_insert(&mut application, &native.key, text, web_time::SystemTime::now())
+                                .and_then(|_|application.bootstrap_messages(&native.key, web_time::SystemTime::now()))
+                                .map_err(anyhow::Error::msg).and_then(|messages|replica::publish(&session, messages))
+                        } else { Err(anyhow::anyhow!("unknown native command; use writer-insert <text>")) };
+                        match &result { Ok(()) => println!("Native Writer action committed and published"), Err(error) => eprintln!("Native control rejected: {error}") }
+                        *app_status.write().map_err(|_|anyhow::anyhow!("status unavailable"))? = replica::status(&application, result.err().map(|error|error.to_string()));
+                    }
+                }
+            }
             result = listener.accept() => {
                 let (socket, _) = result?;
-                let routes = routes.clone(); let received = received.clone(); let connected = connected.clone();
-                tokio::spawn(async move { let _ = serve(socket, routes, received, connected).await; });
+                let routes = routes.clone(); let received = received.clone(); let connected = connected.clone(); let app_status = app_status.clone();
+                tokio::spawn(async move { let _ = serve(socket, routes, received, connected, app_status).await; });
             }
         }
     }
-    native_task.abort();
+    session.into_client().close().await;
     relay.shutdown().await;
     packet.shutdown().await?;
     let _ = std::fs::remove_file(ready_path);
@@ -313,6 +357,7 @@ mod tests {
                 Arc::new(routes),
                 Arc::new(AtomicU64::new(3)),
                 Arc::new(AtomicBool::new(connected)),
+                Arc::new(RwLock::new(json!({"application_state":"not initialized"}))),
             )
             .await
             .unwrap();
@@ -351,6 +396,6 @@ mod tests {
         assert!(result.starts_with("HTTP/1.1 200"));
         assert!(result.contains("\"native_peer\":\"disconnected\""));
         assert!(!result.contains("do-not-disclose"));
-        assert!(result.contains("phase B integration pending"));
+        assert!(result.contains("not initialized"));
     }
 }
