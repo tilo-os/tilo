@@ -306,6 +306,23 @@ pub enum PhotosAction {
         tags: Vec<String>,
         captured_at: Option<String>,
     },
+    /// Replace one person's complete, explicit membership.  This is the
+    /// collaboration boundary for the local People review: face clusters,
+    /// embeddings and geometry never enter the document, while a person can
+    /// deliberately approve the compact labels that should be shared.
+    SetPersonMembership {
+        /// The visible, user-approved person label.
+        person: String,
+        /// The complete set of shared photographs carrying that label.
+        photo_ids: Vec<String>,
+    },
+    /// Rename an explicitly shared person label across its complete current
+    /// membership.  Naming a label that already exists is a deliberate merge,
+    /// not a hidden local face-cluster operation.
+    RenamePerson { from: String, to: String },
+    /// Remove an explicitly shared person label from all photographs.  This
+    /// deletes no photographs and never touches device-local biometric data.
+    RemovePerson { person: String },
     /// Replace a photograph's intentionally shared intelligence result.
     /// The action carries final bounded data rather than an OCR request: every
     /// collaborator converges without re-running a local model or reading a
@@ -620,6 +637,143 @@ impl Action for PhotosAction {
                 photo.people.clone_from(people);
                 photo.tags.clone_from(tags);
                 photo.captured_at.clone_from(captured_at);
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::SetPersonMembership { person, photo_ids } => {
+                if !valid_person_label(person)
+                    || photo_ids.len() > MAX_BATCH_PHOTOS
+                    || photo_ids.iter().any(|id| validate_resource_id(id).is_err())
+                    || photo_ids.iter().enumerate().any(|(index, id)| {
+                        photo_ids
+                            .get(..index)
+                            .is_some_and(|prior| prior.contains(id))
+                    })
+                {
+                    return Err(ActionError::Refused(
+                        "person membership must name a short label and unique valid photograph ids"
+                            .into(),
+                    ));
+                }
+                let person = person.trim();
+                let mut library = PhotosDoc::library(doc);
+                if !photo_ids.iter().all(|id| library.photo(id).is_some()) {
+                    return Err(ActionError::Refused(
+                        "a person membership photograph is no longer in the library".into(),
+                    ));
+                }
+                // Refuse rather than silently dropping an existing label when
+                // a remote caller asks to add a 33rd person to one photo.
+                // The People surface should make that conflict explicit.
+                for photo in &library.photos {
+                    let mut next_people = photo.people.clone();
+                    let has_person = next_people.iter().any(|label| label == person);
+                    let should_have_person = photo_ids.contains(&photo.id);
+                    if should_have_person && !has_person {
+                        next_people.push(person.to_owned());
+                    } else if !should_have_person && has_person {
+                        next_people.retain(|label| label != person);
+                    }
+                    if !valid_metadata(
+                        photo.folder.as_deref(),
+                        &next_people,
+                        &photo.tags,
+                        photo.captured_at.as_deref(),
+                    ) {
+                        return Err(ActionError::Refused(
+                            "person membership would exceed this photograph's metadata limit"
+                                .into(),
+                        ));
+                    }
+                }
+                for photo in &mut library.photos {
+                    let has_person = photo.people.iter().any(|label| label == person);
+                    let should_have_person = photo_ids.contains(&photo.id);
+                    if should_have_person && !has_person {
+                        photo.people.push(person.trim().to_owned());
+                    } else if !should_have_person && has_person {
+                        photo.people.retain(|label| label != person);
+                    }
+                }
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::RenamePerson { from, to } => {
+                if !valid_person_label(from) || !valid_person_label(to) {
+                    return Err(ActionError::Refused(
+                        "person labels must be short, non-empty, and free of control characters"
+                            .into(),
+                    ));
+                }
+                let from = from.trim();
+                let to = to.trim();
+                let mut library = PhotosDoc::library(doc);
+                if !library
+                    .photos
+                    .iter()
+                    .any(|photo| photo.people.iter().any(|label| label == from))
+                {
+                    return Err(ActionError::Refused(
+                        "that person is no longer in the shared library".into(),
+                    ));
+                }
+                if from != to {
+                    for photo in &library.photos {
+                        if photo.people.iter().any(|label| label == from) {
+                            let mut next_people: Vec<_> = photo
+                                .people
+                                .iter()
+                                .filter(|label| label.as_str() != from)
+                                .cloned()
+                                .collect();
+                            if !next_people.iter().any(|label| label == to) {
+                                next_people.push(to.to_owned());
+                            }
+                            if !valid_metadata(
+                                photo.folder.as_deref(),
+                                &next_people,
+                                &photo.tags,
+                                photo.captured_at.as_deref(),
+                            ) {
+                                return Err(ActionError::Refused(
+                                    "renaming this person would exceed a photograph's metadata limit".into(),
+                                ));
+                            }
+                        }
+                    }
+                    for photo in &mut library.photos {
+                        if photo.people.iter().any(|label| label == from) {
+                            photo.people.retain(|label| label != from);
+                            if !photo.people.iter().any(|label| label == to) {
+                                photo.people.push(to.to_owned());
+                            }
+                        }
+                    }
+                }
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::RemovePerson { person } => {
+                if !valid_person_label(person) {
+                    return Err(ActionError::Refused(
+                        "person label must be short, non-empty, and free of control characters"
+                            .into(),
+                    ));
+                }
+                let person = person.trim();
+                let mut library = PhotosDoc::library(doc);
+                if !library
+                    .photos
+                    .iter()
+                    .any(|photo| photo.people.iter().any(|label| label == person))
+                {
+                    return Err(ActionError::Refused(
+                        "that person is no longer in the shared library".into(),
+                    ));
+                }
+                for photo in &mut library.photos {
+                    photo.people.retain(|label| label != person);
+                }
                 PhotosDoc::set_library(doc, &library);
                 Ok(())
             }
@@ -1301,6 +1455,21 @@ pub(crate) fn person_resource(person: &str, count: usize) -> Resource {
     ) {
         item = item.with_action(spec.with_description("Show photographs tagged with this person"));
     }
+    item = item
+        .with_action(person_membership_spec(person))
+        .with_action(person_rename_spec(person));
+    if let Some(spec) = direct_spec(
+        "remove-person",
+        "Remove person label",
+        &PhotosAction::RemovePerson {
+            person: person.to_owned(),
+        },
+    ) {
+        item =
+            item.with_action(spec.destructive().reversible().with_description(
+                "Remove this approved person label from every shared photograph",
+            ));
+    }
     item
 }
 
@@ -1649,6 +1818,15 @@ fn valid_metadata(
     folder.is_none_or(text) && captured_at.is_none_or(text) && labels(people) && labels(tags)
 }
 
+/// A person is a compact user-authored label.  This intentionally has the
+/// same limit and character rules as the `people` metadata array so a review
+/// action can never create a record an ordinary metadata edit would reject.
+fn valid_person_label(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.trim().chars().count() <= 128
+        && !value.chars().any(char::is_control)
+}
+
 fn metadata_labels(args: &ActionArgs, name: &str) -> Vec<String> {
     args.text(name)
         .map(|value| {
@@ -1801,6 +1979,57 @@ fn photo_ids_param(required: bool, description: &'static str, min_items: usize) 
             "maxLength": MAX_RESOURCE_ID_CHARS
         }
     }))
+}
+
+/// The complete membership is supplied by an explicit People review.  The
+/// visible proposal/cluster remains device-local; this action carries only
+/// already-approved photograph ids and a label a collaborator can understand.
+fn person_membership_spec(person: &str) -> ActionSpec {
+    let person = person.to_owned();
+    ActionSpec::typed(
+        "set-membership",
+        "Set person membership",
+        "JSON array of approved photos.photo:… ids (an empty array removes the label)",
+        ExecutionLocus::ClientLocal,
+        vec![photo_ids_param(
+            true,
+            "JSON array of stable photo ids; an empty array removes this person label",
+            0,
+        )],
+        move |args| {
+            encode(&PhotosAction::SetPersonMembership {
+                person: person.clone(),
+                photo_ids: membership_ids(args),
+            })
+        },
+    )
+    .reversible()
+    .with_description("Replace this approved person's shared photograph membership atomically")
+}
+
+/// Renaming to an existing label deliberately merges explicit labels.  It
+/// does not, and cannot, merge private local face clusters.
+fn person_rename_spec(person: &str) -> ActionSpec {
+    let from = person.to_owned();
+    ActionSpec::typed(
+        "rename",
+        "Rename or merge person",
+        "New approved person label; an existing label merges shared memberships",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "name",
+            ParamType::Text,
+            "new approved person label",
+        )],
+        move |args| {
+            encode(&PhotosAction::RenamePerson {
+                from: from.clone(),
+                to: args.text("name").unwrap_or_default().trim().to_owned(),
+            })
+        },
+    )
+    .reversible()
+    .with_description("Rename this approved person label, or merge it into an existing label")
 }
 
 fn create_album_spec() -> ActionSpec {
@@ -2309,6 +2538,69 @@ mod tests {
             }
             .apply(&mut doc)
             .is_err()
+        );
+    }
+
+    #[test]
+    fn approved_people_membership_is_atomic_searchable_and_never_carries_biometrics() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let first = portable_photo("people-one.png", 40, 20);
+        let second = portable_photo("people-two.png", 40, 20);
+        let first_id = first.id.clone();
+        let second_id = second.id.clone();
+        PhotosAction::ImportPhoto { photo: first }
+            .apply(&mut doc)
+            .unwrap();
+        PhotosAction::ImportPhoto { photo: second }
+            .apply(&mut doc)
+            .unwrap();
+
+        PhotosAction::SetPersonMembership {
+            person: "Sam".to_owned(),
+            photo_ids: vec![first_id.clone(), second_id.clone()],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(PhotosDoc::photo(&doc, &first_id).unwrap().people, ["Sam"]);
+        assert_eq!(PhotosDoc::photo(&doc, &second_id).unwrap().people, ["Sam"]);
+        let person = PhotosResources
+            .resource(&doc, &person_resource_id("Sam"))
+            .expect("approved person is a resource");
+        assert!(
+            person
+                .actions
+                .iter()
+                .any(|action| action.id == "set-membership")
+        );
+        assert!(person.actions.iter().any(|action| action.id == "rename"));
+        assert!(
+            person
+                .actions
+                .iter()
+                .any(|action| action.id == "remove-person")
+        );
+
+        PhotosAction::RenamePerson {
+            from: "Sam".to_owned(),
+            to: "Samantha".to_owned(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            PhotosDoc::photo(&doc, &first_id).unwrap().people,
+            ["Samantha"]
+        );
+        PhotosAction::RemovePerson {
+            person: "Samantha".to_owned(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(PhotosDoc::photo(&doc, &first_id).unwrap().people.is_empty());
+        assert!(
+            PhotosResources
+                .resource(&doc, &person_resource_id("Samantha"))
+                .is_none()
         );
     }
 
