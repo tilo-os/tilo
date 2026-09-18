@@ -141,6 +141,9 @@ AppData writes into their private package cache. Such files look installed
 inside that process but are invisible to Explorer. Check the actual executable
 and shortcut paths from outside the packaged process before diagnosing a stale
 Start catalog; restarting Explorer cannot expose private package files.
+Before building, the installer creates and immediately removes a temporary
+probe in each destination and checks its physical path. Redirected package
+cache writes fail this check; merely resolving the directory is insufficient.
 
 ```powershell
 ./tools/install-windows-apps.ps1
