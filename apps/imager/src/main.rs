@@ -118,6 +118,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new_with_args("dev.qos.imager", live_root)
             .shot_handler(render_shot)
+            .shot_root(shot_root)
             .allowed_live_flags(&["--demo", "--setup", "--import-folders"])
             .scenarios(imager::SHOT_SCENARIOS)
             .open_state_with_args(open_state)
@@ -150,7 +151,37 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     }
 }
 
+/// The widget a `--headless-drive --scenario NAME` drive runs against: the
+/// same posed fixture `--shots --scenario NAME` renders, so a geometry dump
+/// describes the screenshot rather than a blank live app.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by LaunchSpec::shot_root"
+)]
+fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(imager::app_root_for_shot(
+        args.scenario.as_deref().unwrap_or("source"),
+    ))
+}
+
+/// The document every non-screenshot mode opens. `--demo` seeds the sample
+/// content into the persisted store, as before. A `--headless-drive
+/// --scenario NAME` fixture instead gets an in-memory document posed exactly
+/// as `render_scenario` poses it for `--shots --scenario NAME`, with
+/// persistence disabled: a geometry dump describes the screenshot and can
+/// never leave sample content behind in the user's store for the live app to
+/// load. The launcher hands the headless drive through this opener (with
+/// `args.scenario` set) since `ux1x/integration`; an older launcher drives the
+/// fixture over an unposed `State::new()` document.
 fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+    if let Some(scenario) = args.scenario.as_deref() {
+        let mut state = ui::State::new();
+        imager::seed_scenario(&mut state.doc, scenario);
+        return (
+            state,
+            ui::persist::Autosave::disabled("screenshot fixture; nothing to persist"),
+        );
+    }
     let (mut state, autosave) = ui::persist::open(app_id);
     if args.has("--demo") {
         imager::doc::ImagerDoc::seed_demo(&mut state.doc);
