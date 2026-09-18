@@ -5142,6 +5142,9 @@ fn display_mirror_views(
     let mut statuses = state
         .sessions
         .iter()
+        .filter(|(_, session)| {
+            session.outbound || session.phase != DisplayMirrorPhase::AwaitingConsent
+        })
         .map(|(session_id, session)| DisplayMirrorStatusView {
             session_id: *session_id,
             peer: session.peer.clone(),
@@ -5373,6 +5376,18 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         (Vec::new(), Vec::new(), Vec::new())
     };
 
+    let (display_mirror_consents, display_mirrors) =
+        if policy.permits(ContinuityCapability::DisplayInput) {
+            display_mirror_views(&fabric)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+    let display_mirror_available = policy.permits(ContinuityCapability::DisplayInput)
+        && local_id.is_some()
+        && devices
+            .iter()
+            .any(|device| !device.is_local && device.online && device.video_output);
+
     DeviceFabricView {
         bluetooth_authorizations,
         bluetooth_handoffs: bluetooth_handoff_status_views(&fabric),
@@ -5389,6 +5404,9 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         revertible_calibrations,
         tethering: crate::shell::personal_tethering_runtime::tethering_statuses(),
         remote_capture: crate::shell::remote_capture_runtime::active_view(),
+        display_mirror_consents,
+        display_mirrors,
+        display_mirror_available,
     }
 }
 
