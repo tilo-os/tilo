@@ -1023,6 +1023,25 @@ pub(super) fn key(table: u8, connection: [u8; 16], serial: u64) -> Vec<u8> {
     key.extend(serial.to_be_bytes());
     key
 }
+/// Constant-size historical receipt; never reconstructs live authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::setup::connection) struct ExistingAncestorPatchV1 {
+    pub version: u8,
+    pub admission: [u8; 32],
+    pub prefixes: u64,
+}
+fn existing_ancestor_receipt<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ExistingAncestorPatchV1>, D::Error> {
+    let receipt = ExistingAncestorPatchV1::deserialize(deserializer)?;
+    if receipt.version != 1 || receipt.prefixes == 0 || receipt.prefixes & 1 != 0 {
+        return Err(serde::de::Error::custom(
+            "invalid existing-ancestor receipt",
+        ));
+    }
+    Ok(Some(receipt))
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
 pub(super) enum Change {
@@ -1196,6 +1215,12 @@ pub(super) enum Change {
         destination: storage::Identity,
     },
     BaselineCommit {
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "existing_ancestor_receipt"
+        )]
+        existing_ancestors: Option<ExistingAncestorPatchV1>,
         connection: [u8; 16],
         expected: u64,
         root: Option<[u8; 32]>,
