@@ -686,6 +686,7 @@ mod tests {
                 id: "needs.text".to_string(),
                 title: "Needs text".to_string(),
                 subtitle: None,
+                badge: None,
                 score: 0,
                 params: vec![ActionParam::required(
                     "text",
@@ -726,6 +727,7 @@ mod tests {
                 id: "broker.action".into(),
                 title: "Broker action".into(),
                 subtitle: None,
+                badge: None,
                 score: 0,
                 params: Vec::new(),
                 contract: None,

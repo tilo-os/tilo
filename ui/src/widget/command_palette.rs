@@ -129,6 +129,9 @@ pub struct CommandEntry {
     pub label: String,
     /// Rendered under the label in [`PaletteMode::Commands`]. `None` → label only.
     pub description: Option<String>,
+    /// Short shell-rendered status shown as a trailing pill. Unlike a
+    /// keybinding it is descriptive and is announced as part of the row.
+    pub badge: Option<String>,
     /// Rendered right-aligned in the row. Purely informational — the palette
     /// never binds it.
     pub keybinding: Option<String>,
@@ -154,6 +157,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("id", &self.id)
             .field("label", &self.label)
             .field("description", &self.description)
+            .field("badge", &self.badge)
             .field("keybinding", &self.keybinding)
             .field("shortcut", &self.shortcut)
             .field("argument", &self.argument)
@@ -173,6 +177,7 @@ impl CommandEntry {
             id: id.into(),
             label: label.into(),
             description: None,
+            badge: None,
             keybinding: None,
             shortcut: None,
             argument: None,
@@ -188,6 +193,12 @@ impl CommandEntry {
     #[must_use]
     pub fn description(mut self, d: impl Into<String>) -> Self {
         self.description = Some(d.into());
+        self
+    }
+
+    #[must_use]
+    pub fn badge(mut self, badge: impl Into<String>) -> Self {
+        self.badge = Some(badge.into());
         self
     }
 
@@ -1676,7 +1687,43 @@ impl CommandPalette {
     ) -> f64 {
         // Reserved before measuring the text, so a long title is ellipsised
         // rather than painted under the chip.
-        if let Some(labels) = entry.keycap_labels(platform) {
+        if let Some(badge) = &entry.badge {
+            let badge_size = label_size - 2.0;
+            let (text_w, text_h) = text_renderer.measure(badge, badge_size, None);
+            let pill_w = f64::from(text_w) + 16.0;
+            let pill_h = f64::from(text_h) + 8.0;
+            let cy = f64::midpoint(row.y0, row.y1);
+            let pill = Rect::new(
+                row.x1 - pill_w - 8.0,
+                cy - pill_h / 2.0,
+                row.x1 - 8.0,
+                cy + pill_h / 2.0,
+            );
+            let shape = RoundedRect::from_rect(pill, pill_h / 2.0);
+            let fill = colors.accent[5].with_alpha_factor(if selected { 0.28 } else { 0.16 });
+            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.accent[5].with_alpha_factor(0.55),
+                None,
+                &shape,
+            );
+            let ink = colors.ink_on(
+                Self::row_ground(colors, selected),
+                colors.accent[5],
+                ON_CARD_SMALL_TEXT_CONTRAST,
+            );
+            text_renderer.draw_text(
+                scene,
+                badge,
+                badge_size,
+                ink,
+                transform.pre_translate(Vec2::new(pill.x0 + 8.0, cy - f64::from(text_h) / 2.0)),
+                None,
+            );
+            pill.x0 - 8.0
+        } else if let Some(labels) = entry.keycap_labels(platform) {
             let chip_w =
                 crate::widget::InputHint::measure_keycap_labels(&labels, text_renderer, theme);
             let chip_h = 26.0;
@@ -2296,6 +2343,13 @@ impl Widget for CommandPalette {
                 if let Some(description) = &entry.description {
                     item = item.with_description(description.clone());
                 }
+                if let Some(badge) = &entry.badge {
+                    let description = entry.description.as_deref().map_or_else(
+                        || format!("Status: {badge}"),
+                        |detail| format!("{detail}. Status: {badge}"),
+                    );
+                    item = item.with_description(description);
+                }
                 Some(item)
             })
             .collect();
@@ -2881,7 +2935,11 @@ mod tests {
         use crate::a11y::Role;
         let mut p = CommandPalette::new();
         p.push(CommandEntry::new("alpha", "Alpha"));
-        p.push(CommandEntry::new("bravo", "Bravo").description("Second result"));
+        p.push(
+            CommandEntry::new("bravo", "Bravo")
+                .description("Second result")
+                .badge("Live"),
+        );
         p.set_rect(Rect::new(20.0, 30.0, 380.0, 310.0));
 
         let closed = Widget::accessibility(&p).expect("palette is semantic while closed");
@@ -2928,6 +2986,10 @@ mod tests {
         assert_eq!(selected.pos_in_set, Some(1));
         assert_eq!(selected.set_size, Some(2));
         assert_eq!(selected.bounds, p.row_rect(0).map(Into::into));
+        assert_eq!(
+            results.children[1].description.as_deref(),
+            Some("Second result. Status: Live")
+        );
         assert_eq!(
             selected.action_target.as_deref(),
             Some("command-palette:result:alpha"),
