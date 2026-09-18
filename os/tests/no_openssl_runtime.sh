@@ -55,10 +55,10 @@ if grep -Eq "run\('openssl', '(genpkey|pkey)'|subprocess\.run\(\['openssl', 'pke
 else
   ok 'development registry-owner key generation uses Rust-native Ed25519'
 fi
-if grep -Eq "openssl\(\['(x509|rsa)'" "$development_trust"; then
-  bad 'development PCR or certificate identity parsing still invokes OpenSSL'
+if grep -Eq "(^|[^[:alnum:]_])openssl([^[:alnum:]_]|$)" "$development_trust"; then
+  bad 'development public trust parsing still invokes OpenSSL'
 else
-  ok 'development PCR and certificate identities use Rust-native parsing'
+  ok 'development Cosign, PCR, and certificate identities use Rust-native parsing'
 fi
 if RUSTC_WRAPPER= cargo tree --manifest-path "$repo/Cargo.toml" -p tilo-crypto -d \
     | grep -Eq '^rsa v'; then

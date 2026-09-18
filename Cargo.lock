@@ -14673,6 +14673,7 @@ dependencies = [
  "hex",
  "libc",
  "object 0.39.1",
+ "p256 0.13.2",
  "picky",
  "picky-asn1",
  "picky-asn1-der",

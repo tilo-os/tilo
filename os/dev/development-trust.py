@@ -35,14 +35,6 @@ def read_public(path):
     return data
 
 
-def openssl(args, data):
-    result = subprocess.run(['openssl', *args], input=data, capture_output=True)
-    if result.returncode:
-        # Do not echo rejected input or subprocess output into logs.
-        raise ValueError('OpenSSL rejected the public key or certificate')
-    return result.stdout
-
-
 def rust_crypto(*args):
     result = subprocess.run([CRYPTO, *map(str, args)],
                             capture_output=True)
@@ -62,9 +54,10 @@ def identities(inputs, paths):
     result = {}
     cosign = inputs['cosign.pub']
     pem(cosign, 'PUBLIC KEY')
-    openssl(['pkey', '-pubin', '-pubcheck', '-noout'], cosign)
-    der = openssl(['pkey', '-pubin', '-outform', 'DER'], cosign)
-    result['cosign.pub'] = hashlib.sha256(der).hexdigest()
+    cosign_identity = rust_crypto('p256-public-key-sha256', paths['cosign.pub']).strip()
+    if not re.fullmatch(rb'[0-9a-f]{64}', cosign_identity):
+        raise ValueError('Rust-native crypto returned an invalid Cosign key identity')
+    result['cosign.pub'] = cosign_identity.decode('ascii')
     pcr = inputs['tpm2-pcr-signing.public.pem']
     pem(pcr, 'PUBLIC KEY')
     info = rust_crypto('rsa-public-key-info', paths['tpm2-pcr-signing.public.pem'])
