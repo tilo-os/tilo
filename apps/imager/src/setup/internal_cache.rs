@@ -1,6 +1,9 @@
-//! Private checkpoint protocol. Native ownership and publication providers are
-//! deliberately absent; this module does not activate persistent downloading.
+//! Private checkpoint protocol and Linux cache provider. No caller or support
+//! route is activated by this module.
 mod checkpoint;
 pub(super) use checkpoint::*;
 #[cfg(test)]
 pub(super) mod tests;
+
+#[cfg(any(target_os = "linux", all(test, unix)))]
+pub(super) mod linux;

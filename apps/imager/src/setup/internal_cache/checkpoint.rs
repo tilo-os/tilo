@@ -49,7 +49,7 @@ pub(in crate::setup) struct Ownership {
     pub file: [u8; 32],
     pub leaf: String,
 }
-/// No production implementation exists yet. All methods are synchronous.
+/// Native implementations remain private. All methods are synchronous.
 /// `scan` must bound each entry BEFORE allocation/read to MAX_RECORD and stop on
 /// visitor error, including unknown entries. Never remove undecodable entries.
 /// `publish` must exclusively create/write/flush/publish one bounded record and
@@ -108,7 +108,31 @@ fn binding(selected: &SelectedManifest, index: usize) -> Result<([u8; 32], u64),
     h.update(c.byte_size.to_le_bytes());
     Ok((h.finalize().into(), c.byte_size))
 }
+/// Selection-checked metadata only; never an acquired namespace capability.
+pub(super) struct UntrustedRecordHint<'a> {
+    pub(super) leaf: &'a str,
+    pub(super) parent_digest: &'a [u8; 32],
+    pub(super) file_digest: &'a [u8; 32],
+    pub(super) generation: u64,
+}
 impl Record {
+    pub(super) fn hint_for(
+        &self,
+        selected: &SelectedManifest,
+        index: usize,
+    ) -> Result<UntrustedRecordHint<'_>, String> {
+        if binding(selected, index)? != (self.binding, self.full_size) {
+            return Err("Checkpoint hint selection mismatch".into());
+        }
+        validate_leaf(selected, &self.ownership.leaf)?;
+        Ok(UntrustedRecordHint {
+            leaf: &self.ownership.leaf,
+            parent_digest: &self.ownership.parent,
+            file_digest: &self.ownership.file,
+            generation: self.generation,
+        })
+    }
+
     fn encode(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(300);
         b.extend_from_slice(b"QOSCP001");
