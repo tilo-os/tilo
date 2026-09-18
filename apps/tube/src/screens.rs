@@ -16,9 +16,9 @@ use crate::images::Imgs;
 use crate::model::{Category, Channel, Playlist, Route, SearchType, SkipMode, TubeModel, Video};
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
-    Align, ChannelAvatar, Flex, ImageBox, IntoElement, Justify, Len, PlayerHost, SharedPlayer,
-    Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, divider_on, gap,
-    hover_fill, hover_pill_surface, spring, subtle_edge, subtle_fill, subtle_surface, text,
+    Align, ChannelAvatar, Flex, ImageBox, IntoElement, Justify, LargeVideoMeta, Len, PlayerHost,
+    SharedPlayer, Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, divider_on,
+    gap, hover_fill, hover_pill_surface, spring, subtle_edge, subtle_fill, subtle_surface, text,
     text_c,
 };
 
@@ -234,9 +234,9 @@ fn icon_button(theme: &Theme, bus: &ActionBus, kind: Icon, action: Action) -> Fl
 /// affordance on a wide window (the rail is already docked) that becomes the
 /// way to summon the rail once it has collapsed into an overlay flap on a
 /// narrow one.
-fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
+fn menu_button(theme: &Theme) -> Flex {
     let m = &theme.tokens.metrics;
-    Flex::row()
+    let button = Flex::row()
         .id("nav_toggle")
         .fixed(m.bar_height, m.bar_height)
         .justify(Justify::Center)
@@ -248,12 +248,16 @@ fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
             border: None,
         })
         .hover_surface(hover_pill_surface(theme))
-        .on_click(bus, Action::ToggleSidebar)
-        .accessible_name("Show or hide navigation")
+        .accessible_name("Show or hide navigation");
+    if let Some(binding) = crate::actions::sidebar_binding() {
+        button.on_action(binding)
+    } else {
+        button
+    }
 }
 
 fn section_header(theme: &Theme, kind: Icon, title: &str, subtitle: &str) -> Flex {
-    Flex::row()
+    let title_row = Flex::row()
         .fill_w()
         // Cards inset their content by `CARD_PAD` inside the grid; the heading
         // row insets the same so its icon and trailing label sit on the card
@@ -262,9 +266,19 @@ fn section_header(theme: &Theme, kind: Icon, title: &str, subtitle: &str) -> Fle
         .gap(HEADING_GAP)
         .align(Align::Center)
         .push(icon(kind, 22.0, theme.accent_primary))
-        .push(text(title, 21.0))
-        .push(spring())
-        .push(dim(theme, subtitle, 13.0))
+        .push(text(title, 21.0));
+    // Large type must reflow rather than leave a right-aligned subtitle to
+    // collide with the heading. The subtitle remains present and readable;
+    // it simply takes its own line, as it would on a compact window.
+    if theme.text_scale >= 1.5 {
+        // The secondary phrase is useful at ordinary density but repeats the
+        // selected source/filter and has no action. At large text we preserve
+        // the primary landmark and reclaim its row for actual results instead
+        // of producing a narrow, three-line fragment above the first card.
+        Flex::col().fill_w().push(title_row).push(gap(1.0, 38.0))
+    } else {
+        title_row.push(spring()).push(dim(theme, subtitle, 13.0))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -282,23 +296,52 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
         thumb = thumb.progress(p);
     }
 
-    let mut meta = Flex::col().gap(CARD_META_GAP).grow(1.0);
-    meta = meta.push(text(v.display_title(dearrow), 14.5));
-    meta = meta.push(
-        Flex::row()
-            .gap(CARD_META_LINE_GAP)
+    let high_text = theme.text_scale >= 1.5;
+    let title = text(v.display_title(dearrow), 14.5);
+    let stats_label = format!("{} • {}", human_views(v.views), v.published);
+    let details = if high_text {
+        // The leaf measures and paints all three scaled lanes together. This
+        // makes its bottom edge a real typography result, rather than a set of
+        // guessed spacers which can collide with the next card at 2×.
+        Flex::col().fill_w().push(LargeVideoMeta::new(
+            v.display_title(dearrow),
+            &v.channel_name,
+            &stats_label,
+        ))
+    } else {
+        let channel = Flex::row()
+            .fill_w()
+            .gap(5.0)
             .align(Align::Center)
-            .push(dim(theme, &v.channel_name, 12.5))
+            .push(
+                Flex::row()
+                    .grow(1.0)
+                    .push(dim(theme, &v.channel_name, 12.5)),
+            )
             .push_if(
                 model.channel(&v.channel_id).is_some_and(|c| c.verified),
                 icon(Icon::Check, 12.0, theme.text_dim),
-            ),
-    );
-    meta = meta.push(dim(
-        theme,
-        format!("{} • {}", human_views(v.views), v.published),
-        12.5,
-    ));
+            );
+        let stats = dim(theme, stats_label, 12.5);
+        let meta = Flex::col()
+            .gap(3.0)
+            .grow(1.0)
+            .push(title)
+            .push(channel)
+            .push(stats);
+        Flex::row()
+            .gap(10.0)
+            .fill_w()
+            .align(Align::Start)
+            .push(channel_avatar(
+                imgs,
+                model,
+                &v.channel_id,
+                &v.channel_name,
+                36.0,
+            ))
+            .push(meta)
+    };
     // No fixed width: as a responsive-grid item the card stretches to fill its
     // column (which the grid sizes between CARD_W and its natural max).
     Flex::col()
@@ -314,20 +357,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
         .on_click(bus, Action::OpenVideo(v.id.clone()))
         .accessible_name(format!("Open video: {}", v.display_title(dearrow)))
         .push(thumb)
-        .push(
-            Flex::row()
-                .gap(CARD_AVATAR_GAP)
-                .fill_w()
-                .align(Align::Start)
-                .push(channel_avatar(
-                    imgs,
-                    model,
-                    &v.channel_id,
-                    &v.channel_name,
-                    36.0,
-                ))
-                .push(meta),
-        )
+        .push(details)
 }
 
 /// Compact horizontal card for the "Up next" rail + history rows.
@@ -368,6 +398,53 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
         )
 }
 
+/// A resource-addressed save/remove control. The shared queue is intentionally
+/// not optimistically mutated here: its server-preferred action either commits
+/// through the collaboration host and comes back in the document projection,
+/// or remains unchanged. That keeps the visible state honest when offline.
+fn queue_control(model: &TubeModel, theme: &Theme, video_id: &str) -> Flex {
+    let queued = model.is_queued(video_id);
+    let label = if queued { "In queue" } else { "Add to queue" };
+    let sel = selected_accent_fill(theme);
+    let surface = if queued {
+        Surface {
+            fill: Some(sel.bg),
+            radius: f64::from(theme.tokens.radii.full),
+            border: None,
+        }
+    } else {
+        Surface {
+            fill: Some(subtle_fill(theme)),
+            radius: f64::from(theme.tokens.radii.full),
+            border: Some((1.0, theme.border_standard)),
+        }
+    };
+    let fg = if queued { sel.fg } else { theme.text_primary };
+    let control = Flex::row()
+        .id(&format!("queue_btn_{video_id}"))
+        .gap(6.0)
+        .pad_xy(12.0, 8.0)
+        .align(Align::Center)
+        .surface(surface)
+        .hover_surface(Surface {
+            fill: Some(if queued {
+                theme.tokens.colors.accent.stops[3]
+            } else {
+                hover_fill(theme)
+            }),
+            radius: f64::from(theme.tokens.radii.full),
+            border: surface.border,
+        })
+        .accessible_name(format!("{label}: shared watch queue"))
+        .push(icon(Icon::ListVideo, 15.0, fg))
+        .push(text_c(label, 12.5, fg));
+    if let Some(binding) = crate::actions::queue_binding(model, video_id) {
+        control.on_action(binding)
+    } else {
+        control
+    }
+}
+
 /// A "N views • date" line that drops any missing part (and its separator), so a
 /// row never shows "0", a dangling "•", or an empty count. Empty when neither is
 /// known.
@@ -388,11 +465,22 @@ fn subs_label(subscribers: u64) -> Option<String> {
     (subscribers > 0).then(|| format!("{} subscribers", human_count(subscribers)))
 }
 
-fn grid(cards: Vec<Flex>) -> Flex {
-    grid_with_id(cards, "video_grid")
+fn grid(theme: &Theme, cards: Vec<Flex>) -> Flex {
+    grid_with_id(theme, cards, "video_grid")
 }
 
-fn grid_with_id(cards: Vec<Flex>, id: &str) -> Flex {
+fn grid_with_id(theme: &Theme, cards: Vec<Flex>, id: &str) -> Flex {
+    // At 2× text a card's title and metadata are intentionally allowed to
+    // occupy several lines. A vertical feed is more readable than squeezing
+    // four visual cards into a desktop-width row; ordinary text keeps the
+    // efficient responsive grid below.
+    if theme.text_scale >= 1.5 {
+        let mut col = Flex::col().id(id).fill_w().gap(24.0);
+        for card in cards {
+            col = col.push(card);
+        }
+        return col;
+    }
     // Responsive grid: columns are ≥ `CARD_W` and flex to fill the row, so the
     // cards scale with the window width up to their natural max and only then
     // wrap to add a column — the row is always filled edge to edge (no right
@@ -454,7 +542,7 @@ fn skeleton_card(theme: &Theme) -> Flex {
 }
 
 fn skeleton_grid(theme: &Theme, n: usize) -> Flex {
-    grid((0..n).map(|_| skeleton_card(theme)).collect())
+    grid(theme, (0..n).map(|_| skeleton_card(theme)).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -463,11 +551,11 @@ fn skeleton_grid(theme: &Theme, n: usize) -> Flex {
 
 fn nav_item(
     theme: &Theme,
-    bus: &ActionBus,
     kind: Icon,
     label: &str,
-    route: Route,
+    route: &Route,
     active: bool,
+    expanded: bool,
 ) -> Flex {
     // Active item: a solid accent fill with a foreground chosen to contrast it
     // (so the selected destination reads clearly), instead of accent-coloured
@@ -507,30 +595,44 @@ fn nav_item(
     // Stable, addressable id so headless click-tests can target a nav item by
     // name (e.g. "nav_home"). Derived from the label, lowercased.
     let id = format!("nav_{}", label.to_lowercase());
-    let sp = &theme.tokens.spacing;
-    Flex::col()
-        .id(&id)
-        .fill_w()
-        .gap(sp.s1)
-        .pad_xy(sp.s1, sp.s2)
-        .align(Align::Center)
-        .justify(Justify::Center)
-        .surface(surface)
-        .hover_surface(hover)
-        .on_click(bus, Action::Navigate(route))
-        .accessible_name(label)
-        .push(icon(kind, 22.0, fg))
-        .push(text_c(label, 11.0, fg))
+    let item = if expanded {
+        Flex::row()
+            .id(&id)
+            .fill_w()
+            .gap(12.0)
+            .pad_xy(14.0, 12.0)
+            .align(Align::Center)
+            .surface(surface)
+            .hover_surface(hover)
+            .accessible_name(label)
+            .push(icon(kind, 21.0, fg))
+            .push(text_c(label, 14.0, fg))
+    } else {
+        Flex::col()
+            .id(&id)
+            .fill_w()
+            .gap(4.0)
+            .pad_xy(4.0, 8.0)
+            .align(Align::Center)
+            .justify(Justify::Center)
+            .surface(surface)
+            .hover_surface(hover)
+            .accessible_name(label)
+            .push(icon(kind, 22.0, fg))
+            .push(text_c(label, 11.0, fg))
+    };
+    if let Some(binding) = crate::actions::navigation_binding(route) {
+        item.on_action(binding)
+    } else {
+        item
+    }
 }
 
-pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
+pub fn nav_rail(model: &TubeModel, theme: &Theme, _bus: &ActionBus, width: f64) -> Flex {
     let sec = model.route.nav_section();
-    // The rail column matches the split's icon sidebar width under this
-    // theme (`ui_scale` only, like the split), so the rail never paints
-    // narrower or wider than the pane the split reserves for it.
-    let rail_w = ui::widget::AuthoredExtent::icon(NAV_RAIL_W).resolve(theme);
+    let expanded = width > NAV_RAIL_W;
     Flex::col()
-        .w(Len::Px(rail_w as f32))
+        .w(Len::Px(width as f32))
         .fill_h()
         .pad_xy(8.0, 14.0)
         .gap(8.0)
@@ -553,47 +655,56 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
                 })
                 .push(icon(Icon::Play, 22.0, Color::WHITE)),
         )
+        .push_if(expanded, text_c("Tube", 16.0, theme.text_primary))
         .push(gap(1.0, 6.0))
         .push(nav_item(
             theme,
-            bus,
             Icon::Home,
             "Home",
-            Route::Home,
+            &Route::Home,
             sec == "home",
+            expanded,
         ))
         .push(nav_item(
             theme,
-            bus,
             Icon::Flame,
             "Trending",
-            Route::Trending,
+            &Route::Trending,
             sec == "trending",
+            expanded,
         ))
         .push(nav_item(
             theme,
-            bus,
             Icon::GalleryVerticalEnd,
             "Subs",
-            Route::Subscriptions,
+            &Route::Subscriptions,
             sec == "subs",
+            expanded,
         ))
         .push(nav_item(
             theme,
-            bus,
+            Icon::ListVideo,
+            "Queue",
+            &Route::Queue,
+            sec == "queue",
+            expanded,
+        ))
+        .push(nav_item(
+            theme,
             Icon::History,
             "History",
-            Route::History,
+            &Route::History,
             sec == "history",
+            expanded,
         ))
         .push(spring())
         .push(nav_item(
             theme,
-            bus,
             Icon::Settings,
             "Settings",
-            Route::Settings,
+            &Route::Settings,
             sec == "settings",
+            expanded,
         ))
 }
 
@@ -623,6 +734,7 @@ pub fn top_bar(
     bus: &ActionBus,
     can_back: bool,
     search_query: &ui::LocalState<String>,
+    compact: bool,
 ) -> Flex {
     // The search field uses the toolkit's process-local TextInput binding. It
     // survives navigation rebuilds in this app instance but never enters the
@@ -642,7 +754,7 @@ pub fn top_bar(
     // A single search lens (leading) — Enter submits, so there is no second
     // trailing lens/button cluttering the field.
     let sp = &theme.tokens.spacing;
-    let search = Flex::row()
+    let search_field = Flex::row()
         .grow(1.0)
         .max_w(560.0)
         .h(Len::Px(SEARCH_FIELD_H))
@@ -652,14 +764,19 @@ pub fn top_bar(
         .surface(subtle_surface(theme))
         .push(icon(Icon::Search, 18.0, theme.text_dim))
         .push(Flex::row().grow(1.0).push(search_input));
+    let search = if compact {
+        icon_button(theme, bus, Icon::Search, Action::OpenPalette).id("compact_search")
+    } else {
+        search_field
+    };
 
     // Only surface the data-source indicator when we're NOT on live data
     // (connecting or offline) — in the normal live case the top bar stays clean.
     // SponsorBlock / DeArrow are settings, not top-bar toggles; they live in Settings.
-    let status = Flex::row()
-        .gap(sp.s2)
-        .align(Align::Center)
-        .push_if(!model.data_source.live, data_source_pill(theme, model));
+    let status = Flex::row().gap(sp.s2).align(Align::Center).push_if(
+        !compact && !model.data_source.live,
+        data_source_pill(theme, model),
+    );
 
     Flex::row()
         .fill_w()
@@ -673,7 +790,7 @@ pub fn top_bar(
             radius: 0.0,
             border: Some((1.0, ui::chrome::chrome_hairline(theme))),
         })
-        .push(menu_button(theme, bus))
+        .push(menu_button(theme))
         .push_if(can_back, back_button(theme, bus))
         // The OS owns the window title/app-name — no "Tube" wordmark here.
         .push(search)
@@ -685,9 +802,8 @@ pub fn top_bar(
 }
 
 /// Live-vs-sample provenance pill. A green dot + "Live" once the rustypipe
-/// backend has actually returned real data; a dim "Sample" (or "Connecting…")
-/// otherwise, so the user always knows whether the catalogue on screen is real
-/// `YouTube` data or the bundled offline sample.
+/// backend has returned data; a dim "Sample" (or "Connecting…") otherwise,
+/// so the user can distinguish `YouTube` data from the bundled offline sample.
 fn data_source_pill(theme: &Theme, model: &TubeModel) -> Flex {
     let live = model.data_source.live;
     let (dot, fg, label) = if live {
@@ -773,8 +889,8 @@ fn scroll(content: Flex) -> Scrollable {
 }
 
 pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Scrollable {
-    // Cold start shows a skeleton (loading) or an honest empty state — never a
-    // fabricated sample catalogue presented as real. Real cards only.
+    // Cold start shows a skeleton (loading) or an empty state. Cards are added
+    // when catalogue data arrives.
     let body = if model.videos.is_empty() {
         if model.feed_loading {
             skeleton_grid(theme, 12)
@@ -795,6 +911,7 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Sc
         }
     } else {
         grid(
+            theme,
             model
                 .videos
                 .iter()
@@ -835,7 +952,7 @@ pub fn trending(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -
                 "Trending",
                 "Most-watched right now",
             ))
-            .push(grid(cards)),
+            .push(grid(theme, cards)),
     )
 }
 
@@ -874,7 +991,7 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Im
             "Subscribe to channels and their latest uploads land here.",
         )
     } else {
-        grid(cards)
+        grid(theme, cards)
     };
 
     scroll(
@@ -908,20 +1025,178 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
     for v in vids {
         col = col.push(compact_card(model, theme, bus, imgs, v));
     }
+    if let Some(recovery) = &model.history_recovery_notice {
+        col = col.push(empty_state(theme, "History recovery needed", recovery));
+    }
     scroll(
         Flex::col()
             .fill_w()
             .pad(theme.tokens.spacing.s6)
             .gap(GRID_GAP)
             .max_w(820.0)
-            .push(section_header(
-                theme,
-                Icon::History,
-                "Watch history",
-                "Stored locally — never uploaded",
-            ))
+            .push(
+                Flex::row()
+                    .fill_w()
+                    .gap(12.0)
+                    .align(Align::Center)
+                    .push(Flex::row().grow(1.0).push(section_header(
+                        theme,
+                        Icon::History,
+                        "Watch history",
+                        "Private to this profile — syncs across your devices",
+                    )))
+                    .push_if(
+                        !model.history.is_empty(),
+                        pill(
+                            theme,
+                            bus,
+                            "Clear history",
+                            Some(Icon::Trash),
+                            Action::ClearHistory,
+                            false,
+                        ),
+                    ),
+            )
             .push(col),
     )
+}
+
+/// The collaborative queue is membership-based rather than a shared ordered
+/// playlist. Say that plainly in the view: people can save the same videos,
+/// while each device still controls what plays next and in which order.
+pub fn queue(
+    model: &TubeModel,
+    theme: &Theme,
+    bus: &ActionBus,
+    imgs: Imgs,
+    available_width: f64,
+) -> Scrollable {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a desktop viewport width is safely representable as f32"
+    )]
+    let content_width = ((available_width - 64.0).max(1.0).min(920.0)) as f32;
+    let videos: Vec<&Video> = model
+        .queue
+        .iter()
+        .filter_map(|id| model.video(id))
+        .collect();
+    let unavailable = model.queue.len().saturating_sub(videos.len());
+    let mut entries = Flex::col().fill_w().gap(10.0);
+    if videos.is_empty() {
+        entries = entries.push(queue_empty_state(theme, content_width));
+    }
+    for video in videos {
+        entries = entries.push(
+            // Keep the queue action on its own line: at a narrow window or
+            // 200% text the compact card retains a useful title lane instead
+            // of sacrificing it to a fixed-width secondary button.
+            Flex::col()
+                .fill_w()
+                .gap(8.0)
+                .push(compact_card(model, theme, bus, imgs, video))
+                .push(queue_control(model, theme, &video.id)),
+        );
+    }
+    if unavailable > 0 {
+        entries = entries.push(dim(
+            theme,
+            format!("{unavailable} queued item(s) need metadata before they can be shown."),
+            12.5,
+        ));
+    }
+    scroll(
+        Flex::col()
+            .id("queue_page")
+            .fill_w()
+            .pad(24.0)
+            .gap(18.0)
+            .max_w(920.0)
+            .push(queue_heading(theme, model.queue.len(), content_width))
+            .push(entries),
+    )
+}
+
+/// Queue-specific large-text heading. Generic one-line chrome is fine at the
+/// normal scale, but at 200% it can become a multi-line `Text` inside a flex
+/// row. Splitting the compact, stable phrases into independently measured
+/// lines makes their vertical geometry explicit instead of letting glyphs
+/// paint below their one-line allocation.
+fn queue_heading(theme: &Theme, count: usize, content_width: f32) -> Flex {
+    if theme.text_scale >= 1.5 {
+        return Flex::col()
+            .id("queue_heading")
+            .w(Len::Px(content_width))
+            .gap(8.0)
+            .push(
+                Flex::row()
+                    .gap(10.0)
+                    .align(Align::Center)
+                    .push(icon(Icon::ListVideo, 22.0, theme.accent_primary))
+                    .push(text("Shared queue", 21.0).with_id("queue_heading_title")),
+            )
+            .push(
+                Flex::row().fill_w().push(
+                    dim(theme, format!("{count} saved"), 13.0).with_id("queue_heading_count"),
+                ),
+            )
+            .push(gap(1.0, 8.0))
+            .push(Flex::row().fill_w().push(
+                dim(theme, "Membership is shared.", 13.0).with_id("queue_heading_membership"),
+            ))
+            .push(Flex::row().fill_w().push(
+                dim(theme, "Playback order stays local.", 13.0).with_id("queue_heading_order"),
+            ));
+    }
+    Flex::col()
+        .id("queue_heading")
+        .fill_w()
+        .gap(8.0)
+        .push(section_header(
+            theme,
+            Icon::ListVideo,
+            "Shared queue",
+            &format!("{count} saved video{}", if count == 1 { "" } else { "s" }),
+        ))
+        .push(dim(
+            theme,
+            "Shared membership; each person controls local playback order.",
+            13.0,
+        ))
+}
+
+/// An explicit large-text empty state for the queue. Its short individual
+/// lines are deliberately all independently laid out; the regular generic
+/// empty state is retained at normal scale where its compact prose has room.
+fn queue_empty_state(theme: &Theme, content_width: f32) -> Flex {
+    if theme.text_scale >= 1.5 {
+        return Flex::col()
+            .id("queue_empty_state")
+            .w(Len::Px(content_width))
+            .gap(12.0)
+            .pad(48.0)
+            .align(Align::Center)
+            .justify(Justify::Center)
+            .push(icon(Icon::Eye, 40.0, theme.text_dim))
+            .push(
+                Flex::row()
+                    .fill_w()
+                    .justify(Justify::Center)
+                    .push(text("Queue empty", 18.0).with_id("queue_empty_title")),
+            )
+            .push(Flex::row().fill_w().justify(Justify::Center).push(
+                dim(theme, "Add from a video's watch page.", 13.0).with_id("queue_empty_add"),
+            ))
+            .push(Flex::row().fill_w().justify(Justify::Center).push(
+                dim(theme, "Sync needs a collaboration host.", 13.0).with_id("queue_empty_sync"),
+            ));
+    }
+    empty_state(
+        theme,
+        "Your shared queue is empty",
+        "Add a video from its watch page. Queue membership syncs with collaborators when a collaboration host is available.",
+    )
+    .id("queue_empty_state")
 }
 
 /// One multi-select type-filter chip (Video · Playlist · Creator). Reuses the
@@ -1132,7 +1407,7 @@ pub fn search(
                 .iter()
                 .map(|p| playlist_card(theme, bus, imgs, p))
                 .collect();
-            col = col.push(grid_with_id(cards, "playlist_grid"));
+            col = col.push(grid_with_id(theme, cards, "playlist_grid"));
         }
         if !videos.is_empty() {
             if visible_results == 1 {
@@ -1158,7 +1433,7 @@ pub fn search(
                     .iter()
                     .map(|v| video_card(model, theme, bus, imgs, v))
                     .collect();
-                col = col.push(grid(cards));
+                col = col.push(grid(theme, cards));
             }
         }
         col
@@ -1362,7 +1637,7 @@ pub fn channel(
             .push(header)
             .push(divider(theme))
             .push(text("Videos", 16.0))
-            .push(grid(cards)),
+            .push(grid(theme, cards)),
     )
 }
 
@@ -1570,6 +1845,10 @@ pub fn watch(
     let mut meta = Flex::row()
         .fill_w()
         .gap(12.0)
+        // Like, queue and share remain individually addressable at large text;
+        // wrapping preserves their 44px-ish targets instead of crushing the
+        // title statistics into an unreadable single line.
+        .wrap()
         .align(Align::Center)
         .push(dim(
             theme,
@@ -1597,6 +1876,7 @@ pub fn watch(
             .map_or_else(|| "—".to_string(), human_count);
         meta = meta.push(stat_pill(theme, &label, Icon::ThumbsDown).id("dislike_pill"));
     }
+    meta = meta.push(queue_control(model, theme, &v.id));
     let meta = meta.push(
         pill(
             theme,

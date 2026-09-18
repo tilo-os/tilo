@@ -41,7 +41,14 @@ pub fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 /// Seed a small, realistic workspace into `root`: a handful of pages in
 /// the tree plus one content-rich note selected so the shot shows real
 /// blocks (headings, lists, checklist, code, an inline link).
-fn seed_sample_workspace(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one visual fixture keeps its mutually linked page corpus readable in one place"
+)]
+fn seed_sample_workspace(
+    root: &Path,
+    scenario: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut ws = Workspace::new();
 
     let inbox = ws.create_page(None);
@@ -56,6 +63,12 @@ fn seed_sample_workspace(root: &Path) -> Result<(), Box<dyn std::error::Error>> 
     ws.rename(recipes, "Recipes");
     let formulas = ws.create_page(None);
     ws.rename(formulas, "Formula notebook");
+    if scenario == Some("sidebar_scroll") {
+        for index in 1..=28 {
+            let page = ws.create_page(None);
+            ws.rename(page, &format!("Reference {index:02}"));
+        }
+    }
 
     // Tags are workspace metadata rather than syntax hidden in the note body.
     // The sample keeps the chips visible in ordinary visual review while the
@@ -86,6 +99,10 @@ What has to land before we ship. Owner in **bold**.
 ## Notes
 
 See [[Reading list]] for sources.
+
+Read the [release writing guide](https://example.test/writing) before publishing.
+
+![[Reading list]]
 
 ```sh
 git checkout -b release/v1.0
@@ -179,6 +196,12 @@ f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
     for (id, body) in bodies {
         storage::write_page_body(root, id, body)?;
     }
+    if scenario == Some("image") {
+        // Reuse a checked-in PNG fixture to exercise the real decoder and
+        // workspace-relative loader without network access.
+        let fixture = include_bytes!("../../settings/shots/settings.png");
+        std::fs::write(root.join(storage::PAGES_DIR).join("image.png"), fixture)?;
+    }
     Ok(())
 }
 
@@ -243,7 +266,7 @@ fn settle_layout(
 /// can be reviewed offscreen:
 ///
 /// - `Some("drawer")` — open the narrow-mode page drawer.
-/// - `Some("first_note")` — a genuinely empty workspace, with the clear
+/// - `Some("first_note")` — an empty workspace, with the clear
 ///   first-note action a new person sees before any sample content exists.
 /// - `Some("drag")` — begin dragging a sidebar row (floating ghost +
 ///   live reflow gap).
@@ -254,9 +277,13 @@ fn settle_layout(
 /// - `Some("slash_applied")` — pick a `/` command by click; the trigger is
 ///   stripped and the block converts.
 /// - `Some("heading")` — type a `# ` shortcut to promote a paragraph to an H1.
+/// - `Some("quote")` — show the semantic blockquote treatment.
 /// - `Some("title_edit")` — open the prominent title's inline rename.
 /// - `Some("recipes")` — select the Recipes page (shows a numbered list).
 /// - `Some("formula")` — select the formula notebook with TeX and Typst previews.
+/// - `Some("table")` — show editable GFM table source with its live native preview.
+/// - `Some("image")` — show workspace-relative Markdown image preview behavior.
+/// - `Some("transclusion")` — show a live, UUID-backed embedded page card.
 /// - `Some("shortcuts")` — open the shared, focus-trapping shortcuts dialog.
 /// - `Some("tag_palette")` — show Cmd-K narrowed to the stable Release tag.
 ///
@@ -275,7 +302,7 @@ pub fn render_to_path(
     let root: PathBuf = std::env::temp_dir().join(format!("notes-shots-{}", uuid::Uuid::new_v4()));
     storage::ensure_layout(&root)?;
     if scenario != Some("first_note") {
-        seed_sample_workspace(&root)?;
+        seed_sample_workspace(&root, scenario)?;
     }
 
     let mut app = NotesApp::spawn(root.clone())?;
@@ -307,6 +334,9 @@ pub fn render_to_path(
     let kept = settle_layout(&mut app, &theme, &mut text_renderer, w, h)?;
 
     drive_scenario(&mut app, &mut state, &kept.0, kept.1, scenario);
+    if scenario == Some("transclusion") {
+        app.sync(&mut state.doc, &state.root);
+    }
 
     // A scenario that switches the selected page (or converts a block)
     // changes the editor's block set, so re-settle the tree before drawing —
@@ -418,6 +448,14 @@ fn mouse_event(state: ElementState, button: MouseButton) -> WindowEvent {
     }
 }
 
+fn scroll_event(lines: f32) -> WindowEvent {
+    WindowEvent::MouseWheel {
+        device_id: unsafe { std::mem::zeroed() },
+        delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines),
+        phase: winit::event::TouchPhase::Moved,
+    }
+}
+
 fn char_key_event(s: &str) -> WindowEvent {
     let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = Key::Character(SmolStr::new(s));
@@ -520,10 +558,7 @@ fn dispatch_rename_commit(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesAp
 }
 
 fn dispatch_slash_applied(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
-    // Fresh page → open the block menu → filter to "Heading 1" → click
-    // that row. The `/` trigger is stripped and the block becomes a
-    // heading, which we then type into. Proves the slash command applies
-    // AND removes its trigger text.
+    // Fresh page → open the block menu → filter to "Heading 1" → click that row.
     let btn = app.sidebar_new_page_btn_center_for_test();
     send(app, &cursor_event(btn.x, btn.y));
     send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
@@ -586,6 +621,17 @@ fn dispatch_formula(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &Wi
     }
 }
 
+fn dispatch_transclusion(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    // Hydrate the embedded legacy fixture page through the production open
+    // path, then return to the source page so its live preview has real text.
+    for index in [3, 2] {
+        if let Some(row) = app.sidebar_row_center_for_test(index) {
+            send(app, &cursor_event(row.x, row.y));
+            send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+        }
+    }
+}
+
 /// Route one named `scenario` to the helper that drives its events, using
 /// `send` to dispatch each synthetic [`WindowEvent`] into `app`.
 fn dispatch_scenario(
@@ -604,9 +650,63 @@ fn dispatch_scenario(
         Some("slash") => send(app, &char_key_event("/")),
         Some("slash_applied") => dispatch_slash_applied(app, send),
         Some("heading") => dispatch_heading(app, send),
+        Some("quote") => {
+            app.main_panel_mut().editor_mut().set_blocks(vec![
+                ui::widget::Block::heading(2, "A thought worth keeping"),
+                ui::widget::Block::quote(
+                    "The best notes make ideas easier to find, connect, and reuse.",
+                ),
+                ui::widget::Block::paragraph(
+                    "Quotes remain editable, linkable, draggable blocks—not pasted decoration.",
+                ),
+            ]);
+        }
         Some("title_edit") => dispatch_title_edit(app, send),
         Some("recipes") => dispatch_recipes(app, send),
         Some("formula") => dispatch_formula(app, send),
+        Some("transclusion") => dispatch_transclusion(app, send),
+        Some("external_link") => {
+            let text = "Read the complete writing guide before publishing.";
+            let start = text.find("complete writing guide").unwrap_or(0);
+            let end = start.saturating_add("complete writing guide".len());
+            let mut linked = ui::widget::Block::paragraph(text);
+            linked.line.set_marks(vec![ui::widget::MarkSpan::new(
+                start..end,
+                ui::widget::Mark::ExternalLink("https://example.test/writing".into()),
+            )]);
+            app.main_panel_mut().editor_mut().set_blocks(vec![
+                ui::widget::Block::heading(1, "Links that behave like links"),
+                ui::widget::Block::paragraph(
+                    "External destinations stay editable Markdown, sync with the note, and open through the desktop portal.",
+                ),
+                linked,
+                ui::widget::Block::quote(
+                    "Unsafe schemes remain plain text instead of becoming executable actions.",
+                ),
+            ]);
+        }
+        Some("table") => {
+            app.main_panel_mut().editor_mut().set_blocks(vec![
+                ui::widget::Block::heading(1, "Tables without leaving the page"),
+                ui::widget::Block::paragraph(
+                    "Edit familiar Markdown source while the structured, themed table updates underneath.",
+                ),
+                ui::widget::Block::table(
+                    "| Project | Owner | Status |\n| :--- | :--- | ---: |\n| Search | Mina | Shipped |\n| Import | Jules | In review |\n| Mobile polish | Sam | Next |",
+                    false,
+                ),
+            ]);
+        }
+        Some("image") => {
+            app.main_panel_mut().editor_mut().set_blocks(vec![
+                ui::widget::Block::heading(1, "Images stay part of the note"),
+                ui::widget::Block::paragraph(
+                    "Workspace-relative images load asynchronously without blocking typing or escaping the collaboration sandbox.",
+                ),
+                ui::widget::Block::paragraph("![A warm red square](image.png)"),
+            ]);
+            assert!(app.main_panel_mut().editor_mut().prewarm_images_for_shots());
+        }
         Some("shortcuts") => app.shortcuts_mut().set_visible(true),
         Some("tag_palette") => {
             app.palette_mut().set_anchor(Point::new(400.0, 80.0));
@@ -615,14 +715,26 @@ fn dispatch_scenario(
                 send(app, &char_key_event(s));
             }
         }
+        Some("scrolled") => {
+            for _ in 0..8 {
+                send(app, &scroll_event(-3.0));
+            }
+        }
+        Some("sidebar_scroll") => {
+            app.open_drawer_for_shots();
+            send(app, &cursor_event(120.0, 280.0));
+            for _ in 0..6 {
+                send(app, &scroll_event(-3.0));
+            }
+        }
         // Force the floating status bubble fully visible for the still.
         Some("status") => app.arm_status_bubble_for_shots(),
         Some("saving") => app.set_save_status_for_shots(storage::SaveStatus::Saving),
         Some("save_error") => app.set_save_status_for_shots(storage::SaveStatus::Failed),
+        Some("import_success") => app.show_transfer_toast_for_shots(),
         _ => {}
     }
 }
-
 
 /// Dispatch the events that drive `app` into the requested interaction
 /// state, against the settled `taffy`/`child` layout, before the frame is

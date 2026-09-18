@@ -1,0 +1,657 @@
+//! An inline-editable label: reads as static text until the caller puts it
+//! into edit mode, then becomes a real [`TextInput`].
+//!
+//! An edit ends one of three ways, matching native inline rename: **Enter**
+//! commits; **focus loss / a click outside the field** blur-commits — a
+//! rename shouldn't be lost just because you clicked away instead of
+//! pressing Enter; **Esc** cancels, keeping the previous value. A blank
+//! commit also keeps the previous value, so an accidental clear can't empty
+//! `value()`.
+//!
+//! The outcome of the most recent edit is polled once via [`take_outcome`]
+//! (rising-edge, like [`TextInput::take_dirty`]).
+
+use std::collections::HashMap;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use crate::presence::PresenceCtx;
+use crate::text_render::{FontChoice, TextRenderer, TextWeight};
+use crate::theme::Theme;
+use crate::widget::TaffyTreeExt;
+use crate::widget::{TextInput, TextInputKind, Widget};
+
+/// Same ratio [`TextInput`] centres its own glyph band against, so text
+/// doesn't jump vertically when the field enters/leaves edit mode.
+const LINE_HEIGHT_RATIO: f32 = 1.25;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditOutcome {
+    None,
+    /// Also returned when a blank entry kept the previous value — the
+    /// payload is always the live value.
+    Committed(String),
+    Cancelled,
+}
+
+pub struct EditableLabel {
+    id: String,
+    value: String,
+    /// Live only while editing; owns the caret/selection and every
+    /// editing affordance.
+    input: TextInput,
+    editing: bool,
+    family: FontChoice,
+    size: f32,
+    idle_color: Option<vello::peniko::Color>,
+    rect: Rect,
+    /// Tracked so a press can be classified as inside (caret) vs. outside
+    /// (blur-commit) without the press event carrying a position.
+    last_pointer: Point,
+    outcome: EditOutcome,
+}
+
+impl EditableLabel {
+    pub fn new(value: &str) -> Self {
+        Self {
+            id: String::new(),
+            value: value.to_string(),
+            input: TextInput::local().with_kind(TextInputKind::Name),
+            editing: false,
+            family: FontChoice::SansSerif,
+            size: 16.0,
+            idle_color: None,
+            rect: Rect::ZERO,
+            last_pointer: Point::ZERO,
+            outcome: EditOutcome::None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_font_family(mut self, family: FontChoice) -> Self {
+        self.input.set_font_family(Some(family.clone()));
+        self.family = family;
+        self
+    }
+
+    #[must_use]
+    pub fn with_font_size(mut self, size: f32) -> Self {
+        self.size = size;
+        self.input.set_font_size(size);
+        self
+    }
+
+    pub fn set_font_size(&mut self, size: f32) {
+        self.size = size;
+        self.input.set_font_size(size);
+    }
+
+    #[must_use]
+    pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
+        self.idle_color = Some(color);
+        self
+    }
+
+    #[must_use]
+    pub fn with_id(mut self, id: &str) -> Self {
+        self.id = id.to_string();
+        self
+    }
+
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// The live field contents while editing, else the committed value.
+    pub fn current_text(&self) -> &str {
+        if self.editing {
+            self.input.value()
+        } else {
+            &self.value
+        }
+    }
+
+    /// Ignored while editing so it doesn't stomp the user's typing.
+    pub fn set_value(&mut self, value: &str) {
+        if !self.editing {
+            self.value = value.to_string();
+        }
+    }
+
+    pub fn is_editing(&self) -> bool {
+        self.editing
+    }
+
+    /// Selects the whole value so the first keystroke replaces it (native
+    /// rename behaviour).
+    pub fn begin_edit(&mut self) {
+        self.input.set_text(&self.value);
+        self.input.set_focus(true);
+        self.input.select_all();
+        self.editing = true;
+        self.outcome = EditOutcome::None;
+    }
+
+    /// A blank entry keeps the previous value. No-op when not editing.
+    pub fn commit(&mut self) {
+        if !self.editing {
+            return;
+        }
+        let trimmed = self.input.value().trim().to_string();
+        if !trimmed.is_empty() {
+            self.value = trimmed;
+        }
+        self.editing = false;
+        self.input.set_focus(false);
+        self.outcome = EditOutcome::Committed(self.value.clone());
+    }
+
+    /// No-op when not editing.
+    pub fn cancel(&mut self) {
+        if !self.editing {
+            return;
+        }
+        self.editing = false;
+        self.input.set_focus(false);
+        self.outcome = EditOutcome::Cancelled;
+    }
+
+    pub fn take_outcome(&mut self) -> EditOutcome {
+        std::mem::replace(&mut self.outcome, EditOutcome::None)
+    }
+
+    /// For callers embedding the label in their own immediate-mode chrome,
+    /// without a taffy pass.
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.rect = rect;
+        self.input.apply_layout_external(rect);
+    }
+
+    /// Matches [`TextInput`]'s own centring so text doesn't shift on edit.
+    fn text_band(&self) -> (f64, f64) {
+        let line_height = f64::from(self.size * LINE_HEIGHT_RATIO);
+        let top = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
+        (top, line_height)
+    }
+}
+
+impl Widget for EditableLabel {
+    fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::auto(),
+                height: Dimension::length((self.size * LINE_HEIGHT_RATIO).max(28.0)),
+            },
+            flex_shrink: 1.0,
+            flex_grow: 0.0,
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn measure(
+        &mut self,
+        _known: taffy::Size<Option<f32>>,
+        _available: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        let (w, _) = text_renderer.measure_font(
+            self.current_text(),
+            self.size,
+            None,
+            TextWeight::Regular,
+            false,
+            &self.family,
+        );
+        taffy::Size {
+            width: w + 4.0,
+            height: (self.size * LINE_HEIGHT_RATIO).max(28.0),
+        }
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
+        );
+        self.input.apply_layout_external(self.rect);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.editing {
+            self.input.apply_layout_external(self.rect);
+            self.input
+                .draw(scene, transform, text_renderer, theme, presence);
+            return;
+        }
+        if self.value.is_empty() {
+            return;
+        }
+        let color = self.idle_color.unwrap_or(theme.text_primary);
+        let (top, _lh) = self.text_band();
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+        )]
+        let text_transform = transform * Affine::translate((self.rect.x0, top));
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
+        )]
+        let width = self.rect.width() as f32 + 1.0;
+        text_renderer.draw_text_font(
+            scene,
+            &self.value,
+            self.size,
+            color,
+            text_transform,
+            Some(width),
+            TextWeight::Regular,
+            false,
+            &self.family,
+        );
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+        if !self.editing {
+            return;
+        }
+        match event {
+            // The field itself consumes neither Enter nor Esc, so the
+            // wrapper intercepts both before forwarding.
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Enter),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                self.commit();
+                *handled = true;
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                self.cancel();
+                *handled = true;
+            }
+            // Deliberately NOT consumed, so the click still reaches whatever
+            // is under it — clicking away both saves and acts, like a
+            // native inline rename.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if !self.rect.contains(self.last_pointer) => {
+                self.commit();
+                // handled stays false: fall through to the host.
+            }
+            // A plain hover move is forwarded but not claimed, so the host
+            // keeps its own pointer bookkeeping.
+            WindowEvent::CursorMoved { .. } => {
+                let was = *handled;
+                self.input.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    root,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
+                if !self.input.is_dragging() {
+                    *handled = was;
+                }
+            }
+            _ => {
+                self.input.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    root,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
+            }
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "EditableLabel"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        if self.id.is_empty() {
+            Some("editable_label")
+        } else {
+            Some(self.id.as_str())
+        }
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.editing && self.rect.contains(point) {
+            Some(winit::window::CursorIcon::Text)
+        } else {
+            None
+        }
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    /// Losing focus while editing blur-commits — the keyboard-navigation
+    /// counterpart to a click-outside.
+    fn set_focus(&mut self, focused: bool) {
+        if focused {
+            self.input.set_focus(true);
+        } else if self.editing {
+            self.commit();
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.editing
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.input)
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Widget::ime_purpose(&self.input)
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.editing && self.input.is_dragging()
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        if self.editing {
+            return self.input.accessibility();
+        }
+        if self.value.is_empty() {
+            return None;
+        }
+        Some(
+            AccessNode::new(Role::TextInput)
+                .with_optional_value(Some(self.value.clone()))
+                .with_state(AccessState {
+                    focusable: true,
+                    ..Default::default()
+                }),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+
+        if !self.editing {
+            match action {
+                Action::SetValue(_) | Action::SetSelection { .. } => self.begin_edit(),
+                _ => return false,
+            }
+        }
+        Widget::perform_action(&mut self.input, action, state, path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn drive(el: &mut EditableLabel, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.leaf_node(Style::default());
+        el.handle_event(
+            ev,
+            1.0,
+            &m,
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
+    }
+
+    fn char_key(s: &str) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(winit::keyboard::SmolStr::new(s));
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn named_key(k: NamedKey) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(k);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn mouse_move(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    fn no_mods() -> Modifiers {
+        Modifiers::default()
+    }
+
+    #[test]
+    fn blur_commit_saves_typed_value_on_click_outside() {
+        let mut el = EditableLabel::new("Old Name");
+        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+        let mut doc = AutoCommit::new();
+
+        el.begin_edit();
+        assert!(el.is_editing());
+
+        // begin_edit selects-all, so the first keystroke replaces the value.
+        drive(&mut el, &mut doc, &char_key("N"), no_mods());
+        drive(&mut el, &mut doc, &char_key("e"), no_mods());
+        drive(&mut el, &mut doc, &char_key("w"), no_mods());
+        assert_eq!(
+            el.current_text(),
+            "New",
+            "typing replaced the selected value"
+        );
+        assert!(el.is_editing(), "still editing until a commit trigger");
+
+        // Move the pointer well outside the field, then press — a click away.
+        drive(&mut el, &mut doc, &mouse_move(500.0, 500.0), no_mods());
+        let consumed = drive(&mut el, &mut doc, &left_press(), no_mods());
+
+        assert!(!el.is_editing(), "click outside ends the edit");
+        assert_eq!(el.value(), "New", "blur committed the typed value");
+        assert!(
+            !consumed,
+            "the outside click is not swallowed — it still reaches the host",
+        );
+        assert_eq!(el.take_outcome(), EditOutcome::Committed("New".into()));
+        assert_eq!(
+            el.take_outcome(),
+            EditOutcome::None,
+            "outcome is rising-edge"
+        );
+    }
+
+    #[test]
+    fn enter_commits_and_consumes() {
+        let mut el = EditableLabel::new("first");
+        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+        let mut doc = AutoCommit::new();
+        el.begin_edit();
+        drive(&mut el, &mut doc, &char_key("z"), no_mods()); // replaces selection → "z"
+        let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Enter), no_mods());
+        assert!(consumed, "Enter is consumed");
+        assert!(!el.is_editing());
+        assert_eq!(el.value(), "z");
+        assert_eq!(el.take_outcome(), EditOutcome::Committed("z".into()));
+    }
+
+    #[test]
+    fn escape_cancels_and_keeps_previous_value() {
+        let mut el = EditableLabel::new("keep me");
+        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+        let mut doc = AutoCommit::new();
+        el.begin_edit();
+        drive(&mut el, &mut doc, &char_key("X"), no_mods()); // would-be new value
+        let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Escape), no_mods());
+        assert!(consumed, "Esc is consumed");
+        assert!(!el.is_editing());
+        assert_eq!(el.value(), "keep me", "cancel restores the previous value");
+        assert_eq!(el.take_outcome(), EditOutcome::Cancelled);
+    }
+
+    #[test]
+    fn blank_commit_keeps_previous_value() {
+        let mut el = EditableLabel::new("Original");
+        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+        let mut doc = AutoCommit::new();
+        el.begin_edit(); // selects all
+        // select-all is already active; type a space then backspace to empty it.
+        drive(&mut el, &mut doc, &char_key(" "), no_mods()); // → " "
+        drive(
+            &mut el,
+            &mut doc,
+            &named_key(NamedKey::Backspace),
+            no_mods(),
+        ); // → ""
+        assert_eq!(el.current_text(), "", "field is empty before commit");
+        el.commit();
+        assert_eq!(el.value(), "Original", "blank commit keeps the old value");
+    }
+
+    #[test]
+    fn focus_loss_blur_commits() {
+        let mut el = EditableLabel::new("before");
+        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+        let mut doc = AutoCommit::new();
+        el.begin_edit();
+        drive(&mut el, &mut doc, &char_key("A"), no_mods()); // → "A"
+        el.set_focus(false);
+        assert!(!el.is_editing());
+        assert_eq!(el.value(), "A");
+        assert_eq!(el.take_outcome(), EditOutcome::Committed("A".into()));
+    }
+
+    #[test]
+    fn ctrl_a_selects_all_through_embedded_field() {
+        let mut el = EditableLabel::new("hello world");
+        el.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 30.0));
+        let mut doc = AutoCommit::new();
+        el.begin_edit();
+        // Collapse the initial select-all by pressing Right (caret to end).
+        drive(
+            &mut el,
+            &mut doc,
+            &named_key(NamedKey::ArrowRight),
+            no_mods(),
+        );
+        // Now Ctrl+A must reselect everything, then typing replaces it all.
+        let mut ctrl = winit::keyboard::ModifiersState::empty();
+        ctrl |= winit::keyboard::ModifiersState::CONTROL;
+        drive(&mut el, &mut doc, &char_key("a"), Modifiers::from(ctrl));
+        drive(&mut el, &mut doc, &char_key("Z"), no_mods());
+        assert_eq!(
+            el.current_text(),
+            "Z",
+            "Ctrl+A selected the whole value so the next keystroke replaced it",
+        );
+    }
+}

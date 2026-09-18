@@ -165,7 +165,7 @@ pub fn build_keymap(symbols: &[Symbol]) -> (String, Vec<(Symbol, u32)>) {
     keymap.push_str("xkb_keymap {\n");
 
     // --- keycodes: name every code we use; <I N> = code N. ---
-    keymap.push_str("xkb_keycodes \"qos-osk\" {\n");
+    keymap.push_str("xkb_keycodes \"tilo-osk\" {\n");
     // `write!` into a `String` is infallible; the `Result` is intentionally
     // discarded rather than `unwrap()`-ed.
     let _ = writeln!(keymap, "minimum = {KEYCODE_BASE};");
@@ -176,11 +176,11 @@ pub fn build_keymap(symbols: &[Symbol]) -> (String, Vec<(Symbol, u32)>) {
     keymap.push_str("};\n");
 
     // --- types / compat: pull in the stock complete definitions. ---
-    keymap.push_str("xkb_types \"qos-osk\" { include \"complete\" };\n");
-    keymap.push_str("xkb_compat \"qos-osk\" { include \"complete\" };\n");
+    keymap.push_str("xkb_types \"tilo-osk\" { include \"complete\" };\n");
+    keymap.push_str("xkb_compat \"tilo-osk\" { include \"complete\" };\n");
 
     // --- symbols: one single-level key per code → exactly one keysym. ---
-    keymap.push_str("xkb_symbols \"qos-osk\" {\n");
+    keymap.push_str("xkb_symbols \"tilo-osk\" {\n");
     for (sym, code) in &assigned {
         let _ = writeln!(keymap, "key <I{code}> {{ [ {} ] }};", sym.keysym_name());
     }
@@ -394,7 +394,7 @@ mod wayland {
         fn upload_keymap(&self, keymap_str: &str) -> Option<()> {
             use std::io::{Seek, SeekFrom, Write};
 
-            let name = c"qos-osk-keymap";
+            let name = c"tilo-osk-keymap";
             // SAFETY: `memfd_create` with a valid C string and a documented
             // flag set; the returned fd is owned by `File` below.
             let raw = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };

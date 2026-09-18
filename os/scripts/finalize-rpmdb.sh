@@ -22,7 +22,7 @@ test -f "$db_dir/rpmdb.sqlite"
 find "$db_parent" -maxdepth 1 -type d -name "${db_name}rebuilddb.*" \
     -exec rm -rf -- {} +
 
-rebuild_log="$(mktemp /tmp/qos-rpm-rebuild.XXXXXX)"
+rebuild_log="$(mktemp /tmp/tilo-rpm-rebuild.XXXXXX)"
 trap 'rm -f -- "$rebuild_log"' EXIT
 if rpm --rebuilddb >"$rebuild_log" 2>&1; then
     # On filesystems where rpm can perform its own directory swap, there is

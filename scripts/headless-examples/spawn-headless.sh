@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Spawn the nirios compositor headlessly + wait for the control socket.
+# Spawn the tilo compositor headlessly + wait for the control socket.
 #
 # Usage:
-#   ./scripts/headless-examples/spawn-headless.sh [/tmp/nirios.sock]
+#   ./scripts/headless-examples/spawn-headless.sh [/tmp/tilo.sock]
 #
 # Behaviour:
 #   - Removes any stale socket at the chosen path.
-#   - Sets QOS_TEST_CONTROL to the socket path.
+#   - Sets TILO_TEST_CONTROL to the socket path.
 #   - Unsets DISPLAY + WAYLAND_DISPLAY so the binary boots truly headless.
 #   - Runs ./target/debug/shell --backend headless.
 #   - Waits up to 15s for the socket to appear.
@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-SOCKET="${1:-/tmp/nirios.sock}"
+SOCKET="${1:-/tmp/tilo.sock}"
 BINARY="$(dirname "$0")/../../target/debug/shell"
 
 if [ ! -x "$BINARY" ]; then
@@ -35,7 +35,7 @@ fi
 
 rm -f "$SOCKET"
 
-export QOS_TEST_CONTROL="$SOCKET"
+export TILO_TEST_CONTROL="$SOCKET"
 exec env -u DISPLAY -u WAYLAND_DISPLAY \
     "$BINARY" --backend headless &
 COMP_PID=$!

@@ -15,18 +15,16 @@ path = "src/main.rs"
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-# Shared streaming + playback layer. The watch page's video surface is a
-# `ui::widget::VideoPlayer` driven by a `media::MediaEngine`, so real decode +
-# audio out land through the same engine the local video player and the editor
-# preview use. Real GStreamer decode is behind this crate's `decode` feature,
-# pulled in by Tube's own `media` feature below.
-media = { path = "../../crates/media" }
+runtime-identity = { path = "../../crates/runtime/runtime-identity" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# Shared streaming and playback layer. The watch-page `VideoPlayer` uses the
+# same `media::MediaEngine` as the local player and editor preview.
+media = { path = "../../crates/media/core" }
 automerge.workspace = true
-# The qOS ACTION model: Tube's `actions` module exports its collaborative
+# The Tilo ACTION model: Tube's `actions` module exports its collaborative
 # operations (likes, queue, comment replies) as replayable actions the host's
 # Ctrl+K palette dispatches.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -36,87 +34,58 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-# Live fetch (Invidious / SponsorBlock / DeArrow). Blocking client driven
-# from a background worker thread; never touched on the `--shots` path.
+# Live fetch (Invidious / SponsorBlock / DeArrow), driven by a background
+# worker and excluded from the shots path.
 # rustls-tls because the distrobox image has no openssl/native-tls.
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+bounded-command = { path = "../../crates/system/bounded-command" }
+atomic-file = { path = "../../crates/system/atomic-file" }
+blake3.workspace = true
+libc.workspace = true
 
-# --- live YouTube backend (off by default) ---------------------------------
-# rustypipe is a pure-Rust InnerTube client (search/channel/video/streams/
-# trending); rustypipe-botguard mints PoTokens. Both are async (tokio) and pull
-# a network stack, so they are gated behind the `live` feature: the default
-# build (and every `--shots`/test run) stays hermetic on the offline sample.
-# No ffmpeg / yt-dlp — rustypipe embeds rquickjs.
+# Live YouTube backend (off by default): rustypipe handles InnerTube requests
+# and botguard tokens without ffmpeg or yt-dlp.
 #
-# rustls (webpki roots) rather than rustypipe's default native-tls: the
-# distrobox build image has no OpenSSL, and it keeps the TLS stack identical to
-# the `reqwest` above (one rustls, no openssl-sys). webpki-roots bundles the
-# Mozilla CA set so YouTube's chain verifies with zero system trust store.
+# rustls with bundled webpki roots avoids an OpenSSL dependency and keeps the
+# TLS stack consistent with reqwest.
 rustypipe = { workspace = true, optional = true, features = ["rustls-tls-webpki-roots"] }
-# `rt-multi-thread` so the live backend's runtime can drive rustypipe's internal
-# `tokio::spawn` (visitor-data prefetch) — a current-thread runtime cannot.
+# `rt-multi-thread` is required by rustypipe's internal spawned tasks.
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 
-# --- Grayjay device sync (Noise Protocol Framework) — off by default --------
-# Real interop with a phone/desktop running Grayjay's "Sync" feature. The wire
-# protocol is the Noise Protocol Framework over TCP (Android listens on 12315),
-# reimplemented clean-room from the OPEN grayjay-android sources (see
-# `src/sync/protocol.rs` for per-fact citations). `snow` is the Rust Noise
-# implementation; its default resolver is pure-Rust (x25519-dalek /
-# chacha20poly1305 / blake2) so it needs no OpenSSL — matching the rest of tube.
-# `flate2` handles the ContentEncoding.Gzip that Grayjay uses for DATA payloads;
-# `base64` decodes the standard/url-safe device public keys in the pairing blob.
-# All three are gated behind `grayjay-sync`: the default build (and every
-# `--shots`/hermetic test run) never pulls in a network/Noise/socket stack.
+# Grayjay device sync uses the Noise protocol over TCP. `snow`, `flate2`, and
+# `base64` are gated behind `grayjay-sync`.
 snow = { version = "0.9", optional = true }
 flate2 = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg", optional = true }
 sha2 = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
-dirs = { workspace = true, optional = true }
+dirs.workspace = true
 
 [dev-dependencies]
-# Encoding-level assertions in the video-surface test: prove a decoded frame
-# actually emits an IMAGE draw command into the scene (mirrors ui's own
-# VideoPlayer paint test). Same version as the `vello` above.
+# Encoding-level assertions for the video-surface test; version matches `vello`.
 vello_encoding.workspace = true
-# Encode a tiny valid PNG so a test can seed the `ui::ImageStore` with a
-# decodable thumbnail (no network) and prove a search-result row paints the real
-# still. Same crate ui uses for the equivalent image-store test.
+# Encode a valid PNG for the offline image-store test fixture.
 png.workspace = true
 tempfile.workspace = true
 
 [features]
 thin = ["dep:runtime-dylib"]
-# The real app ships on by default: `live` gives real YouTube data and `media`
-# gives real GStreamer decode/playback + audio out, so a normally-built `tube`
-# streams real video out of the box. `--shots` and tests stay hermetic at
-# runtime (the live worker is never spawned on the shots path and the watch
-# surface synthesizes frames), so the features only compile the live code in.
-# Grayjay sync is shipped by default; its network worker still starts only in
-# the live app and fails closed if the host secret broker is unavailable.
+# The default app includes live YouTube and media features. Shots/tests remain
+# hermetic at runtime because their live workers are not spawned; Grayjay sync
+# also fails closed if the host secret broker is unavailable.
 default = ["live", "media", "grayjay-sync"]
-# Real YouTube data. The live backend shells out to **yt-dlp** (the
-# community-maintained extractor) for search / video / channel / streams and
-# keeps `rustypipe` compiled as a fallback source. `--features live` must
-# check-compile; it is never part of the shots path.
+# YouTube data via yt-dlp with rustypipe as a fallback source.
 live = ["dep:rustypipe", "dep:tokio"]
-# Real video decode + playback + audio out. Turns on the shared media engine's
-# GStreamer backend (`media/decode`) that the watch-page `VideoPlayer` streams
-# through. The former `--probe-gst` diagnostic is now an alias for the same
-# MediaEngine probe, so Tube no longer links a second direct playback stack. The
-# default build keeps the synthesized-frame fallback, so `--shots`/tests need no
-# gstreamer stack.
+# Video decode, playback, and audio through the shared GStreamer media engine.
 media = [
     "media/decode",
     # Desktop media integration: the watch-page player publishes now-playing +
     # accepts media keys through the toolkit's MPRIS service.
     "ui/mpris",
 ]
-# Real Grayjay account/device sync over Noise (TCP 12315 + pairing). Compiles
-# the live transport and portal-backed lifecycle. `--no-default-features`
-# retains the deterministic unavailable transport for hermetic consumers.
+# Grayjay account/device sync over Noise (TCP 12315 + pairing), including its
+# portal-backed lifecycle.
 grayjay-sync = [
     "dep:snow",
     "dep:flate2",
@@ -124,7 +93,6 @@ grayjay-sync = [
     "dep:runtime-portal-xdg",
     "dep:sha2",
     "dep:zeroize",
-    "dep:dirs",
 ]
 
 [lints]

@@ -4,7 +4,7 @@
 //! map to native DrawingML objects. Model-backed fills, outlines, stroke widths,
 //! text colour and emphasis are emitted as native DrawingML too. PowerPoint
 //! features which do not exist in
-//! the qOS model (masters, charts, SmartArt, transitions and animation) are
+//! the Tilo model (masters, charts, SmartArt, transitions and animation) are
 //! intentionally not invented; the file UI tells users about that boundary.
 
 #![allow(
@@ -171,7 +171,7 @@ struct Picture {
     bytes: Vec<u8>,
 }
 
-/// Write a qOS palette role as DrawingML. Theme colours stay live when the
+/// Write a Tilo palette role as DrawingML. Theme colours stay live when the
 /// presentation is opened in Office; literal picker colours stay literal.
 fn drawing_color(role: &str) -> String {
     if let Some(hex) = role.strip_prefix('#') {
@@ -217,7 +217,7 @@ fn drawing_fill(role: &str) -> String {
 /// Emit the model's three slide treatments as a native DrawingML background.
 /// The value deliberately stays theme-relative: an Accent or Deep slide still
 /// tracks the presentation theme when opened in PowerPoint instead of being
-/// flattened to a qOS-specific RGB colour.
+/// flattened to a Tilo-specific RGB colour.
 fn drawing_slide_background(background: Background) -> String {
     let role = match background {
         Background::Surface => "surface",
@@ -871,7 +871,7 @@ const LAYOUT: &str = r#"<?xml version="1.0" encoding="UTF-8"?><p:sldLayout xmlns
 const LAYOUT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/></Relationships>"#;
 const NOTES_MASTER: &str = r#"<?xml version="1.0" encoding="UTF-8"?><p:notesMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld name=""><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld><p:clrMap accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" bg1="lt1" bg2="lt2" folHlink="folHlink" hlink="hlink" tx1="dk1" tx2="dk2"/></p:notesMaster>"#;
 const NOTES_MASTER_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>"#;
-const THEME: &str = r#"<?xml version="1.0" encoding="UTF-8"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="qOS"><a:themeElements><a:clrScheme name="qOS"><a:dk1><a:srgbClr val="1F2937"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="334155"/></a:dk2><a:lt2><a:srgbClr val="F8FAFC"/></a:lt2><a:accent1><a:srgbClr val="5A60F0"/></a:accent1><a:accent2><a:srgbClr val="10B981"/></a:accent2><a:accent3><a:srgbClr val="F59E0B"/></a:accent3><a:accent4><a:srgbClr val="F43F5E"/></a:accent4><a:accent5><a:srgbClr val="0EA5E9"/></a:accent5><a:accent6><a:srgbClr val="8B5CF6"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fontScheme name="qOS"><a:majorFont/><a:minorFont/></a:fontScheme><a:fmtScheme name="qOS"><a:fillStyleLst/><a:lnStyleLst/><a:effectStyleLst/><a:bgFillStyleLst/></a:fmtScheme></a:themeElements></a:theme>"#;
+const THEME: &str = r#"<?xml version="1.0" encoding="UTF-8"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Tilo"><a:themeElements><a:clrScheme name="Tilo"><a:dk1><a:srgbClr val="1F2937"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="334155"/></a:dk2><a:lt2><a:srgbClr val="F8FAFC"/></a:lt2><a:accent1><a:srgbClr val="5A60F0"/></a:accent1><a:accent2><a:srgbClr val="10B981"/></a:accent2><a:accent3><a:srgbClr val="F59E0B"/></a:accent3><a:accent4><a:srgbClr val="F43F5E"/></a:accent4><a:accent5><a:srgbClr val="0EA5E9"/></a:accent5><a:accent6><a:srgbClr val="8B5CF6"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fontScheme name="Tilo"><a:majorFont/><a:minorFont/></a:fontScheme><a:fmtScheme name="Tilo"><a:fillStyleLst/><a:lnStyleLst/><a:effectStyleLst/><a:bgFillStyleLst/></a:fmtScheme></a:themeElements></a:theme>"#;
 
 #[cfg(test)]
 mod tests {

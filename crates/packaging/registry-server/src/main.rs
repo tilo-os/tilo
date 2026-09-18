@@ -1,12 +1,12 @@
-//! `qos-registry-server` CLI — bind a port, add allowlisted
+//! `tilo-registry-server` CLI — bind a port, add allowlisted
 //! publishers, print the identity, or bootstrap a fresh instance.
 //!
 //! ```text
-//! qos-registry-server serve --port 8443 --identity <path>
-//! qos-registry-server add-publisher --pubkey <hex> [--can-add-new] [--note ...]
-//! qos-registry-server remove-publisher --pubkey <hex>
-//! qos-registry-server list-publishers
-//! qos-registry-server init --owner-pubkey <hex> --name <n> --description <d> --base-url <url>
+//! tilo-registry-server serve --port 8443 --identity <path>
+//! tilo-registry-server add-publisher --pubkey <hex> [--can-add-new] [--note ...]
+//! tilo-registry-server remove-publisher --pubkey <hex>
+//! tilo-registry-server list-publishers
+//! tilo-registry-server init --owner-pubkey <hex> --name <n> --description <d> --base-url <url>
 //! ```
 
 #![cfg_attr(
@@ -38,12 +38,12 @@ use registry_types::{PublisherAuthorization, SNAPSHOT_PROTOCOL, SignedRegistrySn
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "qos-registry-server",
-    about = "Self-hostable qOS app registry."
+    name = "tilo-registry-server",
+    about = "Self-hostable Tilo app registry."
 )]
 struct Cli {
     /// Location of the on-disk state. Defaults to
-    /// `$XDG_STATE_HOME/qos-registry` (see `default_data_dir`).
+    /// `$XDG_STATE_HOME/tilo-registry` (see `default_data_dir`).
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
 
@@ -446,7 +446,7 @@ async fn cmd_serve(storage: Storage, bind: IpAddr, port: u16) -> anyhow::Result<
         .map_err(|e| anyhow::anyhow!("load identity: {e}"))?;
     if ident.owner_pubkey_hex.is_empty() {
         anyhow::bail!(
-            "no handshake.toml at {} — run `qos-registry-server init …` first",
+            "no handshake.toml at {} — run `tilo-registry-server init …` first",
             storage.handshake_path().display()
         );
     }
@@ -496,7 +496,7 @@ fn cmd_init(
         .save_identity(&ident)
         .map_err(|e| anyhow::anyhow!("save identity: {e}"))?;
     info!(
-        "wrote handshake to {} — start the server with `qos-registry-server serve`",
+        "wrote handshake to {} — start the server with `tilo-registry-server serve`",
         storage.handshake_path().display()
     );
     Ok(())

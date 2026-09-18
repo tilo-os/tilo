@@ -39,7 +39,7 @@ pub struct Album {
 }
 
 /// One track. `yt_id` is the YouTube-Music video id used to resolve a
-/// streamable audio URL via the [`crate::source`] layer; for the offline
+/// streamable audio URL via the [`crate::backend`] worker; for the offline
 /// sample library it is a synthetic id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Track {
@@ -70,10 +70,62 @@ pub struct Playlist {
     pub name: String,
     pub description: String,
     pub track_ids: Vec<TrackId>,
+    /// Stable sparse order keys for each membership. The rendered
+    /// `track_ids` vector is sorted from these keys; keeping them in the
+    /// projection lets UI and resource actions author an absolute move rather
+    /// than replaying a fragile pair of list indices.
+    #[serde(default)]
+    pub track_ranks: BTreeMap<TrackId, i64>,
     /// Optional portable playlist cover: an HTTPS URL or a bounded embedded PNG
     /// data URL normalized from the file portal. Empty ⇒ procedural placeholder.
     #[serde(default)]
     pub cover: String,
+}
+
+impl Playlist {
+    const ORDER_STEP: i64 = 1_048_576;
+
+    /// Absolute sparse rank for appending a new membership.
+    pub fn append_rank(&self) -> i64 {
+        self.track_ranks
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(-Self::ORDER_STEP)
+            .saturating_add(Self::ORDER_STEP)
+    }
+
+    /// Absolute sparse rank that moves `track` to `to` in the visible order.
+    /// Ties are resolved by stable track id by the document projection, so
+    /// even exhausted gaps remain deterministic across replicas.
+    pub fn rank_for_move(&self, track: &str, to: usize) -> Option<i64> {
+        let mut remaining = self
+            .track_ids
+            .iter()
+            .filter(|id| id.as_str() != track)
+            .collect::<Vec<_>>();
+        let insert = to.min(remaining.len());
+        let previous = insert.checked_sub(1).and_then(|index| {
+            remaining
+                .get(index)
+                .and_then(|id| self.track_ranks.get(id.as_str()))
+                .copied()
+        });
+        let next = remaining
+            .get(insert)
+            .and_then(|id| self.track_ranks.get(id.as_str()))
+            .copied();
+        remaining.clear();
+        Some(match (previous, next) {
+            (Some(previous), Some(next)) if next.saturating_sub(previous) > 1 => {
+                previous + (next - previous) / 2
+            }
+            (Some(previous), Some(_) | None) => previous.saturating_add(1),
+            (None, Some(next)) => next.saturating_sub(Self::ORDER_STEP),
+            (None, None) if self.track_ids.iter().any(|id| id == track) => 0,
+            (None, None) => return None,
+        })
+    }
 }
 
 /// Per-track cache state. `Cached` is reserved exclusively for a durable

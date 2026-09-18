@@ -10,7 +10,7 @@ SIM, or hardware-capability database.
 
 - Everyday Wi-Fi, hotspot, LAN, APN and SIM-PIN flows stay on the main page.
   Saved-profile metering, Wi-Fi MAC policy and automatic proxy discovery are
-  behind **Advanced** and write NetworkManager connection settings. qOS offers
+  behind **Advanced** and write NetworkManager connection settings. Tilo offers
   PAC URLs because that is NetworkManager's portable per-connection proxy
   contract; it does not invent a parallel manual-proxy service.
 - Advanced Wi-Fi and LAN editors identify profiles by UUID and seed every
@@ -19,8 +19,8 @@ SIM, or hardware-capability database.
   and multiple saved profiles get an explicit selector rather than silently
   editing the first one.
 - Enterprise Wi-Fi supports PEAP, TTLS and EAP-TLS. A valid CA is mandatory;
-  EAP-TLS additionally requires a client certificate and private key. qOS
-  inspects subject, expiry and SHA-256 fingerprint with the platform OpenSSL
+  EAP-TLS additionally requires a client certificate and private key. Tilo
+  inspects subject, expiry and SHA-256 fingerprint with Tilo's bounded Rust X.509 parser
   implementation and refuses expired certificates. Password and private-key
   passphrase flags are `not-saved`, leaving custody to NetworkManager's secret
   agent rather than Settings JSON.
@@ -37,6 +37,12 @@ connections fail before creating unsafe profiles when prerequisites are not
 met.
 
 ## Power
+
+Tilo leaves CPU governor and Intel/AMD P-state EPP ownership exclusively with
+power-profiles-daemon. The legacy polling `tilo-power.service` and its unused
+daemon were removed: two privileged writers racing over cpufreq sysfs would
+make the selected user profile unreliable and can hurt both frame pacing and
+battery life.
 
 - Settings enumerates every kernel battery and UPS for a truthful overview.
   The primary battery additionally exposes cycles and health when the driver

@@ -1,7 +1,7 @@
 //! `OpenMLS` provider wiring + per-member key material.
 //!
 //! One ciphersuite — `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` —
-//! with no negotiation: Ed25519 lines up with the rest of qOS (identity
+//! with no negotiation: Ed25519 lines up with the rest of Tilo (identity
 //! keys, the FROST threshold crate, Iroh's transport key), so a
 //! different MLS signature scheme would force two key materials per
 //! member; X25519/AES-128-GCM/SHA-256 are the small-ciphersuite MLS
@@ -33,13 +33,13 @@ pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_
 /// openmls uses for signing, and the provider holding storage for both
 /// the keypair and any `MlsGroup` this member joins.
 ///
-/// Bundled deliberately: in MLS the signer's private key, a minted
+/// Bundled because in MLS the signer's private key, a minted
 /// `KeyPackage`'s HPKE private state, and the group's epoch state must
 /// all live in the same provider — one struct prevents mixing providers,
 /// a bug class that only surfaces at decryption as "key not found".
 ///
-/// `!Clone` on purpose — the provider holds secret material; mint a
-/// fresh `MemberKey` instead of duplicating it.
+/// `!Clone` because the provider holds secret material; mint a fresh
+/// `MemberKey` instead of duplicating it.
 pub struct MemberKey {
     /// Display name embedded in the MLS `BasicCredential`. Not secret —
     /// carried in the on-wire Welcome and `KeyPackage`.

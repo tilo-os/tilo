@@ -17,22 +17,13 @@ use std::collections::HashSet;
 /// Size: ~75,000 words, ~700 KB. See `spellcheck/data/words.txt`.
 const BUILTIN_WORDS: &str = include_str!("../data/words.txt");
 
-/// Words this OS puts in front of people that a general English list has
-/// no reason to contain.
-///
-/// A spellchecker that underlines the name of the assistant shipped
-/// beside it is reporting the system as a mistake. These are proper
-/// nouns of the product itself, so they belong in the dictionary the
-/// product ships rather than in each person's user list — nobody should
-/// have to teach their computer what it is called.
+/// Product names included in the built-in dictionary.
 ///
 /// Membership is case-insensitive (see [`Dictionary::contains`]), so one
-/// spelling covers `qOS`, `QOS` and `qos`.
-const PRODUCT_WORDS: &[&str] = &["qos", "claude", "nirios"];
+/// spelling covers `Tilo`, `TILO` and `tilo`.
+const PRODUCT_WORDS: &[&str] = &["tilo", "claude", "tilo"];
 
-/// High-frequency conversational forms that broad word-list generation tends
-/// to lose (especially contractions and proper names). Full system Hunspell is
-/// preferred at runtime; these keep the embedded/offline fallback humane.
+/// Common contractions and proper names included in the embedded fallback.
 const CONVERSATIONAL_WORDS: &[&str] = &[
     "aren't",
     "can't",
@@ -167,8 +158,8 @@ impl Dictionary {
     }
 
     /// Like [`builtin`](Self::builtin), but also load any persisted user words
-    /// from the user-config file (`$XDG_CONFIG_HOME/qos/userdict.txt`, falling
-    /// back to `~/.config/qos/userdict.txt`). Missing / unreadable file is a
+    /// from the user-config file (`$XDG_CONFIG_HOME/tilo/userdict.txt`, falling
+    /// back to `~/.config/tilo/userdict.txt`). Missing / unreadable file is a
     /// silent no-op, so this is safe to call in headless tests and sandboxes.
     pub fn with_user_dict() -> Self {
         let mut d = Self::builtin();
@@ -278,7 +269,7 @@ impl Dictionary {
     }
 
     /// Persist the runtime user dictionary to the user-config file
-    /// (`$XDG_CONFIG_HOME/qos/userdict.txt`). Best-effort: returns `Ok(())` and
+    /// (`$XDG_CONFIG_HOME/tilo/userdict.txt`). Best-effort: returns `Ok(())` and
     /// no-ops when no config path is resolvable; surfaces I/O errors otherwise so
     /// a caller *can* report them, but the typical caller ignores the result.
     ///
@@ -330,8 +321,8 @@ impl Dictionary {
 }
 
 /// Resolve the path of the persisted user dictionary:
-/// `$XDG_CONFIG_HOME/qos/userdict.txt`, falling back to
-/// `$HOME/.config/qos/userdict.txt`. Returns `None` when neither environment
+/// `$XDG_CONFIG_HOME/tilo/userdict.txt`, falling back to
+/// `$HOME/.config/tilo/userdict.txt`. Returns `None` when neither environment
 /// variable is set (e.g. a locked-down sandbox), in which case the user
 /// dictionary lives only in memory.
 fn user_dict_path() -> Option<std::path::PathBuf> {
@@ -341,7 +332,7 @@ fn user_dict_path() -> Option<std::path::PathBuf> {
         .or_else(|| {
             std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
         })?;
-    Some(base.join("qos").join("userdict.txt"))
+    Some(base.join("tilo").join("userdict.txt"))
 }
 
 #[cfg(test)]
@@ -387,13 +378,13 @@ mod tests {
     #[test]
     fn add_word_makes_a_word_known_case_insensitively() {
         let mut d = Dictionary::from_words(["alpha", "beta"]);
-        assert!(!d.contains("qos"), "precondition: unknown word");
-        assert!(d.add_word("qOS"), "first add records the word");
-        assert!(d.contains("qos"), "added word is now known");
-        assert!(d.contains("QOS"), "membership stays case-insensitive");
+        assert!(!d.contains("tilo"), "precondition: unknown word");
+        assert!(d.add_word("Tilo"), "first add records the word");
+        assert!(d.contains("tilo"), "added word is now known");
+        assert!(d.contains("TILO"), "membership stays case-insensitive");
         // Re-adding is a no-op, and adding a built-in word records nothing.
         assert!(
-            !d.add_word("qos"),
+            !d.add_word("tilo"),
             "re-adding an existing user word is a no-op"
         );
         assert!(
@@ -417,13 +408,13 @@ mod product_vocabulary_tests {
 
     /// The assistant this OS ships is not a misspelling.
     ///
-    /// A red underline beneath `Claude` in a qOS document is the system
+    /// A red underline beneath `Claude` in a Tilo document is the system
     /// reporting itself as an error, and it turned up in a document where
     /// somebody had simply addressed the agent by name.
     #[test]
     fn the_products_own_nouns_are_not_misspellings() {
         let d = Dictionary::builtin();
-        for word in ["Claude", "claude", "qOS", "QOS", "qos", "nirios"] {
+        for word in ["Claude", "claude", "Tilo", "TILO", "tilo", "tilo"] {
             assert!(
                 d.contains(word),
                 "{word} is a name this OS puts on screen itself, so its own \

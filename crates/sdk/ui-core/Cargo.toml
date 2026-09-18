@@ -1,0 +1,338 @@
+[package]
+name = "ui"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+autoexamples = false
+
+[package.metadata.cargo-machete]
+# build.rs probes optional system libraries through pkg-config.
+ignored = ["pkg-config"]
+
+[features]
+test-support = []
+presentation-feedback = ["dep:wgpu-hal"]
+# Brave/EasyList filter-list → WebKit content-blocker JSON compiler
+# (`webview::adblock`). Off by default: only the browser app (and any
+# other app embedding a WebView with built-in blocking) pays for the
+# adblock-rust dependency.
+webview-adblock = ["dep:adblock"]
+# WPE WebKit engine backend for the WebView widget (`webview::wpe`).
+# Links the WPE stack (not packaged by Fedora — build it with
+# os/dev/build-wpe.sh and export PKG_CONFIG_PATH/LD_LIBRARY_PATH to its
+# prefix). Off by default so the workspace builds without the libraries.
+# Pulls `ash` for the DMA-BUF zero-copy import (raw-Vulkan interop with
+# wgpu-hal); its 0.38 matches the version wgpu-hal 29 resolves.
+webview-wpe = ["dep:ash", "dmabuf-import"]
+# Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory
+# (`dmabuf_import`). Shared by the WebView's rendered pages and the video
+# decoder's hardware frames — both hand over a GPU buffer as a dmabuf. Pulls
+# `ash` for the raw-Vulkan interop, so it stays opt-in for builds that need
+# neither.
+dmabuf-import = ["dep:ash"]
+# GPU video frames: the dmabuf import above plus the YUV->RGB conversion a
+# hardware decoder's NV12/P010 output needs before it can be painted.
+gpu-video = ["dmabuf-import"]
+# Desktop media integration (MPRIS `org.mpris.MediaPlayer2`) for the
+# `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
+# drive playback and show the current title/artist/art. Off by default so the
+# hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
+# `media` feature turns on `ui/mpris`). `zbus` is pinned to 4.4 to match the
+# copy `apps/music` + `apps/chat` already resolve, so no second zbus lands.
+mpris = ["dep:zbus", "zbus/tokio"]
+# Host-native file open/save through the XDG Desktop Portal (`ui::portal`).
+# Pulls `ashpd` (D-Bus / FileChooser) only when an app needs to open or
+# save files — an app opts in with `ui = { …, features = ["portal"] }`. The pure
+# parts always compile, so headless tests drive the exact per-frame drain path
+# with no portal, and a feature-less build degrades to a clean
+# `PortalOutcome::Failed` rather than failing to link.
+portal = ["dep:ashpd", "dep:windows", "dep:mime_guess"]
+notifications = ["dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
+
+[dependencies]
+private-fs = { path = "../../system/private-fs" }
+tilo-ui-graph = { path = "../../dev/ui-graph" }
+atomic-file = { path = "../../system/atomic-file" }
+settings-store = { path = "../../system/settings-store" }
+# Parses the portal's returned file URIs. Non-optional:
+# `portal::to_local_path` is the file-access rule — a URI naming a remote
+# host must not resolve to a local path — and must be testable in every
+# build configuration.
+url.workspace = true
+# The two halves of `uri`: RFC 3986 percent-decoding and the
+# x-www-form-urlencoded dialect that also reads `+` as a space.
+percent-encoding = "2"
+form_urlencoded = "1"
+tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
+# Filter-list compiler for the WebView's built-in ad blocking (feature
+# `webview-adblock`). The `content-blocking` feature provides the
+# EasyList→WebKit-content-blocker conversion; blocking then runs inside
+# WebKit's network process, not in Rust.
+adblock = { version = "0.12", optional = true, default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
+# runtime-collab is the qOS collab broker Cap'n Proto SDK.
+# `CollaborationManager` delegates to it via a shovel thread.
+runtime-collab = { path = "../../runtime/runtime-collab" }
+capnp.workspace = true
+capnp-rpc.workspace = true
+runtime-portal = { path = "../../runtime/runtime-portal" }
+app-state = { path = "../../system/app-state" }
+automerge.workspace = true
+spellcheck = { path = "../../text/spellcheck" }
+syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "parsing", "regex-fancy"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zeroize.workspace = true
+rustls.workspace = true
+chacha20poly1305.workspace = true
+cosmic-text = { version = "0.19.0", default-features = false, features = ["fontconfig", "peniko", "swash", "std"] }
+# Keep this aligned with cosmic-text: text painting needs the font's complete
+# variation-axis order to translate CSS-like axis values for Vello.
+skrifa = "0.40.0"
+pollster.workspace = true
+rustc-hash.workspace = true
+
+# Match wgpu-hal's ash version so Vulkan handles can pass through
+# `create_texture_from_hal`.
+ash = { version = "0.38", optional = true }
+taffy = { workspace = true, features = ["content_size"] }
+tokio = { workspace = true, features = ["full"] }
+vello.workspace = true
+libc.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+dirs.workspace = true
+fluent.workspace = true
+tilo-headless-schema = { path = "../../dev/headless-schema" }
+unic-langid.workspace = true
+unicode-segmentation = "1.12"
+# UAX #14 opportunities shared by editor geometry and clamped-label wrapping.
+# cosmic-text uses the same crate internally; naming it directly lets toolkit
+# code that must mirror shaped rows avoid ASCII-space heuristics.
+unicode-linebreak = "0.1.5"
+# ICU dictionary/LSTM segmentation for scripts whose word boundaries cannot
+# be inferred from whitespace (Thai, Lao, Khmer, Myanmar, CJK).
+icu_segmenter = "1.5"
+# TeX/Liang hyphenation patterns with language-specific minima. The same
+# implementation is already used by the workspace's Typst document engine;
+# making it direct lets UI paragraphs opt in without runtime dictionary I/O.
+hypher = "0.1.7"
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+uuid.workspace = true
+png.workspace = true
+image = { workspace = true, features = ["jpeg", "png", "webp"] }
+chrono = { workspace = true, features = ["clock", "std"] }
+# VideoPlayer widget (`widget::video_player`) decodes H.264 NAL units in-process.
+# `source` feature compiles the pure-C reference implementation so we don't
+# rely on a runtime-installed `libopenh264.so` — same pin as `shell`'s
+# screencast pipeline.
+openh264.workspace = true
+# Shared Tilo media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
+# and pulls frames from it; `media`'s default (no `decode`) build carries no
+# gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
+# An app that wants real decode enables `media/decode` in its own manifest.
+media = { path = "../../media/core" }
+# System clipboard access for TextInput's Ctrl+C / Ctrl+V / Ctrl+X.
+# Wayland uses `wl_data_device`; X11 uses the selection protocol —
+# `arboard` wraps both. The "wayland-data-control" feature lets us
+# talk to the data-control compositor extension when available
+# (kanshi / GNOME / KDE), falling back to the seat-driven protocol
+# otherwise.
+arboard = { workspace = true, features = ["image-data"] }
+# The `Link` widget hands its URL to the OS's registered handler (xdg-open /
+# the desktop portal on Linux) when activated. Same crate + pin the file
+# explorer already uses to open files with the desktop default; already
+# resolved in the workspace lockfile, so this adds no registry fetch.
+open = { workspace = true, features = ["shellexecute-on-windows"] }
+# Shared collaboration types used by the history/conflict/channel widgets and
+# by the signed wire envelopes carried by
+# `CollabRequest::SignedSyncIncremental` /
+# `CollabEvent::SignedCRDTIncremental`.
+collab-types = { path = "../../collab/collab-types" }
+channel-crypto = { path = "../../collab/channel-crypto" }
+# The canonical document model. `history_source` reads a live document's
+# change graph through `qdoc::history` (`versions` / `materialize_at`) and
+# turns it into the `HistoryEntry` rows the timeline + scrubber render, and
+# uses `qdoc`'s structural snapshot diff to write each row's summary. Pure
+# model code — no renderer, no I/O — so this stays a cheap dep.
+qdoc = { path = "../../doc/qdoc" }
+# The Tilo ACTION model: serializable, replayable CRDT-mutation actions + the
+# nested Resource tree apps publish. `command_palette` + `action_palette` +
+# the `App` resource-collection hook build on it to make Ctrl+K scope to the
+# focused app instance's open resources and dispatch their exported actions.
+tilo-actions = { path = "../../collab/actions" }
+# Direct dep on the Ed25519 implementation `tilo-collab-types` uses so
+# the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
+# without reaching into the tilo-collab-types private module path. Pinned
+# to the same major as `tilo-collab-types`.
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+# FROST threshold identity engine used by the identity-flow widgets. The
+# screens in `widget::identity_flow` drive `ThresholdIdentity::bootstrap_single_device`,
+# `begin_enrolment`, `adopt_dkg_outcome`, and `export_recovery_share`.
+threshold-identity = { path = "../../collab/threshold-identity" }
+# `widget::qr` encodes both the
+# pairing-channel JSON payload (screen 3) and the `tilo://invite/...`
+# URL (screen 5). `qrcode` is a small (no transitive deps), pure-Rust
+# QR encoder that produces a module-matrix we paint with Vello.
+qrcode.workspace = true
+# The `tilo://invite/<base32>` URL packs a
+# postcard-encoded payload as base32 (RFC 4648 alphabet, no padding)
+# so it stays URL-safe and case-insensitive when read aloud.
+base32.workspace = true
+# The pairing one-time MAC is derived from the 6-digit code so the
+# host can authenticate the pairer's DKG round-2 reply without a
+# pre-shared long-term key. SHA-512 is already a transitive via
+# `tilo-threshold-identity`, so direct pin keeps the lock single-copy.
+sha2.workspace = true
+# SIMD compiler fingerprinting and integrity for the private DX12 cache.
+blake3.workspace = true
+toml.workspace = true
+unicode-script = "=0.5.8"
+# Pairing-channel authentication. HMAC binds the round-1 broadcast to
+# the one-time pairing secret; XChaCha20-Poly1305 separately encrypts
+# and authenticates the exchanged DKG payloads.
+hmac.workspace = true
+# Identity-flow encode helpers — canonical-bytes for the invite
+# envelope's owner signature view, hex for the pairing-channel JSON
+# payload's binary fields, serde_bytes for the postcard-friendly
+# delegation-secret representation, thiserror for the flow-local
+# error type.
+postcard = { workspace = true, features = ["alloc", "use-std"] }
+hex.workspace = true
+serde_bytes.workspace = true
+thiserror.workspace = true
+# The identity-flow screens need a `CryptoRng + RngCore` compatible with
+# `frost-ed25519` 3.x, which consumes `rand_core` 0.6. Depending on it
+# directly (rather than reaching through `rand`) keeps the requirement
+# visible at the manifest level.
+rand_core = { workspace = true, features = ["getrandom"] }
+# Accessibility: AccessKit is the cross-platform a11y schema; the winit
+# adapter bridges our exported tree into the event loop and, via its default
+# `accesskit_unix` feature on Linux, publishes it over AT-SPI2 so standard ATs
+# (Orca, braille) read every `ui` app. `accesskit_winit` 0.34 targets
+# winit 0.30.x — the same pin as the `winit` dep above. See
+# `crates/sdk/ui-core/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
+# adapter wiring in `crates/sdk/ui-core/src/app.rs`.
+accesskit = "0.25.0"
+accesskit_winit = "0.34.0"
+# Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
+# focus / value / live-region narration through the offline Tilo TTS engine.
+# `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
+# stack is installed), so depending on this is safe in headless builds.
+tts = { path = "../../system/tts" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `smithay-clipboard` speaks Wayland protocols and does not compile on native
+# Windows/macOS targets. The only call sites are already Linux-gated in
+# `clipboard.rs`, so keep the backend out of host bundles on other platforms.
+smithay-clipboard = "0.7"
+# The image source uses the regular focus-gated wl_data_device protocol. The
+# text-only smithay-clipboard facade cannot advertise binary MIME payloads,
+# while data-control would bypass Tilo's focus/privilege boundary.
+smithay-client-toolkit = { version = "0.20.0", features = ["calloop"] }
+
+[target.'cfg(unix)'.dependencies]
+# Shared MPRIS media control needs a Unix session bus. Keep zbus out of native
+# Windows builds even when an app enables `mpris`; p2p supports hermetic tests.
+zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
+ashpd = { workspace = true, optional = true }
+# Launcher-provided identity capabilities use inherited Unix socket file
+# descriptors. Native Windows apps run without that optional Tilo service.
+runtime-identity = { path = "../../runtime/runtime-identity" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
+mime_guess = { version = "2.0.5", optional = true }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
+[build-dependencies]
+# Locates the WPE WebKit stack when the `webview-wpe` feature is on
+# (see build.rs); inert otherwise.
+pkg-config = "0.3"
+
+[dev-dependencies]
+regex.workspace = true
+# The `diag!` tests reproduce the crash they prevent: they need `dup2` to point
+# the process's stderr at a pipe, and the child's exit signal to assert SIGABRT.
+# Inspect Vello scene encodings (draw tags) in widget tests so we can pin
+# end-to-end paint contracts (e.g. `tabs::active_pill_emits_more_color_\
+# fills_than_inactive_siblings`) without rendering pixels.
+vello_encoding.workspace = true
+# `widget::file_picker::tests` build a real on-disk tree to exercise the
+# `std::fs::read_dir` path. Already pulled in by shell as a regular
+# dev-dep; pinning here for the leaf-test build.
+tempfile.workspace = true
+# `record::tests` point `XDG_DATA_HOME` at a scratch tree to exercise
+# per-record persistence, which is process-global — those tests run
+# serially so they cannot see each other's data root.
+serial_test.workspace = true
+# The `collaboration` shim tests stand up a fake capnp broker on one end
+# of a `UnixStream::pair()` and drive `CollaborationManager` against it.
+# Same pin runtime-collab tests use.
+capnp.workspace = true
+tokio-util.workspace = true
+
+[[example]]
+name = "ui-lab"
+path = "examples/ui_lab.rs"
+
+[[example]]
+name = "ui-shots"
+path = "examples/ui_shots.rs"
+
+[[example]]
+name = "ui-perf"
+path = "examples/ui_perf.rs"
+
+[[example]]
+name = "ui-managed-history-probe"
+path = "examples/managed_history_probe.rs"
+
+[[example]]
+name = "ui-native-input-probe"
+path = "examples/native_input_probe.rs"
+
+[[example]]
+name = "native-file-picker"
+path = "examples/native_file_picker.rs"
+required-features = ["portal"]
+
+[[example]]
+name = "windows-host"
+path = "examples/windows_host.rs"
+required-features = ["notifications"]
+
+[[example]]
+name = "ui-wpe"
+path = "examples/ui_wpe.rs"
+required-features = ["webview-wpe"]
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "hosted-platform"
+path = "tests/hosted_platform.rs"
+
+[lints]
+workspace = true
+
+[[example]]
+name = "card-composition-shots"
+path = "examples/card_composition_shots.rs"
+
+[[example]]
+name = "form-composition-shots"
+path = "examples/form_composition_shots.rs"
+
+[[example]]
+name = "manual-composition-shots"
+path = "examples/manual_composition_shots.rs"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu-hal = { version = "29", default-features = false, features = ["metal", "qos-presentation-feedback"], optional = true }

@@ -6,13 +6,10 @@
 //! [`ebook::app_root_for_shot`]) and `--viewport WxH` to capture states the
 //! single-frame renderer can't reach through live input.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -46,9 +43,10 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.qos.ebook", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.ebook", live_root)
             .max_positionals(1)
             .shot_root(shot_root)
+            .shot_handler(shot)
             .shot_viewport(shot_viewport)
             .allowed_options(&["--size"])
             .scenarios(&[
@@ -119,9 +117,32 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchErr
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
+    if !args.positionals().is_empty() {
+        return live_root(args);
+    }
     Ok(ebook::app_root_for_shot(
         args.scenario.as_deref().unwrap_or_default(),
     ))
+}
+
+fn shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let mut harness = ui::headless::FrameHarness::new_with_theme(
+        ui::State::new(),
+        shot_root(args)?,
+        args.viewport.unwrap_or_else(|| shot_viewport(args)),
+        ui::launch::shot_theme(args),
+    );
+    if args.scenario.as_deref() != Some("import-loading") {
+        harness
+            .wait_for_visuals(std::time::Duration::from_secs(15))
+            .map_err(LaunchError::Operation)?;
+    }
+    let out = args
+        .shots
+        .as_ref()
+        .ok_or_else(|| LaunchError::Operation("Missing screenshot path".into()))?;
+    harness.render_png(out);
+    Ok(())
 }
 
 fn parse_viewport(s: &str) -> Option<(u32, u32)> {

@@ -1,10 +1,9 @@
 use alloc::borrow::ToOwned as _;
 
 use objc2::{
-    available,
-    rc::{autoreleasepool, Retained},
+    ClassType, Message, available,
+    rc::{Retained, autoreleasepool},
     runtime::ProtocolObject,
-    ClassType, Message,
 };
 use objc2_core_foundation::CGSize;
 use objc2_foundation::NSObjectProtocol;

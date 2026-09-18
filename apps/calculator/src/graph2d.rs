@@ -107,7 +107,7 @@ impl Default for Graph2dScreen {
             // Shots-only: force the panel open so the headless narrow-width
             // screenshot can show the overlay drawer. No effect when unset, so
             // live behaviour (breakpoint-driven default) is unchanged.
-            user_toggled: std::env::var_os("QOS_CALC_PANEL_OPEN").is_some(),
+            user_toggled: std::env::var_os("TILO_CALC_PANEL_OPEN").is_some(),
             toggle_rect: Rect::ZERO,
             scrim_rect: Rect::ZERO,
             hovered_row: None,
@@ -371,12 +371,12 @@ impl Graph2dScreen {
                 .collect();
             // Seed the active row's caret inside a structure so a fresh frame
             // (incl. the headless screenshot) shows a real 2D caret in place.
-            // `QOS_CALC_SELECTION_DEMO` instead seeds a selection band, for the
+            // `TILO_CALC_SELECTION_DEMO` instead seeds a selection band, for the
             // drag-selection screenshot.
             if let Some(field) = self.fields.get_mut(model.active_fn) {
-                if std::env::var_os("QOS_CALC_LONG_DEMO").is_some() {
+                if std::env::var_os("TILO_CALC_LONG_DEMO").is_some() {
                     field.park_caret_at_end();
-                } else if std::env::var_os("QOS_CALC_SELECTION_DEMO").is_some() {
+                } else if std::env::var_os("TILO_CALC_SELECTION_DEMO").is_some() {
                     field.park_demo_selection();
                 } else {
                     field.park_caret_in_structure();

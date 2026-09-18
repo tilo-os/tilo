@@ -5,6 +5,7 @@ bcfeae05557a9f313ee4392d2f335d0ff69ebbfd232019e3736fb04999fe1734	cosign-v2.5.2-l
 6c0466811541ea03add5213a60a1562f0851e4c0b0ecfdee1a694a9455285900	syft-1.51.0-linux-arm64.tar.gz	https://github.com/anchore/syft/releases/download/v1.51.0/syft_1.51.0_linux_arm64.tar.gz
 138ce4b8843608a257d4bee88191ca78a989778bcefd8abb3c1d1aaac3ac6fb8	umu-launcher-1.4.0.tar	https://github.com/Open-Wine-Components/umu-launcher/releases/download/1.4.0/umu-launcher-1.4.0-zipapp.tar
 62e99e029a18fa313e6fa63d42390918101730a940e3491c54d9d58cab887c69	umu-proton-10.0-4.tar.gz	https://github.com/Open-Wine-Components/umu-proton/releases/download/UMU-Proton-10.0-4/UMU-Proton-10.0-4.tar.gz
+e264f0639ab775338311036f207b35cebe99bc417b016b53931ebca8b30b3d94	steam-runtime-sniper-3.0.20260805.254768.tar.xz	https://repo.steampowered.com/steamrt3/images/3.0.20260805.254768/SteamLinuxRuntime_sniper.tar.xz
 87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8	umu-database-8297d420.csv	https://raw.githubusercontent.com/Open-Wine-Components/umu-database/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv
 65cd49136305dccaa3d327cc948fa508f8e1d33de3e6c36ba0d9bf4646ca1727	bottles-programs-d1160b8.tar.gz	https://github.com/bottlesdevs/programs/archive/d1160b816ca44a1cc803ab9a0050071517cc1960.tar.gz
 e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7	doubletake-ae06722.tar.gz	https://github.com/omarroth/doubletake/archive/ae067228d76df011375164814b729932ed55ca2f.tar.gz
@@ -22,5 +23,18 @@ c880fa8d607b2aa6eadde7d6d6302b1396ebc38368fe2332fa20e193c7ee1420	libwpe-1.16.3.t
 b2bafef2751625b7fdf530f230ff0f542ff0eeba3590c3a989d931b2a55c858e	wpewebkit-2.52.6.tar.xz	https://wpewebkit.org/releases/wpewebkit-2.52.6.tar.xz
 e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118	doubletake-ae06722-LICENSE	https://raw.githubusercontent.com/omarroth/doubletake/ae067228d76df011375164814b729932ed55ca2f/LICENSE
 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986	fluxcast-a74f39f-LICENSE	https://raw.githubusercontent.com/IlyaP358/fluxcast/a74f39fe3f2012e20315cd37e13e9803871e587f/LICENSE
+# Official v4l2loopback tag archive; built and signed with the exact Tilo kernel.
+1efa0d3535523df1d45da00ec09bba0b5fdbf44c3efd775dd480fa7c803c3034	v4l2loopback-0.15.3-a7e4a4d.tar.gz	https://github.com/v4l2loopback/v4l2loopback/archive/a7e4a4dea36187ad3550c797d647bcc50faced42.tar.gz
+# Libvirt source archive: upstream signature provenance is recorded in platform-support.md.
+7ec1a04e7e4f4069353d4daac117bbe869287f5b202695de61fe1b079efb6cb6	libvirt-12.7.0.tar.xz	https://download.libvirt.org/libvirt-12.7.0.tar.xz
+# DXVK Windows DLLs: both PE architectures from one upstream release; GitHub asset SHA-256.
+d85ce7c79f57ecd765aaa1b9e7007cb875e6fde9f6d331df799bce73d513ce87	dxvk-2.7.1.tar.gz	https://github.com/doitsujin/dxvk/releases/download/v2.7.1/dxvk-2.7.1.tar.gz
+a5cb1a6ded7d2d7e92d550ba28edd21be2d1d4044662b399887351023e30ce64	dxvk-c3dd74b-LICENSE	https://raw.githubusercontent.com/doitsujin/dxvk/c3dd74be6baec53786d4e064a572185b70347a17/LICENSE
+# Native assembler for FEX tests; acquired from the official HTTPS release archive.
+1412a1c760bbd05db026b6c0d1657affd6631cd0a63cddb6f73cc6d4aa616148	nasm-2.16.03.tar.xz	https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/nasm-2.16.03.tar.xz
 # Fedora publishes virtio-win unsigned; pin the reviewed release by content.
 2f58eea024e0221a873032761dc3ed3262409cd80860b7b27d3d5a0f206616c9	virtio-win-0.1.302-1.noarch.rpm	https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-0.1.302-1.noarch.rpm
+# Native PDF capture tests use the same Chromium release as the Windows runtime.
+# SHA-256 values are published by GitHub release assets for chromium/8057.
+7788fa57a2996ebd21afc4090eb0a42b9f95ef3a72e7ef4c0756f1ea703c0415	pdfium-8057-linux-x64.tgz	https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8057/pdfium-linux-x64.tgz
+172094db7a92e0449339cb3a753668bcb26280dd484ea07fe98f61508f1409fa	pdfium-8057-linux-arm64.tgz	https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8057/pdfium-linux-arm64.tgz

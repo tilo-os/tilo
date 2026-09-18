@@ -30,10 +30,11 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     Availability, ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType,
-    PermissionRequirement, Resource, ResourceProvider, RetryPolicy, RiskLevel,
+    PermissionRequirement, Resource, ResourcePresentation, ResourceProvider, RetryPolicy,
+    RiskLevel,
 };
 
 use crate::doc::AuthDoc;
@@ -414,7 +415,19 @@ pub fn provide_account_resource(
 ) -> Resource {
     let id = acc.id;
     let cur_color = acc.color;
-    let mut child = Resource::new(account_resource_id(id), "totp.account", account_label(acc));
+    let mut child = Resource::new(account_resource_id(id), "totp.account", account_label(acc))
+        .with_presentation(ResourcePresentation {
+            detail: Some(if has_local_secret {
+                "Codes available on this device".into()
+            } else {
+                "Local setup required to generate codes".into()
+            }),
+            badge: Some(if has_local_secret {
+                "Ready".into()
+            } else {
+                "Set up".into()
+            }),
+        });
 
     child = child.with_action(
         account_operation(
@@ -599,7 +612,7 @@ impl ResourceProvider for crate::app::AuthenticatorApp {
 mod tests {
     use super::*;
     use crate::app::AuthenticatorApp;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -783,6 +796,17 @@ mod tests {
         let acct = Widget::resource(&app, &state.doc, &account_resource_id(account.id))
             .expect("account lazily resolves");
         assert_eq!(acct.kind, "totp.account");
+        assert_eq!(
+            acct.presentation
+                .as_ref()
+                .and_then(|value| value.badge.as_deref()),
+            Some("Ready")
+        );
+        let presentation = serde_json::to_string(&acct.presentation).expect("presentation encodes");
+        assert!(
+            !contains_secret_shaped_text(&presentation),
+            "resource presentation must never expose authenticator secrets"
+        );
         let ids: Vec<&str> = acct.actions.iter().map(|a| a.id.as_str()).collect();
         for want in [
             "open",
@@ -840,7 +864,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -904,8 +928,8 @@ mod tests {
         let encoded = encode(&action);
 
         // A applies locally, producing the envelope; B replays it.
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1008,7 +1032,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let ordered = AuthDoc::list_accounts(&doc);
         assert_eq!(ordered[0].id, second, "the second account moved to the top");

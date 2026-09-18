@@ -1,23 +1,23 @@
 # syntax=docker/dockerfile:1.7
 # ============================================================================
-# qos-kernel — Fedora kernel rebuild with a config fragment that:
+# tilo-kernel — Fedora kernel rebuild with a config fragment that:
 #   * statically links the storage / net / USB / HID / paravirt drivers on
 #     the boot path, so the image mounts its root FS without an initramfs,
-#   * tunes for interactive throughput (PREEMPT + HZ=1000 + THP=always +
+#   * tunes for interactive latency (PREEMPT + HZ=1000 + THP=madvise +
 #     SCHED_MC), and
 #   * drops DEBUG_INFO / KGDB — we ship the running kernel, not its
 #     ~800 MB debuginfo companion.
 #
 # Output OCI image layout (published by .forgejo/workflows/build-kernel.yml):
 #   /repo/
-#     qos-kernel-<ver>.<arch>.rpm
-#     qos-kernel-core-<ver>.<arch>.rpm
-#     qos-kernel-modules-<ver>.<arch>.rpm
+#     tilo-kernel-<ver>.<arch>.rpm
+#     tilo-kernel-core-<ver>.<arch>.rpm
+#     tilo-kernel-modules-<ver>.<arch>.rpm
 #     repodata/…
 #
 # os/Containerfile mounts this image as a second RPM repo alongside the
 # frozen fedora snapshot, and runs
-#   dnf swap kernel-core qos-kernel-core --nogpgcheck
+#   dnf swap kernel-core tilo-kernel-core --nogpgcheck
 # so the OS image ships this tuned kernel instead of Fedora's stock.
 #
 # Build takes ~40 min on the CI runner; on a laptop, allow ~60 min.
@@ -36,7 +36,11 @@
 # stage rather than global.
 ARG BASE_REF
 ARG RPMS_REF
+
 FROM ${RPMS_REF} AS rpms
+
+FROM scratch AS external-assets
+COPY --from=github-assets / /
 
 
 # ---- Stage 1: kernel builder ----------------------------------------------
@@ -45,23 +49,68 @@ FROM ${RPMS_REF} AS rpms
 # here would show up as "invalid module format" at boot.
 FROM ${BASE_REF} AS build
 
+COPY --from=external-assets /v4l2loopback-0.15.3-a7e4a4d.tar.gz /work/v4l2loopback-0.15.3-a7e4a4d.tar.gz
+RUN echo '1efa0d3535523df1d45da00ec09bba0b5fdbf44c3efd775dd480fa7c803c3034  /work/v4l2loopback-0.15.3-a7e4a4d.tar.gz' \
+      | sha256sum --check --strict \
+    && tar -xzf /work/v4l2loopback-0.15.3-a7e4a4d.tar.gz -C /work \
+    && mv /work/v4l2loopback-a7e4a4dea36187ad3550c797d647bcc50faced42 /work/v4l2loopback-0.15.3 \
+    && test -f /work/v4l2loopback-0.15.3/COPYING
+
 # Toolchain for a kernel RPM build.  All from the frozen repo.
 #   kernel-devel / kernel-headers  — matched headers so external module
 #     ABIs (dwarves BTF) resolve.
 #   rpm-build                       — rpmbuild(1) for -bp + -bb targets.
 #   make gcc bc flex bison          — the kernel build itself.
-#   openssl-devel                   — module signing keys.
+#   tilo-crypto is copied from the digest-pinned build stage above.
 #   elfutils-libelf-devel dwarves  — pahole/BTF, needed by CONFIG_DEBUG_INFO_BTF
 #                                     (Fedora sets this; we override it off).
 #   perl-generators python3 gzip xz cpio git  — misc SRPM build hooks.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         kernel-devel kernel-headers \
-        rpm-build make gcc bc flex bison \
-        openssl-devel elfutils-libelf-devel elfutils-devel dwarves \
+        rpm-build make gcc clang lld bc flex bison rust cargo \
+        elfutils-libelf-devel elfutils-devel dwarves \
         perl perl-generators rsync \
         python3 python3-devel python3-rpm-macros \
-        gzip xz cpio git which findutils \
+        gzip xz zstd cpio git which findutils \
     && dnf clean all
+
+# Compile the Rust-native signer on the selected native architecture. The
+# compiler and crate dependencies are frozen by RPMS_REF and Cargo.lock; this
+# avoids smuggling an x86-only CI builder into an ARM64 kernel build.
+COPY Cargo.toml Cargo.lock /work/workspace/
+COPY crates/system/tilo-crypto/Cargo.toml /work/crypto-member.toml
+COPY os/kernel/project-crate.py /work/project-crate.py
+COPY crates/system/tilo-crypto/src /work/tilo-crypto/src
+# bootc keeps /root as a symlink into an unpopulated /var. Cargo's registry
+# and lock files need a real writable build directory, independent of HOME.
+ENV CARGO_HOME=/work/cargo-home
+# Prune workspace-wide optional feature edges in the private lock copy, then
+# prove every version/checksum/edge still comes from the unchanged root lock.
+RUN python3 /work/project-crate.py --workspace /work/workspace/Cargo.toml \
+        --member /work/crypto-member.toml --lockfile /work/workspace/Cargo.lock \
+        --output /work/tilo-crypto \
+    && cd /work/tilo-crypto \
+    && cargo fetch \
+    && python3 /work/project-crate.py --lockfile /work/workspace/Cargo.lock \
+        --verify-lock /work/tilo-crypto/Cargo.lock \
+    && RUSTC_WRAPPER= cargo build --release --frozen \
+    && strip target/release/tilo-crypto \
+    && install -m 0755 target/release/tilo-crypto /usr/local/bin/tilo-crypto \
+    && rm -rf target
+
+# Build the architecture-neutral UEFI console probe with the frozen native
+# LLVM toolchain. Exporting the PE image avoids relying on each VM runner to
+# happen to ship a PE-capable linker (GNU ld commonly does not on ARM64).
+COPY os/tests/secureboot_vm_app.c /work/secureboot_vm_app.c
+RUN case "$(uname -m)" in \
+      x86_64) efi_target=x86_64-pc-win32-coff ;; \
+      aarch64) efi_target=aarch64-pc-win32-coff ;; \
+      *) echo "unsupported EFI probe architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    clang -target "$efi_target" -ffreestanding -fno-stack-protector \
+      -fshort-wchar -c /work/secureboot_vm_app.c -o /work/secureboot_vm_app.obj; \
+    ld.lld -flavor link /subsystem:efi_application /entry:efi_main \
+      /out:/work/secureboot_vm_app.efi /work/secureboot_vm_app.obj
 
 # `createrepo_c` is only needed at build time to write the repo metadata
 # into our output image — it never ships to end users, so pulling it from
@@ -92,7 +141,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 # applies every Fedora patch, and drops the .config that matches the target
 # arch/flavor.  --nodeps because we install the toolchain manually above
 # instead of via the SRPM's BuildRequires (some of those are pandoc / bindgen
-# heavyweights the qOS build doesn't need — DEBUG_INFO=n skips them).
+# heavyweights the Tilo build doesn't need — DEBUG_INFO=n skips them).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo set -eu; \
     export HOME=/work; \
     mkdir -p /work/rpmbuild/BUILD /work/rpmbuild/BUILDROOT /work/rpmbuild/RPMS \
@@ -111,26 +160,58 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo set -eu; \
     test -n "$KERN_SPEC"; \
     rpmbuild -bp --nodeps --define "_topdir /work/rpmbuild" "$KERN_SPEC"
 
+# One ephemeral signing identity per kernel build. Only the public
+# certificate is compiled into the kernel; the key is deleted before publish.
+RUN mkdir -p -m 0700 /work/module-signing \
+    && tilo-crypto generate-secure-boot-cert \
+         'Tilo ephemeral kernel module signing key' \
+         /work/module-signing/signing-key.pem \
+         /work/module-signing/signing-cert.pem \
+    && tilo-crypto certificate-der \
+         /work/module-signing/signing-cert.pem \
+         /work/module-signing/signing-cert.der
+
 # ---- Merge our config fragment on top of Fedora's --------------------------
-COPY os/kernel/config-fragments/qos.config /work/qos.config
+COPY os/kernel/config-fragments/ /work/kernel-config/
+COPY os/kernel/build-support.sh /work/kernel-build-support.sh
+COPY os/kernel/check-config.py /work/check-config.py
+COPY os/kernel/patches/ /work/kernel-patches/
 
 # The prepared source lands at /work/rpmbuild/BUILD/kernel-<VER>/linux-<VER>-<ARCH>/
 # with a resolved .config in place.  Use the in-tree merge_config.sh (the
 # canonical kconfig fragment merger) to overlay our overrides, then
 # olddefconfig to resolve any newly-exposed symbols non-interactively.
 #
-# `-y` in merge_config makes it die on missing symbols (rather than silently
-# dropping them) — a Fedora rename that killed one of our knobs surfaces here
-# instead of at boot.
+# After olddefconfig, every fragment assignment is compared with the resolved
+# config. A Fedora rename or dependency change therefore fails this stage
+# instead of silently dropping a hardening or performance knob.
 RUN set -eux; \
     KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     test -n "$KSRC" || { echo "no prepared kernel source tree found"; exit 1; }; \
     cd "$KSRC"; \
+    git apply --check /work/kernel-patches/*.patch; \
+    git apply /work/kernel-patches/*.patch; \
+    # Do not compile upstream's libcrypto-backed sign-file/extract-cert.
+    # Kbuild still asks extract-cert for our CONFIG_MODULE_SIG_KEY, so provide
+    # the already-validated DER certificate through a deliberately tiny shim.
+    sed -i '/hostprogs-always-$(CONFIG_MODULE_SIG_FORMAT).*sign-file/d' scripts/Makefile; \
+    sed -i '/^hostprogs := extract-cert$/d' certs/Makefile; \
+    ! grep -q 'hostprogs-always-$(CONFIG_MODULE_SIG_FORMAT).*sign-file' scripts/Makefile; \
+    ! grep -q '^hostprogs := extract-cert$' certs/Makefile; \
+    printf '%s\n' '#!/bin/sh' 'set -eu' 'out=$2' \
+      'case ${1:-} in' \
+      '  "") : > "$out" ;;' \
+      '  /work/module-signing/signing-key.pem) cp /work/module-signing/signing-cert.der "$out" ;;' \
+      '  *) echo "unexpected certificate input: $1" >&2; exit 1 ;;' \
+      'esac' \
+      > certs/extract-cert; \
+    chmod 0755 certs/extract-cert; \
     # `rpmbuild -bp` runs %prep which extracts + patches, but does NOT drop
     # the target .config into the source tree — Fedora's kernel spec does
     # that inside %build. Copy the right config manually:
     # `kernel-<arch>-fedora.config` is Fedora's non-debug baseline.
     ARCH="$(uname -m)"; \
+    sh /work/kernel-build-support.sh validate-arch "$ARCH"; \
     CANDIDATES="kernel-${ARCH}-fedora.config kernel-${ARCH}.config"; \
     FOUND=""; \
     for c in $CANDIDATES; do \
@@ -143,8 +224,11 @@ RUN set -eux; \
     }; \
     cp "$FOUND" .config; \
     cp .config /work/fedora.config; \
-    scripts/kconfig/merge_config.sh -m .config /work/qos.config; \
+    cat /work/kernel-config/tilo.config \
+        "/work/kernel-config/$ARCH.config" > /work/tilo-effective.config; \
+    scripts/kconfig/merge_config.sh -m .config /work/tilo-effective.config; \
     make olddefconfig; \
+    python3 /work/check-config.py .config --fragment /work/tilo-effective.config; \
     diff -u /work/fedora.config .config | head -200 > /work/config.diff || true; \
     echo "----- effective config diff (top 200 lines) -----"; \
     cat /work/config.diff; \
@@ -157,43 +241,141 @@ RUN set -eux; \
     missing=""; \
     for opt in \
         CONFIG_MODULE_SIG=y \
-        CONFIG_MODULE_SIG_ALL=y \
+        '# CONFIG_MODULE_SIG_ALL is not set' \
         CONFIG_MODULE_SIG_FORCE=y \
+        '# CONFIG_MODULE_FORCE_LOAD is not set' \
+        '# CONFIG_MODULE_UNLOAD is not set' \
+        '# CONFIG_LIVEPATCH is not set' \
+        '# CONFIG_DEBUG_FS is not set' \
+        '# CONFIG_PROC_PAGE_MONITOR is not set' \
         CONFIG_USER_NS=y \
         CONFIG_SECCOMP_FILTER=y \
         CONFIG_SECURITY_LANDLOCK=y \
         CONFIG_SECURITY_YAMA=y \
         CONFIG_SECURITY_LOCKDOWN_LSM=y \
-        CONFIG_X86_USER_SHADOW_STACK=y \
+        CONFIG_SECURITY_DMESG_RESTRICT=y \
+        CONFIG_BPF_UNPRIV_DEFAULT_OFF=y \
+        '# CONFIG_ACPI_CUSTOM_METHOD is not set' \
+        '# CONFIG_ACPI_CONFIGFS is not set' \
+        '# CONFIG_EFI_CUSTOM_SSDT_OVERLAYS is not set' \
+        CONFIG_PREEMPT=y \
+        CONFIG_PREEMPT_DYNAMIC=y \
+        CONFIG_HZ_1000=y \
+        CONFIG_HZ=1000 \
+        CONFIG_SCSI_VIRTIO=y \
+        CONFIG_DRM_VIRTIO_GPU=y \
+        CONFIG_HW_RANDOM_VIRTIO=y \
+        CONFIG_IWLWIFI=m \
+        CONFIG_SCHED_AUTOGROUP=y \
+        CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y \
+        CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y \
+        CONFIG_IRQ_TIME_ACCOUNTING=y \
+        CONFIG_HIGH_RES_TIMERS=y \
+        CONFIG_NO_HZ_IDLE=y \
+        '# CONFIG_HZ_PERIODIC is not set' \
+        '# CONFIG_NO_HZ_FULL is not set' \
+        CONFIG_UCLAMP_TASK=y \
+        CONFIG_UCLAMP_TASK_GROUP=y \
+        CONFIG_UCLAMP_BUCKETS_COUNT=5 \
+        CONFIG_ENERGY_MODEL=y \
+        CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y \
+        CONFIG_MODULE_COMPRESS_ZSTD=y \
+        CONFIG_MODULE_COMPRESS_ALL=y \
+        CONFIG_RD_ZSTD=y \
+        CONFIG_CRYPTO_LZ4=y \
+        CONFIG_LZ4_COMPRESS=y \
+        CONFIG_ZRAM=y \
+        CONFIG_ZRAM_BACKEND_LZ4=y \
+        CONFIG_ZRAM_DEF_COMP_LZ4=y \
+        CONFIG_DEBUG_INFO_NONE=y \
+        '# CONFIG_DEBUG_INFO is not set' \
+        CONFIG_KALLSYMS=y \
+        '# CONFIG_KALLSYMS_ALL is not set' \
         CONFIG_STRICT_KERNEL_RWX=y \
         CONFIG_STACKPROTECTOR_STRONG=y \
         CONFIG_FORTIFY_SOURCE=y \
         CONFIG_HARDENED_USERCOPY=y \
+        '# CONFIG_SCHED_CLASS_EXT is not set' \
+        '# CONFIG_SCHED_CORE is not set' \
+        '# CONFIG_SCHED_DEBUG is not set' \
         CONFIG_VMAP_STACK=y \
         CONFIG_SLAB_FREELIST_HARDENED=y \
         CONFIG_RANDOMIZE_KSTACK_OFFSET=y \
         CONFIG_LIST_HARDENED=y \
-        CONFIG_X86_KERNEL_IBT=y \
+        '# CONFIG_LEGACY_PTYS is not set' \
+        '# CONFIG_LEGACY_TIOCSTI is not set' \
+        '# CONFIG_USB_CONFIGFS is not set' \
+        '# CONFIG_USB_GADGETFS is not set' \
+        '# CONFIG_USB_FUNCTIONFS is not set' \
+        '# CONFIG_USB_MASS_STORAGE is not set' \
+        '# CONFIG_USB_G_SERIAL is not set' \
+        '# CONFIG_USB_G_PRINTER is not set' \
+        '# CONFIG_USB_G_WEBCAM is not set' \
+        '# CONFIG_USB_RAW_GADGET is not set' \
+        '# CONFIG_USBIP_CORE is not set' \
+        '# CONFIG_ATM is not set' \
+        '# CONFIG_ATALK is not set' \
+        '# CONFIG_CAN is not set' \
+        '# CONFIG_HAMRADIO is not set' \
+        '# CONFIG_6LOWPAN is not set' \
+        '# CONFIG_IEEE802154 is not set' \
+        '# CONFIG_IP_DCCP is not set' \
+        '# CONFIG_IP_SCTP is not set' \
+        '# CONFIG_LAPB is not set' \
+        '# CONFIG_MCTP is not set' \
+        '# CONFIG_MISDN is not set' \
+        '# CONFIG_NFC is not set' \
+        '# CONFIG_PHONET is not set' \
+        '# CONFIG_RDS is not set' \
+        '# CONFIG_TIPC is not set' \
+        '# CONFIG_X25 is not set' \
     ; do \
-        if grep -qx "$opt" .config; then echo "  ok      $opt"; \
+        if python3 /work/check-config.py .config --expect "$opt"; then echo "  ok      $opt"; \
         else echo "  MISSING $opt (resolved to: $(grep -E "^(# )?${opt%%=*}[ =]" .config || echo 'absent'))"; missing="$missing $opt"; fi; \
     done; \
-    if [ -n "$missing" ]; then echo "kernel config lost required security options:$missing"; exit 1; fi
+    if [ "$ARCH" = x86_64 ]; then \
+      for opt in CONFIG_X86_USER_SHADOW_STACK=y CONFIG_X86_INTEL_PSTATE=y \
+          CONFIG_X86_AMD_PSTATE=y CONFIG_X86_AMD_PSTATE_DEFAULT_MODE=3 \
+          CONFIG_X86_KERNEL_IBT=y CONFIG_LEGACY_VSYSCALL_NONE=y \
+          CONFIG_RANDOMIZE_BASE=y CONFIG_RANDOMIZE_MEMORY=y \
+          CONFIG_IA32_EMULATION=y '# CONFIG_X86_X32_ABI is not set' \
+          '# CONFIG_USELIB is not set' \
+          '# CONFIG_DEVPORT is not set' '# CONFIG_X86_MSR is not set' \
+          '# CONFIG_X86_CPUID is not set' \
+          '# CONFIG_USB_GADGET is not set' \
+          '# CONFIG_PARPORT is not set' '# CONFIG_BLK_DEV_FD is not set' \
+          '# CONFIG_PCCARD is not set' \
+          CONFIG_SCHED_MC_PRIO=y; do \
+        if python3 /work/check-config.py .config --expect "$opt"; then echo "  ok      $opt"; \
+        else echo "  MISSING $opt"; missing="$missing $opt"; fi; \
+      done; \
+    else \
+      for opt in CONFIG_ARM64_PTR_AUTH=y CONFIG_ARM64_PTR_AUTH_KERNEL=y \
+          CONFIG_ARM64_BTI=y CONFIG_RANDOMIZE_BASE=y \
+          CONFIG_RANDOMIZE_MODULE_REGION_FULL=y; do \
+        if python3 /work/check-config.py .config --expect "$opt"; then echo "  ok      $opt"; \
+        else echo "  MISSING $opt"; missing="$missing $opt"; fi; \
+      done; \
+    fi; \
+    if [ -n "$missing" ]; then echo "kernel config lost required security options:$missing"; exit 1; fi; \
+    sh /work/kernel-build-support.sh check-config "$ARCH" .config
 
-# ---- Rebuild as qos-kernel-* -----------------------------------------------
+# ---- Rebuild as tilo-kernel-* -----------------------------------------------
 # `make binrpm-pkg` uses scripts/package/kernel.spec (upstream template) to
 # produce a minimal binary RPM directly from the prepared source tree — much
 # faster + simpler than re-running the full Fedora spec (which builds every
 # flavor and the debuginfo pair).  We rename the package via the spec's
 # Name: header so it doesn't collide with Fedora's `kernel-core` and can be
-# swapped in cleanly via `dnf swap kernel-core qos-kernel-core`.
+# swapped in cleanly via `dnf swap kernel-core tilo-kernel-core`.
 #
 # Reproducible timestamp: buildkit passes SOURCE_DATE_EPOCH; the kernel's
 # KBUILD_BUILD_TIMESTAMP honours it.
 ARG SOURCE_DATE_EPOCH=0
+# Override on memory-constrained native builders; an empty value uses all CPUs.
+ARG KERNEL_BUILD_JOBS
 ENV KBUILD_BUILD_TIMESTAMP="@${SOURCE_DATE_EPOCH}" \
-    KBUILD_BUILD_USER=qos \
-    KBUILD_BUILD_HOST=qos-build \
+    KBUILD_BUILD_USER=tilo \
+    KBUILD_BUILD_HOST=tilo-build \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
@@ -207,7 +389,10 @@ ENV KBUILD_BUILD_TIMESTAMP="@${SOURCE_DATE_EPOCH}" \
 RUN set -eux; \
     KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     cd "$KSRC"; \
-    make -j"$(nproc)" all; \
+    JOBS="${KERNEL_BUILD_JOBS:-$(nproc)}"; \
+    case "$JOBS" in ''|*[!0-9]*|0) echo "KERNEL_BUILD_JOBS must be a positive integer" >&2; exit 1;; esac; \
+    make -j"$JOBS" all; \
+    make -C "$KSRC" M=/work/v4l2loopback-0.15.3 -j"$JOBS" modules; \
     KVER="$(make -s kernelrelease)"; \
     printf 'KVER=%s\n' "$KVER" > /work/kver.env; \
     STAGE=/work/stage; \
@@ -218,13 +403,44 @@ RUN set -eux; \
     # /usr/lib/modules, /usr/lib/ostree-boot or /boot" if vmlinuz isn't
     # co-located with the module tree. /boot itself is populated at
     # deploy time from these files.
-    cp arch/x86/boot/bzImage "$STAGE/lib/modules/$KVER/vmlinuz"; \
+    sh /work/kernel-build-support.sh stage-boot "$(uname -m)" "$KSRC" "$STAGE" "$KVER"; \
+    mkdir -p /work/secureboot-probe-inputs; \
+    cp "$STAGE/lib/modules/$KVER/vmlinuz" /work/secureboot-probe-inputs/vmlinuz; \
+    cp usr/gen_init_cpio /work/secureboot-probe-inputs/gen_init_cpio; \
+    cp /usr/local/bin/tilo-crypto /work/secureboot-probe-inputs/tilo-crypto; \
+    cp /work/secureboot_vm_app.efi /work/secureboot-probe-inputs/secureboot_vm_app.efi; \
     cp System.map            "$STAGE/lib/modules/$KVER/System.map"; \
     cp .config               "$STAGE/lib/modules/$KVER/config"; \
-    # CONFIG_MODULE_SIG_ALL signs during this step. modules_install strips
-    # first and signs last, so INSTALL_MOD_STRIP does not invalidate the
-    # signature it just wrote.
+    # Install and strip before signing. Automatic Kbuild signing is disabled
+    # because its host utility links libcrypto.
     make INSTALL_MOD_PATH="$STAGE" INSTALL_MOD_STRIP=1 modules_install; \
+    install -Dm0644 /work/v4l2loopback-0.15.3/v4l2loopback.ko \
+      "$STAGE/lib/modules/$KVER/extra/v4l2loopback.ko"; \
+    strip --strip-debug "$STAGE/lib/modules/$KVER/extra/v4l2loopback.ko"; \
+    test "$(modinfo -F name "$STAGE/lib/modules/$KVER/extra/v4l2loopback.ko")" = v4l2loopback; \
+    case "$(modinfo -F vermagic "$STAGE/lib/modules/$KVER/extra/v4l2loopback.ko")" in \
+      "$KVER "*) ;; \
+      *) echo "v4l2loopback was not built for $KVER" >&2; exit 1 ;; \
+    esac; \
+    install -Dm0644 /work/v4l2loopback-0.15.3/COPYING \
+      "$STAGE/usr/share/licenses/tilo-kernel-core/v4l2loopback-COPYING"; \
+    find "$STAGE/lib/modules/$KVER" -name '*.ko.zst' -type f -print0 \
+      | while IFS= read -r -d '' compressed; do \
+          module="${compressed%.zst}"; \
+          zstd -q -d --rm "$compressed" -o "$module"; \
+          tilo-crypto sign-module /work/module-signing/signing-key.pem \
+            /work/module-signing/signing-cert.pem "$module" "$module.signed"; \
+          tilo-crypto verify-module /work/module-signing/signing-cert.pem "$module.signed"; \
+          mv "$module.signed" "$module"; \
+          zstd -q --rm "$module" -o "$compressed"; \
+        done; \
+    find "$STAGE/lib/modules/$KVER" -name '*.ko' -type f -print0 \
+      | while IFS= read -r -d '' module; do \
+          tilo-crypto sign-module /work/module-signing/signing-key.pem \
+            /work/module-signing/signing-cert.pem "$module" "$module.signed"; \
+          tilo-crypto verify-module /work/module-signing/signing-cert.pem "$module.signed"; \
+          mv "$module.signed" "$module"; \
+        done; \
     # Prove the modules really are signed rather than trusting the config —
     # with MODULE_SIG_FORCE a silently unsigned module tree is a kernel that
     # boots without its drivers.  `modinfo -F sig_id` reads the signature out
@@ -242,7 +458,7 @@ RUN set -eux; \
     # Nothing needs to sign as this identity again: the certificate that
     # verifies it is already compiled into the vmlinuz above, and an
     # image-based OS loads no out-of-tree modules.
-    rm -f certs/signing_key.pem certs/signing_key.x509 certs/x509.genkey; \
+    rm -f /work/module-signing/signing-key.pem; \
     # `depmod` builds modules.dep + friends inside the staging tree so
     # `dnf install` doesn't have to run scriptlets on the live system.
     /sbin/depmod -a -b "$STAGE" "$KVER"; \
@@ -250,12 +466,19 @@ RUN set -eux; \
     # — they point outside the staging tree and rpm would fail file
     # ownership checks on them.
     rm -f "$STAGE/lib/modules/$KVER/source" "$STAGE/lib/modules/$KVER/build"; \
-    du -sh "$STAGE"
+    du -sh "$STAGE"; \
+    # The RPM step consumes only STAGE and kver.env. Exporting the compiler \
+    # tree in a cached layer duplicates tens of GiB during image commit. \
+    # Remove it only after the complete staged module tree passes its checks. \
+    case "$KSRC" in /work/rpmbuild/BUILD/*) ;; \
+        *) echo "refusing to remove kernel source outside the build root" >&2; exit 1;; esac; \
+    cd /work; \
+    rm -rf -- "$KSRC"
 
 # Hand-written spec — no Fedora scriptlets, no debuginfo, no brp-*
-# chain. `dnf swap kernel-core qos-kernel-core` in os/Containerfile
+# chain. `dnf swap kernel-core tilo-kernel-core` in os/Containerfile
 # resolves against the `Provides: kernel-core` line.
-COPY os/kernel/qos-kernel-payload.spec /work/qos-kernel-payload.spec
+COPY os/kernel/tilo-kernel-payload.spec /work/tilo-kernel-payload.spec
 RUN set -eux; \
     . /work/kver.env; \
     rpmbuild -bb \
@@ -265,14 +488,14 @@ RUN set -eux; \
         --define "stage /work/stage" \
         --define "__spec_install_pre %{nil}" \
         --define "__os_install_post %{nil}" \
-        /work/qos-kernel-payload.spec; \
+        /work/tilo-kernel-payload.spec; \
     mkdir -p /out; \
-    find /work/rpmbuild/RPMS -name 'qos-kernel*.rpm' -exec cp -v {} /out/ \;; \
+    find /work/rpmbuild/RPMS -name 'tilo-kernel*.rpm' -exec cp -v {} /out/ \;; \
     ls -lh /out/
 
-# The payload spec is named `qos-kernel-core` and already Provides:
+# The payload spec is named `tilo-kernel-core` and already Provides:
 # kernel-core / kernel-modules / kernel — no separate meta-RPM is
-# needed for the `dnf swap kernel-core qos-kernel-core` step in
+# needed for the `dnf swap kernel-core tilo-kernel-core` step in
 # os/Containerfile to resolve.
 
 # Build the repo metadata. `createrepo_c` was installed in the
@@ -282,12 +505,17 @@ RUN set -eux; \
 RUN mkdir -p /repo \
     && cp /out/*.rpm /repo/ \
     && createrepo_c --quiet /repo \
-    && printf '[qos-kernel]\nname=qOS custom kernel\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/qos-kernel.repo
+    && printf '[tilo-kernel]\nname=Tilo custom kernel\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/tilo-kernel.repo
 
+
+# CI-only export target: the OVMF enforcement probe boots the exact kernel and
+# invokes the exact Rust signer produced above. This is intentionally absent
+# from the published RPM repository image.
+FROM scratch AS secureboot-probe-inputs
+COPY --from=build /work/secureboot-probe-inputs /
 
 # ---- Stage 2: publish ------------------------------------------------------
 # Same shape as the frozen-repo image (os/Containerfile.rpms): FROM scratch +
-# just /repo.  os/Containerfile mounts this at build time as a second RPM
-# source and `dnf swap`s kernel-core → qos-kernel-core.
-FROM scratch
+# just /repo.  Keep this last: it is the default build target.
+FROM scratch AS publish
 COPY --from=build /repo /repo

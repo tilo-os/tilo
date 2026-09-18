@@ -4,7 +4,7 @@
 #   ./os/dev/composefs/update-series.sh
 #
 # bootc#2208 reports rollback breaking after a series of rebases and staying
-# broken through reboots. qOS binds rollback state to TPM-sealed LUKS keyslots,
+# broken through reboots. Tilo binds rollback state to TPM-sealed LUKS keyslots,
 # so a broken rollback is a machine that cannot unseal — which makes this the
 # step most likely to force a rethink, not a formality to run at the end.
 #
@@ -20,7 +20,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/common.sh"
 
 VM="$HERE/vm.sh"
-LOG="$QOS_CFS_RUN/series.log"
+LOG="$TILO_CFS_RUN/series.log"
 : > "$LOG"
 
 step() { printf '\n\033[1;35m=== %s\033[0m\n' "$*" | tee -a "$LOG" >&2; }
@@ -28,25 +28,25 @@ note() { printf '%s\n' "$*" | tee -a "$LOG" >&2; }
 
 # --- the registry ------------------------------------------------------------
 registry_up() {
-  if ! podman container exists qos-cfs-registry 2>/dev/null; then
-    msg "starting a registry on :$QOS_CFS_REG_PORT"
-    podman run -d --name qos-cfs-registry \
-      -p "$QOS_CFS_REG_PORT:5000" docker.io/library/registry:2 >/dev/null
-  elif [ "$(podman inspect -f '{{.State.Running}}' qos-cfs-registry)" != true ]; then
-    podman start qos-cfs-registry >/dev/null
+  if ! podman container exists tilo-cfs-registry 2>/dev/null; then
+    msg "starting a registry on :$TILO_CFS_REG_PORT"
+    podman run -d --name tilo-cfs-registry \
+      -p "$TILO_CFS_REG_PORT:5000" docker.io/library/registry:2 >/dev/null
+  elif [ "$(podman inspect -f '{{.State.Running}}' tilo-cfs-registry)" != true ]; then
+    podman start tilo-cfs-registry >/dev/null
   fi
   for _ in $(seq 1 30); do
-    curl -sf "http://$QOS_CFS_REG_HOST/v2/" >/dev/null && return 0
+    curl -sf "http://$TILO_CFS_REG_HOST/v2/" >/dev/null && return 0
     sleep 1
   done
-  die "registry did not come up on $QOS_CFS_REG_HOST"
+  die "registry did not come up on $TILO_CFS_REG_HOST"
 }
 
 publish() {
   local gen="$1"
-  msg "publishing generation $gen as $QOS_CFS_REG_HOST/$QOS_CFS_REPO:latest"
+  msg "publishing generation $gen as $TILO_CFS_REG_HOST/$TILO_CFS_REPO:latest"
   podman push --tls-verify=false \
-    "$QOS_CFS_IMAGE:gen$gen" "$QOS_CFS_REG_HOST/$QOS_CFS_REPO:latest"
+    "$TILO_CFS_IMAGE:gen$gen" "$TILO_CFS_REG_HOST/$TILO_CFS_REPO:latest"
 }
 
 guest() { "$VM" ssh "$@"; }
@@ -54,7 +54,7 @@ guest() { "$VM" ssh "$@"; }
 # What the guest reports about its own generation and rollback state, in one line.
 snapshot() {
   guest 'set -e
-    gen=$(tr " " "\n" < /proc/cmdline | sed -n "s/^qos\.generation=//p" | head -1)
+    gen=$(tr " " "\n" < /proc/cmdline | sed -n "s/^tilo\.generation=//p" | head -1)
     cfs=$(tr " " "\n" < /proc/cmdline | sed -n "s/^composefs=//p" | head -1)
     pcr11=$(tpm2_pcrread sha256:11 2>/dev/null | sed -n "s/.*11 *: *0x\([0-9A-Fa-f]*\).*/\1/p")
     echo "booted_generation=${gen:-none}"
@@ -90,7 +90,7 @@ for gen in 2 3; do
       warn "bootc upgrade to generation $gen FAILED for another reason"; break
     fi
     note "upgrade wants sha512:${want:0:32}… — rebuilding generation $gen sealing it"
-    QOS_CFS_DIGEST="$want" bash "$HERE/build.sh" "$gen" >>"$LOG" 2>&1
+    TILO_CFS_DIGEST="$want" bash "$HERE/build.sh" "$gen" >>"$LOG" 2>&1
     publish "$gen"
     if ! guest "bootc upgrade" 2>&1 | tee -a "$LOG.up${gen}b" | tee -a "$LOG"; then
       want2="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$LOG.up${gen}b" | tail -1)"

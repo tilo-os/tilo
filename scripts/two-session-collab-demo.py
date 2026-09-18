@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Two qOS sessions collaborating in one workspace, end to end.
+"""Two Tilo sessions collaborating in one workspace, end to end.
 
-Starts two real compositors — separate state directories, separate
+Starts two compositors — separate state directories, separate
 Iroh endpoint keys, separate user identities, separate control sockets —
 and drives them through the flow a pair of users would take:
 
@@ -40,7 +40,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # The app the demonstration grants over, and the action it gates. Both
 # are arbitrary names — what matters is that the peer's answer about
 # them comes from the replicated capability list.
-DEMO_APP = "org.qos.Notes"
+DEMO_APP = "org.tilo.Notes"
 DEMO_ACTION = "edit"
 # A path the filesystem capability covers. Two capabilities are granted
 # rather than one because they answer different questions and only one of
@@ -97,7 +97,7 @@ class Session:
         self.binary = binary
         self.size = size
         # Each session needs its own XDG_RUNTIME_DIR: the compositor
-        # binds its collab broker at <runtime>/qos/services/collab.sock,
+        # binds its collab broker at <runtime>/tilo/services/collab.sock,
         # and two sessions sharing one runtime dir are two sessions
         # contending for one socket. On a real machine that is a
         # per-user directory and the question does not arise; here it
@@ -110,7 +110,7 @@ class Session:
     @property
     def collab_sock(self) -> str:
         """Where this session's broker should be listening."""
-        return os.path.join(self.runtime_dir, "qos", "services", "collab.sock")
+        return os.path.join(self.runtime_dir, "tilo", "services", "collab.sock")
 
     # -- lifecycle ---------------------------------------------------
 
@@ -133,11 +133,11 @@ class Session:
             XDG_CONFIG_HOME=os.path.join(self.dir, "config"),
             XDG_DATA_HOME=os.path.join(self.dir, "data"),
             XDG_CACHE_HOME=os.path.join(self.dir, "cache"),
-            QOS_USER_ID=self.user,
-            QOS_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
-            QOS_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
-            QOS_TEST_CONTROL=self.sock,
-            NIRIOS_HEADLESS_SIZE=self.size,
+            TILO_USER_ID=self.user,
+            TILO_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
+            TILO_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
+            TILO_TEST_CONTROL=self.sock,
+            TILO_HEADLESS_SIZE=self.size,
             RUST_LOG=env.get("RUST_LOG", "info"),
         )
         self._log = open(self.log_path, "w")
@@ -540,7 +540,7 @@ def run(host: Session, peer: Session, shots: str) -> None:
     host.snapshot(os.path.join(shots, "06-host-permissions-after-grant.png"))
 
     step("8.", "the peer tries to administer the room, and is refused")
-    peer_grant = peer.grant("app:org.qos.Rogue", "workspace", "admin")
+    peer_grant = peer.grant("app:org.tilo.Rogue", "workspace", "admin")
     note(f"peer grant -> {json.dumps(peer_grant)}")
     claim("the peer's grant was refused", "err" in peer_grant, True)
     claim("refused for the right reason",
@@ -669,8 +669,8 @@ def main() -> int:
     # Unix socket paths are capped near 108 bytes, so they go in the
     # runtime dir rather than next to the rest of the run.
     runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-    host_sock = os.path.join(runtime, f"qos-demo-host-{os.getpid()}.sock")
-    peer_sock = os.path.join(runtime, f"qos-demo-peer-{os.getpid()}.sock")
+    host_sock = os.path.join(runtime, f"tilo-demo-host-{os.getpid()}.sock")
+    peer_sock = os.path.join(runtime, f"tilo-demo-peer-{os.getpid()}.sock")
     # A private runtime dir per session, standing in for the per-user
     # one logind would give each of two real logins.
     host_runtime = os.path.join(runtime, f"qd-h{os.getpid()}")

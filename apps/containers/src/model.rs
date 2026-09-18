@@ -312,7 +312,7 @@ impl Engine {
 // Sample data (for --shots and as a graceful offline fallback)
 // =====================================================================
 
-/// A realistic populated engine snapshot used when no live podman socket
+/// A populated engine snapshot used when no live podman socket
 /// is reachable (notably the headless `--shots` renderer). Mirrors what a
 /// developer machine running a small web stack would show.
 pub fn sample_engine() -> Engine {
@@ -377,7 +377,7 @@ fn sample_container_web_frontend() -> Container {
             ("TZ".into(), "UTC".into()),
         ],
         labels: vec![
-            ("io.qos.cluster".into(), "dev-stack".into()),
+            ("io.tilo.cluster".into(), "dev-stack".into()),
             ("maintainer".into(), "NGINX Docker Maintainers".into()),
         ],
         stats: Stats {
@@ -398,7 +398,7 @@ fn sample_container_api_server() -> Container {
     Container {
         id: "1b77e0a9c3f54d2e8e0c9a1f6b2d3e4f".into(),
         name: "api-server".into(),
-        image: "registry.qos.local/api:2.4.1".into(),
+        image: "registry.tilo.local/api:2.4.1".into(),
         status: ContainerStatus::Running,
         status_detail: "Up 4 hours (healthy)".into(),
         command: "/usr/local/bin/api --config /etc/api/config.toml".into(),
@@ -425,7 +425,7 @@ fn sample_container_api_server() -> Container {
             ("DATABASE_URL".into(), "postgres://db:5432/app".into()),
             ("PORT".into(), "3000".into()),
         ],
-        labels: vec![("io.qos.cluster".into(), "dev-stack".into())],
+        labels: vec![("io.tilo.cluster".into(), "dev-stack".into())],
         stats: Stats {
             cpu_percent: 0.23,
             mem_bytes: 142 * 1024 * 1024,
@@ -464,7 +464,7 @@ fn sample_container_postgres() -> Container {
             ("POSTGRES_USER".into(), "app".into()),
             ("PGDATA".into(), "/var/lib/postgresql/data/pgdata".into()),
         ],
-        labels: vec![("io.qos.cluster".into(), "dev-stack".into())],
+        labels: vec![("io.tilo.cluster".into(), "dev-stack".into())],
         stats: Stats {
             cpu_percent: 0.04,
             mem_bytes: 96 * 1024 * 1024,
@@ -495,7 +495,7 @@ fn sample_container_redis_cache() -> Container {
         }],
         mounts: vec![],
         env: vec![("TZ".into(), "UTC".into())],
-        labels: vec![("io.qos.cluster".into(), "dev-stack".into())],
+        labels: vec![("io.tilo.cluster".into(), "dev-stack".into())],
         stats: Stats {
             cpu_percent: 0.01,
             mem_bytes: 6 * 1024 * 1024,
@@ -518,7 +518,7 @@ fn sample_container_build_runner() -> Container {
     Container {
         id: "e0b3a7c9f2d14e6b8c0a3f5d7e9b1c2d".into(),
         name: "build-runner".into(),
-        image: "registry.qos.local/ci-runner:latest".into(),
+        image: "registry.tilo.local/ci-runner:latest".into(),
         status: ContainerStatus::Exited,
         status_detail: "Exited (0) 2 hours ago".into(),
         command: "/runner/entrypoint.sh".into(),
@@ -531,12 +531,12 @@ fn sample_container_build_runner() -> Container {
         }],
         env: vec![
             ("CI".into(), "true".into()),
-            ("RUNNER_LABELS".into(), "qos,rust".into()),
+            ("RUNNER_LABELS".into(), "tilo,rust".into()),
         ],
-        labels: vec![("io.qos.cluster".into(), "ci".into())],
+        labels: vec![("io.tilo.cluster".into(), "ci".into())],
         stats: Stats::default(),
         logs: vec![
-            "[runner] job qos-build#4821 picked up".into(),
+            "[runner] job tilo-build#4821 picked up".into(),
             "[runner] cargo build -p shell ... ok (184.2s)".into(),
             "[runner] job complete, exit 0".into(),
         ],
@@ -603,7 +603,7 @@ fn sample_container_grafana() -> Container {
             read_only: false,
         }],
         env: vec![("GF_SECURITY_ADMIN_USER".into(), "admin".into())],
-        labels: vec![("io.qos.cluster".into(), "observability".into())],
+        labels: vec![("io.tilo.cluster".into(), "observability".into())],
         stats: Stats {
             cpu_percent: 0.0,
             mem_bytes: 54 * 1024 * 1024,
@@ -634,7 +634,7 @@ fn sample_images() -> Vec<Image> {
         },
         Image {
             id: "sha256:b7e0d2a4c6f81930e5a7c9b1d3f5a7c9".into(),
-            repository: "registry.qos.local/api".into(),
+            repository: "registry.tilo.local/api".into(),
             tag: "2.4.1".into(),
             size_bytes: 122_683_392,
             created: "3 days ago".into(),
@@ -666,7 +666,7 @@ fn sample_images() -> Vec<Image> {
         },
         Image {
             id: "sha256:f1c4b6d8e0a25374c9e1a3b5d7f9c1e3".into(),
-            repository: "registry.qos.local/ci-runner".into(),
+            repository: "registry.tilo.local/ci-runner".into(),
             tag: "latest".into(),
             size_bytes: 689_438_720,
             created: "yesterday".into(),

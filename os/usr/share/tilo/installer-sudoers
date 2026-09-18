@@ -1,0 +1,25 @@
+# Tilo installer — passwordless sudo for the privileged install backend.
+#
+# This file is NOT active as shipped. It lives at /usr/share and is copied to
+# /etc/sudoers.d/tilo-installer (mode 0440) at runtime by
+# tilo-installer-setup.service, which only fires when `tilo.install` is on the
+# kernel cmdline — i.e. on the installer live medium. The installed system
+# never gets this rule.
+#
+# It lets the unprivileged greetd session user (which runs the tilo-installer
+# UI under cage) self-escalate the two privileged backend commands via
+# `sudo -n`: the installer (tilo-install) and the Finish-screen power action
+# (tilo-power, reboot/poweroff).
+#
+# Preserve a release-channel tag/digest override across the sudo env reset.
+# tilo-install rejects repositories outside the signature-required Tilo origin.
+Defaults env_keep += "TILO_TARGET_IMGREF"
+
+# The installer UI runs under cage with no controlling tty, and that session
+# can't allocate a pty — so Fedora's global `Defaults use_pty` makes the
+# backend's `sudo -n` fail with "unable to allocate pty: Permission denied".
+# Disable use_pty for greetd's invocations (the command is a fixed, audited
+# path, so the pty hardening buys little here).
+Defaults:greetd !use_pty
+
+greetd ALL=(root) NOPASSWD: /usr/libexec/tilo-install, /usr/libexec/tilo-power, /usr/libexec/tilo-recovery

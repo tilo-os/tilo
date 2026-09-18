@@ -18,6 +18,19 @@ pub fn prepare_notebook(
     workspace_id: &str,
     stopped_legacy: bool,
 ) -> Result<PreparedNotebook, String> {
+    prepare_notebook_with_source(root, state_root, workspace_id, stopped_legacy, None)
+}
+
+/// Prepare a canonical notebook and queue an optional explicit Markdown import.
+/// # Errors
+/// Refuses invalid source input and the same custody/storage errors as [`prepare_notebook`].
+pub fn prepare_notebook_with_source(
+    root: &Path,
+    state_root: &Path,
+    workspace_id: &str,
+    stopped_legacy: bool,
+    markdown_source: Option<&str>,
+) -> Result<PreparedNotebook, String> {
     let lock = crate::storage::lock_workspace(root)?;
     let key = crate::legacy_import::source_key(root).map_err(|e| e.to_string())?;
     let checkout = crate::legacy_import::destination(key);
@@ -90,6 +103,10 @@ pub fn prepare_notebook(
             crate::NotesApp::from_document(doc, &author)
         })
         .ok_or("notebook unavailable")??;
+    app.configure_workspace_assets(root)?;
+    if let Some(source) = markdown_source {
+        app.queue_launch_markdown(source)?;
+    }
     app.workspace_lock = Some(lock);
     let mut tile = TileHost::new(ui::widget::TileContent::App(Box::new(app)));
     tile.bind_record(records.clone(), checkout.clone());

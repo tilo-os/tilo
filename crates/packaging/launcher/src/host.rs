@@ -1,4 +1,4 @@
-//! Launching an application qOS did not package.
+//! Launching an application Tilo did not package.
 //!
 //! Every other module in this crate exists to build a sandbox. This one
 //! exists because there are applications for which that is the wrong
@@ -9,7 +9,7 @@
 //!
 //! A `.desktop` entry is a text file naming a command line, not a
 //! package manifest: nothing in it says which paths, devices, services
-//! or network hosts the program needs. qOS's sandbox is *derived* from
+//! or network hosts the program needs. Tilo's sandbox is *derived* from
 //! those declarations — [`crate::sandbox`] turns a manifest into bind
 //! mounts, [`crate::seccomp`] into a syscall filter, [`crate::landlock`]
 //! into an FS ruleset. With no manifest there's nothing to derive, and a
@@ -19,7 +19,7 @@
 //! `flatpak run` builds its own sandbox, needing `unshare(2)`,
 //! `mount(2)` and `pivot_root(2)`, all of which [`crate::seccomp`]'s
 //! baseline denies, plus `/usr/bin/flatpak`, its installation tree and
-//! system D-Bus (none of which qOS's sandbox binds), plus a network
+//! system D-Bus (none of which Tilo's sandbox binds), plus a network
 //! namespace, which `--unshare-all` removes. Nesting the two doesn't
 //! double the confinement — it produces `bwrap: execvp flatpak: No such
 //! file or directory`, or a seccomp kill.
@@ -27,11 +27,11 @@
 //! ## What the user is therefore told
 //!
 //! A host application runs with the user's own identity, files and
-//! network, exactly as under any other desktop: no `QOS_WORKSPACE_ID`
+//! network, exactly as under any other desktop: no `TILO_WORKSPACE_ID`
 //! (no collaboration room, no per-room partition), no capability file
 //! (workspace grants describe what a *sandboxed* app may reach, and
 //! passing them here would assert a limit that doesn't exist), and no
-//! `QOS_APP_DIR` (it writes to the user's real `$HOME`).
+//! `TILO_APP_DIR` (it writes to the user's real `$HOME`).
 //!
 //! Those absences are why the desktop labels host applications
 //! separately and why this module prints a one-line notice naming the
@@ -44,7 +44,7 @@
 //! The environment. See [`desktop_entry::launch`]: the child is spawned
 //! from an explicit allowlist plus the Wayland handoff and, when available,
 //! one authenticated rootless-Xwayland fallback, so the
-//! compositor's own `QOS_*` variables don't leak into a process not
+//! compositor's own `TILO_*` variables don't leak into a process not
 //! subject to them.
 
 use std::os::unix::process::CommandExt as _;
@@ -110,8 +110,8 @@ pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
     // sandbox says so where the compositor's log, journal and a
     // developer's terminal will all see it.
     eprintln!(
-        "qos-launcher: running host application {} ({}) UNCONFINED — \
-         no qOS sandbox, no workspace room, no per-room state. {} {}",
+        "tilo-launcher: running host application {} ({}) UNCONFINED — \
+         no Tilo sandbox, no workspace room, no per-room state. {} {}",
         launch.desktop_id,
         launch.source.label(),
         launch.program.display(),
@@ -167,7 +167,7 @@ mod tests {
     /// package.
     fn example_manifest() -> crate::manifest::MinimalManifest {
         toml::from_str(
-            "[package]\nid = \"dev.qos.example\"\nversion = \"1.0.0\"\n\
+            "[package]\nid = \"dev.tilo.example\"\nversion = \"1.0.0\"\n\
              [entrypoint]\nbin = \"bin/example\"\n",
         )
         .expect("the fixture manifest parses")
@@ -214,13 +214,13 @@ mod tests {
     #[test]
     fn an_unknown_desktop_id_is_reported() {
         let err = run_host(
-            "dev.qos.definitely-not-installed-anywhere",
+            "dev.tilo.definitely-not-installed-anywhere",
             &LaunchEnv::default(),
         )
         .expect_err("nothing has that id");
         assert!(
             err.to_string()
-                .contains("dev.qos.definitely-not-installed-anywhere"),
+                .contains("dev.tilo.definitely-not-installed-anywhere"),
             "the error must name what could not be found: {err}"
         );
     }

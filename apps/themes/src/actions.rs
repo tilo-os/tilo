@@ -29,7 +29,7 @@ use automerge::{AutoCommit, ROOT};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, OperationKind,
     ParamType, Resource, ResourceProvider, RetryPolicy, RiskLevel,
@@ -50,7 +50,7 @@ pub const THEMES_ACTION_TYPE: &str = "themes.action";
 pub enum ThemesAction {
     /// Make the theme named by `id` the active OS theme: writes the active id
     /// into the shared document (the in-app "Active" badge and the next-launch
-    /// look). Persisting the full spec to `~/.config/qos/settings.json` is an
+    /// look). Persisting the full spec to `~/.config/tilo/settings.json` is an
     /// app-level side effect, not part of this replayable action. A malformed id
     /// (naming no theme in the catalog) is a no-op.
     SetActiveTheme {
@@ -169,7 +169,7 @@ pub fn register(registry: &mut ActionRegistry) {
 /// replayable envelope.
 ///
 /// Returns `EncodedAction` rather than a `Result`: every call site — including
-/// the `build` closures [`ActionSpec::prompted`](qos_actions::ActionSpec::prompted)
+/// the `build` closures [`ActionSpec::prompted`](tilo_actions::ActionSpec::prompted)
 /// requires to return `EncodedAction` directly — needs the value unconditionally,
 /// and every [`ThemesAction`] variant carries only plain `String` / [`ThemeSpec`]
 /// fields, which `serde_json` cannot fail to serialize.
@@ -268,10 +268,10 @@ pub fn new_default_spec() -> ActionSpec {
     clippy::missing_panics_doc,
     reason = "the static resource has this nullary action"
 )]
-pub fn new_default_binding() -> qos_actions::ActionBinding<()> {
+pub fn new_default_binding() -> tilo_actions::ActionBinding<()> {
     let resource =
         Resource::new("themes.library", "themes.library", "Themes").with_action(new_default_spec());
-    qos_actions::ActionBinding::unit_for(&resource, "new")
+    tilo_actions::ActionBinding::unit_for(&resource, "new")
         .expect("the static New theme action accepts unit arguments")
 }
 
@@ -293,7 +293,7 @@ pub fn export_selected_spec() -> ActionSpec {
     .expect("unit payload serializes")
     .with_contract(ActionContract {
         discovery: DiscoveryScope::Launchable,
-        execution: qos_actions::ExecutionMode::Background { cancellable: false },
+        execution: tilo_actions::ExecutionMode::Background { cancellable: false },
         tags: vec!["appearance".into(), "theme".into(), "export".into()],
         ..ActionContract::default()
     })
@@ -304,10 +304,10 @@ pub fn export_selected_spec() -> ActionSpec {
     clippy::missing_panics_doc,
     reason = "the static resource has this nullary action"
 )]
-pub fn export_selected_binding() -> qos_actions::ActionBinding<()> {
+pub fn export_selected_binding() -> tilo_actions::ActionBinding<()> {
     let resource = Resource::new("themes.library", "themes.library", "Themes")
         .with_action(export_selected_spec());
-    qos_actions::ActionBinding::unit_for(&resource, "export-selected")
+    tilo_actions::ActionBinding::unit_for(&resource, "export-selected")
         .expect("export-selected is nullary")
 }
 
@@ -330,8 +330,8 @@ pub fn apply_selected_spec() -> ActionSpec {
     .with_contract(ActionContract {
         discovery: DiscoveryScope::Launchable,
         retry: RetryPolicy::Idempotent,
-        execution: qos_actions::ExecutionMode::Background { cancellable: true },
-        result: qos_actions::ResultSpec::Job,
+        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+        result: tilo_actions::ResultSpec::Job,
         tags: vec!["appearance".into(), "theme".into()],
         ..ActionContract::default()
     })
@@ -342,10 +342,10 @@ pub fn apply_selected_spec() -> ActionSpec {
     clippy::missing_panics_doc,
     reason = "the static resource has this nullary action"
 )]
-pub fn apply_selected_binding() -> qos_actions::ActionBinding<()> {
+pub fn apply_selected_binding() -> tilo_actions::ActionBinding<()> {
     let resource = Resource::new("themes.library", "themes.library", "Themes")
         .with_action(apply_selected_spec());
-    qos_actions::ActionBinding::unit_for(&resource, "apply-selected")
+    tilo_actions::ActionBinding::unit_for(&resource, "apply-selected")
         .expect("apply-selected is nullary")
 }
 
@@ -430,7 +430,7 @@ pub fn rename_spec(current: &ThemeSpec, name: &str) -> ThemeSpec {
 // ===========================================================================
 
 /// Same non-fallible-in-practice contract as [`encode`]: `provide_resources`
-/// returns a plain `Vec<Resource>` (the [`qos_actions::ResourceProvider`]
+/// returns a plain `Vec<Resource>` (the [`tilo_actions::ResourceProvider`]
 /// trait shape), so there is no `Result` to propagate an encode failure into.
 #[allow(
     clippy::expect_used,
@@ -521,8 +521,8 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             .with_contract(ActionContract {
                 discovery: DiscoveryScope::Launchable,
                 retry: RetryPolicy::Idempotent,
-                execution: qos_actions::ExecutionMode::Background { cancellable: true },
-                result: qos_actions::ResultSpec::Job,
+                execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                result: tilo_actions::ResultSpec::Job,
                 tags: vec!["appearance".into(), "theme".into()],
                 ..ActionContract::default()
             }),
@@ -541,7 +541,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             .expect("theme id is serializable")
             .with_contract(ActionContract {
                 discovery: DiscoveryScope::Launchable,
-                execution: qos_actions::ExecutionMode::Background { cancellable: false },
+                execution: tilo_actions::ExecutionMode::Background { cancellable: false },
                 tags: vec!["appearance".into(), "theme".into(), "export".into()],
                 ..ActionContract::default()
             }),
@@ -646,7 +646,7 @@ impl ResourceProvider for crate::app::ThemesApp {
 mod tests {
     use super::*;
     use crate::app::ThemesApp;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -702,8 +702,8 @@ mod tests {
         let builtin = lib
             .children
             .iter()
-            .find(|r| r.id.as_str() == "themes.theme:qos-blue")
-            .expect("the qos-blue preset resource");
+            .find(|r| r.id.as_str() == "themes.theme:tilo-blue")
+            .expect("the tilo-blue preset resource");
         let b_actions: Vec<&str> = builtin.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(b_actions.contains(&"apply"), "{b_actions:?}");
         assert!(b_actions.contains(&"duplicate"), "{b_actions:?}");
@@ -747,9 +747,9 @@ mod tests {
         assert_eq!(apply.contract.discovery, DiscoveryScope::Launchable);
         assert_eq!(
             apply.contract.execution,
-            qos_actions::ExecutionMode::Background { cancellable: true }
+            tilo_actions::ExecutionMode::Background { cancellable: true }
         );
-        assert_eq!(apply.contract.result, qos_actions::ResultSpec::Job);
+        assert_eq!(apply.contract.result, tilo_actions::ResultSpec::Job);
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
@@ -781,7 +781,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -831,8 +831,8 @@ mod tests {
         let action = upsert_custom_theme_action(&spec);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -864,8 +864,8 @@ mod tests {
         let action = set_custom_theme_token_action(&sunset.id, TokenId::Accent, [1, 2, 3]);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -891,10 +891,10 @@ mod tests {
         let before_heads = doc.get_heads();
         let before = catalog(&doc);
 
-        let action = delete_custom_theme_action("qos-blue");
+        let action = delete_custom_theme_action("tilo-blue");
         let encoded = encode(&action);
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
 
         assert_eq!(catalog(&doc), before, "a built-in preset is protected");
         assert_eq!(
@@ -911,14 +911,14 @@ mod tests {
         let mut doc = seeded_doc();
         doc.commit();
         let before = catalog(&doc);
-        // Try to overwrite the qos-blue preset (claiming custom).
+        // Try to overwrite the tilo-blue preset (claiming custom).
         let mut sneaky = presets()[0].clone();
         sneaky.builtin = false;
         sneaky.name = "Hijacked".into();
         let action = upsert_custom_theme_action(&sneaky);
         let encoded = encode(&action);
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
         assert_eq!(
             catalog(&doc),
             before,
@@ -933,7 +933,7 @@ mod tests {
         let action = set_active_theme_action("dracula");
         let encoded = encode(&action);
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
         assert_eq!(
             doc::get_str(&doc, &ROOT, doc::KEY_ACTIVE).as_deref(),
             Some("dracula")
@@ -968,14 +968,14 @@ mod tests {
         let builtin = lib
             .children
             .iter()
-            .find(|r| r.id.as_str() == "themes.theme:qos-blue")
+            .find(|r| r.id.as_str() == "themes.theme:tilo-blue")
             .unwrap();
         let apply_spec = builtin.actions.iter().find(|a| a.id == "apply").unwrap();
         let from_spec = immediate_encode(apply_spec);
         assert_eq!(from_spec.type_id, "themes.apply");
         assert_eq!(
             serde_json::from_slice::<String>(&from_spec.payload).unwrap(),
-            "qos-blue"
+            "tilo-blue"
         );
 
         // The rename spec == the rename builder for the same name.
@@ -1067,7 +1067,7 @@ mod tests {
         let encoded = prompted_encode(spec, "Aurora");
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let cat = catalog(&doc);
         assert_eq!(cat.len(), before + 1, "the action added a theme");

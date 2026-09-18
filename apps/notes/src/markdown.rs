@@ -2,11 +2,7 @@
 //! disk and the in-memory block list the [`ui::widget::BlockEditor`]
 //! renders.
 //!
-//! Phase 3 extends this with four more block kinds: bullet lists,
-//! checklists, fenced code blocks, and dividers. Phase 4 adds inline
-//! marks (`**bold**`, `*italic*`, `` `code` ``, `[[Page Title]]`) and
-//! propagates a per-block [`MarkSpan`] list alongside the plain-text
-//! body. The grammar is:
+//! The grammar supports block structure and a per-block [`MarkSpan`] list:
 //!
 //! - A line beginning with `# `, `## `, `### ` is a heading.
 //! - A line beginning with `- ` / `* ` (after optional 2-space
@@ -14,16 +10,20 @@
 //! - A line beginning with `- [ ] ` / `- [x] ` (similarly indentable)
 //!   is a checklist item.
 //! - A line equal to `---` is a divider.
+//! - A line beginning with `> ` is a block quote.
 //! - A line beginning with ` ``` ` opens a fenced code block; the
 //!   matching closing fence terminates it. **v0.1 limitation**: code
 //!   block body is single-line per block.
-//! - Inline marks (Phase 4):
+//! - Inline marks:
 //!   - `**text**` → bold
 //!   - `*text*`  → italic (but: `**` never parses as italic-double-
 //!     star; the bold tokenizer runs first)
+//!   - `__text__` → underline
+//!   - `~~text~~` → strikethrough
 //!   - `` `text` `` → inline code
 //!   - `[[Page Title]]` → page link (target id = `Uuid::nil()`; the
 //!     notes app resolves the title to an id at parse time)
+//!   - `[label](https://example.test)` → external link
 //! - Any other non-empty line is a paragraph.
 //! - Blank lines are block separators (consecutive blanks collapse).
 //!
@@ -68,6 +68,7 @@ impl InlineText {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockSpec {
     Paragraph(InlineText),
+    Quote(InlineText),
     Heading {
         level: u8,
         text: InlineText,
@@ -89,6 +90,9 @@ pub enum BlockSpec {
         lang: Option<String>,
         text: String,
     },
+    Table {
+        source: String,
+    },
     Divider,
 }
 
@@ -101,6 +105,9 @@ impl BlockSpec {
     }
     pub fn paragraph_marks(s: impl Into<String>, marks: Vec<MarkSpan>) -> Self {
         BlockSpec::Paragraph(InlineText::new(s, marks))
+    }
+    pub fn quote(s: impl Into<String>) -> Self {
+        BlockSpec::Quote(InlineText::plain(s))
     }
     pub fn heading(level: u8, s: impl Into<String>) -> Self {
         BlockSpec::Heading {
@@ -166,6 +173,60 @@ impl BlockSpec {
     pub fn divider() -> Self {
         BlockSpec::Divider
     }
+    pub fn table(source: impl Into<String>) -> Self {
+        BlockSpec::Table {
+            source: source.into(),
+        }
+    }
+}
+
+fn table_separator_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let body = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let body = body.strip_suffix('|').unwrap_or(body);
+    let cells = body.split('|').map(str::trim).collect::<Vec<_>>();
+    !cells.is_empty()
+        && cells.iter().all(|cell| {
+            let core = cell.trim_matches(':');
+            core.len() >= 3 && core.chars().all(|ch| ch == '-')
+        })
+}
+
+fn take_table_source<'a>(
+    header: &'a str,
+    lines: &mut std::iter::Peekable<std::str::Split<'a, char>>,
+) -> Option<String> {
+    if !header.contains('|') || !lines.peek().copied().is_some_and(table_separator_line) {
+        return None;
+    }
+    let mut source = vec![header, lines.next().unwrap_or_default()];
+    while let Some(next) = lines.peek().copied().filter(|next| next.contains('|')) {
+        source.push(next);
+        let _ = lines.next();
+    }
+    Some(source.join("\n"))
+}
+
+fn standalone_image_syntax(line: &str) -> bool {
+    let Some(body) = line.trim().strip_prefix("![") else {
+        return false;
+    };
+    let Some((_, destination)) = body.split_once("](") else {
+        return false;
+    };
+    destination
+        .strip_suffix(')')
+        .is_some_and(|destination| !destination.trim().is_empty())
+}
+
+fn take_rich_block<'a>(
+    line: &'a str,
+    lines: &mut std::iter::Peekable<std::str::Split<'a, char>>,
+) -> Option<BlockSpec> {
+    if standalone_image_syntax(line) {
+        return Some(BlockSpec::paragraph(line));
+    }
+    take_table_source(line, lines).map(BlockSpec::table)
 }
 
 fn parse_list_indent(line: &str) -> (u8, &str) {
@@ -221,9 +282,10 @@ fn push_indent(out: &mut String, indent: u8) {
 /// Tokeniser order:
 /// 1. Inline code (backtick) — eats everything literally between
 ///    the matching backticks so `\*` inside code stays `\*`.
-/// 2. Page link (`[[Page Title]]`).
-/// 3. Bold (`**...**`).
-/// 4. Italic (`*...*`).
+/// 2. Page transclusion (`![[Page Title]]`) or link (`[[Page Title]]`).
+/// 3. Underline (`__...__`) or strikethrough (`~~...~~`).
+/// 4. Bold (`**...**`).
+/// 5. Italic (`*...*`).
 ///
 /// Unmatched markers fall through to the plain text — `*not closed`
 /// stays `*not closed` so the round-trip stays byte-stable.
@@ -244,6 +306,22 @@ pub fn parse_inline(line: &str) -> InlineText {
             i = end + 1;
             continue;
         }
+        // Page transclusion `![[Title]]`. Run before the ordinary link case.
+        if bytes.get(i) == Some(&b'!')
+            && bytes.get(i + 1) == Some(&b'[')
+            && bytes.get(i + 2) == Some(&b'[')
+            && let Some(end) = find_pair(bytes, i + 3, b']', b']')
+        {
+            let start = plain.len();
+            plain.push_str(line.get(i + 3..end).unwrap_or_default());
+            let stop = plain.len();
+            marks.push(MarkSpan::new(
+                start..stop,
+                Mark::Transclusion(PageId::nil()),
+            ));
+            i = end + 2;
+            continue;
+        }
         // Page link `[[Title]]`.
         if bytes.get(i) == Some(&b'[')
             && bytes.get(i + 1) == Some(&b'[')
@@ -258,6 +336,22 @@ pub fn parse_inline(line: &str) -> InlineText {
             // `resolve_link_ids`.
             marks.push(MarkSpan::new(start..stop, Mark::Link(PageId::nil())));
             i = end + 2;
+            continue;
+        }
+        // Standard external Markdown link. Relative destinations have no
+        // stable base in a native Notes page, so only safe absolute web/mail
+        // URLs become clickable marks; other syntax remains literal.
+        if let Some(next) = parse_external_link(line, i, &mut plain, &mut marks) {
+            i = next;
+            continue;
+        }
+        // Underline `__...__` and strikethrough `~~...~~`. These are
+        // emitted by `serialize_inline`, so recognizing them here is
+        // required for lossless Markdown export -> import.
+        if let Some((delimiter, mark)) = paired_mark_at(bytes, i)
+            && let Some(next) = parse_paired_mark(line, i, delimiter, mark, &mut plain, &mut marks)
+        {
+            i = next;
             continue;
         }
         // Bold `**...**` (run before italic so `**` doesn't parse as
@@ -327,6 +421,60 @@ pub fn parse_inline(line: &str) -> InlineText {
     InlineText { text: plain, marks }
 }
 
+fn paired_mark_at(bytes: &[u8], at: usize) -> Option<(u8, Mark)> {
+    match (bytes.get(at), bytes.get(at + 1)) {
+        (Some(b'_'), Some(b'_')) => Some((b'_', Mark::Underline)),
+        (Some(b'~'), Some(b'~')) => Some((b'~', Mark::Strikethrough)),
+        _ => None,
+    }
+}
+
+fn parse_external_link(
+    line: &str,
+    at: usize,
+    plain: &mut String,
+    marks: &mut Vec<MarkSpan>,
+) -> Option<usize> {
+    let bytes = line.as_bytes();
+    (bytes.get(at) == Some(&b'[') && bytes.get(at + 1) != Some(&b'[')).then_some(())?;
+    let label_end = find_unescaped(bytes, at + 1, b']')?;
+    (bytes.get(label_end + 1) == Some(&b'(')).then_some(())?;
+    let url_end = find_unescaped(bytes, label_end + 2, b')')?;
+    let label = line.get(at + 1..label_end)?;
+    let url = line.get(label_end + 2..url_end)?;
+    (!label.is_empty() && safe_external_url(url)).then_some(())?;
+    let start = plain.len();
+    plain.push_str(label);
+    marks.push(MarkSpan::new(
+        start..plain.len(),
+        Mark::ExternalLink(url.to_string()),
+    ));
+    Some(url_end + 1)
+}
+
+fn parse_paired_mark(
+    line: &str,
+    at: usize,
+    delimiter: u8,
+    mark: Mark,
+    plain: &mut String,
+    marks: &mut Vec<MarkSpan>,
+) -> Option<usize> {
+    let end = find_pair(line.as_bytes(), at + 2, delimiter, delimiter)?;
+    (end > at + 2).then_some(())?;
+    let body = parse_inline(line.get(at + 2..end).unwrap_or_default());
+    let start = plain.len();
+    plain.push_str(&body.text);
+    marks.push(MarkSpan::new(start..plain.len(), mark));
+    marks.extend(body.marks.into_iter().map(|inner| {
+        MarkSpan::new(
+            (inner.range.start + start)..(inner.range.end + start),
+            inner.mark,
+        )
+    }));
+    Some(end + 2)
+}
+
 /// Search for `delim` in `bytes[start..]`, ignoring escaped
 /// occurrences (`\delim`). Returns the byte index of the first
 /// match or `None`.
@@ -363,6 +511,12 @@ fn find_pair(bytes: &[u8], start: usize, delim1: u8, delim2: u8) -> Option<usize
     None
 }
 
+pub fn safe_external_url(value: &str) -> bool {
+    url::Url::parse(value)
+        .ok()
+        .is_some_and(|url| matches!(url.scheme(), "http" | "https" | "mailto"))
+}
+
 /// Serialise an [`InlineText`] back to a markdown string, weaving
 /// the inline markers back over the plain bytes. Output is
 /// byte-stable for any text+marks that came out of [`parse_inline`].
@@ -381,18 +535,21 @@ fn open_marker(mark: &Mark) -> &'static str {
         Mark::Italic => "*",
         Mark::Code => "`",
         Mark::Link(_) => "[[",
+        Mark::Transclusion(_) => "![[",
         Mark::Underline => "__",
         Mark::Strikethrough => "~~",
+        Mark::ExternalLink(_) => "[",
     }
 }
-fn close_marker(mark: &Mark) -> &'static str {
+fn close_marker(mark: &Mark) -> std::borrow::Cow<'_, str> {
     match mark {
-        Mark::Bold => "**",
-        Mark::Italic => "*",
-        Mark::Code => "`",
-        Mark::Link(_) => "]]",
-        Mark::Underline => "__",
-        Mark::Strikethrough => "~~",
+        Mark::Bold => "**".into(),
+        Mark::Italic => "*".into(),
+        Mark::Code => "`".into(),
+        Mark::Link(_) | Mark::Transclusion(_) => "]]".into(),
+        Mark::Underline => "__".into(),
+        Mark::Strikethrough => "~~".into(),
+        Mark::ExternalLink(url) => format!("]({url})").into(),
     }
 }
 // Sort marks for deterministic emission: by start ascending, then
@@ -405,6 +562,8 @@ fn priority(m: &Mark) -> u8 {
         Mark::Strikethrough => 3,
         Mark::Code => 4,
         Mark::Link(_) => 5,
+        Mark::Transclusion(_) => 6,
+        Mark::ExternalLink(_) => 7,
     }
 }
 
@@ -435,7 +594,7 @@ pub fn serialize_inline(text: &InlineText) -> String {
         // Close any marks whose range.end == i (deepest first).
         while let Some(top) = open.last() {
             if top.range.end == i {
-                out.push_str(close_marker(&top.mark));
+                out.push_str(&close_marker(&top.mark));
                 open.pop();
             } else {
                 break;
@@ -470,9 +629,13 @@ pub fn serialize_inline(text: &InlineText) -> String {
 /// Empty input → a single empty paragraph.
 pub fn parse(md: &str) -> Vec<BlockSpec> {
     let mut blocks = Vec::new();
-    let mut lines = md.split('\n');
+    let mut lines = md.split('\n').peekable();
     while let Some(line) = lines.next() {
         if line.is_empty() {
+            continue;
+        }
+        if let Some(block) = take_rich_block(line, &mut lines) {
+            blocks.push(block);
             continue;
         }
         if let Some(rest) = line.strip_prefix("```") {
@@ -493,6 +656,10 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
         }
         if line == "---" {
             blocks.push(BlockSpec::divider());
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("> ") {
+            blocks.push(BlockSpec::Quote(parse_inline(rest)));
             continue;
         }
         let (indent, body) = parse_list_indent(line);
@@ -587,6 +754,10 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
         }
         match b {
             BlockSpec::Paragraph(t) => out.push_str(&serialize_inline(t)),
+            BlockSpec::Quote(t) => {
+                out.push_str("> ");
+                out.push_str(&serialize_inline(t));
+            }
             BlockSpec::Heading { level, text } => {
                 let prefix = match *level {
                     1 => "# ",
@@ -624,6 +795,7 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
                 out.push_str(text);
                 out.push_str("\n```");
             }
+            BlockSpec::Table { source } => out.push_str(source),
             BlockSpec::Divider => {
                 out.push_str("---");
             }
@@ -644,6 +816,7 @@ pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
         .map(|(kind, inline)| {
             let mut block = match kind {
                 BlockKind::Paragraph => Block::paragraph(&inline.text),
+                BlockKind::Quote => Block::quote(&inline.text),
                 BlockKind::Heading(level) => Block::heading(level, &inline.text),
                 BlockKind::Bullet { indent } => Block::bullet(indent, &inline.text),
                 BlockKind::Numbered { indent } => Block::numbered(indent, &inline.text),
@@ -651,6 +824,7 @@ pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
                     Block::checklist(indent, done, &inline.text)
                 }
                 BlockKind::CodeBlock { lang } => Block::code_block(lang, &inline.text),
+                BlockKind::Table { visual } => Block::table(&inline.text, visual),
                 BlockKind::Divider => Block::divider(),
             };
             block.line.set_marks(inline.marks);
@@ -667,6 +841,7 @@ pub(crate) fn expanded_rows(specs: &[BlockSpec]) -> Vec<(ui::widget::BlockKind, 
     for spec in specs {
         let (kind, text) = match spec {
             BlockSpec::Paragraph(text) => (BlockKind::Paragraph, text),
+            BlockSpec::Quote(text) => (BlockKind::Quote, text),
             BlockSpec::Heading { level, text } => (BlockKind::Heading(*level), text),
             BlockSpec::Bullet { indent, text } => (BlockKind::Bullet { indent: *indent }, text),
             BlockSpec::Numbered { indent, text } => (BlockKind::Numbered { indent: *indent }, text),
@@ -686,6 +861,13 @@ pub(crate) fn expanded_rows(specs: &[BlockSpec]) -> Vec<(ui::widget::BlockKind, 
                 }
                 continue;
             }
+            BlockSpec::Table { source } => {
+                rows.push((
+                    BlockKind::Table { visual: false },
+                    InlineText::plain(source),
+                ));
+                continue;
+            }
             BlockSpec::Divider => {
                 rows.push((BlockKind::Divider, InlineText::plain("")));
                 continue;
@@ -700,6 +882,7 @@ pub(crate) fn block_kind_wire(kind: &ui::widget::BlockKind) -> String {
     use ui::widget::BlockKind;
     match kind {
         BlockKind::Paragraph => "paragraph".into(),
+        BlockKind::Quote => "quote".into(),
         BlockKind::Heading(level) => format!("heading{}", level.clamp(&1, &3)),
         BlockKind::Bullet { indent } => format!("bullet:{}", (*indent).min(5)),
         BlockKind::Numbered { indent } => format!("numbered:{}", (*indent).min(5)),
@@ -707,6 +890,7 @@ pub(crate) fn block_kind_wire(kind: &ui::widget::BlockKind) -> String {
             format!("checklist:{}:{}", (*indent).min(5), i32::from(*done))
         }
         BlockKind::CodeBlock { lang } => format!("code:{}", lang.as_deref().unwrap_or_default()),
+        BlockKind::Table { visual } => format!("table:{}", i32::from(*visual)),
         BlockKind::Divider => "divider".into(),
     }
 }
@@ -722,6 +906,13 @@ pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
         match &b.kind {
             BlockKind::Paragraph => {
                 out.push(BlockSpec::Paragraph(InlineText::new(
+                    b.text(),
+                    b.line.marks().to_vec(),
+                )));
+                i += 1;
+            }
+            BlockKind::Quote => {
+                out.push(BlockSpec::Quote(InlineText::new(
                     b.text(),
                     b.line.marks().to_vec(),
                 )));
@@ -779,6 +970,12 @@ pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
                     text: lines.join("\n"),
                 });
             }
+            BlockKind::Table { .. } => {
+                out.push(BlockSpec::Table {
+                    source: b.text().to_string(),
+                });
+                i += 1;
+            }
             BlockKind::Divider => {
                 out.push(BlockSpec::Divider);
                 i += 1;
@@ -798,6 +995,7 @@ where
 {
     for b in blocks {
         let (BlockSpec::Paragraph(inline)
+        | BlockSpec::Quote(inline)
         | BlockSpec::Heading { text: inline, .. }
         | BlockSpec::Bullet { text: inline, .. }
         | BlockSpec::Numbered { text: inline, .. }
@@ -806,12 +1004,20 @@ where
             continue;
         };
         for m in &mut inline.marks {
-            if let Mark::Link(id) = &m.mark
-                && id.is_nil()
+            let replacement = match &m.mark {
+                Mark::Link(id) if id.is_nil() => Some(false),
+                Mark::Transclusion(id) if id.is_nil() => Some(true),
+                _ => None,
+            };
+            if let Some(transclusion) = replacement
                 && let Some(title) = inline.text.get(m.range.clone())
                 && let Some(new_id) = resolver(title)
             {
-                m.mark = Mark::Link(new_id);
+                m.mark = if transclusion {
+                    Mark::Transclusion(new_id)
+                } else {
+                    Mark::Link(new_id)
+                };
             }
         }
     }
@@ -839,6 +1045,25 @@ mod tests {
             _ => panic!("expected heading"),
         }
         assert_eq!(blocks.len(), 3);
+    }
+
+    #[test]
+    fn blockquote_round_trips_with_inline_formatting() {
+        let markdown = "> A **useful** quotation\n";
+        let parsed = parse(markdown);
+        let BlockSpec::Quote(text) = &parsed[0] else {
+            panic!("expected quote");
+        };
+        assert_eq!(text.text, "A useful quotation");
+        assert!(text.marks.iter().any(|mark| mark.mark == Mark::Bold));
+        assert_eq!(serialize(&parsed), markdown);
+
+        let editor_blocks = specs_to_blocks(&parsed);
+        assert!(matches!(
+            editor_blocks[0].kind,
+            ui::widget::BlockKind::Quote
+        ));
+        assert_eq!(serialize(&blocks_to_specs(&editor_blocks)), markdown);
     }
 
     #[test]
@@ -890,12 +1115,72 @@ mod tests {
     }
 
     #[test]
+    fn parse_inline_underline_and_strikethrough() {
+        let inline = parse_inline("__under__ and ~~gone~~");
+        assert_eq!(inline.text, "under and gone");
+        assert_eq!(inline.marks.len(), 2);
+        assert_eq!(inline.marks[0], MarkSpan::new(0..5, Mark::Underline));
+        assert_eq!(inline.marks[1], MarkSpan::new(10..14, Mark::Strikethrough));
+    }
+
+    #[test]
+    fn underline_and_strikethrough_round_trip_with_nesting() {
+        for md in ["__under__", "~~gone~~", "__under ~~and gone~~__"] {
+            assert_eq!(serialize_inline(&parse_inline(md)), md);
+        }
+    }
+
+    #[test]
     fn parse_inline_link() {
         let inline = parse_inline("hello [[Welcome]] there");
         assert_eq!(inline.text, "hello Welcome there");
         let m = &inline.marks[0];
         assert!(matches!(m.mark, Mark::Link(_)));
         assert_eq!(inline.text.get(m.range.clone()), Some("Welcome"));
+    }
+
+    #[test]
+    fn standard_external_link_round_trips_as_a_durable_mark() {
+        let markdown = "Read [the guide](https://example.test/docs?q=notes).";
+        let inline = parse_inline(markdown);
+        assert_eq!(inline.text, "Read the guide.");
+        assert_eq!(
+            inline.marks,
+            vec![MarkSpan::new(
+                5..14,
+                Mark::ExternalLink("https://example.test/docs?q=notes".into())
+            )]
+        );
+        assert_eq!(serialize_inline(&inline), markdown);
+    }
+
+    #[test]
+    fn unsafe_or_relative_external_destinations_stay_literal() {
+        for markdown in [
+            "[script](javascript:alert(1))",
+            "[local](../private)",
+            "[file](file:///etc/passwd)",
+        ] {
+            let inline = parse_inline(markdown);
+            assert_eq!(inline.text, markdown);
+            assert!(inline.marks.is_empty());
+        }
+    }
+
+    #[test]
+    fn transclusion_round_trips_and_resolves_to_a_stable_page_id() {
+        let mut blocks = parse("![[Roadmap]]\n");
+        assert_eq!(serialize(&blocks), "![[Roadmap]]\n");
+        let target = Uuid::from_u128(0xfeed);
+        resolve_link_ids(&mut blocks, |title| (title == "Roadmap").then_some(target));
+        let BlockSpec::Paragraph(inline) = &blocks[0] else {
+            panic!("transclusion should remain a paragraph block")
+        };
+        assert_eq!(inline.text, "Roadmap");
+        assert!(matches!(
+            inline.marks[0].mark,
+            Mark::Transclusion(id) if id == target
+        ));
     }
 
     #[test]
@@ -922,8 +1207,12 @@ mod tests {
             "**bold**",
             "*italic*",
             "`code`",
+            "__underline__",
+            "~~strikethrough~~",
             "hello **world** bye",
             "hello [[Page]] there",
+            "[guide](https://example.test/guide)",
+            "![[Page]]",
             "**bold *italic***",
             "a `b` c **d** e",
         ];
@@ -1165,5 +1454,45 @@ sum_(i=1)^n frac(1, i^2)
             text: InlineText::plain("x"),
         }];
         assert_eq!(serialize(&blocks), "### x\n");
+    }
+
+    #[test]
+    fn gfm_table_round_trips_byte_stably() {
+        let md = "| Name | Status |\n| :--- | ---: |\n| Search | Done |\n";
+        assert_eq!(serialize(&parse(md)), md);
+    }
+
+    #[test]
+    fn gfm_table_accepts_all_alignment_separators() {
+        let parsed = parse("A | B | C\n:--- | ---: | :---:\nx | y | z\n");
+        assert!(matches!(parsed.as_slice(), [BlockSpec::Table { .. }]));
+    }
+
+    #[test]
+    fn ordinary_pipe_text_is_not_promoted_to_table() {
+        let parsed = parse("Use A | B when discussing alternatives.\n");
+        assert!(matches!(parsed.as_slice(), [BlockSpec::Paragraph(_)]));
+    }
+
+    #[test]
+    fn table_survives_editor_block_round_trip() {
+        let md = "| A | B |\n| --- | --- |\n| 1 | 2 |\n";
+        let blocks = specs_to_blocks(&parse(md));
+        assert!(matches!(
+            blocks[0].kind,
+            ui::widget::BlockKind::Table { visual: false }
+        ));
+        assert_eq!(serialize(&blocks_to_specs(&blocks)), md);
+    }
+
+    #[test]
+    fn standalone_markdown_image_round_trips_without_becoming_a_link_mark() {
+        let md = "![Architecture diagram](diagram.png)\n";
+        let parsed = parse(md);
+        assert_eq!(serialize(&parsed), md);
+        let [BlockSpec::Paragraph(inline)] = parsed.as_slice() else {
+            panic!("standalone image remains one paragraph-backed image block");
+        };
+        assert!(inline.marks.is_empty());
     }
 }

@@ -55,7 +55,7 @@ inside the container but runs fine on the host.
 Two paths, depending on whether your distrobox matches the host's
 ffmpeg ABI:
 
-### Happy path — `my-distrobox-44` (Fedora 44)
+### Matching-ABI container (Fedora 44)
 
 When the distrobox and the host are on the same Fedora version, their
 libavcodec/libavutil/libswscale SONAMEs match and the compiled binary
@@ -65,10 +65,10 @@ Create it once:
 
 ```
 podman pull registry.fedoraproject.org/fedora-toolbox:44
-distrobox create --name my-distrobox-44 \
+distrobox create --name tilo-dev-44 \
     --image registry.fedoraproject.org/fedora-toolbox:44 \
     --nvidia --yes
-distrobox enter my-distrobox-44 -- bash -c '
+distrobox enter tilo-dev-44 -- bash -c '
     sudo dnf install -y \
         https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-44.noarch.rpm \
         https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-44.noarch.rpm
@@ -78,19 +78,19 @@ distrobox enter my-distrobox-44 -- bash -c '
         mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel pipewire-devel \
         ffmpeg ffmpeg-devel libva-devel libva-utils capnproto capnproto-devel \
         fuse3-devel dbus-devel harfbuzz-devel freetype-devel glibc-devel \
-        openssl-devel systemd-devel wayland-devel wayland-protocols-devel \
+        systemd-devel wayland-devel wayland-protocols-devel \
         xz-devel zlib-devel bzip2-devel kernel-headers rust cargo
 '
 ```
 
-`scripts/test-flatpak-share.sh` auto-detects `my-distrobox-44` and
-prefers it. The nvenc subcommand then just builds the test binary and
-runs it bare on the host — `ldd` resolves everything against `/lib64`
-naturally.
+Set `TILO_DISTROBOX=tilo-dev-44` when running
+`scripts/test-flatpak-share.sh`. The nvenc subcommand then builds the test
+binary and runs it bare on the host — `ldd` resolves everything against
+`/lib64` naturally.
 
-### Fallback — `my-distrobox` (Fedora 42) + LD_LIBRARY_PATH shim
+### Different-ABI container + `LD_LIBRARY_PATH` shim
 
-If only the older distrobox exists, the runner:
+If the container's ffmpeg ABI differs from the host's, the runner:
 
 1. Compiles the test in distrobox with `--features nvenc`
 2. Extracts the ffmpeg .so files from distrobox into a scratch dir
@@ -123,13 +123,14 @@ bridged by a veth pair, then spawns the share host in nsA and the
 viewer in nsB. Frames flow over the veth link; input events flow back
 over a second UDP port. Real network stack, no in-process shortcuts.
 
-Requires `sudo` because `ip netns add` needs `CAP_NET_ADMIN`. Won't run
-inside rootless podman.
+Requires `sudo` because the checked-in driver uses `ip netns add` and needs
+`CAP_NET_ADMIN`. A host which permits unprivileged user namespaces can also
+run the same two test roles in child network namespaces without host root.
 
-The in-process UDP-loopback shape of the same test (`cargo test -p
-shell --test two_netns_share -- --include-ignored`) is what CI relies
-on; it exercises the framing + backpressure + decode pipeline without
-needing kernel netns.
+The always-on UDP-loopback shape of the same test (`cargo test -p shell
+--test it --locked in_process_udp_pipeline_sustains_10_fps_and_bounded_latency`)
+is what unprivileged CI relies on; it exercises the framing + backpressure +
+decode pipeline without needing kernel netns.
 
 ## The side-by-side demo
 
@@ -175,9 +176,9 @@ so you can compare configurations without a stopwatch.
   oldest per subscriber, gossip vs substream split, viewer teardown
   releases the subscription.
 - `two_netns_share` — same pipeline over real UDP loopback (in-process,
-  runs everywhere) and over an actual netns pair (self-skips without
-  the driver script's env vars, runs cleanly under `sudo
-  scripts/two-netns-share.sh`).
+  runs everywhere) and over an actual netns pair. The namespace roles compile
+  only with `--features netns-e2e`, fail closed when their driver variables
+  are absent, and run under `sudo scripts/two-netns-share.sh`.
 - `vaapi_hardware_encode` / `nvenc_hardware_encode` — real bytes come
   out on real hardware. Self-skip on hosts without an H.264 encode
   profile; the NVENC file documents the on-host runbook.

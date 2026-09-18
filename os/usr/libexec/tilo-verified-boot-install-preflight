@@ -1,0 +1,77 @@
+#!/usr/bin/bash
+# Prove the offline installer carries an exact authority-signed target UKI and
+# a generation-bound PCR11 prediction before the UI offers TPM short-PIN mode.
+set -euo pipefail
+root="${TILO_PREFLIGHT_ROOT:-}"
+if [ -z "$root" ]; then
+  # bootc may expose the ESP at /boot or /efi depending on image layout.
+  # Only inspect actual FAT mountpoints, never shadow directories below them.
+  roots=()
+  for esp in /boot /efi /boot/efi; do
+    if [ "$(findmnt -nro FSTYPE --mountpoint "$esp" 2>/dev/null || true)" = vfat ] \
+       && [ -d "$esp/tilo-target" ]; then
+      roots+=("$esp/tilo-target")
+    fi
+  done
+  [ "${#roots[@]}" -eq 1 ] || exit 1
+  root="${roots[0]}"
+fi
+pub="${TILO_PREFLIGHT_PUBLIC_KEY:-/usr/share/tilo/tpm2-pcr-signing.public.pem}"
+crypto_bin="${TILO_PREFLIGHT_CRYPTO:-tilo-crypto}"
+signature_check="${TILO_PREFLIGHT_SIGNATURE_CHECK:-}"
+uki="$root/tilo-target.efi"
+generation_file="${TILO_PREFLIGHT_GENERATION:-/usr/lib/tilo/generation}"
+prediction=""
+skip_platform="${TILO_PREFLIGHT_SKIP_PLATFORM:-0}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --uki) uki="${2:-}"; shift 2 ;;
+    --prediction) prediction="${2:-}"; shift 2 ;;
+    --generation) generation_file="${2:-}"; shift 2 ;;
+    --public-key) pub="${2:-}"; shift 2 ;;
+    --skip-platform) skip_platform=1; shift ;;
+    *) exit 2 ;;
+  esac
+done
+if [ "$skip_platform" != 1 ]; then
+  { [ -c /dev/tpmrm0 ] || [ -c /dev/tpm0 ]; }
+  sb="$(find /sys/firmware/efi/efivars -maxdepth 1 -type f -name 'SecureBoot-*' -print -quit)"
+  [ -n "$sb" ] && [ "$(od -An -tu1 -j4 -N1 "$sb" | tr -d ' ')" = 1 ]
+  grep -Eq '\[(integrity|confidentiality)\]' /sys/kernel/security/lockdown
+fi
+if [[ "$generation_file" = *[!0-9]* || -z "$generation_file" ]]; then
+  generation="$(cat "$generation_file")"
+else
+  generation="$generation_file"
+fi
+case "$generation" in ''|*[!0-9]*) exit 1 ;; esac
+if [ -z "$prediction" ]; then
+  mapfile -t matches < <(find "$root/predictions" -maxdepth 1 -type f \
+    -name "generation-$generation*.json" -print 2>/dev/null)
+  [ "${#matches[@]}" -eq 1 ] || exit 1
+  prediction="${matches[0]}"
+fi
+[ -f "$uki" ] && [ -f "$prediction" ] && [ -f "$prediction.uki.sig" ] && [ -f "$pub" ]
+if [ -n "$signature_check" ]; then
+  "$signature_check" "$uki"
+else
+  count="$("$crypto_bin" efi-signature-count "$uki")"
+  case "$count" in ''|*[!0-9]*|0) exit 1 ;; esac
+fi
+"$crypto_bin" verify-rsa-sha256 "$pub" "$uki" "$prediction.uki.sig" >/dev/null 2>&1
+python3 - "$prediction" "$generation" "$pub" "$crypto_bin" <<'PY'
+import base64, json, os, struct, subprocess, sys, tempfile
+p, expected, public, crypto = sys.argv[1:]
+d = json.load(open(p, encoding="utf-8"))
+if d.get("generation") != int(expected) or d.get("pcr_bank") != "sha256" or d.get("pcrs") != [11]:
+    raise SystemExit(1)
+approved = base64.b64decode(d["approved_policy"], validate=True)
+signature = base64.b64decode(d["signature"], validate=True)
+with tempfile.TemporaryDirectory() as td:
+    message = os.path.join(td, "message")
+    sig = os.path.join(td, "signature")
+    open(message, "wb").write(approved + struct.pack(">Q", int(expected)))
+    open(sig, "wb").write(signature)
+    subprocess.run([crypto, "verify-rsa-sha256", public, message, sig], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+PY

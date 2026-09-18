@@ -1,6 +1,6 @@
 //! Native Automerge persistence for the Themes catalog.
 //!
-//! `catalog` is the legacy Phase-1 JSON text.  New records live in a map keyed
+//! `catalog` is the legacy JSON text. New records live in a map keyed
 //! by stable id, so unrelated themes and fields merge without whole-list writes.
 
 use crate::model::{FONTS, ThemeSpec, TokenId, hex, parse_hex, presets};

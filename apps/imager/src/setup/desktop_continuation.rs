@@ -464,7 +464,7 @@ pub(super) fn trusted_identity_complete() -> Result<(), String> {
     // the root-owned shell ELF beside this installed import executable.
     let trusted_shell = option_env!("QOS_DESKTOP_TRUSTED_SHELL_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| parent.join("qos-shell"));
+        .unwrap_or_else(|| parent.join("tilo-shell"));
     authenticated_session_ready(&runtime, &display, &trusted_shell)
 }
 

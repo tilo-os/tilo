@@ -1,13 +1,19 @@
 //! The canonical rich-text automerge layout (schema v1). Public ABI: codecs
 //! and the snapshot depend on these field names.
 
-pub const SCHEMA_ID: &str = "qos.richtext";
+pub const SCHEMA_ID: &str = "tilo.richtext";
 pub const SCHEMA_VERSION: i64 = 1;
 
 pub const KEY_SCHEMA: &str = "schema";
 pub const KEY_SCHEMA_VERSION: &str = "schema_version";
 pub const KEY_BLOCKS: &str = "blocks"; // Map<block_id, block>
+/// Prefix for grow-only structural deletion markers stored beside block maps.
+pub const BLOCK_TOMBSTONE_PREFIX: &str = "~deleted:";
 pub const KEY_STYLES: &str = "styles"; // Map<style_id, style def>
+/// Prefix for grow-only named-style deletion markers stored beside style maps.
+/// This gives custom-style deletion deterministic delete-wins semantics when a
+/// divergent replica edits a property of the same style.
+pub const STYLE_TOMBSTONE_PREFIX: &str = "~deleted:";
 // Preservation layer (lossless fidelity store for content a codec doesn't model): `preserved` is
 // `Map<part_name, part>`, stored either as a single legacy `Bytes` scalar, or (Tier-4) as a
 // `Map<segment_id, {ord, bytes}>` whose per-atom objects let independent atoms merge across replicas.
@@ -78,7 +84,14 @@ pub const COMMENT_REPLY_PARENT: &str = "parent";
 pub const COMMENT_REPLY_AUTHOR: &str = "author"; // Str — reply author's display name
 pub const COMMENT_REPLY_DATE: &str = "date"; // Str — reply timestamp (ISO-8601)
 pub const COMMENT_REPLY_BLOCKS: &str = "blocks"; // Map<block_id, block> (reply body)
-/// The inline mark anchoring a comment to a text range `[start, end)`, valued with the comment id (a `Str`); unlike `note-ref`, spans real text rather than a placeholder character.
+/// Prefix for grow-only comment-resolution tombstones stored as boolean values
+/// in the comments map. Keeping them beside the entities works for legacy docs
+/// without changing the schema genesis while making resolve win over a reply
+/// authored on a divergent replica.
+pub const COMMENT_TOMBSTONE_PREFIX: &str = "~resolved:";
+/// The inline mark anchoring a comment to a text range `[start, end)`, valued
+/// with the comment id (a `Str`); unlike `note-ref`, it spans text rather than
+/// a placeholder character.
 pub const MARK_COMMENT: &str = "comment"; // Str — the anchored comment id
 
 // Tracked changes / revision marks: a `changes` root map of `Map<change_id, change>`, each a

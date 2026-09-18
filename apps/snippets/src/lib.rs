@@ -1,4 +1,4 @@
-//! Snippets — a text & code snippet manager for qOS.
+//! Snippets — a text & code snippet manager for Tilo.
 //!
 //! A searchable, taggable library of reusable snippets. Each snippet has a
 //! title, language, tags and a body that may contain `${placeholder}`

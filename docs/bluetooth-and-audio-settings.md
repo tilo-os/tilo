@@ -2,7 +2,7 @@
 
 ## Bluetooth
 
-Settings uses the shared `qos-bluez` client through `os-actions::bluez`; it
+Settings uses the shared `tilo-bluez` client through `os-actions::bluez`; it
 does not invoke `bluetoothctl`. The process-wide client deliberately keeps one
 system-bus connection alive because BlueZ binds discovery to the connection
 that started it. All device actions use the BlueZ object path, not a MAC
@@ -52,7 +52,7 @@ eight seconds in Settings (and the backend rejects unbounded durations).
 
 Balance and mono are persisted by Settings but actuated by exactly one worker
 owned by the compositor session. That worker observes PipeWire off the render
-thread, reapplies balance after a real volume/default-device change, retains
+thread, reapplies balance after a volume or default-device change, retains
 the physical master when the virtual mono sink becomes the reported default,
 and migrates cleanly on hot-plug. Dropping the session owner restores the
 physical output and unloads the module. Settings windows therefore never

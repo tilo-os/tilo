@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A window one person opens becomes a real window on the other's screen.
+"""A window one person opens appears on the other's screen.
 
 `installed-app-collab-proof.py` has both people open the app themselves
 and proves their documents converge. That leaves the beat before it
@@ -15,8 +15,8 @@ opened its own instance of the app against the same room.
 
 What it checks, in order:
 
-  1. bob's tab for alice's window stops being a card and becomes a real
-     surface — asserted on the tile in bob's tree, not on the picture.
+  1. bob's tab for alice's window stops being a card and becomes a
+     surface, asserted on the tile in bob's tree.
   2. bob's compositor has taken frames from that surface (`frame_seq >
      0`), so it is a painting window and not a placeholder.
   3. exactly one word-processor window on bob's side. A tab that got a
@@ -45,7 +45,7 @@ import time
 from reaper import die_with_parent, track
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-APP = "dev.qos.word-processor"
+APP = "dev.tilo.word-processor"
 APPLICATIONS = "applications"
 
 failures: list[str] = []
@@ -73,13 +73,13 @@ def tool(name: str) -> pathlib.Path | None:
 # same as not having one. These are the ones where "the binary predates
 # the source" means this run cannot tell you anything.
 UNDER_TEST = (
-    "shell/src/shell/peer_windows.rs",
-    "shell/src/shell/state.rs",
-    "shell/src/shell/mod.rs",
-    "shell/src/compositor/tab_binding.rs",
-    "shell/src/compositor/frame.rs",
-    "shell/src/shell/launcher.rs",
-    "ui/src/widget/tile_host.rs",
+    "crates/session/shell/src/shell/peer_windows.rs",
+    "crates/session/shell/src/shell/state.rs",
+    "crates/session/shell/src/shell/mod.rs",
+    "crates/session/shell/src/compositor/tab_binding.rs",
+    "crates/session/shell/src/compositor/frame.rs",
+    "crates/session/shell/src/shell/launcher.rs",
+    "crates/sdk/ui-core/src/widget/tile_host.rs",
 )
 
 
@@ -141,24 +141,24 @@ class Session:
             # screenshot cannot be read by whoever it is for.
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
             "XDG_STATE_HOME": os.path.join(self.dir, "state"),
             "XDG_CONFIG_HOME": os.path.join(self.dir, "config"),
             "XDG_RUNTIME_DIR": runtime,
-            "QOS_APPS_DATA_DIR": apps_dir,
-            "QOS_RUNTIME_BUNDLE_DIR": os.path.join(home, ".local/share/qos-runtime"),
+            "TILO_APPS_DATA_DIR": apps_dir,
+            "TILO_RUNTIME_BUNDLE_DIR": os.path.join(home, ".local/share/tilo-runtime"),
             # Without its own device key a session's peer-sync turns
             # itself off, and the only symptom is a missing peer.* action.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
-            "NIRIOS_HEADLESS_SIZE": "1280x1400",
-            "QUICK_COLLAB_DEBUG": "1",
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_HEADLESS_SIZE": "1280x1400",
+            "RUST_LOG": "tilo.state=debug",
             "RUST_LOG": "info",
         }
-        for var, binary in (("QOS_INSTALL_BIN", "qos-install"),
-                            ("QOS_LAUNCHER_BIN", "qos-launcher")):
+        for var, binary in (("TILO_INSTALL_BIN", "tilo-install"),
+                            ("TILO_LAUNCHER_BIN", "tilo-launcher")):
             found = tool(binary)
             if found:
                 env[var] = str(found)
@@ -305,10 +305,10 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true")
     args = ap.parse_args()
 
-    live_apps = REPO / "target" / "qos-apps-live"
+    live_apps = REPO / "target" / "tilo-apps-live"
     payload = live_apps / "payloads" / APP / "bin" / "word-processor"
     missing = [what for what, path in (
-        ("shell", tool("shell")), ("qos-launcher", tool("qos-launcher")),
+        ("shell", tool("shell")), ("tilo-launcher", tool("tilo-launcher")),
         ("the word-processor payload", payload),
     ) if not path or not pathlib.Path(path).exists()]
     if missing:

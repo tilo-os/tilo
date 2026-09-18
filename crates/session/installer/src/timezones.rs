@@ -12,7 +12,7 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::process::Command;
+use std::time::Duration;
 
 /// The time zone seeded by default (kept in sync with the installer's
 /// `installer.timezone` CRDT seed).
@@ -69,10 +69,14 @@ fn finalize(zones: Vec<String>) -> Vec<String> {
 }
 
 fn from_timedatectl() -> Option<Vec<String>> {
-    let out = Command::new("timedatectl")
-        .arg("list-timezones")
-        .output()
-        .ok()?;
+    let out = bounded_command::run(
+        "timedatectl",
+        &["list-timezones"],
+        None,
+        1024 * 1024,
+        Duration::from_secs(5),
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }

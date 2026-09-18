@@ -1,0 +1,77 @@
+# Settings — Tilo application manifest.
+#
+# The widest exec surface in the fleet — systemctl, localectl, bootc,
+# nmcli, wpctl, lpstat, cancel — and the host inventory the About,
+# Display, Power, Users and Date & Time panes read. Still no egress of
+# its own: every network action is delegated to nmcli.
+#
+# Beyond the system read profile it needs, as consented capabilities:
+# read+exec on the host bin dirs, read on the host inventory files
+# under /proc and /etc, and read+write on the shared `~/.config/tilo`
+# tree including the account store and credential vault.
+#
+
+
+[package]
+id       = "dev.tilo.settings"
+name     = "Personal Settings"
+category = "System"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+tools = "optional@1"
+models = "required@1"
+model-gateway = "required@1"
+
+[entrypoint]
+bin             = "bin/settings"
+type            = "gui"
+splash-segments = ["bin/settings[0x0:0x400000]"]
+splash-budget   = 250
+
+# The installed-image external AT-SPI client uses this safe navigation action
+# as a release certificate; it neither changes a preference nor needs hardware
+# or a configured account.
+[accessibility.atspi_acceptance]
+root         = "Personal Settings"
+required     = ["Appearance", "Accessibility"]
+action       = "Accessibility"
+after_action = ["Screen reader"]
+
+[providers]
+mime = []
+ext  = []

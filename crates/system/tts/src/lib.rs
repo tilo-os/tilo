@@ -1,6 +1,6 @@
-//! # qos-tts — the qOS text-to-speech engine
+//! # tilo-tts — the Tilo text-to-speech engine
 //!
-//! A small, dependency-light, **offline** speech engine for the qOS built-in screen reader.
+//! A small, dependency-light, **offline** speech engine for the Tilo built-in screen reader.
 //! It abstracts over several speech backends behind one [`Speaker`] trait and adds an
 //! interrupt-aware [`SpeechQueue`] so chatty focus narration coalesces and preempts sanely.
 //!
@@ -8,7 +8,7 @@
 //!
 //! | Backend | Type | Role |
 //! |---|---|---|
-//! | [`SpeechDispatcherSpeaker`] | SSIP socket to `speech-dispatcher` | **primary** — brokers espeak-ng / Piper system-side, server-side queue + interrupt |
+//! | `SpeechDispatcherSpeaker` (Unix) | SSIP socket to `speech-dispatcher` | **primary** — brokers espeak-ng / Piper system-side, server-side queue + interrupt |
 //! | [`EspeakSpeaker`] | `espeak-ng` subprocess | low-latency fallback when no daemon is running |
 //! | [`NullSpeaker`] | no-op recorder | tests + headless; never panics |
 //!
@@ -57,7 +57,7 @@
 //! * **Piper** (OHF-Voice fork, GPL-3.0): reached as a **speech-dispatcher output module** —
 //!   another separate process behind the SSIP socket.
 //!
-//! Ship those engines in the OS image and document their licenses; the qOS code itself stays
+//! Ship those engines in the OS image and document their licenses; the Tilo code itself stays
 //! permissive. (`piper-plus`, MIT, exists as a GPL-free in-process escape hatch if a
 //! daemon-less embedded path is ever needed — out of scope here.)
 //!
@@ -84,6 +84,7 @@ mod factory;
 mod null;
 mod queue;
 mod speaker;
+#[cfg(unix)]
 mod speechd;
 
 pub use error::TtsError;
@@ -92,6 +93,7 @@ pub use factory::{default_speaker, select_speaker};
 pub use null::NullSpeaker;
 pub use queue::SpeechQueue;
 pub use speaker::{Priority, Speaker, Utterance};
+#[cfg(unix)]
 pub use speechd::SpeechDispatcherSpeaker;
 
 #[cfg(test)]

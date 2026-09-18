@@ -1,12 +1,12 @@
-//! qos-cli-shim — the PATH-facing wrapper installed once per CLI
-//! command a qOS package publishes.
+//! tilo-cli-shim — the PATH-facing wrapper installed once per CLI
+//! command a Tilo package publishes.
 //!
 //! Reads `argv[0]` (bare command or full path), locates its own
 //! executable path via [`std::env::current_exe`], reads the sidecar
-//! `<exe-path>.qos-shim` (TOML: `package_id`, `command`, optional
+//! `<exe-path>.tilo-shim` (TOML: `package_id`, `command`, optional
 //! `launcher`), and `execv`s the launcher:
 //! ```text
-//! qos-launcher run-installed --package <pkg-id> --command <cmd> -- <argv[1..]>
+//! tilo-launcher run-installed --package <pkg-id> --command <cmd> -- <argv[1..]>
 //! ```
 //! The sidecar lets one shim binary serve every installed command
 //! without recompiling per install; its one open/read/close is
@@ -43,16 +43,16 @@ use serde::Deserialize;
 
 /// The suffix appended to the shim executable's path to find its
 /// sidecar; a `const` so `install` and the shim agree.
-pub const SIDECAR_SUFFIX: &str = ".qos-shim";
+pub const SIDECAR_SUFFIX: &str = ".tilo-shim";
 
 /// System install path for the launcher; overridable by the sidecar's
-/// `launcher = ...` field so tests can point at a target/debug/qos-launcher without root-installing.
-const DEFAULT_LAUNCHER_PATH: &str = "/usr/libexec/qos-launcher";
+/// `launcher = ...` field so tests can point at a target/debug/tilo-launcher without root-installing.
+const DEFAULT_LAUNCHER_PATH: &str = "/usr/bin/tilo-launcher";
 
 /// Wire form of the sidecar TOML.
 #[derive(Debug, Deserialize)]
 struct Sidecar {
-    /// Reverse-DNS package id (`dev.qos.notes-cli`).
+    /// Reverse-DNS package id (`dev.tilo.notes-cli`).
     package_id: String,
     /// Command name as declared in the manifest's [cli].commands.
     /// Duplicated here (argv[0] also carries it) so renaming the shim
@@ -66,12 +66,12 @@ struct Sidecar {
 fn main() -> ! {
     // Diverges — either execvs the launcher (never returns) or exits via the error path with a status the caller can inspect.
     let exe = env::current_exe().unwrap_or_else(|e| {
-        die(&format!("qos-cli-shim: cannot resolve current exe: {e}"));
+        die(&format!("tilo-cli-shim: cannot resolve current exe: {e}"));
     });
     let sidecar_path = sidecar_path_for(&exe);
     let sidecar = read_sidecar(&sidecar_path).unwrap_or_else(|e| {
         die(&format!(
-            "qos-cli-shim: sidecar {} unreadable: {e}",
+            "tilo-cli-shim: sidecar {} unreadable: {e}",
             sidecar_path.display()
         ));
     });
@@ -87,7 +87,7 @@ fn main() -> ! {
     // without it clap would try to interpret --help etc. as launcher flags.
     let mut argv: Vec<String> = Vec::with_capacity(6usize.saturating_add(passthrough.len()));
     argv.push(launcher.file_name().map_or_else(
-        || "qos-launcher".to_string(),
+        || "tilo-launcher".to_string(),
         |s| s.to_string_lossy().into_owned(),
     ));
     argv.push("run-installed".to_string());
@@ -105,7 +105,7 @@ fn main() -> ! {
 pub fn sidecar_path_for(exe: &Path) -> PathBuf {
     let mut p = exe.to_path_buf();
     let name = p.file_name().map_or_else(
-        || "qos-cli-shim".to_string(),
+        || "tilo-cli-shim".to_string(),
         |s| s.to_string_lossy().into_owned(),
     );
     p.set_file_name(format!("{name}{SIDECAR_SUFFIX}"));
@@ -121,12 +121,12 @@ fn read_sidecar(path: &Path) -> Result<Sidecar, String> {
 fn execv_launcher(launcher: &Path, argv: &[String]) -> ! {
     // Build the raw C argv + terminating NULL.
     let path_c = CString::new(launcher.as_os_str().as_encoded_bytes())
-        .unwrap_or_else(|_| die("qos-cli-shim: launcher path contains a NUL byte"));
+        .unwrap_or_else(|_| die("tilo-cli-shim: launcher path contains a NUL byte"));
     let owned: Vec<CString> = argv
         .iter()
         .map(|s| {
             CString::new(s.as_bytes())
-                .unwrap_or_else(|_| die("qos-cli-shim: argv contains a NUL byte"))
+                .unwrap_or_else(|_| die("tilo-cli-shim: argv contains a NUL byte"))
         })
         .collect();
     let mut c_argv: Vec<*const libc::c_char> = owned.iter().map(|s| s.as_ptr()).collect();
@@ -140,7 +140,7 @@ fn execv_launcher(launcher: &Path, argv: &[String]) -> ! {
     // execv only returns on failure.
     let errno = std::io::Error::last_os_error();
     die(&format!(
-        "qos-cli-shim: execv {} failed: {errno}",
+        "tilo-cli-shim: execv {} failed: {errno}",
         launcher.display()
     ));
 }
@@ -162,21 +162,21 @@ mod tests {
 
     #[test]
     fn sidecar_path_suffixes_the_exe_name() {
-        let p = sidecar_path_for(Path::new("/home/x/.local/share/qos-apps/bin/notes"));
+        let p = sidecar_path_for(Path::new("/home/x/.local/share/tilo-apps/bin/notes"));
         assert_eq!(
             p,
-            PathBuf::from("/home/x/.local/share/qos-apps/bin/notes.qos-shim")
+            PathBuf::from("/home/x/.local/share/tilo-apps/bin/notes.tilo-shim")
         );
     }
 
     #[test]
     fn sidecar_deserialises() {
         let text = r#"
-package_id = "dev.qos.notes-cli"
+package_id = "dev.tilo.notes-cli"
 command    = "notes"
 "#;
         let s: Sidecar = toml::from_str(text).expect("decode");
-        assert_eq!(s.package_id, "dev.qos.notes-cli");
+        assert_eq!(s.package_id, "dev.tilo.notes-cli");
         assert_eq!(s.command, "notes");
         assert!(s.launcher.is_none());
     }
@@ -184,14 +184,28 @@ command    = "notes"
     #[test]
     fn sidecar_launcher_override_deserialises() {
         let text = r#"
-package_id = "dev.qos.notes-cli"
+package_id = "dev.tilo.notes-cli"
 command    = "notes"
-launcher   = "/tmp/target/debug/qos-launcher"
+launcher   = "/tmp/target/debug/tilo-launcher"
 "#;
         let s: Sidecar = toml::from_str(text).expect("decode");
         assert_eq!(
             s.launcher.as_deref(),
-            Some(Path::new("/tmp/target/debug/qos-launcher"))
+            Some(Path::new("/tmp/target/debug/tilo-launcher"))
         );
+    }
+
+    #[test]
+    fn user_installed_shim_defaults_to_rpm_launcher_path() {
+        let text = r#"
+package_id = "dev.tilo.notes-cli"
+command    = "notes"
+"#;
+        let sidecar: Sidecar = toml::from_str(text).expect("decode");
+        let launcher = sidecar
+            .launcher
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_LAUNCHER_PATH));
+
+        assert_eq!(launcher, PathBuf::from("/usr/bin/tilo-launcher"));
     }
 }

@@ -1,18 +1,18 @@
 # The `runtime` SDK
 
-Every qOS app depends on the `runtime` umbrella crate. It re-exports five
+Every Tilo app depends on the `runtime` umbrella crate. It re-exports five
 submodules and one error type; everything else in the SDK is layered on top.
 
 ```rust
 use runtime::{collab, fs, identity, portal, portal_xdg};
-use runtime::{NotAvailable, is_qos_native};
+use runtime::{NotAvailable, is_tilo_native};
 ```
 
 **Design intent.** Every service reachable through this SDK is optional.
 Apps built against `runtime` MUST run as Flatpaks on stock Linux with no
-qOS services present — every `try_connect` / `load` returns
+Tilo services present — every `try_connect` / `load` returns
 `Result<T, NotAvailable>` and never panics, so the app falls back to a
-local-only mode. `is_qos_native()` is the cheap probe you may use to gate
+local-only mode. `is_tilo_native()` is the cheap probe you may use to gate
 first-run welcome UI, but you must NOT use it as an authorization gate —
 `try_connect` is the source of truth.
 
@@ -28,7 +28,7 @@ Re-exports:
 | `runtime::portal`      | Service-fd + Cap'n Proto plumbing (`runtime_portal`). |
 | `runtime::portal_xdg`  | XDG desktop portal client (`runtime_portal_xdg`). |
 | `runtime::NotAvailable`| The single error type every fallible SDK entry returns. |
-| `runtime::is_qos_native` | `bool` — heuristic ("is `QOS_WORKSPACE_ID` set?"). |
+| `runtime::is_tilo_native` | `bool` — heuristic ("is `TILO_WORKSPACE_ID` set?"). |
 
 ## `runtime::portal` — service discovery and RPC plumbing
 
@@ -42,13 +42,13 @@ pub enum NotAvailable {
     Capnp(capnp::Error),                             // RPC-layer error
 }
 
-pub fn is_qos_native() -> bool;
+pub fn is_tilo_native() -> bool;
 pub fn service_fd(name: &str) -> Option<RawFd>;
 pub struct UnixCapnpClient { … }
 pub fn try_open_service<C: FromClientHook>(name: &str) -> Result<C, NotAvailable>;
 ```
 
-`service_fd("collab")` reads `QOS_SVC_COLLAB_FD` from the environment and
+`service_fd("collab")` reads `TILO_SVC_COLLAB_FD` from the environment and
 verifies the fd is still open with `fcntl(F_GETFD)`. Names are
 case-insensitive; call sites pass lowercase.
 
@@ -81,7 +81,7 @@ impl PresenceHandle {
 ```
 
 The broker is speaking Cap'n Proto over the connected fd the launcher
-passed in as `QOS_SVC_COLLAB_FD`. `CollabClient::from_raw` exists for tests
+passed in as `TILO_SVC_COLLAB_FD`. `CollabClient::from_raw` exists for tests
 that own their own RPC system.
 
 `send_unsigned_snapshot` / `send_unsigned_incremental` are the raw CRDT
@@ -113,8 +113,8 @@ impl FileHandle {
 }
 ```
 
-The FUSE tree is mounted at `/var/workspace/` on a live qOS. This client is
-a Cap'n Proto proxy over `QOS_SVC_FS_FD` — the launcher opened a socket to
+The FUSE tree is mounted at `/var/workspace/` on a live Tilo. This client is
+a Cap'n Proto proxy over `TILO_SVC_FS_FD` — the launcher opened a socket to
 the FS daemon on your behalf. Prefer it over raw `std::fs` for anything in
 the workspace: it participates in the P2P projection/hydration flow and
 respects the workspace ACLs.
@@ -140,12 +140,12 @@ impl SigningIdentity {
 }
 ```
 
-This is your app-level identity — an app-scoped capability for the user's
+This is the app-level identity — an app-scoped capability for the user's
 Ed25519 identity. `load()` consumes the launcher-provided broker descriptor
-(`QOS_IDENTITY_BROKER_FD`); public metadata and signatures cross that
+(`TILO_IDENTITY_BROKER_FD`); public metadata and signatures cross that
 connection, but the key does not. `is_single_device()` distinguishes
 single-device signing from threshold (multi-device) identities. The legacy
-`QOS_USER_IDENTITY` file path remains only for unsandboxed development.
+`TILO_USER_IDENTITY` file path remains only for unsandboxed development.
 
 ## `runtime::portal_xdg` — XDG desktop portals
 
@@ -206,8 +206,8 @@ usually indicates a stock GNOME / KDE setup didn't install
 The launcher plumbs sockets in via:
 
 ```
---file <host-fd>  /run/qos/services/<name>.sock
---setenv          QOS_SVC_<NAME>_FD  <child-fd>
+--file <host-fd>  /run/tilo/services/<name>.sock
+--setenv          TILO_SVC_<NAME>_FD  <child-fd>
 ```
 
 Your app reads the fd number out of the env and hands it to
@@ -217,18 +217,18 @@ only touch `service_fd` directly if you are speaking a custom protocol.
 
 ## The graceful-degradation contract, in code
 
-The reference `qos-hello` bin exercises every SDK entry. This is what
-running it under `qos-install run` outside a qOS session (no services)
+The reference `tilo-hello` bin exercises every SDK entry. This is what
+running it under `tilo-install run` outside a Tilo session (no services)
 prints — every call returns cleanly:
 
 ```
-$ qos-install run dev.qos.hello --no-services
-qos-hello: a qOS-native app, running.
+$ tilo-install run dev.tilo.hello --no-services
+tilo-hello: a Tilo-native app, running.
 
 == environment ==
-  is_qos_native      : false
-  QOS_WORKSPACE_ID   : (unset)
-  QOS identity broker: (unset)
+  is_tilo_native      : false
+  TILO_WORKSPACE_ID   : (unset)
+  TILO identity broker: (unset)
 
 == services ==
   collab   : unavailable (no fd — graceful)
@@ -244,9 +244,9 @@ qos-hello: a qOS-native app, running.
   read(        /proc/self/status): permission denied — blocked (bwrap or Landlock)
   read(              /etc/passwd): entity not found — blocked (bwrap or Landlock)
   stat(                     /tmp): OK
-  stat(            /qos-launcher): OK
-  write(/tmp/qos-hello-probe): OK
-  write(/var/qos-apps/probe): permission denied — blocked (bwrap or Landlock)
+  stat(            /tilo-launcher): OK
+  write(/tmp/tilo-hello-probe): OK
+  write(/var/tilo-apps/probe): permission denied — blocked (bwrap or Landlock)
 
 == xdg portal probes ==
   is_portal_available: false
@@ -255,14 +255,14 @@ qos-hello: a qOS-native app, running.
   open-uri      : unavailable — graceful (no bus / launcher didn't plumb)
   secret        : unavailable — graceful (no bus / launcher didn't plumb)
 
-qos-hello: done.
+tilo-hello: done.
 ```
 
-Note the last block: the D-Bus bus address IS set (bwrap inherited it),
+The last block shows that the D-Bus bus address is set (bwrap inherited it),
 but because the manifest did not declare any `[sandbox.portals]` entry,
 the launcher did not bind the bus socket into the sandbox — so
 `is_portal_available()` returns false and every portal call surfaces
-`NotAvailable`. Exactly what an app on stock Linux without a bus sees.
+`NotAvailable`, as an app on stock Linux without a bus would see.
 
 ## Depending on `runtime`
 
@@ -274,8 +274,7 @@ runtime = { path = "crates/runtime/runtime" }
 ```
 
 For an out-of-workspace crate publish (until we cut a crates.io release),
-depend directly by pinned path relative to your worktree. The transitive
-dep footprint is small enough that this is not painful; the SDK carries
+depend directly by pinned path relative to your worktree. The SDK carries
 `ashpd`, `capnp-rpc`, `tokio` at pinned versions and nothing else.
 
 Next: [`cli-apps.md`](./cli-apps.md) — the CLI-flavour of the same

@@ -7,7 +7,7 @@
 //!
 //! Two ways in, differing only in who composed the change: [`Editor::invoke`]
 //! performs one operation an app currently exports, by address, through
-//! [`qos_actions::door`], resolved against a tree built **now** so an
+//! [`tilo_actions::door`], resolved against a tree built **now** so an
 //! operation that has gone away since it was offered is a refusal rather
 //! than a substitution; [`Editor::apply`] performs one action the agent
 //! composed itself.
@@ -15,8 +15,8 @@
 use anyhow::{Context, Result};
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit};
-use qos_actions::door::{self, ActionAddress, DoorError};
-use qos_actions::{ActionRegistry, LocalTransport, Resource};
+use tilo_actions::door::{self, ActionAddress, DoorError};
+use tilo_actions::{ActionRegistry, LocalTransport, Resource};
 
 use crate::surface::{AppContract, View};
 
@@ -31,7 +31,7 @@ pub struct Editor {
     author: String,
     /// Durable task provenance applied to native edits while a session is
     /// carrying out one addressed instruction.
-    history_context: Option<qos_actions::ActionContext>,
+    history_context: Option<tilo_actions::ActionContext>,
     /// Which app authored this document.
     contract: &'static AppContract,
 }
@@ -144,7 +144,7 @@ impl Editor {
 
     /// Set task context for subsequent commits. The session clears it after
     /// the run so a later, unrelated instruction cannot inherit it.
-    pub fn set_history_context(&mut self, context: Option<qos_actions::ActionContext>) {
+    pub fn set_history_context(&mut self, context: Option<tilo_actions::ActionContext>) {
         self.history_context = context;
     }
 
@@ -429,7 +429,7 @@ impl Editor {
     /// action names a block, table or attribute that is no longer there.
     pub fn apply<A>(&mut self, action: &A) -> Result<Option<Vec<u8>>>
     where
-        A: qos_actions::Action + std::fmt::Debug + ?Sized,
+        A: tilo_actions::Action + std::fmt::Debug + ?Sized,
     {
         self.doc.set_actor(self.actor.clone());
         // A clean commit boundary and the baseline to compare against:
@@ -452,7 +452,7 @@ impl Editor {
                 &mut self.doc,
                 self.history_context
                     .as_ref()
-                    .and_then(qos_actions::ActionContext::change_message),
+                    .and_then(tilo_actions::ActionContext::change_message),
             );
         } else if self.doc.get_heads() != before {
             tracing::warn!(
@@ -481,7 +481,10 @@ impl Editor {
     /// # Errors
     ///
     /// When `action.apply` fails against this document.
-    pub fn apply_foreign<A: qos_actions::Action>(&mut self, action: &A) -> Result<Option<Vec<u8>>> {
+    pub fn apply_foreign<A: tilo_actions::Action>(
+        &mut self,
+        action: &A,
+    ) -> Result<Option<Vec<u8>>> {
         self.doc.set_actor(self.actor.clone());
         action
             .apply(&mut self.doc)
@@ -615,7 +618,7 @@ impl Editor {
             &mut self.doc,
             self.history_context
                 .as_ref()
-                .and_then(qos_actions::ActionContext::change_message),
+                .and_then(tilo_actions::ActionContext::change_message),
         );
     }
 
@@ -700,7 +703,7 @@ impl Editor {
 mod tests {
     use super::*;
     use automerge::{ROOT, ReadDoc, ScalarValue};
-    use qos_actions::{Action, ActionError, Doc, ExecutionLocus};
+    use tilo_actions::{Action, ActionError, Doc, ExecutionLocus};
 
     /// An action that asks the document a question between its writes,
     /// which closes the transaction early — the condition a `pending_ops`
@@ -923,7 +926,7 @@ mod tests {
             ..View::default()
         };
         let registry = crate::surface::registry();
-        let add = qos_actions::door::ActionAddress::new("word-processor.document", "add-comment");
+        let add = tilo_actions::door::ActionAddress::new("word-processor.document", "add-comment");
         let add_args = serde_json::json!({
             "author": "Scribe",
             "date": "2026-09-08",
@@ -945,7 +948,7 @@ mod tests {
         assert_eq!(comment.author, "Scribe");
         assert_eq!(comment.blocks[0].text, "Please clarify this.");
 
-        let reply = qos_actions::door::ActionAddress::new(
+        let reply = tilo_actions::door::ActionAddress::new(
             format!("word-processor.comment:{}", comment.id),
             "reply",
         );

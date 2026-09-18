@@ -68,7 +68,7 @@ impl PairingTranscript {
         // Canonicalise via postcard for byte-level determinism across machines.
         let bytes = canonical_bytes(self)?;
         let mut hasher = sha2::Sha512::new();
-        hasher.update(b"qos-threshold-identity:pairing-transcript:v1");
+        hasher.update(b"tilo-threshold-identity:pairing-transcript:v1");
         hasher.update(bytes);
         let full = hasher.finalize();
         // SHA-512 output is always 64 bytes, so this never actually misses —

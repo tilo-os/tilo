@@ -269,10 +269,10 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
     a.push(crate::GUEST_BIN_DIR.into());
     a.push("--ro-bind".into());
     a.push(plan.runtime_bin.clone().into_os_string());
-    a.push(format!("{}/qos-ush", crate::GUEST_BIN_DIR).into());
+    a.push(format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into());
     for cmd in crate::GUEST_COMMANDS {
         a.push("--symlink".into());
-        a.push("qos-ush".into());
+        a.push("tilo-ush".into());
         a.push(format!("{}/{cmd}", crate::GUEST_BIN_DIR).into());
     }
     a.push("--bind".into());
@@ -343,8 +343,8 @@ fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan) {
     setenv("USER", "root", a);
     setenv("LOGNAME", "root", a);
     setenv("SHELL", &plan.shell.to_string_lossy(), a);
-    setenv("QOS_USH_PROFILE", plan.profile.as_str(), a);
-    setenv("QOS_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
+    setenv("TILO_USH_PROFILE", plan.profile.as_str(), a);
+    setenv("TILO_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
     // Carried across explicitly since the guest no longer inherits it: a shell
     // with no `LANG` answers in the C locale, breaking `ls`, `date`, and messages.
     for key in INHERITED_ENV {
@@ -725,7 +725,7 @@ mod tests {
             home_mountpoint: PathBuf::from("/var/home/you"),
             trusted_dirs: Vec::new(),
             readable_dirs: Vec::new(),
-            runtime_bin: PathBuf::from("/usr/libexec/qos-ush"),
+            runtime_bin: PathBuf::from("/usr/libexec/tilo-ush"),
             broker_socket: PathBuf::from("/store/sessions/s1/broker.sock"),
             seccomp_blob: PathBuf::from("/store/sessions/s1/ush.bpf"),
             command: Vec::new(),
@@ -974,7 +974,7 @@ mod tests {
         for cmd in crate::GUEST_COMMANDS {
             assert!(
                 w3.iter().any(|w| w[0] == "--symlink"
-                    && w[1] == "qos-ush"
+                    && w[1] == "tilo-ush"
                     && w[2] == format!("{}/{cmd}", crate::GUEST_BIN_DIR)),
                 "`{cmd}` has no shim in the guest"
             );
@@ -986,7 +986,7 @@ mod tests {
         let argv = strings(&build_argv(&plan(), Some(9), None));
         let i = argv
             .iter()
-            .position(|a| a == "/usr/libexec/qos-ush")
+            .position(|a| a == "/usr/libexec/tilo-ush")
             .expect("runtime binary not bound");
         assert_eq!(
             argv[i - 1],

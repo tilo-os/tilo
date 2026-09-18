@@ -112,6 +112,15 @@ impl LiveAccountTester {
         Ok(value.replace('\\', "\\\\").replace('"', "\\\""))
     }
 
+    fn imap_login_accepted(response: &str, tag: &str) -> bool {
+        response.lines().any(|line| {
+            line.strip_prefix(tag)
+                .and_then(|suffix| suffix.strip_prefix(' '))
+                .and_then(|suffix| suffix.split_ascii_whitespace().next())
+                .is_some_and(|status| status.eq_ignore_ascii_case("OK"))
+        })
+    }
+
     /// Complete TLS, read the greeting, authenticate, and log out. A TCP
     /// accept alone is deliberately not success: it says nothing about the
     /// saved credential or whether this is an IMAP endpoint.
@@ -178,24 +187,20 @@ impl LiveAccountTester {
         }
         let user = Self::imap_quote(username.trim())?;
         let password = Self::imap_quote(secret.password.trim())?;
-        write!(stream, "qos1 LOGIN \"{user}\" \"{password}\"\r\n")
+        write!(stream, "tilo1 LOGIN \"{user}\" \"{password}\"\r\n")
             .map_err(|_| "could not send the IMAP login".to_string())?;
         stream
             .flush()
             .map_err(|_| "could not send the IMAP login".to_string())?;
         let login = Self::read_imap_response(
             &mut stream,
-            Some("qos1"),
+            Some("tilo1"),
             std::time::Instant::now() + Self::NETWORK_TIMEOUT,
         )?;
-        let accepted = login.lines().any(|line| {
-            line.get(..7)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("qos1 OK"))
-        });
-        if !accepted {
+        if !Self::imap_login_accepted(&login, "tilo1") {
             return Err("IMAP server rejected the saved credential".into());
         }
-        let _ = stream.write_all(b"qos2 LOGOUT\r\n");
+        let _ = stream.write_all(b"tilo2 LOGOUT\r\n");
         Ok("IMAP sign-in succeeded".into())
     }
 
@@ -277,15 +282,64 @@ mod tests {
     use std::sync::mpsc;
 
     #[test]
+    fn imap_login_accepts_only_the_matching_tag_and_complete_ok_status() {
+        for response in [
+            "tilo1 OK LOGIN completed\r\n",
+            "* CAPABILITY IMAP4rev1\r\ntilo1 ok done\r\n",
+        ] {
+            assert!(LiveAccountTester::imap_login_accepted(response, "tilo1"));
+        }
+        for response in [
+            "tilo1 NO rejected\r\n",
+            "tilo1 BAD invalid\r\n",
+            "tilo1 OKAY invalid\r\n",
+            "tilo10 OK wrong tag\r\n",
+            "other OK wrong tag\r\n",
+            "* OK untagged\r\n",
+            "tilo1\r\n",
+        ] {
+            assert!(
+                !LiveAccountTester::imap_login_accepted(response, "tilo1"),
+                "{response:?}"
+            );
+        }
+    }
+
+    #[test]
     fn imap_response_requires_the_expected_tag() {
-        let mut response = &b"* CAPABILITY IMAP4rev1\r\nqos1 OK logged in\r\n"[..];
+        let mut response = &b"* CAPABILITY IMAP4rev1\r\ntilo1 OK logged in\r\n"[..];
         let parsed = LiveAccountTester::read_imap_response(
             &mut response,
-            Some("qos1"),
+            Some("tilo1"),
             std::time::Instant::now() + Duration::from_secs(1),
         )
         .expect("tagged completion");
-        assert!(parsed.contains("qos1 OK"));
+        assert!(parsed.contains("tilo1 OK"));
+    }
+
+    #[test]
+    fn imap_login_requires_an_exact_matching_success_status() {
+        assert!(LiveAccountTester::imap_login_accepted(
+            "tilo1 OK LOGIN completed\r\n",
+            "tilo1"
+        ));
+        assert!(LiveAccountTester::imap_login_accepted(
+            "tilo1 ok LOGIN completed\r\n",
+            "tilo1"
+        ));
+        for response in [
+            "tilo1 NO credential rejected\r\n",
+            "tilo1 BAD invalid login\r\n",
+            "tilo1 OKAY invalid status\r\n",
+            "tilo2 OK unrelated command\r\n",
+            "* OK untagged response\r\n",
+            "tilo1 NO rejected\r\n* OK server ready\r\n",
+        ] {
+            assert!(
+                !LiveAccountTester::imap_login_accepted(response, "tilo1"),
+                "{response:?}"
+            );
+        }
     }
 
     #[test]
@@ -321,11 +375,11 @@ mod tests {
                 let mut reader = BufReader::new(&mut stream);
                 reader.read_line(&mut login).expect("login command");
             }
-            assert!(login.starts_with("qos1 LOGIN "));
+            assert!(login.starts_with("tilo1 LOGIN "));
             assert!(login.contains("\"ada@example.test\""));
             assert!(login.contains("\"app-password\""));
             stream
-                .write_all(b"qos1 OK LOGIN completed\r\n")
+                .write_all(b"tilo1 OK LOGIN completed\r\n")
                 .expect("login response");
             stream.flush().expect("login flush");
         });

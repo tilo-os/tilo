@@ -354,7 +354,7 @@ fn busy_destination_refuses_before_source_read_and_retries_once() {
 fn unrelated_failed_writer_does_not_override_saved_import() {
     let f = LegacyFixture::rich();
     let other = RecordCheckout::new(
-        RecordId::parse("notes-fixture-unrelated").unwrap(),
+        RecordId::derived("notes-fixture-unrelated", &RecordId::for_tab(0)),
         RecordKind::new("notes.notebook"),
     );
     f.records
@@ -385,8 +385,12 @@ fn destination_mapping_is_fixed_for_zero_and_ff_keys() {
         let checkout = destination(LegacySourceKey::from_bytes([byte; 32]));
         assert_eq!(
             checkout.id.as_str(),
-            format!("derived:notes-legacy-v1@{}", hex.repeat(32))
+            format!(
+                "derived:notes-legacy-v1@derived:key-{half}@derived:key-{half}@tab:0000000000000000",
+                half = hex.repeat(16)
+            )
         );
+        assert!(checkout.is_valid());
         assert_eq!(checkout.kind.as_str(), "notes.notebook");
     }
 }
@@ -503,7 +507,7 @@ fn canonical_validation_refuses_versions_and_malformed_shapes_without_reset() {
 #[test]
 fn deleting_every_page_and_tag_through_actions_does_not_reimport() {
     use notes::actions::NotesAction;
-    use qos_actions::Action;
+    use tilo_actions::Action;
     let f = LegacyFixture::rich();
     let checkout = imported(&f).checkout;
     // Explicit authority is retained for the caller; import itself performs private initialization.
@@ -596,7 +600,7 @@ fn corruption_schema_and_identity_refusals_retain_destination_bytes() {
             let checkout = destination(f.key);
             let mut doc = AutoCommit::new();
             let id = if case == "identity" {
-                RecordId::parse("wrong-id").unwrap()
+                RecordId::derived("wrong-id", &RecordId::for_tab(0))
             } else {
                 checkout.id.clone()
             };
@@ -663,7 +667,7 @@ fn accepted_prefix_with_missing_notebook_version_returns_retained_migration_erro
 
 #[test]
 fn deleting_link_target_retains_surviving_text_and_read_only_projection() {
-    use qos_actions::Action;
+    use tilo_actions::Action;
     let f = LegacyFixture::rich();
     let checkout = imported(&f).checkout;
     let before = f

@@ -6,10 +6,10 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "One-shot install / launch / list / remove for qOS packages."
+description = "One-shot install / launch / list / remove for Tilo packages."
 
 [[bin]]
-name = "qos-install"
+name = "tilo-install"
 path = "src/main.rs"
 
 [lib]
@@ -27,7 +27,7 @@ hex.workspace = true
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
-tar.workspace = true
+ed25519-dalek.workspace = true
 blake3.workspace = true
 semver.workspace = true
 # `update` resolves a newer version through the signed registry index
@@ -37,8 +37,8 @@ app-registry = { path = "../app-registry" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]
-ed25519-dalek = { workspace = true, features = ["rand_core"] }
 rand.workspace = true
+tar.workspace = true
 tempfile.workspace = true
 
 [[test]]

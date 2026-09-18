@@ -1,4 +1,4 @@
-//! Authenticator — a 2FA TOTP authenticator for qOS, built on the
+//! Authenticator — a 2FA TOTP authenticator for Tilo, built on the
 //! CRDT-native `ui` toolkit.
 //!
 //! # What it does

@@ -560,7 +560,7 @@ mod approval_tests {
 fn approval_path(extension: &ExtensionInfo) -> Option<PathBuf> {
     let path = extension.path.canonicalize().ok()?;
     let key = blake3::hash(path.to_str()?.as_bytes()).to_hex();
-    Some(path.parent()?.join(format!(".qos-approval-{key}.json")))
+    Some(path.parent()?.join(format!(".tilo-approval-{key}.json")))
 }
 fn manifest_digest(extension: &ExtensionInfo) -> Result<String, ExtensionError> {
     let text = read_manifest(&extension.path.join("manifest.json"))?;
@@ -622,7 +622,10 @@ pub fn permission_summary(extension: &ExtensionInfo) -> Result<String, Extension
             }
         }
     }
-    if let Some(scripts) = value.get("content_scripts").and_then(serde_json::Value::as_array) {
+    if let Some(scripts) = value
+        .get("content_scripts")
+        .and_then(serde_json::Value::as_array)
+    {
         for script in scripts {
             if let Some(matches) = script.get("matches").and_then(serde_json::Value::as_array) {
                 for pattern in matches {
@@ -664,7 +667,8 @@ pub fn action_url(extension: &ExtensionInfo) -> Option<String> {
             .to_vec()
     };
     let hash = Sha256::digest(bytes);
-    let id: String = hash.iter()
+    let id: String = hash
+        .iter()
         .take(16)
         .flat_map(|byte| {
             [

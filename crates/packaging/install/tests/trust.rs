@@ -1,4 +1,4 @@
-//! End-to-end tests for the `qos-install` trust flags:
+//! End-to-end tests for the `tilo-install` trust flags:
 //!
 //! - `install --require-attestor foo`: refuses when the package
 //!   isn't attested by `foo`.
@@ -8,11 +8,11 @@
 //! - `install` on a package with a revoked publisher key is
 //!   refused unconditionally.
 //!
-//! The tests build .qpkg files in-process (bypassing qos-pkg-cli
+//! The tests build .qpkg files in-process (bypassing tilo-pkg-cli
 //! to avoid a circular workspace dep) and drive the built
-//! `qos-install` binary via `std::process::Command` with
+//! `tilo-install` binary via `std::process::Command` with
 //! `XDG_CONFIG_HOME` / `XDG_DATA_HOME` pointed at per-test
-//! tempdirs so the tests never touch the developer's real config.
+//! tempdirs so the tests use isolated configuration.
 
 #![allow(
     clippy::unwrap_used,
@@ -39,18 +39,18 @@ use pkg::{Manifest, MemoryBlobStore, SigningIdentity, pack};
 use rand::rngs::OsRng;
 use serde::Serialize;
 
-/// Path to the compiled `qos-install` binary. Cargo sets
-/// CARGO_BIN_EXE_qos-install when the [[bin]] block is `qos-install`.
+/// Path to the compiled `tilo-install` binary. Cargo sets
+/// CARGO_BIN_EXE_tilo-install when the [[bin]] block is `tilo-install`.
 fn install_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_qos-install"))
+    PathBuf::from(env!("CARGO_BIN_EXE_tilo-install"))
 }
 
 const SAMPLE_APP_MANIFEST_TEMPLATE: &str = r#"
 [package]
-id          = "dev.qos.editor"
+id          = "dev.tilo.editor"
 version     = "1.4.2"
 kind        = "app"
-runtime     = "qos-runtime/2025.06"
+runtime     = "tilo-runtime/2025.06"
 
 [publisher]
 identity    = "ed25519:<HEX>"
@@ -58,7 +58,7 @@ signature   = ""
 
 [sandbox]
 namespaces  = ["user", "pid", "uts", "ipc", "mount", "net"]
-seccomp     = "qos-default"
+seccomp     = "tilo-default"
 landlock    = "strict"
 
 [sandbox.net]
@@ -66,7 +66,7 @@ mode = "off"
 
 [sandbox.services]
 collab      = "required@1"
-qos-fs      = "required@1"
+tilo-fs      = "required@1"
 
 [entrypoint]
 bin             = "bin/editor"
@@ -128,7 +128,7 @@ fn attest_and_inject(
     });
 }
 
-/// Build a .qpkg file with the same layout that qos-pkg-cli writes.
+/// Build a .qpkg file with the same layout that tilo-pkg-cli writes.
 fn build_qpkg(
     qpkg_path: &Path,
     manifest: &Manifest,
@@ -199,19 +199,19 @@ impl TestEnv {
         self.home.path().join("data")
     }
 
-    fn qos_config(&self) -> PathBuf {
-        self.xdg_config().join("qos")
+    fn tilo_config(&self) -> PathBuf {
+        self.xdg_config().join("tilo")
     }
 
     fn write_trusted_attestors(&self, attestors: &TrustedAttestors) {
-        std::fs::create_dir_all(self.qos_config()).unwrap();
-        let path = self.qos_config().join("trusted-attestors.toml");
+        std::fs::create_dir_all(self.tilo_config()).unwrap();
+        let path = self.tilo_config().join("trusted-attestors.toml");
         attestors.save(&path).unwrap();
     }
 
     fn write_revocation(&self, list: &RevocationList) {
-        std::fs::create_dir_all(self.qos_config()).unwrap();
-        let path = self.qos_config().join("revoked-keys.toml");
+        std::fs::create_dir_all(self.tilo_config()).unwrap();
+        let path = self.tilo_config().join("revoked-keys.toml");
         list.save(&path).unwrap();
     }
 
@@ -229,7 +229,7 @@ impl TestEnv {
 }
 
 fn run(mut cmd: Command) -> (bool, String, String) {
-    let out = cmd.output().expect("spawn qos-install");
+    let out = cmd.output().expect("spawn tilo-install");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     (out.status.success(), stdout, stderr)
@@ -260,7 +260,7 @@ fn install_require_attestor_refuses_self_signed() {
         .arg(&qpkg_path)
         .arg("--ignore-missing-runtime")
         .arg("--require-attestor")
-        .arg("qos-curated/2026.07");
+        .arg("tilo-curated/2026.07");
     let (ok, _stdout, stderr) = run(cmd);
     assert!(!ok, "expected refusal, stderr: {stderr}");
     assert!(
@@ -285,7 +285,7 @@ fn install_require_attestor_permits_matching_attestation() {
         &mut manifest,
         payload_dir.path(),
         &publisher_sk,
-        "qos-curated/2026.07",
+        "tilo-curated/2026.07",
         &attestor_sk,
     );
 
@@ -294,7 +294,7 @@ fn install_require_attestor_permits_matching_attestation() {
 
     env.write_trusted_attestors(&TrustedAttestors {
         attestor: vec![TrustedAttestor {
-            id: "qos-curated/2026.07".into(),
+            id: "tilo-curated/2026.07".into(),
             pubkey_hex: attestor_pub_hex,
             scope: AttestorScope::All,
         }],
@@ -310,7 +310,7 @@ fn install_require_attestor_permits_matching_attestation() {
         .arg(&qpkg_path)
         .arg("--ignore-missing-runtime")
         .arg("--require-attestor")
-        .arg("qos-curated/2026.07");
+        .arg("tilo-curated/2026.07");
     let (ok, stdout, stderr) = run(cmd);
     assert!(ok, "expected success, stdout={stdout} stderr={stderr}");
     assert!(stdout.contains("installed:"), "stdout: {stdout}");
@@ -330,7 +330,7 @@ fn install_require_attestor_and_allow_self_signed_takes_attestation_when_present
         &mut manifest,
         payload_dir.path(),
         &publisher_sk,
-        "qos-curated/2026.07",
+        "tilo-curated/2026.07",
         &attestor_sk,
     );
 
@@ -339,7 +339,7 @@ fn install_require_attestor_and_allow_self_signed_takes_attestation_when_present
 
     env.write_trusted_attestors(&TrustedAttestors {
         attestor: vec![TrustedAttestor {
-            id: "qos-curated/2026.07".into(),
+            id: "tilo-curated/2026.07".into(),
             pubkey_hex: attestor_pub_hex,
             scope: AttestorScope::All,
         }],
@@ -355,7 +355,7 @@ fn install_require_attestor_and_allow_self_signed_takes_attestation_when_present
         .arg(&qpkg_path)
         .arg("--ignore-missing-runtime")
         .arg("--require-attestor")
-        .arg("qos-curated/2026.07")
+        .arg("tilo-curated/2026.07")
         .arg("--allow-self-signed");
     let (ok, stdout, stderr) = run(cmd);
     assert!(ok, "expected success, stdout={stdout} stderr={stderr}");
@@ -389,7 +389,7 @@ fn install_require_attestor_and_allow_self_signed_falls_back_when_no_match() {
         .arg(&qpkg_path)
         .arg("--ignore-missing-runtime")
         .arg("--require-attestor")
-        .arg("qos-curated/2026.07")
+        .arg("tilo-curated/2026.07")
         .arg("--allow-self-signed");
     let (ok, stdout, stderr) = run(cmd);
     assert!(

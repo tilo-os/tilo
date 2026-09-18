@@ -11,22 +11,17 @@ exclude = [
     "vendor/vello_shaders",
     "vendor/genawaiter-proc-macro",
     "vendor/winit",
+    "vendor/wgpu-hal",
 ]
-# `runtime-dylib` is a workspace member (so it shares the lockfile,
-# target dir, and crate SVHs with the apps that link it) but is kept
-# OUT of `default-members`: a bare `cargo build` / `cargo test` never
-# compiles it. It carries `crate-type = ["dylib"]`, which requires
-# `panic = "unwind"` — incompatible with the workspace's default
-# `panic = "abort"` release profile. It is built only, and explicitly,
-# under `--profile thin-app` (`cargo build -p runtime-dylib --profile
-# thin-app`). See its Cargo.toml for the full rationale.
-# Keep bare developer builds on the load-bearing spine. CI's affected-package
-# selector and nightly full-workspace gate cover every member explicitly.
+# Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
+# it requires unwind support, unlike the default release profile.
+# Default builds cover core crates. CI checks affected packages and runs
+# the full workspace nightly.
 default-members = [
     "crates/doc/qdoc",
-    "fs",
-    "shell",
-    "ui",
+    "crates/system/fs",
+    "crates/session/shell",
+    "crates/sdk/ui-core",
     "crates/packaging/pkg",
     "crates/runtime/runtime",
 ]
@@ -34,176 +29,191 @@ members = [
     "crates/session/qos-ntfs-helper",
     "crates/session/qos-ntfs-protocol",
     "crates/browser/chromium-blocker",
-    "apps/scratchpad",
-    "crates/app/qos-app",
-    "crates/windows/compat-catalogue",
-    "crates/windows/compat-service",
-    "crates/dev/headless-schema",
-    "crates/dev/qos-dev",
-    "crates/dev/qos-dev-template-smoke",
-    "crates/dev/ui-builder",
-    "crates/dev/ui-graph",
-    "crates/system/qos-rollback",
-    "crates/system/qos-cli",
-    "crates/system/tinker",
-    "crates/system/swipe",
-    "crates/system/tts",
-    "crates/system/accounts",
-    "crates/agent/provider-config",
-    "crates/agent/model-gateway",
-    "crates/agent/local-model-service",
-    "crates/system/app-state",
-    "crates/system/desktop-policy",
-    "crates/doc/qdoc",
-    "crates/text/spellcheck",
-    "crates/doc/qdoc-pdf",
-    "crates/doc/qdoc-html",
-    "crates/doc/qdoc-rtf",
-    "crates/doc/qdoc-epub",
-    "apps/word-processor",
-    "apps/photos",
+    # Core product surfaces
+    "crates/session/shell",
+    "crates/sdk/ui-core",
+
+    # Applications
     "apps/agent",
-    "apps/video-player",
-    "crates/media",
-    "crates/thumbnail",
-    "fs",
-    "shell",
-    "ui",
-    "crates/system/os-actions",
-    "crates/system/qos-bluez",
-    "crates/system/power",
-    "crates/collab/collab-types",
-    "crates/collab/actions",
-    "crates/collab/collab-fixtures",
-    "crates/collab/reference",
-    "crates/collab/threshold-identity",
-    "crates/collab/channel-crypto",
-    "crates/collab/collab-link",
-    "crates/collab/frame-link",
-    "crates/collab/qos-callstream",
-    "crates/packaging/pkg",
-    "crates/packaging/collab-probe",
-    "crates/packaging/pkg-cli",
-    "crates/packaging/registry-types",
-    "crates/packaging/registry-server",
-    "crates/packaging/app-registry",
-    "crates/packaging/launcher",
-    "crates/packaging/app-catalogue",
-    "crates/packaging/app-fs",
-    "crates/packaging/app-host",
-    "crates/packaging/runtime-bundle",
-    "crates/runtime/runtime",
-    "crates/runtime/runtime-portal",
-    "crates/runtime/runtime-portal-xdg",
-    "crates/runtime/runtime-collab",
-    "crates/runtime/runtime-fs",
-    "crates/runtime/runtime-identity",
-    "crates/runtime/ush",
-    "crates/runtime/cli",
-    "crates/format/format-provider-wit",
-    "crates/format/format-host",
-    "crates/packaging/hello",
-    "crates/packaging/install",
-    "crates/packaging/cli-shim",
-    "crates/packaging/notes-cli",
-    "crates/identity/qos-user-identity",
-    "crates/hosting/qos-relay",
-    "apps/file-explorer",
-    "apps/terminal",
-    "apps/browser",
-    "apps/notes",
-    "apps/osk",
-    "apps/settings",
-    "apps/api_tester",
+    "apps/api-tester",
     "apps/backups",
+    "apps/browser",
     "apps/calculator",
     "apps/calendar",
     "apps/camera",
     "apps/chat",
-    "apps/code_editor",
+    "apps/clocks",
+    "apps/code-editor",
     "apps/contacts",
     "apps/containers",
-    "apps/windows",
-    "apps/db_client",
+    "apps/db-client",
     "apps/diffmerge",
     "apps/disks",
+    "apps/disk-usage",
     "apps/ebook",
     "apps/feeds",
+    "apps/file-explorer",
     "apps/firewall",
-    "apps/git_client",
-    "apps/hex_editor",
+    "apps/git-client",
+    "apps/hex-editor",
+    "apps/image-editor",
     "apps/imager",
     "apps/logs",
     "apps/mail",
     "apps/maps",
     "apps/monitor",
     "apps/music",
-    "apps/pdf_viewer",
+    "apps/notes",
+    "apps/osk",
+    "apps/passwords",
+    "apps/pdf-viewer",
+    "apps/photos",
+    "apps/print-centre",
     "apps/remote",
+    "apps/scratchpad",
+    "apps/speed-test",
+    "apps/settings",
     "apps/sheets",
     "apps/slides",
     "apps/snippets",
     "apps/store",
+    "apps/terminal",
     "apps/themes",
     "apps/totp",
     "apps/tube",
-    "apps/typst_editor",
-    "apps/video_editor",
+    "apps/typst-editor",
+    "apps/video-editor",
+    "apps/video-player",
     "apps/vpn",
     "apps/weather",
-    "crates/session/greeter",
-    "crates/session/qos-unlock-helper",
-    "crates/session/qos-power",
-    "crates/system/qos-startup-metrics",
-    "crates/system/system-extension",
-    "crates/system/projector",
-    "crates/session/installer",
-    # Opt-in dynamic build of the runtime SDK. A member (shares lockfile
-    # + target dir + crate SVHs) but excluded from default-members above,
-    # so it is compiled only via `--profile thin-app`, never by a bare
-    # `cargo build`. See crates/runtime/runtime-dylib/Cargo.toml.
+    "apps/windows",
+    "apps/word-processor",
+
+    # Agent
+    "crates/agent/local-model-service",
+    "crates/agent/model-gateway",
+    "crates/agent/provider-config",
+
+    # SDK
+    "crates/sdk/tilo-app",
+
+    # Collab
+    "crates/collab/actions",
+    "crates/collab/channel-crypto",
+    "crates/collab/collab-fixtures",
+    "crates/collab/collab-types",
+    "crates/collab/reference",
+    "crates/collab/threshold-identity",
+    "crates/collab/tilo-callstream",
+    "crates/collab/tilo-user-identity",
+
+    # Dev
+    "crates/dev/collab-link",
+    "crates/dev/collab-probe",
+    "crates/dev/frame-link",
+    "crates/dev/headless-schema",
+    "crates/dev/tilo-dev",
+    "crates/dev/tilo-dev-template-smoke",
+    "crates/dev/ui-builder",
+    "crates/dev/ui-graph",
+
+    # Doc
+    "crates/doc/format-host",
+    "crates/doc/format-provider-wit",
+    "crates/doc/qdoc",
+    "crates/doc/qdoc-epub",
+    "crates/doc/qdoc-html",
+    "crates/doc/qdoc-pdf",
+    "crates/doc/qdoc-rtf",
+
+    # Hosting
+    "crates/hosting/tilo-relay",
+
+    # Media
+    "crates/media/core",
+    "crates/media/ocr",
+    "crates/media/thumbnail",
+    "crates/media/vision",
+
+    # Packaging
+    "crates/packaging/app-catalogue",
+    "crates/packaging/app-fs",
+    "crates/packaging/app-host",
+    "crates/packaging/app-registry",
+    "crates/packaging/cli-shim",
+    "crates/packaging/install",
+    "crates/packaging/launcher",
+    "crates/packaging/pkg",
+    "crates/packaging/pkg-cli",
+    "crates/packaging/registry-server",
+    "crates/packaging/registry-types",
+    "crates/packaging/runtime-bundle",
+
+    # Examples
+    "examples/packaging/hello",
+    "examples/packaging/notes-cli",
+
+    # Runtime
+    "crates/runtime/cli",
+    "crates/runtime/runtime",
+    "crates/runtime/runtime-collab",
+    # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
-    "crates/system/settings-store",
+    "crates/runtime/runtime-fs",
+    "crates/runtime/runtime-identity",
+    "crates/runtime/runtime-portal",
+    "crates/runtime/runtime-portal-xdg",
+    "crates/runtime/ush",
+
+    # Session
+    "crates/session/greeter",
+    "crates/session/installer",
+    "crates/session/tilo-unlock-helper",
+
+    # System
+    "crates/system/accounts",
+    "crates/system/app-state",
     "crates/system/atomic-file",
+    "crates/system/bounded-command",
+    "crates/system/private-fs",
     "crates/system/desktop-entry",
-    "crates/system/windows-vm",
+    "crates/system/desktop-policy",
+    "crates/system/fs",
+    "crates/system/os-actions",
+    "crates/system/power",
+    "crates/system/projector",
+    "crates/system/settings-store",
+    "crates/system/swipe",
+    "crates/system/system-extension",
+    "crates/system/tilo-bluez",
+    "crates/system/tilo-cli",
+    "crates/system/tilo-crypto",
+    "crates/system/tilo-native-certs",
+    "crates/system/tilo-rollback",
+    "crates/system/tilo-startup-metrics",
+    "crates/system/tinker",
+    "crates/system/tts",
+
+    # Text
+    "crates/text/spellcheck",
+
+    # Windows
+    "crates/windows/compat-catalogue",
+    "crates/windows/compat-service",
+    "crates/windows/windows-vm",
 ]
 resolver = "2"
 
-# qOS is distributed as one AGPL operating-system source tree, not as a set of
-# independently published crates. Members inherit this metadata so Cargo tools
-# can distinguish repository-owned path dependencies from registry packages.
+# Tilo is distributed as one AGPL operating-system source tree; workspace
+# members inherit this metadata and are not published independently.
 [workspace.package]
 license = "AGPL-3.0-only"
 publish = false
 
-# Every dependency shared by two or more workspace members is pinned here, and
-# the members inherit it with `dep.workspace = true`. This is the one file to
-# edit to bump a shared version — before it existed, `vello` was spelled out in
-# 49 separate manifests and any one of them could silently drift.
-#
-# Reading the entries:
-#
-#   * The version here is the floor for the whole workspace. A member may not
-#     override it; that is the point.
-#   * `features` here are the ones nearly every member wants. A member adds its
-#     own on top (`features = [...]` alongside `workspace = true`); features are
-#     additive, so the member gets the union.
-#   * `default-features = false` here is a floor too, and it only travels one
-#     way: a member can turn defaults back **on** with `default-features = true`,
-#     but a member can never turn them off if this table leaves them on. So any
-#     dependency where even one member wants defaults off is declared off here.
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
-# `nursery` as a group is clippy's unstable channel: documented false positives,
-# behaviour that changes between releases, so a toolchain bump can turn CI red
-# with no code change. Measured here it was 10,873 violations, 96% of them four
-# style lints (use_self 3401, missing_const_for_fn 2511, redundant_pub_crate
-# 1443, suboptimal_flops 1224 — the last rewrites float expressions and changes
-# results, which a renderer should not accept from a lint).
-#
-# The nursery lints that find bugs rather than style are named individually
-# below: 431 violations, and each one is a defect.
+# `nursery` is unstable and includes documented false positives, so its lints
+# are enabled individually below where they catch correctness defects.
 
 # Panics. clippy.toml exempts tests.
 unwrap_used = "deny"
@@ -218,7 +228,7 @@ panic_in_result_fn = "deny"
 panic = "deny"
 exit = "deny"
 
-# Nursery lints kept individually: each catches a defect, not a style.
+# Selected nursery lints.
 redundant_clone = "deny"                    # allocations that are never needed
 significant_drop_tightening = "deny"        # lock held longer than necessary
 significant_drop_in_scrutinee = "deny"      # lock held across a match arm
@@ -243,28 +253,17 @@ set_contains_or_insert = "deny"
 clear_with_drain = "deny"
 trailing_empty_array = "deny"
 
-# `as_conversions` fires on all 7,090 `as` uses, including provably-safe ones.
-# pedantic already denies the dangerous subset more precisely — cast_possible_
-# truncation (1,518), cast_precision_loss (872), cast_sign_loss (469),
-# cast_possible_wrap (301) — plus cast_lossless (3,388) which rewrites a safe
-# cast to `From`. Denying the blanket lint on top adds no safety and turns
-# bounded graphics casts into fallible conversions that cannot be discharged
-# with unwrap, since that is denied too.
+# `as_conversions` is broad; pedantic already denies the dangerous cast
+# categories more precisely. The blanket lint adds noise to bounded graphics
+# conversions.
 as_conversions = "allow"
 
-# `duration_suboptimal_units` wants `Duration::from_days(3)` where the code
-# says `from_secs(259_200)`. It would read better — but `from_days`,
-# `from_hours`, `from_mins` and `from_weeks` are all still behind the unstable
-# `duration_constructors` feature, and the toolchain is pinned to stable. The
-# lint's own suggestion does not compile here, so denying it only produces
-# violations nobody can discharge.
+# `duration_suboptimal_units` suggests constructors behind the unstable
+# `duration_constructors` feature, so it remains disabled on stable Rust.
 duration_suboptimal_units = "allow"
 
-# `must_use_candidate` wants `#[must_use]` on every public value-returning
-# function: 6,746 attributes here. The bug it aims at — calling something and
-# discarding a result that mattered — is better caught by `#[must_use]` on the
-# *type*, the way Result and Option do it. Mark guards, builders returning Self
-# and tokens; a getter whose result is ignored is harmless.
+# `must_use_candidate` is too broad for this API; annotate result types,
+# guards, builders, and tokens where ignoring a value is harmful.
 must_use_candidate = "allow"
 
 [workspace.dependencies]
@@ -272,11 +271,8 @@ must_use_candidate = "allow"
 # ---------------------------------------------------------------------------
 # UI toolkit stack
 #
-# `ui` re-exports vello, taffy, winit and automerge (see `ui/src/lib.rs`). An
-# app should reach for `ui::vello` rather than declaring its own copy: two vello
-# versions in one process means two incompatible `Scene` types, and a widget
-# tree that cannot be handed a scene it can draw into. These entries exist so
-# the crates that legitimately need a direct dependency all get the same one.
+# Prefer the re-exports in `crates/sdk/ui-core/src/lib.rs`. Direct dependencies must use
+# compatible versions to share types such as `vello::Scene`.
 # ---------------------------------------------------------------------------
 vello = "0.9"
 vello_encoding = "0.9"
@@ -290,9 +286,6 @@ rustc-hash = "2.1"
 # ---------------------------------------------------------------------------
 # Async runtime and networking
 # ---------------------------------------------------------------------------
-# tokio declares `default = []`, so there is nothing to switch off; members
-# carry their own runtime features (`rt`, `net`, `macros`, ...) since those
-# genuinely differ per crate.
 tokio = "1.52.3"
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
@@ -313,8 +306,6 @@ url = "2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 serde_bytes = "0.11"
-# Canonical wire encoding for everything that gets signed — little-endian,
-# varint, no field-reorder leeway, so signatures reproduce byte-for-byte.
 postcard = "1.1.3"
 toml = "0.8"
 quick-xml = "0.41.0"
@@ -334,14 +325,8 @@ tar = "0.4"
 # ---------------------------------------------------------------------------
 # Cryptography and identity
 #
-# The Ed25519 stack is deliberately conservative. Every qOS signing path
-# (`collab-types`, `qos-user-identity`, `threshold-identity`, `app-registry`,
-# `pkg`, `runtime-identity`) is on ed25519-dalek 2.x, which consumes `rand_core`
-# 0.6 — and `rand` 0.8 is the only release that hands out a 0.6-shaped `OsRng`.
-# That is why `rand` is pinned to 0.8 rather than the current 0.10: bumping it
-# would not typecheck against `SigningKey::generate`. iroh drags in a *second*
-# Ed25519 implementation (ed25519-dalek 3.x) for its own node identity; that is
-# iroh's business and must not become ours.
+# ed25519-dalek 2.x requires rand_core 0.6 for `SigningKey::generate`.
+# Keep rand at 0.8 for a compatible `OsRng`.
 # ---------------------------------------------------------------------------
 ed25519-dalek = "2"
 rand = "0.8"
@@ -361,7 +346,8 @@ bip39 = "2"
 # ---------------------------------------------------------------------------
 iroh = "1.0.3"
 iroh-base = "1.0.3"
-iroh-blobs = "0.103.0"
+# Disable unused RPC support and its platform certificate dependencies.
+iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 iroh-gossip = "0.101.0"
 iroh-mdns-address-lookup = "0.5.0"
 # ---------------------------------------------------------------------------
@@ -379,8 +365,9 @@ gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = "0.24"
 rustypipe = { version = "0.11", default-features = false }
+rquickjs = "0.9"
 # Sender-side discovery and transports for FCast and Google Cast. Disable the
-# mobile FFI/logging defaults: qos-projector is a native Rust broker.
+# mobile FFI/logging defaults: tilo-projector is a native Rust broker.
 fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }
 mdns-sd = "=0.20.3"
 
@@ -401,7 +388,7 @@ open = "5.3.5"
 libc = "0.2.186"
 
 # ---------------------------------------------------------------------------
-# Diagnostics, CLI and the long tail
+# Diagnostics and utilities
 # ---------------------------------------------------------------------------
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -428,52 +415,16 @@ tempfile = "3.27.0"
 serial_test = "3.4.0"
 proptest = "1"
 
-# Aggressive release profile. Fat LTO across the workspace + a single
-# codegen unit unlock cross-crate inlining — meaningful for the shell
-# because most of the hot path (widget draw → wgpu submit, CRDT apply,
-# encode/decode) crosses crate boundaries. panic=abort drops the
-# unwinding tables + landing pads (a compositor can't meaningfully
-# recover from a panic, and abort strips a real chunk of binary size).
-# strip=symbols removes the symbol table without touching perf.
-# debug=line-tables-only is deliberately kept — cheap on disk, needed
-# for perf/BOLT flamegraphs to attribute samples to lines.
-#
-# Debug builds carry line tables, not full DWARF.
-#
-# A `target/` here reaches 150+ GB, and it is not the object code: of one
-# measured 154 GB tree, 103 GB was `deps/` and 77 GB of that was binaries
-# and objects rather than rlibs. This workspace has 97 members and builds
-# on the order of 200 test binaries, and cargo's default `debug = true`
-# copies full DWARF — every type, every variable, every inlined frame —
-# into each of them. Multiplied across per-worktree targets (which cannot
-# be shared: cargo's artifact key omits the package path, so worktrees of
-# one repo collide) that is what fills a 2.7 TB disk.
-#
-# `line-tables-only` keeps the part anyone actually reads: a panic still
-# names the file and line, backtraces still resolve, and profilers still
-# attribute samples. What it drops is variable and type inspection in a
-# debugger. If you need that for a session, override it for the one crate
-# you are stepping through rather than paying for it across the fleet.
-#
-# Compile time is unaffected or slightly better; this is a size setting.
-#
-# Note `target/debug/incremental` is a further ~45 GB and is pure cache —
-# it can be deleted at any time and costs only one slower rebuild.
+# Keep line tables in development and test artifacts to retain useful
+# backtraces/profiling information without full DWARF size.
 [profile.dev]
 debug = "line-tables-only"
 
-# Test binaries are the bulk of the count, so they get the same treatment.
 [profile.test]
 debug = "line-tables-only"
 
-# Optimise the CRDT core even in a dev build. Every widget's state lives in an
-# `AutoCommit`, so almost every test touches this code, and unoptimised it is
-# not slow-but-workable — deleting ~3 KB from a text object takes 6.1 s in a
-# dev build against 6.9 ms in release, an 890x gap, because the column store is
-# built from deep generic iterator chains that only inlining makes sane. Seven
-# maps tests hit the 240 s timeout on that alone. These are dependencies, so
-# they are compiled once and cached; nothing here is our own code being
-# optimised out from under a debugger.
+# Optimise the CRDT dependencies in development and test builds; their generic
+# data structures are otherwise disproportionately slow in workspace tests.
 [profile.dev.package.automerge]
 opt-level = 3
 [profile.dev.package.hexane]
@@ -493,89 +444,43 @@ overflow-checks = false
 debug = "line-tables-only"
 incremental = false
 
-# Thin-app profile: the release profile, minus the two settings that are
-# fundamentally incompatible with dynamic linking of the SDK.
+# Thin-app profile: release settings minus those incompatible with dynamic SDK
+# linking.
 #
 #   * `panic = "unwind"` — a Rust `dylib` (and anything linking one, via
 #     `-C prefer-dynamic`) must unwind; `panic = "abort"` is rejected.
 #   * `lto = false` — fat LTO + `-C prefer-dynamic` is rejected by rustc.
 #
-# Everything else (opt-level 3, strip, one codegen unit) is inherited so
-# thin binaries stay as small + fast as the static ones. This profile is
-# how `runtime-dylib` and the thin apps that link it are compiled:
-#
-#   cargo rustc --profile thin-app -p runtime-dylib -- -C prefer-dynamic
-#   cargo rustc --profile thin-app -p <app> --features thin \
-#     --bin <bin> -- -C prefer-dynamic
-#
-# Pass the flag after `--`, never as RUSTFLAGS. The environment variable
-# REPLACES `build.rustflags` from .cargo/config.toml rather than adding
-# to it, so `RUSTFLAGS='-C prefer-dynamic'` silently drops
-# target-cpu=x86-64-v3 and every link-time hardening flag -- full RELRO,
-# BIND_NOW, noexecstack and the GNU_PROPERTY shadow-stack mark. The `--`
-# form is additive and keeps them.
-#
-# It is opt-in: nothing builds under it unless `--profile thin-app` is
-# passed, so the default `panic = "abort"` release path is untouched.
+# Thin builds are opt-in. Pass `-C prefer-dynamic` after `--` so workspace
+# target and linker hardening flags remain active.
 [profile.thin-app]
 inherits = "release"
 panic = "unwind"
 lto = false
 
-# Optimised, but still a developer build — what a screen recording of the
-# compositor needs.
-#
-# `snapshot` re-renders the scene and PNG-encodes it on the event loop, so
-# the frame rate of any recording is the speed of that code: unoptimised it
-# is ~1.4 s per frame at 1920x1080, which is not a video anybody can watch.
-#
-# `--release` is not the answer, because it is not merely optimised. The
-# `QOS_TEST_CONTROL` socket the harnesses drive the shell through is a
-# complete lock-screen bypass, so `compositor::dev_env` gates it on
-# `cfg!(debug_assertions)` and a shipped binary does not contain the code at
-# all — there is no flag to turn back on, deliberately. A `--release` shell
-# is therefore a compositor the harness cannot reach: it binds no socket and
-# says nothing about why.
-#
-# So: release's optimisation, with the developer surface still compiled in.
-# The override is scoped to `shell` alone, which is where the gate is read —
-# every dependency stays bit-identical to its release build, so this is
-# mostly a re-link rather than a rebuild. `--release` itself is untouched,
-# and the OS image and host RPM still ship the closed gate.
+# The demo profile keeps release optimisation while enabling shell's
+# debug-only test-control surface for recordings.
 [profile.demo]
 inherits = "release"
 
 [profile.demo.package.shell]
 debug-assertions = true
 
-# Vendored winit fork. Upstream winit 0.30.13 only emits
-# `WindowEvent::PinchGesture` on macOS/iOS — its Wayland backend never binds
-# `zwp_pointer_gestures_v1`, so touchpad pinch-to-zoom is dead on Linux. The
-# vendored copy adds that binding and translates the protocol's pinch
-# begin/update/end into the same `PinchGesture` event shape the Apple
-# backends emit, giving every `ui` app touchpad pinch-to-zoom for free.
+# Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
+# pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
-# Opt-in Metal presentation feedback; original renderer path when disabled.
+# libspa-sys 0.10.1 lets bindgen discover newer PipeWire inline functions
+# through transitive headers, but its emitted C wrapper includes only the
+# narrower wrapper.h. Keep the missing direct includes locally until upstream
+# ships the same fix; clean Fedora 44 builds otherwise fail in static_fns.c.
+libspa-sys = { path = "vendor/libspa-sys" }
+# Pinned DX12 shader cache and opt-in Metal presentation feedback.
 wgpu-hal = { path = "vendor/wgpu-hal" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
+rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 winit = { path = "vendor/winit" }
-# vello reserves its scratch buffers for a 30,000-path stress scene, per
-# renderer and so per process -- about 165 MB a desktop never touches. Its
-# own source says as much: "hand picked to accommodate ... paris-30k ...
-# should instead get derived from the scene layout". On an integrated GPU
-# shared by a dozen clients that is the entire memory window, and it froze
-# this machine four times in one evening.
-#
-# The Vello and encoding vendored copies size those buffers from what frames
-# actually use: the GPU already writes the counts into `BumpAllocators`,
-# so the renderer reads them back and grows a `BumpBudget` to fit. That
-# is upstream's own TODO ("apply logic to determine whether we need to
-# rerun coarse") and is meant to go back to them rather than live here.
-# Buffer sizing lives in `vendor/vello/src/bump_budget.rs`. The renderer also
-# includes retained-damage handling, profiling, and opt-in CPU/GPU scheduling
-# experiments documented in `docs/ui-performance-benchmark.md`.
-# `vello_shaders` is based on upstream 0.9.0 (Apache-2.0 OR MIT), with matching
-# sparse rasterization, CPU draw-prefix, and direct path-dispatch variants.
+# Vendored vello variants size scratch buffers from the current scene and
+# include the matching shader/encoding changes.
 vello_encoding = { path = "vendor/vello_encoding" }
 vello_shaders = { path = "vendor/vello_shaders" }
 vello = { path = "vendor/vello" }

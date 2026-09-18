@@ -1,20 +1,24 @@
-//! Calendar events, tasks, and projects as a retained qOS global-search source.
+//! Calendar events, tasks, and projects as a retained Tilo global-search source.
 //!
 //! The catalogue is keyed by each record's canonical resource id. It retains
 //! the complete loaded Calendar corpus and delegates query paging to
 //! [`SearchCatalog`], so typing never re-walks events and a match after a long
 //! run of broad matches remains reachable through a cursor.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
+use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
 
-use crate::actions::CalendarCollectionResource;
+use crate::actions::{
+    CalendarCollectionResource, calendar_resource_id, event_resource_id, project_resource_id,
+    task_resource_id,
+};
 use crate::date;
 use crate::model::{Event, Model, Project, Task};
 
@@ -25,12 +29,24 @@ pub const CALENDAR_KIND: &str = "Calendar";
 ///
 /// Clones retain the same `SearchCatalog`, which lets `CalendarApp` refresh it
 /// on document revisions while palette instances keep inexpensive provider
-/// handles. `indexed_ids` lets Calendar remove records deleted by a peer or an
-/// undo without reconstructing the catalogue.
+/// handles. `indexed_ids` records the successfully-published revision so
+/// removals and stale result addresses remain observable to diagnostics.
 #[derive(Clone)]
 pub struct CalendarSearchProvider {
     catalog: SearchCatalog,
     indexed_ids: Arc<RwLock<BTreeSet<String>>>,
+    /// The search action directory resolves through this exact, retained map
+    /// rather than walking the app's open-resource tree. Each value is the
+    /// one-action resource for its canonical result address.
+    resources: Arc<RwLock<BTreeMap<String, Resource>>>,
+    last_refresh_error: Arc<RwLock<Option<String>>>,
+}
+
+struct CatalogRow {
+    id: String,
+    searchable: String,
+    result: SearchResult,
+    resource: Resource,
 }
 
 impl CalendarSearchProvider {
@@ -48,16 +64,22 @@ impl CalendarSearchProvider {
         let provider = Self {
             catalog: SearchCatalog::new(CALENDAR_KIND),
             indexed_ids: Arc::new(RwLock::new(BTreeSet::new())),
+            resources: Arc::new(RwLock::new(BTreeMap::new())),
+            last_refresh_error: Arc::new(RwLock::new(None)),
         };
-        provider.refresh(model, notes);
+        // Keep construction total for app startup. The error is retained and
+        // surfaced by the live app on its next refresh instead of quietly
+        // presenting a partial index.
+        if let Err(error) = provider.refresh(model, notes) {
+            *provider
+                .last_refresh_error
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.to_string());
+        }
         provider
     }
 
-    fn index_calendar(
-        &self,
-        calendar: &CalendarCollectionResource,
-        current: &mut BTreeSet<String>,
-    ) {
+    fn index_calendar(calendar: &CalendarCollectionResource) -> CatalogRow {
         let result = SearchResult::for_action(
             CALENDAR_KIND,
             &calendar.label,
@@ -69,23 +91,33 @@ impl CalendarSearchProvider {
             "Calendar · hidden"
         })
         .with_icon(Icon::Calendar);
-        let Some(address) = result.action_address() else {
-            return;
-        };
-        let id = address.resource;
+        let id = calendar_resource_id(&calendar.id);
         let searchable = format!("{}\0{}", calendar.label, calendar.id);
-        let _ = self.catalog.upsert(id.clone(), searchable, result);
-        current.insert(id);
+        CatalogRow {
+            id,
+            searchable,
+            result,
+            resource: crate::actions::calendar_collection_resource(calendar),
+        }
     }
 
     fn event_subtitle(event: &Event) -> String {
-        if event.all_day {
+        let when = if event.all_day {
             date::fmt_day_long(event.start.date())
         } else {
             format!(
                 "{} · {}",
                 date::fmt_day_long(event.start.date()),
                 date::fmt_time(&event.start)
+            )
+        };
+        if event.attendees.is_empty() && event.timezone == "floating" {
+            when
+        } else {
+            format!(
+                "{when} · {} · {} guests",
+                event.timezone,
+                event.attendees.len()
             )
         }
     }
@@ -107,7 +139,7 @@ impl CalendarSearchProvider {
         )
     }
 
-    fn index_project(&self, project: &Project, current: &mut BTreeSet<String>) {
+    fn index_project(project: &Project) -> CatalogRow {
         let result = SearchResult::for_action(
             CALENDAR_KIND,
             &project.name,
@@ -115,15 +147,15 @@ impl CalendarSearchProvider {
         )
         .with_subtitle("Task project")
         .with_icon(Icon::Check);
-        let Some(address) = result.action_address() else {
-            return;
-        };
-        let id = address.resource;
-        let _ = self.catalog.upsert(id.clone(), &project.name, result);
-        current.insert(id);
+        CatalogRow {
+            id: project_resource_id(project.id),
+            searchable: project.name.clone(),
+            result,
+            resource: crate::actions::search_project_resource(project),
+        }
     }
 
-    fn index_event(&self, event: &Event, note: Option<&String>, current: &mut BTreeSet<String>) {
+    fn index_event(event: &Event, note: Option<&String>) -> CatalogRow {
         let result = SearchResult::for_action(
             CALENDAR_KIND,
             event.display_title(),
@@ -131,22 +163,51 @@ impl CalendarSearchProvider {
         )
         .with_subtitle(Self::event_subtitle(event))
         .with_icon(Icon::Calendar);
-        let Some(address) = result.action_address() else {
-            return;
-        };
-        let id = address.resource;
+        let attendees = event
+            .attendees
+            .iter()
+            .map(|attendee| {
+                format!(
+                    "{} {} {}",
+                    attendee.name,
+                    attendee.email,
+                    attendee.status.label()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
         let searchable = format!(
-            "{}\0{}\0{}\0{}",
+            "{}\0{}\0{}\0{}\0{}\0{}",
             event.display_title(),
             event.location,
             event.calendar_id.as_deref().unwrap_or(""),
+            event.timezone,
+            attendees,
             note.map_or("", String::as_str),
         );
-        let _ = self.catalog.upsert(id.clone(), searchable, result);
-        current.insert(id);
+        CatalogRow {
+            id: event_resource_id(event.id),
+            searchable,
+            result,
+            resource: crate::actions::search_event_resource(event),
+        }
     }
 
-    fn index_task(&self, task: &Task, note: Option<&String>, current: &mut BTreeSet<String>) {
+    /// A hidden collection is a visibility boundary, not merely a paint-time
+    /// preference. In particular, its event titles, locations, attendees and
+    /// notes must not escape through the global search catalogue. Collections
+    /// absent from this configuration snapshot remain searchable: they may be
+    /// local data imported before an account is configured, and treating an
+    /// unknown owner as hidden would make durable records unreachable.
+    fn event_visible_to_search(event: &Event, calendars: &[CalendarCollectionResource]) -> bool {
+        let owner = event.calendar_id.as_deref().unwrap_or("local");
+        calendars
+            .iter()
+            .find(|calendar| calendar.id == owner)
+            .is_none_or(|calendar| calendar.visible)
+    }
+
+    fn index_task(task: &Task, note: Option<&String>) -> CatalogRow {
         let result = SearchResult::for_action(
             CALENDAR_KIND,
             Self::task_title(task),
@@ -154,56 +215,104 @@ impl CalendarSearchProvider {
         )
         .with_subtitle(Self::task_subtitle(task))
         .with_icon(Icon::Check);
-        let Some(address) = result.action_address() else {
-            return;
-        };
-        let id = address.resource;
         let searchable = format!(
             "{}\0{}",
             Self::task_title(task),
             note.map_or("", String::as_str)
         );
-        let _ = self.catalog.upsert(id.clone(), searchable, result);
-        current.insert(id);
+        CatalogRow {
+            id: task_resource_id(task.id),
+            searchable,
+            result,
+            resource: crate::actions::search_task_resource(task),
+        }
     }
 
-    /// Incrementally reconcile the complete loaded model into the retained
-    /// catalogue. Changed records replace only their row; absent stable ids are
-    /// removed so stale search addresses cannot outlive a peer deletion/undo.
-    pub fn refresh(&self, model: &Model, notes: &std::collections::HashMap<String, String>) {
-        self.refresh_with_calendars(model, notes, &[]);
+    /// Atomically replace the retained snapshot from the complete loaded model.
+    /// A successful rebuild publishes one new generation; an invalid row leaves
+    /// the old index and its exact action resolver intact.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalogue validation or generation error without publishing a
+    /// partial snapshot.
+    pub fn refresh(
+        &self,
+        model: &Model,
+        notes: &std::collections::HashMap<String, String>,
+    ) -> Result<(), ui::search::SearchCatalogError> {
+        self.refresh_with_calendars(model, notes, &[])
     }
 
     /// Revision callers provide the live account projection too, so local and
     /// remote collections participate in the same durable search namespace as
     /// their events.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalogue validation or generation error without replacing
+    /// the previously retained resolver/index revision.
     pub fn refresh_with_calendars(
         &self,
         model: &Model,
         notes: &std::collections::HashMap<String, String>,
         calendars: &[CalendarCollectionResource],
-    ) {
-        let mut current = BTreeSet::new();
+    ) -> Result<(), ui::search::SearchCatalogError> {
+        let mut rows = Vec::with_capacity(
+            calendars.len() + model.projects.len() + model.events.len() + model.tasks.len(),
+        );
         for calendar in calendars {
-            self.index_calendar(calendar, &mut current);
+            rows.push(Self::index_calendar(calendar));
         }
         for project in &model.projects {
-            self.index_project(project, &mut current);
+            rows.push(Self::index_project(project));
         }
         for event in &model.events {
-            self.index_event(event, notes.get(&event.id.to_string()), &mut current);
+            if Self::event_visible_to_search(event, calendars) {
+                rows.push(Self::index_event(event, notes.get(&event.id.to_string())));
+            }
         }
         for task in &model.tasks {
-            self.index_task(task, notes.get(&task.id.to_string()), &mut current);
+            rows.push(Self::index_task(task, notes.get(&task.id.to_string())));
         }
-        let mut indexed = self
+        // `replace_all` validates every canonical address before publishing a
+        // new generation. On error the prior catalogue and resolver map stay
+        // intact, so failed indexing can neither leak a partial corpus nor
+        // silently leave mismatched result/resource state behind.
+        if let Err(error) = self.catalog.replace_all(
+            rows.iter()
+                .map(|row| (row.id.clone(), row.searchable.clone(), row.result.clone())),
+        ) {
+            *self
+                .last_refresh_error
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.to_string());
+            return Err(error);
+        }
+        let current = rows.iter().map(|row| row.id.clone()).collect();
+        let resources = rows.into_iter().map(|row| (row.id, row.resource)).collect();
+        *self
             .indexed_ids
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for removed in indexed.difference(&current) {
-            self.catalog.remove(removed);
-        }
-        *indexed = current;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = current;
+        *self
+            .resources
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = resources;
+        *self
+            .last_refresh_error
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        Ok(())
+    }
+
+    /// The last failed snapshot rebuild, if any. Callers can surface this in
+    /// the UI instead of behaving as though every durable record was indexed.
+    pub fn last_refresh_error(&self) -> Option<String> {
+        self.last_refresh_error
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     #[cfg(test)]
@@ -230,7 +339,8 @@ impl SearchProvider for CalendarSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog.search_limited(query, limit)
+        self.catalog
+            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
     }
 
     fn search_page(
@@ -240,8 +350,29 @@ impl SearchProvider for CalendarSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+        self.catalog.query_page(
+            query,
+            cursor,
+            work_budget,
+            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+        )
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        if address.action != "open" {
+            return None;
+        }
+        let resource = self
+            .resources
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&address.resource)
+            .cloned()?;
+        resource
+            .actions
+            .iter()
+            .any(|action| action.id == address.action)
+            .then_some(resource)
     }
 }
 
@@ -317,6 +448,17 @@ mod tests {
         assert_eq!(page.inspected, 1);
         assert_eq!(page.results.len(), 1);
         assert_eq!(page.results[0].title, "late calendar needle");
+        let address = page.results[0]
+            .action_address()
+            .expect("a late hit retains its canonical address");
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("the retained provider materializes the exact late resource");
+        assert_eq!(resource.id.as_str(), address.resource);
+        assert!(
+            tilo_actions::door::resolve(&[resource], &address).is_some(),
+            "the exact open action exists without constructing the resource tree"
+        );
         assert_eq!(
             provider.stats().records,
             model.projects.len() + model.events.len() + model.tasks.len()
@@ -352,17 +494,94 @@ mod tests {
     }
 
     #[test]
+    fn oversized_result_requests_stay_within_the_shared_display_cap() {
+        let mut model = seeded();
+        let template = model.events[0].clone();
+        model.events = (0..(DEFAULT_SEARCH_RESULT_LIMIT as u128 + 32))
+            .map(|index| {
+                let mut event = template.clone();
+                event.id = uuid::Uuid::from_u128(index + 1);
+                event.title = format!("common capped event {index}");
+                event
+            })
+            .collect();
+        model.tasks.clear();
+        model.projects.clear();
+        let provider = CalendarSearchProvider::new(&model);
+
+        assert_eq!(
+            provider.search_limited("common", usize::MAX).len(),
+            DEFAULT_SEARCH_RESULT_LIMIT
+        );
+        let page = provider.search_page("common", None, 1_024, usize::MAX);
+        assert_eq!(page.results.len(), DEFAULT_SEARCH_RESULT_LIMIT);
+        assert!(page.inspected <= 1_024);
+    }
+
+    #[test]
+    fn stale_cursor_and_colliding_titles_keep_exact_stable_addresses() {
+        let mut model = seeded();
+        let template = model.events[0].clone();
+        let first_id = uuid::Uuid::from_u128(90_001);
+        let second_id = uuid::Uuid::from_u128(90_002);
+        for id in [first_id, second_id] {
+            let mut event = template.clone();
+            event.id = id;
+            event.title = "Same visible title".into();
+            model.events.push(event);
+        }
+        let provider = CalendarSearchProvider::new(&model);
+        let hits = provider.search_limited("same visible", 8);
+        let addresses: Vec<_> = hits
+            .iter()
+            .filter_map(SearchResult::action_address)
+            .filter(|address| {
+                address.resource == event_resource_id(first_id)
+                    || address.resource == event_resource_id(second_id)
+            })
+            .collect();
+        assert_eq!(
+            addresses.len(),
+            2,
+            "equal labels cannot collide in identity"
+        );
+        assert_ne!(addresses[0].resource, addresses[1].resource);
+        for address in &addresses {
+            let resource = provider
+                .resolve_action_resource(address)
+                .expect("each exact collision-safe address resolves");
+            assert_eq!(resource.id.as_str(), address.resource);
+            assert!(tilo_actions::door::resolve(&[resource], address).is_some());
+        }
+
+        let first_page = provider.search_page("same visible", None, 4, 1);
+        let cursor = first_page.next.expect("more collision-safe rows remain");
+        model.events[0].title = "revision invalidates cursors".into();
+        provider
+            .refresh(&model, &std::collections::HashMap::new())
+            .expect("a canonical revision rebuilds atomically");
+        assert!(
+            !provider.action_directory_cursor_is_current(&cursor),
+            "a cursor from the prior catalogue generation is stale"
+        );
+    }
+
+    #[test]
     fn refresh_replaces_changed_rows_and_withdraws_deleted_resources() {
         let mut model = seeded();
         let provider = CalendarSearchProvider::new(&model);
         let event = model.events[0].id;
         model.events[0].title = "revised calendar event".into();
-        provider.refresh(&model, &std::collections::HashMap::new());
+        provider
+            .refresh(&model, &std::collections::HashMap::new())
+            .expect("canonical rows rebuild the search catalogue");
         assert!(provider.search("revised").iter().any(
             |result| result.action_address() == Some(crate::actions::open_event_address(event))
         ));
         model.events.retain(|candidate| candidate.id != event);
-        provider.refresh(&model, &std::collections::HashMap::new());
+        provider
+            .refresh(&model, &std::collections::HashMap::new())
+            .expect("canonical rows rebuild the search catalogue");
         assert!(provider.search("revised").is_empty());
     }
 
@@ -376,7 +595,9 @@ mod tests {
             color: Some(0),
             visible: true,
         }];
-        provider.refresh_with_calendars(&model, &std::collections::HashMap::new(), &calendars);
+        provider
+            .refresh_with_calendars(&model, &std::collections::HashMap::new(), &calendars)
+            .expect("canonical rows rebuild the search catalogue");
         let hit = provider
             .search("team schedule")
             .into_iter()
@@ -385,6 +606,43 @@ mod tests {
         assert_eq!(
             hit.action_address(),
             Some(crate::actions::open_calendar_address("account/team"))
+        );
+    }
+
+    #[test]
+    fn hidden_calendar_events_and_notes_do_not_enter_global_search() {
+        let mut model = seeded();
+        let event = &mut model.events[0];
+        event.title = "Private board strategy".into();
+        event.location = "Secret annex".into();
+        event.calendar_id = Some("work/private".into());
+        let mut notes = std::collections::HashMap::new();
+        notes.insert(event.id.to_string(), "restricted launch plan".into());
+        let provider = CalendarSearchProvider::new(&model);
+        let calendars = vec![crate::actions::CalendarCollectionResource {
+            id: "work/private".into(),
+            label: "Private work".into(),
+            color: None,
+            visible: false,
+        }];
+
+        provider
+            .refresh_with_calendars(&model, &notes, &calendars)
+            .expect("canonical rows rebuild the search catalogue");
+        for query in ["board strategy", "secret annex", "restricted launch"] {
+            assert!(
+                provider.search(query).is_empty(),
+                "hidden event content escaped through query {query:?}"
+            );
+        }
+
+        // The collection remains discoverable so the user can re-enable it,
+        // but its private event records stay absent.
+        assert!(
+            provider
+                .search("private work")
+                .iter()
+                .any(|hit| hit.title == "Private work")
         );
     }
 }

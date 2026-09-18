@@ -11,7 +11,7 @@
 > Route-policy mutation, snapshots, migration/reset, and automatic
 > failure-triggered fallback ordering remain unavailable and are shown as such.
 
-qOS is intended to present Windows programs as applications, not as prefixes,
+Tilo is intended to present Windows programs as applications, not as prefixes,
 compatibility tools, or a second desktop. The target has three execution layers:
 
 1. Wine for ordinary desktop programs.
@@ -24,15 +24,22 @@ operation because it changes the program's state and security boundary.
 
 ## Do not build another compatibility ecosystem
 
-qOS owns the policy and presentation around existing engines:
+Tilo owns the policy and presentation around existing engines:
 
 - Wine owns Win32 compatibility and prefixes.
 - UMU owns the supported non-Steam Proton invocation contract, Steam Runtime,
   game identifiers, and protonfix integration.
 - Steam owns Proton selection for games installed through Steam.
+- Tilo-owned Proton capsule launches inherit a modest 12.5% scheduler
+  utilization floor, one-microsecond timer slack, and priority 2 in the
+  ordinary best-effort I/O class. This reduces frequency-ramp, wake-up, and
+  asset/shader-cache loading latency without realtime CPU or I/O priority and
+  without `CAP_SYS_NICE`; ordinary Wine
+  productivity applications do not receive the hint, and unsupported kernels
+  simply ignore it.
 - libvirt and QEMU/KVM own the appliance lifecycle.
 - FreeRDP RemoteApp is the normal appliance presentation path.
-- qOS's existing workspace grants, portals, launcher, window chrome, actions,
+- Tilo's existing workspace grants, portals, launcher, window chrome, actions,
   and resources remain the user-visible security and automation surfaces.
 
 The compatibility catalogue stores references to upstream identifiers and
@@ -43,22 +50,22 @@ second dependency-script language.
 
 A capsule is the user-facing unit corresponding to a Wine or Proton prefix. It
 records the exact runner, architecture, Windows version, component set,
-program entry points, catalogue provenance, launch overrides, and qOS grants.
+program entry points, catalogue provenance, launch overrides, and Tilo grants.
 One installed program gets one capsule by default. A suite may deliberately
 share a capsule, but unrelated installers are never placed together merely to
 save disk space.
 
-The capsule filesystem contains only Windows-owned state and a qOS exchange
+The capsule filesystem contains only Windows-owned state and a Tilo exchange
 directory. It is launched through the existing per-workspace confinement:
 
 - `C:` is private to the capsule.
 - `Q:` maps to its exchange directory.
 - user-selected files are imported or published into that directory.
-- a linked directory is an ordinary qOS filesystem grant and takes effect on
+- a linked directory is an ordinary Tilo filesystem grant and takes effect on
   the next launch when a new mount bind is required.
-- network, devices, clipboard, and collaboration use existing qOS grants.
+- network, devices, clipboard, and collaboration use existing Tilo grants.
 
-Wine file pickers do not constitute authority to browse the host. qOS grants
+Wine file pickers do not constitute authority to browse the host. Tilo grants
 the containing sandbox access; a Windows path alone never does.
 
 ### Audio (implemented)
@@ -66,20 +73,20 @@ the containing sandbox access; a Windows path alone never does.
 Each Wine/UMU launch receives its own short-lived PipeWire daemon and Pulse
 server. It is not a bind of the session's `pipewire-0`, `pulse/native`, or
 `/dev/snd`: the broker creates a virtual output sink which tunnels only
-playback to the qOS session audio server. This makes ordinary Wine PulseAudio
+playback to the Tilo session audio server. This makes ordinary Wine PulseAudio
 and native PipeWire clients work without making microphones visible.
 
-When the ordinary qOS `Device("microphone")` grant is present, the broker adds
+When the ordinary Tilo `Device("microphone")` grant is present, the broker adds
 one virtual source tunnel to that same private graph. It otherwise creates no
 source and runs no WirePlumber/device-discovery process. The capsule still
 cannot see the host Pulse/PipeWire socket or the raw sound device. Revoking a
 launch kills both proxy processes, disconnecting any audio handles the Windows
 program still holds. The Windows Apps manager reports playback as available
-and microphone state through the standard qOS grants list.
+and microphone state through the standard Tilo grants list.
 
 ### Installing and opening user software
 
-Windows Apps uses the shared qOS/XDG file chooser for **Add Windows app…** and
+Windows Apps uses the shared Tilo/XDG file chooser for **Add Windows app…** and
 registers `.exe` and `.msi` open associations. The portal worker immediately
 opens the selected regular file without following its final path component,
 then carries that descriptor and a separate display name to the UI. The
@@ -98,7 +105,7 @@ prefix, guest path, command, or operation ID.
 For a capsule, the service copies the installer into descriptor-anchored state
 while hashing again. Only that managed copy can run. EXE setup is a typed
 direct invocation; MSI setup is the fixed
-`msiexec.exe /i C:\qos-installers\<digest>.msi` argv shape. Unknown desktop
+`msiexec.exe /i C:\tilo-installers\<digest>.msi` argv shape. Unknown desktop
 software is recommended a fresh Wine capsule, while Proton remains a
 catalogue-selected route.
 
@@ -107,7 +114,7 @@ the certificate-pinned, HMAC-authenticated host-only bridge. Guest staging is
 bounded, expiring, one-use, and private to the operation. Setup opens in the
 app-focused surface, and Windows Apps continues polling the server-owned
 operation if the viewer closes. Bounded Program Files discovery returns
-unpublished candidates; the owner chooses which become qOS launchers. Removing
+unpublished candidates; the owner chooses which become Tilo launchers. Removing
 a launcher keeps the guest install. Vendor uninstall is offered for either a
 typed MSI product code or a narrowly bound EXE record. MSI always executes the
 fixed `msiexec /x <product-code>` form. An EXE record is accepted only when all
@@ -126,13 +133,13 @@ of these discovery and execution checks hold:
   SHA-256 are persisted administrator-only and all revalidated immediately
   before launch and again after UAC elevation when elevation is required.
 
-The raw `UninstallString` is neither stored nor run. qOS quotes the persisted
+The raw `UninstallString` is neither stored nor run. Tilo quotes the persisted
 argv back into a direct `CreateProcessW` call without a shell. Missing
 `InstallLocation`, unquoted/ambiguous executable paths, system/temp/user roots,
 writable or reparse paths, digest changes, and out-of-bound argv all mean that
 no vendor-uninstall action is exposed.
 
-Setup remains interactive as an ordinary qOS window while Windows Apps stays
+Setup remains interactive as an ordinary Tilo window while Windows Apps stays
 responsive and reports installing/failed/ready state. Discovery is bounded and
 keeps only application executables under Program Files or per-user Local
 AppData, excluding system, helper, updater, setup, and uninstall executables.
@@ -142,7 +149,7 @@ retry action bound to the retained digest.
 
 ## Current session boundary
 
-The compositor loads the immutable qOS, pinned UMU, and metadata-only Bottles
+The compositor loads the immutable Tilo, pinned UMU, and metadata-only Bottles
 catalogues and owns the compatibility service. The launcher writes an
 authenticated app/workspace preamble to a connected inherited descriptor. The
 service corroborates the launcher PID and kernel start time with a
@@ -195,29 +202,29 @@ an automatic live flow.
 
 ## The Windows appliance
 
-There is exactly one appliance on the qOS system. It is a compatibility
+There is exactly one appliance on the Tilo system. It is a compatibility
 fallback, not an alternative session.
 
 Normal operation is headless:
 
 - a guest service publishes an allowlisted inventory of installed programs;
-- qOS creates program shortcuts from that inventory;
+- Tilo creates program shortcuts from that inventory;
 - the current Wayland session uses a clearly labelled, app-focused SPICE
   surface and suppresses Explorer while the requested program runs;
-- the typed FreeRDP RAIL path is used only when qOS has a real RAIL-capable
+- the typed FreeRDP RAIL path is used only when Tilo has a real RAIL-capable
   local surface and the guest supports it;
 - the Windows desktop is not a normal application route.
 
 If RemoteApp publication or the guest service is unavailable, launch fails
 closed with repair and recovery actions. It does not reveal a desktop. A full
 console exists only as an explicit owner-only recovery action and is marked as
-unconfined guest administration in qOS chrome.
+unconfined guest administration in Tilo chrome.
 
 The appliance uses UEFI Secure Boot, a software TPM 2.0, KVM acceleration,
 VirtIO storage and networking, memory ballooning, discard, and host CPU
 passthrough where safe. Its qcow2 disk and TPM state live in one protected
 state directory. Provisioning requires user-supplied Windows installation
-media and licensing; qOS does not redistribute Windows.
+media and licensing; Tilo does not redistribute Windows.
 
 ## Appliance capabilities
 
@@ -225,14 +232,14 @@ The VM boundary does not bypass workspace policy. Its default device model has
 no shared host filesystem, host clipboard, camera, microphone, USB forwarding,
 or unrestricted bridged network.
 
-Per-program launches receive short-lived capability leases from the qOS
+Per-program launches receive short-lived capability leases from the Tilo
 broker. The presentation/file-transfer channel exposes only the resources in
 the lease, and all leases are revoked when the RemoteApp session ends.
 The shipped appliance network is host-only with forwarding disabled; it has no
 NAT or physical-network access by default. Native RAIL can materialize exact
 host-authorized `NetHost` requests as a short-lived, host-only CONNECT relay
 and a guest-local proxy inherited by the fixed RemoteApp wrapper's target
-process tree. The relay reuses qOS's ordinary NetHost matcher and post-DNS
+process tree. The relay reuses Tilo's ordinary NetHost matcher and post-DNS
 device-local protection, and dropping its lease closes the listener rather
 than attaching an egress NIC. These are host-side lease controls, not
 per-process Windows isolation: all programs in the one persistent Windows
@@ -256,7 +263,7 @@ a retained installation with Retry setup and Delete app & data.
 
 Lifecycle actions deliberately say what they remove:
 
-- **Remove launcher** unregisters one qOS entry and keeps the Windows install
+- **Remove launcher** unregisters one Tilo entry and keeps the Windows install
   and all private data.
 - **Run uninstaller** executes only the typed MSI product code or the
   digest-bound, Program Files-rooted EXE/argv contract discovered for that
@@ -275,16 +282,16 @@ information includes:
 
 Remaining management targets are snapshots, duplicate/export/reset, runner
 migration, explicit persistent route override/reset, active-process inspection,
-and richer links into the existing qOS grant controls.
+and richer links into the existing Tilo grant controls.
 
 Route-policy and remaining mutation controls stay disabled until they have a
 trusted action handoff. VM launch appears only when the provisioned singleton,
 owner-readable bridge authority, and authenticated guest are ready.
 Wine/Proton audio is available through the brokered,
 playback-only PipeWire/Pulse graph described above; microphone capture remains
-subject to the existing qOS microphone grant.
+subject to the existing Tilo microphone grant.
 
-The eventual operations should exist as qOS actions/resources. Accessibility tools,
+The eventual operations should exist as Tilo actions/resources. Accessibility tools,
 automation, collaborators, and tests therefore use the same semantic surface
 as the visual UI.
 

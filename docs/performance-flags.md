@@ -1,6 +1,6 @@
 # UI and compositor performance controls
 
-This is the source-checked reference for qOS-owned rendering, redraw, cache,
+This is the source-checked reference for Tilo-owned rendering, redraw, cache,
 copy, and performance-harness controls. It covers the retained UI, vendored
 Vello, DRM bridge, and presentation loop, not unrelated application settings or
 every graphics-driver environment variable. Defaults below mean **unset**.
@@ -55,8 +55,8 @@ A/B or troubleshooting control, not an optimization recommendation.
 | `VELLO_DIRECT_PATH_DISPATCH` | Default-on | Bounded direct GPU path-count/tiling dispatch, avoiding setup dispatches. Not used for full CPU rendering. |
 | `VELLO_ZERO_GRADIENT_REUSE` | Default-on | Reuses an engine-owned zero-gradient texture for scenes without gradient ramps. |
 
-Sources: [offscreen.rs](../ui/src/offscreen.rs),
-[render_thread.rs](../ui/src/render_thread.rs),
+Sources: [offscreen.rs](../crates/sdk/ui-core/src/offscreen.rs),
+[render_thread.rs](../crates/sdk/ui-core/src/render_thread.rs),
 [wgpu_engine.rs](../vendor/vello/src/wgpu_engine.rs),
 [shaders.rs](../vendor/vello/src/shaders.rs),
 [Vello renderer](../vendor/vello/src/lib.rs).
@@ -83,14 +83,14 @@ plan. Sparse shader experiments below require the supported GPU/Area path.
 | `VELLO_AREA_PPT8` | Exact-1 | Eight-pixels-per-thread Area fine-shader experiment. Full rendering excludes canonical order; sparse rendering additionally excludes selected quad-skip, solid-fuse, and segment-row-mask paths. |
 | `VELLO_CLIP_SINGLE_GROUP` | Exact-1 | GPU clip-leaf specialization only for 1–256 clips and exactly one clip-leaf workgroup `(1,1,1)`. Other clip shapes use the normal shader. |
 | `VELLO_DEFER_BUMP_READBACK` | Exact-1 | Moves the existing bump-counter readback after fine rasterization in synchronous GPU recording. Not full CPU or asynchronous rendering. Does not remove overflow validation or the readback bytes. |
-| `QOS_DRM_XRGB_DAMAGE` | Exact-1 | Opt-in damage-aware writes into DRM XRGB destinations, also exercised by `redraw_bench`. Per-buffer revision history must be valid; unknown/stale/invalid history and recovery boundaries require full refresh. This is distinct from GPU texture readback damage. |
+| `TILO_DRM_XRGB_DAMAGE` | Exact-1 | Opt-in damage-aware writes into DRM XRGB destinations, also exercised by `redraw_bench`. Per-buffer revision history must be valid; unknown/stale/invalid history and recovery boundaries require full refresh. This is distinct from GPU texture readback damage. |
 
 Sources: [shader selection](../vendor/vello/src/render.rs),
-[DRM scanout](../shell/src/compositor/backend/drm/scanout.rs),
-[XRGB history](../shell/src/compositor/backend/drm/xrgb_history.rs).
+[DRM scanout](../crates/session/shell/src/compositor/backend/drm/scanout.rs),
+[XRGB history](../crates/session/shell/src/compositor/backend/drm/xrgb_history.rs).
 For the recorded `bounds-xrgb-ppt8` experiment, the additional controls were
 `VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1
-QOS_DRM_XRGB_DAMAGE=1 VELLO_AREA_PPT8=1`; these are not production defaults.
+TILO_DRM_XRGB_DAMAGE=1 VELLO_AREA_PPT8=1`; these are not production defaults.
 
 ## Memory-policy and renderer diagnostics
 
@@ -104,7 +104,7 @@ QOS_DRM_XRGB_DAMAGE=1 VELLO_AREA_PPT8=1`; these are not production defaults.
 | `VELLO_GPU_DISPATCH_TIMESTAMPS` | Exact-1, off | Per-dispatch GPU timing; requires `VELLO_GPU_TIMESTAMPS=1`, inside-pass query support, GPU execution, and no `wgpu-profiler` feature. The harness rejects the missing-parent-flag combination. |
 
 Sources: [bump_budget.rs](../vendor/vello/src/bump_budget.rs),
-[gpu.rs](../ui/src/gpu.rs), [wgpu_engine.rs](../vendor/vello/src/wgpu_engine.rs).
+[gpu.rs](../crates/sdk/ui-core/src/gpu.rs), [wgpu_engine.rs](../vendor/vello/src/wgpu_engine.rs).
 Tracked GPU bytes exclude driver-private allocations. CPU XRGB bytes written,
 GPU readback payload, GPU-to-GPU copies, and physical VRAM are separate metrics.
 The completion/map phase includes rendering and synchronization, not only copy
@@ -118,22 +118,22 @@ time. Readback payload counters exclude row-padding holes.
 | `QUICK_UI_NO_SPLIT_CACHE` | Nonempty, off | Disables `NavSplit` scene caching for troubleshooting. Cached at first use. |
 | `QUICK_UI_PERF` | Nonempty, off | Enables application performance logging. Cached at first use. |
 | `QUICK_UI_PRESENT` | Present, off | Render-thread encode/acquire/present timing logs; useful for costs absent from offscreen benchmarks. Latched when the render thread starts. |
-| `QOS_PROFILE` | Nonempty, off | Enables the in-app profiling HUD, including in release builds. The HUD itself adds UI work. |
-| `QOS_PROFILE_OUT` | Nonempty path, unset | Enables per-frame profiling without requiring the HUD. Appends CSV for `.csv`, JSON-lines otherwise. Choose a dedicated output path. |
-| `QOS_WEBVIEW_PROFILE` | Unset/empty/`0`: off | Other nonempty strings enable periodic WebView timing summaries; exact `trace` adds initial frame/draw detail. Includes SHM swizzle and input-to-paint diagnostics; latched at first use. |
+| `TILO_PROFILE` | Nonempty, off | Enables the in-app profiling HUD, including in release builds. The HUD itself adds UI work. |
+| `TILO_PROFILE_OUT` | Nonempty path, unset | Enables per-frame profiling without requiring the HUD. Appends CSV for `.csv`, JSON-lines otherwise. Choose a dedicated output path. |
+| `TILO_WEBVIEW_PROFILE` | Unset/empty/`0`: off | Other nonempty strings enable periodic WebView timing summaries; exact `trace` adds initial frame/draw detail. Includes SHM swizzle and input-to-paint diagnostics; latched at first use. |
 
 `QUICK_UI_DEBUG` is a presence-enabled **debug-build-only** UI debug mode, not
-a release optimization. `QOS_A11Y_REDUCE_MOTION` / `QOS_REDUCE_MOTION` are
+a release optimization. `TILO_A11Y_REDUCE_MOTION` / `TILO_REDUCE_MOTION` are
 accessibility inputs: trimmed nonempty values other than `0` or
 case-insensitive `false` request reduced motion. Record the effective theme
 setting when comparing animation workloads; do not claim a speedup by silently
 removing animation. Likewise keep UI scale, text scale, theme, and overlays
-constant. `QOS_SHOTS_THEME` selects the offscreen launch fixture (`light`,
+constant. `TILO_SHOTS_THEME` selects the offscreen launch fixture (`light`,
 `high-contrast`, otherwise dark); it is not a renderer optimization switch.
 
-Sources: [app.rs](../ui/src/app.rs), [nav_split.rs](../ui/src/widget/nav_split.rs),
-[profiling.rs](../ui/src/profiling.rs),
-[WebView profiling](../ui/src/webview/profile.rs).
+Sources: [app.rs](../crates/sdk/ui-core/src/app.rs), [nav_split.rs](../crates/sdk/ui-core/src/widget/nav_split.rs),
+[profiling.rs](../crates/sdk/ui-core/src/profiling.rs),
+[WebView profiling](../crates/sdk/ui-core/src/webview/profile.rs).
 
 ## Startup warmup and DMA-BUF routing
 
@@ -142,17 +142,17 @@ selection. Keep their values identical across steady-state comparisons.
 
 | Variable | Default / values | Effect and limits |
 | --- | --- | --- |
-| `QOS_STARTUP_WARM` | On; trimmed, case-insensitive `off`, `0`, `false`, or `no` disables | Master background warmup switch, cached at first use. Empty/other values enable it. The shell warms a throwaway font system to populate OS/font caches; this is not a persistent GPU pipeline cache. |
-| `QOS_STARTUP_WARM_VELLO` | Off; trimmed empty/`0`/`off`/`false`/`no` disables, case-insensitive | Other supplied values additionally request a 4×4 Vello scratch render in shell and shot-harness startup. Requires master warmup enabled. Can contend with real renderer initialization; do not assume it improves first paint. |
-| `QOS_STARTUP_METRICS_PATH` | Unset: disabled; path | Enables startup event capture at initialization. Explicit dump or scoped shutdown writes/replaces JSON at that path; parent directories are not created and write errors are ignored. Verify the file exists before reporting a result. |
-| `QOS_WEBVIEW_DMABUF` | Present, off | WPE-only EGL/DMA-BUF export path; **`=0` enables the request**. Setup failure falls back to SHM. Requires the compiled WPE/import path and compatible devices; request alone is not proof of zero-copy. |
-| `QOS_WEBVIEW_DRM_NODE` | `/dev/dri/renderD128`; path | DRM node for WPE EGL setup when DMA-BUF export is requested. Empty/unusable paths fail setup and fall back to SHM. Not the wgpu adapter selector. |
-| `QOS_DMABUF_DEVICE` | Unset: automatic probe; path | Selects the render node advertised to compositor clients. Empty explicitly disables DMA-BUF advertisement; an unusable override is rejected. Automatic selection requires an openable, known CPU-mappable driver; an override bypasses that driver allow-list. The compositor's foreign-surface route CPU-maps the buffer, so DMA-BUF advertisement does **not** imply a GPU-only zero-copy import. |
+| `TILO_STARTUP_WARM` | On; trimmed, case-insensitive `off`, `0`, `false`, or `no` disables | Master background warmup switch, cached at first use. Empty/other values enable it. The shell warms a throwaway font system to populate OS/font caches; this is not a persistent GPU pipeline cache. |
+| `TILO_STARTUP_WARM_VELLO` | Off; trimmed empty/`0`/`off`/`false`/`no` disables, case-insensitive | Other supplied values additionally request a 4×4 Vello scratch render in shell and shot-harness startup. Requires master warmup enabled. Can contend with real renderer initialization; do not assume it improves first paint. |
+| `TILO_STARTUP_METRICS_PATH` | Unset: disabled; path | Enables startup event capture at initialization. Explicit dump or scoped shutdown writes/replaces JSON at that path; parent directories are not created and write errors are ignored. Verify the file exists before reporting a result. |
+| `TILO_WEBVIEW_DMABUF` | Present, off | WPE-only EGL/DMA-BUF export path; **`=0` enables the request**. Setup failure falls back to SHM. Requires the compiled WPE/import path and compatible devices; request alone is not proof of zero-copy. |
+| `TILO_WEBVIEW_DRM_NODE` | `/dev/dri/renderD128`; path | DRM node for WPE EGL setup when DMA-BUF export is requested. Empty/unusable paths fail setup and fall back to SHM. Not the wgpu adapter selector. |
+| `TILO_DMABUF_DEVICE` | Unset: automatic probe; path | Selects the render node advertised to compositor clients. Empty explicitly disables DMA-BUF advertisement; an unusable override is rejected. Automatic selection requires an openable, known CPU-mappable driver; an override bypasses that driver allow-list. The compositor's foreign-surface route CPU-maps the buffer, so DMA-BUF advertisement does **not** imply a GPU-only zero-copy import. |
 
-Sources: [warmup.rs](../ui/src/warmup.rs), [shell startup](../shell/src/main.rs),
-[startup metrics](../crates/system/qos-startup-metrics/src/lib.rs),
-[WPE export](../ui/src/webview/wpe/mod.rs), [EGL node](../ui/src/webview/wpe/egl.rs),
-[compositor render node](../shell/src/compositor/render_node.rs).
+Sources: [warmup.rs](../crates/sdk/ui-core/src/warmup.rs), [shell startup](../crates/session/shell/src/main.rs),
+[startup metrics](../crates/system/tilo-startup-metrics/src/lib.rs),
+[WPE export](../crates/sdk/ui-core/src/webview/wpe/mod.rs), [EGL node](../crates/sdk/ui-core/src/webview/wpe/egl.rs),
+[compositor render node](../crates/session/shell/src/compositor/render_node.rs).
 
 ## UI dashboard benchmark
 
@@ -201,7 +201,7 @@ Always check that the expected gate actually printed a result: a misspelled
 budget or an invalid value in an ignore-on-error parser is not a passing gate.
 A 16,667 µs p99 gate is a useful 60 Hz screen, not proof that every frame met
 its deadline. The million-event frozen test measures **zero redraws**, not a
-million rendered frames. Source: [dashboard harness](../ui/examples/dashboard_perf_bench.rs).
+million rendered frames. Source: [dashboard harness](../crates/sdk/ui-core/examples/dashboard_perf_bench.rs).
 
 ### Other UI performance scenarios
 
@@ -216,9 +216,9 @@ results are not interchangeable with native-4K dashboard redraws:
 | `ui-shots perf_hud_shot` / `PERF_HUD_FRAMES` | `90` usize frames; invalid falls back. Feeds real CPU pass timings into a HUD screenshot at 1280×800, not an acceptance run. |
 | `PERF_HUD_OUT` | `/tmp/perf_hud/hud.png`; PNG output path for the HUD fixture, which creates parent directories and writes the image. Use a dedicated path to avoid replacing an existing image. |
 
-Sources: [perf_scenario.rs](../ui/examples/perf_scenario.rs),
-[widget_perf_bench.rs](../ui/examples/widget_perf_bench.rs),
-[perf_hud_shot.rs](../ui/examples/perf_hud_shot.rs).
+Sources: [perf_scenario.rs](../crates/sdk/ui-core/examples/perf_scenario.rs),
+[widget_perf_bench.rs](../crates/sdk/ui-core/examples/widget_perf_bench.rs),
+[perf_hud_shot.rs](../crates/sdk/ui-core/examples/perf_hud_shot.rs).
 
 ## Shell redraw and cold-scene harnesses
 
@@ -231,10 +231,10 @@ claim. Its CPU destination is reused memory, not a physical KMS mapping.
 
 | Variable | Default / values | Effect |
 | --- | --- | --- |
-| `QOS_REDRAW_BENCH_PROFILE` | Exact-1, off | Phase timing and joined action diagnostics. Acceptance is disabled and the run deliberately returns nonzero even when rendering succeeds. |
-| `QOS_REDRAW_BENCH_PROFILE_OUTPUT` | Unset, or nonempty path | Profile-only all-action report, written after the loop to a newly created file; existing paths are not overwritten. Empty paths fail in profile mode. Ignored outside profile mode. |
-| `QOS_REDRAW_BENCH_SCENE_REUSE` | Exact-1, off | Requires PROFILE=1. Compares/retains resolved upload bytes for **telemetry**, not production scene-reuse enablement. |
-| `QOS_REDRAW_BENCH_GEOMETRY_REUSE` | Exact-1, off | Requires PROFILE=1. Measures potential geometry reuse for **telemetry**, not an implemented production geometry cache. |
+| `TILO_REDRAW_BENCH_PROFILE` | Exact-1, off | Phase timing and joined action diagnostics. Acceptance is disabled and the run deliberately returns nonzero even when rendering succeeds. |
+| `TILO_REDRAW_BENCH_PROFILE_OUTPUT` | Unset, or nonempty path | Profile-only all-action report, written after the loop to a newly created file; existing paths are not overwritten. Empty paths fail in profile mode. Ignored outside profile mode. |
+| `TILO_REDRAW_BENCH_SCENE_REUSE` | Exact-1, off | Requires PROFILE=1. Compares/retains resolved upload bytes for **telemetry**, not production scene-reuse enablement. |
+| `TILO_REDRAW_BENCH_GEOMETRY_REUSE` | Exact-1, off | Requires PROFILE=1. Measures potential geometry reuse for **telemetry**, not an implemented production geometry cache. |
 | `SHELL_DRAW_ITERS` | `500`; usize | Only the separate `draw_bench` example: repeated CPU scene paint at 1600×900, no GPU/present. Invalid falls back; use a positive count. |
 
 Either GPU timestamp flag, scene/geometry reuse telemetry, or a nondefault
@@ -246,8 +246,8 @@ reading its explicit mode and result.
 `legacy-dense`, `legacy-versioned`, `segmented-dense`, or
 `segmented-versioned`. It renders one **cold** native-4K frame with phase
 timing; it is not an acceptance benchmark. Sources:
-[redraw_bench.rs](../shell/examples/redraw_bench.rs),
-[retained_scene_probe.rs](../shell/examples/retained_scene_probe.rs).
+[redraw_bench.rs](../crates/session/shell/examples/redraw_bench.rs),
+[retained_scene_probe.rs](../crates/session/shell/examples/retained_scene_probe.rs).
 
 ## Presentation-loop controls
 
@@ -256,15 +256,15 @@ separate from headless and nested-window results.
 
 | Variable | Default / values | Effect |
 | --- | --- | --- |
-| `QOS_FRAME_TRACE` | Unset; path | Enables instrumentation and creates/truncates a per-tick CSV file. |
-| `QOS_FRAME_SUMMARY` | Unset; path | Enables instrumentation and writes a JSON summary at shutdown. Either path alone enables recording; use valid dedicated paths, not empty strings. |
-| `QOS_FRAME_WARMUP_MS` | `1500`; trimmed u64 | Excludes early samples from summary; zero allowed, invalid falls back. Only useful with instrumentation enabled. |
-| `QOS_PAINT_STATS` | Present (Unicode), off | Logs painted/idle tick counts, selected redraw causes, cadence, and presentation/backpressure counters about every two seconds. `=0` still logs. The cause counters are not an exhaustive partition of all redraw reasons. |
-| `QOS_LOOP_TIMING` | Present (Unicode), off | Logs a phase breakdown for native-loop ticks with more than 100 ms of non-sleeping work. `=0` still enables it; no log does not establish a 16.67 ms deadline. |
-| `QOS_RUN_SECONDS` | Unset: run indefinitely | Positive finite fractional seconds requests clean shutdown; malformed/nonpositive values mean no timeout. |
-| `QOS_REFRESH_HZ` | Backend refresh, or 60 Hz fallback | Diagnostic pacing override, finite 20–1000 Hz including fractional rates (rounded to millihertz). Invalid values warn and are ignored. Does not reconfigure a physical monitor. |
-| `NIRIOS_HEADLESS_SIZE` | `1600x900` | Initial headless output `WxH`, positive u32 dimensions; malformed/zero falls back. |
-| `NIRIOS_WINIT_SIZE` | `1600x900` | Initial nested window `WxH`, positive u32 dimensions; malformed/zero falls back. |
+| `TILO_FRAME_TRACE` | Unset; path | Enables instrumentation and creates/truncates a per-tick CSV file. |
+| `TILO_FRAME_SUMMARY` | Unset; path | Enables instrumentation and writes a JSON summary at shutdown. Either path alone enables recording; use valid dedicated paths, not empty strings. |
+| `TILO_FRAME_WARMUP_MS` | `1500`; trimmed u64 | Excludes early samples from summary; zero allowed, invalid falls back. Only useful with instrumentation enabled. |
+| `TILO_PAINT_STATS` | Present (Unicode), off | Logs painted/idle tick counts, selected redraw causes, cadence, and presentation/backpressure counters about every two seconds. `=0` still logs. The cause counters are not an exhaustive partition of all redraw reasons. |
+| `TILO_LOOP_TIMING` | Present (Unicode), off | Logs a phase breakdown for native-loop ticks with more than 100 ms of non-sleeping work. `=0` still enables it; no log does not establish a 16.67 ms deadline. |
+| `TILO_RUN_SECONDS` | Unset: run indefinitely | Positive finite fractional seconds requests clean shutdown; malformed/nonpositive values mean no timeout. |
+| `TILO_REFRESH_HZ` | Backend refresh, or 60 Hz fallback | Diagnostic pacing override, finite 20–1000 Hz including fractional rates (rounded to millihertz). Invalid values warn and are ignored. Does not reconfigure a physical monitor. |
+| `TILO_HEADLESS_SIZE` | `1600x900` | Initial headless output `WxH`, positive u32 dimensions; malformed/zero falls back. |
+| `TILO_WINIT_SIZE` | `1600x900` | Initial nested window `WxH`, positive u32 dimensions; malformed/zero falls back. |
 
 The [frame-loop driver](../scripts/perf/frame-loop-bench.py) exposes:
 
@@ -285,15 +285,15 @@ The [frame-loop driver](../scripts/perf/frame-loop-bench.py) exposes:
 | `--report STATS_JSON` | Report existing results |
 | `--resummarize TRACE_CSV` | Recompute **and rewrite** stats from an existing trace using selected warm-up/target |
 
-The driver uses `QOS_TEST_CONTROL` for its local input-control socket. That is
+The driver uses `TILO_TEST_CONTROL` for its local input-control socket. That is
 test infrastructure, not an optimization flag. `present_async` in traces
 distinguishes input-to-queued from synchronous input-to-present; neither an
 offscreen GPU fence nor a queue submission proves a physical page flip.
 
 ### Projector capture workload
 
-`QOS_PROJECTOR_PROFILE` is an **input JSON path**, not a profiling-output flag.
-It defaults to `XDG_RUNTIME_DIR/qos-projector/capture-profile.json` when that
+`TILO_PROJECTOR_PROFILE` is an **input JSON path**, not a profiling-output flag.
+It defaults to `XDG_RUNTIME_DIR/tilo-projector/capture-profile.json` when that
 directory variable exists; otherwise no profile file is selected. The path is
 latched at capture construction, but active capture rereads the file at most
 once per second. Its u32 fields are `max_width`, `max_height`, `fps`, and
@@ -303,12 +303,12 @@ Encoder pressure can reduce the effective dimensions/bitrate below the ceiling.
 This changes the streamed workload, not native display resolution; scaled
 projector results are not native-4K redraw evidence.
 
-`QOS_PROJECTOR_VIDEO_SOCKET` selects the capture worker's Unix socket, defaulting
-to `XDG_RUNTIME_DIR/qos-projector/video.sock` when available. It routes output,
+`TILO_PROJECTOR_VIDEO_SOCKET` selects the capture worker's Unix socket, defaulting
+to `XDG_RUNTIME_DIR/tilo-projector/video.sock` when available. It routes output,
 not rendering speed. Sources:
-[capture](../shell/src/compositor/projection_capture.rs),
+[capture](../crates/session/shell/src/compositor/projection_capture.rs),
 [profile schema and defaults](../crates/system/projector/src/lib.rs),
-[native-loop diagnostics](../shell/src/compositor/native.rs).
+[native-loop diagnostics](../crates/session/shell/src/compositor/native.rs).
 
 ## Build and dependency controls
 
@@ -338,7 +338,7 @@ experiments, not part of the default release recipe or the preserved A/B runs.
 `-C profile-generate=DIR`, `LLVM_PROFILE_FILE`, and `-C profile-use=FILE`
 control Rust instrumentation, training output, and profile-guided codegen.
 The scripts use fixed `target/pgo-*` directories and the named Distrobox
-environment; merging profiles writes `os/pgo/qos.profdata` and does not itself
+environment; merging profiles writes `os/pgo/tilo.profdata` and does not itself
 commit it. The BOLT helper additionally requires per-binary `.fdata` and uses
 `-reorder-blocks=ext-tsp`, `-reorder-functions=hfsort+`, `-split-functions`,
 `-split-all-cold`, `-icf=1`, and `-use-gnu-stack`. Rust `.profraw` collection
@@ -346,7 +346,7 @@ does not automatically produce BOLT `.fdata`. These helpers were not validated
 in this integration; record training data, tool versions, hardening flags, and
 both final binaries before attributing any runtime gain to them.
 
-qOS passes wgpu environment configuration through at device initialization.
+Tilo passes wgpu environment configuration through at device initialization.
 `WGPU_BACKEND` selects a comma-separated list of compiled/platform-supported
 backends (`vulkan`/`vk`, `metal`/`mtl`, `dx12`/`d3d12`,
 `opengl`/`gles`/`gl`, or `webgpu`; case-insensitive). Unset uses wgpu's
@@ -358,13 +358,13 @@ adapter. Keep them identical for A/B runs and record the **actual** adapter.
 wgpu's `WGPU_DEBUG`, `WGPU_VALIDATION`, `WGPU_GPU_BASED_VALIDATION`,
 `WGPU_VALIDATION_INDIRECT_CALL`, `WGPU_DISCARD_HAL_LABELS`, and
 `WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER` are dependency diagnostics, not
-qOS optimization presets. In the locked wgpu 29 implementation, exact `0`
+Tilo optimization presets. In the locked wgpu 29 implementation, exact `0`
 clears a supplied Boolean instance flag and any other supplied string sets it.
 Debug builds default to DEBUG, VALIDATION, and VALIDATION_INDIRECT_CALL;
 release defaults to VALIDATION_INDIRECT_CALL. The other listed flags default
 off. Do not disable correctness checks to manufacture benchmark gains.
 Backend-specific controls are defined by the wgpu version in
-[Cargo.lock](../Cargo.lock), not by qOS's Boolean parsers.
+[Cargo.lock](../Cargo.lock), not by Tilo's Boolean parsers.
 The `vello/wgpu-profiler` Cargo feature is build-time profiling
 and excludes the custom per-dispatch timestamp path described above.
 
@@ -382,7 +382,7 @@ an application can enable them through dependency feature unification):
 | `shell/hevc-codec-tests` | Off | Codec-dependent tests only; enables `hdr-decode`, not a speed optimization. |
 | `shell/hosted-test-control` | On | Hosted input-control test socket; remove from production feature selection when that test surface is unwanted. Not a frame-rate optimization. |
 
-See [UI features](../ui/Cargo.toml) and [shell features](../shell/Cargo.toml).
+See [UI features](../crates/sdk/ui-core/Cargo.toml) and [shell features](../crates/session/shell/Cargo.toml).
 `--no-default-features` changes the workload/capability set; document it in any
 benchmark recipe rather than silently comparing different feature sets.
 

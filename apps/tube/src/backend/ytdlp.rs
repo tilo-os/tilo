@@ -21,13 +21,12 @@
 //!
 //! It is a subprocess, not a crate, so it adds **no** compile-time dependency:
 //! the only requirement is that `yt-dlp` is on `PATH` (it is, in the distrobox
-//! build env and on the qOS image — see the module notes). Construction probes
+//! build env and on the Tilo image — see the module notes). Construction probes
 //! `yt-dlp --version` so a missing binary degrades cleanly to the offline
 //! sample rather than erroring at query time.
 
 #![cfg(feature = "live")]
 
-use std::process::Command;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -39,6 +38,7 @@ use crate::model::{Channel, Video};
 
 /// How many results to pull for search / channel / trending listings.
 const LIST_LIMIT: usize = 30;
+const YTDLP_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 
 /// The yt-dlp-backed data source.
 pub struct YtDlpBackend {
@@ -57,10 +57,14 @@ impl YtDlpBackend {
     /// Returns `Err` if `yt-dlp --version` cannot be run or fails.
     pub fn new() -> Result<Self, BackendError> {
         let bin = "yt-dlp".to_string();
-        let out = Command::new(&bin)
-            .arg("--version")
-            .output()
-            .map_err(|e| BackendError(format!("yt-dlp not runnable: {e}")))?;
+        let out = bounded_command::run(
+            &bin,
+            &["--version"],
+            None,
+            64 * 1024,
+            Duration::from_secs(3),
+        )
+        .map_err(|e| BackendError(format!("yt-dlp not runnable: {e}")))?;
         if !out.status.success() {
             return Err(BackendError("yt-dlp --version failed".into()));
         }
@@ -71,37 +75,8 @@ impl YtDlpBackend {
     /// Run yt-dlp with `args`, returning its stdout as text. `timeout` bounds
     /// the call so a hung extraction can't wedge the worker.
     fn run_text(&self, args: &[&str], timeout: Duration) -> Result<String, BackendError> {
-        let mut child = Command::new(&self.bin)
-            .args(args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| BackendError(format!("spawn yt-dlp: {e}")))?;
-
-        // Bounded wait: poll for exit up to `timeout`, then kill.
-        let start = std::time::Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(_status)) => break,
-                Ok(None) => {
-                    if start.elapsed() >= timeout {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(BackendError(format!(
-                            "yt-dlp timed out after {}s ({:?})",
-                            timeout.as_secs(),
-                            args
-                        )));
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                Err(e) => return Err(BackendError(format!("wait yt-dlp: {e}"))),
-            }
-        }
-
-        let out = child
-            .wait_with_output()
-            .map_err(|e| BackendError(format!("collect yt-dlp output: {e}")))?;
+        let out = bounded_command::run(&self.bin, args, None, YTDLP_OUTPUT_LIMIT, timeout)
+            .map_err(|e| BackendError(format!("yt-dlp failed safely: {e}")))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             let last = err.lines().last().unwrap_or("").trim();

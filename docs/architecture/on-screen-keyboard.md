@@ -9,7 +9,7 @@ owns the service lifecycle, protocol authority, placement, and visibility.
 
 The compositor exposes `text-input-v3` on the normal Wayland display. That is
 safe for applications: Smithay associates each text-input object with the
-seat's actually focused surface, so a client can only describe its own focused
+seat's focused surface, so a client can only describe its own focused
 field.
 
 `input-method-v2` and `virtual-keyboard-v1` are different: either can inject
@@ -23,11 +23,11 @@ the compositor/session group, and the connecting process must both be in that
 group and have the launcher as an ancestor in `/proc`. A same-user sibling
 cannot obtain authority by discovering the socket or joining/spoofing a group;
 the path name is not treated as a secret capability. The compositor launches
-the installed, signed `dev.qos.osk` service through the ordinary qOS sandbox
+the installed, signed `dev.tilo.osk` service through the ordinary Tilo sandbox
 launcher and binds that socket as its Wayland display.
 
-An app-id is display metadata, not authentication. qOS additionally requires
-the exact `dev.qos.osk` app-id before promoting its toplevel into the OSK
+An app-id is display metadata, not authentication. Tilo additionally requires
+the exact `dev.tilo.osk` app-id before promoting its toplevel into the OSK
 overlay, but app-id alone never reveals an input global. A public-display
 client which copies the id remains an ordinary tiled application.
 
@@ -37,7 +37,7 @@ crashed service is retried with backoff only while the preference remains on.
 
 ## Text lifecycle
 
-Editable qOS widgets explicitly opt into IME handling. The UI runtime follows
+Editable Tilo widgets explicitly opt into IME handling. The UI runtime follows
 focus and sends winit the field purpose and cursor rectangle before enabling
 IME. Winit emits `text-input-v3` enable/commit/disable requests. Smithay couples
 that text input to seat keyboard focus and activates the single input-method
@@ -67,15 +67,15 @@ painting and hit testing even while its service connection stays alive.
 
 ## Deliberate limits
 
-- Winit currently exposes only Normal, Password, and Terminal purposes. qOS
+- Winit currently exposes only Normal, Password, and Terminal purposes. Tilo
   native widgets can therefore select those today. Other toolkits which emit
   richer text-input-v3 purposes still reach the OSK's numeric, phone, URL, and
   email layouts. Number widgets validate input even though they request the
   Normal purpose until winit exposes Numeric.
 - Smithay accepts input-method candidate popup surfaces, but the compositor
-  does not paint or position them yet. The qOS keyboard's own suggestion strip
+  does not paint or position them yet. The Tilo keyboard's own suggestion strip
   is part of its main overlay and works without popup surfaces.
-- Placement chooses among qOS's current horizontally arranged output model.
+- Placement chooses among Tilo's current horizontally arranged output model.
   Per-output rotation and non-horizontal output origins must land with the
   broader display-layout work.
 - The protocol and policy paths have focused unit tests. A real touch device,

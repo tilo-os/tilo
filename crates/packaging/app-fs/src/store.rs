@@ -1,6 +1,6 @@
 //! Content-addressed blob store with **range reads** as the primitive.
 //!
-//! Unlike `qos-pkg::BlobStore`'s whole-blob `get`/`put` (packing needs
+//! Unlike `tilo-pkg::BlobStore`'s whole-blob `get`/`put` (packing needs
 //! the whole bundle in hand), the mount layer serves small windows
 //! (often one 4 KiB page) into multi-hundred-MB blobs, and the whole
 //! point of the mount is to avoid pulling unrequested bytes. So it
@@ -9,8 +9,8 @@
 //!
 //! Implementations: [`MemoryBlobStore`] (tests/CLI pack flow, slices),
 //! [`DiskBlobStore`] (files at `<dir>/<blake3-hex>`, `pread()`), and
-//! [`CountingStore`] (wraps any store, counts calls — tests prove
-//! partial reads don't over-fetch). A real iroh-blobs adapter is out
+//! [`CountingStore`] (wraps any store, counts calls — tests verify
+//! partial reads don't over-fetch). An iroh-blobs adapter is out
 //! of scope; its async/back-pressure semantics belong in a separate crate.
 
 use std::collections::BTreeMap;
@@ -177,7 +177,7 @@ impl DiskBlobStore {
 
     /// Write `bytes` under their BLAKE3 hash; returns the hash. Exposed
     /// for tests and one-off ingest — production packers go through
-    /// `qos-pkg`, which lays out a directory the same way.
+    /// `tilo-pkg`, which lays out a directory the same way.
     ///
     /// # Errors
     ///
@@ -246,7 +246,7 @@ impl BlobStore for DiskBlobStore {
     }
 }
 
-/// A wrapping store that counts every call; tests use it to prove the mount only fetches what was requested.
+/// A wrapping store that counts every call; tests use it to verify the mount only fetches what was requested.
 #[derive(Debug, Clone)]
 pub struct CountingStore<S: BlobStore> {
     inner: S,

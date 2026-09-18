@@ -40,12 +40,12 @@ impl settings::account_probe::AccountTester for AcceptAccount {
 }
 
 /// A process-unique temp config root so this test never collides with a real
-/// `~/.config/qos` or a parallel run.
+/// `~/.config/tilo` or a parallel run.
 fn unique_config_root() -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "qos-settings-mailloop-{}-{}",
+        "tilo-settings-mailloop-{}-{}",
         std::process::id(),
         n
     ))
@@ -64,12 +64,12 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
         std::env::set_var("XDG_CONFIG_HOME", &root_dir);
     }
 
-    // The shared crate resolves `<XDG_CONFIG_HOME>/qos` as its config root.
-    let qos_root = root_dir.join("qos");
+    // The shared crate resolves `<XDG_CONFIG_HOME>/tilo` as its config root.
+    let tilo_root = root_dir.join("tilo");
 
     // A fresh install: no accounts yet.
     assert!(
-        accounts::AccountStore::load_in(&qos_root).is_empty(),
+        accounts::AccountStore::load_in(&tilo_root).is_empty(),
         "precondition: the shared store starts empty"
     );
 
@@ -97,7 +97,7 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
     assert!(!pane.form_open(), "a successful save closes the form");
 
     // ---- Now read it back the way MAIL does, through Mail's own loader. ----
-    let mail_store = mail::account::AccountStore::load_in(&qos_root);
+    let mail_store = mail::account::AccountStore::load_in(&tilo_root);
     assert_eq!(
         mail_store.len(),
         1,
@@ -120,7 +120,7 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
     // from the sealed vault when Mail loads — the credential genuinely made it
     // across, encrypted at rest.
     let store_json =
-        std::fs::read_to_string(accounts::store_path_in(&qos_root)).expect("store.json exists");
+        std::fs::read_to_string(accounts::store_path_in(&tilo_root)).expect("store.json exists");
     assert!(
         !store_json.contains("s3cret-app-password"),
         "the password never touches the plaintext store: {store_json}"

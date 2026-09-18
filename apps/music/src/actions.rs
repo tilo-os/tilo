@@ -42,8 +42,8 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use qos_actions::resource::INVALID_ARGUMENTS_TYPE;
-use qos_actions::{
+use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
+use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
     Resource, ResourceProvider, ResultSpec, RetryPolicy,
@@ -121,6 +121,37 @@ pub fn playlist_resource_id(id: &str) -> String {
     format!("music.playlist:{id}")
 }
 
+/// The local-device queue. Unlike a playlist, this is intentionally not part
+/// of the shared library document: queuing or playing a track on one device
+/// must never commandeer a collaborator's speakers.
+pub const QUEUE_RESOURCE_ID: &str = "music.queue:queue";
+
+/// A queue occurrence has an identity of its own. A track may legitimately
+/// appear more than once, so `music.track:<id>` cannot name a queue row.
+/// Encoding both the observed index and the track id lets the operation host
+/// fail closed if the local queue changed before an old palette result lands.
+pub fn queue_item_resource_id(index: usize, track: &str) -> String {
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    format!(
+        "music.queue-item:v1:{index}:{}",
+        engine.encode(track.as_bytes())
+    )
+}
+
+/// Decode a queue occurrence resource identity. Invalid base64, UTF-8, and
+/// empty ids never become addressable queue authority.
+pub fn parse_queue_item_resource_id(id: &str) -> Option<(usize, String)> {
+    let value = id.strip_prefix("music.queue-item:v1:")?;
+    let (index, track) = value.split_once(':')?;
+    let index = index.parse().ok()?;
+    if track.is_empty() {
+        return None;
+    }
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let track = String::from_utf8(engine.decode(track).ok()?).ok()?;
+    (!track.is_empty()).then_some((index, track))
+}
+
 /// A playlist membership is distinct from the track itself: it owns the
 /// playlist-specific remove and reorder actions without duplicating a track's
 /// library-level identity in the resource tree.
@@ -175,11 +206,13 @@ pub fn open_playlist_membership_address(playlist: &str, track: &str) -> ActionAd
 }
 
 /// Non-document operations exported by Music. Navigation changes only the
-/// local presentation. Playback is intentionally absent: its durable controls
-/// are collaborative [`MusicAction`] values, while stream resolution and audio
-/// output remain device effects.
+/// local presentation. Playback and queue operations are explicit local-device
+/// effects: stream resolution and audio output must never be replicated into a
+/// collaborator's session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MusicOperation {
+    /// Ask the host picker for a file; callers cannot supply a raw path.
+    ChooseAudioFile,
     /// Open one of the stable app-owned destinations in [`NAVIGATION_VIEWS`].
     /// The receiver validates `id` again before it changes local presentation.
     OpenView {
@@ -207,6 +240,26 @@ pub enum MusicOperation {
     /// peer start playing audio or inherit this device's volume/queue.
     SetPlayback {
         playback: crate::model::Playback,
+    },
+    /// Start this exact observed queue occurrence. The `(index, track)` pair
+    /// is checked at the local-device authority boundary before it can alter
+    /// playback, preventing a stale queue result from selecting a recycled
+    /// row.
+    PlayQueueItem {
+        index: usize,
+        track: String,
+    },
+    /// Remove this exact observed queue occurrence. Queue effects are local
+    /// device effects, not document mutations.
+    RemoveQueueItem {
+        index: usize,
+        track: String,
+    },
+    /// Move this exact observed queue occurrence to an absolute queue index.
+    MoveQueueItem {
+        index: usize,
+        track: String,
+        to: usize,
     },
     /// Download durable, device-local media bytes or remove them from the
     /// device-local cache. Neither the bytes nor their paths enter Automerge.
@@ -256,17 +309,29 @@ pub enum MusicAction {
     DeletePlaylist { id: String },
     /// Append a track to a playlist (idempotent — a track already present is a
     /// no-op, matching the on-screen affordance).
+    /// Legacy positional append retained for decoding existing history only.
     AddTrackToPlaylist { playlist: String, track: String },
     /// Remove the first occurrence of a track from a playlist.
     RemoveTrackFromPlaylist { playlist: String, track: String },
-    /// Reorder a track within a playlist from `from` to `to` (clamped).
+    /// Legacy positional move retained for decoding existing history only.
     MoveTrackInPlaylist {
         playlist: String,
-        /// Identity of the membership expected at `from`. This prevents a
-        /// stale resource from moving whichever row later occupied its index.
         track: String,
         from: usize,
         to: usize,
+    },
+    /// Set a stable playlist membership to an absolute state and sparse rank.
+    SetPlaylistMembership {
+        playlist: String,
+        track: String,
+        present: bool,
+        rank: i64,
+    },
+    /// Set a stable playlist membership's absolute sparse order key.
+    SetTrackRank {
+        playlist: String,
+        track: String,
+        rank: i64,
     },
     /// Set (or clear, with an empty string) a playlist's portable cover value.
     /// The *pick* (the native file portal) is app-side, non-deterministic work;
@@ -282,25 +347,36 @@ pub enum MusicAction {
 }
 
 /// Durable, browseable history metadata for a library mutation.
-pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
-    let mut context = qos_actions::ActionContext::for_action("org.qos.Music", "Music", action);
+pub fn history_context(action: &MusicAction) -> tilo_actions::ActionContext {
+    let mut context = tilo_actions::ActionContext::for_action("org.tilo.Music", "Music", action);
     let (label, id, kind, resource_label): (&str, &str, &str, &str) = match action {
         MusicAction::CreatePlaylist { id, name } => ("Create playlist", id, "music.playlist", name),
         MusicAction::RenamePlaylist { id, name } => ("Rename playlist", id, "music.playlist", name),
         MusicAction::DeletePlaylist { id } => ("Delete playlist", id, "music.playlist", id),
-        MusicAction::AddTrackToPlaylist { playlist, track: _ } => (
+        MusicAction::AddTrackToPlaylist { playlist, .. }
+        | MusicAction::SetPlaylistMembership {
+            playlist,
+            present: true,
+            ..
+        } => (
             "Add track to playlist",
             playlist,
             "music.playlist",
             playlist,
         ),
-        MusicAction::RemoveTrackFromPlaylist { playlist, track: _ } => (
+        MusicAction::RemoveTrackFromPlaylist { playlist, track: _ }
+        | MusicAction::SetPlaylistMembership {
+            playlist,
+            present: false,
+            ..
+        } => (
             "Remove track from playlist",
             playlist,
             "music.playlist",
             playlist,
         ),
-        MusicAction::MoveTrackInPlaylist { playlist, .. } => {
+        MusicAction::MoveTrackInPlaylist { playlist, .. }
+        | MusicAction::SetTrackRank { playlist, .. } => {
             ("Reorder playlist", playlist, "music.playlist", playlist)
         }
         MusicAction::SetPlaylistCover { playlist, .. } => (
@@ -337,7 +413,7 @@ pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
         ),
     };
     context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id: format!("{kind}:{id}"),
         kind: kind.to_string(),
         label: resource_label.to_string(),
@@ -378,7 +454,8 @@ impl Action for MusicAction {
                     mdoc::has_playlist(doc, playlist) && mdoc::has_track(doc, track),
                     "playlist or track is no longer in the library",
                 )?;
-                mdoc::add_track_to_playlist(doc, playlist, track);
+                let rank = mdoc::playlist_append_rank(doc, playlist);
+                mdoc::add_track_to_playlist(doc, playlist, track, rank);
             }
             MusicAction::RemoveTrackFromPlaylist { playlist, track } => {
                 require(
@@ -398,14 +475,47 @@ impl Action for MusicAction {
                 to,
             } => {
                 require(
+                    mdoc::playlist_track_at(doc, playlist, *from).as_deref() == Some(track),
+                    "playlist membership moved or is no longer present",
+                )?;
+                let rank = mdoc::playlist_rank_for_move(doc, playlist, track, *to)
+                    .ok_or_else(|| ActionError::Refused("playlist membership is missing".into()))?;
+                mdoc::set_track_rank(doc, playlist, track, rank);
+            }
+            MusicAction::SetPlaylistMembership {
+                playlist,
+                track,
+                present,
+                rank,
+            } => {
+                require(
+                    mdoc::has_playlist(doc, playlist) && mdoc::has_track(doc, track),
+                    "playlist or track is no longer in the library",
+                )?;
+                if *present {
+                    mdoc::add_track_to_playlist(doc, playlist, track, *rank);
+                } else {
+                    require(
+                        mdoc::playlist_contains_track(doc, playlist, track),
+                        "playlist membership is no longer present",
+                    )?;
+                    mdoc::remove_track_from_playlist(doc, playlist, track);
+                }
+            }
+            MusicAction::SetTrackRank {
+                playlist,
+                track,
+                rank,
+            } => {
+                require(
                     mdoc::has_playlist(doc, playlist),
                     "playlist is no longer in the library",
                 )?;
                 require(
-                    mdoc::playlist_track_at(doc, playlist, *from).as_deref() == Some(track),
-                    "playlist membership moved or is no longer present",
+                    mdoc::playlist_contains_track(doc, playlist, track),
+                    "playlist membership is no longer present",
                 )?;
-                mdoc::move_track_in_playlist(doc, playlist, *from, *to);
+                mdoc::set_track_rank(doc, playlist, track, *rank);
             }
             MusicAction::SetPlaylistCover { playlist, cover } => {
                 require(
@@ -552,26 +662,29 @@ pub fn delete_playlist_action(id: &str) -> MusicAction {
     MusicAction::DeletePlaylist { id: id.to_string() }
 }
 
-pub fn add_track_action(playlist: &str, track: &str) -> MusicAction {
-    MusicAction::AddTrackToPlaylist {
+pub fn add_track_action(playlist: &str, track: &str, rank: i64) -> MusicAction {
+    MusicAction::SetPlaylistMembership {
         playlist: playlist.to_string(),
         track: track.to_string(),
+        present: true,
+        rank,
     }
 }
 
 pub fn remove_track_action(playlist: &str, track: &str) -> MusicAction {
-    MusicAction::RemoveTrackFromPlaylist {
+    MusicAction::SetPlaylistMembership {
         playlist: playlist.to_string(),
         track: track.to_string(),
+        present: false,
+        rank: 0,
     }
 }
 
-pub fn move_track_action(playlist: &str, track: &str, from: usize, to: usize) -> MusicAction {
-    MusicAction::MoveTrackInPlaylist {
+pub fn move_track_action(playlist: &str, track: &str, rank: i64) -> MusicAction {
+    MusicAction::SetTrackRank {
         playlist: playlist.to_string(),
         track: track.to_string(),
-        from,
-        to,
+        rank,
     }
 }
 
@@ -613,6 +726,7 @@ pub struct TrackRef {
     pub id: String,
     pub label: String,
     pub liked: bool,
+    pub rank: i64,
 }
 
 /// One playlist surfaced as a resource, with its ordered tracks.
@@ -621,6 +735,42 @@ pub struct PlaylistResource {
     pub id: String,
     pub name: String,
     pub tracks: Vec<TrackRef>,
+}
+
+impl PlaylistResource {
+    fn append_rank(&self) -> i64 {
+        self.tracks
+            .iter()
+            .map(|track| track.rank)
+            .max()
+            .unwrap_or(-1_048_576)
+            .saturating_add(1_048_576)
+    }
+
+    fn move_rank(&self, index: usize, to: usize) -> i64 {
+        let mut remaining = self
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(candidate, _)| *candidate != index)
+            .map(|(_, track)| track.rank)
+            .collect::<Vec<_>>();
+        let insert = to.min(remaining.len());
+        let previous = insert
+            .checked_sub(1)
+            .and_then(|at| remaining.get(at))
+            .copied();
+        let next = remaining.get(insert).copied();
+        remaining.clear();
+        match (previous, next) {
+            (Some(previous), Some(next)) if next.saturating_sub(previous) > 1 => {
+                previous + (next - previous) / 2
+            }
+            (Some(previous), _) => previous.saturating_add(1),
+            (None, Some(next)) => next.saturating_sub(1_048_576),
+            (None, None) => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -659,6 +809,19 @@ pub struct PlaylistMembershipResource {
     pub track: TrackRef,
     pub index: usize,
     pub total: usize,
+    pub up_rank: i64,
+    pub down_rank: i64,
+}
+
+/// One addressable occurrence in the local playback queue. The queue permits
+/// duplicates, therefore `index` is part of the identity rather than merely
+/// presentational numbering.
+#[derive(Debug, Clone)]
+pub struct QueueItemResource {
+    pub index: usize,
+    pub track: String,
+    pub label: String,
+    pub current: bool,
 }
 
 /// The presentation context Music hands [`provide_resources`]: the user's
@@ -666,11 +829,16 @@ pub struct PlaylistMembershipResource {
 /// derived from state the document already holds; nothing is fabricated.
 #[derive(Debug, Clone, Default)]
 pub struct MusicResourceCtx {
+    pub local_file: Option<CatalogTrackResource>,
     pub playlists: Vec<PlaylistResource>,
     pub tracks: Vec<CatalogTrackResource>,
     pub albums: Vec<CatalogAlbumResource>,
     pub artists: Vec<CatalogArtistResource>,
     pub membership: Option<PlaylistMembershipResource>,
+    /// Bounded contextual queue rows. Direct resource resolution rebuilds only
+    /// the exact requested row, so a long queue never gets cloned merely to
+    /// open Ctrl+K.
+    pub queue: Vec<QueueItemResource>,
     pub playback: crate::model::Playback,
 }
 
@@ -722,7 +890,7 @@ fn local_playback_spec(
             playback: playback.clone(),
         },
     );
-    if playback.playing && playback.current != previous.current {
+    if playback.playing && (playback.current != previous.current || !previous.playing) {
         spec.execution(ExecutionMode::Background { cancellable: false })
             .returns(ResultSpec::Json {
                 schema: serde_json::json!({
@@ -745,7 +913,7 @@ fn local_offline_spec(id: &str, label: &str, tracks: Vec<String>, keep: bool) ->
         OperationKind::Effect,
         &MusicOperation::SetOffline { tracks, keep },
     );
-    spec.execution(ExecutionMode::Background { cancellable: false })
+    spec.execution(ExecutionMode::Background { cancellable: true })
         .returns(ResultSpec::Json {
             schema: serde_json::json!({
                 "type": "object",
@@ -1017,6 +1185,119 @@ fn with_queue_actions(
     root
 }
 
+fn queue_item_effect_spec(
+    id: &str,
+    label: &str,
+    operation: &MusicOperation,
+    destructive: bool,
+) -> ActionSpec {
+    let spec = operation_spec(id, label, OperationKind::Effect, operation)
+        .requiring(PermissionRequirement::Write);
+    if destructive {
+        spec.destructive()
+    } else {
+        spec
+    }
+}
+
+fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
+    let index = item.index;
+    let track = item.track.clone();
+    let mut resource = Resource::new(
+        queue_item_resource_id(index, &track),
+        "music.queue-item",
+        item.label.clone(),
+    )
+    .with_action(operation_spec(
+        "open",
+        "Open queue",
+        OperationKind::View,
+        &MusicOperation::OpenView { id: "queue".into() },
+    ))
+    .with_action(
+        queue_item_effect_spec(
+            "play",
+            if item.current {
+                "Restart track"
+            } else {
+                "Play queue item"
+            },
+            &MusicOperation::PlayQueueItem {
+                index,
+                track: track.clone(),
+            },
+            false,
+        )
+        .execution(ExecutionMode::Background { cancellable: false })
+        .returns(ResultSpec::Json {
+            schema: serde_json::json!({
+                "type": "object",
+                "required": ["state"],
+                "properties": { "state": { "enum": ["resolved", "playing"] } }
+            }),
+        }),
+    )
+    .with_action(queue_item_effect_spec(
+        "remove",
+        "Remove from queue",
+        &MusicOperation::RemoveQueueItem {
+            index,
+            track: track.clone(),
+        },
+        true,
+    ));
+
+    let move_up = queue_item_effect_spec(
+        "move-up",
+        "Move queue item up",
+        &MusicOperation::MoveQueueItem {
+            index,
+            track: track.clone(),
+            to: index.saturating_sub(1),
+        },
+        false,
+    );
+    resource = resource.with_action(if index > 0 {
+        move_up
+    } else {
+        move_up.unavailable(
+            "first_queue_item",
+            "This item is already first in the queue",
+        )
+    });
+
+    let move_down = queue_item_effect_spec(
+        "move-down",
+        "Move queue item down",
+        &MusicOperation::MoveQueueItem {
+            index,
+            track,
+            to: index.saturating_add(1),
+        },
+        false,
+    );
+    resource.with_action(if index + 1 < total {
+        move_down
+    } else {
+        move_down.unavailable("last_queue_item", "This item is already last in the queue")
+    })
+}
+
+fn queue_resource(ctx: &MusicResourceCtx) -> Resource {
+    let total = ctx.playback.queue.len();
+    let mut resource =
+        Resource::new(QUEUE_RESOURCE_ID, "music.queue", "Queue").with_action(operation_spec(
+            "open",
+            "Open queue",
+            OperationKind::View,
+            &MusicOperation::OpenView { id: "queue".into() },
+        ));
+    for item in &ctx.queue {
+        resource = resource.with_child(queue_item_resource(item, total));
+    }
+    resource
+}
+
 fn playlist_resource(
     playlist: &PlaylistResource,
     known_tracks: &BTreeSet<String>,
@@ -1057,6 +1338,7 @@ fn playlist_resource(
         .destructive(),
     );
     let add_playlist = playlist.id.clone();
+    let add_rank = playlist.append_rank();
     let add_track_ids = known_tracks.clone();
     resource = resource.with_action(
         ActionSpec::typed(
@@ -1076,7 +1358,7 @@ fn playlist_resource(
                 if !add_track_ids.contains(track) {
                     return invalid_arguments("track is no longer in the library");
                 }
-                encode(&add_track_action(&add_playlist, track))
+                encode(&add_track_action(&add_playlist, track, add_rank))
             },
         )
         .requiring(PermissionRequirement::Write),
@@ -1100,6 +1382,8 @@ fn playlist_resource(
             track,
             index,
             playlist.tracks.len(),
+            playlist.move_rank(index, index.saturating_sub(1)),
+            playlist.move_rank(index, index.saturating_add(1)),
         ));
     }
     resource
@@ -1110,6 +1394,8 @@ fn playlist_track_resource(
     track: &TrackRef,
     index: usize,
     total: usize,
+    up_rank: i64,
+    down_rank: i64,
 ) -> Resource {
     Resource::new(
         playlist_track_resource_id(playlist, &track.id),
@@ -1143,14 +1429,14 @@ fn playlist_track_resource(
         immediate_spec(
             "move-up",
             "Move track up",
-            &move_track_action(playlist, &track.id, index, index - 1),
+            &move_track_action(playlist, &track.id, up_rank),
         )
         .reversible()
     } else {
         immediate_spec(
             "move-up",
             "Move track up",
-            &move_track_action(playlist, &track.id, index, index),
+            &move_track_action(playlist, &track.id, track.rank),
         )
         .unavailable("first_track", "This track is already first in the playlist")
     })
@@ -1158,14 +1444,14 @@ fn playlist_track_resource(
         immediate_spec(
             "move-down",
             "Move track down",
-            &move_track_action(playlist, &track.id, index, index + 1),
+            &move_track_action(playlist, &track.id, down_rank),
         )
         .reversible()
     } else {
         immediate_spec(
             "move-down",
             "Move track down",
-            &move_track_action(playlist, &track.id, index, index),
+            &move_track_action(playlist, &track.id, track.rank),
         )
         .unavailable("last_track", "This track is already last in the playlist")
     })
@@ -1307,17 +1593,25 @@ fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
 /// playlist (remove + toggle-like). Every document-mutating operation is
 /// exported as the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let known_tracks = ctx
+    let mut known_tracks = ctx
         .tracks
         .iter()
         .map(|track| track.id.clone())
         .collect::<BTreeSet<_>>();
-    let mut root = Resource::new("music.library", "music.library", "Library");
+    if let Some(file) = &ctx.local_file {
+        known_tracks.insert(file.id.clone());
+    }
+    let mut root = Resource::new("music.library", "music.library", "Library")
+        .with_action(open_local_file_spec());
+    if let Some(file) = &ctx.local_file {
+        root = root.with_child(local_file_resource(file, &ctx.playback));
+    }
     root = root.with_child(with_playback_actions(
         Resource::new("music.player:player", "music.player", "Player"),
         &ctx.playback,
         &known_tracks,
     ));
+    root = root.with_child(queue_resource(ctx));
 
     // Library-level: create a playlist. The id is minted once when the name
     // argument is committed, then baked into the envelope, so replay stays
@@ -1386,6 +1680,12 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
 /// otherwise stale targets disappear instead of gaining authority from an old
 /// palette snapshot.
 pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
+    if id == LOCAL_FILE_RESOURCE_ID {
+        return ctx
+            .local_file
+            .as_ref()
+            .map(|file| local_file_resource(file, &ctx.playback));
+    }
     if let Some(view) = parse_view_resource_id(id) {
         return known_view_label(view).map(|label| navigation_view_resource(view, label));
     }
@@ -1397,13 +1697,18 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
             &membership.track,
             membership.index,
             membership.total,
+            membership.up_rank,
+            membership.down_rank,
         ));
     }
-    let known_tracks = ctx
+    let mut known_tracks = ctx
         .tracks
         .iter()
         .map(|track| track.id.clone())
         .collect::<BTreeSet<_>>();
+    if let Some(file) = &ctx.local_file {
+        known_tracks.insert(file.id.clone());
+    }
     if id == "music.library" {
         return provide_resources(ctx, &AutoCommit::new())
             .into_iter()
@@ -1415,6 +1720,16 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
             &ctx.playback,
             &known_tracks,
         ));
+    }
+    if id == QUEUE_RESOURCE_ID {
+        return Some(queue_resource(ctx));
+    }
+    if let Some((index, track)) = parse_queue_item_resource_id(id) {
+        let item = ctx
+            .queue
+            .iter()
+            .find(|item| item.index == index && item.track == track)?;
+        return Some(queue_item_resource(item, ctx.playback.queue.len()));
     }
     if let Some(track_id) = id.strip_prefix("music.track:").filter(|id| !id.is_empty()) {
         return ctx
@@ -1457,11 +1772,48 @@ impl ResourceProvider for crate::app::MusicApp {
     }
 }
 
+/// A device-local source has no collaborative track/catalog identity.
+pub const LOCAL_FILE_RESOURCE_ID: &str = "music.local-file:current";
+
+pub(crate) fn open_local_file_spec() -> ActionSpec {
+    operation_spec(
+        "open-file",
+        "Open audio file",
+        OperationKind::Effect,
+        &MusicOperation::ChooseAudioFile,
+    )
+    .retry_policy(RetryPolicy::AtMostOnce)
+    .execution(ExecutionMode::Background { cancellable: false })
+    .returns(ResultSpec::Json {
+        schema: serde_json::json!({
+            "type":"object", "required":["state"], "properties":{"state":{"enum":["playing"]}}
+        }),
+    })
+}
+
+fn local_file_resource(file: &CatalogTrackResource, playback: &crate::model::Playback) -> Resource {
+    let resource = Resource::new(
+        LOCAL_FILE_RESOURCE_ID,
+        "music.local-file",
+        file.label.clone(),
+    );
+    if playback.current.as_deref() == Some(&file.id) {
+        return with_transport_navigation(with_transport_settings(resource, playback), playback);
+    }
+    let mut next = playback.clone();
+    next.current = Some(file.id.clone());
+    next.queue = vec![file.id.clone()];
+    next.queue_index = 0;
+    next.position_ms = 0;
+    next.playing = true;
+    resource.with_action(local_playback_spec("play", "Play file", playback, &next))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::MusicApp;
-    use qos_actions::{ActionInput, ArgValue, LocalTransport};
+    use tilo_actions::{ActionInput, ArgValue, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -1534,7 +1886,7 @@ mod tests {
                 .unwrap()
                 .contract
                 .risk,
-            qos_actions::RiskLevel::Destructive
+            tilo_actions::RiskLevel::Destructive
         );
 
         let player = lib
@@ -1590,7 +1942,7 @@ mod tests {
 
         // The full flattened tree exports every action, including the nested
         // track ops that sort after the playlists.
-        let flat: Vec<&str> = qos_actions::flatten(&resources)
+        let flat: Vec<&str> = tilo_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
@@ -1606,6 +1958,10 @@ mod tests {
             labels.iter().any(|l| l.contains("New playlist")),
             "{labels:?}"
         );
+        // The shared palette shows eight rows per group; find the nested
+        // action through its production search path instead of assuming order.
+        palette.set_query("Rename playlist");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Rename playlist")),
             "{labels:?}"
@@ -1630,7 +1986,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -1694,11 +2050,11 @@ mod tests {
             .cloned()
             .expect("a track not already in the playlist");
         let pid = playlist.id.clone();
-        let action = add_track_action(&pid, &new_track);
+        let action = add_track_action(&pid, &new_track, playlist.append_rank());
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1729,8 +2085,8 @@ mod tests {
         assert!(!cover.contains("/tmp/"));
 
         let action = set_cover_action(&playlist, &cover);
-        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
-        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1791,8 +2147,8 @@ mod tests {
         let action = set_liked_action(&track, true);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1874,7 +2230,7 @@ mod tests {
         let encoded = prompted_encode(spec, "Late Night");
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let lib = crate::doc::load_library(&doc);
         assert_eq!(
@@ -1907,7 +2263,7 @@ mod tests {
             "queue-remove",
         ] {
             let action = root.actions.iter().find(|action| action.id == id).unwrap();
-            assert_eq!(action.kind, qos_actions::OperationKind::Effect, "{id}");
+            assert_eq!(action.kind, tilo_actions::OperationKind::Effect, "{id}");
             assert_eq!(
                 action.contract.permission,
                 PermissionRequirement::Write,
@@ -1945,6 +2301,79 @@ mod tests {
             ExecutionMode::Background { cancellable: false }
         );
         assert!(matches!(play.contract.result, ResultSpec::Json { .. }));
+        let offline = catalog_track_resource(&track, &ctx.playback)
+            .actions
+            .into_iter()
+            .find(|action| action.id == "keep-offline")
+            .unwrap();
+        assert_eq!(
+            offline.contract.execution,
+            ExecutionMode::Background { cancellable: true },
+            "offline transfer is a bounded cancellable device effect"
+        );
+    }
+
+    #[test]
+    fn queue_occurrences_are_canonical_and_duplicate_safe() {
+        let mut ctx = MusicResourceCtx::default();
+        ctx.playback.queue = vec!["track-1".into(), "track-1".into(), "track-2".into()];
+        ctx.playback.current = Some("track-1".into());
+        ctx.queue = vec![
+            QueueItemResource {
+                index: 0,
+                track: "track-1".into(),
+                label: "First track".into(),
+                current: true,
+            },
+            QueueItemResource {
+                index: 1,
+                track: "track-1".into(),
+                label: "Second occurrence".into(),
+                current: false,
+            },
+            QueueItemResource {
+                index: 2,
+                track: "track-2".into(),
+                label: "Third track".into(),
+                current: false,
+            },
+        ];
+        let root = provide_resources(&ctx, &AutoCommit::new()).pop().unwrap();
+        let queue = root
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == QUEUE_RESOURCE_ID)
+            .expect("local queue has a canonical resource");
+        assert_eq!(queue.kind, "music.queue");
+        assert_eq!(queue.children.len(), 3);
+        assert_ne!(queue.children[0].id, queue.children[1].id);
+        assert_eq!(
+            parse_queue_item_resource_id(queue.children[1].id.as_str()),
+            Some((1, "track-1".into())),
+            "a duplicate track retains an occurrence-specific address"
+        );
+        let remove = queue.children[1]
+            .actions
+            .iter()
+            .find(|action| action.id == "remove")
+            .expect("queue rows are actionable without pixels");
+        let operation = decode_operation(
+            &immediate_encode(remove).type_id,
+            &immediate_encode(remove).payload,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            operation,
+            MusicOperation::RemoveQueueItem {
+                index: 1,
+                track: "track-1".into(),
+            }
+        );
+        assert!(
+            parse_queue_item_resource_id("music.queue-item:v1:not-an-index:dHJhY2stMQ").is_none(),
+            "malformed occurrence ids cannot acquire queue authority"
+        );
     }
 
     #[test]
@@ -1969,7 +2398,7 @@ mod tests {
                 .expect("generic resource shape binds before Music validates its kind/state");
             assert_eq!(
                 encoded.type_id,
-                qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
                 "{address}"
             );
         }
@@ -1992,7 +2421,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             encoded.type_id,
-            qos_actions::resource::INVALID_ARGUMENTS_TYPE
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
         );
     }
 
@@ -2090,7 +2519,7 @@ mod tests {
     fn document_mutations_advertise_write_permission_and_views_advertise_read() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        for flat in qos_actions::flatten(&resources) {
+        for flat in tilo_actions::flatten(&resources) {
             let permission = flat.action.contract.permission;
             match flat.action.kind {
                 OperationKind::Document => assert_eq!(
@@ -2158,7 +2587,7 @@ mod tests {
         let operation_handlers =
             std::collections::HashSet::from([MUSIC_OPERATION_TYPE.to_string()]);
         let violations =
-            qos_actions::validate_surface(&resources, &registry(), &operation_handlers);
+            tilo_actions::validate_surface(&resources, &registry(), &operation_handlers);
         assert!(violations.is_empty(), "{violations:#?}");
     }
 
@@ -2172,6 +2601,7 @@ mod tests {
                     id: format!("track:{number}:🎧"),
                     label: format!("Track {number}"),
                     liked: false,
+                    rank: i64::try_from(number).unwrap_or(i64::MAX / 1_048_576) * 1_048_576,
                 })
                 .collect(),
         };
@@ -2184,6 +2614,8 @@ mod tests {
                 track: target.clone(),
                 index,
                 total: playlist.tracks.len(),
+                up_rank: playlist.move_rank(index, index.saturating_sub(1)),
+                down_rank: playlist.move_rank(index, index.saturating_add(1)),
             }),
             ..Default::default()
         };
@@ -2225,15 +2657,14 @@ mod tests {
             encode(&move_track_action(
                 &playlist.id,
                 &target.id,
-                index,
-                index - 1
+                ctx.membership.as_ref().unwrap().up_rank
             )),
             "the lazy resource preserves the original membership index"
         );
     }
 
     #[test]
-    fn stale_membership_remove_and_reorder_are_refused() {
+    fn stale_membership_remove_is_refused_and_absolute_reorder_is_idempotent() {
         let (_app, mut doc) = seeded();
         let playlist = crate::doc::load_library(&doc).playlists[0].clone();
         let track = playlist.track_ids[0].clone();
@@ -2246,11 +2677,85 @@ mod tests {
 
         let playlist = crate::doc::load_library(&doc).playlists[0].clone();
         let track = playlist.track_ids[0].clone();
-        let move_action = move_track_action(&playlist.id, &track, 0, 1);
+        let rank = playlist.rank_for_move(&track, 1).unwrap();
+        let move_action = move_track_action(&playlist.id, &track, rank);
         move_action.apply(&mut doc).expect("live membership moves");
-        assert!(matches!(
-            move_action.apply(&mut doc),
-            Err(ActionError::Refused(_))
+        move_action
+            .apply(&mut doc)
+            .expect("absolute membership move safely replays");
+    }
+
+    #[test]
+    fn encoded_divergent_playlist_edits_converge_by_stable_membership() {
+        let (_app, mut base) = seeded();
+        base.commit();
+        let bytes = base.save();
+        let mut a = AutoCommit::load(&bytes).unwrap();
+        let mut b = AutoCommit::load(&bytes).unwrap();
+        let playlist = crate::doc::load_library(&a).playlists[0].clone();
+        let moved = playlist.track_ids[0].clone();
+        let removed = playlist.track_ids[1].clone();
+        let rank = playlist
+            .rank_for_move(&moved, playlist.track_ids.len() - 1)
+            .unwrap();
+
+        let move_action = move_track_action(&playlist.id, &moved, rank);
+        let remove_action = remove_track_action(&playlist.id, &removed);
+        tilo_actions::apply_local(&mut a, &move_action, encode(&move_action)).unwrap();
+        tilo_actions::apply_local(&mut b, &remove_action, encode(&remove_action)).unwrap();
+
+        let a_bytes = a.save();
+        let b_bytes = b.save();
+        let mut left = AutoCommit::load(&a_bytes).unwrap();
+        let mut right_for_left = AutoCommit::load(&b_bytes).unwrap();
+        left.merge(&mut right_for_left).unwrap();
+        let mut right = AutoCommit::load(&b_bytes).unwrap();
+        let mut left_for_right = AutoCommit::load(&a_bytes).unwrap();
+        right.merge(&mut left_for_right).unwrap();
+
+        assert_eq!(left.get_heads(), right.get_heads());
+        let left_playlist = crate::doc::load_library(&left)
+            .playlist(&playlist.id)
+            .unwrap()
+            .clone();
+        let right_playlist = crate::doc::load_library(&right)
+            .playlist(&playlist.id)
+            .unwrap()
+            .clone();
+        assert_eq!(left_playlist.track_ids, right_playlist.track_ids);
+        assert!(!left_playlist.track_ids.contains(&removed));
+        assert_eq!(left_playlist.track_ids.last(), Some(&moved));
+    }
+
+    #[test]
+    fn legacy_positional_membership_actions_remain_decodable() {
+        let (_app, mut doc) = seeded();
+        let append: MusicAction = serde_json::from_value(serde_json::json!({
+            "AddTrackToPlaylist": {
+                "playlist": "pl_focus",
+                "track": "tk_g1"
+            }
+        }))
+        .unwrap();
+        append.apply(&mut doc).unwrap();
+        assert!(crate::doc::playlist_contains_track(
+            &doc, "pl_focus", "tk_g1"
         ));
+
+        let moved = crate::doc::playlist_track_at(&doc, "pl_focus", 0).unwrap();
+        let reorder: MusicAction = serde_json::from_value(serde_json::json!({
+            "MoveTrackInPlaylist": {
+                "playlist": "pl_focus",
+                "track": moved,
+                "from": 0,
+                "to": 1
+            }
+        }))
+        .unwrap();
+        reorder.apply(&mut doc).unwrap();
+        assert_eq!(
+            crate::doc::playlist_track_at(&doc, "pl_focus", 1),
+            Some(moved)
+        );
     }
 }

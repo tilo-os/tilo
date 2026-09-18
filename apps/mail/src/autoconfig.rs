@@ -366,22 +366,63 @@ pub fn discovery_urls(domain: &str, email: &str) -> Vec<String> {
 /// manually".
 #[cfg(feature = "live")]
 pub fn discover(email: &str) -> Option<Autoconfig> {
+    discover_cancellable(email, &std::sync::atomic::AtomicBool::new(false))
+}
+
+/// Discover on a worker, dropping active HTTP requests when setup closes.
+#[cfg(feature = "live")]
+pub fn discover_cancellable(
+    email: &str,
+    cancellation: &std::sync::atomic::AtomicBool,
+) -> Option<Autoconfig> {
     let (_, domain) = email.split_once('@')?;
-    let client = reqwest::blocking::Client::builder()
+    discover_with_urls(email, cancellation, discovery_urls(domain, email))
+}
+
+#[cfg(feature = "live")]
+fn discover_with_urls(
+    email: &str,
+    cancellation: &std::sync::atomic::AtomicBool,
+    urls: Vec<String>,
+) -> Option<Autoconfig> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    runtime.block_on(async {
+        tokio::select! {
+            biased;
+            () = async {
+                loop {
+                    if cancellation.load(std::sync::atomic::Ordering::Relaxed) { return; }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            } => None,
+            result = tokio::time::timeout(std::time::Duration::from_secs(30), discover_candidates(email, urls)) => result.ok().flatten(),
+        }
+    })
+}
+
+#[cfg(feature = "live")]
+async fn discover_candidates(email: &str, urls: Vec<String>) -> Option<Autoconfig> {
+    let (_, domain) = email.split_once('@')?;
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
-        .user_agent("qOS Mail")
+        .user_agent("Tilo Mail")
         .build()
         .ok()?;
 
     // 1. Thunderbird ISPDB + provider `.well-known` autoconfig XML.
-    for url in discovery_urls(domain, email) {
-        let Ok(resp) = client.get(&url).send() else {
+    for url in urls {
+        let Ok(resp) = client.get(&url).send().await else {
             continue;
         };
         if !resp.status().is_success() {
             continue;
         }
-        let Ok(body) = resp.text() else { continue };
+        let Ok(body) = resp.text().await else {
+            continue;
+        };
         if let Some(cfg) = parse_autoconfig(&body) {
             return Some(cfg);
         }
@@ -398,7 +439,7 @@ pub fn discover(email: &str) -> Option<Autoconfig> {
     //    Workspace / Microsoft 365 keeps its own domain but points MX at the
     //    provider). Resolved via DNS-over-HTTPS so no resolver dependency is
     //    pulled in.
-    if let Some(p) = discover_via_mx(&client, domain) {
+    if let Some(p) = discover_via_mx(&client, domain).await {
         return Some(p.autoconfig());
     }
 
@@ -408,7 +449,7 @@ pub fn discover(email: &str) -> Option<Autoconfig> {
 /// Resolve `domain`'s MX records via DNS-over-HTTPS and map them to a known
 /// provider. Tries Google and Cloudflare `DoH` endpoints. Network — `live` only.
 #[cfg(feature = "live")]
-fn discover_via_mx(client: &reqwest::blocking::Client, domain: &str) -> Option<KnownProvider> {
+async fn discover_via_mx(client: &reqwest::Client, domain: &str) -> Option<KnownProvider> {
     let endpoints = [
         format!("https://dns.google/resolve?name={domain}&type=MX"),
         format!("https://cloudflare-dns.com/dns-query?name={domain}&type=MX"),
@@ -418,13 +459,16 @@ fn discover_via_mx(client: &reqwest::blocking::Client, domain: &str) -> Option<K
             .get(&url)
             .header("accept", "application/dns-json")
             .send()
+            .await
         else {
             continue;
         };
         if !resp.status().is_success() {
             continue;
         }
-        let Ok(body) = resp.text() else { continue };
+        let Ok(body) = resp.text().await else {
+            continue;
+        };
         let records = parse_doh_mx(&body);
         if let Some(p) = provider_from_mx_records(records) {
             return Some(p);
@@ -436,6 +480,64 @@ fn discover_via_mx(client: &reqwest::blocking::Client, domain: &str) -> Option<K
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "live")]
+    #[test]
+    fn cancelling_discovery_closes_a_stalled_http_request() {
+        use std::io::Read;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+        use std::time::{Duration, Instant};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/config.xml", listener.local_addr().unwrap());
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let worker_cancellation = Arc::clone(&cancellation);
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sender
+                .send(discover_with_urls(
+                    "fixture@custom.invalid",
+                    &worker_cancellation,
+                    vec![url],
+                ))
+                .unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "discovery never connected");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("local listener: {error}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = [0; 4096];
+        assert!(
+            stream.read(&mut request).unwrap() > 0,
+            "real HTTP request began"
+        );
+        cancellation.store(true, Ordering::Relaxed);
+        assert!(
+            receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .is_none()
+        );
+        stream
+            .read_to_end(&mut Vec::new())
+            .expect("cancellation closes the request socket");
+        worker.join().unwrap();
+    }
 
     const SAMPLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <clientConfig version="1.1">

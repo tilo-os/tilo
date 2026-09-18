@@ -1,6 +1,6 @@
-# Packaging the qOS desktop session
+# Packaging the Tilo Desktop session
 
-The host package installs qOS as an additional Wayland session on an existing
+The host package installs Tilo as an additional Wayland session on an existing
 Linux system. It is deliberately smaller than the bootc operating-system image:
 the package contains the compositor, sandbox launcher, unlock helper, PAM policy,
 portal registration, display-manager entry, and AGPL-3.0 license text. It does
@@ -8,25 +8,25 @@ not replace the host's boot chain, greeter, or package manager.
 
 The session scans the host's normal XDG application directories, including
 per-user and system Flatpak exports. Those existing applications keep their
-real home directory and their original confinement model, and qOS labels them
-as unconfined host apps rather than implying they use qOS package policy. On
+real home directory and their original confinement model, and Tilo labels them
+as unconfined host apps rather than implying they use Tilo package policy. On
 Fedora, `xwayland-satellite` is a hard package dependency so legacy X11-only
-applications continue to open; native Wayland applications still use the qOS
-socket directly. The complete qOS image remains Wayland-only—this compatibility
+applications continue to open; native Wayland applications still use the Tilo
+socket directly. The complete Tilo image remains Wayland-only—this compatibility
 bridge is enabled only by the explicit host-desktop session mode.
 
-The wrapper owns `graphical-session.target` for the lifetime of qOS, clears
+The wrapper owns `graphical-session.target` for the lifetime of Tilo, clears
 display variables left by the preceding desktop before starting it, and removes
-qOS's desktop identity when the session ends. That is what allows portal and
-other standard user services to use qOS while logged in and ensures they stop
+Tilo's desktop identity when the session ends. That is what allows portal and
+other standard user services to use Tilo while logged in and ensures they stop
 before GNOME, KDE, or another session is selected next.
 The portal frontend and filtered D-Bus proxy are hard package dependencies, so
-sandboxed qOS applications do not silently lose desktop APIs on minimal hosts.
+sandboxed Tilo applications do not silently lose desktop APIs on minimal hosts.
 
 The package-owned wrapper sends compositor stdout and stderr directly to the
-user journal with `SYSLOG_IDENTIFIER=qos-session`. After returning to another
+user journal with `SYSLOG_IDENTIFIER=tilo-session`. After returning to another
 desktop, startup, portal, application-launch, and crash diagnostics remain
-available with `journalctl --user -t qos-session`; no GDM-specific session-log
+available with `journalctl --user -t tilo-session`; no GDM-specific session-log
 path is required. The wrapper records no environment dump or credentials, and
 the journal keeps the host's normal per-user/root access controls.
 
@@ -34,19 +34,19 @@ the journal keeps the host's normal per-user/root access controls.
 
 | Distribution | Release files | Architectures |
 | --- | --- | --- |
-| Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64`; `arm64` when enabled |
-| Debian 13 | `qos-session_*+deb13*.deb` | `amd64`; `arm64` when enabled |
-| Fedora 44 | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64`; `aarch64` when enabled |
-| Arch Linux | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64`; `aarch64` when enabled |
+| Ubuntu 24.04 | `tilo-session_*+ubuntu24.04*.deb` | `amd64`; `arm64` when enabled |
+| Debian 13 | `tilo-session_*+deb13*.deb` | `amd64`; `arm64` when enabled |
+| Fedora 44 | `tilo-session-*.rpm`, `tilo-session-devel-*.rpm` | `x86_64`; `aarch64` when enabled |
+| Arch Linux | `tilo-session-*.pkg.tar.zst`, `tilo-session-devel-*.pkg.tar.zst` | `x86_64`; `aarch64` when enabled |
 | NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux`; `aarch64-linux` when enabled |
 
-The complete ARM64 package definitions and release verifier remain in tree,
-but ARM64 publication is temporarily disabled by
-`QOS_DESKTOP_ARM64_RELEASES` until a native `runner-arm64` host is available.
-Current tags therefore publish the x86-64 set. Changing that single workflow
-switch to `"1"` restores the complete native ARM64 release lane.
+The complete ARM64 package definitions and release verifier are enabled by
+`TILO_DESKTOP_ARM64_RELEASES`. Tagged and explicit full-native builds use the
+native `runner-arm64` pool and publish both architecture sets; ordinary changes
+retain one amd64 lane for faster feedback. The single workflow switch remains
+the emergency control for temporarily pausing ARM64 scheduling.
 
-`qos-session-devel` is optional and is only for machines developing qOS. It
+`tilo-session-devel` is optional and is only for machines developing Tilo. It
 adds a second login entry that can start a user-selected local build after
 checking its ownership, directory permissions, and embedded development marker.
 
@@ -58,7 +58,7 @@ Install the native dependencies listed in `DEVELOPMENT.md`, then run one of:
 dist/debian/build-deb.sh
 dist/rpm/build-rpm.sh
 dist/arch/build-arch.sh       # makepkg must run as a non-root user
-nix build .#qos-session
+nix build .#tilo-session
 ```
 
 All FHS packages share `dist/stage-payload.sh`; `dist/verify-payload.sh` asserts
@@ -74,52 +74,52 @@ inside its own distribution build root.
 ## Install from code.podesta.ai
 
 Tagged releases are uploaded both as release assets and to Forgejo's native
-package registries under the `qos` organization. Once the organization is
+package registries under the `tilo` organization. Once the organization is
 public, Debian 13 (`trixie`) and Ubuntu 24.04 (`noble`) users can add the apt
 repository with:
 
 ```bash
 sudo install -d -m 0755 /etc/apt/keyrings
-sudo curl -fsSL https://code.podesta.ai/api/packages/qos/debian/repository.key \
-  -o /etc/apt/keyrings/forgejo-qos.asc
-echo "deb [signed-by=/etc/apt/keyrings/forgejo-qos.asc] https://code.podesta.ai/api/packages/qos/debian noble main" \
-  | sudo tee /etc/apt/sources.list.d/qos.list
+sudo curl -fsSL https://code.podesta.ai/api/packages/tilo/debian/repository.key \
+  -o /etc/apt/keyrings/forgejo-tilo.asc
+echo "deb [signed-by=/etc/apt/keyrings/forgejo-tilo.asc] https://code.podesta.ai/api/packages/tilo/debian noble main" \
+  | sudo tee /etc/apt/sources.list.d/tilo.list
 sudo apt update
-sudo apt install qos-session
+sudo apt install tilo-session
 ```
 
 Use `trixie` instead of `noble` on Debian 13. Fedora 44 users must first
 bootstrap the RPM release key and maintained repo definition from the exact
 `desktop-vX.Y.Z` release they are installing. Forgejo's generated RPM repo
-file does not advertise a qOS key or enable package verification; the release
+file does not advertise a Tilo key or enable package verification; the release
 workflow publishes a repo definition with those settings already present:
-`https://code.podesta.ai/api/packages/qos/rpm/fedora/44.repo` is the upstream
+`https://code.podesta.ai/api/packages/tilo/rpm/fedora/44.repo` is the upstream
 Forgejo-generated endpoint, retained for diagnostics and private-server
 fallbacks only.
 
 ```bash
-QOS_DESKTOP_VERSION=0.1.7
+TILO_DESKTOP_VERSION=0.1.7
 sudo install -d -m 0755 /etc/pki/rpm-gpg
 sudo curl --fail --location \
-  --output /etc/pki/rpm-gpg/qos-rpm-signing-key.asc \
-  "https://code.podesta.ai/qos/qos/releases/download/desktop-v${QOS_DESKTOP_VERSION}/qos-rpm-signing-key.asc"
+  --output /etc/pki/rpm-gpg/tilo-rpm-signing-key.asc \
+  "https://code.podesta.ai/qos/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
 sudo curl --fail --location \
-  --output /etc/yum.repos.d/qos.repo \
-  "https://code.podesta.ai/qos/qos/releases/download/desktop-v${QOS_DESKTOP_VERSION}/qos-fedora-44.repo"
+  --output /etc/yum.repos.d/tilo.repo \
+  "https://code.podesta.ai/qos/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
 ```
 
-`gpgcheck=1` makes DNF/rpm-ostree verify every qOS RPM. Forgejo's native RPM
+`gpgcheck=1` makes DNF/rpm-ostree verify every Tilo RPM. Forgejo's native RPM
 registry's generated `.repo` does not publish `repomd.xml.asc`, so the
 maintained definition uses `repo_gpgcheck=0`; HTTPS protects the unsigned
 metadata and the package signature protects the payload. Compare the release
 key's full fingerprint with the fingerprint published through an independent
-qOS channel before trusting it. No manual repo-file edit is needed on the
+Tilo channel before trusting it. No manual repo-file edit is needed on the
 public path.
 
 On a traditional mutable Fedora system, install from the configured repo with:
 
 ```bash
-sudo dnf install qos-session
+sudo dnf install tilo-session
 ```
 
 On Fedora Atomic desktops such as Silverblue, Kinoite, or an rpm-ostree-based
@@ -127,30 +127,30 @@ derivative, use the same configured repo and layer the package into the next
 deployment instead:
 
 ```bash
-sudo rpm-ostree install qos-session
+sudo rpm-ostree install tilo-session
 ```
 
 Save your work and reboot into the prepared deployment. GDM will continue to
-offer the existing desktop and will also offer qOS in its session menu. The
+offer the existing desktop and will also offer Tilo in its session menu. The
 layering transaction preserves other requested and locally installed packages;
 applications installed system-wide or for your user, including Flatpaks, remain
-installed and discoverable from qOS under **Host Apps**. Select the existing
-desktop in GDM whenever you want to switch back. Removing qOS later uses
-`sudo rpm-ostree uninstall qos-session` and another reboot. Do not use the
+installed and discoverable from Tilo under **Host Apps**. Select the existing
+desktop in GDM whenever you want to switch back. Removing Tilo later uses
+`sudo rpm-ostree uninstall tilo-session` and another reboot. Do not use the
 development subpackage for an ordinary installation.
 
-If a later host or qOS deployment is unhealthy, choose the previous deployment
+If a later host or Tilo deployment is unhealthy, choose the previous deployment
 from the boot menu or run `sudo rpm-ostree rollback`, then reboot. Rollback and
 uninstall change only the immutable deployment/package layer; the existing
 home directory, layered applications, and Flatpak data remain untouched.
 
-When this repository publishes a newer `qos-session`, the normal
+When this repository publishes a newer `tilo-session`, the normal
 `sudo rpm-ostree update` command (an alias for `rpm-ostree upgrade`) resolves
 it into the next deployment together with the host OS update. Users do not
 download or reinstall release RPMs by hand.
 
-If the qOS Forgejo organization is still private, the registry requires
-authenticated package-read access. Public qOS organization/package visibility
+If the Tilo Forgejo organization is still private, the registry requires
+authenticated package-read access. Public Tilo organization/package visibility
 is the preferred release setup: it avoids credentials at install time and lets
 the public repository work with both `dnf` and `rpm-ostree` without any extra
 configuration.
@@ -163,32 +163,32 @@ options in the repo stanza rather than embedding the token in `baseurl`.
 The following fetches the repo definition with a temporary netrc (the token is
 not a command-line argument or shell-history entry), installs it with
 root-only permissions, and asks you to add the two options to the generated
-stanza (the maintained release file already contains the qOS verification
+stanza (the maintained release file already contains the Tilo verification
 settings):
 
 ```bash
-read -r -p 'Forgejo username: ' QOS_FORGEJO_USER
-read -r -s -p 'Forgejo read:package token: ' QOS_FORGEJO_TOKEN
+read -r -p 'Forgejo username: ' TILO_FORGEJO_USER
+read -r -s -p 'Forgejo read:package token: ' TILO_FORGEJO_TOKEN
 printf '\n'
-QOS_NETRC=$(mktemp)
-QOS_REPO=$(mktemp)
-QOS_KEY=$(mktemp)
-trap 'rm -f -- "$QOS_NETRC" "$QOS_REPO" "$QOS_KEY"' EXIT
-chmod 600 "$QOS_NETRC"
+TILO_NETRC=$(mktemp)
+TILO_REPO=$(mktemp)
+TILO_KEY=$(mktemp)
+trap 'rm -f -- "$TILO_NETRC" "$TILO_REPO" "$TILO_KEY"' EXIT
+chmod 600 "$TILO_NETRC"
 printf 'machine code.podesta.ai login %s password %s\n' \
-  "$QOS_FORGEJO_USER" "$QOS_FORGEJO_TOKEN" > "$QOS_NETRC"
-QOS_DESKTOP_VERSION=0.1.7
-curl --fail --location --netrc-file "$QOS_NETRC" \
-  --output "$QOS_REPO" \
-  "https://code.podesta.ai/qos/qos/releases/download/desktop-v${QOS_DESKTOP_VERSION}/qos-fedora-44.repo"
-curl --fail --location --netrc-file "$QOS_NETRC" \
-  --output "$QOS_KEY" \
-  "https://code.podesta.ai/qos/qos/releases/download/desktop-v${QOS_DESKTOP_VERSION}/qos-rpm-signing-key.asc"
-sudo install -o root -g root -m 0600 "$QOS_REPO" /etc/yum.repos.d/qos.repo
-sudo install -o root -g root -m 0644 "$QOS_KEY" \
-  /etc/pki/rpm-gpg/qos-rpm-signing-key.asc
-unset QOS_FORGEJO_USER QOS_FORGEJO_TOKEN
-sudoedit /etc/yum.repos.d/qos.repo
+  "$TILO_FORGEJO_USER" "$TILO_FORGEJO_TOKEN" > "$TILO_NETRC"
+TILO_DESKTOP_VERSION=0.1.7
+curl --fail --location --netrc-file "$TILO_NETRC" \
+  --output "$TILO_REPO" \
+  "https://code.podesta.ai/qos/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
+curl --fail --location --netrc-file "$TILO_NETRC" \
+  --output "$TILO_KEY" \
+  "https://code.podesta.ai/qos/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
+sudo install -o root -g root -m 0600 "$TILO_REPO" /etc/yum.repos.d/tilo.repo
+sudo install -o root -g root -m 0644 "$TILO_KEY" \
+  /etc/pki/rpm-gpg/tilo-rpm-signing-key.asc
+unset TILO_FORGEJO_USER TILO_FORGEJO_TOKEN
+sudoedit /etc/yum.repos.d/tilo.repo
 ```
 
 Inside the repo stanza, add the actual values (not the placeholders) and save:
@@ -198,15 +198,15 @@ username=<Forgejo username>
 password=<PAT with read:package>
 gpgcheck=1
 repo_gpgcheck=0
-gpgkey=file:///etc/pki/rpm-gpg/qos-rpm-signing-key.asc
+gpgkey=file:///etc/pki/rpm-gpg/tilo-rpm-signing-key.asc
 ```
 
 Keep the file mode at `0600`; the token is necessarily stored there so future
 metadata and RPM fetches can authenticate. After saving, use `sudo dnf install
-qos-session` on a mutable Fedora host or `sudo rpm-ostree install qos-session`
+tilo-session` on a mutable Fedora host or `sudo rpm-ostree install tilo-session`
 on Fedora Atomic. Do not put a PAT in this repository or paste it into a
 shared terminal. The Forgejo administrator must enable the package registry,
-grant the user read access to the `qos` organization/packages, and keep the
+grant the user read access to the `tilo` organization/packages, and keep the
 HTTPS reverse proxy's `/api/packages` routes reachable. Without public
 organization visibility or those authenticated settings, an install (and
 therefore a future `rpm-ostree update`) is expected to fail with HTTP 401/403.
@@ -218,18 +218,18 @@ the new key.
 For Arch or Arch Linux ARM, add this repository to `/etc/pacman.conf`:
 
 ```ini
-[qos.stable.code.podesta.ai]
+[tilo.stable.code.podesta.ai]
 SigLevel = Required
-Server = https://code.podesta.ai/api/packages/qos/arch/stable/$arch
+Server = https://code.podesta.ai/api/packages/tilo/arch/stable/$arch
 ```
 
 Import and locally trust the registry key once, then install normally:
 
 ```bash
-curl -fsSL https://code.podesta.ai/api/packages/qos/arch/repository.key -o qos-forgejo.gpg
-sudo pacman-key --add qos-forgejo.gpg
-sudo pacman-key --lsign-key 'qos@noreply.code.podesta.ai'
-sudo pacman -Sy qos-session
+curl -fsSL https://code.podesta.ai/api/packages/tilo/arch/repository.key -o tilo-forgejo.gpg
+sudo pacman-key --add tilo-forgejo.gpg
+sudo pacman-key --lsign-key 'tilo@noreply.code.podesta.ai'
+sudo pacman -Sy tilo-session
 ```
 
 While the organization remains private, use a Forgejo username and personal
@@ -241,12 +241,12 @@ The flake exposes both a package and a module:
 
 ```nix
 {
-  inputs.qos.url = "git+https://code.podesta.ai/qos/qos";
-  outputs = { nixpkgs, qos, ... }: {
+  inputs.tilo.url = "git+https://code.podesta.ai/qos/tilo";
+  outputs = { nixpkgs, tilo, ... }: {
     nixosConfigurations.my-machine = nixpkgs.lib.nixosSystem {
       modules = [
-        qos.nixosModules.qos-session
-        { services.qos-session.enable = true; }
+        tilo.nixosModules.tilo-session
+        { services.tilo-session.enable = true; }
       ];
     };
   };
@@ -255,7 +255,7 @@ The flake exposes both a package and a module:
 
 The module registers the display-manager session, PAM policy, and portal. Using
 the package alone is useful for nested development, but a real login session
-should use the module so `/etc/pam.d/qos-unlock` is activated declaratively.
+should use the module so `/etc/pam.d/tilo-unlock` is activated declaratively.
 Tagged builds also publish an exact Nix store closure as a generic Forgejo
 package for disaster recovery; normal installations should use the flake so
 Nix can build or substitute the package declaratively.
@@ -295,9 +295,9 @@ so dependency resolution, ELF linkage, package metadata, installation, and
 `ldd` verification all exercise the target ABI. The runner must expose Docker
 and allow ordinary Docker create/copy/export/start operations. The deferred
 cross-architecture path additionally needs unprivileged `ptrace`. RPM tag
-publication additionally requires protected `QOS_RPM_SIGNING_KEY_B64` and
-`QOS_RPM_SIGNING_KEY_ID` secrets plus the protected
-`QOS_RPM_SIGNING_FINGERPRINT` variable. The key must be an unencrypted armored
+publication additionally requires protected `TILO_RPM_SIGNING_KEY_B64` and
+`TILO_RPM_SIGNING_KEY_ID` secrets plus the protected
+`TILO_RPM_SIGNING_FINGERPRINT` variable. The key must be an unencrypted armored
 private key because non-interactive `rpmsign` cannot prompt for a passphrase;
 the signing workflow imports it only into a mode-0700 temporary keyring and
 never publishes it. If policy requires a passphrase-protected key, add an

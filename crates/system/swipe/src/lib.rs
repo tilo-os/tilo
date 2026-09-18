@@ -5,7 +5,7 @@
 //! decoder + an optional context LM run on `ExecuTorch`, scored against a
 //! dictionary trie. See [`FutoSwipe`].
 //!
-//! When the crate is built WITHOUT the FUTO static libs (env `QOS_SWIPE_LIB`
+//! When the crate is built WITHOUT the FUTO static libs (env `TILO_SWIPE_LIB`
 //! unset at build time → `cfg(futo)` off), [`available`] returns `false` and
 //! [`FutoSwipe::new`] returns `None`, so callers (the on-screen keyboard)
 //! transparently fall back to their geometric decoder.
@@ -42,7 +42,7 @@ mod imp {
     use std::path::Path;
 
     unsafe extern "C" {
-        fn qos_swipe_create(
+        fn tilo_swipe_create(
             encoder_path: *const c_char,
             decoder_path: *const c_char,
             lm_path: *const c_char,
@@ -51,9 +51,9 @@ mod imp {
             beam_width: i32,
             top_k: i32,
         ) -> *mut c_void;
-        fn qos_swipe_has_decoder(h: *mut c_void) -> i32;
-        fn qos_swipe_has_lm(h: *mut c_void) -> i32;
-        fn qos_swipe_recognize(
+        fn tilo_swipe_has_decoder(h: *mut c_void) -> i32;
+        fn tilo_swipe_has_lm(h: *mut c_void) -> i32;
+        fn tilo_swipe_recognize(
             h: *mut c_void,
             x: *const f32,
             y: *const f32,
@@ -65,7 +65,7 @@ mod imp {
             scores: *mut f32,
             max: i32,
         ) -> i32;
-        fn qos_swipe_predict_next(
+        fn tilo_swipe_predict_next(
             h: *mut c_void,
             context: *const c_char,
             nctx: i32,
@@ -75,7 +75,7 @@ mod imp {
             scores: *mut f32,
             max: i32,
         ) -> i32;
-        fn qos_swipe_destroy(h: *mut c_void);
+        fn tilo_swipe_destroy(h: *mut c_void);
     }
 
     const WORDS_CAP: usize = 8192;
@@ -116,7 +116,7 @@ mod imp {
             let lmv = cstr_opt(&paths.lm_vocab);
             let dict = cstr_opt(&paths.dict_combined);
             let handle = unsafe {
-                qos_swipe_create(
+                tilo_swipe_create(
                     enc.as_ptr(),
                     ptr(&dec),
                     ptr(&lm),
@@ -134,10 +134,10 @@ mod imp {
         }
 
         pub fn has_decoder(&self) -> bool {
-            unsafe { qos_swipe_has_decoder(self.handle) != 0 }
+            unsafe { tilo_swipe_has_decoder(self.handle) != 0 }
         }
         pub fn has_lm(&self) -> bool {
-            unsafe { qos_swipe_has_lm(self.handle) != 0 }
+            unsafe { tilo_swipe_has_lm(self.handle) != 0 }
         }
 
         /// Recognize a swipe. `x`/`y` are normalized to the layout's [0,1]
@@ -151,7 +151,7 @@ mod imp {
             let mut words = vec![0i8 as c_char; WORDS_CAP];
             let mut scores = vec![0f32; MAX_RESULTS];
             let count = unsafe {
-                qos_swipe_recognize(
+                tilo_swipe_recognize(
                     self.handle,
                     x.as_ptr(),
                     y.as_ptr(),
@@ -181,7 +181,7 @@ mod imp {
             let mut words = vec![0i8 as c_char; WORDS_CAP];
             let mut scores = vec![0f32; MAX_RESULTS];
             let count = unsafe {
-                qos_swipe_predict_next(
+                tilo_swipe_predict_next(
                     self.handle,
                     buf.as_ptr() as *const c_char,
                     context.len() as i32,
@@ -198,7 +198,7 @@ mod imp {
 
     impl Drop for FutoSwipe {
         fn drop(&mut self) {
-            unsafe { qos_swipe_destroy(self.handle) }
+            unsafe { tilo_swipe_destroy(self.handle) }
         }
     }
 

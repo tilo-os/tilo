@@ -4,8 +4,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$TiloTrustedOwnerSids = @(
+    'S-1-5-18',
+    'S-1-5-32-544',
+    'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+)
 
-function Assert-qOSTrustedExecutable([string]$Candidate, [string]$Description) {
+function Assert-TiloTrustedExecutable([string]$Candidate, [string]$Description) {
     if (-not [IO.Path]::IsPathFullyQualified($Candidate)) { throw "$Description must be absolute" }
     $Item = Get-Item -LiteralPath $Candidate -Force
     if ($Item.PSIsContainer -or ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
@@ -19,32 +24,48 @@ function Assert-qOSTrustedExecutable([string]$Candidate, [string]$Description) {
             throw "$Description must not come from the checkout or job temporary directory"
         }
     }
-    $Acl = Get-Acl -LiteralPath $Item.FullName
-    if ($Acl.Owner -notmatch '(?i)(SYSTEM|Administrators)$') {
-        throw "$Description must be owned by SYSTEM or Administrators"
-    }
-    $Dangerous = ([Security.AccessControl.FileSystemRights]::Write -bor
-        [Security.AccessControl.FileSystemRights]::Modify -bor
-        [Security.AccessControl.FileSystemRights]::FullControl)
-    foreach ($Rule in $Acl.Access) {
-        if ($Rule.AccessControlType -eq 'Allow' -and ($Rule.FileSystemRights -band $Dangerous) -and
-            $Rule.IdentityReference.Value -match '(?i)(Everyone|Authenticated Users|BUILTIN\\Users|INTERACTIVE)$') {
-            throw "$Description ACL permits an untrusted principal to replace it"
+    $Current = $Item
+    while ($Current) {
+        $Acl = Get-Acl -LiteralPath $Current.FullName
+        $OwnerSid = $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($OwnerSid -notin $TiloTrustedOwnerSids) {
+            throw "$Description and every parent must have a trusted owner"
         }
+        # Directory WriteData may only create an unrelated child. Reject rights
+        # that can replace this component or change its ACL; reject all writes
+        # on the executable itself.
+        $Dangerous = ([Security.AccessControl.FileSystemRights]::Modify -bor
+            [Security.AccessControl.FileSystemRights]::FullControl -bor
+            [Security.AccessControl.FileSystemRights]::Delete -bor
+            [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+            [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+            [Security.AccessControl.FileSystemRights]::TakeOwnership)
+        if ($Current -is [IO.FileInfo]) {
+            $Dangerous = $Dangerous -bor [Security.AccessControl.FileSystemRights]::Write
+        }
+        foreach ($Rule in @($Acl.GetAccessRules(
+                    $true, $true, [Security.Principal.SecurityIdentifier]))) {
+            $TrustedPrincipal = $Rule.IdentityReference.Value -in $TiloTrustedOwnerSids
+            if ($Rule.AccessControlType -eq 'Allow' -and
+                ($Rule.FileSystemRights -band $Dangerous) -and -not $TrustedPrincipal) {
+                throw "$Description or a parent is writable by an untrusted principal"
+            }
+        }
+        $Current = if ($Current -is [IO.FileInfo]) { $Current.Directory } else { $Current.Parent }
     }
     return $Item.FullName
 }
 
 if (-not $env:RUNNER_TEMP -or -not $env:GITHUB_WORKSPACE) { throw "runner paths are required" }
-$Trusted = Assert-qOSTrustedExecutable $Path $Kind
+$Trusted = Assert-TiloTrustedExecutable $Path $Kind
 if ($Kind -eq "signer") {
-    "QOS_WINDOWS_SIGNER=$Trusted"
+    "TILO_WINDOWS_SIGNER=$Trusted"
     exit 0
 }
 if (-not $env:ACTIONS_ID_TOKEN_REQUEST_URL -or -not $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN) {
     throw "Forgejo OIDC request credentials are required"
 }
-$LeaseDirectory = Join-Path $env:RUNNER_TEMP ("qos-imager-windows-" + [Guid]::NewGuid().ToString('N'))
+$LeaseDirectory = Join-Path $env:RUNNER_TEMP ("tilo-imager-windows-" + [Guid]::NewGuid().ToString('N'))
 $Lease = Join-Path $LeaseDirectory "lease.env"
 New-Item -ItemType Directory -Path $LeaseDirectory | Out-Null
 try {
@@ -57,11 +78,15 @@ try {
     }
     $Acl = Get-Acl -LiteralPath $Lease
     if (-not $Acl.AreAccessRulesProtected) { throw "credential lease must disable inherited ACLs" }
-    $CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    if ($Acl.Owner -cne $CurrentIdentity) { throw "credential lease must be owned by the runner identity" }
-    foreach ($Rule in $Acl.Access) {
+    $CurrentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ($Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $CurrentIdentitySid) {
+        throw "credential lease must be owned by the runner identity"
+    }
+    foreach ($Rule in @($Acl.GetAccessRules(
+                $true, $true, [Security.Principal.SecurityIdentifier]))) {
         $Principal = $Rule.IdentityReference.Value
-        $TrustedPrincipal = $Principal -ceq $CurrentIdentity -or $Principal -match '(?i)(SYSTEM|Administrators)$'
+        $TrustedPrincipal = $Principal -ceq $CurrentIdentitySid -or
+            $Principal -in $TiloTrustedOwnerSids
         if ($Rule.AccessControlType -eq 'Allow' -and -not $TrustedPrincipal) {
             throw "credential lease ACL grants another principal access"
         }
@@ -73,11 +98,11 @@ try {
     $Text = [Text.UTF8Encoding]::new($false, $true).GetString($Bytes)
     $Lines = $Text -split "`n"
     if ($Lines[-1] -eq '') { $Lines = $Lines[0..($Lines.Count - 2)] }
-    if ($Lines.Count -ne 1 -or $Lines[0] -notmatch '^QOS_WINDOWS_SIGNER=([^\x00-\x1f\x7f]+)$') {
+    if ($Lines.Count -ne 1 -or $Lines[0] -notmatch '^TILO_WINDOWS_SIGNER=([^\x00-\x1f\x7f]+)$') {
         throw "Windows broker must return exactly one signer path"
     }
-    $Signer = Assert-qOSTrustedExecutable $Matches[1] "Windows signer"
-    "QOS_WINDOWS_SIGNER=$Signer"
+    $Signer = Assert-TiloTrustedExecutable $Matches[1] "Windows signer"
+    "TILO_WINDOWS_SIGNER=$Signer"
 } finally {
     Remove-Item -LiteralPath $Lease -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $LeaseDirectory -Force -ErrorAction SilentlyContinue

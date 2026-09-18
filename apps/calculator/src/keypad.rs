@@ -7,7 +7,7 @@
 //!  * the keypad picks a [`KeypadLayout`] (compact / standard / scientific)
 //!    from its available width, so the pad stays usable from a narrow strip
 //!    up to a wide window; and
-//!  * the history sidebar follows the qOS Adwaita overlay-sidebar pattern: it
+//!  * the history sidebar follows the Tilo Adwaita overlay-sidebar pattern: it
 //!    docks beside the keypad when the window is wide, and collapses to a
 //!    toggle that opens an overlay drawer (drawn over the keypad with a
 //!    dismiss scrim) when the window is too narrow to dock it.

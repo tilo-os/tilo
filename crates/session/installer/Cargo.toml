@@ -10,20 +10,23 @@ name = "installer"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qos-installer"
+name = "tilo-installer"
 path = "src/main.rs"
 
 [dependencies]
 # Mirrors the dep set used by the `ui`-based system apps (greeter /
 # file-explorer): the toolkit plus the trait crates its `Widget` impls
 # reference directly.
-ui = { path = "../../../ui" }
+ui = { path = "../../sdk/ui-core" }
 automerge.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tracing-subscriber.workspace = true
 os-actions = { path = "../../system/os-actions" }
+bounded-command = { path = "../../system/bounded-command" }
+libc.workspace = true
+tilo-power-mgmt = { path = "../../system/power", default-features = false }
 zeroize.workspace = true
 serde_json.workspace = true
 serde.workspace = true

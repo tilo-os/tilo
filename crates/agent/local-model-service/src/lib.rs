@@ -3,7 +3,7 @@
 //! Downloads are restricted to catalog-pinned HTTPS artifacts and resume into
 //! a private staging path. Bytes are hashed and atomically promoted beneath
 //! their SHA-256 identity; only then can a signed runtime extension and model
-//! become eligible for a typed vLLM launch. There is intentionally no generic
+//! become eligible for a typed vLLM launch. There is no generic
 //! command, URL, tag, or package-install API.
 
 #![cfg_attr(
@@ -467,7 +467,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     }
 
     /// Capture the user's explicit confirmation against this exact signed
-    /// release. This is intentionally separate from UI state and survives a
+    /// release. This is separate from UI state and survives a
     /// transient worker restart, while a changed catalog release must be
     /// confirmed again.
     pub fn record_license_acceptance(
@@ -521,7 +521,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
 
     /// Persist a queued runtime start before the background worker is
     /// launched.  Settings can return to its event loop immediately and
-    /// reconstruct honest progress after it is closed or restarted.
+    /// reconstruct progress after it is closed or restarted.
     pub fn mark_starting(&mut self, model_id: &str) -> Result<(), ServiceError> {
         self.update_status(model_id, LocalModelStatus::Starting, None)
     }
@@ -943,6 +943,8 @@ mod tests {
             required_memory_mib: 1,
             required_accelerator_mib: 0,
             context_window: 1,
+            vision: false,
+            face_recognition: false,
         }
     }
 
@@ -986,7 +988,11 @@ mod tests {
             destination: &mut File,
         ) -> Result<u64, ServiceError> {
             self.starts.push(start);
-            let tail = &self.bytes[start as usize..];
+            let start = usize::try_from(start).map_err(|_| ServiceError::PartialTooLarge)?;
+            let tail = self
+                .bytes
+                .get(start..)
+                .ok_or(ServiceError::PartialTooLarge)?;
             destination.write_all(tail)?;
             progress(tail.len() as u64);
             Ok(tail.len() as u64)
@@ -1004,7 +1010,11 @@ mod tests {
             progress: &mut dyn FnMut(u64),
             destination: &mut File,
         ) -> Result<u64, ServiceError> {
-            let tail = &self.bytes[start as usize..];
+            let start = usize::try_from(start).map_err(|_| ServiceError::PartialTooLarge)?;
+            let tail = self
+                .bytes
+                .get(start..)
+                .ok_or(ServiceError::PartialTooLarge)?;
             let split = tail.len().min(2);
             destination.write_all(&tail[..split])?;
             progress(split as u64);
@@ -1105,7 +1115,7 @@ mod tests {
         let mut service = LocalModelService::open(
             dir.path(),
             Transport {
-                bytes: bytes.clone(),
+                bytes,
                 starts: vec![],
             },
             Supervisor {
@@ -1269,7 +1279,7 @@ mod tests {
     #[test]
     fn command_is_argv_and_never_uses_a_mutable_tag() {
         let command = VllmCommand {
-            runtime_image: "registry.example.invalid/qos/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            runtime_image: "registry.example.invalid/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             runtime_kind: RuntimeKind::Cpu,
             args: vec![
                 "serve".into(),

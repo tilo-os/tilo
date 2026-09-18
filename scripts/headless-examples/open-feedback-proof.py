@@ -58,7 +58,7 @@ import time
 from reaper import die_with_parent, track
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-PACKAGE_ID = "dev.qos.word-processor"
+PACKAGE_ID = "dev.tilo.word-processor"
 DISPLAY_NAME = "Word Processor"
 QUERY = "word processor"
 
@@ -131,21 +131,21 @@ class Session:
 
         env = {k: v for k, v in os.environ.items() if k not in SCRUB}
         env.update({
-            "QOS_TEST_CONTROL": self.sock,
-            "QOS_STATE_PATH": str(self.dir / "config" / "state.json"),
+            "TILO_TEST_CONTROL": self.sock,
+            "TILO_STATE_PATH": str(self.dir / "config" / "state.json"),
             "HOME": str(home),
             "XDG_DATA_HOME": str(self.dir / "data"),
             "XDG_CACHE_HOME": str(self.dir / "cache"),
             "XDG_STATE_HOME": str(self.dir / "state"),
             "XDG_CONFIG_HOME": str(self.dir / "config"),
             "XDG_RUNTIME_DIR": str(runtime),
-            "QOS_PEER_KEY_PATH": str(self.dir / "keys" / "peer-key"),
+            "TILO_PEER_KEY_PATH": str(self.dir / "keys" / "peer-key"),
             # Empty, so the app is genuinely absent.
-            "QOS_APPS_DATA_DIR": str(self.apps_dir),
-            "QOS_RUNTIME_BUNDLE_DIR": str(runtime_bundles),
-            "QOS_STORE_CONFIG_DIR": str(store_config),
-            "QOS_STORE_CACHE_DIR": str(self.store_cache),
-            "NIRIOS_HEADLESS_SIZE": "1600x1000",
+            "TILO_APPS_DATA_DIR": str(self.apps_dir),
+            "TILO_RUNTIME_BUNDLE_DIR": str(runtime_bundles),
+            "TILO_STORE_CONFIG_DIR": str(store_config),
+            "TILO_STORE_CACHE_DIR": str(self.store_cache),
+            "TILO_HEADLESS_SIZE": "1600x1000",
             # The host is de_DE; without this the chrome renders in
             # German and every string assertion below is meaningless.
             "LC_ALL": "en_US.UTF-8",
@@ -341,12 +341,12 @@ def main() -> int:
     shell = args.shell or tool("shell")
     example = REPO / "target" / "debug" / "examples" / "serve-test-registry"
     payload = args.payload or (
-        REPO / "target" / "qos-apps-live" / "payloads" / PACKAGE_ID / "bin"
+        REPO / "target" / "tilo-apps-live" / "payloads" / PACKAGE_ID / "bin"
         / "word-processor")
     tools = {}
-    for var, name in (("QOS_CATALOGUE_BIN", "qos-catalogue"),
-                      ("QOS_INSTALL_BIN", "qos-install"),
-                      ("QOS_LAUNCHER_BIN", "qos-launcher")):
+    for var, name in (("TILO_CATALOGUE_BIN", "tilo-catalogue"),
+                      ("TILO_INSTALL_BIN", "tilo-install"),
+                      ("TILO_LAUNCHER_BIN", "tilo-launcher")):
         found = tool(name)
         if found:
             tools[var] = str(found)
@@ -358,7 +358,7 @@ def main() -> int:
         missing.append(f"serve-test-registry ({example})")
     if not payload.exists():
         missing.append(f"word-processor payload ({payload})")
-    for var in ("QOS_CATALOGUE_BIN", "QOS_INSTALL_BIN", "QOS_LAUNCHER_BIN"):
+    for var in ("TILO_CATALOGUE_BIN", "TILO_INSTALL_BIN", "TILO_LAUNCHER_BIN"):
         if var not in tools:
             missing.append(var)
     if missing:
@@ -369,14 +369,14 @@ def main() -> int:
 
     # A stale compositor produces a verdict about code that is not under
     # test, and it produces it silently.
-    src = REPO / "shell" / "src"
+    src = REPO / "crates" / "session" / "shell" / "src"
     newest = max((f.stat().st_mtime for f in src.rglob("*.rs")), default=0)
     if shell.stat().st_mtime < newest:
-        print(f"REFUSING: {shell} predates shell/src. Build first.",
+        print(f"REFUSING: {shell} predates crates/session/shell/src. Build first.",
               file=sys.stderr)
         return 2
 
-    runtime_bundles = pathlib.Path.home() / ".local/share/qos-runtime"
+    runtime_bundles = pathlib.Path.home() / ".local/share/tilo-runtime"
     if not runtime_bundles.exists():
         print(f"FAIL: no runtime bundle store at {runtime_bundles}.",
               file=sys.stderr)

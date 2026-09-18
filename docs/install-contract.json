@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "product": "qOS",
+  "schemaVersion": 2,
+  "product": "Tilo",
   "imager": {
     "hosts": [
       {
@@ -11,7 +11,7 @@
       },
       {
         "os": "Windows 10 or 11",
-        "architectures": ["x86_64"],
+        "architectures": ["x86_64", "aarch64"],
         "downloads": ["setup EXE", "standalone EXE", "portable zip"],
         "packageManager": "WinGet"
       },
@@ -25,7 +25,11 @@
   },
   "completeSystem": {
     "architectures": ["x86_64", "aarch64"],
-    "minimumUsbGiB": 8,
+    "usbCapacity": {
+      "requirement": "expanded-image-size",
+      "catalogField": "image_size",
+      "unit": "bytes"
+    },
     "minimumVmMemoryGiB": 4,
     "minimumVmDiskGiB": 40,
     "alongside": {
@@ -36,14 +40,14 @@
     }
   },
   "desktopSession": [
-    { "distribution": "Ubuntu", "versions": ["24.04"], "architectures": ["amd64", "arm64"], "plannedArchitectures": [], "package": "qos-session" },
-    { "distribution": "Debian", "versions": ["13"], "architectures": ["amd64", "arm64"], "plannedArchitectures": [], "package": "qos-session" },
-    { "distribution": "Fedora", "versions": ["44"], "architectures": ["x86_64", "aarch64"], "plannedArchitectures": [], "package": "qos-session" },
-    { "distribution": "Arch Linux", "versions": ["rolling"], "architectures": ["x86_64", "aarch64"], "plannedArchitectures": [], "package": "qos-session" },
-    { "distribution": "NixOS", "versions": ["flake"], "architectures": ["x86_64-linux", "aarch64-linux"], "plannedArchitectures": [], "package": "qos-session" }
+    { "distribution": "Ubuntu", "versions": ["24.04"], "architectures": ["amd64"], "plannedArchitectures": ["arm64"], "package": "tilo-session" },
+    { "distribution": "Debian", "versions": ["13"], "architectures": ["amd64"], "plannedArchitectures": ["arm64"], "package": "tilo-session" },
+    { "distribution": "Fedora", "versions": ["44"], "architectures": ["x86_64"], "plannedArchitectures": ["aarch64"], "package": "tilo-session" },
+    { "distribution": "Arch Linux", "versions": ["rolling"], "architectures": ["x86_64"], "plannedArchitectures": ["aarch64"], "package": "tilo-session" },
+    { "distribution": "NixOS", "versions": ["flake"], "architectures": ["x86_64-linux"], "plannedArchitectures": ["aarch64-linux"], "package": "tilo-session" }
   ],
   "principles": [
-    "qOS Imager authenticates the selected installer before writing and verifies the medium after writing.",
+    "Tilo Imager authenticates the selected installer before writing and verifies the medium after writing.",
     "The media-writing route carries only secret-free setup choices and does not migrate files or resize an internal disk.",
     "The development guided-import route copies explicitly selected local folders where native durability is supported, preserves originals, and does not authorize synchronization or sharing.",
     "The live installer never resizes an existing filesystem.",

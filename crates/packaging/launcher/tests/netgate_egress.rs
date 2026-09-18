@@ -1,10 +1,9 @@
-//! Packet-level proof of per-host egress filtering, run against a real
-//! `bwrap` sandbox.
+//! Packet-level tests for per-host egress filtering in a `bwrap` sandbox.
 //!
-//! Everything here asserts on **connection outcomes from inside the
+//! These tests assert on **connection outcomes from inside the
 //! sandbox** — bytes that arrived, or a refusal code — never the argv
-//! that built it: an argv assertion proves a string was constructed,
-//! these prove a packet did or did not go anywhere.
+//! that built it: argv only describes the requested command, while these
+//! outcomes show whether a packet could leave the sandbox.
 //!
 //! ## The two kernel properties underneath
 //!
@@ -54,23 +53,23 @@ use launcher::sandbox::NetGateBind;
 
 /// Sandbox-side path of the bind-mounted gate socket. Absent when the
 /// launch has no gate.
-const ENV_SOCKET: &str = "QOS_NETGATE_PROBE_SOCKET";
+const ENV_SOCKET: &str = "TILO_NETGATE_PROBE_SOCKET";
 /// Port of the server the probe should be able to reach.
-const ENV_ALLOWED_PORT: &str = "QOS_NETGATE_PROBE_ALLOWED_PORT";
+const ENV_ALLOWED_PORT: &str = "TILO_NETGATE_PROBE_ALLOWED_PORT";
 /// Port of a second server, for the raw-TCP reachability checks.
-const ENV_OTHER_PORT: &str = "QOS_NETGATE_PROBE_OTHER_PORT";
+const ENV_OTHER_PORT: &str = "TILO_NETGATE_PROBE_OTHER_PORT";
 /// Set when the probe should also exercise the loopback relay.
-const ENV_RELAY: &str = "QOS_NETGATE_PROBE_RELAY";
+const ENV_RELAY: &str = "TILO_NETGATE_PROBE_RELAY";
 
 /// Where the gate socket appears inside the sandbox. Short on purpose:
 /// `sun_path` is 108 bytes.
-const SANDBOX_SOCKET_PATH: &str = "/run/qos-gate.sock";
+const SANDBOX_SOCKET_PATH: &str = "/run/tilo-gate.sock";
 
 /// Loopback port for the relay inside the sandbox.
 const PROBE_RELAY_PORT: u16 = 19050;
 
 /// The name the allowlist is written against in these tests. `localhost`
-/// resolves on every host, so the gate's real resolution step runs.
+/// resolves on every host, so the gate's resolution step runs.
 const ALLOWED_NAME: &str = "localhost";
 
 /// RFC 2606 reserves `.invalid` as never-resolvable, so a refusal for
@@ -171,10 +170,10 @@ fn netns_probe() {
 /// as [`netns_probe`].
 #[test]
 fn proof_probe() {
-    let Ok(socket) = std::env::var("QOS_NETGATE_PROOF_SOCKET") else {
+    let Ok(socket) = std::env::var("TILO_NETGATE_PROOF_SOCKET") else {
         return;
     };
-    let port: u16 = std::env::var("QOS_NETGATE_PROOF_PORT")
+    let port: u16 = std::env::var("TILO_NETGATE_PROOF_PORT")
         .expect("port")
         .parse()
         .expect("parses");
@@ -390,7 +389,7 @@ fn serve(body: &'static str) -> u16 {
 /// `sun_path`'s 108-byte limit.
 fn runtime_scratch_dir() -> PathBuf {
     let dir = PathBuf::from(format!(
-        "/tmp/qos-netgate-{}-{}",
+        "/tmp/tilo-netgate-{}-{}",
         unsafe { libc::getuid() },
         std::process::id()
     ));
@@ -593,8 +592,8 @@ fn an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host
             "--test-threads",
             "1",
         ])
-        .env("QOS_NETGATE_PROOF_SOCKET", SANDBOX_SOCKET_PATH)
-        .env("QOS_NETGATE_PROOF_PORT", host_port.to_string())
+        .env("TILO_NETGATE_PROOF_SOCKET", SANDBOX_SOCKET_PATH)
+        .env("TILO_NETGATE_PROOF_PORT", host_port.to_string())
         .output()
         .expect("spawn bwrap");
 
@@ -871,7 +870,7 @@ fn a_gate_that_cannot_start_refuses_rather_than_sharing_the_network() {
     let policy = EgressPolicy::new(vec![ALLOWED_NAME.to_string()]);
     // `/proc` is not writable, so creating the parent directory fails
     // before any bind is attempted.
-    let impossible = PathBuf::from("/proc/qos-netgate-nope/gate.sock");
+    let impossible = PathBuf::from("/proc/tilo-netgate-nope/gate.sock");
     let err = NetGate::start(&impossible, policy).expect_err("binding here must fail");
 
     let rendered = err.to_string();
@@ -898,7 +897,7 @@ fn a_gate_that_cannot_start_refuses_rather_than_sharing_the_network() {
     );
 }
 
-// Device-local is network: qOS's own services (e.g. the collaboration
+// Device-local is network: Tilo's own services (e.g. the collaboration
 // broker) are reachable without leaving the box, so "no network" must
 // also mean no device-local access. Two routes closed by different
 // mechanisms: raw TCP is closed by the empty namespace itself;
@@ -906,12 +905,12 @@ fn a_gate_that_cannot_start_refuses_rather_than_sharing_the_network() {
 // gate resolves in the host namespace and a name can point anywhere.
 
 /// `IP:PORT` of a service on the host's loopback.
-const ENV_LOCAL_LOOPBACK: &str = "QOS_NETGATE_LOCAL_LOOPBACK";
+const ENV_LOCAL_LOOPBACK: &str = "TILO_NETGATE_LOCAL_LOOPBACK";
 /// `IP:PORT` of the same service on the host's own LAN address, or unset
 /// when the machine has no non-loopback address.
-const ENV_LOCAL_LAN: &str = "QOS_NETGATE_LOCAL_LAN";
+const ENV_LOCAL_LAN: &str = "TILO_NETGATE_LOCAL_LAN";
 /// Name to ask the gate for, when a gate is present.
-const ENV_LOCAL_NAME: &str = "QOS_NETGATE_LOCAL_NAME";
+const ENV_LOCAL_NAME: &str = "TILO_NETGATE_LOCAL_NAME";
 
 /// The in-sandbox half of the device-local tests. Same dispatcher shape as
 /// [`netns_probe`]: a no-op unless the outer test selected it.

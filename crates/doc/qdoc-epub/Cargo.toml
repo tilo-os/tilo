@@ -4,16 +4,11 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "EPUB 3 export for qdoc DocSnapshot documents (qOS)"
+description = "EPUB 3 export for qdoc DocSnapshot documents (Tilo)"
 
 [dependencies]
 qdoc = { path = "../qdoc" }
-# Reuse the HTML export engine for inline/block markup + escaping; we wrap its
-# fragment output in well-formed XHTML.
-qdoc-html = { path = "../qdoc-html" }
-# ZIP container for the EPUB OCF package. Pinned to the version already in the
-# workspace lockfile (qdoc's docx/odt codecs use it) so adding qdoc-epub does not
-# churn the resolve.
+# ZIP container for the EPUB OCF package; shared with qdoc's docx/odt codecs.
 zip.workspace = true
 
 [lints]

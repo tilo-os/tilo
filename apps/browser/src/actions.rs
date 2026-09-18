@@ -6,8 +6,8 @@
 
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
-use qos_actions::{Action, ActionContext, ActionError, ActionRegistry, Doc, ExecutionLocus};
 use serde::{Deserialize, Serialize};
+use tilo_actions::{Action, ActionContext, ActionError, ActionRegistry, Doc, ExecutionLocus};
 
 use crate::library::{Bookmark, Bookmarks};
 use crate::settings::{ADBLOCK_PATH, CLEAR_ON_EXIT_PATH, HOMEPAGE_PATH, SEARCH_ENGINE_PATH};
@@ -94,7 +94,7 @@ fn bookmark_key(url: &str) -> String {
 
 /// Context attached to durable Browser actions in workspace history.
 pub fn history_context(action: &BrowserAction) -> ActionContext {
-    let mut context = ActionContext::for_action("dev.qos.browser", "Browser", action);
+    let mut context = ActionContext::for_action("dev.tilo.browser", "Browser", action);
     let (label, id, kind, resource_label) = match action {
         BrowserAction::AddBookmark { url, title, .. } => (
             "Add bookmark",
@@ -118,7 +118,7 @@ pub fn history_context(action: &BrowserAction) -> ActionContext {
         BrowserAction::SetSearchEngine { .. } => settings_context("Set search engine"),
     };
     context.action_label = label.into();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id,
         kind: kind.into(),
         label: resource_label,

@@ -1,0 +1,123 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-relay"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "Tilo host + relay daemon: authenticated iroh transport for workspace CRDT ops, pins WorkspaceDirectory, store-and-forwards for offline peers."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "tilo_relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-relay"
+path = "src/main.rs"
+
+[[bin]]
+name = "tilo-relay-admin"
+path = "src/admin.rs"
+
+[[bin]]
+name = "tilo-enroll"
+path = "src/enroll.rs"
+
+[[bin]]
+name = "tilo-home-peer-control"
+path = "src/home_peer_control.rs"
+
+# The host / relay daemon.
+#
+# `tilo-relay` is the WAN transport + host tier of the sync/host model:
+# an authenticated iroh endpoint that any of the user's devices dial
+# to publish workspace-CRDT deltas + presence, receives, persists,
+# and fans out to every other connected peer bound to the same
+# workspace. If a target peer is offline the update is buffered on
+# disk under `pending/<peer_id>/` and delivered on next connect.
+#
+# Design axioms:
+# - Same identity model as devices — the relay holds a device
+#   keypair + a signed cert (capability `can_act_as_host`) issued by
+#   the user's root. Every inbound peer must present a valid cert
+#   chaining to the same user identity.
+# - Passive CRDT peer — the relay never *originates* mutations, only
+#   receives, stores, and forwards.
+# - Multi-host by construction — several relays bound to the same
+#   workspace merge like any other automerge peers.
+# - Fully in-process testable — `Relay::start` binds a random-port
+#   iroh endpoint so the integration tests spin up two relays + N
+#   peers without any external service.
+[dependencies]
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../../crates/system/atomic-file" }
+bounded-command = { path = "../../system/bounded-command" }
+launcher = { path = "../../packaging/launcher" }
+install = { path = "../../packaging/install" }
+# Home-peer configuration is one signed filesystem bundle; the relay imports
+# its workspace tickets rather than asking the operator to duplicate ids.
+fs = { path = "../../system/fs" }
+collab-types = { path = "../../collab/collab-types" }
+# Iroh 1.0.x — pinned to the same versions the `crates/system/fs/` crate uses so
+# they share a single build of the transport across the workspace.
+# iroh gives us stable node ids + NAT hole punching + n0-hosted relay
+# fallback out of the box, so the relay is reachable from any device
+# without extra infrastructure. `crates/system/fs/` already depends on iroh-blobs, so
+# unifying on iroh here means one transport stack across CRDT-op fanout
+# and content hydration.
+iroh.workspace = true
+iroh-base.workspace = true
+
+# Identity + workspace directory + cert-chain verification.
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+runtime-identity = { path = "../../runtime/runtime-identity" }
+
+# Workspace CRDT (same version as identity + shell).
+automerge.workspace = true
+
+# Wire encoding — postcard for the framed messages exchanged over
+# the ALPN. Same encoding the identity crate uses so byte layouts
+# stay compatible.
+serde.workspace = true
+serde_bytes.workspace = true
+serde_json.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+
+# Signing / hashing — reused for the connection-level nonce challenge.
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+rand.workspace = true
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305.workspace = true
+blake3.workspace = true
+hex.workspace = true
+uuid.workspace = true
+
+# Runtime + config.
+tokio = { workspace = true, features = ["full"] }
+clap.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+libc.workspace = true
+socket2 = "0.6"
+
+# Observability.
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+# Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
+# outside a systemd session.
+sd-notify.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+pkg = { path = "../../packaging/pkg" }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

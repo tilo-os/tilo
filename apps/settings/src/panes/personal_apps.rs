@@ -155,7 +155,7 @@ impl PersonalAppsPane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
         );
     }
 }
@@ -399,7 +399,7 @@ impl Widget for PersonalAppsPane {
             .into_iter()
             .collect()
     }
-    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         let pending = std::mem::take(&mut self.commit_context_pending)
             || self
                 .composed
@@ -433,14 +433,17 @@ mod tests {
     #[test]
     fn dropdown_change_persists_personal_choice() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("personal_default");
-        let candidates = vec![candidate("dev.qos.a", "pdf"), candidate("dev.qos.b", "pdf")];
+        let candidates = vec![
+            candidate("dev.tilo.a", "pdf"),
+            candidate("dev.tilo.b", "pdf"),
+        ];
         let mut pane = PersonalAppsPane::with_state(candidates, PersonalDefaults::default());
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         doc.put(
             &automerge::ROOT,
             "default_apps.ext.pdf",
-            "dev.qos.b — dev.qos.b",
+            "dev.tilo.b — dev.tilo.b",
         )
         .unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
@@ -449,14 +452,14 @@ mod tests {
                 .handlers
                 .get(&ResourceKind::extension("pdf").unwrap())
                 .map(String::as_str),
-            Some("dev.qos.b")
+            Some("dev.tilo.b")
         );
     }
 
     #[test]
     fn mime_and_scheme_claims_are_exposed_as_personal_defaults() {
         let candidate = AppCandidate {
-            package_id: "dev.qos.browser".into(),
+            package_id: "dev.tilo.browser".into(),
             display_name: "Browser".into(),
             resources: [
                 ResourceKind::mime("text/html").unwrap(),
@@ -470,12 +473,12 @@ mod tests {
         assert_eq!(
             PersonalAppsPane::read_str(&doc, &automerge::ROOT, "default_apps.mime.text/html")
                 .as_deref(),
-            Some("Browser — dev.qos.browser")
+            Some("Browser — dev.tilo.browser")
         );
         assert_eq!(
             PersonalAppsPane::read_str(&doc, &automerge::ROOT, "default_apps.scheme.https")
                 .as_deref(),
-            Some("Browser — dev.qos.browser")
+            Some("Browser — dev.tilo.browser")
         );
     }
 }

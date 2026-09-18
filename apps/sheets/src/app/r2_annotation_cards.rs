@@ -33,9 +33,18 @@ fn annotation_card_rows_clear_each_other_at_every_scale() {
             "the classic seam is the floor"
         );
         assert!((chart.controls_y1 - chart.controls_y0 - ANNOTATION_ACTION_H).abs() < 0.01);
-        assert!(chart.plot_y0 >= chart.controls_y1 + m.s4 - 0.01, "plot clears the band");
-        assert!((chart.plot_y1 - chart.plot_y0 - CHART_PLOT_H).abs() < 0.01, "plot is content-sized");
-        assert!((chart.height - chart.plot_y1 - m.s4).abs() < 0.01, "bottom pad is s4");
+        assert!(
+            chart.plot_y0 >= chart.controls_y1 + m.s4 - 0.01,
+            "plot clears the band"
+        );
+        assert!(
+            (chart.plot_y1 - chart.plot_y0 - CHART_PLOT_H).abs() < 0.01,
+            "plot is content-sized"
+        );
+        assert!(
+            (chart.height - chart.plot_y1 - m.s4).abs() < 0.01,
+            "bottom pad is s4"
+        );
 
         let comment = m.comment_card_rows();
         assert!(
@@ -56,7 +65,10 @@ fn annotation_card_rows_clear_each_other_at_every_scale() {
         // The resolve/reopen target is a full action-height band around its
         // detail line that stops where the action band starts.
         assert!((comment.toggle_y1 - comment.toggle_y0 - ANNOTATION_ACTION_H).abs() < 0.01);
-        assert!(comment.toggle_y1 <= comment.controls_y0 + 0.01, "toggle target never enters the band");
+        assert!(
+            comment.toggle_y1 <= comment.controls_y0 + 0.01,
+            "toggle target never enters the band"
+        );
         assert!(
             comment.toggle_y0 <= comment.detail_top + 0.01
                 && comment.toggle_y1 >= comment.detail_top + m.lh_xs - 0.01,
@@ -65,10 +77,26 @@ fn annotation_card_rows_clear_each_other_at_every_scale() {
 
         if (scale - 1.0).abs() < f32::EPSILON {
             // Classic density: the 1× cards are the sizes they always were.
-            assert!((chart.height - 176.0).abs() < 0.5, "1x chart card {:.2}", chart.height);
-            assert!((comment.height - 178.0).abs() < 0.5, "1x comment card {:.2}", comment.height);
-            assert!((chart.controls_y0 - 26.0).abs() < 0.5, "1x chart band {:.2}", chart.controls_y0);
-            assert!((comment.controls_y0 - 112.0).abs() < 0.5, "1x comment band {:.2}", comment.controls_y0);
+            assert!(
+                (chart.height - 176.0).abs() < 0.5,
+                "1x chart card {:.2}",
+                chart.height
+            );
+            assert!(
+                (comment.height - 178.0).abs() < 0.5,
+                "1x comment card {:.2}",
+                comment.height
+            );
+            assert!(
+                (chart.controls_y0 - 26.0).abs() < 0.5,
+                "1x chart band {:.2}",
+                chart.controls_y0
+            );
+            assert!(
+                (comment.controls_y0 - 112.0).abs() < 0.5,
+                "1x comment band {:.2}",
+                comment.controls_y0
+            );
         } else {
             assert!(chart.height > 176.0, "2x chart card grew with its text");
             assert!(comment.height > 178.0, "2x comment card grew with its text");
@@ -122,7 +150,11 @@ fn painted_annotation_targets_follow_the_measured_rows() {
         })
         .map(|(rect, _)| *rect)
         .collect();
-    assert_eq!(chart_targets.len(), 2, "two chart-only actions were registered");
+    assert_eq!(
+        chart_targets.len(),
+        2,
+        "two chart-only actions were registered"
+    );
     for rect in &chart_targets {
         let label_top = rect.y0 + (rect.height() - m.lh_xs) / 2.0;
         assert!(

@@ -20,6 +20,44 @@ use crate::model::{Annotation, FontEntry, Settings};
 use crate::paint;
 use crate::reader_theme::ReaderPalette;
 
+/// Native event services shared by the reader's retained input widgets.
+///
+/// Keeping this contract at the toolkit boundary prevents each component from
+/// mirroring the complete [`Widget::handle_event`] argument list.
+pub(crate) struct InputEventCtx<'a> {
+    pub event: &'a WindowEvent,
+    pub scale_factor: f64,
+    pub modifiers: Modifiers,
+    pub state: &'a mut AutoCommit,
+    pub root: &'a ObjId,
+    pub node_id: NodeId,
+    pub taffy: &'a TaffyTree<()>,
+    pub handled: &'a mut bool,
+}
+
+impl InputEventCtx<'_> {
+    pub(crate) fn reborrow<'a>(&'a mut self, handled: &'a mut bool) -> InputEventCtx<'a> {
+        InputEventCtx {
+            event: self.event,
+            scale_factor: self.scale_factor,
+            modifiers: self.modifiers,
+            state: self.state,
+            root: self.root,
+            node_id: self.node_id,
+            taffy: self.taffy,
+            handled,
+        }
+    }
+}
+
+/// Paint services shared by the reader's retained input widgets.
+pub(crate) struct InputPaintCtx<'a> {
+    pub scene: &'a mut Scene,
+    pub transform: Affine,
+    pub text: &'a mut TextRenderer,
+    pub theme: &'a Theme,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum NumberField {
     FontScale,
@@ -182,32 +220,21 @@ impl NumberControls {
 
     /// Route an event to controls painted in the current frame and return all
     /// committed values. The app remains responsible only for domain mapping.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
-    ) -> Vec<(NumberField, f64)> {
+    pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> Vec<(NumberField, f64)> {
         let mut changes = Vec::new();
         for control in self.controls.iter_mut().filter(|control| control.active) {
             let mut local_handled = false;
             let mut focus_target = None;
             control.input.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                root,
+                ctx.event,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.root,
                 &mut local_handled,
                 &mut focus_target,
-                node_id,
-                taffy,
+                ctx.node_id,
+                ctx.taffy,
             );
             if focus_target.is_some() {
                 control.input.set_focus(true);
@@ -215,7 +242,7 @@ impl NumberControls {
             if let Some(value) = control.input.take_changed() {
                 changes.push((control.field.clone(), value));
             }
-            *handled |= local_handled;
+            *ctx.handled |= local_handled;
         }
         changes
     }
@@ -266,6 +293,12 @@ struct NoteLayout {
     inner_width: f32,
     excerpt: String,
     input_rect: Rect,
+}
+
+pub(crate) struct NoteView<'a> {
+    pub bounds: Rect,
+    pub anchor_y: Option<f64>,
+    pub annotation: &'a Annotation,
 }
 
 impl Default for NoteComposer {
@@ -389,35 +422,24 @@ impl NoteComposer {
     }
 
     /// Returns a changed text value and whether Enter requested Save.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
-    ) -> (Option<String>, bool) {
+    pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> (Option<String>, bool) {
         if self.id.is_none() {
             return (None, false);
         }
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+        if let WindowEvent::CursorMoved { position, .. } = ctx.event {
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         let mut focus_target = None;
         self.input.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            root,
-            handled,
+            ctx.event,
+            ctx.scale_factor,
+            &ctx.modifiers,
+            ctx.state,
+            ctx.root,
+            ctx.handled,
             &mut focus_target,
-            node_id,
-            taffy,
+            ctx.node_id,
+            ctx.taffy,
         );
         if focus_target.is_some() {
             self.input.set_focus(true);
@@ -626,28 +648,28 @@ mod tests {
         let taffy = TaffyTree::new();
         let modifiers = Modifiers::default();
         let mut handled = false;
-        let (changed, submitted) = composer.handle_event(
-            &key(Key::Character("world".into())),
-            1.0,
+        let (changed, submitted) = composer.handle_event(&mut InputEventCtx {
+            event: &key(Key::Character("world".into())),
+            scale_factor: 1.0,
             modifiers,
-            &mut doc,
-            &root,
-            NodeId::new(0),
-            &taffy,
-            &mut handled,
-        );
+            state: &mut doc,
+            root: &root,
+            node_id: NodeId::new(0),
+            taffy: &taffy,
+            handled: &mut handled,
+        });
         assert_eq!(changed.as_deref(), Some("world"));
         assert!(!submitted);
-        let (_, submitted) = composer.handle_event(
-            &key(Key::Named(NamedKey::Enter)),
-            1.0,
+        let (_, submitted) = composer.handle_event(&mut InputEventCtx {
+            event: &key(Key::Named(NamedKey::Enter)),
+            scale_factor: 1.0,
             modifiers,
-            &mut doc,
-            &root,
-            NodeId::new(0),
-            &taffy,
-            &mut handled,
-        );
+            state: &mut doc,
+            root: &root,
+            node_id: NodeId::new(0),
+            taffy: &taffy,
+            handled: &mut handled,
+        });
         assert!(submitted);
     }
 

@@ -1,5 +1,5 @@
-//! Phase 4: byte-stable `parse → serialize` for documents that carry
-//! inline marks (bold / italic / code / page link). Mirror of
+//! Byte-stable `parse → serialize` for documents that carry inline marks
+//! (bold / italic / code / page link). Mirror of
 //! `markdown_phase3_roundtrip.rs` but pinned on the inline-marker
 //! grammar instead of the block-kind grammar.
 //!

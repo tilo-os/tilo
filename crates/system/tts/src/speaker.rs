@@ -34,10 +34,12 @@ pub enum Priority {
     Important,
 }
 
+#[cfg(unix)]
 impl Priority {
     /// Map to the `ssip` crate's [`ssip_client::Priority`]. Kept here (rather than
     /// a `From` impl on the foreign type) so the rest of the crate never has to
     /// name the foreign enum.
+    #[cfg(unix)]
     pub(crate) fn to_ssip(self) -> ssip_client::Priority {
         use ssip_client::Priority as P;
         match self {
@@ -128,6 +130,7 @@ pub trait Speaker: Send {
     clippy::cast_possible_truncation,
     reason = "clamped to [-100.0, 100.0] just above, well within i8's range"
 )]
+#[cfg(any(unix, test))]
 pub(crate) fn rate_to_ssip(rate: f32) -> i8 {
     if !rate.is_finite() || rate <= 0.0 {
         return 0;
@@ -192,6 +195,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn priority_to_ssip_total() {
         // Just prove every variant maps without panicking.
         for p in [

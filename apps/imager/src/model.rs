@@ -14,23 +14,23 @@ use serde::{Deserialize, Serialize};
 /// Where the bytes to be written come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceKind {
-    /// An arbitrary `.iso` file picked from disk.
+    /// An arbitrary local disk image picked from disk.
     IsoFile,
-    /// A qOS installer/live image (local file or a known release).
-    QosImage,
+    /// A Tilo installer/live image authenticated by the release catalog.
+    TiloImage,
 }
 
 impl SourceKind {
     pub fn tag(&self) -> &'static str {
         match self {
-            SourceKind::IsoFile => "ISO",
-            SourceKind::QosImage => "qOS",
+            SourceKind::IsoFile => "LOCAL",
+            SourceKind::TiloImage => "Tilo",
         }
     }
     pub fn long(&self) -> &'static str {
         match self {
-            SourceKind::IsoFile => "Disk image file",
-            SourceKind::QosImage => "qOS system image",
+            SourceKind::IsoFile => "Local disk image (unverified)",
+            SourceKind::TiloImage => "Tilo system image",
         }
     }
 }
@@ -47,9 +47,9 @@ pub struct Source {
     pub name: String,
     /// Size in bytes (0 when not yet known / not downloaded).
     pub size: u64,
-    /// Volume label or image variant ("qOS 1.0 Live", "Fedora-Workstation"…).
+    /// Volume label or image variant ("Tilo 1.0 Live", "Fedora-Workstation"…).
     pub label: String,
-    /// Whether this source can drive a full qOS install (vs. raw ISO write
+    /// Whether this source can drive a full Tilo install (vs. raw ISO write
     /// only).
     pub installable: bool,
     /// Stable identity of the file selected and reviewed by the user. The
@@ -126,14 +126,22 @@ impl Source {
     }
 }
 
-/// A locally-known qOS release the user can pick without browsing for a
-/// file. The `path` is filled in once it is fetched / located on disk.
+fn generic_hardware_profile() -> String {
+    "generic".into()
+}
+
+/// Authenticated release identity includes both CPU architecture and board.
+/// Matching the host CPU alone does not establish device compatibility.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct QosRelease {
+pub struct TiloRelease {
     pub name: String,
     pub version: String,
     pub size: u64,
     pub channel: String,
+    #[serde(default)]
+    pub architecture: String,
+    #[serde(default = "generic_hardware_profile")]
+    pub hardware_profile: String,
     /// Local path once available; empty means "needs download".
     pub local_path: String,
     /// Immutable release asset URL. Empty only in screenshot/demo fixtures.
@@ -150,17 +158,66 @@ pub struct QosRelease {
     pub image_sha256: String,
 }
 
-impl QosRelease {
+impl TiloRelease {
+    pub fn display_name(&self) -> String {
+        let name = format!("{} {}", self.name, self.version);
+        if self.hardware_profile == "generic" {
+            name
+        } else {
+            format!("{name} ({} only)", self.hardware_profile)
+        }
+    }
+
+    pub fn target_label(&self) -> String {
+        if self.hardware_profile != "generic" {
+            return format!("{} only", self.hardware_profile);
+        }
+        match self.architecture.as_str() {
+            "aarch64" => "Generic ARM64",
+            "x86_64" => "Generic x86-64",
+            _ => "Generic media",
+        }
+        .into()
+    }
+
+    pub fn selection_id(&self) -> String {
+        format!(
+            "{}:{}:{}:{}",
+            self.version, self.architecture, self.hardware_profile, self.image_sha256
+        )
+    }
+
+    pub fn matches_source(&self, source: &Source) -> bool {
+        source.kind == SourceKind::TiloImage
+            && source.name == self.display_name()
+            && (self.image_sha256.is_empty()
+                || source.expected_sha256.as_deref() == Some(self.image_sha256.as_str()))
+    }
+
     pub fn to_source(&self) -> Source {
+        let authenticated = self.image_sha256.len() == 64
+            && self
+                .image_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit());
         Source {
-            kind: SourceKind::QosImage,
+            kind: if authenticated {
+                SourceKind::TiloImage
+            } else {
+                SourceKind::IsoFile
+            },
             path: self.local_path.clone(),
-            name: format!("{} {}", self.name, self.version),
+            name: self.display_name(),
             size: self.size,
-            label: format!("qOS {} ({})", self.version, self.channel),
-            installable: true,
+            label: format!(
+                "Tilo {} ({}) · {}",
+                self.version,
+                self.channel,
+                self.target_label()
+            ),
+            installable: authenticated,
             identity: None,
-            expected_sha256: (!self.image_sha256.is_empty()).then(|| self.image_sha256.clone()),
+            expected_sha256: authenticated.then(|| self.image_sha256.clone()),
         }
     }
 }
@@ -263,7 +320,7 @@ pub struct TargetDrive {
     pub tran: Option<String>,
     pub removable: bool,
     /// `true` for the root/system disk. The media creator never accepts it;
-    /// internal installation belongs to the booted qOS installer.
+    /// internal installation belongs to the booted Tilo installer.
     pub is_system: bool,
     pub partitions: Vec<TargetPartition>,
 }
@@ -339,7 +396,7 @@ pub enum Action {
     /// Raw `dd`-style copy of an image onto a drive, then verify. The plain
     /// "write this image to this drive" case (a USB stick or SD card).
     Flash,
-    /// Full qOS install onto the target, driven by an [`InstallProfile`] — the
+    /// Full Tilo install onto the target, driven by an [`InstallProfile`] — the
     /// pre-configuration the Customize step collects is baked into the media.
     Install,
 }
@@ -355,7 +412,7 @@ impl Action {
     pub fn title(&self) -> &'static str {
         match self {
             Action::Flash => "Write image",
-            Action::Install => "Install qOS",
+            Action::Install => "Install Tilo",
         }
     }
     /// The imperative verb for the primary button and the step caption —
@@ -397,7 +454,7 @@ impl Action {
 /// * **Done** is the terminal outcome (verified / failed) with a fresh-start
 ///   affordance.
 ///
-/// Customize is skipped for a plain ISO (only a qOS image carries a profile),
+/// Customize is skipped for a plain ISO (only a Tilo image carries a profile),
 /// but it always occupies a station in the indicator so the flow reads the
 /// same length every time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -536,45 +593,43 @@ impl InstallMode {
     }
 }
 
-/// Disk layout strategy for an install.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DiskLayout {
-    /// Single root partition filling the device.
-    WholeDisk,
-    /// Separate /home for data that survives reinstalls.
-    SeparateHome,
-    /// Btrfs subvolumes (qOS default for snapshots).
-    BtrfsSubvols,
+/// Filesystem used for the installed system.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Filesystem {
+    #[serde(alias = "BtrfsSubvols")]
+    #[default]
+    Btrfs,
+    #[serde(alias = "WholeDisk", alias = "SeparateHome")]
+    Ext4,
+    Xfs,
 }
 
-impl DiskLayout {
+impl Filesystem {
     pub fn key(&self) -> &'static str {
         match self {
-            DiskLayout::WholeDisk => "whole",
-            DiskLayout::SeparateHome => "home",
-            DiskLayout::BtrfsSubvols => "btrfs",
+            Self::Btrfs => "btrfs",
+            Self::Ext4 => "ext4",
+            Self::Xfs => "xfs",
         }
     }
     pub fn label(&self) -> &'static str {
         match self {
-            DiskLayout::WholeDisk => "Whole disk (single root)",
-            DiskLayout::SeparateHome => "Separate /home",
-            DiskLayout::BtrfsSubvols => "Btrfs subvolumes",
+            Self::Btrfs => "Btrfs — recommended",
+            Self::Ext4 => "Ext4",
+            Self::Xfs => "XFS",
         }
     }
-    pub fn from_key(k: &str) -> DiskLayout {
+    pub fn from_key(k: &str) -> Option<Self> {
         match k {
-            "home" => DiskLayout::SeparateHome,
-            "btrfs" => DiskLayout::BtrfsSubvols,
-            _ => DiskLayout::WholeDisk,
+            "btrfs" => Some(Self::Btrfs),
+            "ext4" | "whole" | "home" => Some(Self::Ext4),
+            "xfs" => Some(Self::Xfs),
+            _ => None,
         }
     }
-    pub fn all() -> [DiskLayout; 3] {
-        [
-            DiskLayout::WholeDisk,
-            DiskLayout::SeparateHome,
-            DiskLayout::BtrfsSubvols,
-        ]
+    pub fn all() -> [Self; 3] {
+        [Self::Btrfs, Self::Ext4, Self::Xfs]
     }
 }
 
@@ -593,7 +648,7 @@ pub struct UserAccount {
 impl Default for UserAccount {
     fn default() -> Self {
         Self {
-            full_name: "qOS User".into(),
+            full_name: "Tilo User".into(),
             username: "quser".into(),
             password: String::new(),
             is_admin: true,
@@ -613,7 +668,8 @@ pub struct InstallProfile {
     pub locale: String,
     pub keyboard: String,
     pub timezone: String,
-    pub layout: DiskLayout,
+    #[serde(default, alias = "layout")]
+    pub filesystem: Filesystem,
     pub encrypt: bool,
     /// Passphrase for full-disk encryption (only meaningful when `encrypt`).
     pub encryption_passphrase: String,
@@ -625,12 +681,12 @@ impl Default for InstallProfile {
     fn default() -> Self {
         Self {
             mode: InstallMode::Live,
-            hostname: "qos".into(),
+            hostname: "tilo".into(),
             user: UserAccount::default(),
             locale: "en_US.UTF-8".into(),
             keyboard: "us".into(),
             timezone: "UTC".into(),
-            layout: DiskLayout::BtrfsSubvols,
+            filesystem: Filesystem::Btrfs,
             encrypt: false,
             encryption_passphrase: String::new(),
             persist_mb: 4096,
@@ -696,7 +752,7 @@ impl InstallProfile {
                 | "chrony"
                 | "tss"
                 | "greetd"
-                | "qos"
+                | "tilo"
         );
         if username_bytes.is_empty()
             || username_bytes.len() > 32
@@ -736,7 +792,7 @@ impl InstallProfile {
         }
 
         if !INSTALLER_KEYBOARDS.contains(&self.keyboard.trim()) {
-            return Err("Keyboard layout is not supported by the qOS installer.".into());
+            return Err("Keyboard layout is not supported by the Tilo installer.".into());
         }
 
         let timezone = self.timezone.trim();
@@ -753,7 +809,7 @@ impl InstallProfile {
         Ok(())
     }
 
-    /// Secret-free configuration embedded into qOS installation media.
+    /// Secret-free configuration embedded into Tilo installation media.
     ///
     /// Destructive choices and credentials deliberately do not cross the
     /// host/target boundary. The target installer consumes these validated
@@ -777,10 +833,6 @@ impl InstallProfile {
             filesystem: &'static str,
         }
 
-        let filesystem = match self.layout {
-            DiskLayout::BtrfsSubvols => "btrfs",
-            DiskLayout::SeparateHome | DiskLayout::WholeDisk => "ext4",
-        };
         serde_json::to_vec(&MediaProfile {
             schema: 1,
             hostname: self.hostname.trim(),
@@ -789,7 +841,7 @@ impl InstallProfile {
             locale: self.locale.trim(),
             keyboard: self.keyboard.trim(),
             timezone: self.timezone.trim(),
-            filesystem,
+            filesystem: self.filesystem.key(),
         })
     }
 
@@ -797,7 +849,7 @@ impl InstallProfile {
     pub fn sample_workstation() -> Self {
         InstallProfile {
             mode: InstallMode::DiskInstall,
-            hostname: "qos-workstation".into(),
+            hostname: "tilo-workstation".into(),
             user: UserAccount {
                 full_name: "Quinten".into(),
                 username: "quinten".into(),
@@ -808,14 +860,14 @@ impl InstallProfile {
             locale: "en_US.UTF-8".into(),
             keyboard: "us".into(),
             timezone: "Europe/Amsterdam".into(),
-            layout: DiskLayout::BtrfsSubvols,
+            filesystem: Filesystem::Btrfs,
             encrypt: true,
             encryption_passphrase: "•••••••••".into(),
             persist_mb: 0,
         }
     }
 
-    /// Render the exact secret-free JSON embedded into qOS media. The preview
+    /// Render the exact secret-free JSON embedded into Tilo media. The preview
     /// excludes host paths, target devices, passwords, disk selection, and
     /// destructive confirmation.
     pub fn to_headless_config(
@@ -849,7 +901,7 @@ pub enum JobPhase {
 /// A persisted active phase cannot prove that a restarted UI still supervises
 /// the privileged writer which produced it. Treat that state as unknown and
 /// potentially incomplete until the user performs a fresh review.
-pub const WRITE_SUPERVISION_LOST: &str = "qOS Imager restarted before the previous write reported completion. Its outcome is unknown and the drive may be incomplete. Keep it connected until any writer activity stops, then rescan and review it before retrying.";
+pub const WRITE_SUPERVISION_LOST: &str = "Tilo Imager restarted before the previous write reported completion. Its outcome is unknown and the drive may be incomplete. Keep it connected until any writer activity stops, then rescan and review it before retrying.";
 
 impl JobPhase {
     pub fn key(&self) -> &'static str {
@@ -1017,41 +1069,45 @@ pub fn sample_targets() -> Vec<TargetDrive> {
     ]
 }
 
-/// Known qOS releases offered without a file browse.
-pub fn sample_releases() -> Vec<QosRelease> {
+/// Known Tilo releases offered without a file browse.
+pub fn sample_releases() -> Vec<TiloRelease> {
     vec![
-        QosRelease {
-            name: "qOS".into(),
+        TiloRelease {
+            name: "Tilo".into(),
             version: "1.0".into(),
             size: 2_415_919_104,
             channel: "stable".into(),
-            local_path: "/var/lib/qos/images/qos-1.0-x86_64.iso".into(),
+            architecture: "x86_64".into(),
+            hardware_profile: "generic".into(),
+            local_path: "/var/lib/tilo/images/tilo-1.0-x86_64.iso".into(),
             url: String::new(),
             archive_sha256: String::new(),
             archive_size: 0,
-            image_sha256: String::new(),
+            image_sha256: "1111111111111111111111111111111111111111111111111111111111111111".into(),
         },
-        QosRelease {
-            name: "qOS".into(),
+        TiloRelease {
+            name: "Tilo".into(),
             version: "1.1-rc2".into(),
             size: 2_499_805_184,
             channel: "testing".into(),
+            architecture: "x86_64".into(),
+            hardware_profile: "generic".into(),
             local_path: String::new(),
             url: String::new(),
             archive_sha256: String::new(),
             archive_size: 0,
-            image_sha256: String::new(),
+            image_sha256: "2222222222222222222222222222222222222222222222222222222222222222".into(),
         },
     ]
 }
 
-/// The source pre-selected for `--shots`: a qOS 1.0 stable image.
+/// The source pre-selected for `--shots`: a Tilo 1.0 stable image.
 pub fn sample_source() -> Source {
     // `sample_releases()` always returns at least one entry; the fallback
     // below only matters if that ever changes.
     sample_releases().first().map_or_else(
         || Source {
-            kind: SourceKind::QosImage,
+            kind: SourceKind::TiloImage,
             path: String::new(),
             name: String::new(),
             size: 0,
@@ -1060,7 +1116,7 @@ pub fn sample_source() -> Source {
             identity: None,
             expected_sha256: None,
         },
-        QosRelease::to_source,
+        TiloRelease::to_source,
     )
 }
 
@@ -1128,6 +1184,40 @@ pub fn fmt_rate(bps: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn source_identity_tracks_the_file_across_handles_and_renames() {
+        use super::SourceIdentity;
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original.img");
+        let renamed = directory.path().join("renamed.img");
+        std::fs::write(&original, b"same bytes").unwrap();
+        let file = std::fs::File::open(&original).unwrap();
+        let identity = SourceIdentity::from_file(&file)
+            .expect("read native file identity")
+            .expect("native file identity");
+        assert_eq!(
+            SourceIdentity::from_file(&file.try_clone().unwrap())
+                .expect("read cloned file identity"),
+            Some(identity)
+        );
+        std::fs::rename(&original, &renamed).unwrap();
+        std::fs::write(&original, b"same bytes").unwrap();
+        assert_eq!(
+            SourceIdentity::from_file(&file).expect("read file identity"),
+            Some(identity)
+        );
+        assert_eq!(
+            SourceIdentity::from_file(&std::fs::File::open(&renamed).unwrap())
+                .expect("read renamed file identity"),
+            Some(identity)
+        );
+        let replacement = SourceIdentity::from_file(&std::fs::File::open(&original).unwrap())
+            .expect("read replacement file identity")
+            .expect("replacement file identity");
+        assert_ne!(replacement, identity);
+    }
+
     use super::*;
 
     #[cfg(any(unix, target_os = "windows"))]
@@ -1171,11 +1261,21 @@ mod tests {
     }
 
     #[test]
-    fn sample_source_is_installable_qos() {
+    fn sample_source_is_installable_tilo() {
         let s = sample_source();
-        assert_eq!(s.kind, SourceKind::QosImage);
+        assert_eq!(s.kind, SourceKind::TiloImage);
         assert!(s.installable);
         assert!(s.size > 0);
+    }
+
+    #[test]
+    fn release_without_authenticated_image_digest_fails_closed() {
+        let mut release = sample_releases().remove(0);
+        release.image_sha256.clear();
+        let source = release.to_source();
+        assert_eq!(source.kind, SourceKind::IsoFile);
+        assert!(!source.installable);
+        assert!(source.expected_sha256.is_none());
     }
 
     #[test]
@@ -1185,13 +1285,44 @@ mod tests {
         let tgt = sample_targets()[1].clone();
         let cfg = prof.to_headless_config(Some(&src), Some(&tgt));
         assert!(cfg.contains("\"schema\": 1"));
-        assert!(cfg.contains("\"hostname\": \"qos-workstation\""));
+        assert!(cfg.contains("\"hostname\": \"tilo-workstation\""));
         assert!(cfg.contains("\"username\": \"quinten\""));
         assert!(!cfg.contains(&src.path));
         assert!(!cfg.contains(&tgt.dev_path()));
         assert!(!cfg.contains("password"));
         assert!(!cfg.contains("passphrase"));
         assert!(!cfg.contains(&prof.user.password) || prof.user.password.contains('•'));
+    }
+
+    #[test]
+    fn every_filesystem_serializes_to_the_installer_contract() {
+        for filesystem in Filesystem::all() {
+            let profile = InstallProfile {
+                filesystem,
+                ..InstallProfile::default()
+            };
+            let value: serde_json::Value =
+                serde_json::from_slice(&profile.to_media_profile_json().unwrap()).unwrap();
+            assert_eq!(value["filesystem"], filesystem.key());
+        }
+    }
+
+    #[test]
+    fn legacy_layout_profile_migrates_to_typed_filesystem() {
+        let value = serde_json::json!({
+            "mode": "Live",
+            "hostname": "tilo",
+            "user": UserAccount::default(),
+            "locale": "en_US.UTF-8",
+            "keyboard": "us",
+            "timezone": "UTC",
+            "layout": "WholeDisk",
+            "encrypt": false,
+            "encryption_passphrase": "",
+            "persist_mb": 4096
+        });
+        let profile: InstallProfile = serde_json::from_value(value).unwrap();
+        assert_eq!(profile.filesystem, Filesystem::Ext4);
     }
 
     #[test]
@@ -1253,7 +1384,7 @@ mod tests {
         let back: InstallProfile = serde_json::from_str(&json).unwrap();
         assert_eq!(back.hostname, prof.hostname);
         assert_eq!(back.encrypt, prof.encrypt);
-        assert_eq!(back.layout, prof.layout);
+        assert_eq!(back.filesystem, prof.filesystem);
     }
 
     #[test]

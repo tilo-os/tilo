@@ -1,12 +1,11 @@
-//! qOS **power management** — suspend-on-idle, lid/power-key handling,
+//! Tilo **power management** — suspend-on-idle, lid/power-key handling,
 //! suspend inhibitors, and battery thresholds, built on `systemd-logind` and
 //! `UPower` over D-Bus.
 //!
 //! # Shape
 //!
-//! The crate is split into a **pure policy core** and a **real D-Bus glue**,
-//! so every decision is unit-testable without a bus and the actuator stays
-//! thin and honest:
+//! The crate is split into a **pure policy core** and **D-Bus integration**,
+//! so every decision is unit-testable without a bus:
 //!
 //! * [`policy`] — the [`PowerPolicy`] and the lid / power-key decisions.
 //! * [`battery`] — the [`BatteryMonitor`] threshold state machine
@@ -15,7 +14,7 @@
 //!   API the shell and apps hold while media plays / a task runs.
 //! * [`config`] — reading the policy from the shared `settings.json` the
 //!   Settings pane writes.
-//! * [`logind`] / [`upower`] — the real `zbus` proxies (suspend, inhibit
+//! * [`logind`] / [`upower`] — the `zbus` proxies (suspend, inhibit
 //!   locks, battery + lid reads, sleep signals).
 //! * [`sysfs`] — a synchronous, bus-free battery read for callers (the
 //!   compositor's status indicator) that need a number on a plain
@@ -30,7 +29,7 @@
 //! The compositor's idle state machine (`shell::compositor::idle`) grows a
 //! *suspend* threshold and emits a suspend transition, which the compositor
 //! loop turns into a [`bridge::PowerCommand::Suspend`] — gated by
-//! [`InhibitRegistry::is_inhibited`]. The service issues the real
+//! [`InhibitRegistry::is_inhibited`]. The service issues
 //! `logind.Suspend`, mirrors the registry into a logind `idle:sleep` lock,
 //! watches the battery, and reacts to the lid.
 

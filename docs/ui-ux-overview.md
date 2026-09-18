@@ -1,4 +1,4 @@
-# qOS UI/UX release ledger
+# Tilo UI/UX release ledger
 
 Status: active implementation ledger, updated 2026-09-05.
 
@@ -43,7 +43,7 @@ to infer present product behaviour.
 - Settings category chrome uses theme-driven vector icons instead of optional
   private-use font glyphs, so its navigation remains legible in deterministic
   rendering and minimal installations.
-- Chat has exactly two contextual destinations: the active qOS Workspace and a
+- Chat has exactly two contextual destinations: the active Tilo Workspace and a
   system Inbox that groups cross-workspace messages by their source. Chat no
   longer creates a second, contradictory kind of "workspace".
 - Git Client, Notes, Monitor and Maps expose their primary controls through the
@@ -67,7 +67,7 @@ to infer present product behaviour.
 
 ## Capability honesty
 
-- Remote Desktop offers SSH, VNC, and qOS device connections. qOS sessions use
+- Remote Desktop offers SSH, VNC, and Tilo device connections. Tilo sessions use
   the shell's authenticated exact-target device route, stay waiting until the
   target shares a workspace surface, and fail closed on unavailable relays,
   denial, revocation, or route loss. Existing RDP profiles remain
@@ -97,10 +97,14 @@ acceptance record.
 1. **Accessibility acceptance.** Core journeys still require recorded
    screen-reader, 200% scale and high-contrast acceptance evidence on the
    supported desktop stack. The installed-image VM now fails unless an external
-   AT-SPI client can read the compositor-owned OOBE, desktop and protected lock
-   screen, in addition to the deeper Files tree smoke. Monolithic custom-painted
-   apps are being converted to complete semantic/action trees app by app; a
-   committed gate is not a recorded successful external run.
+   AT-SPI client can read and drive the compositor-owned OOBE, desktop and
+   protected lock screen. It also launches the signed installed Files and
+   Settings payloads, finds them through the real AT-SPI bus, verifies their
+   named roots and meaningful controls, invokes a safe action, and observes the
+   resulting tree state. That executable evidence does not substitute for a
+   recorded screen-reader, 200% scale, high-contrast, hardware, service, or
+   full product-journey acceptance run; monolithic custom-painted apps remain
+   on the app-by-app semantic/action conversion track.
 2. **Localisation.** Public shell and app strings need Fluent ownership and
    expansion-safe layouts. English literals are not a release-ready fallback.
 3. **Standard-app journey acceptance.** The visible-control audit is complete,
@@ -122,7 +126,7 @@ acceptance record.
   rejected, including operations delivered after an offline period.
 - Revocation is not retroactive deletion. Data already downloaded to another
   device cannot be clawed back, and the UI says so plainly.
-- qOS does not add a second encryption/governance stack for this. Existing
+- Tilo does not add a second encryption/governance stack for this. Existing
   signed workspace authority remains the source of truth; future content-key
   rotation is a separate confidentiality feature, not a prerequisite for
   correct membership enforcement.
@@ -143,9 +147,9 @@ acceptance record.
 
 ## Source documents
 
-- Product direction: `~/Development/quickdesktop-planning/`.
-- Interaction and component rules: [`ui/HIG.md`](../ui/HIG.md).
+- Product direction: [`docs/product.md`](product.md).
+- Interaction and component rules: [`crates/sdk/ui-core/HIG.md`](../crates/sdk/ui-core/HIG.md).
 - Shell keyboard/containment map:
   [`docs/shell-navigation-keyboard-map.md`](shell-navigation-keyboard-map.md).
 - Current executable UI evidence: shell `shots` scenarios and
-  `shell/tests/e2e_shell_flows.rs`.
+  `crates/session/shell/tests/e2e_shell_flows.rs`.

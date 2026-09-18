@@ -1,0 +1,57 @@
+# syntax=docker/dockerfile:1.7
+# Native libvirt RPMs with upstream tests enabled. ARM's protected UEFI
+# variable-store configuration needs a newer libvirt than the Fedora snapshot.
+# Build/pin the buildroot target first; the package target can then run offline
+# with LIBVIRT_BUILDROOT_REF set to that immutable native image.
+ARG BASE_REF
+ARG LIBVIRT_BUILDROOT_REF=libvirt-buildroot
+FROM ${BASE_REF} AS libvirt-source
+COPY os/external-assets/github-assets.tsv /tmp/external-assets.tsv
+RUN --mount=type=bind,from=github-assets,source=/,target=/tilo-assets,ro \
+    set -eu; \
+    cd /tilo-assets; \
+    awk -F '\t' '$2 == "libvirt-12.7.0.tar.xz" { print $1 "  " $2; found++ } END { if (found != 1) exit 1 }' \
+      /tmp/external-assets.tsv > /tmp/libvirt.sha256; \
+    sha256sum --check --strict /tmp/libvirt.sha256; \
+    install -D -m 0644 libvirt-12.7.0.tar.xz /work/rpmbuild/SOURCES/libvirt-12.7.0.tar.xz; \
+    mkdir -p /work/rpmbuild/SPECS; \
+    tar -xOf libvirt-12.7.0.tar.xz libvirt-12.7.0/libvirt.spec > /work/rpmbuild/SPECS/libvirt.spec; \
+    install -D -m 0644 /tmp/libvirt.sha256 /work/source.sha256
+
+FROM libvirt-source AS libvirt-buildroot
+RUN dnf install -y dnf5-plugins rpm-build createrepo_c glibc-langpack-en \
+ && dnf builddep -y /work/rpmbuild/SPECS/libvirt.spec \
+ && install -d /usr/lib/tilo \
+ && rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' \
+      | LC_ALL=C sort > /usr/lib/tilo/libvirt-buildroot-packages.txt \
+ && dnf clean all
+
+FROM ${LIBVIRT_BUILDROOT_REF} AS libvirt-build
+COPY --from=libvirt-source /work/rpmbuild/SOURCES/ /work/rpmbuild/SOURCES/
+COPY --from=libvirt-source /work/rpmbuild/SPECS/ /work/rpmbuild/SPECS/
+COPY --from=libvirt-source /work/source.sha256 /work/source.sha256
+ARG BUILD_JOBS=2
+RUN set -eu; \
+    case "$BUILD_JOBS" in ''|*[!0-9]*) echo 'BUILD_JOBS must be positive' >&2; exit 1;; esac; \
+    test "$BUILD_JOBS" -gt 0; \
+    native_arch=$(uname -m); \
+    case "$native_arch" in aarch64|x86_64) ;; *) echo 'Unsupported native build architecture' >&2; exit 1;; esac; \
+    locale -a | grep -qi '^en_US\.utf8$'; \
+    test ! -e /work/rpmbuild/RPMS; \
+    test ! -e /repo; \
+    rpmbuild -ba --define '_topdir /work/rpmbuild' \
+      --define "_smp_mflags -j$BUILD_JOBS" --define "_smp_build_ncpus $BUILD_JOBS" \
+      /work/rpmbuild/SPECS/libvirt.spec; \
+    mkdir -p /repo; \
+    find /work/rpmbuild/RPMS -name '*.rpm' -exec cp -t /repo {} +; \
+    test -n "$(find /repo -name "libvirt-libs-*.$native_arch.rpm" -print -quit)"; \
+    rpm -K /repo/*.rpm; \
+    createrepo_c --quiet /repo; \
+    cp /work/source.sha256 /repo/tilo-libvirt-source.sha256; \
+    cp /work/rpmbuild/SPECS/libvirt.spec /repo/tilo-libvirt-upstream.spec; \
+    rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE} %{ARCH}\n' /repo/*.rpm \
+      | LC_ALL=C sort > /repo/tilo-libvirt-packages.txt; \
+    rm -rf /work/rpmbuild/BUILD
+
+FROM scratch
+COPY --from=libvirt-build /repo /repo

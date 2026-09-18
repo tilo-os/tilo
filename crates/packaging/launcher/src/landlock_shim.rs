@@ -13,7 +13,7 @@
 //! its own binary), with a hidden `__sandbox-exec` first argument. The
 //! re-entered launcher parses the argv following the token, builds a
 //! Landlock ruleset against the *sandbox-side* paths, calls
-//! `restrict_self()`, then `execvp`s the real app.
+//! `restrict_self()`, then `execvp`s the target app.
 //!
 //! qpkg applications require this layer.  An unsupported kernel, a partial
 //! ABI, or ruleset construction failure refuses the launch instead of quietly
@@ -58,7 +58,7 @@ pub struct ShimArgs {
     /// Connected broker descriptors intentionally handed to the app. Every
     /// other descriptor above stderr is closed before the entrypoint executes.
     pub keep_fds: Vec<i32>,
-    /// The real app argv to `execvp` after restricting.
+    /// The app argv passed to `execvp` after restricting.
     pub command: Vec<String>,
 }
 
@@ -226,7 +226,7 @@ fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, LandlockBuil
             }
             Err(e) => {
                 eprintln!(
-                    "qos-sandbox-exec: skipping rule for {} (open failed: {e})",
+                    "tilo-sandbox-exec: skipping rule for {} (open failed: {e})",
                     rule.path.display()
                 );
             }
@@ -244,18 +244,18 @@ pub fn apply(args: &ShimArgs) -> LandlockOutcome {
     }
     match build_and_restrict(args) {
         Ok(status) => {
-            eprintln!("qos-sandbox-exec: Landlock restriction status: {status:?}");
+            eprintln!("tilo-sandbox-exec: Landlock restriction status: {status:?}");
             outcome_from_status(&status.ruleset)
         }
         Err(e) => {
-            eprintln!("qos-sandbox-exec: failed to build/apply ruleset: {e}");
+            eprintln!("tilo-sandbox-exec: failed to build/apply ruleset: {e}");
             LandlockOutcome::Errored
         }
     }
 }
 
 /// Close every inherited descriptor except stdin/out/err and the explicitly
-/// connected service descriptors. `close_range` is part of the qOS kernel
+/// connected service descriptors. `close_range` is part of the Tilo kernel
 /// contract; inability to close ambient descriptors refuses the launch.
 fn close_ambient_fds(keep: &[i32]) -> std::io::Result<()> {
     for (first, last) in ambient_fd_close_ranges(keep)? {
@@ -333,25 +333,25 @@ fn spawn_relay(gate: &std::path::Path, port: u16) {
     match pid {
         -1 => {
             let err = std::io::Error::last_os_error();
-            eprintln!("qos-sandbox-exec: could not fork the egress relay: {err}");
+            eprintln!("tilo-sandbox-exec: could not fork the egress relay: {err}");
         }
         0 => {
             // Child: serve until the sandbox goes away.
             if let Err(e) = crate::netgate::run_relay(gate, port) {
-                eprintln!("qos-sandbox-exec: egress relay stopped: {e}");
+                eprintln!("tilo-sandbox-exec: egress relay stopped: {e}");
             }
             std::process::exit(0);
         }
         _ => {
             eprintln!(
-                "qos-sandbox-exec: egress relay on 127.0.0.1:{port} → {}",
+                "tilo-sandbox-exec: egress relay on 127.0.0.1:{port} → {}",
                 gate.display()
             );
         }
     }
 }
 
-/// Entry point for `qos-launcher __sandbox-exec ...`. Diverges:
+/// Entry point for `tilo-launcher __sandbox-exec ...`. Diverges:
 /// either `execvp`s the real command or exits non-zero.
 ///
 /// `args` is the slice AFTER the subcommand token. Never returns: diverges
@@ -367,7 +367,7 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
     let parsed = match ShimArgs::parse(args) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("qos-sandbox-exec: {e}");
+            eprintln!("tilo-sandbox-exec: {e}");
             std::process::exit(2);
         }
     };
@@ -380,7 +380,7 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
 
     let outcome = apply(&parsed);
     eprintln!(
-        "qos-sandbox-exec: {} ({} ro, {} rw, net_restricted={}, gate_port={:?})",
+        "tilo-sandbox-exec: {} ({} ro, {} rw, net_restricted={}, gate_port={:?})",
         outcome.describe(),
         parsed.ro.len(),
         parsed.rw.len(),
@@ -390,14 +390,14 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
 
     if !parsed.no_landlock && outcome != LandlockOutcome::FullyEnforced {
         eprintln!(
-            "qos-sandbox-exec: refusing qpkg launch because the complete Landlock v5 policy is not enforced"
+            "tilo-sandbox-exec: refusing qpkg launch because the complete Landlock v5 policy is not enforced"
         );
         std::process::exit(126);
     }
 
     if let Err(error) = close_ambient_fds(&parsed.keep_fds) {
         eprintln!(
-            "qos-sandbox-exec: refusing qpkg launch: could not close ambient descriptors: {error}"
+            "tilo-sandbox-exec: refusing qpkg launch: could not close ambient descriptors: {error}"
         );
         std::process::exit(126);
     }
@@ -413,12 +413,12 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
 )]
 fn exec_real_command(command: &[String]) -> ! {
     let Some(program) = command.first() else {
-        eprintln!("qos-sandbox-exec: empty command");
+        eprintln!("tilo-sandbox-exec: empty command");
         std::process::exit(2);
     };
 
     let Ok(cprogram) = CString::new(program.as_bytes()) else {
-        eprintln!("qos-sandbox-exec: program path contains an interior NUL");
+        eprintln!("tilo-sandbox-exec: program path contains an interior NUL");
         std::process::exit(2);
     };
 
@@ -429,7 +429,7 @@ fn exec_real_command(command: &[String]) -> ! {
     {
         v
     } else {
-        eprintln!("qos-sandbox-exec: argument contains an interior NUL");
+        eprintln!("tilo-sandbox-exec: argument contains an interior NUL");
         std::process::exit(2);
     };
 
@@ -445,7 +445,7 @@ fn exec_real_command(command: &[String]) -> ! {
         libc::execvp(cprogram.as_ptr(), argv_ptrs.as_ptr());
     }
     let err = std::io::Error::last_os_error();
-    eprintln!("qos-sandbox-exec: execvp {program:?} failed: {err}");
+    eprintln!("tilo-sandbox-exec: execvp {program:?} failed: {err}");
     std::process::exit(2);
 }
 

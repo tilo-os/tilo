@@ -10,9 +10,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-const OWNER: &str = "/usr/libexec/qos-windows-owner";
-const RECOVERY_CONSOLE: &str = "/usr/libexec/qos-windows-recovery-console";
+const OWNER: &str = "/usr/libexec/tilo-windows-owner";
+const RECOVERY_CONSOLE: &str = "/usr/libexec/tilo-windows-recovery-console";
 const STATUS_INTERVAL: Duration = Duration::from_secs(2);
+const OWNER_OUTPUT_LIMIT: usize = 1024 * 1024;
+const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
+const ACTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+fn run_owner_command(
+    command: Command,
+    timeout: Duration,
+) -> Result<bounded_command::Output, String> {
+    bounded_command::run_prepared(command, None, OWNER_OUTPUT_LIMIT, timeout)
+        .map_err(|error| format!("The Windows appliance command failed: {error}"))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LifecycleAction {
@@ -227,7 +238,7 @@ impl ApplianceStatus {
             AppliancePhase::NotProvisioned => "Choose Windows installation media",
             AppliancePhase::Installing => "Complete Windows Setup in the authorised setup desktop",
             AppliancePhase::AwaitingGuestBridge => {
-                "Finish qOS guest integration in the authorised recovery desktop"
+                "Finish Tilo guest integration in the authorised recovery desktop"
             }
             AppliancePhase::Ready => "Windows is ready for published applications",
             AppliancePhase::RepairRequired => {
@@ -237,7 +248,7 @@ impl ApplianceStatus {
         }
     }
 
-    /// qOS reports only what the authenticated guest said. It deliberately
+    /// Tilo reports only what the authenticated guest said. It deliberately
     /// does not turn activation into a licensing determination.
     #[must_use]
     pub const fn license_label(&self) -> &'static str {
@@ -260,10 +271,10 @@ impl ApplianceStatus {
                 Some("Finish Windows Setup, then return here to check its activation status.")
             }
             LicenseState::Unlicensed => Some(
-                "Use the authorised setup or recovery desktop to activate Windows. qOS does not keep product keys or decide whether a licence is valid.",
+                "Use the authorised setup or recovery desktop to activate Windows. Tilo does not keep product keys or decide whether a licence is valid.",
             ),
             LicenseState::Evaluation => Some(
-                "Evaluation editions have their own terms and expiry. qOS does not keep product keys or decide whether a licence is valid.",
+                "Evaluation editions have their own terms and expiry. Tilo does not keep product keys or decide whether a licence is valid.",
             ),
             LicenseState::DigitallyActivated
             | LicenseState::ProductKeyActivated
@@ -396,15 +407,10 @@ impl ApplianceOwnerClient {
         self.action_pending = true;
         let sender = self.sender.clone();
         std::thread::spawn(move || {
-            let result = Command::new("pkexec")
-                .arg(OWNER)
-                .arg("lifecycle")
-                .arg(action.argument())
-                .output()
-                .map_err(|error| {
-                    format!("Could not start the standard authorisation prompt: {error}")
-                })
-                .and_then(|output| success_output(&output));
+            let mut command = Command::new("pkexec");
+            command.arg(OWNER).arg("lifecycle").arg(action.argument());
+            let result = run_owner_command(command, ACTION_TIMEOUT)
+                .and_then(|output| success_bounded_output(&output));
             let _ = sender.send(OwnerEvent::Lifecycle(action, result));
         });
         Ok(())
@@ -431,16 +437,14 @@ impl ApplianceOwnerClient {
         self.action_pending = true;
         let sender = self.sender.clone();
         std::thread::spawn(move || {
-            let result = Command::new("pkexec")
+            let mut command = Command::new("pkexec");
+            command
                 .arg(OWNER)
                 .arg("egress-open")
                 .arg(purpose.argument())
-                .arg("600")
-                .output()
-                .map_err(|error| {
-                    format!("Could not start the standard authorisation prompt: {error}")
-                })
-                .and_then(|output| success_output(&output));
+                .arg("600");
+            let result = run_owner_command(command, ACTION_TIMEOUT)
+                .and_then(|output| success_bounded_output(&output));
             let _ = sender.send(OwnerEvent::Egress(purpose, result));
         });
         Ok(())
@@ -463,14 +467,10 @@ impl ApplianceOwnerClient {
         self.action_pending = true;
         let sender = self.sender.clone();
         std::thread::spawn(move || {
-            let result = Command::new("pkexec")
-                .arg(OWNER)
-                .arg("egress-revoke")
-                .output()
-                .map_err(|error| {
-                    format!("Could not start the standard authorisation prompt: {error}")
-                })
-                .and_then(|output| success_output(&output));
+            let mut command = Command::new("pkexec");
+            command.arg(OWNER).arg("egress-revoke");
+            let result = run_owner_command(command, ACTION_TIMEOUT)
+                .and_then(|output| success_bounded_output(&output));
             let _ = sender.send(OwnerEvent::EgressRevoked(result));
         });
         Ok(())
@@ -486,14 +486,10 @@ impl ApplianceOwnerClient {
         self.action_pending = true;
         let sender = self.sender.clone();
         std::thread::spawn(move || {
-            let result = Command::new("pkexec")
-                .arg(OWNER)
-                .arg("recovery-start")
-                .output()
-                .map_err(|error| {
-                    format!("Could not start the standard authorisation prompt: {error}")
-                })
-                .and_then(|output| success_output(&output))
+            let mut command = Command::new("pkexec");
+            command.arg(OWNER).arg("recovery-start");
+            let result = run_owner_command(command, ACTION_TIMEOUT)
+                .and_then(|output| success_bounded_output(&output))
                 .and_then(|()| {
                     Command::new(RECOVERY_CONSOLE)
                         .arg("--owner-authorized")
@@ -599,9 +595,9 @@ fn command_with_stdin(mut command: Command, source: File) -> Result<std::process
 }
 
 fn read_status() -> Result<ApplianceStatus, String> {
-    let output = Command::new(OWNER)
-        .arg("status")
-        .output()
+    let mut command = Command::new(OWNER);
+    command.arg("status");
+    let output = run_owner_command(command, STATUS_TIMEOUT)
         .map_err(|error| format!("Could not read Windows appliance status: {error}"))?;
     if !output.status.success() {
         return Err(output_error(&output.stderr));
@@ -611,6 +607,14 @@ fn read_status() -> Result<ApplianceStatus, String> {
 }
 
 fn success_output(output: &std::process::Output) -> Result<(), String> {
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(output_error(&output.stderr))
+    }
+}
+
+fn success_bounded_output(output: &bounded_command::Output) -> Result<(), String> {
     if output.status.success() {
         Ok(())
     } else {
@@ -723,7 +727,7 @@ mod tests {
         command
             .arg("-c")
             .arg("cat > \"$1\"")
-            .arg("qos-test-capture")
+            .arg("tilo-test-capture")
             .arg(&captured_path);
         let output = command_with_stdin(command, source).unwrap();
         assert!(output.status.success());

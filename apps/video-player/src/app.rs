@@ -19,7 +19,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -199,6 +199,7 @@ struct PanelLabels {
     clear_w: f64,
     queue_w: f64,
     recent_w: f64,
+    shared_w: f64,
     remove_w: f64,
     play_w: f64,
     /// The subtitle's wrapped height inside the panel gutter.
@@ -216,6 +217,7 @@ struct LibraryPanelGeometry {
     clear: Rect,
     queue_tab: Rect,
     recent_tab: Rect,
+    shared_tab: Rect,
     rows_top: f64,
     /// One row's surface height (authored 58) — the pitch adds `PANEL_ROW_GAP`.
     row_h: f64,
@@ -271,13 +273,22 @@ impl LibraryPanelGeometry {
         let tabs_y0 = subtitle.y1 + PANEL_SECTION_GAP;
         let queue_w = grown(PANEL_QUEUE_TAB_W, labels.map(|l| l.queue_w), BUTTON_PAD_X);
         let recent_w = grown(PANEL_RECENT_TAB_W, labels.map(|l| l.recent_w), BUTTON_PAD_X);
-        let queue_tab = Rect::new(left, tabs_y0, left + queue_w, tabs_y0 + tab_h);
-        let recent_tab = Rect::new(
-            queue_tab.x1 + PANEL_BUTTON_GAP,
-            tabs_y0,
-            queue_tab.x1 + PANEL_BUTTON_GAP + recent_w,
-            tabs_y0 + tab_h,
-        );
+        let shared_w = grown(PANEL_RECENT_TAB_W, labels.map(|l| l.shared_w), BUTTON_PAD_X);
+        let mut next_x = left;
+        let mut next_y = tabs_y0;
+        let mut tab = |width: f64| {
+            let width = width.min((right - left).max(0.0));
+            if next_x > left && next_x + width > right {
+                next_x = left;
+                next_y += tab_h + PANEL_BUTTON_GAP;
+            }
+            let rect = Rect::new(next_x, next_y, next_x + width, next_y + tab_h);
+            next_x = rect.x1 + PANEL_BUTTON_GAP;
+            rect
+        };
+        let queue_tab = tab(queue_w);
+        let recent_tab = tab(recent_w);
+        let shared_tab = tab(shared_w);
         // Rows: 8 px, the title box (21 at 1×), the subtitle line, 8 px.
         let row_title_box_h =
             PANEL_ROW_TITLE_BOX_H.max(line_h(PANEL_ROW_TITLE_SIZE, text_scale) + 3.5);
@@ -300,7 +311,8 @@ impl LibraryPanelGeometry {
             clear,
             queue_tab,
             recent_tab,
-            rows_top: recent_tab.y1 + PANEL_SECTION_GAP,
+            shared_tab,
+            rows_top: shared_tab.y1 + PANEL_SECTION_GAP,
             row_h,
             row_title_box_h,
             control_h,
@@ -324,7 +336,7 @@ const OPEN_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1
 struct PendingPortalOpen {
     channel: PortalChannel,
     generation: u64,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
 }
 
 /// A terminal response paired with the request identity and optional action
@@ -332,7 +344,7 @@ struct PendingPortalOpen {
 /// guard readable without a deeply nested tuple type.
 type PortalOpenOutcome = (
     u64,
-    Option<qos_actions::InvocationId>,
+    Option<tilo_actions::InvocationId>,
     Result<PathBuf, Option<String>>,
 );
 
@@ -340,7 +352,7 @@ type PortalOpenOutcome = (
 /// separate from the file-picker request: the picker can succeed while decode
 /// fails, stalls, or is superseded before a frame appears.
 struct PendingMediaOpen {
-    invocation: qos_actions::InvocationId,
+    invocation: tilo_actions::InvocationId,
     source_id: String,
     deadline: std::time::Instant,
 }
@@ -362,17 +374,26 @@ struct LibraryRowHit {
     remove: Option<Rect>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
+struct SharedRowHit {
+    id: String,
+    jump: Option<Rect>,
+    remove: Rect,
+    annotation: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LibraryTab {
     Queue,
     Recent,
+    Shared,
 }
 
 fn configured_player(autoplay: bool, loop_enabled: bool) -> VideoPlayer {
     let mut player = VideoPlayer::new()
         .with_engine(media::MediaEngine::new())
         .with_test_id("video_surface");
-    player.enable_mpris("qos_video_player", "Video Player");
+    player.enable_mpris("tilo_video_player", "Video Player");
     configure_player_settings(&mut player, autoplay, loop_enabled);
     player
 }
@@ -408,6 +429,12 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
         RATES.into_iter().map(str::to_string).collect(),
         selected,
     ));
+    player.set_setting(PlayerSetting::button(
+        "picture-in-picture",
+        Icon::PictureInPicture2,
+        "Picture in Picture",
+        0,
+    ));
 }
 
 /// Build a taffy node from `children` already built in the same tree.
@@ -423,6 +450,25 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
 
 fn fill_rect(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, transform, color, None, &rect);
+}
+
+/// Shared title/description/tab rhythm for the custom library panel. Text
+/// metrics are expressed in logical pixels and expanded exactly once by the
+/// active accessibility scale, so paint and hit geometry cannot drift.
+fn library_vertical_metrics(scale: f64, description_lines: usize) -> (f64, f64, f64) {
+    let title_top = 10.0;
+    let title_height = 18.0 * scale;
+    let privacy_top = title_top + title_height + 8.0 * scale;
+    let privacy_line_height = 16.0 * scale;
+    let privacy_bottom = privacy_top + privacy_line_height * description_lines as f64;
+    let tabs_top = privacy_bottom + 12.0 * scale;
+    // Tabs remain generous at the default scale too. These are not merely
+    // decorative filters: Queue, Recent and Shared partition different data
+    // ownership models, so they need the same comfortable target as the row
+    // actions below them.
+    let tab_height = if scale > 1.25 { 50.0 } else { 36.0 };
+    let rows_top = tabs_top + tab_height + if scale > 1.25 { 14.0 } else { 12.0 };
+    (privacy_top, tabs_top, rows_top)
 }
 
 /// Paint one line of panel text vertically centred in `rect`, at the weight
@@ -469,9 +515,9 @@ fn panel_text(
 }
 
 fn find_resource<'a>(
-    resources: &'a [qos_actions::Resource],
+    resources: &'a [tilo_actions::Resource],
     id: &str,
-) -> Option<&'a qos_actions::Resource> {
+) -> Option<&'a tilo_actions::Resource> {
     resources.iter().find_map(|resource| {
         if resource.id.0 == id {
             Some(resource)
@@ -519,7 +565,7 @@ fn local_source_token(source: &media::Source, generation: u64) -> String {
     // boundary. The monotonic generation prevents a same-path reopen from
     // accepting stale dynamic stream/chapter actions.
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in source.to_uri().bytes() {
+    for byte in media::session::session_key(source).bytes() {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
@@ -534,6 +580,9 @@ pub struct PlayerApp {
     player: VideoPlayer,
     title: String,
     rect: Rect,
+    /// Accessibility text scale captured from the live theme. Only geometry
+    /// containing text expands; the media surface itself remains unscaled.
+    text_scale: f64,
     /// The floating Open pill's hit rect (top-right of the video). Only live
     /// while the overlay is shown.
     open_button_rect: Rect,
@@ -546,13 +595,13 @@ pub struct PlayerApp {
     library_panel_rect: Rect,
     library_queue_tab_rect: Rect,
     library_recent_tab_rect: Rect,
+    library_shared_tab_rect: Rect,
     library_close_rect: Rect,
     library_row_hits: Vec<LibraryRowHit>,
     library_clear_rect: Rect,
-    /// The theme's accessibility text scale, captured in `build_layout` (the
-    /// only layout pass that sees the theme) so `apply_layout` can size the
-    /// floating top strip to contain its labels.
-    text_scale: f64,
+    shared_watch_later_rect: Rect,
+    shared_bookmark_rect: Rect,
+    shared_row_hits: Vec<SharedRowHit>,
     library_visible: bool,
     library_tab: LibraryTab,
     queue: Vec<LocalMediaEntry>,
@@ -565,9 +614,9 @@ pub struct PlayerApp {
     portal_open: Option<PendingPortalOpen>,
     media_open: Option<PendingMediaOpen>,
     portal_generation: u64,
-    resource_results: VecDeque<qos_actions::InvocationUpdate>,
+    resource_results: VecDeque<tilo_actions::InvocationUpdate>,
     open_action: Option<ActionEmitter<()>>,
-    library_control_invocations: VecDeque<qos_actions::ControlInvocation>,
+    library_control_invocations: VecDeque<tilo_actions::ControlInvocation>,
     open_focused: bool,
     library_focused: bool,
     library_focus_id: Option<String>,
@@ -581,6 +630,17 @@ pub struct PlayerApp {
     /// Deterministic decoder metadata used only by the explicit headless
     /// `metadata` screenshot fixture. Live runs always read the active engine.
     shot_metadata: Option<DecoderMetadata>,
+    /// Deterministically holds the production no-frame/loading presentation
+    /// for visual regression capture while the synthesized engine stays
+    /// hermetic. Live runs always derive loading from decoder frame state.
+    shot_loading: bool,
+    pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
+    actions: ui::ActionHost,
+    shared_library: crate::shared::SharedLibrary,
+    shot_shared: bool,
+    /// Opaque source identity for durable shared playlists and markers. It
+    /// survives reopening the same local media, unlike the per-open source ID.
+    current_media_ref: Option<String>,
     current_source_id: Option<String>,
     source_generation: u64,
     search_cache: RefCell<Option<SearchCache>>,
@@ -619,6 +679,7 @@ impl PlayerApp {
             media: crate::actions::MediaAvailability {
                 has_media: self.player.has_media(),
                 source_id: self.current_source_id.clone(),
+                media_ref: self.current_media_ref.clone(),
                 can_control_transport: self
                     .collab
                     .as_ref()
@@ -791,6 +852,10 @@ impl PlayerApp {
     }
 
     fn new_with_preferences(preferences: PlaybackPreferences) -> Self {
+        // Tests inject picker outcomes while exercising the same request and
+        // completion paths; they must never open a desktop file chooser.
+        #[cfg(test)]
+        ui::portal::suppress_for_tests();
         let player = configured_player(preferences.autoplay, preferences.loop_enabled);
         let recent = crate::preferences::load_recent_history()
             .into_iter()
@@ -805,6 +870,7 @@ impl PlayerApp {
             media: crate::actions::MediaAvailability {
                 has_media: false,
                 source_id: None,
+                media_ref: None,
                 can_control_transport: true,
             },
             settings: crate::actions::PlaybackSettingsState {
@@ -820,12 +886,13 @@ impl PlayerApp {
         let action_surface = crate::actions::resources(&action_ctx, &AutoCommit::new());
         let open_action = action_surface
             .first()
-            .and_then(|resource| qos_actions::ActionBinding::unit_for(resource, "open").ok())
+            .and_then(|resource| tilo_actions::ActionBinding::unit_for(resource, "open").ok())
             .map(ActionEmitter::new);
         Self {
             player,
             title: "No media".to_string(),
             rect: Rect::ZERO,
+            text_scale: 1.0,
             open_button_rect: Rect::ZERO,
             library_button_rect: Rect::ZERO,
             strip_labels: None,
@@ -833,10 +900,13 @@ impl PlayerApp {
             library_panel_rect: Rect::ZERO,
             library_queue_tab_rect: Rect::ZERO,
             library_recent_tab_rect: Rect::ZERO,
+            library_shared_tab_rect: Rect::ZERO,
             library_close_rect: Rect::ZERO,
             library_row_hits: Vec::new(),
             library_clear_rect: Rect::ZERO,
-            text_scale: 1.0,
+            shared_watch_later_rect: Rect::ZERO,
+            shared_bookmark_rect: Rect::ZERO,
+            shared_row_hits: Vec::new(),
             library_visible: false,
             library_tab: LibraryTab::Queue,
             queue: Vec::new(),
@@ -856,6 +926,12 @@ impl PlayerApp {
             manager: None,
             preferences,
             shot_metadata: None,
+            shot_loading: false,
+            pending_pip: None,
+            actions: ui::ActionHost::new(),
+            shared_library: crate::shared::SharedLibrary::default(),
+            shot_shared: false,
+            current_media_ref: None,
             current_source_id: None,
             source_generation: 0,
             search_cache: RefCell::new(None),
@@ -875,6 +951,27 @@ impl PlayerApp {
         self
     }
 
+    /// Open a broker-validated handoff source before the first frame.
+    #[must_use]
+    pub fn with_open_source(mut self, source: media::Source, title: String) -> Self {
+        let _ = self.open_local_source(source, title, None);
+        self
+    }
+
+    /// Land on the acknowledged source playhead and preserve whether the
+    /// source was playing. This runs after open so local autoplay preferences
+    /// cannot override the handoff transaction.
+    #[must_use]
+    pub fn with_handoff_transport(mut self, position_ms: u64, resume_playing: bool) -> Self {
+        self.player.seek_to_ms(position_ms);
+        if resume_playing {
+            self.player.play();
+        } else {
+            self.player.pause();
+        }
+        self
+    }
+
     /// Build a player staged for a headless `--shots` capture: a source opened
     /// with its real engine state and the controls revealed. Opens
     /// `open` when given, else a synthesized demo clip. Never attaches a collab
@@ -883,6 +980,7 @@ impl PlayerApp {
     /// `scenario` selects an optional demo overlay for the capture:
     ///   * `"empty"` — the first-run state before a source is chosen.
     ///   * `"error"` — a decoder/open failure before a picture arrives.
+    ///   * `"loading"` — a source admitted while its first frame is pending.
     ///   * `"native-error"` — use `--open` with a bad source to capture the
     ///     decoder's actual error event rather than fixture copy.
     ///   * `"playing"` / `"paused"` — explicit transport states (the
@@ -893,48 +991,63 @@ impl PlayerApp {
     ///   * `"metadata"` — open the controls menu with deterministic embedded
     ///     audio/subtitle/chapter metadata.
     ///   * `"library"` / `"recent"` — populated device-local queue/history.
+    ///   * `"shared"` — shared playlist and timestamp-annotation management.
     ///   * `"library-focus"` — the same queue with a keyboard-visible Play
     ///     focus ring, for accessibility visual review.
     ///   * anything else / `None` — a plain player.
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
+        app.stage_shot_source(open, scenario);
+        app.stage_shot_scenario(scenario);
+        if !matches!(scenario, Some("empty" | "error")) {
+            app.player.reveal_controls();
+        }
+        app
+    }
+
+    fn stage_shot_source(&mut self, open: Option<PathBuf>, scenario: Option<&str>) {
         if !matches!(scenario, Some("empty" | "error")) {
             if let Some(path) = open {
-                let _ = app.open_path(&path);
+                let _ = self.open_path(&path);
             } else {
                 // The demo shot must stay hermetic: pin the deterministic
                 // synthesized-frame engine so no real GStreamer pipeline is
                 // built and the placeholder `demo.local` host is never
                 // contacted — even though `decode` compiles the real backend in
                 // by default. `--shots --open <file>` is the real-decode path.
-                app.player.set_engine(media::MediaEngine::new_synthesized());
+                self.player
+                    .set_engine(media::MediaEngine::new_synthesized());
                 let source = media::Source::Remote {
                     url: "https://demo.local/clip.mp4".into(),
                 };
-                let queue_id = app.ensure_queued(source.clone(), "Demo clip".into());
-                let _ = app.set_current_source(&source);
-                app.player.open(source);
-                app.title = "Demo clip".to_string();
-                app.current_queue_id = Some(queue_id);
+                let queue_id = self.ensure_queued(source.clone(), "Demo clip".into());
+                let _ = self.set_current_source(&source);
+                self.player.open(source);
+                self.title = "Demo clip".to_string();
+                self.current_queue_id = Some(queue_id);
                 // Park at a fixed position for a stable reference frame. The
                 // explicit `playing` fixture starts the real engine below;
                 // default/`paused` deliberately stay deterministic.
-                app.player.seek_to_ms(8_000);
-                app.player.pause();
+                self.player.seek_to_ms(8_000);
+                self.player.pause();
             }
         }
+    }
+
+    fn stage_shot_scenario(&mut self, scenario: Option<&str>) {
         match scenario {
             Some("error") => {
-                app.open_error = Some(
+                self.open_error = Some(
                     "The local decoder could not read this video. Check the file and try again."
                         .into(),
                 );
             }
-            Some("playing") => app.player.play(),
-            Some("paused") => app.player.pause(),
-            Some("settings") => app.player.open_settings_menu(None),
+            Some("loading") => self.shot_loading = true,
+            Some("playing") => self.player.play(),
+            Some("paused") => self.player.pause(),
+            Some("settings") => self.player.open_settings_menu(None),
             Some("metadata") => {
-                app.shot_metadata = Some(DecoderMetadata {
+                self.shot_metadata = Some(DecoderMetadata {
                     audio_tracks: vec![
                         crate::actions::TrackState {
                             stream_id: "fixture-audio-en".into(),
@@ -968,34 +1081,56 @@ impl PlayerApp {
                         },
                     ],
                 });
-                app.sync_decoder_settings();
-                app.player.open_settings_menu(None);
+                self.sync_decoder_settings();
+                self.player.open_settings_menu(None);
             }
             Some("library" | "recent" | "library-focus") => {
                 for (url, title) in [
                     ("https://demo.local/next.mp4", "Second act"),
                     ("https://demo.local/finale.mp4", "Closing scene"),
                 ] {
-                    app.ensure_queued(media::Source::Remote { url: url.into() }, title.into());
+                    self.ensure_queued(media::Source::Remote { url: url.into() }, title.into());
                 }
-                app.recent = app.queue.iter().rev().cloned().collect();
-                app.library_visible = true;
-                app.library_tab = if scenario == Some("recent") {
+                self.recent = self.queue.iter().rev().cloned().collect();
+                self.library_visible = true;
+                self.library_tab = if scenario == Some("recent") {
                     LibraryTab::Recent
                 } else {
                     LibraryTab::Queue
                 };
                 if scenario == Some("library-focus") {
-                    app.library_focus_id = app.queue.get(1).map(|entry| entry.id.clone());
+                    self.library_focus_id = self.queue.get(1).map(|entry| entry.id.clone());
                 }
             }
-            Some("fullscreen") => app.player.toggle_fullscreen(),
+            Some("shared") => {
+                self.library_visible = true;
+                self.library_tab = LibraryTab::Shared;
+                self.shared_library = crate::shared::SharedLibrary {
+                    playlists: vec![crate::shared::Playlist {
+                        id: "watch-later".into(),
+                        name: "Watch later".into(),
+                    }],
+                    items: Vec::new(),
+                    annotations: vec![
+                        crate::shared::TimestampAnnotation {
+                            id: "opening".into(),
+                            media_ref: self.current_media_ref.clone().unwrap_or_default(),
+                            time_ms: 8_000,
+                            text: "Opening detail".into(),
+                        },
+                        crate::shared::TimestampAnnotation {
+                            id: "bookmark".into(),
+                            media_ref: self.current_media_ref.clone().unwrap_or_default(),
+                            time_ms: 45_000,
+                            text: String::new(),
+                        },
+                    ],
+                };
+                self.shot_shared = true;
+            }
+            Some("fullscreen") => self.player.toggle_fullscreen(),
             _ => {}
         }
-        if !matches!(scenario, Some("empty" | "error")) {
-            app.player.reveal_controls();
-        }
-        app
     }
 
     /// Attach collaborative playback: a live collab socket plus the host/
@@ -1041,11 +1176,9 @@ impl PlayerApp {
     }
 
     fn ensure_queued(&mut self, source: media::Source, title: String) -> String {
-        if let Some(entry) = self
-            .queue
-            .iter()
-            .find(|entry| entry.source.to_uri() == source.to_uri())
-        {
+        if let Some(entry) = self.queue.iter().find(|entry| {
+            media::session::session_key(&entry.source) == media::session::session_key(&source)
+        }) {
             return entry.id.clone();
         }
         let id = format!("local-queue-{}", local_source_token(&source, 0));
@@ -1082,7 +1215,7 @@ impl PlayerApp {
         }
         self.cancel_pending_portal("a direct video open replaced the file picker");
         if let Some(pending) = self.media_open.take() {
-            self.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+            self.queue_resource_result(tilo_actions::InvocationUpdate::Cancelled {
                 invocation: pending.invocation,
                 message: Some("a newer video open replaced this decoder request".into()),
             });
@@ -1202,6 +1335,7 @@ impl PlayerApp {
         })?;
         self.source_generation = generation;
         self.current_source_id = Some(local_source_token(source, generation));
+        self.current_media_ref = Some(local_source_token(source, 0));
         Ok(())
     }
 
@@ -1216,7 +1350,7 @@ impl PlayerApp {
 
     fn close_media(&mut self) {
         if let Some(pending) = self.media_open.take() {
-            self.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+            self.queue_resource_result(tilo_actions::InvocationUpdate::Cancelled {
                 invocation: pending.invocation,
                 message: Some("video was closed before decoding a first frame".into()),
             });
@@ -1238,8 +1372,33 @@ impl PlayerApp {
         self.player = player;
         self.title = "No media".into();
         self.current_source_id = None;
+        self.current_media_ref = None;
         self.current_queue_id = None;
         self.invalidate_search_cache();
+        self.dirty = true;
+    }
+
+    fn request_picture_in_picture(&mut self) {
+        if !self.player.has_media() || self.player.get_rect().width() < 1.0 {
+            return;
+        }
+        let region = self.player.get_rect();
+        let aspect = (region.width() / region.height().max(1.0)).clamp(0.4, 2.8);
+        self.pending_pip = Some(ui::floating_surface::FloatingSurfaceRequest {
+            id: "video-player.current-video".into(),
+            title: self.title.clone(),
+            role: ui::floating_surface::FloatingRole::PictureInPicture,
+            source: ui::floating_surface::FloatingSource::AppElement {
+                app_id: "dev.tilo.video-player".into(),
+                element_id: "video_surface".into(),
+                region,
+            },
+            preferred_size: vello::kurbo::Size::new(360.0, 360.0 / aspect),
+            aspect_ratio: Some(aspect),
+            initial_rect: None,
+            presentation_rect: None,
+            tracking_source: None,
+        });
         self.dirty = true;
     }
 
@@ -1266,6 +1425,139 @@ impl PlayerApp {
         self.request_library_action("video-player.history.local", "clear");
     }
 
+    fn request_library_hide(&mut self) {
+        self.request_library_action("video-player.application", "hide-library");
+    }
+
+    fn request_queue_library(&mut self) {
+        self.request_library_action("video-player.queue.local", "show");
+    }
+
+    fn request_recent_library(&mut self) {
+        self.request_library_action("video-player.history.local", "show");
+    }
+
+    fn request_shared_library(&mut self) {
+        self.request_library_action("video-player.playlists.shared", "show");
+    }
+
+    /// The Library button and `L` shortcut choose a concrete, replay-safe
+    /// action from the current presentation. We never publish a toggle: a
+    /// replay or delayed agent invocation must not invert a newer user choice.
+    fn request_library_visibility_change(&mut self) {
+        if self.library_visible {
+            self.request_library_hide();
+        } else {
+            match self.library_tab {
+                LibraryTab::Queue => self.request_queue_library(),
+                LibraryTab::Recent => self.request_recent_library(),
+                LibraryTab::Shared => self.request_shared_library(),
+            }
+        }
+    }
+
+    /// Route marker navigation through the same canonical resource action used
+    /// by global search and agents. Shared marker resources live in the
+    /// document, so this resolves them against the active document rather than
+    /// manufacturing a local playback closure.
+    fn request_annotation_jump(&mut self, doc: &AutoCommit, annotation_id: &str) {
+        let (audio, subtitles, chapters) = self.decoder_metadata();
+        let context = self.action_context(&audio, &subtitles, &chapters);
+        let resource_id = crate::actions::annotation_resource_id(annotation_id);
+        let Some(resource) = crate::actions::resource(&context, doc, &resource_id) else {
+            return;
+        };
+        let Ok(binding) = tilo_actions::ActionBinding::unit_for(&resource, "jump") else {
+            return;
+        };
+        if let Ok(invocation) = binding.invoke(()) {
+            self.library_control_invocations.push_back(invocation);
+        }
+    }
+
+    fn dispatch_shared(&mut self, doc: &mut AutoCommit, action: &crate::shared::SharedAction) {
+        let context = crate::shared::history_context(action);
+        self.actions
+            .dispatch_with_context(doc, crate::shared::ACTION_TYPE, action, context);
+        self.shared_library = crate::shared::read(doc);
+        self.invalidate_search_cache();
+        self.dirty = true;
+    }
+
+    fn add_current_to_watch_later(&mut self, doc: &mut AutoCommit) {
+        let Some(media_ref) = self.current_media_ref.clone() else {
+            return;
+        };
+        let playlist_id = "watch-later".to_string();
+        if !self
+            .shared_library
+            .playlists
+            .iter()
+            .any(|playlist| playlist.id == playlist_id)
+        {
+            self.dispatch_shared(
+                doc,
+                &crate::shared::SharedAction::CreatePlaylist {
+                    id: playlist_id.clone(),
+                    name: "Watch later".into(),
+                },
+            );
+        }
+        if self
+            .shared_library
+            .items
+            .iter()
+            .any(|item| item.playlist_id == playlist_id && item.media_ref == media_ref)
+        {
+            return;
+        }
+        let position = self
+            .shared_library
+            .items
+            .iter()
+            .filter(|item| item.playlist_id == playlist_id)
+            .map(|item| item.position)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1024);
+        let id = format!(
+            "item-{}-{}",
+            crate::actions::identity_token_for_action(&media_ref),
+            media::now_ms()
+        );
+        self.dispatch_shared(
+            doc,
+            &crate::shared::SharedAction::AddPlaylistItem {
+                id,
+                playlist_id,
+                media_ref,
+                title: self.title.clone(),
+                position,
+            },
+        );
+    }
+
+    fn bookmark_current_time(&mut self, doc: &mut AutoCommit) {
+        let Some(media_ref) = self.current_media_ref.clone() else {
+            return;
+        };
+        let time_ms = self.player.position_ms();
+        let id = format!(
+            "annotation-{}-{}-{time_ms}",
+            crate::actions::identity_token_for_action(&media_ref),
+            media::now_ms()
+        );
+        self.dispatch_shared(
+            doc,
+            &crate::shared::SharedAction::CreateAnnotation {
+                id,
+                media_ref,
+                time_ms,
+                text: String::new(),
+            },
+        );
+    }
+
     fn request_library_action(&mut self, resource_id: &str, action_id: &str) {
         let (audio, subtitles, chapters) = self.decoder_metadata();
         let resources = crate::actions::resources(
@@ -1275,7 +1567,7 @@ impl PlayerApp {
         let Some(resource) = find_resource(&resources, resource_id) else {
             return;
         };
-        let Ok(binding) = qos_actions::ActionBinding::unit_for(resource, action_id) else {
+        let Ok(binding) = tilo_actions::ActionBinding::unit_for(resource, action_id) else {
             return;
         };
         if let Ok(invocation) = binding.invoke(()) {
@@ -1321,14 +1613,14 @@ impl PlayerApp {
             return;
         };
         if let Some(invocation) = pending.invocation {
-            self.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+            self.queue_resource_result(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some(message.into()),
             });
         }
     }
 
-    fn await_open_frame(&mut self, invocation: qos_actions::InvocationId) -> Result<(), String> {
+    fn await_open_frame(&mut self, invocation: tilo_actions::InvocationId) -> Result<(), String> {
         if self.media_open.is_some() {
             return Err("another video open is still waiting for decoder output".into());
         }
@@ -1346,17 +1638,17 @@ impl PlayerApp {
 
     fn poll_open_frame(
         &mut self,
-        invocation: qos_actions::InvocationId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
         let pending = self.media_open.as_ref()?;
         if pending.invocation != invocation {
             return None;
         }
         if self.current_source_id.as_deref() != Some(pending.source_id.as_str()) {
             let pending = self.media_open.take()?;
-            return Some(qos_actions::InvocationUpdate::Failed {
+            return Some(tilo_actions::InvocationUpdate::Failed {
                 invocation: pending.invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "video_player.open_superseded".into(),
                     message: "The requested video was superseded before decoding a frame.".into(),
                     details: None,
@@ -1367,9 +1659,9 @@ impl PlayerApp {
         if self.player.latest_frame().is_some() {
             let pending = self.media_open.take()?;
             self.record_current_history();
-            return Some(qos_actions::InvocationUpdate::Succeeded {
+            return Some(tilo_actions::InvocationUpdate::Succeeded {
                 invocation: pending.invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             });
         }
         if std::time::Instant::now() >= pending.deadline {
@@ -1377,9 +1669,9 @@ impl PlayerApp {
             let message = "The decoder did not produce a first frame in time.".to_string();
             self.open_error = Some(message.clone());
             self.dirty = true;
-            return Some(qos_actions::InvocationUpdate::Failed {
+            return Some(tilo_actions::InvocationUpdate::Failed {
                 invocation: pending.invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "video_player.open_timed_out".into(),
                     message,
                     details: Some(serde_json::json!({
@@ -1396,7 +1688,7 @@ impl PlayerApp {
     /// older invocation that the host has not polled yet. `trigger_open`
     /// applies backpressure before accepting another asynchronous request, so
     /// every accepted invocation keeps its result until it is collected.
-    fn queue_resource_result(&mut self, update: qos_actions::InvocationUpdate) {
+    fn queue_resource_result(&mut self, update: tilo_actions::InvocationUpdate) {
         self.resource_results.push_back(update);
     }
 
@@ -1436,7 +1728,22 @@ impl PlayerApp {
             }
             PlayerOperation::RevealLibrary => {
                 self.library_visible = true;
+                self.library_tab = LibraryTab::Queue;
                 self.player.reveal_controls();
+            }
+            PlayerOperation::RevealRecentLibrary => {
+                self.library_visible = true;
+                self.library_tab = LibraryTab::Recent;
+                self.player.reveal_controls();
+            }
+            PlayerOperation::RevealSharedLibrary => {
+                self.library_visible = true;
+                self.library_tab = LibraryTab::Shared;
+                self.player.reveal_controls();
+            }
+            PlayerOperation::HideLibrary => {
+                self.library_visible = false;
+                self.library_focus_id = None;
             }
             PlayerOperation::Close => self.close_media(),
             PlayerOperation::TogglePlayback => self.player.toggle_play(),
@@ -1445,6 +1752,10 @@ impl PlayerApp {
             PlayerOperation::SeekSeconds(seconds)
             | PlayerOperation::JumpToChapter { seconds, .. } => {
                 self.player.seek_to_ms((seconds.max(0.0) * 1000.0) as u64);
+            }
+            PlayerOperation::JumpToAnnotation { time_ms, .. } => {
+                self.player.seek_to_ms(time_ms);
+                self.player.reveal_controls();
             }
             PlayerOperation::SeekBySeconds(seconds) => {
                 let current = self.player.position_ms() as f64;
@@ -1489,6 +1800,7 @@ impl PlayerApp {
                     self.player.set_choice_selection("playback-rate", selected);
                 }
             }
+            PlayerOperation::OpenPictureInPicture => self.request_picture_in_picture(),
             PlayerOperation::SelectAudioTrack { index, .. } => {
                 if !self
                     .player
@@ -1585,6 +1897,13 @@ impl PlayerApp {
             {
                 return Err("the chapter changed; refresh search and try again".into());
             }
+            PlayerOperation::JumpToAnnotation { media_ref, .. }
+                if self.current_media_ref.as_deref() != Some(media_ref) =>
+            {
+                return Err(
+                    "this review marker belongs to a different video on this device".into(),
+                );
+            }
             _ => {}
         }
         Ok(())
@@ -1629,9 +1948,9 @@ impl PlayerApp {
                     "video player: ignored a stale portal outcome"
                 );
                 if let Some(invocation) = invocation {
-                    self.queue_resource_result(qos_actions::InvocationUpdate::Failed {
+                    self.queue_resource_result(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "video_player.stale_open_response".into(),
                             message: "ignored a stale video picker response; open again".into(),
                             details: None,
@@ -1657,9 +1976,9 @@ impl PlayerApp {
                         // invocation until `poll_open_frame` observes a first
                         // decoded picture (or a truthful timeout/failure).
                         if let Err(message) = self.await_open_frame(invocation) {
-                            self.queue_resource_result(qos_actions::InvocationUpdate::Failed {
+                            self.queue_resource_result(tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "video_player.open_lifecycle_failed".into(),
                                     message,
                                     details: None,
@@ -1669,15 +1988,15 @@ impl PlayerApp {
                         }
                     }
                     Ok(false) => {
-                        self.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+                        self.queue_resource_result(tilo_actions::InvocationUpdate::Cancelled {
                             invocation,
                             message: Some("video selection was cancelled".into()),
                         });
                     }
                     Err(message) => {
-                        self.queue_resource_result(qos_actions::InvocationUpdate::Failed {
+                        self.queue_resource_result(tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "video_player.open_failed".into(),
                                 message,
                                 details: None,
@@ -1718,7 +2037,7 @@ impl PlayerApp {
                 if let Some(engine) = self.player.engine()
                     && let Some(delta) = collab.host_step(engine, now)
                 {
-                    mgr.send(CollabRequest::DocumentIncremental { data: delta });
+                    mgr.send(CollabRequest::document_incremental(delta));
                 }
             }
             Role::Follower => {
@@ -1795,6 +2114,9 @@ impl PlayerApp {
                         });
                     }
                 }
+                PlayerSettingEvent::Activated { id } if id == "picture-in-picture" => {
+                    self.perform_resource_operation(PlayerOperation::OpenPictureInPicture);
+                }
                 PlayerSettingEvent::Toggled { .. }
                 | PlayerSettingEvent::Chose { .. }
                 | PlayerSettingEvent::Activated { .. } => {}
@@ -1812,9 +2134,9 @@ impl PlayerApp {
                     self.open_error = Some(message.clone());
                     self.dirty = true;
                     if let Some(pending) = self.media_open.take() {
-                        self.queue_resource_result(qos_actions::InvocationUpdate::Failed {
+                        self.queue_resource_result(tilo_actions::InvocationUpdate::Failed {
                             invocation: pending.invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "video_player.decoder_failed".into(),
                                 message,
                                 details: None,
@@ -1941,6 +2263,7 @@ impl PlayerApp {
         self.library_clear_rect = panel.clear;
         self.library_queue_tab_rect = panel.queue_tab;
         self.library_recent_tab_rect = panel.recent_tab;
+        self.library_shared_tab_rect = panel.shared_tab;
         panel
     }
 
@@ -1960,6 +2283,7 @@ impl PlayerApp {
             clear_w: width(text_renderer, "Clear", PANEL_HEADER_BUTTON_SIZE),
             queue_w: width(text_renderer, "Queue", PANEL_TAB_SIZE),
             recent_w: width(text_renderer, "Recent", PANEL_TAB_SIZE),
+            shared_w: width(text_renderer, "Shared", PANEL_TAB_SIZE),
             remove_w: width(text_renderer, "Remove", PANEL_ROW_CONTROL_SIZE),
             play_w: width(text_renderer, "Play", PANEL_ROW_CONTROL_SIZE).max(width(
                 text_renderer,
@@ -1969,7 +2293,11 @@ impl PlayerApp {
             subtitle_h: f64::from(
                 text_renderer
                     .measure_weighted(
-                        PANEL_SUBTITLE,
+                        if self.library_tab == LibraryTab::Shared {
+                            "Shared metadata · media access stays on each device"
+                        } else {
+                            PANEL_SUBTITLE
+                        },
                         PANEL_SUBTITLE_SIZE,
                         Some(gutter_w),
                         TextWeight::Regular,
@@ -2100,39 +2428,67 @@ impl PlayerApp {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if self.player.latest_frame().is_some() || self.rect.height() < 180.0 {
+        if (!self.shot_loading && self.player.latest_frame().is_some())
+            || self.rect.height() < 180.0
+        {
             return;
         }
         let center = self.rect.center();
+        let compact_copy = self.text_scale > 1.25 && self.rect.width() < 520.0;
         let (title, subtitle) = if let Some(error) = &self.open_error {
-            ("Couldn't open video", error.as_str())
+            if compact_copy {
+                ("Couldn't open\nvideo", "Check the file, then\ntry again.")
+            } else {
+                ("Couldn't open video", error.as_str())
+            }
         } else if self.player.has_media() {
             ("Loading video…", "Preparing the first frame")
+        } else if compact_copy {
+            ("Open a video\nto start", "MP4, WebM, MKV,\nMOV and AVI")
         } else {
             ("Open a video to start", "MP4, WebM, MKV, MOV and AVI")
         };
+        let scale = self.text_scale;
         let copy_width = (self.rect.width() - 32.0).max(0.0) as f32;
-        let title = text_renderer.elide_to_width(title, 20.0, copy_width);
-        let subtitle = text_renderer.elide_to_width(subtitle, 13.0, copy_width);
-        let (title_w, _) = text_renderer.measure(&title, 20.0, None);
-        let (subtitle_w, _) = text_renderer.measure(&subtitle, 13.0, None);
-        text_renderer.draw_text(
-            scene,
-            &title,
-            20.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((center.x - f64::from(title_w) * 0.5, center.y + 55.0)),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            &subtitle,
-            13.0,
-            theme.tokens.colors.text_dim,
-            transform
-                * Affine::translate((center.x - f64::from(subtitle_w) * 0.5, center.y + 85.0)),
-            None,
-        );
+        let title_lines: Vec<_> = title.lines().collect();
+        let subtitle_lines: Vec<_> = subtitle.lines().collect();
+        let title_step = 24.0 * scale;
+        let subtitle_step = 18.0 * scale;
+        let block_h = title_step * title_lines.len() as f64
+            + 10.0 * scale
+            + subtitle_step * subtitle_lines.len() as f64;
+        let mut baseline = if compact_copy && !self.shot_loading {
+            center.y + 92.0
+        } else {
+            center.y - block_h * 0.5 + 20.0 * scale
+        };
+        for line in title_lines {
+            let line = text_renderer.elide_to_width(line, 20.0, copy_width);
+            let (width, _) = text_renderer.measure(&line, 20.0, None);
+            text_renderer.draw_text(
+                scene,
+                &line,
+                20.0,
+                theme.tokens.colors.text_primary,
+                transform * Affine::translate((center.x - f64::from(width) * 0.5, baseline)),
+                None,
+            );
+            baseline += title_step;
+        }
+        baseline += 10.0 * scale;
+        for line in subtitle_lines {
+            let line = text_renderer.elide_to_width(line, 13.0, copy_width);
+            let (width, _) = text_renderer.measure(&line, 13.0, None);
+            text_renderer.draw_text(
+                scene,
+                &line,
+                13.0,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((center.x - f64::from(width) * 0.5, baseline)),
+                None,
+            );
+            baseline += subtitle_step;
+        }
     }
 
     #[allow(
@@ -2155,10 +2511,23 @@ impl PlayerApp {
         let geometry = self.refresh_panel_labels(text_renderer);
         let colors = &theme.tokens.colors;
         let panel = self.library_panel_rect;
+        let large_text = self.text_scale > 1.25;
+        // A softly distinguished header stops this persistent side panel from
+        // reading as a pile of ungrouped text over the video. It deliberately
+        // uses theme tokens rather than hard-coded dark paint, preserving the
+        // high-contrast palette.
+        let (_, tabs_top, _) =
+            library_vertical_metrics(self.text_scale, if large_text { 2 } else { 1 });
         fill_rect(scene, transform, panel, colors.surfaces.raised);
         // The panel's edge against the video derives from its own surface
         // (HIG §9.5); a declared `border_standard` on `raised` vanished in
         // the dark preset.
+        fill_rect(
+            scene,
+            transform,
+            Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + tabs_top - 4.0),
+            colors.neutral[1],
+        );
         fill_rect(
             scene,
             transform,
@@ -2180,7 +2549,11 @@ impl PlayerApp {
             text_renderer,
             transform,
             geometry.subtitle,
-            PANEL_SUBTITLE,
+            if self.library_tab == LibraryTab::Shared {
+                "Shared metadata · media access stays on each device"
+            } else {
+                PANEL_SUBTITLE
+            },
             PANEL_SUBTITLE_SIZE,
             colors.text_dim,
             TextWeight::Regular,
@@ -2211,7 +2584,16 @@ impl PlayerApp {
         let queue_active = self.library_tab == LibraryTab::Queue;
         for (label, rect, active) in [
             ("Queue", self.library_queue_tab_rect, queue_active),
-            ("Recent", self.library_recent_tab_rect, !queue_active),
+            (
+                "Recent",
+                self.library_recent_tab_rect,
+                self.library_tab == LibraryTab::Recent,
+            ),
+            (
+                "Shared",
+                self.library_shared_tab_rect,
+                self.library_tab == LibraryTab::Shared,
+            ),
         ] {
             let mut face = ButtonFace::new(rect, label)
                 .ghost()
@@ -2228,12 +2610,30 @@ impl PlayerApp {
             );
         }
         self.library_row_hits.clear();
+        if self.library_tab == LibraryTab::Shared {
+            self.paint_shared_library(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                (panel, large_text, geometry.rows_top),
+            );
+            return;
+        }
         let entries: Vec<LocalMediaEntry> = match self.library_tab {
             LibraryTab::Queue => self.queue.clone(),
             LibraryTab::Recent => self.recent.iter().cloned().collect(),
+            LibraryTab::Shared => Vec::new(),
         };
+        let narrow_large = large_text && panel.width() < 520.0;
+        let row_surface_h = geometry.row_h
+            + if narrow_large {
+                geometry.control_h + PANEL_ROW_PAD_Y
+            } else {
+                0.0
+            };
         let mut y = geometry.rows_top;
-        let row_h = geometry.row_h + PANEL_ROW_GAP;
+        let row_h = row_surface_h + PANEL_ROW_GAP;
         if entries.is_empty() {
             panel_text(
                 scene,
@@ -2262,7 +2662,7 @@ impl PlayerApp {
             .into_iter()
             .take(crate::actions::CONTEXTUAL_CHILD_LIMIT)
         {
-            if y + geometry.row_h > panel.y1 - PANEL_GUTTER {
+            if y + row_surface_h > panel.y1 - PANEL_GUTTER {
                 break;
             }
             // Row surface inset `PANEL_ROW_INSET`; its text and controls inset
@@ -2271,13 +2671,17 @@ impl PlayerApp {
                 panel.x0 + PANEL_ROW_INSET,
                 y,
                 panel.x1 - PANEL_ROW_INSET,
-                y + geometry.row_h,
+                y + row_surface_h,
             );
             let content_x0 = rect.x0 + PANEL_ROW_INSET;
             let controls_x1 = rect.x1 - PANEL_ROW_INSET;
             // Play / Remove centred in the row (7 px in at 1×), widths grown
             // to the measured labels when those need more than the authored.
-            let control_y0 = rect.y0 + (geometry.row_h - geometry.control_h) / 2.0;
+            let control_y0 = if narrow_large {
+                rect.y1 - PANEL_ROW_PAD_Y - geometry.control_h
+            } else {
+                rect.y0 + (geometry.row_h - geometry.control_h) / 2.0
+            };
             let control_y1 = control_y0 + geometry.control_h;
             let play = Rect::new(
                 controls_x1 - geometry.play_w,
@@ -2306,7 +2710,11 @@ impl PlayerApp {
                 },
             );
             let active = self.current_queue_id.as_deref() == Some(entry.id.as_str());
-            let text_x1 = remove.map_or(play.x0, |remove| remove.x0) - STRIP_TITLE_GAP;
+            let text_x1 = if narrow_large {
+                controls_x1
+            } else {
+                remove.map_or(play.x0, |remove| remove.x0) - STRIP_TITLE_GAP
+            };
             // Elide at the weight the label is drawn with (`panel_text` now
             // honours `Medium`); Regular advances are narrower and would let
             // a just-fitting title run into the Remove/Play faces.
@@ -2342,7 +2750,16 @@ impl PlayerApp {
                 scene,
                 text_renderer,
                 transform,
-                Rect::new(content_x0, title_box.y1, text_x1, rect.y1 - PANEL_ROW_PAD_Y),
+                Rect::new(
+                    content_x0,
+                    title_box.y1,
+                    text_x1,
+                    if narrow_large {
+                        control_y0 - PANEL_ROW_PAD_Y
+                    } else {
+                        rect.y1 - PANEL_ROW_PAD_Y
+                    },
+                ),
                 if active {
                     "Playing on this device"
                 } else {
@@ -2395,6 +2812,509 @@ impl PlayerApp {
             y += row_h;
         }
     }
+
+    fn paint_shared_library(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: (Rect, bool, f64),
+    ) {
+        let (panel, large_text, y) = layout;
+        let colors = &theme.tokens.colors;
+        let gap = 8.0;
+        let action_h = if large_text { 56.0 } else { 38.0 };
+        let action_w = (panel.width() - 24.0 - gap) * 0.5;
+        self.shared_watch_later_rect =
+            Rect::new(panel.x0 + 12.0, y, panel.x0 + 12.0 + action_w, y + action_h);
+        self.shared_bookmark_rect = Rect::new(
+            self.shared_watch_later_rect.x1 + gap,
+            y,
+            panel.x1 - 12.0,
+            y + action_h,
+        );
+        for (rect, label) in [
+            (self.shared_watch_later_rect, "Watch later"),
+            (self.shared_bookmark_rect, "Bookmark time"),
+        ] {
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(rect, label)
+                    .text_size(11.0)
+                    .primary()
+                    .hovered(rect.contains(self.last_cursor)),
+            );
+        }
+        self.shared_row_hits.clear();
+        let mut row_y = y + action_h + 16.0;
+        let row_h = if large_text { 72.0 } else { 48.0 };
+        let remove_w = if large_text { 92.0 } else { 64.0 };
+        for playlist in self
+            .shared_library
+            .playlists
+            .iter()
+            .take(crate::actions::CONTEXTUAL_CHILD_LIMIT)
+        {
+            if row_y + row_h > panel.y1 - 12.0 {
+                break;
+            }
+            let remove = Rect::new(
+                panel.x1 - 12.0 - remove_w,
+                row_y + 4.0,
+                panel.x1 - 12.0,
+                row_y + row_h - 4.0,
+            );
+            let row = Rect::new(panel.x0 + 12.0, row_y, panel.x1 - 12.0, row_y + row_h);
+            // Shared entries must retain a visible grouping boundary in every
+            // theme, particularly high contrast where an unfilled text row
+            // reads as sparse decoration rather than an actionable item.
+            fill_rect(scene, transform, row, colors.surfaces.base);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.border_standard,
+                None,
+                &row,
+            );
+            panel_text(
+                scene,
+                text_renderer,
+                transform,
+                Rect::new(
+                    panel.x0 + 18.0,
+                    row_y + 4.0,
+                    remove.x0 - 8.0,
+                    row_y + row_h - 4.0,
+                ),
+                &playlist.name,
+                13.0,
+                colors.text_primary,
+                TextWeight::Regular,
+            );
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(remove, "Delete")
+                    .ghost()
+                    .text_size(11.0)
+                    .hovered(remove.contains(self.last_cursor)),
+            );
+            self.shared_row_hits.push(SharedRowHit {
+                id: playlist.id.clone(),
+                jump: None,
+                remove,
+                annotation: false,
+            });
+            row_y += row_h;
+        }
+        self.paint_shared_annotations(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            (panel, row_h, remove_w, &mut row_y),
+        );
+        if self.shared_library.playlists.is_empty() && self.shared_library.annotations.is_empty() {
+            panel_text(
+                scene,
+                text_renderer,
+                transform,
+                Rect::new(panel.x0 + 20.0, row_y, panel.x1 - 20.0, row_y + row_h),
+                "Shared playlists and timestamp notes appear here.",
+                12.0,
+                colors.text_dim,
+                TextWeight::Regular,
+            );
+        }
+    }
+
+    fn paint_shared_annotations(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: (Rect, f64, f64, &mut f64),
+    ) {
+        let (panel, row_h, remove_w, row_y) = layout;
+        for annotation in self
+            .shared_library
+            .annotations
+            .iter()
+            .take(crate::actions::CONTEXTUAL_CHILD_LIMIT)
+        {
+            if *row_y + row_h > panel.y1 - 12.0 {
+                break;
+            }
+            let remove = Rect::new(
+                panel.x1 - 12.0 - remove_w,
+                *row_y + 4.0,
+                panel.x1 - 12.0,
+                *row_y + row_h - 4.0,
+            );
+            let matching_media = self.player.has_media()
+                && self.current_media_ref.as_deref() == Some(annotation.media_ref.as_str());
+            let jump = matching_media.then_some(Rect::new(
+                remove.x0 - 6.0 - remove_w,
+                *row_y + 4.0,
+                remove.x0 - 6.0,
+                *row_y + row_h - 4.0,
+            ));
+            let text = if annotation.text.is_empty() {
+                format!("Bookmark · {:.1}s", annotation.time_ms as f64 / 1000.0)
+            } else {
+                format!(
+                    "{} · {:.1}s",
+                    annotation.text,
+                    annotation.time_ms as f64 / 1000.0
+                )
+            };
+            let row = Rect::new(panel.x0 + 12.0, *row_y, panel.x1 - 12.0, *row_y + row_h);
+            fill_rect(scene, transform, row, theme.tokens.colors.surfaces.base);
+            // Keep the grouping visible even on renderers whose hairline
+            // rectangle stroke lands between device pixels at scaled output.
+            fill_rect(
+                scene,
+                transform,
+                Rect::new(row.x0, row.y0, row.x1, row.y0 + 1.0),
+                theme.tokens.colors.border_standard,
+            );
+            fill_rect(
+                scene,
+                transform,
+                Rect::new(row.x0, row.y1 - 1.0, row.x1, row.y1),
+                theme.tokens.colors.border_standard,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &row,
+            );
+            panel_text(
+                scene,
+                text_renderer,
+                transform,
+                Rect::new(
+                    panel.x0 + 18.0,
+                    *row_y + 4.0,
+                    jump.map_or(remove.x0, |jump| jump.x0) - 8.0,
+                    *row_y + row_h - 4.0,
+                ),
+                &text,
+                12.0,
+                theme.tokens.colors.text_primary,
+                TextWeight::Regular,
+            );
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(remove, "Delete")
+                    .ghost()
+                    .text_size(11.0)
+                    .hovered(remove.contains(self.last_cursor)),
+            );
+            if let Some(jump) = jump {
+                Button::paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &ButtonFace::new(jump, "Jump")
+                        .primary()
+                        .text_size(11.0)
+                        .focused(
+                            self.library_focus_id.as_deref()
+                                == Some(format!("shared-jump-{}", annotation.id).as_str()),
+                        )
+                        .hovered(jump.contains(self.last_cursor)),
+                );
+            }
+            self.shared_row_hits.push(SharedRowHit {
+                id: annotation.id.clone(),
+                jump,
+                remove,
+                annotation: true,
+            });
+            *row_y += row_h;
+        }
+    }
+
+    fn handle_app_pointer(&mut self, state: &mut AutoCommit) -> bool {
+        if self.library_visible && self.library_panel_rect.contains(self.last_cursor) {
+            if self.library_close_rect.contains(self.last_cursor) {
+                self.request_library_hide();
+            } else if self.library_queue_tab_rect.contains(self.last_cursor) {
+                self.request_queue_library();
+            } else if self.library_recent_tab_rect.contains(self.last_cursor) {
+                self.request_recent_library();
+            } else if self.library_shared_tab_rect.contains(self.last_cursor) {
+                self.request_shared_library();
+            } else if self.library_tab == LibraryTab::Shared
+                && self.shared_watch_later_rect.contains(self.last_cursor)
+            {
+                self.add_current_to_watch_later(state);
+            } else if self.library_tab == LibraryTab::Shared
+                && self.shared_bookmark_rect.contains(self.last_cursor)
+            {
+                self.bookmark_current_time(state);
+            } else if self.library_tab == LibraryTab::Shared
+                && let Some(row) = self
+                    .shared_row_hits
+                    .iter()
+                    .find(|row| row.jump.is_some_and(|jump| jump.contains(self.last_cursor)))
+                    .cloned()
+            {
+                self.request_annotation_jump(state, &row.id);
+            } else if self.library_tab == LibraryTab::Shared
+                && let Some(row) = self
+                    .shared_row_hits
+                    .iter()
+                    .find(|row| row.remove.contains(self.last_cursor))
+                    .cloned()
+            {
+                let action = if row.annotation {
+                    crate::shared::SharedAction::DeleteAnnotation { id: row.id }
+                } else {
+                    crate::shared::SharedAction::DeletePlaylist {
+                        observed_item_ids: self
+                            .shared_library
+                            .items
+                            .iter()
+                            .filter(|item| item.playlist_id == row.id)
+                            .map(|item| item.id.clone())
+                            .collect(),
+                        id: row.id,
+                    }
+                };
+                self.dispatch_shared(state, &action);
+            } else if self.library_tab == LibraryTab::Recent
+                && self.library_clear_rect.contains(self.last_cursor)
+            {
+                self.request_library_clear();
+            } else if let Some(row) = self
+                .library_row_hits
+                .iter()
+                .find(|row| row.row.contains(self.last_cursor))
+                .cloned()
+            {
+                if row
+                    .remove
+                    .is_some_and(|rect| rect.contains(self.last_cursor))
+                {
+                    self.request_library_remove(&row.id);
+                } else {
+                    self.request_library_play(&row.id);
+                }
+            }
+            self.dirty = true;
+            return true;
+        }
+        if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
+            self.request_open_action();
+            return true;
+        }
+        if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
+            self.request_library_visibility_change();
+            return true;
+        }
+        false
+    }
+
+    /// Handle the keyboard values this app owns. Factoring this from winit's
+    /// event carrier keeps shortcut tests fully safe and avoids fabricating
+    /// invalid platform event structs just to exercise a key binding.
+    fn handle_app_shortcut_input(
+        &mut self,
+        logical_key: &winit::keyboard::Key,
+        state: ElementState,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        if state != ElementState::Pressed {
+            return false;
+        }
+        // The library is an app-owned side panel rather than a modal supplied
+        // by the shared player surface. Give it the conventional close key so
+        // keyboard and switch-control users never have to hunt for the small
+        // header button. Do not consume Escape while the panel is absent: the
+        // shell and the embedded player may have a more relevant use for it.
+        if matches!(
+            logical_key,
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+        ) && self.library_visible
+        {
+            self.request_library_hide();
+            return true;
+        }
+        let winit::keyboard::Key::Character(key) = logical_key else {
+            return false;
+        };
+        if modifiers.state().control_key() && key.eq_ignore_ascii_case("o") {
+            self.request_open_action();
+        } else if key.eq_ignore_ascii_case("l") {
+            self.request_library_visibility_change();
+        } else if key.eq_ignore_ascii_case("p") && self.player.has_media() {
+            self.perform_resource_operation(PlayerOperation::OpenPictureInPicture);
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// Route a logical key through the app-owned shortcuts, then the focused
+    /// reusable player surface. This mirrors the live event order while
+    /// remaining safe to exercise without fabricating a platform `KeyEvent`.
+    fn route_key_input(
+        &mut self,
+        logical_key: &winit::keyboard::Key,
+        state: ElementState,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        self.handle_app_shortcut_input(logical_key, state, modifiers)
+            || self.player.handle_key_input(logical_key, state)
+    }
+}
+
+fn shared_accessibility_targets(app: &PlayerApp) -> Vec<(String, String, Rect)> {
+    let mut targets = Vec::new();
+    for row in &app.shared_row_hits {
+        if row.annotation {
+            if let Some(jump) = row.jump {
+                targets.push((
+                    format!("shared-jump-{}", row.id),
+                    format!("video-player.shared.jump.annotation.{}", row.id),
+                    jump,
+                ));
+            }
+            targets.push((
+                format!("shared-delete-{}", row.id),
+                format!("video-player.shared.delete.annotation.{}", row.id),
+                row.remove,
+            ));
+        } else {
+            targets.push((
+                format!("shared-delete-{}", row.id),
+                format!("video-player.shared.delete.playlist.{}", row.id),
+                row.remove,
+            ));
+        }
+    }
+    targets
+}
+
+fn shared_accessibility_nodes(app: &PlayerApp) -> Vec<ui::a11y::AccessNode> {
+    use ui::a11y::{AccessNode, AccessState, Role};
+    let mut nodes = vec![
+        AccessNode::new(Role::Button)
+            .with_name("Add current video to Watch later")
+            .with_action_target("video-player.shared.watch-later")
+            .with_bounds(app.shared_watch_later_rect)
+            .with_state(AccessState {
+                focusable: true,
+                focused: app.library_focus_id.as_deref() == Some("shared-watch-later"),
+                disabled: !app.player.has_media(),
+                ..Default::default()
+            }),
+        AccessNode::new(Role::Button)
+            .with_name("Bookmark current timestamp")
+            .with_action_target("video-player.shared.bookmark")
+            .with_bounds(app.shared_bookmark_rect)
+            .with_state(AccessState {
+                focusable: true,
+                focused: app.library_focus_id.as_deref() == Some("shared-bookmark"),
+                disabled: !app.player.has_media(),
+                ..Default::default()
+            }),
+    ];
+    nodes.extend(
+        shared_accessibility_targets(app)
+            .into_iter()
+            .map(|(focus, target, rect)| {
+                let is_jump = focus.starts_with("shared-jump-");
+                AccessNode::new(Role::Button)
+                    .with_name(if is_jump {
+                        "Jump to timestamp annotation"
+                    } else if target.contains(".annotation.") {
+                        "Delete timestamp annotation"
+                    } else {
+                        "Delete shared playlist"
+                    })
+                    .with_action_target(target)
+                    .with_bounds(rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: app.library_focus_id.as_deref() == Some(focus.as_str()),
+                        ..Default::default()
+                    })
+            }),
+    );
+    nodes
+}
+
+fn local_library_accessibility_nodes(app: &PlayerApp) -> Vec<ui::a11y::AccessNode> {
+    use ui::a11y::{AccessNode, AccessState, Role};
+    let mut nodes: Vec<_> = app
+        .library_row_hits
+        .iter()
+        .map(|row| {
+            let id = &row.id;
+            let title = app
+                .queue
+                .iter()
+                .chain(app.recent.iter())
+                .find(|entry| entry.id == *id)
+                .map_or("Local video", |entry| entry.title.as_str());
+            AccessNode::new(Role::Button)
+                .with_name(format!("Play {title}"))
+                .with_description("Opens this device-local video")
+                .with_action_target(format!("video-player.library.play.{id}"))
+                .with_bounds(row.play)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: app.library_focus_id.as_deref() == Some(id.as_str()),
+                    ..Default::default()
+                })
+        })
+        .collect();
+    if app.library_tab == LibraryTab::Recent && !app.recent.is_empty() {
+        nodes.push(
+            AccessNode::new(Role::Button)
+                .with_name("Clear recent videos")
+                .with_description("Removes recent-history entries from this device")
+                .with_action_target("video-player.library.clear")
+                .with_bounds(app.library_clear_rect)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: app.library_focus_id.as_deref() == Some("library-clear"),
+                    ..Default::default()
+                }),
+        );
+    }
+    nodes.extend(app.library_row_hits.iter().filter_map(|row| {
+        row.remove.map(|remove| {
+            AccessNode::new(Role::Button)
+                .with_name("Remove from queue")
+                .with_description("Removes this item from the session-only queue")
+                .with_action_target(format!("video-player.library.remove.{}", row.id))
+                .with_bounds(remove)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: app.library_focus_id.as_deref()
+                        == Some(format!("library-remove-{}", row.id).as_str()),
+                    ..Default::default()
+                })
+        })
+    }));
+    nodes
 }
 
 impl Default for PlayerApp {
@@ -2408,7 +3328,7 @@ impl Widget for PlayerApp {
         &[crate::actions::OPERATION_TYPE]
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
         crate::actions::resources(
             &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
@@ -2416,10 +3336,11 @@ impl Widget for PlayerApp {
         )
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
         crate::actions::resource(
             &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
+            doc,
             id,
         )
     }
@@ -2432,11 +3353,14 @@ impl Widget for PlayerApp {
             .as_ref()
             .is_some_and(|cached| cached.source_id == source_id && cached.revision == revision);
         if !reusable {
-            let provider = crate::search::VideoPlayerSearchProvider::new(&self.action_context(
-                &self.search_metadata.audio_tracks,
-                &self.search_metadata.subtitle_tracks,
-                &self.search_metadata.chapters,
-            ));
+            let provider = crate::search::VideoPlayerSearchProvider::new(
+                &self.action_context(
+                    &self.search_metadata.audio_tracks,
+                    &self.search_metadata.subtitle_tracks,
+                    &self.search_metadata.chapters,
+                ),
+                &self.shared_library,
+            );
             *cache = Some(SearchCache {
                 source_id,
                 revision,
@@ -2456,13 +3380,13 @@ impl Widget for PlayerApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode(type_id, payload)? else {
@@ -2472,6 +3396,25 @@ impl Widget for PlayerApp {
             return Err("open a video before using this playback control".into());
         }
         self.validate_dynamic_target(&operation)?;
+        if let PlayerOperation::JumpToAnnotation {
+            id,
+            media_ref,
+            time_ms,
+        } = &operation
+        {
+            let annotation_is_current =
+                crate::shared::read(doc)
+                    .annotations
+                    .iter()
+                    .any(|annotation| {
+                        annotation.id == *id
+                            && annotation.media_ref == *media_ref
+                            && annotation.time_ms == *time_ms
+                    });
+            if !annotation_is_current {
+                return Err("the review marker changed; refresh search and try again".into());
+            }
+        }
         if self
             .collab
             .as_ref()
@@ -2486,6 +3429,7 @@ impl Widget for PlayerApp {
                     | crate::actions::PlayerOperation::SetLoop(_)
                     | crate::actions::PlayerOperation::SetPlaybackRate(_)
                     | crate::actions::PlayerOperation::JumpToChapter { .. }
+                    | crate::actions::PlayerOperation::JumpToAnnotation { .. }
             )
         {
             return Err("this player is following the collaborative host".into());
@@ -2525,8 +3469,8 @@ impl Widget for PlayerApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -2562,18 +3506,18 @@ impl Widget for PlayerApp {
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         }
     }
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         self.drain_portal();
         if let Some(update) = self.poll_open_frame(invocation) {
             return Some(update);
@@ -2585,6 +3529,12 @@ impl Widget for PlayerApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        let shared = crate::shared::read(state);
+        if !self.shot_shared && shared != self.shared_library {
+            self.shared_library = shared;
+            self.invalidate_search_cache();
+            self.dirty = true;
+        }
         self.drain_portal();
         self.tick_collab();
         self.player.sync(state, path);
@@ -2600,6 +3550,7 @@ impl Widget for PlayerApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
         // Edge-to-edge: the player fills the whole surface. The app keeps itself
         // in the node map (so it can intercept the floating Open pill) by owning
         // a single-child root that stretches the player to 100%×100%.
@@ -2657,6 +3608,14 @@ impl Widget for PlayerApp {
     ) {
         self.player
             .draw(scene, transform, text_renderer, theme, presence);
+        if self.shot_loading {
+            fill_rect(
+                scene,
+                transform,
+                self.rect,
+                theme.tokens.colors.surfaces.base,
+            );
+        }
         self.paint_media_status_copy(scene, transform, text_renderer, theme);
         if self.overlay_visible() {
             self.refresh_strip_labels(text_renderer);
@@ -2685,68 +3644,14 @@ impl Widget for PlayerApp {
             button: MouseButton::Left,
             ..
         } = event
+            && self.handle_app_pointer(state)
         {
-            if self.library_visible && self.library_panel_rect.contains(self.last_cursor) {
-                if self.library_close_rect.contains(self.last_cursor) {
-                    self.library_visible = false;
-                } else if self.library_queue_tab_rect.contains(self.last_cursor) {
-                    self.library_tab = LibraryTab::Queue;
-                } else if self.library_recent_tab_rect.contains(self.last_cursor) {
-                    self.library_tab = LibraryTab::Recent;
-                } else if self.library_tab == LibraryTab::Recent
-                    && self.library_clear_rect.contains(self.last_cursor)
-                {
-                    self.request_library_clear();
-                } else if let Some(row) = self
-                    .library_row_hits
-                    .iter()
-                    .find(|row| row.row.contains(self.last_cursor))
-                    .cloned()
-                {
-                    if row
-                        .remove
-                        .is_some_and(|rect| rect.contains(self.last_cursor))
-                    {
-                        self.request_library_remove(&row.id);
-                    } else {
-                        self.request_library_play(&row.id);
-                    }
-                }
-                self.dirty = true;
-                *handled = true;
-                return;
-            }
-            // Only intercept the Open pill while the overlay is actually shown;
-            // during immersive playback that corner is just video.
-            if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
-                self.request_open_action();
-                *handled = true;
-                return;
-            }
-            if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
-                self.library_visible = !self.library_visible;
-                self.player.reveal_controls();
-                self.dirty = true;
-                *handled = true;
-                return;
-            }
-        }
-        if let WindowEvent::KeyboardInput { event, .. } = event
-            && event.state == ElementState::Pressed
-            && modifiers.state().control_key()
-            && matches!(&event.logical_key, winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("o"))
-        {
-            self.request_open_action();
             *handled = true;
             return;
         }
         if let WindowEvent::KeyboardInput { event, .. } = event
-            && event.state == ElementState::Pressed
-            && matches!(&event.logical_key, winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("l"))
+            && self.route_key_input(&event.logical_key, event.state, *modifiers)
         {
-            self.library_visible = !self.library_visible;
-            self.player.reveal_controls();
-            self.dirty = true;
             *handled = true;
             return;
         }
@@ -2777,16 +3682,26 @@ impl Widget for PlayerApp {
         vec![&mut self.player as &mut (dyn Widget + '_)]
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.open_action
             .as_mut()
             .and_then(ActionEmitter::take)
             .or_else(|| self.library_control_invocations.pop_front())
     }
 
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.pending_pip.take()
+    }
+
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.open_action {
             action.refresh_availability(allowed);
@@ -2794,9 +3709,15 @@ impl Widget for PlayerApp {
     }
 
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        self.open_action.as_ref().map_or_else(Vec::new, |action| {
-            vec![action.metadata("video-player.open")]
-        })
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        if let Some(action) = &self.open_action
+            && let Some(binding) = bindings
+                .iter_mut()
+                .find(|binding| binding.control_id == "video-player.open")
+        {
+            *binding = action.metadata("video-player.open");
+        }
+        bindings
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -2832,54 +3753,52 @@ impl Widget for PlayerApp {
                 }),
         ];
         if self.library_visible {
-            children.extend(self.library_row_hits.iter().map(|row| {
-                let id = &row.id;
-                let title = self
-                    .queue
-                    .iter()
-                    .chain(self.recent.iter())
-                    .find(|entry| entry.id == *id)
-                    .map_or("Local video", |entry| entry.title.as_str());
+            children.extend([
                 AccessNode::new(Role::Button)
-                    .with_name(format!("Play {title}"))
-                    .with_description("Opens this device-local video")
-                    .with_action_target(format!("video-player.library.play.{id}"))
-                    .with_bounds(row.play)
+                    .with_name("Close library")
+                    .with_description("Escape")
+                    .with_action_target("video-player.library.close")
+                    .with_bounds(self.library_close_rect)
                     .with_state(AccessState {
                         focusable: true,
-                        focused: self.library_focus_id.as_deref() == Some(id.as_str()),
+                        focused: self.library_focus_id.as_deref() == Some("library-close"),
                         ..Default::default()
-                    })
-            }));
-            if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
-                children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name("Clear recent videos")
-                        .with_description("Removes recent-history entries from this device")
-                        .with_action_target("video-player.library.clear")
-                        .with_bounds(self.library_clear_rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.library_focus_id.as_deref() == Some("library-clear"),
-                            ..Default::default()
-                        }),
-                );
+                    }),
+                AccessNode::new(Role::Tab)
+                    .with_name("Queue")
+                    .with_action_target("video-player.library.tab.queue")
+                    .with_bounds(self.library_queue_tab_rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.library_focus_id.as_deref() == Some("library-tab-queue"),
+                        selected: self.library_tab == LibraryTab::Queue,
+                        ..Default::default()
+                    }),
+                AccessNode::new(Role::Tab)
+                    .with_name("Recent")
+                    .with_action_target("video-player.library.tab.recent")
+                    .with_bounds(self.library_recent_tab_rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.library_focus_id.as_deref() == Some("library-tab-recent"),
+                        selected: self.library_tab == LibraryTab::Recent,
+                        ..Default::default()
+                    }),
+                AccessNode::new(Role::Tab)
+                    .with_name("Shared")
+                    .with_action_target("video-player.library.tab.shared")
+                    .with_bounds(self.library_shared_tab_rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.library_focus_id.as_deref() == Some("library-tab-shared"),
+                        selected: self.library_tab == LibraryTab::Shared,
+                        ..Default::default()
+                    }),
+            ]);
+            if self.library_tab == LibraryTab::Shared {
+                children.extend(shared_accessibility_nodes(self));
             }
-            children.extend(self.library_row_hits.iter().filter_map(|row| {
-                row.remove.map(|remove| {
-                    AccessNode::new(Role::Button)
-                        .with_name("Remove from queue")
-                        .with_description("Removes this item from the session-only queue")
-                        .with_action_target(format!("video-player.library.remove.{}", row.id))
-                        .with_bounds(remove)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.library_focus_id.as_deref()
-                                == Some(format!("library-remove-{}", row.id).as_str()),
-                            ..Default::default()
-                        })
-                })
-            }));
+            children.extend(local_library_accessibility_nodes(self));
         }
         Some(
             AccessNode::new(Role::Group)
@@ -2896,8 +3815,23 @@ impl Widget for PlayerApp {
         match path {
             [0] => Some(self.open_button_rect),
             [1] => Some(self.library_button_rect),
+            [2] if self.library_visible => Some(self.library_close_rect),
+            [3] if self.library_visible => Some(self.library_queue_tab_rect),
+            [4] if self.library_visible => Some(self.library_recent_tab_rect),
+            [5] if self.library_visible => Some(self.library_shared_tab_rect),
+            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                Some(self.shared_watch_later_rect)
+            }
+            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                Some(self.shared_bookmark_rect)
+            }
+            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                shared_accessibility_targets(self)
+                    .get(index.saturating_sub(8))
+                    .map(|(_, _, rect)| *rect)
+            }
             [index] => {
-                let library_index = index.saturating_sub(2);
+                let library_index = index.saturating_sub(6);
                 let play_count = self.library_row_hits.len();
                 if let Some(row) = self.library_row_hits.get(library_index) {
                     Some(row.play)
@@ -2939,8 +3873,57 @@ impl Widget for PlayerApp {
                 self.dirty = true;
                 true
             }
+            [2] if self.library_visible => {
+                self.library_focus_id = Some("library-close".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [3] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-queue".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [4] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-recent".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [5] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-shared".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                self.library_focus_id = Some("shared-watch-later".into());
+                self.dirty = true;
+                true
+            }
+            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                self.library_focus_id = Some("shared-bookmark".into());
+                self.dirty = true;
+                true
+            }
+            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                let Some((focus, _, _)) = shared_accessibility_targets(self)
+                    .get(index.saturating_sub(8))
+                    .cloned()
+                else {
+                    return false;
+                };
+                self.library_focus_id = Some(focus);
+                self.dirty = true;
+                true
+            }
             [index] => {
-                let library_index = index.saturating_sub(2);
+                let library_index = index.saturating_sub(6);
                 let play_count = self.library_row_hits.len();
                 self.library_focus_id = if let Some(row) = self.library_row_hits.get(library_index)
                 {
@@ -2979,21 +3962,79 @@ impl Widget for PlayerApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
+        state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
         if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
             self.request_open_action();
             true
         } else if target == "video-player.library" && matches!(action, ui::a11y::Action::Activate) {
-            self.library_visible = !self.library_visible;
-            self.player.reveal_controls();
-            self.dirty = true;
+            self.request_library_visibility_change();
             true
         } else if let Some(item_id) = target.strip_prefix("video-player.library.play.")
             && matches!(action, ui::a11y::Action::Activate)
         {
             self.request_library_play(item_id);
+            true
+        } else if target == "video-player.library.close"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.request_library_hide();
+            true
+        } else if target == "video-player.library.tab.queue"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.request_queue_library();
+            true
+        } else if target == "video-player.library.tab.recent"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.request_recent_library();
+            true
+        } else if target == "video-player.library.tab.shared"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.request_shared_library();
+            true
+        } else if target == "video-player.shared.watch-later"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.add_current_to_watch_later(state);
+            true
+        } else if target == "video-player.shared.bookmark"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.bookmark_current_time(state);
+            true
+        } else if let Some(rest) = target.strip_prefix("video-player.shared.jump.annotation.")
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.request_annotation_jump(state, rest);
+            true
+        } else if let Some(rest) = target.strip_prefix("video-player.shared.delete.annotation.")
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.dispatch_shared(
+                state,
+                &crate::shared::SharedAction::DeleteAnnotation { id: rest.into() },
+            );
+            true
+        } else if let Some(rest) = target.strip_prefix("video-player.shared.delete.playlist.")
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.dispatch_shared(
+                state,
+                &crate::shared::SharedAction::DeletePlaylist {
+                    observed_item_ids: self
+                        .shared_library
+                        .items
+                        .iter()
+                        .filter(|item| item.playlist_id == rest)
+                        .map(|item| item.id.clone())
+                        .collect(),
+                    id: rest.into(),
+                },
+            );
             true
         } else if target == "video-player.library.clear"
             && matches!(action, ui::a11y::Action::Activate)
@@ -3014,12 +4055,54 @@ impl Widget for PlayerApp {
         if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
             Some("Open video (Ctrl+O)")
         } else if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
-            Some("Show queue and recent videos (L)")
+            Some(if self.library_visible {
+                "Hide queue and recent videos (L)"
+            } else {
+                "Show queue and recent videos (L)"
+            })
+        } else if self.library_visible && self.library_close_rect.contains(self.last_cursor) {
+            Some("Close library (Escape)")
+        } else if self.library_visible && self.library_queue_tab_rect.contains(self.last_cursor) {
+            Some("Show this device's queue")
+        } else if self.library_visible && self.library_recent_tab_rect.contains(self.last_cursor) {
+            Some("Show recently played videos on this device")
+        } else if self.library_visible && self.library_shared_tab_rect.contains(self.last_cursor) {
+            Some("Show shared playlists and timestamp notes")
+        } else if self.library_visible
+            && self.library_tab == LibraryTab::Shared
+            && self.shared_watch_later_rect.contains(self.last_cursor)
+        {
+            Some("Add the current video to the shared Watch later playlist")
+        } else if self.library_visible
+            && self.library_tab == LibraryTab::Shared
+            && self.shared_bookmark_rect.contains(self.last_cursor)
+        {
+            Some("Add a shared bookmark at the current playback time")
+        } else if self.library_visible
+            && self.library_tab == LibraryTab::Shared
+            && let Some(row) = self
+                .shared_row_hits
+                .iter()
+                .find(|row| row.remove.contains(self.last_cursor))
+        {
+            Some(if row.annotation {
+                "Delete this shared timestamp note"
+            } else {
+                "Delete this shared playlist"
+            })
         } else if self.library_visible
             && self.library_tab == LibraryTab::Recent
             && self.library_clear_rect.contains(self.last_cursor)
         {
             Some("Clear recent videos from this device")
+        } else if self.library_visible
+            && self.library_tab == LibraryTab::Shared
+            && self
+                .shared_row_hits
+                .iter()
+                .any(|row| row.jump.is_some_and(|jump| jump.contains(self.last_cursor)))
+        {
+            Some("Jump to this timestamp in the current video")
         } else if self.library_row_hits.iter().any(|row| {
             row.remove
                 .is_some_and(|rect| rect.contains(self.last_cursor))
@@ -3092,13 +4175,13 @@ mod tests {
     #[test]
     fn source_for_path_splits_local_vs_workspace() {
         // Point the mount at a scratch root so the classification is testable.
-        let root = std::env::temp_dir().join(format!("qos-vp-app-{}", std::process::id()));
-        unsafe { std::env::set_var("QOS_WORKSPACE_ROOT", &root) };
+        let root = std::env::temp_dir().join(format!("tilo-vp-app-{}", std::process::id()));
+        unsafe { std::env::set_var("TILO_WORKSPACE_ROOT", &root) };
         let ws = source_for_path(&root.join("media/a.mp4"));
         assert!(matches!(ws, media::Source::Workspace(_)));
         let local = source_for_path(Path::new("/home/u/b.mp4"));
         assert!(matches!(local, media::Source::LocalFile(_)));
-        unsafe { std::env::remove_var("QOS_WORKSPACE_ROOT") };
+        unsafe { std::env::remove_var("TILO_WORKSPACE_ROOT") };
     }
 
     #[test]
@@ -3205,6 +4288,87 @@ mod tests {
     }
 
     #[test]
+    fn durable_marker_media_reference_survives_a_reopen_but_source_actions_stay_fresh() {
+        let mut app = synth_app();
+        let path = Path::new("/tmp/review-cut.mp4");
+        app.open_path(path).expect("first source identity");
+        let first_source_id = app.current_source_id.clone();
+        let media_ref = app.current_media_ref.clone();
+        app.open_path(path).expect("reopened source identity");
+        assert_ne!(app.current_source_id, first_source_id);
+        assert_eq!(app.current_media_ref, media_ref);
+        assert!(
+            !app.current_media_ref
+                .as_deref()
+                .unwrap_or_default()
+                .contains("review-cut"),
+            "the durable reference remains opaque"
+        );
+    }
+
+    #[test]
+    fn marker_jump_control_uses_its_canonical_resource_action() {
+        let mut app = synth_app();
+        app.open_path(Path::new("/tmp/review-cut.mp4"))
+            .expect("source identity");
+        let mut doc = AutoCommit::new();
+        app.dispatch_shared(
+            &mut doc,
+            &crate::shared::SharedAction::CreateAnnotation {
+                id: "review-marker".into(),
+                media_ref: app.current_media_ref.clone().unwrap(),
+                time_ms: 12_500,
+                text: "Tighten this cut".into(),
+            },
+        );
+        app.request_annotation_jump(&doc, "review-marker");
+        let invocation = Widget::take_control_invocation(&mut app).expect("marker jump intent");
+        assert_eq!(
+            invocation.address.resource,
+            crate::actions::annotation_resource_id("review-marker")
+        );
+        assert_eq!(invocation.address.action, "jump");
+    }
+
+    #[test]
+    fn marker_jump_refuses_a_stale_document_target_before_seeking() {
+        let mut app = synth_app();
+        app.open_path(Path::new("/tmp/review-cut.mp4"))
+            .expect("source identity");
+        let media_ref = app.current_media_ref.clone().expect("durable media ref");
+        let mut doc = AutoCommit::new();
+        app.dispatch_shared(
+            &mut doc,
+            &crate::shared::SharedAction::CreateAnnotation {
+                id: "review-marker".into(),
+                media_ref: media_ref.clone(),
+                time_ms: 12_500,
+                text: String::new(),
+            },
+        );
+        let encoded = tilo_actions::EncodedAction::encode_operation(
+            crate::actions::OPERATION_TYPE,
+            &PlayerOperation::JumpToAnnotation {
+                id: "review-marker".into(),
+                media_ref,
+                time_ms: 14_000,
+            },
+        )
+        .expect("operation encodes");
+        let error = Widget::invoke_resource_operation(
+            &mut app,
+            tilo_actions::OperationKind::View,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &root(),
+        )
+        .expect_err("changed timestamp must be refused");
+        assert!(error.contains("review marker changed"));
+        assert_ne!(app.player.position_ms(), 14_000);
+    }
+
+    #[test]
     fn metadata_revision_boundary_discards_the_cache_before_resetting() {
         let mut app = PlayerApp::for_shot(None, Some("metadata"));
         let _first = app.search_providers();
@@ -3248,8 +4412,8 @@ mod tests {
     #[test]
     fn completed_portal_result_backpressures_new_async_requests_until_polled() {
         let mut app = PlayerApp::new();
-        app.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
-            invocation: qos_actions::InvocationId::new(),
+        app.queue_resource_result(tilo_actions::InvocationUpdate::Cancelled {
+            invocation: tilo_actions::InvocationId::new(),
             message: Some("test completion".into()),
         });
         let error = app
@@ -3340,11 +4504,118 @@ mod tests {
                 remove: Some(Rect::new(44.0, 44.0, 88.0, 88.0)),
             },
         ];
-        assert!(Widget::focus_synthetic_accessibility(&mut app, &[3]));
+        assert!(Widget::focus_synthetic_accessibility(&mut app, &[7]));
         assert_eq!(app.library_focus_id.as_deref(), Some(focused_id.as_str()));
         assert_eq!(
-            Widget::synthetic_accessibility_rect(&app, &[3]),
+            Widget::synthetic_accessibility_rect(&app, &[7]),
             Some(Rect::new(0.0, 44.0, 44.0, 88.0))
+        );
+    }
+
+    #[test]
+    fn library_close_and_tabs_are_reachable_accessibility_controls() {
+        let mut app = PlayerApp::for_shot(None, Some("library"));
+        app.library_close_rect = Rect::new(0.0, 0.0, 44.0, 44.0);
+        app.library_queue_tab_rect = Rect::new(44.0, 0.0, 132.0, 44.0);
+        app.library_recent_tab_rect = Rect::new(132.0, 0.0, 220.0, 44.0);
+        app.library_shared_tab_rect = Rect::new(220.0, 0.0, 308.0, 44.0);
+
+        let tree = Widget::accessibility(&app).expect("application accessibility tree");
+        assert_eq!(tree.children[2].name.as_deref(), Some("Close library"));
+        assert_eq!(tree.children[3].name.as_deref(), Some("Queue"));
+        assert!(tree.children[3].state.selected);
+        assert_eq!(tree.children[4].name.as_deref(), Some("Recent"));
+        assert!(!tree.children[4].state.selected);
+        assert_eq!(tree.children[5].name.as_deref(), Some("Shared"));
+        assert!(!tree.children[5].state.selected);
+
+        assert!(Widget::focus_synthetic_accessibility(&mut app, &[4]));
+        assert_eq!(app.library_focus_id.as_deref(), Some("library-tab-recent"));
+        let mut doc = AutoCommit::new();
+        let path = root();
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "video-player.library.tab.recent",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &path,
+        ));
+        let recent = Widget::take_control_invocation(&mut app).expect("recent intent");
+        assert_eq!(recent.address.resource, "video-player.history.local");
+        assert_eq!(recent.address.action, "show");
+        assert_eq!(
+            app.library_tab,
+            LibraryTab::Queue,
+            "a11y did not bypass host routing"
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "video-player.library.close",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &path,
+        ));
+        let close = Widget::take_control_invocation(&mut app).expect("close intent");
+        assert_eq!(close.address.resource, "video-player.application");
+        assert_eq!(close.address.action, "hide-library");
+        assert!(app.library_visible, "a11y did not bypass host routing");
+
+        app.perform_resource_operation(PlayerOperation::RevealRecentLibrary);
+        assert_eq!(app.library_tab, LibraryTab::Recent);
+        app.perform_resource_operation(PlayerOperation::HideLibrary);
+        assert!(!app.library_visible);
+    }
+
+    #[test]
+    fn library_has_conventional_escape_close_and_complete_hover_help() {
+        let mut app = PlayerApp::for_shot(None, Some("shared"));
+        app.library_close_rect = Rect::new(0.0, 0.0, 44.0, 44.0);
+        app.last_cursor = Point::new(20.0, 20.0);
+        assert_eq!(app.tooltip(), Some("Close library (Escape)"));
+
+        assert!(app.handle_app_shortcut_input(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+            ElementState::Pressed,
+            winit::event::Modifiers::default(),
+        ));
+        let close = Widget::take_control_invocation(&mut app).expect("escape close intent");
+        assert_eq!(close.address.resource, "video-player.application");
+        assert_eq!(close.address.action, "hide-library");
+        assert!(
+            app.library_visible,
+            "Escape did not bypass the host action lifecycle"
+        );
+    }
+
+    #[test]
+    fn picture_in_picture_uses_the_shell_owned_floating_surface_contract() {
+        let mut app = synth_app();
+        app.open_path(Path::new("/tmp/Clip.mp4"))
+            .expect("source identity available");
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::new();
+        let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let root = app.build_layout(&mut taffy, &theme, &mut nodes);
+        taffy
+            .compute_layout(
+                root,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(720.0),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, root, Point::ZERO);
+        app.perform_resource_operation(PlayerOperation::OpenPictureInPicture);
+        let request = Widget::take_floating_surface_request(&mut app).expect("PiP request");
+        assert_eq!(request.id, "video-player.current-video");
+        assert_eq!(
+            request.role,
+            ui::floating_surface::FloatingRole::PictureInPicture
+        );
+        assert_eq!(request.aspect_ratio, Some(16.0 / 9.0));
+        assert!(
+            matches!(request.source, ui::floating_surface::FloatingSource::AppElement { ref app_id, ref element_id, .. } if app_id == "dev.tilo.video-player" && element_id == "video_surface")
         );
     }
 
@@ -3378,20 +4649,139 @@ mod tests {
     }
 
     #[test]
+    fn library_navigation_is_published_as_canonical_actions() {
+        let app = PlayerApp::for_shot(None, Some("library"));
+        let resources = Widget::resources(&app, &AutoCommit::new());
+        let queue = find_resource(&resources, "video-player.queue.local").expect("queue resource");
+        let recent =
+            find_resource(&resources, "video-player.history.local").expect("recent resource");
+        let shared = find_resource(&resources, "video-player.playlists.shared")
+            .expect("shared library resource");
+        let root = &resources[0];
+
+        assert!(
+            root.actions
+                .iter()
+                .any(|action| action.id == "show-library")
+        );
+        assert!(
+            root.actions
+                .iter()
+                .any(|action| action.id == "hide-library")
+        );
+        assert!(queue.actions.iter().any(|action| action.id == "show"));
+        assert!(recent.actions.iter().any(|action| action.id == "show"));
+        assert!(shared.actions.iter().any(|action| action.id == "show"));
+        for action in root
+            .actions
+            .iter()
+            .filter(|action| matches!(action.id.as_str(), "show-library" | "hide-library"))
+            .chain(queue.actions.iter().filter(|action| action.id == "show"))
+            .chain(recent.actions.iter().filter(|action| action.id == "show"))
+            .chain(shared.actions.iter().filter(|action| action.id == "show"))
+        {
+            assert_eq!(action.contract.retry, tilo_actions::RetryPolicy::Idempotent);
+            assert_eq!(
+                action.contract.execution,
+                tilo_actions::ExecutionMode::Immediate
+            );
+            assert_eq!(
+                action.contract.tags,
+                vec!["device-local", "media", "presentation"]
+            );
+        }
+        let queued_item = queue.children.first().expect("queued item");
+        assert_eq!(
+            queued_item
+                .actions
+                .iter()
+                .find(|action| action.id == "remove")
+                .expect("remove action")
+                .contract
+                .retry,
+            tilo_actions::RetryPolicy::AtMostOnce
+        );
+    }
+
+    #[test]
+    fn library_visibility_controls_restore_the_last_explicit_tab() {
+        let mut app = PlayerApp::for_shot(None, Some("library"));
+        let mut doc = AutoCommit::new();
+
+        // Pointer activation reopens Recent, not the hard-coded Queue default.
+        app.library_tab = LibraryTab::Recent;
+        app.library_button_rect = Rect::new(0.0, 0.0, 100.0, 44.0);
+        app.last_cursor = Point::new(20.0, 20.0);
+        assert!(app.handle_app_pointer(&mut doc));
+        let hide = Widget::take_control_invocation(&mut app).expect("pointer hide intent");
+        assert_eq!(hide.address.action, "hide-library");
+        app.perform_resource_operation(PlayerOperation::HideLibrary);
+        assert!(app.handle_app_pointer(&mut doc));
+        let recent = Widget::take_control_invocation(&mut app).expect("pointer reopen intent");
+        assert_eq!(recent.address.resource, "video-player.history.local");
+        assert_eq!(recent.address.action, "show");
+
+        // `L` uses the same explicit intent and retains a Shared view.
+        app.perform_resource_operation(PlayerOperation::RevealSharedLibrary);
+        let shortcut = winit::keyboard::Key::Character("l".into());
+        assert!(app.handle_app_shortcut_input(
+            &shortcut,
+            ElementState::Pressed,
+            winit::event::Modifiers::default(),
+        ));
+        let hide = Widget::take_control_invocation(&mut app).expect("shortcut hide intent");
+        assert_eq!(hide.address.action, "hide-library");
+        app.perform_resource_operation(PlayerOperation::HideLibrary);
+        assert!(app.handle_app_shortcut_input(
+            &shortcut,
+            ElementState::Pressed,
+            winit::event::Modifiers::default(),
+        ));
+        let shared = Widget::take_control_invocation(&mut app).expect("shortcut reopen intent");
+        assert_eq!(shared.address.resource, "video-player.playlists.shared");
+        assert_eq!(shared.address.action, "show");
+
+        // Assistive-tech activation is routed through the identical Queue
+        // action rather than privately changing the current tab.
+        app.perform_resource_operation(PlayerOperation::RevealLibrary);
+        let path = root();
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "video-player.library",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &path,
+        ));
+        let hide = Widget::take_control_invocation(&mut app).expect("a11y hide intent");
+        assert_eq!(hide.address.action, "hide-library");
+        app.perform_resource_operation(PlayerOperation::HideLibrary);
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "video-player.library",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &path,
+        ));
+        let queue = Widget::take_control_invocation(&mut app).expect("a11y reopen intent");
+        assert_eq!(queue.address.resource, "video-player.queue.local");
+        assert_eq!(queue.address.action, "show");
+    }
+
+    #[test]
     fn follower_rejects_transport_operations_even_if_invoked_out_of_band() {
         let mut app = synth_app();
         app.open_path(Path::new("/tmp/Clip.mp4"))
             .expect("source identity available");
         app.collab = Some(CollabPlayback::new(Role::Follower));
         app.player.set_transport_enabled(false);
-        let encoded = qos_actions::EncodedAction::encode_operation(
+        let encoded = tilo_actions::EncodedAction::encode_operation(
             crate::actions::OPERATION_TYPE,
             &crate::actions::PlayerOperation::TogglePlayback,
         )
         .unwrap();
         let result = Widget::invoke_resource_operation(
             &mut app,
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             &encoded.type_id,
             &encoded.payload,
             &AutoCommit::new(),
@@ -3403,14 +4793,14 @@ mod tests {
     #[test]
     fn unavailable_transport_is_rejected_even_if_a_caller_bypasses_discovery() {
         let mut app = PlayerApp::new();
-        let encoded = qos_actions::EncodedAction::encode_operation(
+        let encoded = tilo_actions::EncodedAction::encode_operation(
             crate::actions::OPERATION_TYPE,
             &crate::actions::PlayerOperation::TogglePlayback,
         )
         .unwrap();
         let result = Widget::invoke_resource_operation(
             &mut app,
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             &encoded.type_id,
             &encoded.payload,
             &AutoCommit::new(),
@@ -3548,6 +4938,7 @@ mod tests {
             clear_w: width(&mut tr, "Clear", PANEL_HEADER_BUTTON_SIZE),
             queue_w: width(&mut tr, "Queue", PANEL_TAB_SIZE),
             recent_w: width(&mut tr, "Recent", PANEL_TAB_SIZE),
+            shared_w: width(&mut tr, "Shared", PANEL_TAB_SIZE),
             remove_w: width(&mut tr, "Remove", PANEL_ROW_CONTROL_SIZE),
             play_w: width(&mut tr, "Replay", PANEL_ROW_CONTROL_SIZE),
             subtitle_h: f64::from(
@@ -3724,7 +5115,7 @@ mod tests {
     fn direct_open_is_accepted_until_a_decoder_frame_confirms_success() {
         let mut app = synth_app();
         let path = std::env::temp_dir().join(format!(
-            "qos-video-player-open-lifecycle-{}-{}.mp4",
+            "tilo-video-player-open-lifecycle-{}-{}.mp4",
             std::process::id(),
             media::now_ms()
         ));
@@ -3733,12 +5124,12 @@ mod tests {
             path: Some(path.to_string_lossy().into_owned()),
         };
         let payload = serde_json::to_vec(&operation).expect("serialize operation");
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let doc = AutoCommit::new();
         let started = Widget::start_resource_operation(
             &mut app,
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::OPERATION_TYPE,
             &payload,
             &doc,
@@ -3757,7 +5148,7 @@ mod tests {
         app.sync(&mut mutable_doc, &root());
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, invocation, false, &mutable_doc, &root()),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         std::fs::remove_file(path).ok();
     }
@@ -3770,13 +5161,13 @@ mod tests {
             item_id: item_id.clone(),
         })
         .expect("serialize queue operation");
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let mut doc = AutoCommit::new();
         assert_eq!(
             Widget::start_resource_operation(
                 &mut app,
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -3793,7 +5184,7 @@ mod tests {
         app.sync(&mut doc, &root());
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, invocation, false, &doc, &root()),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         assert_eq!(
             app.recent.front().map(|entry| entry.id.as_str()),
@@ -3805,7 +5196,7 @@ mod tests {
     fn admitted_direct_open_reports_a_decoder_timeout_instead_of_false_success() {
         let mut app = synth_app();
         let path = std::env::temp_dir().join(format!(
-            "qos-video-player-open-timeout-{}-{}.mp4",
+            "tilo-video-player-open-timeout-{}-{}.mp4",
             std::process::id(),
             media::now_ms()
         ));
@@ -3814,13 +5205,13 @@ mod tests {
             path: Some(path.to_string_lossy().into_owned()),
         })
         .expect("serialize operation");
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let doc = AutoCommit::new();
         assert_eq!(
             Widget::start_resource_operation(
                 &mut app,
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -3835,7 +5226,7 @@ mod tests {
             .deadline = std::time::Instant::now();
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, invocation, false, &doc, &root()),
-            Some(qos_actions::InvocationUpdate::Failed { error, .. })
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
                 if error.code == "video_player.open_timed_out"
         ));
         assert_eq!(
@@ -3936,62 +5327,17 @@ mod tests {
         let mut app = synth_app();
         app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
             .expect("source identity available");
-
-        // Lay the app out so `handle_event` can find the player child node.
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(640.0),
-                    height: taffy::AvailableSpace::Definite(480.0),
-                },
-            )
-            .unwrap();
-        app.apply_layout(&taffy, node, Point::ZERO);
         app.player.set_focus(true);
-
         let was_playing = app.player.is_playing();
-        let mut doc = AutoCommit::new();
-        let r = root();
-        let mods = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus_target = None;
-        let space = {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            }
-        };
-        app.handle_event(
-            &space,
-            1.0,
-            &mods,
-            &mut doc,
-            &r,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
-        );
-        assert!(handled, "the app forwarded the key to the player");
+        assert!(app.route_key_input(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space),
+            ElementState::Pressed,
+            winit::event::Modifiers::default(),
+        ));
         assert_ne!(
             app.player.is_playing(),
             was_playing,
-            "Space toggled playback via the app"
+            "Space reached the focused player through the app"
         );
     }
 

@@ -22,6 +22,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use pkg::blobs::{BlobHash, Collection};
 use pkg::signed::SignedRoot;
 
@@ -55,8 +56,16 @@ pub enum IntegrityError {
     RootIdMismatch,
     #[error("recorded signed root is malformed: {0}")]
     RootMalformed(String),
+    #[error("recorded package root is not signed")]
+    RootUnsigned,
+    #[error("recorded package publisher key is invalid")]
+    InvalidPublisherKey,
+    #[error("recorded package signature is invalid")]
+    RootSignatureMismatch,
     #[error("recorded manifest does not match the hash the signature covers")]
     ManifestMismatch,
+    #[error("installed manifest differs from the signed manifest record")]
+    InstalledManifestMismatch,
     #[error("recorded payload collection does not match the hash the signature covers")]
     CollectionMismatch,
     #[error("payload collection is malformed: {0}")]
@@ -217,10 +226,24 @@ pub fn verify(
     }
     let root = SignedRoot::decode(&signed_bytes)
         .map_err(|e| IntegrityError::RootMalformed(e.to_string()))?;
+    let signature = root.signature.ok_or(IntegrityError::RootUnsigned)?;
+    let publisher = VerifyingKey::from_bytes(&root.publisher_identity)
+        .map_err(|_| IntegrityError::InvalidPublisherKey)?;
+    publisher
+        .verify(&root.signing_bytes(), &Signature::from_bytes(&signature))
+        .map_err(|_| IntegrityError::RootSignatureMismatch)?;
 
     // 2 + 3. The two hashes the publisher's signature actually covers.
     if BlobHash::of(&manifest_bytes) != root.manifest_hash {
         return Err(IntegrityError::ManifestMismatch);
+    }
+    let installed_manifest =
+        std::fs::read(payload_root.join(MANIFEST)).map_err(|source| IntegrityError::Read {
+            path: payload_root.join(MANIFEST),
+            source,
+        })?;
+    if installed_manifest != manifest_bytes {
+        return Err(IntegrityError::InstalledManifestMismatch);
     }
     if BlobHash::of(&collection_bytes) != root.payload_root_hash {
         return Err(IntegrityError::CollectionMismatch);
@@ -294,32 +317,39 @@ fn collect_unexpected(
 
 #[cfg(test)]
 mod tests {
+    use ed25519_dalek::{Signer, SigningKey};
+
     use super::*;
 
     /// Build a payload directory plus the record that describes it, exactly as the installer would.
     fn fixture(root: &Path) -> (PathBuf, String) {
-        let payload = root.join("payloads/dev.qos.example");
+        let payload = root.join("payloads/dev.tilo.example");
         std::fs::create_dir_all(payload.join("bin")).unwrap();
         std::fs::write(payload.join("bin/app"), b"binary bytes").unwrap();
         std::fs::write(payload.join("data.txt"), b"hello").unwrap();
 
-        let manifest_bytes = b"[package]\nid = \"dev.qos.example\"\n".to_vec();
+        let manifest_bytes = b"[package]\nid = \"dev.tilo.example\"\n".to_vec();
+        std::fs::write(payload.join(MANIFEST), &manifest_bytes).unwrap();
         let collection = Collection::from_entries([
             ("bin/app".to_string(), BlobHash::of(b"binary bytes")),
             ("data.txt".to_string(), BlobHash::of(b"hello")),
         ]);
         let collection_bytes = collection.encode();
-        let signed = SignedRoot::unsigned(
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let mut signed = SignedRoot::unsigned(
             BlobHash::of(&manifest_bytes),
             BlobHash::of(&collection_bytes),
-            [7u8; 32],
+            signing_key.verifying_key().to_bytes(),
         );
+        // The has-signature bit is part of the signed preimage.
+        signed.signature = Some([0; 64]);
+        signed.signature = Some(signing_key.sign(&signed.signing_bytes()).to_bytes());
         let signed_bytes = signed.encode().to_vec();
         let id_hex = hex::encode(BlobHash::of(&signed_bytes).0);
 
         record(
             root,
-            "dev.qos.example",
+            "dev.tilo.example",
             &signed_bytes,
             &manifest_bytes,
             &collection_bytes,
@@ -332,7 +362,7 @@ mod tests {
     fn an_untouched_install_verifies() {
         let tmp = tempfile::tempdir().unwrap();
         let (payload, id_hex) = fixture(tmp.path());
-        let report = verify(tmp.path(), "dev.qos.example", &id_hex, &payload).unwrap();
+        let report = verify(tmp.path(), "dev.tilo.example", &id_hex, &payload).unwrap();
         assert!(report.is_intact(), "{report:?}");
         assert_eq!(report.files_checked, 2);
         assert!(report.unexpected.is_empty());
@@ -343,9 +373,23 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (payload, id_hex) = fixture(tmp.path());
         std::fs::write(payload.join("bin/app"), b"tampered").unwrap();
-        let report = verify(tmp.path(), "dev.qos.example", &id_hex, &payload).unwrap();
+        let report = verify(tmp.path(), "dev.tilo.example", &id_hex, &payload).unwrap();
         assert!(!report.is_intact());
         assert_eq!(report.faults, vec![FileFault::Modified("bin/app".into())]);
+    }
+
+    #[test]
+    fn a_modified_installed_manifest_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (payload, id_hex) = fixture(tmp.path());
+        std::fs::write(
+            payload.join(MANIFEST),
+            b"[package]\nid = \"dev.tilo.attacker\"\n",
+        )
+        .unwrap();
+        let error = verify(tmp.path(), "dev.tilo.example", &id_hex, &payload)
+            .expect_err("the launcher reads the installed manifest, so it must be signed");
+        assert!(matches!(error, IntegrityError::InstalledManifestMismatch));
     }
 
     #[test]
@@ -353,7 +397,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (payload, id_hex) = fixture(tmp.path());
         std::fs::remove_file(payload.join("data.txt")).unwrap();
-        let report = verify(tmp.path(), "dev.qos.example", &id_hex, &payload).unwrap();
+        let report = verify(tmp.path(), "dev.tilo.example", &id_hex, &payload).unwrap();
         assert_eq!(report.faults, vec![FileFault::Missing("data.txt".into())]);
     }
 
@@ -362,7 +406,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (payload, id_hex) = fixture(tmp.path());
         std::fs::write(payload.join("extra.so"), b"?").unwrap();
-        let report = verify(tmp.path(), "dev.qos.example", &id_hex, &payload).unwrap();
+        let report = verify(tmp.path(), "dev.tilo.example", &id_hex, &payload).unwrap();
         assert!(report.is_intact(), "a stray file is not proof of tampering");
         assert_eq!(report.unexpected, vec!["extra.so".to_string()]);
     }
@@ -375,7 +419,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (payload, _id_hex) = fixture(tmp.path());
         let wrong_hex = hex::encode([0u8; 32]);
-        let err = verify(tmp.path(), "dev.qos.example", &wrong_hex, &payload)
+        let err = verify(tmp.path(), "dev.tilo.example", &wrong_hex, &payload)
             .expect_err("the record does not describe that package id");
         assert!(matches!(err, IntegrityError::RootIdMismatch));
     }
@@ -386,11 +430,11 @@ mod tests {
         let (payload, id_hex) = fixture(tmp.path());
         let forged = Collection::from_entries([("bin/app".to_string(), BlobHash::of(b"tampered"))]);
         std::fs::write(
-            record_dir(tmp.path(), "dev.qos.example").join(COLLECTION),
+            record_dir(tmp.path(), "dev.tilo.example").join(COLLECTION),
             forged.encode(),
         )
         .unwrap();
-        let err = verify(tmp.path(), "dev.qos.example", &id_hex, &payload)
+        let err = verify(tmp.path(), "dev.tilo.example", &id_hex, &payload)
             .expect_err("the collection hash is covered by the signature");
         assert!(matches!(err, IntegrityError::CollectionMismatch));
     }
@@ -400,7 +444,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let err = verify(
             tmp.path(),
-            "dev.qos.never-installed",
+            "dev.tilo.never-installed",
             &hex::encode([0u8; 32]),
             tmp.path(),
         )
@@ -412,8 +456,8 @@ mod tests {
     fn forget_removes_the_record() {
         let tmp = tempfile::tempdir().unwrap();
         let _ = fixture(tmp.path());
-        assert!(has_record(tmp.path(), "dev.qos.example"));
-        forget(tmp.path(), "dev.qos.example");
-        assert!(!has_record(tmp.path(), "dev.qos.example"));
+        assert!(has_record(tmp.path(), "dev.tilo.example"));
+        forget(tmp.path(), "dev.tilo.example");
+        assert!(!has_record(tmp.path(), "dev.tilo.example"));
     }
 }

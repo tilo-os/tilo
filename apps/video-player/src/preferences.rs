@@ -1,6 +1,6 @@
 //! Device-local Video Player preferences.
 //!
-//! Playback preferences intentionally live in the shared qOS settings file,
+//! Playback preferences intentionally live in the shared Tilo settings file,
 //! under this app's own section, rather than in the collaborative media
 //! document. Two people reviewing the same clip may reasonably want different
 //! autoplay defaults, while repeat is only used by the local host to drive the
@@ -119,7 +119,7 @@ impl PlaybackPreferences {
 
 /// Load the bounded device-local recent history. Corrupt individual rows are
 /// ignored; a malformed settings file yields an empty history like every
-/// other qOS preference reader.
+/// other Tilo preference reader.
 pub fn load_recent_history() -> Vec<RecentMedia> {
     settings_store::load_section(SECTION)
         .get(RECENT_HISTORY)
@@ -185,7 +185,7 @@ mod tests {
 
     fn test_path() -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "qos-video-player-preferences-{}-{}-{}.json",
+            "tilo-video-player-preferences-{}-{}-{}.json",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

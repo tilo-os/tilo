@@ -1,4 +1,4 @@
-//! A local video player for qOS, built on the shared [`media`] streaming layer
+//! A local video player for Tilo, built on the shared [`media`] streaming layer
 //! and the reusable [`ui::widget::VideoPlayer`] widget.
 //!
 //! The binary is a thin entry point ([`crate`]'s `main`); all logic lives here.
@@ -38,6 +38,7 @@ pub mod app;
 pub mod collab;
 mod preferences;
 pub mod search;
+pub mod shared;
 pub use app::{PlayerApp, source_for_path};
 
 use std::path::PathBuf;
@@ -46,11 +47,31 @@ use ui::widget::Widget;
 /// The live app root: a player with collaborative playback attached (a peer on
 /// the same workspace can join and follow). Opens `open` immediately when given.
 pub fn app_root(open: Option<PathBuf>) -> Box<dyn Widget> {
-    let app = match open {
-        Some(path) => PlayerApp::new().with_open_path(&path),
+    app_root_source(open.map(|path| source_for_path(&path)), None)
+}
+
+/// Live root for either a file or an exact-target remote-stream handoff.
+pub fn app_root_source(open: Option<media::Source>, title: Option<String>) -> Box<dyn Widget> {
+    let mut app = match open {
+        Some(source) => PlayerApp::new()
+            .with_open_source(source, title.unwrap_or_else(|| "Handed-off media".into())),
         None => PlayerApp::new(),
     };
+    if let Some((position_ms, resume_playing)) = media_handoff_transport_env() {
+        app = app.with_handoff_transport(position_ms, resume_playing);
+    }
     Box::new(app.with_collab())
+}
+
+fn media_handoff_transport_env() -> Option<(u64, bool)> {
+    let position = std::env::var("TILO_MEDIA_HANDOFF_POSITION_MS")
+        .ok()?
+        .parse()
+        .ok()?;
+    let resume = std::env::var("TILO_MEDIA_HANDOFF_RESUME_PLAYING")
+        .ok()
+        .is_some_and(|value| value == "1");
+    Some((position, resume))
 }
 
 /// The headless `--shots` root: a player staged with a frame + revealed

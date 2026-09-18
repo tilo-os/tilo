@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Compare a conventional static app with its thin qpkg binary. The command
-# should perform real initialization and exit; Calculator's zero-click harness
+# should perform normal initialization and exit; Calculator's zero-click harness
 # does that without requiring Wayland or a GPU.
 set -euo pipefail
 

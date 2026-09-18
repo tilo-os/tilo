@@ -1,4 +1,4 @@
-//! Themes — standard qOS application entry point.
+//! Themes — standard Tilo application entry point.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -25,7 +25,7 @@ use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
 // The signature is fixed by `ui::launch::ShotFactory`: other apps' shot roots
-// genuinely can fail, so the alias is fallible even where this one isn't.
+// may fail, so the alias is fallible even where this one isn't.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "signature is dictated by ui::launch::ShotFactory, which other apps' fallible shot roots need"
@@ -43,11 +43,13 @@ pub fn main() {
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("dev.qos.themes", themes::app_root)
-            .history(&themes::framework_history::HISTORY)
-            .shot_root(shot_root)
-            .configure_app(|app| themes::actions::register(app.action_registry_mut()))
+    LaunchSpec::new("dev.tilo.themes", themes::app_root)
+        .history(&themes::framework_history::HISTORY)
+        .shot_root(shot_root)
+        .configure_app(|app| themes::actions::register(app.action_registry_mut()))
 }
 
 #[test]
-fn production_launch_registers_history() { launch_spec().validate_history_declaration().unwrap(); }
+fn production_launch_registers_history() {
+    launch_spec().validate_history_declaration().unwrap();
+}

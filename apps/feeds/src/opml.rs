@@ -2,9 +2,8 @@
 //!
 //! OPML is a tiny XML dialect: feeds are `<outline type="rss"
 //! xmlUrl="..."/>` leaves, optionally nested inside `<outline text="...">`
-//! folder groups. We only need a one-level-deep folder model, which is what
-//! every real reader (`NetNewsWire`, Feedly, …) emits, so a hand-rolled
-//! scanner is plenty and saves an XML dependency.
+//! folder groups. The app supports one nesting level with a small,
+//! dependency-free scanner.
 
 use crate::model::{Feed, FeedKind, Folder, Store};
 use uuid::Uuid;

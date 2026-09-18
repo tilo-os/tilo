@@ -1,9 +1,8 @@
-//! A representative, fully populated sample mailbox used when the app runs
-//! headless (`--shots`) or before a live account is configured. It is *not*
-//! a hollow mockup: two messages (including one with a PDF attachment) are
-//! authored as raw RFC 5322 `.eml` blobs and hydrated through
-//! [`crate::transport::parse_eml`], so the screenshot exercises the real
-//! MIME-parse path. The rest are constructed directly for breadth across
+//! A representative sample mailbox used when the app runs headless
+//! (`--shots`) or before a live account is configured. Two messages (including
+//! one with a PDF attachment) are authored as raw RFC 5322 `.eml` blobs and
+//! hydrated through [`crate::transport::parse_eml`]. The rest are constructed
+//! directly for breadth across
 //! folders, threads, read/unread, and starred state.
 
 use uuid::Uuid;
@@ -27,35 +26,46 @@ fn att(filename: &str, mime: &str, size: u64) -> Attachment {
     Attachment::projected(filename, mime, size)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn message(
+struct SampleMessage<'a> {
     from: Addr,
     to: Vec<Addr>,
-    subject: &str,
-    body: &str,
+    subject: &'a str,
+    body: &'a str,
     ago_min: i64,
     read: bool,
     starred: bool,
     folder: Folder,
     attachments: Vec<Attachment>,
-) -> Message {
-    Message {
-        id: Uuid::new_v4(),
-        rfc_message_id: None,
-        in_reply_to: None,
-        from,
-        to,
-        cc: vec![],
-        subject: subject.into(),
-        body: body.into(),
-        html_body: None,
-        attachments,
-        timestamp_min: SAMPLE_NOW_MIN - ago_min,
-        read,
-        starred,
-        folder,
-        labels: Vec::new(),
+}
+
+impl SampleMessage<'_> {
+    fn build(self) -> Message {
+        Message {
+            id: Uuid::new_v4(),
+            rfc_message_id: None,
+            in_reply_to: None,
+            from: self.from,
+            to: self.to,
+            cc: vec![],
+            subject: self.subject.into(),
+            body: self.body.into(),
+            html_body: None,
+            attachments: self.attachments,
+            timestamp_min: SAMPLE_NOW_MIN - self.ago_min,
+            read: self.read,
+            starred: self.starred,
+            folder: self.folder,
+            labels: Vec::new(),
+        }
     }
+}
+
+struct InboxCorrespondents<'a> {
+    ci: Addr,
+    katherine: &'a Addr,
+    alan: Addr,
+    linus: Addr,
+    calendar: Addr,
 }
 
 /// One hour, in minutes — the unit the sample timestamps are expressed in.
@@ -64,17 +74,17 @@ const HOUR_MIN: i64 = 60;
 /// Build the bundled mailbox. The account is a plausible self-host config so
 /// the account-setup screen has real values to display.
 pub fn sample_mailbox() -> Mailbox {
-    let me = Addr::new("You", "you@qos.example");
+    let me = Addr::new("You", "you@tilo.example");
     let account = AccountConfig {
         display_name: "You".into(),
-        email: "you@qos.example".into(),
-        imap_host: "imap.qos.example".into(),
+        email: "you@tilo.example".into(),
+        imap_host: "imap.tilo.example".into(),
         imap_port: 993,
         imap_tls: true,
-        smtp_host: "smtp.qos.example".into(),
+        smtp_host: "smtp.tilo.example".into(),
         smtp_port: 465,
         smtp_tls: true,
-        username: "you@qos.example".into(),
+        username: "you@tilo.example".into(),
         auth: crate::model::AuthMethod::Password,
         password: "********".into(),
     };
@@ -85,11 +95,21 @@ pub fn sample_mailbox() -> Mailbox {
     let alan = Addr::new("Alan Turing", "alan@bletchley.example");
     let katherine = Addr::new("Katherine Johnson", "katherine@nasa.example");
     let linus = Addr::new("Linus Torvalds", "linus@kernel.example");
-    let ci = Addr::new("qOS CI", "ci@qos.example");
-    let calendar = Addr::new("Calendar", "noreply@cal.qos.example");
+    let ci = Addr::new("Tilo CI", "ci@tilo.example");
+    let calendar = Addr::new("Calendar", "noreply@cal.tilo.example");
 
     insert_launch_plan_thread(&mut mb, &me, &ada, &grace);
-    insert_standalone_inbox_items(&mut mb, &me, ci, &katherine, alan, linus, calendar);
+    insert_standalone_inbox_items(
+        &mut mb,
+        &me,
+        InboxCorrespondents {
+            ci,
+            katherine: &katherine,
+            alan,
+            linus,
+            calendar,
+        },
+    );
 
     insert_sent_archive_and_junk(&mut mb, me, ada, grace, katherine);
 
@@ -125,141 +145,151 @@ pub fn sample_mailbox() -> Mailbox {
 /// the list's threading and unread-head rendering have something to group.
 fn insert_launch_plan_thread(mb: &mut Mailbox, me: &Addr, ada: &Addr, grace: &Addr) {
     // ---- Thread 1: "Launch plan for the spatial shell" (3 msgs, unread head)
-    let root_id = "sample-launch-plan-root@qos.example";
-    let mut root = message(
-        ada.clone(),
-        vec![me.clone()],
-        "Launch plan for the spatial shell",
-        "Hi team,\n\nI sketched the rollout for the 2D-cluster window model. \
+    let root_id = "sample-launch-plan-root@tilo.example";
+    let mut root = SampleMessage {
+        from: ada.clone(),
+        to: vec![me.clone()],
+        subject: "Launch plan for the spatial shell",
+        body: "Hi team,\n\nI sketched the rollout for the 2D-cluster window model. \
 First milestone is the tiling engine, then per-cluster sandboxing, then the \
 collaboration buffer streaming. Thoughts on sequencing?\n\n— Ada",
-        2 * HOUR_MIN + 23,
-        true,
-        true,
-        Folder::Inbox,
-        vec![],
-    );
+        ago_min: 2 * HOUR_MIN + 23,
+        read: true,
+        starred: true,
+        folder: Folder::Inbox,
+        attachments: vec![],
+    }
+    .build();
     root.rfc_message_id = Some(root_id.into());
     mb.insert(root);
-    let mut reply = message(
-        grace.clone(),
-        vec![me.clone(), ada.clone()],
-        "Re: Launch plan for the spatial shell",
-        "Sequencing looks right. I'd pull sandboxing forward — it's the \
+    let mut reply = SampleMessage {
+        from: grace.clone(),
+        to: vec![me.clone(), ada.clone()],
+        subject: "Re: Launch plan for the spatial shell",
+        body: "Sequencing looks right. I'd pull sandboxing forward — it's the \
 security boundary everything else leans on. Let's not ship streaming before \
 the bubblewrap policy is solid.\n\nGrace",
-        HOUR_MIN + 47,
-        true,
-        false,
-        Folder::Inbox,
-        vec![],
-    );
-    reply.rfc_message_id = Some("sample-launch-plan-reply@qos.example".into());
+        ago_min: HOUR_MIN + 47,
+        read: true,
+        starred: false,
+        folder: Folder::Inbox,
+        attachments: vec![],
+    }
+    .build();
+    reply.rfc_message_id = Some("sample-launch-plan-reply@tilo.example".into());
     reply.in_reply_to = Some(root_id.into());
     mb.insert(reply);
-    let mut latest = message(
-        ada.clone(),
-        vec![me.clone(), grace.clone()],
-        "Re: Launch plan for the spatial shell",
-        "Agreed. New order: tiling → sandbox → streaming. I attached the \
+    let mut latest = SampleMessage {
+        from: ada.clone(),
+        to: vec![me.clone(), grace.clone()],
+        subject: "Re: Launch plan for the spatial shell",
+        body: "Agreed. New order: tiling → sandbox → streaming. I attached the \
 revised gantt. Can you review the collaboration section before Friday?",
-        38,
-        false,
-        false,
-        Folder::Inbox,
-        vec![att("rollout-gantt.pdf", "application/pdf", 184_320)],
-    );
-    latest.rfc_message_id = Some("sample-launch-plan-latest@qos.example".into());
+        ago_min: 38,
+        read: false,
+        starred: false,
+        folder: Folder::Inbox,
+        attachments: vec![att("rollout-gantt.pdf", "application/pdf", 184_320)],
+    }
+    .build();
+    latest.rfc_message_id = Some("sample-launch-plan-latest@tilo.example".into());
     latest.in_reply_to = Some(root_id.into());
     mb.insert(latest);
 }
 
 /// The one-off inbox items: a CI failure, two short replies, a mailing-list
 /// post and a calendar invite. Each stands alone rather than threading.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one correspondent per message; bundling them into a struct would only move the same list somewhere else"
-)]
 fn insert_standalone_inbox_items(
     mb: &mut Mailbox,
     me: &Addr,
-    ci: Addr,
-    katherine: &Addr,
-    alan: Addr,
-    linus: Addr,
-    calendar: Addr,
+    correspondents: InboxCorrespondents<'_>,
 ) {
     // ---- Thread 2: CI failure (unread, attachment: log)
-    mb.insert(message(
-        ci,
-        vec![me.clone()],
-        "Build #4821 failed on shell --lib",
-        "Pipeline qos/qos run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
+    mb.insert(
+        SampleMessage {
+            from: correspondents.ci,
+            to: vec![me.clone()],
+            subject: "Build #4821 failed on shell --lib",
+            body: "Pipeline tilo/tilo run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
 error: process didn't exit successfully: SIGSEGV (parallel wgpu instance \
 contention?)\n\nFull log attached. Re-run threshold was 4 OK / 8 SIGSEGV.",
-        14,
-        false,
-        false,
-        Folder::Inbox,
-        vec![att("build-4821.log", "text/plain", 28_716)],
-    ));
+            ago_min: 14,
+            read: false,
+            starred: false,
+            folder: Folder::Inbox,
+            attachments: vec![att("build-4821.log", "text/plain", 28_716)],
+        }
+        .build(),
+    );
 
     // ---- Thread 3: Katherine, calculations (read)
-    mb.insert(message(
-        katherine.clone(),
-        vec![me.clone()],
-        "Re-check the trajectory math",
-        "I ran the re-entry numbers by hand and they line up with the \
+    mb.insert(
+        SampleMessage {
+            from: correspondents.katherine.clone(),
+            to: vec![me.clone()],
+            subject: "Re-check the trajectory math",
+            body: "I ran the re-entry numbers by hand and they line up with the \
 solver. Margins are tight on the third burn — want me to widen the window?",
-        5 * HOUR_MIN,
-        true,
-        true,
-        Folder::Inbox,
-        vec![att("trajectory.csv", "text/csv", 9_204)],
-    ));
+            ago_min: 5 * HOUR_MIN,
+            read: true,
+            starred: true,
+            folder: Folder::Inbox,
+            attachments: vec![att("trajectory.csv", "text/csv", 9_204)],
+        }
+        .build(),
+    );
 
     // ---- Thread 4: Alan, single short (unread)
-    mb.insert(message(
-        alan,
-        vec![me.clone()],
-        "Coffee before the standup?",
-        "Fancy a coffee at 9:15 before we dive into the compositor review? \
+    mb.insert(
+        SampleMessage {
+            from: correspondents.alan,
+            to: vec![me.clone()],
+            subject: "Coffee before the standup?",
+            body: "Fancy a coffee at 9:15 before we dive into the compositor review? \
 I have thoughts on the focus model.",
-        3,
-        false,
-        false,
-        Folder::Inbox,
-        vec![],
-    ));
+            ago_min: 3,
+            read: false,
+            starred: false,
+            folder: Folder::Inbox,
+            attachments: vec![],
+        }
+        .build(),
+    );
 
     // ---- Thread 5: Linus, mailing-list style (read, long)
-    mb.insert(message(
-        linus,
-        vec![Addr::bare("qos-dev@lists.qos.example")],
-        "Re: [PATCH] fuse: hydrate-on-read for projected blobs",
-        "On Tue, the patch looks mostly fine, but the readahead window is \
+    mb.insert(
+        SampleMessage {
+            from: correspondents.linus,
+            to: vec![Addr::bare("tilo-dev@lists.tilo.example")],
+            subject: "Re: [PATCH] fuse: hydrate-on-read for projected blobs",
+            body: "On Tue, the patch looks mostly fine, but the readahead window is \
 hard-coded to 1MB. Make it a mount option. Also your error path leaks the \
 moka entry on a failed fetch — fix that and resend.\n\nNAK until then.",
-        26 * HOUR_MIN,
-        true,
-        false,
-        Folder::Inbox,
-        vec![],
-    ));
+            ago_min: 26 * HOUR_MIN,
+            read: true,
+            starred: false,
+            folder: Folder::Inbox,
+            attachments: vec![],
+        }
+        .build(),
+    );
 
     // ---- Calendar invite (unread, ics attachment)
-    mb.insert(message(
-        calendar,
-        vec![me.clone()],
-        "Invitation: Compositor sync @ Thu 11:00",
-        "You have been invited to \"Compositor sync\".\nWhen: Thursday 11:00–\
+    mb.insert(
+        SampleMessage {
+            from: correspondents.calendar,
+            to: vec![me.clone()],
+            subject: "Invitation: Compositor sync @ Thu 11:00",
+            body: "You have been invited to \"Compositor sync\".\nWhen: Thursday 11:00–\
 11:45\nWhere: cluster://review-room\n\nAccept · Decline · Tentative",
-        9 * HOUR_MIN,
-        false,
-        false,
-        Folder::Inbox,
-        vec![att("invite.ics", "text/calendar", 1_842)],
-    ));
+            ago_min: 9 * HOUR_MIN,
+            read: false,
+            starred: false,
+            folder: Folder::Inbox,
+            attachments: vec![att("invite.ics", "text/calendar", 1_842)],
+        }
+        .build(),
+    );
 }
 
 /// The Sent, Archive and Junk folders of the bundled corpus. Split out of
@@ -272,58 +302,70 @@ fn insert_sent_archive_and_junk(
     katherine: Addr,
 ) {
     // ---- Sent items
-    mb.insert(message(
-        me.clone(),
-        vec![ada, grace.clone()],
-        "Re: Launch plan for the spatial shell",
-        "Thanks both. I'll own the tiling engine and have a skeleton up by \
+    mb.insert(
+        SampleMessage {
+            from: me.clone(),
+            to: vec![ada, grace.clone()],
+            subject: "Re: Launch plan for the spatial shell",
+            body: "Thanks both. I'll own the tiling engine and have a skeleton up by \
 Wednesday. Pushing the sandbox policy doc to the shared cluster now.",
-        50,
-        true,
-        false,
-        Folder::Sent,
-        vec![],
-    ));
-    mb.insert(message(
-        me.clone(),
-        vec![katherine],
-        "Re: Re-check the trajectory math",
-        "Widen it — better a longer window than a missed burn. I'll update \
+            ago_min: 50,
+            read: true,
+            starred: false,
+            folder: Folder::Sent,
+            attachments: vec![],
+        }
+        .build(),
+    );
+    mb.insert(
+        SampleMessage {
+            from: me.clone(),
+            to: vec![katherine],
+            subject: "Re: Re-check the trajectory math",
+            body: "Widen it — better a longer window than a missed burn. I'll update \
 the solver bounds and re-run tonight.",
-        4 * HOUR_MIN + 30,
-        true,
-        false,
-        Folder::Sent,
-        vec![],
-    ));
+            ago_min: 4 * HOUR_MIN + 30,
+            read: true,
+            starred: false,
+            folder: Folder::Sent,
+            attachments: vec![],
+        }
+        .build(),
+    );
 
     // ---- Archive
-    mb.insert(message(
-        grace,
-        vec![me.clone()],
-        "Onboarding notes",
-        "Welcome aboard! Here are the cluster conventions and the review \
+    mb.insert(
+        SampleMessage {
+            from: grace,
+            to: vec![me.clone()],
+            subject: "Onboarding notes",
+            body: "Welcome aboard! Here are the cluster conventions and the review \
 rota. Ping me if the FUSE mount misbehaves.",
-        9 * 1440,
-        true,
-        false,
-        Folder::Archive,
-        vec![att("onboarding.pdf", "application/pdf", 512_000)],
-    ));
+            ago_min: 9 * 1440,
+            read: true,
+            starred: false,
+            folder: Folder::Archive,
+            attachments: vec![att("onboarding.pdf", "application/pdf", 512_000)],
+        }
+        .build(),
+    );
 
     // ---- Junk
-    mb.insert(message(
-        Addr::new("Totally Legit Prize Co", "winner@prize.example"),
-        vec![me],
-        "\u{1F389} You have WON a free spatial monitor!!!",
-        "Dear winner, click here within 24 hours to claim your prize. This \
+    mb.insert(
+        SampleMessage {
+            from: Addr::new("Totally Legit Prize Co", "winner@prize.example"),
+            to: vec![me],
+            subject: "\u{1F389} You have WON a free spatial monitor!!!",
+            body: "Dear winner, click here within 24 hours to claim your prize. This \
 is definitely not a scam.",
-        7 * HOUR_MIN,
-        false,
-        false,
-        Folder::Junk,
-        vec![],
-    ));
+            ago_min: 7 * HOUR_MIN,
+            read: false,
+            starred: false,
+            folder: Folder::Junk,
+            attachments: vec![],
+        }
+        .build(),
+    );
 }
 
 /// A bundled multi-account store so the sidebar shows more than one account
@@ -333,14 +375,14 @@ is definitely not a scam.",
 pub fn sample_account_store() -> AccountStore {
     let personal = AccountConfig {
         display_name: "You".into(),
-        email: "you@qos.example".into(),
-        imap_host: "imap.qos.example".into(),
+        email: "you@tilo.example".into(),
+        imap_host: "imap.tilo.example".into(),
         imap_port: 993,
         imap_tls: true,
-        smtp_host: "smtp.qos.example".into(),
+        smtp_host: "smtp.tilo.example".into(),
         smtp_port: 465,
         smtp_tls: true,
-        username: "you@qos.example".into(),
+        username: "you@tilo.example".into(),
         auth: crate::model::AuthMethod::Password,
         password: "********".into(),
     };
@@ -370,7 +412,7 @@ pub fn sample_account_store() -> AccountStore {
 
 /// A plain text/plain message, parsed live by mail-parser.
 const RAW_PLAIN: &str = "From: Margaret Hamilton <margaret@apollo.example>\r\n\
-To: you@qos.example\r\n\
+To: you@tilo.example\r\n\
 Subject: Priority display + error detection\r\n\
 Message-ID: <apollo-2026@apollo.example>\r\n\
 Date: Tue, 30 Jun 2026 08:30:00 +0000\r\n\
@@ -383,56 +425,56 @@ rather than queueing them. Happy to pair on it.\r\n";
 
 /// A multipart/mixed message with a PDF attachment, parsed live.
 const RAW_WITH_PDF: &str = "From: Radia Perlman <radia@spanning.example>\r\n\
-To: you@qos.example\r\n\
+To: you@tilo.example\r\n\
 Subject: Spanning-tree notes for the gossip mesh\r\n\
 Message-ID: <stp-2026@spanning.example>\r\n\
 Date: Tue, 30 Jun 2026 07:05:00 +0000\r\n\
 MIME-Version: 1.0\r\n\
-Content-Type: multipart/mixed; boundary=\"=_qos_boundary_=\"\r\n\
+Content-Type: multipart/mixed; boundary=\"=_tilo_boundary_=\"\r\n\
 \r\n\
---=_qos_boundary_=\r\n\
+--=_tilo_boundary_=\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 \r\n\
 Your direct + hosted gossip topology can loop if two clusters bridge the same \
 peer. A spanning-tree pass keeps the collaboration buffer from echoing. \
 Diagram attached.\r\n\
---=_qos_boundary_=\r\n\
+--=_tilo_boundary_=\r\n\
 Content-Type: application/pdf\r\n\
 Content-Disposition: attachment; filename=\"spanning-tree.pdf\"\r\n\
 Content-Transfer-Encoding: base64\r\n\
 \r\n\
 JVBERi0xLjQgZmFrZSBwZGYgYm9keSBmb3IgdGhlIHNhbXBsZSBtYWlsYm94Lg==\r\n\
---=_qos_boundary_=--\r\n";
+--=_tilo_boundary_=--\r\n";
 
 /// A multipart/alternative message with a plain-text part and a rich HTML part
 /// (including a **remote** image the reader must block by default), parsed live.
-const RAW_HTML: &str = "From: qOS Weekly <news@weekly.qos.example>\r\n\
-To: you@qos.example\r\n\
-Subject: This week in qOS — spatial shells & collab buffers\r\n\
-Message-ID: <weekly-2026-27@weekly.qos.example>\r\n\
+const RAW_HTML: &str = "From: Tilo Weekly <news@weekly.tilo.example>\r\n\
+To: you@tilo.example\r\n\
+Subject: This week in Tilo — spatial shells & collab buffers\r\n\
+Message-ID: <weekly-2026-27@weekly.tilo.example>\r\n\
 Date: Tue, 30 Jun 2026 13:13:00 +0000\r\n\
 MIME-Version: 1.0\r\n\
-Content-Type: multipart/alternative; boundary=\"=_qos_alt_=\"\r\n\
+Content-Type: multipart/alternative; boundary=\"=_tilo_alt_=\"\r\n\
 \r\n\
---=_qos_alt_=\r\n\
+--=_tilo_alt_=\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 \r\n\
 This week: the scrollable-strip shell landed, and collaboration buffers now \
 stream over gossip. Read on.\r\n\
---=_qos_alt_=\r\n\
+--=_tilo_alt_=\r\n\
 Content-Type: text/html; charset=utf-8\r\n\
 \r\n\
 <html><body style=\"font-family:sans-serif\">\
-<h1 style=\"color:#4f7cff\">This week in qOS</h1>\
-<img src=\"https://track.weekly.qos.example/open.gif?u=you\" width=\"1\" height=\"1\">\
+<h1 style=\"color:#4f7cff\">This week in Tilo</h1>\
+<img src=\"https://track.weekly.tilo.example/open.gif?u=you\" width=\"1\" height=\"1\">\
 <p>The <strong>scrollable-strip shell</strong> landed, and collaboration \
 buffers now stream over gossip.</p>\
 <ul><li>Spatial window model</li><li>Per-workspace sandboxing</li>\
 <li>Live collab presence</li></ul>\
 <blockquote>\u{201c}It feels like one shared desktop.\u{201d}</blockquote>\
-<p><a href=\"https://qos.example/weekly/27\">Read the full issue \u{2192}</a></p>\
+<p><a href=\"https://tilo.example/weekly/27\">Read the full issue \u{2192}</a></p>\
 </body></html>\r\n\
---=_qos_alt_=--\r\n";
+--=_tilo_alt_=--\r\n";
 
 #[cfg(test)]
 mod tests {

@@ -6,10 +6,10 @@ publish.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "qos-pkg"
+name = "tilo-pkg"
 path = "src/main.rs"
 
-# CLI driver for `qos-pkg`. Pack a payload + manifest into a
+# CLI driver for `tilo-pkg`. Pack a payload + manifest into a
 # `.qpkg` file, sign / verify / inspect / unpack it. The .qpkg
 # file format is a tarball with the following entries:
 #
@@ -30,7 +30,7 @@ path = "src/main.rs"
 [dependencies]
 pkg = { path = "../pkg" }
 app-registry = { path = "../app-registry" }
-# Signed `/entries` rows for `qos-pkg entry`; `rand` for `keygen`.
+# Signed `/entries` rows for `tilo-pkg entry`; `rand` for `keygen`.
 registry-types = { path = "../registry-types" }
 rand.workspace = true
 

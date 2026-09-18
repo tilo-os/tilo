@@ -1,0 +1,41 @@
+[package]
+name = "typst-editor"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "typst_editor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "typst-editor"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+tilo-actions = { path = "../../crates/collab/actions" }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+dirs.workspace = true
+
+# Typst compilation + raster rendering. All three pinned to the same 0.14
+# series so the `typst` crate instance is unified across compile + render.
+typst = "0.14"
+typst-render = "0.14"
+typst-pdf = "0.14"
+typst-assets = { version = "0.14", features = ["fonts"] }
+tiny-skia = "0.11"
+comemo = "0.5"
+
+[lints]
+workspace = true

@@ -1,4 +1,4 @@
-//! Windows Apps is qOS' compatibility control plane.
+//! Windows Apps is Tilo' compatibility control plane.
 //!
 //! It is intentionally a *manager*, never a second launcher implementation:
 //! the compatibility service decides the actual Wine/UMU/VM invocation.  This

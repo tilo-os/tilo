@@ -1,5 +1,5 @@
-//! Phase 4: Cmd-K / Ctrl-K opens the page jump palette, which
-//! navigates to the chosen page on Enter.
+//! Cmd-K / Ctrl-K opens the page jump palette and Enter navigates to the
+//! selected page.
 
 #![allow(
     clippy::unwrap_used,

@@ -37,7 +37,7 @@ use crate::role::Role;
 /// Signing-domain tag mixed into every invite's signed bytes so a
 /// signature is unforgeable across structure types. Frozen once invites
 /// ship on the wire.
-pub const INVITE_DOMAIN_TAG: &str = "qos-invite-v1";
+pub const INVITE_DOMAIN_TAG: &str = "tilo-invite-v1";
 
 /// A signed capability grant into a workspace.
 ///

@@ -21,6 +21,10 @@ pub struct AppNotificationRule {
     pub previews: Option<bool>,
     #[serde(default)]
     pub lock_screen: Option<bool>,
+    /// `None` follows the global preference. Only notifications with a
+    /// compositor-verified application identity are ever eligible.
+    #[serde(default)]
+    pub cross_device: Option<bool>,
     /// A user-approved priority app may pierce a scheduled focus period. This
     /// cannot be requested by the app itself.
     #[serde(default)]
@@ -99,7 +103,7 @@ impl FocusSchedule {
     }
 }
 
-// Six independent, user-facing notification toggles, not a state machine — and this
+// Independent, user-facing notification toggles, not a state machine — and this
 // document's JSON shape and field names are load-bearing across `shell`, so folding
 // them into a bitflags type ripples well outside this crate.
 #[allow(
@@ -121,6 +125,10 @@ pub struct NotificationPolicy {
     pub show_on_lock_screen: bool,
     #[serde(default = "default_true")]
     pub show_badges: bool,
+    /// Project eligible notifications to this person's other certified Tilo
+    /// devices. Per-app policy and sender sensitivity can only narrow this.
+    #[serde(default = "default_true")]
+    pub cross_device: bool,
     #[serde(default)]
     pub focus: FocusSchedule,
     #[serde(default)]
@@ -136,13 +144,14 @@ impl Default for NotificationPolicy {
             play_sounds: true,
             show_on_lock_screen: false,
             show_badges: true,
+            cross_device: true,
             focus: FocusSchedule::default(),
             per_app: BTreeMap::new(),
         }
     }
 }
 
-// Six independent facets of "should this notification show right now", each derived by a
+// Independent facets of "should this notification show right now", each derived by a
 // different rule — not a state machine, and `shell` reads them by field to decide what to
 // render.
 #[allow(
@@ -156,6 +165,7 @@ pub struct EffectiveNotificationPolicy {
     pub badges: bool,
     pub previews: bool,
     pub lock_screen: bool,
+    pub cross_device: bool,
     pub quiet: bool,
 }
 
@@ -208,6 +218,10 @@ impl NotificationPolicy {
             lock_screen: rule
                 .and_then(|r| r.lock_screen)
                 .unwrap_or(self.show_on_lock_screen),
+            cross_device: verified_app_id.is_some()
+                && rule
+                    .and_then(|rule| rule.cross_device)
+                    .unwrap_or(self.cross_device),
             quiet,
         }
     }
@@ -240,13 +254,13 @@ mod tests {
             ..NotificationPolicy::default()
         };
         p.per_app.insert(
-            "dev.qos.chat".into(),
+            "dev.tilo.chat".into(),
             AppNotificationRule {
                 priority: true,
                 ..AppNotificationRule::default()
             },
         );
-        assert!(!p.effective_for(Some("dev.qos.chat"), 0, 500, 0).quiet);
+        assert!(!p.effective_for(Some("dev.tilo.chat"), 0, 500, 0).quiet);
         assert!(p.effective_for(Some("spoofed name"), 0, 500, 0).quiet);
     }
 
@@ -254,14 +268,14 @@ mod tests {
     fn temporary_mute_expires_without_a_cleanup_write() {
         let mut p = NotificationPolicy::default();
         p.per_app.insert(
-            "dev.qos.mail".into(),
+            "dev.tilo.mail".into(),
             AppNotificationRule {
                 muted_until: Some(200),
                 ..AppNotificationRule::default()
             },
         );
-        assert!(p.effective_for(Some("dev.qos.mail"), 199, 0, 0).quiet);
-        assert!(!p.effective_for(Some("dev.qos.mail"), 200, 0, 0).quiet);
+        assert!(p.effective_for(Some("dev.tilo.mail"), 199, 0, 0).quiet);
+        assert!(!p.effective_for(Some("dev.tilo.mail"), 200, 0, 0).quiet);
     }
 
     #[test]
@@ -276,23 +290,47 @@ mod tests {
             ..NotificationPolicy::default()
         };
         p.per_app.insert(
-            "dev.qos.mail".into(),
+            "dev.tilo.mail".into(),
             AppNotificationRule {
                 priority_contacts: true,
                 ..AppNotificationRule::default()
             },
         );
         assert!(
-            !p.effective_for_context(Some("dev.qos.mail"), true, 0, 500, 0)
+            !p.effective_for_context(Some("dev.tilo.mail"), true, 0, 500, 0)
                 .quiet
         );
         assert!(
-            p.effective_for_context(Some("dev.qos.mail"), false, 0, 500, 0)
+            p.effective_for_context(Some("dev.tilo.mail"), false, 0, 500, 0)
                 .quiet
         );
         assert!(
-            p.effective_for_context(Some("dev.qos.other"), true, 0, 500, 0)
+            p.effective_for_context(Some("dev.tilo.other"), true, 0, 500, 0)
                 .quiet
+        );
+    }
+
+    #[test]
+    fn cross_device_requires_verified_identity_and_honours_per_app_policy() {
+        let mut policy = NotificationPolicy::default();
+        assert!(
+            policy
+                .effective_for(Some("dev.tilo.mail"), 0, 0, 0)
+                .cross_device
+        );
+        assert!(!policy.effective_for(None, 0, 0, 0).cross_device);
+
+        policy.per_app.insert(
+            "dev.tilo.mail".into(),
+            AppNotificationRule {
+                cross_device: Some(false),
+                ..AppNotificationRule::default()
+            },
+        );
+        assert!(
+            !policy
+                .effective_for(Some("dev.tilo.mail"), 0, 0, 0)
+                .cross_device
         );
     }
 }

@@ -7,10 +7,10 @@
 //! - Scope check: attestor's `prefix:` scope must cover the
 //!   package's declared id.
 //!
-//! Attestation signatures are produced inline with a real
-//! Ed25519 key — matches the format `verify_with_trust` walks.
+//! Attestation signatures are produced inline with an Ed25519 key, matching
+//! the format `verify_with_trust` walks.
 //! The signature covers `(payload_root_hash, publisher_pubkey)`,
-//! which we compute cheaply via one throwaway pack pass.
+//! which we compute via a preliminary pack pass.
 
 #![allow(
     clippy::unwrap_used,
@@ -114,12 +114,12 @@ fn attested_by_trusted_attestor_returns_attested_by() {
         &mut manifest,
         payload_dir.path(),
         &publisher_sk,
-        "qos-curated/2026.07",
+        "tilo-curated/2026.07",
         &attestor_sk,
     );
 
     let trusted = vec![TrustedAttestor {
-        id: "qos-curated/2026.07".into(),
+        id: "tilo-curated/2026.07".into(),
         pubkey_hex: attestor_pub_hex,
         scope: AttestorScope::All,
     }];
@@ -127,7 +127,7 @@ fn attested_by_trusted_attestor_returns_attested_by() {
     let v = verify_with_trust(id, &store, &[], &trusted, &RevocationList::empty());
     match v {
         Verification::AttestedBy { attestor, .. } => {
-            assert_eq!(attestor, "qos-curated/2026.07");
+            assert_eq!(attestor, "tilo-curated/2026.07");
         }
         other => panic!("expected AttestedBy, got {other:?}"),
     }
@@ -206,12 +206,12 @@ fn revoked_publisher_overrides_attestor_trust() {
         &mut manifest,
         payload_dir.path(),
         &publisher_sk,
-        "qos-curated/2026.07",
+        "tilo-curated/2026.07",
         &attestor_sk,
     );
 
     let trusted = vec![TrustedAttestor {
-        id: "qos-curated/2026.07".into(),
+        id: "tilo-curated/2026.07".into(),
         pubkey_hex: attestor_pub_hex,
         scope: AttestorScope::All,
     }];
@@ -229,7 +229,7 @@ fn revoked_publisher_overrides_attestor_trust() {
 #[test]
 fn attestor_scope_mismatch_falls_back_to_untrusted() {
     // Attestor is trusted for `prefix:com.example.` but the
-    // package declares id `dev.qos.editor` — scope doesn't cover.
+    // package declares id `dev.tilo.editor` — scope doesn't cover.
     let (publisher_sk, publisher_pub_hex) = fresh_key();
     let mut manifest = manifest_with_key(&publisher_pub_hex);
     manifest.trust.attested_by.clear();
@@ -242,12 +242,12 @@ fn attestor_scope_mismatch_falls_back_to_untrusted() {
         &mut manifest,
         payload_dir.path(),
         &publisher_sk,
-        "qos-curated/2026.07",
+        "tilo-curated/2026.07",
         &attestor_sk,
     );
 
     let trusted = vec![TrustedAttestor {
-        id: "qos-curated/2026.07".into(),
+        id: "tilo-curated/2026.07".into(),
         pubkey_hex: attestor_pub_hex,
         scope: AttestorScope::Prefix(vec!["com.example.".into()]),
     }];
@@ -276,13 +276,13 @@ fn tampered_attestation_signature_falls_back_to_untrusted() {
         &mut manifest,
         payload_dir.path(),
         &publisher_sk,
-        "qos-curated/2026.07",
+        "tilo-curated/2026.07",
         &attestor_sk,
     );
 
     let (_, wrong_hex) = fresh_key();
     let trusted = vec![TrustedAttestor {
-        id: "qos-curated/2026.07".into(),
+        id: "tilo-curated/2026.07".into(),
         pubkey_hex: wrong_hex,
         scope: AttestorScope::All,
     }];

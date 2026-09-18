@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Drive a live compositor the way a language model does: over MCP.
 
-`action-api-demo.py` proves the socket. This proves the layer a model
-actually speaks to — `scripts/qos-mcp-server.py` — against a real
-compositor, over real MCP stdio framing, with no fixture anywhere in the
-path.
+`action-api-demo.py` exercises the socket. This exercises the layer a model
+speaks to — `scripts/tilo-mcp-server.py` — against a compositor over MCP
+stdio framing, without fixtures.
 
 What it checks, in order:
 
@@ -14,8 +13,8 @@ What it checks, in order:
      only; reading one application returns its objects with their actions
      nested beneath them. The full catalogue never lands in the model's
      initial context, and the tree follows the ownership apps already publish.
-  4. `qos_enumerate_actions` can still search the live surface explicitly.
-  5. `qos_invoke_action` moves real state — read back with an
+  4. `tilo_enumerate_actions` can still search the live surface explicitly.
+  5. `tilo_invoke_action` moves state — read back with an
      independent `state_dump`, not from the tool's own reply.
   6. A refusal reaches the model as `isError: true` carrying the
      compositor's own code, rather than being smoothed into a success.
@@ -36,8 +35,8 @@ import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SHELL = REPO / "target" / "debug" / "shell"
-SHIM = REPO / "scripts" / "qos-mcp-server.py"
-SOCKET = "/tmp/qos-mcp-live-proof.sock"
+SHIM = REPO / "scripts" / "tilo-mcp-server.py"
+SOCKET = "/tmp/tilo-mcp-live-proof.sock"
 PROTOCOL = "2025-06-18"
 
 failures: list[str] = []
@@ -96,7 +95,7 @@ def overlays() -> dict:
     layer that claimed to cause it is not confirmed at all.
     """
     out = subprocess.run(
-        [str(REPO / "target" / "debug" / "qos-control"), "--socket", SOCKET, "state-dump"],
+        [str(REPO / "target" / "debug" / "tilo-control"), "--socket", SOCKET, "state-dump"],
         capture_output=True,
         text=True,
         timeout=30,
@@ -118,14 +117,14 @@ def main() -> int:
         pass
 
     # Isolate the whole home, not just the workspace tree: record
-    # documents live under `XDG_DATA_HOME`, so `QOS_STATE_PATH` alone
+    # documents live under `XDG_DATA_HOME`, so `TILO_STATE_PATH` alone
     # leaves runs sharing documents with each other and with whatever is
     # already on this machine.
-    state_dir = tempfile.mkdtemp(prefix="qos-mcp-proof-")
+    state_dir = tempfile.mkdtemp(prefix="tilo-mcp-proof-")
     env = {
         **os.environ,
-        "QOS_TEST_CONTROL": SOCKET,
-        "QOS_STATE_PATH": os.path.join(state_dir, "state.json"),
+        "TILO_TEST_CONTROL": SOCKET,
+        "TILO_STATE_PATH": os.path.join(state_dir, "state.json"),
         "XDG_DATA_HOME": os.path.join(state_dir, "data"),
         "XDG_CACHE_HOME": os.path.join(state_dir, "cache"),
         "XDG_STATE_HOME": os.path.join(state_dir, "state"),
@@ -183,8 +182,8 @@ def main() -> int:
         reply = read_reply(shim, 2)
         names = sorted(t["name"] for t in reply["result"]["tools"]) if reply else []
         check("all five tools are offered",
-              names == ["qos_action_status", "qos_cancel_action", "qos_enumerate_actions",
-                        "qos_invoke_action", "qos_state_dump"],
+              names == ["tilo_action_status", "tilo_cancel_action", "tilo_enumerate_actions",
+                        "tilo_invoke_action", "tilo_state_dump"],
               ", ".join(names))
 
         print("\n[3] resources are lazy: application -> object -> action")
@@ -192,8 +191,8 @@ def main() -> int:
         reply = read_reply(shim, 3)
         resources = (reply or {}).get("result", {}).get("resources", [])
         app_only = bool(resources) and all(
-            resource.get("mimeType") == "application/vnd.qos.application+json"
-            and resource.get("uri", "").startswith("qos://application/")
+            resource.get("mimeType") == "application/vnd.tilo.application+json"
+            and resource.get("uri", "").startswith("tilo://application/")
             for resource in resources
         )
         check("the root loads applications, not action descriptors", app_only,
@@ -213,7 +212,7 @@ def main() -> int:
         print("\n[4] enumerate through the shim")
         rpc(shim, {
             "jsonrpc": "2.0", "id": 5, "method": "tools/call",
-            "params": {"name": "qos_enumerate_actions", "arguments": {"query": ""}},
+            "params": {"name": "tilo_enumerate_actions", "arguments": {"query": ""}},
         })
         reply = read_reply(shim, 5)
         try:
@@ -227,7 +226,7 @@ def main() -> int:
         before = overlays().get("collaborators")
         rpc(shim, {
             "jsonrpc": "2.0", "id": 6, "method": "tools/call",
-            "params": {"name": "qos_invoke_action",
+            "params": {"name": "tilo_invoke_action",
                        "arguments": {"provider": "actions", "id": "collaborators.open"}},
         })
         reply = read_reply(shim, 6)
@@ -241,7 +240,7 @@ def main() -> int:
         print("\n[6] a refusal reaches the model intact")
         rpc(shim, {
             "jsonrpc": "2.0", "id": 7, "method": "tools/call",
-            "params": {"name": "qos_invoke_action",
+            "params": {"name": "tilo_invoke_action",
                        "arguments": {"provider": "actions", "id": "not.a.real.action"}},
         })
         reply = read_reply(shim, 7)

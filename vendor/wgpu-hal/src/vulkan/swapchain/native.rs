@@ -7,10 +7,9 @@ use ash::{khr, vk};
 use parking_lot::{Mutex, MutexGuard};
 
 use crate::vulkan::{
-    conv, map_host_device_oom_and_lost_err,
+    DeviceShared, InstanceShared, conv, map_host_device_oom_and_lost_err,
     semaphore_list::SemaphoreType,
     swapchain::{Surface, SurfaceTextureMetadata, Swapchain, SwapchainSubmissionSemaphoreGuard},
-    DeviceShared, InstanceShared,
 };
 
 pub(crate) struct NativeSurface {

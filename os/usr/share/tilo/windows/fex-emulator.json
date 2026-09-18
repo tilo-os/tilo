@@ -1,0 +1,13 @@
+{
+  "emulator_v0": {
+    "argv": ["/usr/bin/FEX"],
+    "environment": {
+      "FEX_ROOTFS": "/opt/tilo/x86",
+      "FEX_INTERPRETER_INSTALLED": "0"
+    },
+    "container_environment": { "FEX_ROOTFS": "" },
+    "emulated_architectures": ["x86_64-linux-gnu", "i386-linux-gnu"],
+    "required_architectures": ["aarch64-linux-gnu"],
+    "required_libraries": ["libc.so.6", "libstdc++.so.6", "libm.so.6", "libgcc_s.so.1"]
+  }
+}

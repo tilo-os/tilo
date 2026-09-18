@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn encode_then_decode_round_trips() {
-        let payload = "https://qos.example/welcome";
+        let payload = "https://tilo.example/welcome";
         let m = encode(payload).expect("encode");
         let (buf, dim) = rasterize(&m, 6, 4);
         let decoded = decode_greyscale(&buf, dim, dim);
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn decode_wifi_classifies() {
-        let payload = "WIFI:T:WPA2;S:qOS Guest;P:hunter2;H:false;;";
+        let payload = "WIFI:T:WPA2;S:Tilo Guest;P:hunter2;H:false;;";
         let m = encode(payload).unwrap();
         let (buf, dim) = rasterize(&m, 6, 4);
         let scanned = decode_and_classify(&buf, dim, dim, |p| p).expect("decode");

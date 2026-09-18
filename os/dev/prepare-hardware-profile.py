@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Stage verified local firmware and an image-owned hardware profile.
+
+Run inside the native image builder before dracut. All inputs and output
+paths are validated before any writes. Generic images need no local firmware.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import re
+import stat
+import struct
+from pathlib import Path
+from hardware_profile import ARCH_CONFIG, DEFINITION_PATH, PROFILES_DIR, load_definition, validate_target_imgref
+
+
+FIRMWARE_PATH = Path("usr/lib/firmware")
+PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
+DRACUT_PATH = Path("etc/dracut.conf.d/41-tilo-hardware.conf")
+
+
+def checked_path(root: Path, relative: Path, *, required: bool) -> Path:
+    """Reject redirects and nonregular files within a trusted directory."""
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("hardware profile path must stay within its root")
+    current = root
+    for index, component in enumerate(("", *relative.parts)):
+        if component:
+            current = current / component
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            if required or index == 0:
+                raise ValueError(f"hardware profile input is missing: {current}") from None
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError(f"hardware profile path contains a symlink: {current}")
+        if index == len(relative.parts):
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError(f"hardware profile path is not a regular file: {current}")
+        elif not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"hardware profile path is not a directory: {current}")
+    return current
+
+
+def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir: Path,
+                    profiles_dir: Path = PROFILES_DIR, *, target_update_ref: str | None = None) -> None:
+    if profile == "generic":
+        return
+    definition = load_definition(profile, profiles_dir)
+    validate_target_imgref(target_update_ref, root=root)
+    architecture = definition["architecture"]
+    if platform.machine() != architecture:
+        raise ValueError(f"{profile} hardware profile requires a native {architecture} builder")
+    if os.geteuid() != 0:
+        raise ValueError("hardware profile preparation must run as root inside the image builder")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", kernel_version):
+        raise ValueError("invalid kernel version for hardware profile")
+
+    kernel = Path(f"usr/lib/modules/{kernel_version}")
+    config = checked_path(root, kernel / "config", required=True)
+    if ARCH_CONFIG[architecture] not in config.read_text(encoding="utf-8").splitlines():
+        raise ValueError(f"hardware profile requires a matching {architecture} kernel configuration")
+    dtb_relative = kernel / "dtb" / definition["devicetree"] if definition["devicetree"] else None
+    dtb = None
+    if dtb_relative is not None:
+        dtb = checked_path(root, dtb_relative, required=True).read_bytes()
+        if len(dtb) < 40 or struct.unpack_from(">II", dtb) != (0xD00DFEED, len(dtb)):
+            raise ValueError("hardware profile device tree has an invalid flattened-device-tree header")
+
+    firmware_names = definition["firmware"]
+    manifest_path = checked_path(firmware_dir, Path("manifest.json"), required=True) if firmware_names else None
+    manifest = {"schema_version": 1, "profile": profile, "files": {}}
+    if manifest_path and manifest_path.stat().st_size > 16384:
+        raise ValueError("firmware manifest is too large")
+    if manifest_path:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or set(manifest) != {"schema_version", "profile", "files"}:
+        raise ValueError("firmware manifest has missing or unknown fields")
+    if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1:
+        raise ValueError("unsupported firmware manifest schema")
+    if manifest["profile"] != profile:
+        raise ValueError("firmware manifest belongs to another hardware profile")
+    hashes = manifest["files"]
+    if not isinstance(hashes, dict) or set(hashes) != set(firmware_names):
+        raise ValueError("firmware manifest must name exactly the hardware definition's firmware files")
+
+    outputs: dict[Path, bytes] = {}
+    for name, destination in firmware_names.items():
+        digest = hashes[name]
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"firmware manifest has no valid SHA-256 for {name}")
+        payload = checked_path(firmware_dir, Path(name), required=True).read_bytes()
+        if not payload or hashlib.sha256(payload).hexdigest() != digest:
+            raise ValueError(f"firmware does not match its pinned SHA-256: {name}")
+        outputs[FIRMWARE_PATH / destination] = payload
+
+    document = {
+        "schema_version": 1,
+        "id": profile,
+        "architecture": architecture,
+        "devicetree": f"/{dtb_relative.as_posix()}" if dtb_relative else None,
+        "devicetree_sha256": hashlib.sha256(dtb).hexdigest() if dtb else None,
+        "target_update_ref": target_update_ref,
+    }
+    outputs[PROFILE_PATH] = (json.dumps(document, indent=2) + "\n").encode("utf-8")
+    outputs[DEFINITION_PATH] = (json.dumps(definition, indent=2) + "\n").encode("utf-8")
+    firmware_paths = " ".join(f"/{(FIRMWARE_PATH / name).as_posix()}" for name in firmware_names.values())
+    outputs[DRACUT_PATH] = (
+        "# Hardware-profile firmware needed before the encrypted root is unlocked.\n"
+        f'install_items+=" {firmware_paths} "\n'
+    ).encode("utf-8")
+    # Check every destination before creating directories or installing bytes.
+    # This includes existing output files, including dangling symlinks.
+    destinations = {
+        checked_path(root, relative, required=False): payload
+        for relative, payload in outputs.items()
+    }
+    for destination, payload in destinations.items():
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+        destination.write_bytes(payload)
+        destination.chmod(0o644)
+        os.chown(destination, 0, 0)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", required=True)
+    parser.add_argument("--profiles-dir", type=Path, default=PROFILES_DIR)
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--kernel-version", required=True)
+    parser.add_argument("--firmware-dir", type=Path, required=True)
+    parser.add_argument("--target-update-ref")
+    args = parser.parse_args()
+    try:
+        prepare_profile(args.profile, args.root, args.kernel_version, args.firmware_dir, args.profiles_dir,
+                        target_update_ref=args.target_update_ref)
+    except (OSError, ValueError, TypeError) as error:
+        parser.exit(1, f"hardware profile rejected: {error}\n")
+
+
+if __name__ == "__main__":
+    main()

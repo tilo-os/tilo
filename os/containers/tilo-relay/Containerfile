@@ -1,0 +1,128 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# tilo-relay standalone container image
+# ----------------------------------------------------------------------------
+# Ships the relay daemon + its systemd unit as a small OCI image
+# usable outside of the full bootc host mode. Two use cases:
+#
+#   1. Home users who want a relay container next to another home
+#      service (Nextcloud, Home Assistant, ...) on an existing
+#      Debian/Fedora/Podman-quadlet setup.
+#   2. Enterprise cloud tier: the relay image is the deployable
+#      unit; instances get provisioned per-tenant via k8s or a
+#      podman-quadlet fleet.
+#
+# Build from the repo root:
+#
+#     podman build -f os/containers/tilo-relay/Containerfile \
+#         -t code.podesta.ai/qos/tilo-relay:latest .
+#
+# Publish via the existing forgejo CI workflow — see
+# `.forgejo/workflows/tilo-relay.yaml` (companion to the OS image job).
+# ============================================================================
+
+# ---- Frozen RPM repo + mirrored base (cross-time reproducibility) ----------
+# Digest-pinned snapshot and base shared with the desktop + host bootc images.
+# RPMS_REF comes from os/rpms-snapshot.env and BASE_REF from
+# os/base-snapshot.env — see os/dev/build-image.sh and the
+# .forgejo/workflows/tilo-relay.yaml build. Declared before the first FROM so
+# both are global rather than scoped to the preceding stage.
+ARG BASE_REF
+ARG RPMS_REF
+FROM ${RPMS_REF} AS rpms
+
+# ---- Stage 1: builder --------------------------------------------------------
+FROM ${BASE_REF} AS builder
+
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+        rust cargo sccache capnproto \
+        gcc gcc-c++ make cmake perl perl-FindBin python3 git \
+        clang clang-devel pkgconf-pkg-config \
+    && dnf clean all
+
+WORKDIR /build
+COPY . /build
+
+# BuildKit's default RUN env doesn't include a writable HOME, so cargo
+# tries `/root/.cargo` and fails to create it. Same fix as
+# os/Containerfile.host — pin CARGO_HOME + SCCACHE_DIR into the
+# repo-mounted /build.
+ARG SOURCE_DATE_EPOCH=0
+# No RUSTFLAGS here, deliberately. The variable REPLACES `build.rustflags`
+# from .cargo/config.toml rather than appending to it, so setting it for the
+# `--remap-path-prefix` alone silently drops target-cpu=x86-64-v3 and every
+# link-time hardening flag (full RELRO, BIND_NOW, noexecstack, and the
+# GNU_PROPERTY shadow-stack mark) from everything this image builds. That
+# exact regression is why the remap now lives in .cargo/config.toml instead,
+# alongside the flags it used to displace -- it still applies here, because
+# cargo reads that config from /build.
+ENV CARGO_HOME=/build/.cargo-home \
+    SCCACHE_DIR=/build/.sccache \
+    CARGO_BUILD_JOBS=2 \
+    CARGO_PROFILE_RELEASE_LTO=thin \
+    CARGO_INCREMENTAL=0 \
+    SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
+    LC_ALL=C.UTF-8 \
+    TZ=UTC
+
+# Build tilo-relay and the authenticated filesystem replica — trims build time to
+# minutes rather than tens. Match os/Containerfile.host's cache
+# mounts so incremental builds actually pick up on the runner.
+RUN --mount=type=cache,target=/build/.cargo-home \
+    --mount=type=cache,target=/build/target \
+    --mount=type=cache,target=/build/.sccache \
+    sed -i '/"apps\/browser",/d' Cargo.toml \
+    && cargo build --release -p tilo-relay --bins \
+    && cargo build --release -p fs --bin fs \
+    && mkdir -p /out \
+    && cp target/release/tilo-relay \
+          target/release/tilo-relay-admin \
+          target/release/tilo-enroll \
+          target/release/fs \
+          /out/ \
+    && /build/os/scripts/verify-elf-hardening.sh /out
+
+# ---- Stage 2: runtime --------------------------------------------------------
+FROM quay.io/fedora/fedora-minimal:44
+
+# Runtime dependency: CA roots for rustls connections to hosted Iroh relay
+# endpoints. Iroh does not use the system OpenSSL ABI. BusyBox is statically
+# linked, so it remains usable after removing the package manager, coreutils,
+# and their otherwise inherited OpenSSL dependency closure.
+# Minimal bases can contain the CA package without its generated bundle; an
+# already-installed package will not rerun its installation scriptlet. Extract
+# the same server-auth anchors as update-ca-trust before removing its tools.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    microdnf install -y --setopt=reposdir=/repo --disablerepo='*' --enablerepo=frozen \
+        ca-certificates busybox \
+    && P11_KIT_NO_USER_CONFIG=1 /usr/bin/trust extract --format=pem-bundle \
+        --filter=ca-anchors --overwrite --comment --purpose server-auth /ca-bundle.crt \
+    && /usr/bin/busybox grep -q '^-----BEGIN CERTIFICATE-----$' /ca-bundle.crt \
+    && microdnf remove -y --setopt=protected_packages= openssl-libs coreutils dnf5 \
+    && /usr/bin/busybox mkdir -p /etc/pki/tls/certs \
+    && /usr/bin/busybox mv /ca-bundle.crt /etc/pki/tls/certs/ca-bundle.crt \
+    && /usr/bin/busybox test -s /etc/pki/tls/certs/ca-bundle.crt \
+    && ! /usr/bin/busybox find / -xdev \
+        \( -name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl \) \
+        -print -quit | /usr/bin/busybox grep -q .
+
+COPY --from=builder /out/tilo-relay /usr/bin/tilo-relay
+COPY --from=builder /out/tilo-relay-admin /usr/bin/tilo-relay-admin
+COPY --from=builder /out/tilo-enroll /usr/bin/tilo-enroll
+COPY --from=builder /out/fs /usr/bin/fs
+COPY os/containers/tilo-relay/tilo-home-peer /usr/bin/tilo-home-peer
+RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-home-peer
+COPY os/usr/lib/systemd/system/tilo-relay.service /usr/lib/systemd/system/tilo-relay.service
+
+# Where the daemon writes state + reads config. The container
+# operator mounts a volume here for persistence.
+VOLUME ["/var/lib/tilo-relay", "/var/lib/tilo", "/etc/tilo"]
+
+# Iroh uses UDP + hole-punching, but for a public-relay deployment
+# a stable UDP port is nice to have. iroh's default bind is
+# ephemeral; the config file lets an operator pin a fixed port.
+EXPOSE 4433/udp
+
+# Default command: daemon. Operator can override with `admin`.
+ENTRYPOINT ["/usr/bin/tilo-home-peer"]
+CMD ["--config", "/etc/tilo/relay.toml", "run"]

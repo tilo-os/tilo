@@ -32,7 +32,7 @@ use crate::errors::{Error, Result};
 /// the secret material in the member is what makes the group state
 /// usable, so separating them would invite "wrong signer for this group" bugs.
 pub struct ChannelGroup {
-    /// The qOS channel this group represents, so callers can route incoming
+    /// The Tilo channel this group represents, so callers can route incoming
     /// ops via [`channel_id`](Self::channel_id) without a side table.
     pub(crate) channel_id: ChannelId,
     /// Secret material + provider — the group state lives in

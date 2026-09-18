@@ -1,7 +1,7 @@
-//! Phase 3 round-trip pinning: byte-stable `parse → serialize` across
-//! every block kind the notes app now supports (paragraph, heading 1-3,
+//! Byte-stable `parse → serialize` across every supported block kind
+//! (paragraph, heading 1-3,
 //! bullets with three indent levels, checklists done/not, fenced code
-//! block, divider). Mirror of `ui/tests/block_editor_markdown.rs` so we
+//! block, divider). Mirror of `crates/sdk/ui-core/tests/block_editor_markdown.rs` so we
 //! catch any drift between the storage grammar and the widget grammar.
 //!
 //! The two consumers are intentionally separate (`apps/notes` should

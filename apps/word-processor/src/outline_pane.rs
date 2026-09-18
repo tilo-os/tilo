@@ -1,11 +1,10 @@
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 
 use crate::i18n::t;
 use crate::num;
+use crate::paint_context::PaintContext;
 use crate::word_processor::Heading;
-use ui::text_render::TextRenderer;
 
 #[derive(Clone, Copy)]
 pub(super) struct OutlinePalette {
@@ -56,12 +55,9 @@ impl OutlinePane {
         self.hits.clear();
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
+        context: &mut PaintContext<'_>,
         panel: Rect,
         entries: &[Heading],
         active_id: Option<&str>,
@@ -69,19 +65,25 @@ impl OutlinePane {
     ) {
         self.rect = panel;
         self.hits.clear();
-        scene.fill(Fill::NonZero, transform, palette.background, None, &panel);
-        scene.fill(
+        context.scene.fill(
             Fill::NonZero,
-            transform,
+            context.transform,
+            palette.background,
+            None,
+            &panel,
+        );
+        context.scene.fill(
+            Fill::NonZero,
+            context.transform,
             palette.border,
             None,
             &Rect::new(panel.x1 - 1.0, panel.y0, panel.x1, panel.y1),
         );
-        scene.push_layer(
+        context.scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
-            transform,
+            context.transform,
             &panel,
         );
 
@@ -91,26 +93,26 @@ impl OutlinePane {
         let inner_w = (right - x0).max(40.0);
         let mut y = panel.y0 + 14.0;
 
-        text_renderer.draw_text(
-            scene,
+        context.text.draw_text(
+            context.scene,
             &t("outline-header"),
             10.5,
             palette.text_dim,
-            transform * Affine::translate((x0, y)),
+            context.transform * Affine::translate((x0, y)),
             None,
         );
         y += 18.0;
 
         if entries.is_empty() {
-            text_renderer.draw_text(
-                scene,
+            context.text.draw_text(
+                context.scene,
                 &t("outline-empty"),
                 12.5,
                 palette.text_dim,
-                transform * Affine::translate((x0, y)),
+                context.transform * Affine::translate((x0, y)),
                 Some(num::f32_of_f64(inner_w)),
             );
-            scene.pop_layer();
+            context.scene.pop_layer();
             return;
         }
 
@@ -125,7 +127,7 @@ impl OutlinePane {
             if active {
                 // The current heading is a lifted row: the chip face with
                 // its derived edge, never an accent wash (HIG §9.3).
-                ui::surface::card(scene, transform, rect, 5.0, palette.chip);
+                ui::surface::card(context.scene, context.transform, rect, 5.0, palette.chip);
             }
             let (size, ink) = match heading.level {
                 1 => (13.5, palette.text),
@@ -144,18 +146,18 @@ impl OutlinePane {
             } else {
                 heading.text.trim().to_string()
             };
-            text_renderer.draw_text(
-                scene,
+            context.text.draw_text(
+                context.scene,
                 &label,
                 size,
                 ink,
-                transform * Affine::translate((x0 + indent, y + 4.0)),
+                context.transform * Affine::translate((x0 + indent, y + 4.0)),
                 Some(num::f32_of_f64((inner_w - indent).max(20.0))),
             );
             self.hits.push((rect, heading.id.clone()));
             y += row_h;
         }
-        scene.pop_layer();
+        context.scene.pop_layer();
     }
 }
 

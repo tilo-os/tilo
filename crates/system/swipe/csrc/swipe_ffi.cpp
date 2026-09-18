@@ -1,7 +1,7 @@
 // C ABI shim over the FUTO swipe-library `SwipeEngine` (GPL-3.0-or-later;
-// linked into qOS which is AGPL-3.0-or-later — compatible). Compiled by
+// linked into Tilo which is AGPL-3.0-or-later — compatible). Compiled by
 // build.rs via the `cc` crate and linked against libswipe_decoder.a +
-// ExecuTorch static libs. The Rust side (`qos-swipe`) calls these.
+// ExecuTorch static libs. The Rust side (`tilo-swipe`) calls these.
 //
 // The engine uses the library's built-in `default_en_qwerty()` layout
 // (normalized [0,1] key centres); callers normalize their swipe path into
@@ -57,7 +57,7 @@ extern "C" {
 // Create an engine. `encoder_path` is required; `decoder_path`/`lm_path`/
 // `lm_vocab_path` are optional ("" or NULL to omit). `dict_combined_path`
 // is a FUTO `.combined` vocab file. Returns NULL on failure.
-void *qos_swipe_create(const char *encoder_path, const char *decoder_path,
+void *tilo_swipe_create(const char *encoder_path, const char *decoder_path,
                        const char *lm_path, const char *lm_vocab_path,
                        const char *dict_combined_path, int beam_width,
                        int top_k) {
@@ -88,12 +88,12 @@ void *qos_swipe_create(const char *encoder_path, const char *decoder_path,
     return h;
 }
 
-int qos_swipe_has_decoder(void *handle) {
+int tilo_swipe_has_decoder(void *handle) {
     auto *h = static_cast<Handle *>(handle);
     return (h != nullptr && h->engine.hasDecoder()) ? 1 : 0;
 }
 
-int qos_swipe_has_lm(void *handle) {
+int tilo_swipe_has_lm(void *handle) {
     auto *h = static_cast<Handle *>(handle);
     return (h != nullptr && h->engine.hasLm()) ? 1 : 0;
 }
@@ -101,7 +101,7 @@ int qos_swipe_has_lm(void *handle) {
 // Recognize a swipe given normalized (x,y in [0,1]) points + times t (ms).
 // Writes NUL-separated candidate words into words_buf and scores into
 // scores[]. Returns the candidate count (<= max).
-int qos_swipe_recognize(void *handle, const float *x, const float *y,
+int tilo_swipe_recognize(void *handle, const float *x, const float *y,
                         const float *t, uintptr_t n, int top_k,
                         char *words_buf, int words_cap, float *scores,
                         int max) {
@@ -115,7 +115,7 @@ int qos_swipe_recognize(void *handle, const float *x, const float *y,
 
 // Context-only next-word prediction (requires an LM). `context` is a
 // NUL-separated list of `nctx` previous words.
-int qos_swipe_predict_next(void *handle, const char *context, int nctx, int k,
+int tilo_swipe_predict_next(void *handle, const char *context, int nctx, int k,
                            char *words_buf, int words_cap, float *scores,
                            int max) {
     auto *h = static_cast<Handle *>(handle);
@@ -143,7 +143,7 @@ int qos_swipe_predict_next(void *handle, const char *context, int nctx, int k,
     return count;
 }
 
-void qos_swipe_destroy(void *handle) {
+void tilo_swipe_destroy(void *handle) {
     delete static_cast<Handle *>(handle);
 }
 

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "qOS broker for default-deny Wine, UMU/Proton, and Windows VM launches"
+description = "Tilo broker for default-deny Wine, UMU/Proton, and Windows VM launches"
 
 [lib]
 name = "compat_service"
@@ -19,7 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-windows-vm = { path = "../../system/windows-vm" }
+windows-vm = { path = "../windows-vm" }
 
 [dev-dependencies]
 tempfile.workspace = true

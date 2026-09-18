@@ -46,8 +46,8 @@ directory would converge through the filesystem and prove nothing.
 Two things are machine state rather than session state and must NOT be
 isolated, or no app can start at all:
 
-  QOS_APPS_DATA_DIR       the installed-app registry
-  QOS_RUNTIME_BUNDLE_DIR  the runtime bundle every packaged app pins
+  TILO_APPS_DATA_DIR       the installed-app registry
+  TILO_RUNTIME_BUNDLE_DIR  the runtime bundle every packaged app pins
 
 Usage:
   ./word-processor-convergence-proof.py [--keep] [--text WORDS]
@@ -74,9 +74,9 @@ import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SHELL = REPO / "target" / "debug" / "shell"
-LAUNCHER = REPO / "target" / "debug" / "qos-launcher"
+LAUNCHER = REPO / "target" / "debug" / "tilo-launcher"
 
-APP = "dev.qos.word-processor"
+APP = "dev.tilo.word-processor"
 APPLICATIONS = "applications"
 
 failures: list[str] = []
@@ -121,20 +121,20 @@ class Session:
         home = os.path.expanduser("~")
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
             "XDG_STATE_HOME": os.path.join(self.dir, "state"),
             "XDG_CONFIG_HOME": os.path.join(self.dir, "config"),
             "XDG_RUNTIME_DIR": runtime,
             # Machine state the isolation must not take with it.
-            "QOS_APPS_DATA_DIR": apps_dir or os.path.join(home, ".local/share/qos-apps"),
-            "QOS_RUNTIME_BUNDLE_DIR": os.path.join(home, ".local/share/qos-runtime"),
+            "TILO_APPS_DATA_DIR": apps_dir or os.path.join(home, ".local/share/tilo-apps"),
+            "TILO_RUNTIME_BUNDLE_DIR": os.path.join(home, ".local/share/tilo-runtime"),
             # Without its own device key a session's peer-sync turns
             # itself off, and the only symptom is a missing peer.* action.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
-            "NIRIOS_HEADLESS_SIZE": "1280x800",
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_HEADLESS_SIZE": "1280x800",
         }
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
@@ -257,11 +257,11 @@ def main() -> int:
                          "lives inside the app rather than in the compositor.")
     args = ap.parse_args()
 
-    for binary, what in ((SHELL, "shell"), (LAUNCHER, "qos-launcher")):
+    for binary, what in ((SHELL, "shell"), (LAUNCHER, "tilo-launcher")):
         if not binary.exists():
             print(f"missing {what} at {binary}")
             print("build it:  cargo build -p shell --bin shell && "
-                  "cargo build -p launcher --bin qos-launcher")
+                  "cargo build -p launcher --bin tilo-launcher")
             return 2
 
     # AF_UNIX paths cap near 108 bytes, and a session binds several

@@ -1,0 +1,20 @@
+#!/bin/bash
+# tilo-session-select — the greetd default_session entry for the Tilo
+# installer live medium. The installer image overwrites /etc/greetd/config.toml
+# to launch THIS instead of the greeter directly, so a single image can serve
+# both roles depending on the kernel cmdline:
+#
+#   * tilo.install present  -> run the Tilo graphical installer (tilo-installer)
+#   * otherwise              -> run the normal graphical login greeter
+#
+# Both run inside `cage` (a single-window kiosk wlroots compositor) because
+# greetd has no display of its own. WLR_NO_HARDWARE_CURSORS=1 forces a software
+# cursor — the virtio-gpu HW cursor renders Y-flipped/offset under qemu's GL
+# (see etc/greetd/config.toml for the full rationale).
+set -euo pipefail
+
+if grep -qw 'tilo.install' /proc/cmdline 2>/dev/null; then
+  exec env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-installer
+else
+  exec env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter
+fi

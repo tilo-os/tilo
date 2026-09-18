@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# What a booted qOS image has to be able to do with its preinstalled apps.
+# What a booted Tilo image has to be able to do with its preinstalled apps.
 #
 #   ./os/tests/booted_app_store.sh            # over SSH into a running vm.sh guest
 #   OS_ROOT=/ ./os/tests/booted_app_store.sh  # on the machine itself
@@ -21,7 +21,7 @@
 set -uo pipefail
 
 RUNNER="${RUNNER:-}"
-STORE="${STORE:-/usr/share/qos-apps}"
+STORE="${STORE:-/usr/share/tilo-apps}"
 RUNTIME_VERSION="${RUNTIME_VERSION:-2026.07}"
 # How many packages the store must list. The image build fails unless every app
 # with a built binary installs, so this is a floor, not a guess — set it to what
@@ -73,41 +73,41 @@ fi
 # --- 2. the registry is what a reader of the store actually sees -------------
 # The file being right and a reader seeing it are different claims: the store is
 # merged with a per-user one behind SYSTEM_DATA_DIR, and a wrong constant there
-# shows up as an empty palette with a perfectly good registry.toml. `qos-install
+# shows up as an empty palette with a perfectly good registry.toml. `tilo-install
 # list` goes through that same read path, so it is the cheapest way to exercise
 # it without a compositor. The palette itself is proved by screenshot.
-listed="$(on 'qos-install list 2>&1' | grep -cE '^[a-z0-9.-]+\.[a-z0-9-]+' | tr -d '\r')"
+listed="$(on 'tilo-install list 2>&1' | grep -cE '^[a-z0-9.-]+\.[a-z0-9-]+' | tr -d '\r')"
 if [ "${listed:-0}" -ge "$MIN_PACKAGES" ]; then
-  ok "qos-install list reports $listed packages from the system store"
+  ok "tilo-install list reports $listed packages from the system store"
 else
-  bad "qos-install list reported $listed packages (expected >= $MIN_PACKAGES):
-$(on 'qos-install list 2>&1' | head -8 | sed 's/^/      /')"
+  bad "tilo-install list reported $listed packages (expected >= $MIN_PACKAGES):
+$(on 'tilo-install list 2>&1' | head -8 | sed 's/^/      /')"
 fi
-if on 'command -v qos-launcher' >/dev/null 2>&1; then
-  ok "qos-launcher is on PATH, so the palette has something to exec"
+if on 'command -v tilo-launcher' >/dev/null 2>&1; then
+  ok "tilo-launcher is on PATH, so the palette has something to exec"
 else
-  bad "qos-launcher is not on PATH, so nothing can start a packaged app"
+  bad "tilo-launcher is not on PATH, so nothing can start a packaged app"
 fi
 
 # --- 3. the runtime bundle every app declares actually resolves --------------
-# This is what RuntimeBundleMissing is: the manifest names qos-runtime/<v> and
-# the launcher refuses to start the app when /usr/lib/qos-runtime/<v>/ has no
+# This is what RuntimeBundleMissing is: the manifest names tilo-runtime/<v> and
+# the launcher refuses to start the app when /usr/lib/tilo-runtime/<v>/ has no
 # bundle.toml. Assert the file, then assert the tool agrees it is valid.
-if on "test -f /usr/lib/qos-runtime/$RUNTIME_VERSION/bundle.toml"; then
-  ok "/usr/lib/qos-runtime/$RUNTIME_VERSION/bundle.toml is present"
+if on "test -f /usr/lib/tilo-runtime/$RUNTIME_VERSION/bundle.toml"; then
+  ok "/usr/lib/tilo-runtime/$RUNTIME_VERSION/bundle.toml is present"
 else
-  bad "no bundle at /usr/lib/qos-runtime/$RUNTIME_VERSION/ — every packaged app
-      declaring qos-runtime/$RUNTIME_VERSION fails at launch with RuntimeBundleMissing"
+  bad "no bundle at /usr/lib/tilo-runtime/$RUNTIME_VERSION/ — every packaged app
+      declaring tilo-runtime/$RUNTIME_VERSION fails at launch with RuntimeBundleMissing"
 fi
-if on "qos-runtime-bundle verify /usr/lib/qos-runtime/$RUNTIME_VERSION" >/dev/null 2>&1; then
+if on "tilo-runtime-bundle verify /usr/lib/tilo-runtime/$RUNTIME_VERSION" >/dev/null 2>&1; then
   ok "the baked runtime bundle verifies"
 else
-  bad "qos-runtime-bundle verify failed on /usr/lib/qos-runtime/$RUNTIME_VERSION:
-$(on "qos-runtime-bundle verify /usr/lib/qos-runtime/$RUNTIME_VERSION 2>&1" | head -3 | sed 's/^/      /')"
+  bad "tilo-runtime-bundle verify failed on /usr/lib/tilo-runtime/$RUNTIME_VERSION:
+$(on "tilo-runtime-bundle verify /usr/lib/tilo-runtime/$RUNTIME_VERSION 2>&1" | head -3 | sed 's/^/      /')"
 fi
 
 # --- 4. the package manager is usable on the running system ------------------
-for t in qos-install qos-pkg; do
+for t in tilo-install tilo-pkg; do
   if on "command -v $t" >/dev/null 2>&1; then
     ok "$t is on PATH"
   else
@@ -117,26 +117,26 @@ for t in qos-install qos-pkg; do
 done
 # On PATH is not the same as working. `list` reads the same registry the
 # launcher does and exercises the store code path.
-if on 'qos-install list' >/dev/null 2>&1; then
-  ok "qos-install list succeeds against the real store"
+if on 'tilo-install list' >/dev/null 2>&1; then
+  ok "tilo-install list succeeds against the real store"
 else
-  bad "qos-install list failed:
-$(on 'qos-install list 2>&1' | head -5 | sed 's/^/      /')"
+  bad "tilo-install list failed:
+$(on 'tilo-install list 2>&1' | head -5 | sed 's/^/      /')"
 fi
 
 # --- 5. the confined shell runtime the Terminal requires is serving ----------
 # apps/terminal declares ush = "required@1"; without this socket the launcher
 # refuses to start it at all.
-if on 'test -x /usr/libexec/qos-ush'; then
-  ok "/usr/libexec/qos-ush is installed"
+if on 'test -x /usr/libexec/tilo-ush'; then
+  ok "/usr/libexec/tilo-ush is installed"
 else
-  bad "/usr/libexec/qos-ush is missing — the packaged Terminal cannot launch"
+  bad "/usr/libexec/tilo-ush is missing — the packaged Terminal cannot launch"
 fi
-if on 'test -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/qos/services/ush.sock"'; then
+if on 'test -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo/services/ush.sock"'; then
   ok "the ush service socket is bound for this session"
 else
-  bad "no ush socket at \$XDG_RUNTIME_DIR/qos/services/ush.sock; qos-ush.service says:
-$(on 'systemctl --user status qos-ush.service 2>&1' | head -8 | sed 's/^/      /')"
+  bad "no ush socket at \$XDG_RUNTIME_DIR/tilo/services/ush.sock; tilo-ush.service says:
+$(on 'systemctl --user status tilo-ush.service 2>&1' | head -8 | sed 's/^/      /')"
 fi
 
 # --- 6. the collaborative filesystem is mounted ------------------------------

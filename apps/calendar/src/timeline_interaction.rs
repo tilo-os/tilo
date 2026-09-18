@@ -5,9 +5,9 @@
 //! effects; [`CalendarApp`](crate::app::CalendarApp) remains responsible for
 //! applying those effects to the calendar model and CRDT.
 
-use automerge::{AutoCommit, ObjId};
+use crate::draw_util::PaintContext;
+use crate::input_context::InputContext;
 use chrono::{Datelike, NaiveDate};
-use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::Fill;
@@ -18,14 +18,16 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
 use crate::date;
-use crate::draw_util::{elide_to_width, fill_rect, fill_round, hairline, stroke_line, stroke_round};
-use ui::surface::card;
-use ui::tokens::colors::over;
+use crate::draw_util::{
+    elide_to_width, fill_rect, fill_round, hairline, stroke_line, stroke_round,
+};
 use crate::model::{Id, Palette};
 use crate::timeline_viewport::{
     TIMELINE_DAY_TEXT, TIMELINE_HOUR_TEXT, TIMELINE_STRIP_TEXT, TIMELINE_SUBTITLE_TEXT,
     TIMELINE_TITLE_TEXT, TIMELINE_WEEKDAY_TEXT, TimelineGeom, TimelineViewport,
 };
+use ui::surface::card;
+use ui::tokens::colors::over;
 
 pub(super) const TIMELINE_SNAP_MIN: i64 = 15;
 
@@ -99,21 +101,6 @@ impl TimelineOutcome {
     }
 }
 
-/// Widget event context needed only because the shared `Scrollable` follows
-/// the standard widget event contract. Bundling it keeps that plumbing at the
-/// controller boundary rather than threading eight parameters through every
-/// gesture branch.
-pub(super) struct TimelineEventCtx<'a> {
-    pub event: &'a WindowEvent,
-    pub scale_factor: f64,
-    pub modifiers: Modifiers,
-    pub state: &'a mut AutoCommit,
-    pub path: &'a ObjId,
-    pub focus_target: &'a mut Option<NodeId>,
-    pub node_id: NodeId,
-    pub taffy: &'a TaffyTree<()>,
-}
-
 #[derive(Clone, Copy, Debug)]
 enum TimelineDrag {
     Create {
@@ -175,7 +162,7 @@ impl TimelineInteraction {
 
     pub fn handle_event(
         &mut self,
-        mut cx: TimelineEventCtx<'_>,
+        cx: &mut InputContext<'_>,
         area: Rect,
         days: &[NaiveDate],
         spans: &[TimelineSpan],
@@ -186,13 +173,13 @@ impl TimelineInteraction {
 
         match cx.event {
             WindowEvent::MouseWheel { .. } if area.contains(self.pointer) => {
-                let handled = self.forward_to_scroll(&mut cx);
+                let handled = self.forward_to_scroll(cx);
                 TimelineOutcome {
                     handled,
                     effect: None,
                 }
             }
-            WindowEvent::CursorMoved { .. } => self.handle_pointer_move(&mut cx, area),
+            WindowEvent::CursorMoved { .. } => self.handle_pointer_move(cx, area),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -202,7 +189,7 @@ impl TimelineInteraction {
                 if !body.contains(self.pointer) {
                     return TimelineOutcome::ignored();
                 }
-                if self.forward_to_scroll(&mut cx) {
+                if self.forward_to_scroll(cx) {
                     return TimelineOutcome::handled(None);
                 }
                 if self.begin_drag(area, days, spans, self.pointer) {
@@ -217,7 +204,7 @@ impl TimelineInteraction {
                 ..
             } => {
                 if self.wants_pointer_capture() {
-                    let handled = self.forward_to_scroll(&mut cx);
+                    let handled = self.forward_to_scroll(cx);
                     return TimelineOutcome {
                         handled,
                         effect: None,
@@ -232,11 +219,7 @@ impl TimelineInteraction {
         }
     }
 
-    fn handle_pointer_move(
-        &mut self,
-        cx: &mut TimelineEventCtx<'_>,
-        area: Rect,
-    ) -> TimelineOutcome {
+    fn handle_pointer_move(&mut self, cx: &mut InputContext<'_>, area: Rect) -> TimelineOutcome {
         if self.wants_pointer_capture() {
             let handled = self.forward_to_scroll(cx);
             return TimelineOutcome {
@@ -387,17 +370,8 @@ impl TimelineInteraction {
             .map(|span| TimelineEffect::Select(span.id))
     }
 
-    fn forward_to_scroll(&mut self, cx: &mut TimelineEventCtx<'_>) -> bool {
-        self.viewport.handle_event(
-            cx.event,
-            cx.scale_factor,
-            cx.modifiers,
-            cx.state,
-            cx.path,
-            cx.focus_target,
-            cx.node_id,
-            cx.taffy,
-        )
+    fn forward_to_scroll(&mut self, cx: &mut InputContext<'_>) -> bool {
+        self.viewport.handle_event(cx)
     }
 
     fn preview(&self, area: Rect, days: &[NaiveDate]) -> Option<TimelineEffect> {

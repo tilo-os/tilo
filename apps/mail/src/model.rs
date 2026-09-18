@@ -181,7 +181,7 @@ impl Addr {
 /// A decoded attachment. When the bytes are present locally (`hydrated`) they
 /// are held in `content`, so the reader can save the real file to disk; in the
 /// live app the bytes are hydrated on demand (same projection-vs-hydration
-/// story as the qOS FUSE layer) and `content` is empty until then.
+/// story as the Tilo FUSE layer) and `content` is empty until then.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attachment {
     pub filename: String,
@@ -189,6 +189,11 @@ pub struct Attachment {
     pub size: u64,
     /// Whether the bytes are present locally (vs. server-side only).
     pub hydrated: bool,
+    /// Portable draft-content identity when this attachment is a Drafts
+    /// projection. Incoming mail leaves this absent; drafts use it to reopen
+    /// with the same qdoc-backed bytes on any collaborator.
+    #[serde(default)]
+    pub content_id: Option<String>,
     /// The decoded bytes, when hydrated. Never serialised into the shared
     /// settings store (it holds message content, not settings).
     #[serde(skip, default)]
@@ -203,6 +208,7 @@ impl Attachment {
             mime: mime.into(),
             size,
             hydrated: false,
+            content_id: None,
             content: Vec::new(),
         }
     }
@@ -218,6 +224,7 @@ impl Attachment {
             mime: mime.into(),
             size: content.len() as u64,
             hydrated: true,
+            content_id: None,
             content,
         }
     }
@@ -590,18 +597,26 @@ pub struct Draft {
     /// `text/html` part alongside `body` as the `text/plain` alternative.
     #[serde(default)]
     pub html_body: Option<String>,
-    /// Filesystem paths of files staged as attachments for this draft. The
-    /// bytes are read from these paths when the message is built (see
-    /// `transport::build_mime`), so what is sent is the real file — no
-    /// fabricated placeholder payload.
-    pub attachments: Vec<String>,
+    /// Bounded RFC 5545 METHOD:REQUEST payload for a calendar invitation.
+    /// Stored inline so a collaborative draft never grants a host-path read.
+    #[serde(default)]
+    pub calendar_ics: Option<String>,
+    /// Verified portable attachment metadata.  `content_id` names qdoc blob
+    /// bytes; no participant's filesystem path is persisted or replicated.
+    #[serde(default)]
+    pub attachments: Vec<DraftAttachment>,
     /// If this draft is a reply, the message it answers.
     pub in_reply_to: Option<MessageId>,
 }
 
-/// The display name (final path component) of a staged attachment path.
-pub fn attachment_display_name(path: &str) -> &str {
-    path.rsplit(['/', '\\']).next().unwrap_or(path)
+/// Metadata for one staged draft attachment. The content is addressed by a
+/// verified qdoc blob identity and materialized only at the send boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftAttachment {
+    pub content_id: String,
+    pub filename: String,
+    pub mime: String,
+    pub size: u64,
 }
 
 /// The whole mailbox aggregate: an account, its messages, and the derived
@@ -912,7 +927,7 @@ mod tests {
             rfc_message_id: None,
             in_reply_to: None,
             from: Addr::new("Ada Lovelace", "ada@analytical.example"),
-            to: vec![Addr::bare("you@qos.example")],
+            to: vec![Addr::bare("you@tilo.example")],
             cc: vec![],
             subject: subject.into(),
             body: "First line.\nSecond line.".into(),

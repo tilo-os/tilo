@@ -65,7 +65,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 IMAGE=""; OUTDIR=""
 COMPOSEFS=auto; BOOTLOADER=""; SIZE=""; ROOT_MIN=12G; ESP_SIZE=2G
-RETAIN="${QOS_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
+RETAIN="${TILO_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
 KARGS=(); USERSPEC=""; TARGET_IMGREF=""; KEEP_RAW=0; DEFAULT_KARGS=yes
 
 while [ $# -gt 0 ]; do
@@ -117,8 +117,8 @@ if podman run --rm --entrypoint /bin/sh "$IMAGE" \
      -c 'ls /boot/EFI/Linux/*.efi >/dev/null 2>&1'; then
   HAS_UKI=yes
 fi
-# The image's own install config decides the bootloader (qOS ships
-# `bootloader = "systemd"` in /usr/lib/bootc/install/40-qos.toml), and that
+# The image's own install config decides the bootloader (Tilo ships
+# `bootloader = "systemd"` in /usr/lib/bootc/install/40-tilo.toml), and that
 # choice constrains the backend: `bootc install` refuses systemd-boot on the
 # ostree backend with "bootupd is required for ostree-based installs" — bootupd
 # only plants GRUB. So an image asking for systemd-boot needs the composefs
@@ -191,8 +191,8 @@ if [ "$COMPOSEFS" = yes ]; then BOOT_IS_ESP=yes; else BOOT_IS_ESP=no; fi
 #   capacity >= (retained_generations + RETAINED_NEWER_GENERATIONS) * per-generation
 #               + slack for the bootloader and filesystem overhead
 #
-# retained_generations is qos-rollback's window (`Config::default()` in
-# crates/system/qos-rollback/src/lib.rs, default 3 — "this generation plus the two
+# retained_generations is tilo-rollback's window (`Config::default()` in
+# crates/system/tilo-rollback/src/lib.rs, default 3 — "this generation plus the two
 # before it"). RETAINED_NEWER_GENERATIONS (2, retention.rs) covers a staged update
 # whose kernel is already written before it has ever booted, plus a second staged
 # behind it. At the defaults that is 5 * 160 MiB + 64 MiB = 864 MiB.
@@ -226,8 +226,8 @@ if [ "$kernels_have" -lt "$kernels_need" ]; then
     $kernels_flag ($kernels_have MiB)
     needs $kernels_need MiB = ($RETAIN retained + $RETAINED_NEWER staged + $REPAIR_UKI repair) x $UKI_BUDGET + $KERNEL_FS_SLACK_MIB MiB slack
   Raise it, or lower --retain to at most $(( (kernels_have - KERNEL_FS_SLACK_MIB) / uki_mib - RETAINED_NEWER - REPAIR_UKI )).
-  --retain must match qos-rollback's retained_generations
-  (crates/system/qos-rollback/src/lib.rs); os/tests/esp_capacity.sh checks that."
+  --retain must match tilo-rollback's retained_generations
+  (crates/system/tilo-rollback/src/lib.rs); os/tests/esp_capacity.sh checks that."
 fi
 
 # The disk has to be big enough for the partitions asked for; growing it is free
@@ -270,16 +270,16 @@ trap cleanup EXIT
 # fails inside the composefs pull with "Opening stream '': Creating new
 # splitstream reader: Invalid splitstream content type". The same image pulled
 # over HTTP installs. So a local registry is started and the image published to
-# it; this is a genuine new requirement of dropping bib, not a preference.
+# it; this is a new requirement of dropping bib.
 REG=""; SRC_REF=""; RUNREF="$IMAGE"; TLS_ARGS=()
 start_registry() {
-  local want="${QOS_DISK_REG_PORT:-5000}" port
+  local want="${TILO_DISK_REG_PORT:-5000}" port
   # An already-present registry container of ours is authoritative: reuse it on
   # whatever port it was published on.
-  if podman container exists qos-disk-registry 2>/dev/null; then
-    [ "$(podman inspect -f '{{.State.Running}}' qos-disk-registry)" = true ] \
-      || podman start qos-disk-registry >/dev/null
-    port="$(podman port qos-disk-registry 5000/tcp 2>/dev/null | head -1)"
+  if podman container exists tilo-disk-registry 2>/dev/null; then
+    [ "$(podman inspect -f '{{.State.Running}}' tilo-disk-registry)" = true ] \
+      || podman start tilo-disk-registry >/dev/null
+    port="$(podman port tilo-disk-registry 5000/tcp 2>/dev/null | head -1)"
     port="${port##*:}"
     [ -n "$port" ] || port="$want"
     echo "localhost:$port"; return
@@ -291,9 +291,9 @@ start_registry() {
     echo "localhost:$want"; return
   fi
   for port in $(seq "$want" $(( want + 9 ))); do
-    podman run -d --name qos-disk-registry -p "$port:5000" \
+    podman run -d --name tilo-disk-registry -p "$port:5000" \
       docker.io/library/registry:2 >/dev/null 2>&1 || {
-        podman rm -f qos-disk-registry >/dev/null 2>&1 || true
+        podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
         continue
       }
     for _ in $(seq 1 30); do
@@ -304,7 +304,7 @@ start_registry() {
       msg "started a registry on :$port for the install source" >&2
       echo "localhost:$port"; return
     fi
-    podman rm -f qos-disk-registry >/dev/null 2>&1 || true
+    podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
   done
   return 1
 }
@@ -314,10 +314,10 @@ if [ "$COMPOSEFS" = yes ]; then
   backend cannot install from container storage: pulling an image out of
   containers-storage (or one moved across with \`podman save | sudo podman load\`)
   fails with \"Invalid splitstream content type\". The disk step therefore needs a
-  registry it can reach over HTTP. Start one and set QOS_DISK_REG_PORT, or install
+  registry it can reach over HTTP. Start one and set TILO_DISK_REG_PORT, or install
   docker.io/library/registry:2 so this can start its own."
-  # The source may be digest-pinned (`registry/owner/qos@sha256:...`). Splitting
-  # at the first colon turns that into the invalid repository `qos@sha256`.
+  # The source may be digest-pinned (`registry/owner/tilo@sha256:...`). Splitting
+  # at the first colon turns that into the invalid repository `tilo@sha256`.
   # Isolate the final path component first, then remove either digest or tag.
   repo="$(basename "$IMAGE")"
   repo="${repo%%@*}"
@@ -351,7 +351,7 @@ fi
 mkdir -p "$DEFS"
 printf '[Partition]\nType=esp\nFormat=vfat\nSizeMinBytes=%s\nSizeMaxBytes=%s\n' \
   "$ESP_SIZE" "$ESP_SIZE" > "$DEFS/01-esp.conf"
-printf '[Partition]\nType=root\nFormat=btrfs\nSizeMinBytes=%s\nGrowFileSystem=yes\n' \
+printf '[Partition]\nType=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab\nLabel=Tilo root\nFormat=btrfs\nSizeMinBytes=%s\nGrowFileSystem=yes\n' \
   "$ROOT_MIN" > "$DEFS/02-root.conf"
 
 msg "1/4 systemd-repart -> $RAW (ESP $ESP_SIZE + btrfs root >= $ROOT_MIN, disk $SIZE)"

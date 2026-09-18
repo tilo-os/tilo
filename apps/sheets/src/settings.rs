@@ -2,13 +2,13 @@
 //!
 //! # The shared store
 //!
-//! qOS apps need a single place to read user-wide locale defaults — the
+//! Tilo apps need a single place to read user-wide locale defaults — the
 //! currency to assume for money, how to render dates and times, and which
 //! measurement system to use. Rather than each app inventing its own
 //! preference file, they all read and write **one** JSON document:
 //!
 //! ```text
-//! $XDG_CONFIG_HOME/qos/settings.json   (falls back to ~/.config/qos/settings.json)
+//! $XDG_CONFIG_HOME/tilo/settings.json   (falls back to ~/.config/tilo/settings.json)
 //! ```
 //!
 //! The file is a plain JSON object, namespaced by domain so that unrelated
@@ -131,12 +131,12 @@ impl GlobalSettings {
     }
 
     /// Persist to the shared path, preserving foreign keys. Creates the
-    /// `qos` config directory if needed. Returns the path written.
+    /// `tilo` config directory if needed. Returns the path written.
     ///
     /// # Errors
     ///
     /// Returns an error if no config directory is available, or if creating
-    /// the `qos` config directory or writing the settings file fails.
+    /// the `tilo` config directory or writing the settings file fails.
     pub fn save(&self) -> std::io::Result<PathBuf> {
         let path = settings_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
         if let Some(parent) = path.parent() {

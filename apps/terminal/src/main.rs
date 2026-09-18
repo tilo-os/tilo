@@ -5,6 +5,7 @@
 // unwrap_used, expect_used, panic — because a panicking app is a bad app
 // whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
 // full set: a fault there takes the session, or every app with it.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -69,7 +70,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.qos.terminal", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.terminal", live_root)
             .live_handler(run_live)
             .shot_handler(run_shot)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
@@ -80,6 +81,7 @@ pub fn main() {
                 "colors",
                 "tui",
                 "scrollback",
+                "find",
                 "empty",
                 "empty-menu",
                 "ended",
@@ -102,7 +104,7 @@ fn run_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
     // polling at ~60 Hz: grab the handle before moving the widget into the App,
     // then store the loop's proxy once it exists.
     let waker = widget.waker_handle();
-    let (state, autosave) = ui::persist::open("dev.qos.terminal");
+    let (state, autosave) = ui::persist::open("dev.tilo.terminal");
     let app =
         ui::App::from_scoped_parts(wake_scope, state, Box::new(widget)).with_autosave(autosave);
     app.run_with_setup(move |proxy| {
@@ -122,15 +124,21 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let scenario = args.scenario.as_deref();
     let mut widget = match scenario {
         Some("shell" | "shell-select") | None => TerminalWidget::spawn_default(),
-        // A command that exits at once. `portable-pty` spawns the literal path
-        // (no `PATH` lookup), and macOS ships `true` at `/usr/bin/true` only —
-        // there is no `/bin/true` on Darwin, so the spawn failed with ENOENT on
-        // the development hosts. `/bin/sh` is the one path POSIX guarantees on
-        // every host this scenario runs on.
         Some("ended") => {
-            let mut cmd = terminal::CommandBuilder::new("/bin/sh");
-            cmd.args(["-c", "exit 0"]);
-            TerminalWidget::spawn_command(cmd)
+            #[cfg(unix)]
+            let command = {
+                // Spawn the portable shell path: macOS has no /bin/true.
+                let mut command = terminal::CommandBuilder::new("/bin/sh");
+                command.args(["-c", "exit 0"]);
+                command
+            };
+            #[cfg(windows)]
+            let command = {
+                let mut command = terminal::CommandBuilder::new("cmd.exe");
+                command.args(["/d", "/c", "exit /b 0"]);
+                command
+            };
+            TerminalWidget::spawn_command(command)
         }
         Some(_) => TerminalWidget::spawn_headless(),
     }
@@ -218,7 +226,7 @@ fn render_shot_to_png(
     // scenario drives the real PTY instead of feeding canned bytes.
     if let Some(name) = scenario {
         if name == "shell" || name == "shell-select" {
-            drive_live_shell(widget, &mut state.doc, &state.root);
+            drive_live_shell(widget, &mut state.doc, &state.root)?;
         } else {
             run_scenario(widget, &mut state.doc, &state.root, name);
         }
@@ -257,7 +265,7 @@ fn drive_live_shell(
     widget: &mut TerminalWidget,
     doc: &mut automerge::AutoCommit,
     root: &automerge::ObjId,
-) {
+) -> Result<(), &'static str> {
     use std::time::Duration;
     // Let the shell reach its first prompt.
     for _ in 0..8 {
@@ -266,15 +274,24 @@ fn drive_live_shell(
     }
     // A short demo: identify the shell, print some content, and end with a
     // green "done" so the shot shows real SGR-coloured output.
+    #[cfg(unix)]
     widget.write_input(
-        b"clear; printf 'qOS terminal - live PTY session\\n'; \
+        b"clear; printf 'Tilo terminal - live PTY session\\n'; \
           printf 'primes below 20: 2 3 5 7 11 13 17 19\\n'; \
           printf '\\033[1;32mdone\\033[0m\\n'\r",
     );
-    for _ in 0..30 {
+    #[cfg(windows)]
+    widget.write_input(
+        b"@echo off\r\ncls\r\necho Tilo terminal - live PTY session\r\necho primes below 20: 2 3 5 7 11 13 17 19\r\necho \x1b[1;32mdone\x1b[0m\r\n",
+    );
+    for _ in 0..150 {
         widget.sync(doc, root);
+        if widget.grid_text().lines().any(|line| line.trim() == "done") {
+            return Ok(());
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
+    Err("the live shell did not execute the screenshot command")
 }
 
 /// Highlight a line (and a word) of the live shell output so the `shell-select`
@@ -307,7 +324,7 @@ fn run_scenario(
         // truecolor gradient, and the four style bits.
         "colors" => {
             let mut s = String::new();
-            s.push_str("\x1b[1mqOS terminal — SGR palette\x1b[0m\r\n\r\n");
+            s.push_str("\x1b[1mTilo terminal — SGR palette\x1b[0m\r\n\r\n");
             s.push_str(" 16-color ANSI:  ");
             for n in 0..8 {
                 let _ = write!(s, "\x1b[4{n}m  \x1b[0m");
@@ -330,7 +347,7 @@ fn run_scenario(
             s.push_str("\x1b[1mbold\x1b[0m  \x1b[2mdim\x1b[0m  \x1b[3mitalic\x1b[0m  \x1b[4munderline\x1b[0m  \x1b[9mstrike\x1b[0m  \x1b[7mreverse\x1b[0m\r\n");
             s.push_str("\r\n foreground:     ");
             s.push_str("\x1b[38;2;255;90;90mred \x1b[38;2;90;220;120mgreen \x1b[38;2;110;160;255mblue\x1b[0m\r\n");
-            s.push_str("\r\n$ \x1b[38;5;120mecho\x1b[0m \x1b[38;5;223m\"hello, qOS\"\x1b[0m\r\n");
+            s.push_str("\r\n$ \x1b[38;5;120mecho\x1b[0m \x1b[38;5;223m\"hello, Tilo\"\x1b[0m\r\n");
             widget.feed(doc, root, s.as_bytes());
         }
         // A full-screen alternate-screen redraw resembling a text editor.
@@ -338,7 +355,7 @@ fn run_scenario(
             let mut s = String::new();
             s.push_str("\x1b[?1049h\x1b[2J\x1b[H");
             // Reverse-video title bar across the top.
-            s.push_str("\x1b[1;1H\x1b[7m qOS EDIT  main.rs  [+]                                      unix  utf-8 \x1b[0m");
+            s.push_str("\x1b[1;1H\x1b[7m Tilo EDIT  main.rs  [+]                                      unix  utf-8 \x1b[0m");
             #[allow(
                 clippy::literal_string_with_formatting_args,
                 reason = "demo source text shown verbatim in the tui shot; the braces are \
@@ -347,7 +364,7 @@ fn run_scenario(
             let lines = [
                 "fn main() {",
                 "    // alternate-screen redraw via CSI ?1049h",
-                "    let greeting = \"hello, qOS\";",
+                "    let greeting = \"hello, Tilo\";",
                 "    for i in 0..3 {",
                 "        println!(\"{i}: {greeting}\");",
                 "    }",
@@ -381,6 +398,20 @@ fn run_scenario(
             widget.sync(doc, root);
             // Scroll up so retained history (not the live tail) is visible.
             widget.scroll_up(20);
+        }
+        // Search state is explicitly local and is shown over real retained
+        // scrollback, not a fabricated remote/agent transcript operation.
+        "find" => {
+            let mut s = String::new();
+            for i in 0..80 {
+                // A terminal LF preserves the current column. Use the shell's
+                // normal CRLF output so this models a readable transcript.
+                let _ = writeln!(s, "{i:>4}  build step {i:03}: compiling terminal search\r");
+            }
+            widget.feed(doc, root, s.as_bytes());
+            widget.sync(doc, root);
+            widget.open_find();
+            widget.set_find_query("build step 042");
         }
         // A command that exits immediately exercises the persistent terminal
         // lifecycle status, including the reader's EOF transition.

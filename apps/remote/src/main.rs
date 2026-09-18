@@ -1,4 +1,4 @@
-//! Remote connections — standard qOS application entry point.
+//! Remote connections — standard Tilo application entry point.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -31,7 +31,7 @@ use ui::widget::Widget;
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let scenario = args.scenario.as_deref().unwrap_or_default();
     Ok(
-        if std::env::var("QOS_REMOTE_SAMPLE").as_deref() == Ok("1") {
+        if std::env::var("TILO_REMOTE_SAMPLE").as_deref() == Ok("1") {
             remote::app_root_for_shot_demo(scenario)
         } else {
             remote::app_root_for_shot(scenario)
@@ -44,17 +44,17 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.remote", remote::app_root)
+        &LaunchSpec::new("dev.tilo.remote", remote::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "narrow",
                 "narrow-open",
                 "form",
-                "form-qos",
+                "form-tilo",
                 "session-ssh",
                 "session-vnc",
                 "session-rdp",
-                "session-qos",
+                "session-tilo",
                 "session-connecting",
                 "session-failed",
                 "confirm-connect",

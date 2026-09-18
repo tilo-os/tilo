@@ -16,10 +16,9 @@
 //! the chip state converges across peers and survives a reload; it is cleared
 //! when a fresh set of inputs is loaded (the hunk indices no longer correspond).
 //!
-//! The diff and three-way panels themselves are derived views over plain text
-//! the app holds in memory — only the *output* of the merge is CRDT-backed,
-//! mirroring how a real editor keeps the conflict markers ephemeral but the
-//! buffer you save authoritative.
+//! The diff and three-way panels are derived views over plain text held in
+//! memory. Only the *output* of the merge is CRDT-backed, keeping conflict
+//! markers ephemeral while the saved buffer remains authoritative.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};

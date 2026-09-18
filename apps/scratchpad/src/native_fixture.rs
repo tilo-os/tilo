@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
-use automerge::{ROOT, transaction::Transactable};
-use qos_actions::OperationKind;
 use serde::Serialize;
+use tilo_actions::Action;
+use tilo_actions::OperationKind;
 
 #[derive(Debug, Serialize)]
 pub struct NativeFixtureManifest {
@@ -42,7 +42,7 @@ pub fn seed_native_fixture(directory: &Path) -> anyhow::Result<NativeFixtureMani
         prefixed_x_bytes: prefixed.len(),
     };
     let (mut state, mut root) = crate::open(directory)?;
-    state.doc.put(ROOT, "body", body)?;
+    crate::actions::EditNote { text: body }.apply(&mut state.doc)?;
     let saved = root
         .invoke_resource_operation(
             OperationKind::Effect,

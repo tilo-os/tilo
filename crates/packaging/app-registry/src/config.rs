@@ -2,8 +2,8 @@
 //! against, in what order, and how much each is trusted.
 //!
 //! Two layers, merged at load time: **global**
-//! (`~/.config/qos/registries.toml` / `$XDG_CONFIG_HOME`) and
-//! **per-workspace** (`<workspace>/.qos/registries.toml`), which can
+//! (`~/.config/tilo/registries.toml` / `$XDG_CONFIG_HOME`) and
+//! **per-workspace** (`<workspace>/.tilo/registries.toml`), which can
 //! add registries or override a global one's trust — workspace
 //! entries win on a name collision and sort before global entries of
 //! equal priority.
@@ -11,7 +11,7 @@
 //! ```toml
 //! [[registry]]
 //! name = "central"
-//! base-url = "https://registry.qos.dev"
+//! base-url = "https://registry.tilo.dev"
 //! trust = "ed25519:2f1c…"     # pin the operator key (fail-closed)
 //! priority = 0                # lower sorts first, default 0
 //! ```
@@ -154,13 +154,13 @@ pub enum ConfigError {
 }
 
 impl RegistriesConfig {
-    /// The built-in default: the central qOS registry. Shipped so a
+    /// The built-in default: the central Tilo registry. Shipped so a
     /// fresh install resolves *something* without config, but the
     /// operator key is a placeholder — a real deployment pins the true key.
     pub fn default_central() -> RegistryRef {
         RegistryRef {
             name: "central".to_string(),
-            base_url: "https://registry.qos.dev".to_string(),
+            base_url: "https://registry.tilo.dev".to_string(),
             // Placeholder key (all-zero is not a valid ed25519 point,
             // so an unconfigured central registry fails closed until
             // the operator pins the real key).
@@ -181,7 +181,7 @@ impl RegistriesConfig {
 
     /// Merge an explicit global-config path with a workspace root.
     /// [`Self::load`] calls this with the real global path; tests pass a
-    /// temp path so they never read the host's ~/.config/qos.
+    /// temp path so they never read the host's ~/.config/tilo.
     ///
     /// # Errors
     ///
@@ -269,14 +269,14 @@ fn load_file(path: &Path) -> Result<Vec<RegistryRef>, ConfigError> {
         .collect()
 }
 
-/// `~/.config/qos/registries.toml` (honours `$XDG_CONFIG_HOME`).
+/// `~/.config/tilo/registries.toml` (honours `$XDG_CONFIG_HOME`).
 pub fn global_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("qos").join("registries.toml"))
+    dirs::config_dir().map(|d| d.join("tilo").join("registries.toml"))
 }
 
-/// `<workspace>/.qos/registries.toml`.
+/// `<workspace>/.tilo/registries.toml`.
 pub fn workspace_path(workspace_root: &Path) -> PathBuf {
-    workspace_root.join(".qos").join("registries.toml")
+    workspace_root.join(".tilo").join("registries.toml")
 }
 
 #[cfg(test)]
@@ -299,7 +299,7 @@ mod tests {
         let cfg = RegistriesConfig::from_registries(vec![
             RegistryRef {
                 name: "central".into(),
-                base_url: "https://registry.qos.dev".into(),
+                base_url: "https://registry.tilo.dev".into(),
                 trust: RegistryTrust::Key([9u8; 32]),
                 priority: 0,
             },
@@ -330,7 +330,7 @@ mod tests {
             r#"
 [[registry]]
 name = "central"
-base-url = "https://registry.qos.dev"
+base-url = "https://registry.tilo.dev"
 trust = "ed25519:0303030303030303030303030303030303030303030303030303030303030303"
 priority = 0
 "#,
@@ -338,7 +338,7 @@ priority = 0
         .unwrap();
 
         let ws_root = dir.path().join("ws");
-        std::fs::create_dir_all(ws_root.join(".qos")).unwrap();
+        std::fs::create_dir_all(ws_root.join(".tilo")).unwrap();
         std::fs::write(
             workspace_path(&ws_root),
             r#"

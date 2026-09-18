@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """An agent edits a shared document, and the other people see it.
 
-This is the claim the collaboration story rests on, so it is verified
-the only way that means anything: the text is read back out of the
-sessions that did **not** write it.
+The text is read back from sessions that did **not** write it.
 
-Three real compositors, separate identities, separate homes, one room.
+Three compositors with separate identities and homes share one room.
 The third invokes `actions/text.insert` by address with arguments and no
 synthetic input at all — no click, no keystroke. Then quinten's and
 xaver's own sessions are asked whether that text is in their copy of the
@@ -13,9 +11,8 @@ document.
 
 The read-back goes through the production search path rather than a
 back door: the text providers match a query against each tab's document
-body (`shell/src/shell/search/providers/text_app.rs`), so a session that
-returns a hit for a token it never typed is a session whose document
-genuinely contains it.
+body (`crates/session/shell/src/shell/search/providers/text_app.rs`), so a session that
+returns a hit for a token it never typed has that token in its document.
 
 Usage:
   ./agent-collab-proof.py [--keep]
@@ -83,14 +80,14 @@ class Session:
         self.dir = os.path.join(root, name)
         os.makedirs(self.dir, exist_ok=True)
         self.socket = os.path.join(self.dir, "control.sock")
-        # Every home an app or the shell might persist into. `QOS_STATE_PATH`
+        # Every home an app or the shell might persist into. `TILO_STATE_PATH`
         # alone moves only the workspace tree; records live under
         # XDG_DATA_HOME, and a relative XDG_CONFIG_HOME is ignored outright
         # by `dirs::config_dir`, so all of these are absolute.
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
             "XDG_STATE_HOME": os.path.join(self.dir, "state"),
@@ -102,8 +99,8 @@ class Session:
             # point of view: the only visible symptom is that the peer.*
             # actions are never exported, which reads as a capability
             # refusal rather than a missing prerequisite.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
-            "NIRIOS_HEADLESS_SIZE": "1280x800",
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_HEADLESS_SIZE": "1280x800",
         }
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
@@ -229,7 +226,7 @@ def main() -> int:
         print("      run: cargo build -p shell --bin shell", file=sys.stderr)
         return 1
 
-    root = tempfile.mkdtemp(prefix="qos-agent-collab-")
+    root = tempfile.mkdtemp(prefix="tilo-agent-collab-")
     sessions: list[Session] = []
     try:
         print("\n[1] three real sessions, isolated from this machine and each other")

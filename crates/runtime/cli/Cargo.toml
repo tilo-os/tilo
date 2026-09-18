@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "SDK helpers for qOS CLI apps — stdio, workspace paths, terminal-aware output."
+description = "SDK helpers for Tilo CLI apps — stdio, workspace paths, terminal-aware output."
 
 [lib]
 name = "cli"
@@ -12,8 +12,8 @@ path = "src/lib.rs"
 
 # Thin wrappers over the runtime umbrella crate so CLI apps can
 # focus on their own logic rather than plumbing. Works both when
-# the launcher's environment is present (QOS_WORKSPACE_*,
-# QOS_SVC_FS_FD, ...) and when the app is running standalone —
+# the launcher's environment is present (TILO_WORKSPACE_*,
+# TILO_SVC_FS_FD, ...) and when the app is running standalone —
 # in the latter case, `resolve_workspace_path` returns a
 # fallback under $XDG_DATA_HOME / ~/.local/share.
 

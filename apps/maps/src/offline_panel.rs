@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
+use ui::a11y::{AccessNode, AccessState, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -91,6 +92,12 @@ impl OfflinePanel {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    pub fn modal_capture(&self) -> Option<Rect> {
+        self.open
+            .then(|| self.targets.first().map(|(rect, _)| *rect))
+            .flatten()
     }
 
     pub fn open(&mut self, cache_bytes: u64) {
@@ -197,6 +204,106 @@ impl OfflinePanel {
             .rev()
             .find(|(rect, _)| rect.contains(point))
             .map(|(_, action)| action.clone())
+    }
+
+    /// Semantics for the modal overlay. While this is open the map behind it
+    /// must disappear from the accessibility tree just as it does from pointer
+    /// hit testing; otherwise a screen-reader user can accidentally operate
+    /// obscured controls.
+    pub fn accessibility(&self) -> Option<AccessNode> {
+        self.open.then(|| {
+            let children = self
+                .accessibility_targets()
+                .into_iter()
+                .map(|(rect, _action, label, target)| {
+                    let role = if target == "maps.offline.search" {
+                        Role::TextInput
+                    } else {
+                        Role::Button
+                    };
+                    AccessNode::new(role)
+                        .with_name(label)
+                        .with_action_target(target)
+                        .with_bounds(rect)
+                        .with_state(AccessState::new().focusable(true))
+                })
+                .collect();
+            AccessNode::new(Role::Dialog)
+                .with_name("Offline maps")
+                .with_state(AccessState::new().modal(true))
+                .with_children(children)
+        })
+    }
+
+    pub fn accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else { return None };
+        self.accessibility_targets()
+            .get(*index)
+            .map(|(rect, ..)| *rect)
+    }
+
+    pub fn semantic_action(&self, target: &str) -> Option<OfflineAction> {
+        self.accessibility_targets()
+            .into_iter()
+            .find_map(|(_, action, _, candidate)| (candidate == target).then_some(action))
+    }
+
+    fn accessibility_targets(&self) -> Vec<(Rect, OfflineAction, String, String)> {
+        let mut targets = Vec::new();
+        if let Some(field) = self.field_rect.filter(|rect| rect.area() > 0.0) {
+            targets.push((
+                field,
+                OfflineAction::Consume,
+                "Area to download".to_string(),
+                "maps.offline.search".to_string(),
+            ));
+        }
+        // The first Close target is the full scrim. Expose the smaller,
+        // explicit close control instead, and deduplicate repeated commands.
+        let close = self
+            .targets
+            .iter()
+            .filter(|(rect, action)| *action == OfflineAction::Close && rect.area() > 0.0)
+            .min_by(|(a, _), (b, _)| a.area().total_cmp(&b.area()))
+            .map(|(rect, _)| *rect);
+        if let Some(rect) = close {
+            targets.push((
+                rect,
+                OfflineAction::Close,
+                "Close offline maps".to_string(),
+                "maps.offline.close".to_string(),
+            ));
+        }
+        for (rect, action) in &self.targets {
+            let (label, target) = match action {
+                OfflineAction::ZoomDelta(-1) => (
+                    "Decrease download detail",
+                    "maps.offline.zoom-out".to_string(),
+                ),
+                OfflineAction::ZoomDelta(1) => (
+                    "Increase download detail",
+                    "maps.offline.zoom-in".to_string(),
+                ),
+                OfflineAction::Download => (
+                    "Download selected area",
+                    "maps.offline.download".to_string(),
+                ),
+                OfflineAction::DeleteRegion(id) => (
+                    "Delete downloaded area",
+                    format!("maps.offline.region:{id}:delete"),
+                ),
+                OfflineAction::ClearCache => {
+                    ("Clear offline map cache", "maps.offline.clear".to_string())
+                }
+                OfflineAction::Close | OfflineAction::Consume | OfflineAction::ZoomDelta(_) => {
+                    continue;
+                }
+            };
+            if rect.area() > 0.0 && !targets.iter().any(|(_, _, _, seen)| seen == &target) {
+                targets.push((*rect, action.clone(), label.to_string(), target));
+            }
+        }
+        targets
     }
 
     pub fn adjust_zoom(&mut self, delta: i8) {
@@ -331,11 +438,11 @@ impl OfflinePanel {
         let scale = text.text_scale();
         let line = |size: f32| ui::text_metrics::line_height_px(size, scale);
         let (title_h, label_h, body_h, small_h) = (line(18.0), line(13.0), line(12.0), line(11.5));
-        let field_h = 36.0;
-        let stepper_h = 26.0;
+        let field_h = 36.0_f64.max(label_h + 12.0);
+        let stepper_h = 26.0_f64.max(line(18.0) + 8.0);
         let bar_h = 8.0;
-        let row_h = 34.0;
-        let button_h = 38.0;
+        let row_h = 34.0_f64.max(line(13.0) + line(11.0) + 8.0);
+        let button_h = 38.0_f64.max(label_h + 12.0);
         draw::fill_rect(
             scene,
             transform,
@@ -416,7 +523,7 @@ impl OfflinePanel {
             "✕",
             close.x0,
             close.x1,
-            vmid(close.y0, stepper_h, 14.0),
+            vmid_scaled(close.y0, stepper_h, 14.0, f64::from(scale)),
             14.0,
             theme.text_dim,
         );
@@ -471,7 +578,7 @@ impl OfflinePanel {
                 );
             }
         } else {
-            draw::text(
+            draw::text_clip(
                 scene,
                 text,
                 transform,
@@ -480,6 +587,7 @@ impl OfflinePanel {
                 y,
                 11.5,
                 theme.text_dim,
+                right - left,
             );
         }
         y += label_h + s4;
@@ -493,7 +601,7 @@ impl OfflinePanel {
             transform,
             "Detail (zoom levels)",
             left,
-            vmid(row.y0, stepper_h, 13.0),
+            vmid_scaled(row.y0, stepper_h, 13.0, f64::from(scale)),
             13.0,
             theme.text_primary,
             TextWeight::Semibold,
@@ -525,7 +633,7 @@ impl OfflinePanel {
             &format!("z{}–z{}", request.z0, request.z1),
             minus.x1,
             plus.x0,
-            vmid(row.y0, stepper_h, 13.0),
+            vmid_scaled(row.y0, stepper_h, 13.0, f64::from(scale)),
             13.0,
             theme.accent_primary,
         );
@@ -771,8 +879,8 @@ fn draw_trash(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
     }
 }
 
-fn vmid(y: f64, height: f64, size: f32) -> f64 {
-    y + (height - f64::from(size)) / 2.0 - 1.0
+fn vmid_scaled(y: f64, height: f64, size: f32, text_scale: f64) -> f64 {
+    y + (height - f64::from(size) * text_scale) / 2.0 - 1.0
 }
 
 fn fmt_bytes(bytes: u64) -> String {

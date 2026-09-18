@@ -386,7 +386,7 @@ impl Slide {
     /// Elements ordered back-to-front for painting.
     pub fn z_sorted(&self) -> Vec<&Element> {
         let mut v: Vec<&Element> = self.elements.iter().collect();
-        v.sort_by_key(|e| e.z);
+        v.sort_by(|a, b| a.z.cmp(&b.z).then_with(|| a.id.cmp(&b.id)));
         v
     }
 }

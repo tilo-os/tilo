@@ -1,4 +1,4 @@
-# qOS
+# Tilo
 
 A collaborative Linux desktop, shipped as an image-based OS.
 
@@ -39,24 +39,24 @@ Most of the rest follows from that:
 
 | Path | What |
 |---|---|
-| `shell/` | Wayland compositor: scrollable strips, wheel-disc workspace switcher, per-workspace bubblewrap sandbox. `smithay` + `vello` + `wgpu`, collaboration over Iroh and `automerge`. Also `qos-control` (drives a running desktop) and `shots` (offscreen renderer). |
-| `ui/` | Retained-mode CRDT-native toolkit. Every widget reads and writes one automerge document, so undo, persistence and collaboration share a mechanism. `wgpu` + `vello` + `taffy` + `cosmic-text` + `winit` + `fluent`. |
-| `fs/` | FUSE3 driver. Iroh content addressing, `blake3`, `moka` cache. Mounted at `/var/workspace`; projects metadata immediately, hydrates content on first read. |
-| `apps/` | 46 native applications — office suite, WebKit-based browser, mail, calendar, maps, video editor, terminal, files. See [`apps/README.md`](apps/README.md). |
+| `crates/session/shell/` | Wayland compositor: scrollable strips, wheel-disc workspace switcher, per-workspace bubblewrap sandbox. `smithay` + `vello` + `wgpu`, collaboration over Iroh and `automerge`. Also `tilo-control` and the offscreen `shots` runner. |
+| `crates/sdk/` | Public application facade and its retained-mode CRDT-native UI implementation. Every widget reads and writes one automerge document, so undo, persistence and collaboration share a mechanism. |
+| `crates/system/fs/` | FUSE3 driver. Iroh content addressing, `blake3`, `moka` cache. Mounted at `/var/workspace`; projects metadata immediately, hydrates content on first read. |
+| `apps/` | 50 native applications — office suite, Servo-based browser, mail, calendar, maps, creative tools, passwords, clocks, terminal, and files. See [`apps/README.md`](apps/README.md). |
 | `crates/` | Supporting libraries by domain: collab, doc, runtime, packaging, session, system, text, format. |
+| `dist/` | Distribution packaging, session integration, release policy, and reproducible release recipes. |
 | `os/` | Bootc-based Fedora image. greetd → Wayland session → `shell`. |
 
 Single Cargo workspace, no submodules.
 
 ## Building
 
-Needs the pinned toolchain (rustup reads `rust-toolchain.toml` automatically) and a set of
-native libraries. `tools/check-build-env.sh` names any that are missing — Rust otherwise
-reports an absent one as `pkg-config exited with status code 1` inside a `-sys` crate without
-saying which. [`DEVELOPMENT.md`](DEVELOPMENT.md) maps them to packages.
+Install Rust through rustup and the native dependencies listed in
+[`DEVELOPMENT.md`](DEVELOPMENT.md). Rustup selects the toolchain from
+`rust-toolchain.toml`. Check dependencies with `tools/ci/check-build-env.sh`.
 
 ```bash
-cargo build -p shell        # compositor, qos-control, shots
+cargo build -p shell        # compositor, tilo-control, shots
 cargo build -p ui
 cargo build -p fs
 cargo build -p file-explorer
@@ -72,20 +72,19 @@ target until a native runner can validate the Nix closure.
 
 ## Testing
 
-Scope tests to what you are changing; the compile dominates.
+Run tests for the affected package or module:
 
 ```bash
 cargo test -p shell --lib room_activity
 cargo test -p shell --test interaction_test   # headless Wayland state, no GPU
 ```
 
-Every app renders offscreen to a PNG with no display attached, and a running desktop can be
-driven over a socket — semantically through its exported actions, or with synthetic input
-when the thing under test is the pointer itself:
+Render PNGs without a display, invoke desktop actions, or test pointer and keyboard
+input through the control socket:
 
 ```bash
 cargo run --bin shots -- --mode offscreen --out target/shots
-cargo run -q --bin qos-control -- actions list
+cargo run -q --bin tilo-control -- actions list
 ./scripts/headless-examples/full-loop.py     # spawn → drive → snapshot → tear down, ~5 s
 ```
 
@@ -96,10 +95,10 @@ The required application-facing resource/action contract is documented in
 ## Where to read first
 
 - [`docs/getting-started.md`](docs/getting-started.md) — choose a VM, Linux desktop session, or complete-system install
-- [`docs/architecture.md`](docs/architecture.md) — component overview
-- [`plan/`](plan/) — design intent for the compositor, collaboration, security, distribution
-- [`DEVELOPMENT.md`](DEVELOPMENT.md) — build environment and running qOS on your own machine
-- [`CLAUDE.md`](CLAUDE.md) — what agents working in this repository are told
+- [`docs/architecture/`](docs/architecture/) — product model, component overview, and design intent
+- [`DEVELOPMENT.md`](DEVELOPMENT.md) — build environment and running Tilo on your own machine
+- [`crates/README.md`](crates/README.md) — workspace domains, developer tools, and build boundaries
+- [`AGENTS.md`](AGENTS.md) — what agents working in this repository are told
 
 ## Status
 
@@ -109,14 +108,13 @@ portal-mediated grants, FUSE-projected workspaces, and headless test infrastruct
 produces the same pixels as the live binary.
 
 Collaboration between different people works today; durable encrypted channel membership and
-the production secret-store boundary are being completed before it is called ready for syncing
-your own devices. Also outstanding for daily-driver use: multi-workspace-per-output and cross-GPU
+the production secret-store boundary are still required for device sync.
+Also outstanding for daily use: multi-workspace-per-output and cross-GPU
 monitor handling, per-app audio routing, and recorded hardware acceptance for session lock and
 power management. The app/shell AT-SPI bridge now includes compositor-owned OOBE, desktop and
 protected-lock endpoints, and the installed-image workflow walks those trees through an external
-AT-SPI client. Human screen-reader acceptance and a successful run of the new installed-system
-gate remain evidence requirements; they are not missing implementation hidden behind a status
-claim.
+AT-SPI client. Human screen-reader acceptance and a successful installed-system
+gate run are still required.
 
 Release packaging covers the platform matrix in `docs/install-contract.json`,
 but the first public Imager, installer image, and Linux package registries have

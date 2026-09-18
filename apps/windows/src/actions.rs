@@ -7,13 +7,13 @@
 //! control while allowing a team to agree on a launch policy.
 use crate::model::{Catalogue, Route};
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
-use qos_actions::{
+use serde::{Deserialize, Serialize};
+use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     Availability, ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus,
     ExecutionMode, OperationKind, ParamType, PermissionRequirement, Resource, ResultSpec,
     RetryPolicy, RiskLevel,
 };
-use serde::{Deserialize, Serialize};
 
 pub const WINDOWS_ACTION_TYPE: &str = "windows.compat.action";
 const ROOT_KEY: &str = "windows-compat";
@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn every_catalogue_app_has_explicit_routes() {
         let res = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        let flattened = qos_actions::flatten(&res);
+        let flattened = tilo_actions::flatten(&res);
         let manager = res.first().expect("manager root");
         assert!(
             manager
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn every_background_operation_declares_a_job_result() {
         let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
-        for action in qos_actions::flatten(&resources)
+        for action in tilo_actions::flatten(&resources)
             .into_iter()
             .map(|action| action.action)
         {

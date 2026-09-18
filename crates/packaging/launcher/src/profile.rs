@@ -1,15 +1,11 @@
 //! The system read profile — the only host paths a sandboxed app can
 //! see without a user's consent.
 //!
-//! Every manifest in the tree used to hand-list fonts, mesa, `/usr/lib`,
-//! the Wayland socket and `/dev/dri` — identical in 45 of 46 packages,
-//! which is the tell: not a property of the app, but of *running a GUI
-//! program on this system*. Worse, a package named host paths and the
-//! launcher bound whatever it named — a package asking for `/` got `/`.
-//!
-//! So the set moved here: fixed, identical for every package, fed by no
-//! manifest field. An app that needs something outside it asks the user
-//! through the capability system ([`crate::capabilities`]).
+//! The set is fixed and independent of the manifest because these paths are a
+//! property of running a GUI app, not of an individual package. Letting a
+//! package select host paths would let it define its own containment boundary.
+//! An app that needs something outside the profile asks the user through the
+//! capability system ([`crate::capabilities`]).
 //!
 //! Two rules govern what may be added: **no user content** (fonts,
 //! driver ICDs, the C library and the CA bundle are the same bytes for

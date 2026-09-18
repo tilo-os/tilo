@@ -1,19 +1,11 @@
 //! Launcher smoke tests.
 //!
-//! These tests invoke the *library* surface of `qos-launcher` (so we
-//! don't need to first build the binary) against ad-hoc fixtures. Each
-//! test that actually spawns bwrap is `#[ignore]`d by default — bwrap
-//! may not be installed everywhere, and typically needs `CAP_SYS_ADMIN`
-//! or unprivileged user namespaces, which plain CI may not have.
-//!
-//! Run the live-bwrap ones explicitly:
-//!
-//! ```bash
-//! cargo test -p qos-launcher -- --ignored
-//! ```
-//!
-//! The non-ignored tests cover manifest-handling and service-resolution
-//! semantics without touching bwrap at all.
+//! These tests invoke the *library* surface of `tilo-launcher` against
+//! ad-hoc fixtures. Bubblewrap is part of the product security boundary, so
+//! absence is a broken build environment rather than a reason to skip.
+//! Landlock enforcement is covered by its policy tests; these smoke cases
+//! isolate process launch and service-resolution semantics so they also run
+//! on builder kernels older than Landlock ABI v5.
 
 #![allow(
     clippy::unwrap_used,
@@ -94,13 +86,15 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
         opens_ext: Vec::new(),
         opens_mime: Vec::new(),
         opens_schemes: Vec::new(),
+        continuity: launcher::manifest::ContinuityContract::default(),
     }
 }
 
-/// Locate bwrap, or return None if absent. Skip live tests on absence.
-fn bwrap_path() -> Option<PathBuf> {
+/// Locate the product sandbox executable. A test unable to observe it fails.
+fn bwrap_path() -> PathBuf {
     let p = PathBuf::from("/usr/bin/bwrap");
-    if p.exists() { Some(p) } else { None }
+    assert!(p.exists(), "bwrap is required to verify qpkg launching");
+    p
 }
 
 // tests
@@ -153,12 +147,8 @@ fn no_services_flag_skips_required_resolution() {
 }
 
 #[test]
-#[ignore = "requires bwrap + unprivileged user namespaces; run with --ignored"]
 fn hello_world_runs() {
-    let Some(bwrap) = bwrap_path() else {
-        eprintln!("bwrap not installed; skipping");
-        return;
-    };
+    let bwrap = bwrap_path();
     let payload = tempfile::tempdir().unwrap();
     let _bin = build_hello(payload.path());
 
@@ -167,9 +157,9 @@ fn hello_world_runs() {
         no_services: false,
         runtime_root: None,
         bwrap_bin: Some(bwrap),
-        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_qos-launcher"))),
+        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
         minimal_libs: false,
-        landlock_enforce: true,
+        landlock_enforce: false,
         mode: launcher::run::LaunchMode::Gui,
         ..Default::default()
     };
@@ -183,12 +173,8 @@ fn hello_world_runs() {
 }
 
 #[test]
-#[ignore = "requires bwrap; run with --ignored"]
 fn no_services_flag_skips_required() {
-    let Some(bwrap) = bwrap_path() else {
-        eprintln!("bwrap not installed; skipping");
-        return;
-    };
+    let bwrap = bwrap_path();
     let payload = tempfile::tempdir().unwrap();
     let _bin = build_hello(payload.path());
     let mut svcs = BTreeMap::new();
@@ -199,7 +185,7 @@ fn no_services_flag_skips_required() {
         runtime_root: None,
         bwrap_bin: Some(bwrap),
         minimal_libs: false,
-        landlock_enforce: true,
+        landlock_enforce: false,
         mode: launcher::run::LaunchMode::Gui,
         ..Default::default()
     };
@@ -209,12 +195,8 @@ fn no_services_flag_skips_required() {
 
 #[test]
 #[serial_test::serial(process_env)]
-#[ignore = "requires bwrap; run with --ignored"]
 fn optional_service_missing_warns_and_runs() {
-    let Some(bwrap) = bwrap_path() else {
-        eprintln!("bwrap not installed; skipping");
-        return;
-    };
+    let bwrap = bwrap_path();
     let dir = tempfile::tempdir().unwrap();
     unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
 
@@ -229,7 +211,7 @@ fn optional_service_missing_warns_and_runs() {
         runtime_root: None,
         bwrap_bin: Some(bwrap),
         minimal_libs: false,
-        landlock_enforce: true,
+        landlock_enforce: false,
         mode: launcher::run::LaunchMode::Gui,
         ..Default::default()
     };
@@ -259,7 +241,7 @@ fn manifest_declared_runtime_missing_bundle_fails() {
         std::env::set_var("XDG_RUNTIME_DIR", dir.path());
     }
     let mut m = hello_manifest(dir.path(), BTreeMap::new());
-    m.runtime = Some("qos-runtime/nope-9.9.9".to_string());
+    m.runtime = Some("tilo-runtime/nope-9.9.9".to_string());
     let opts = RunOptions {
         no_services: true,
         landlock_enforce: false,
@@ -280,7 +262,7 @@ fn manifest_declared_runtime_missing_bundle_fails() {
     );
 }
 
-/// Build a valid unsigned runtime bundle under `<xdg_data_home>/qos-runtime/<version>/`
+/// Build a valid unsigned runtime bundle under `<xdg_data_home>/tilo-runtime/<version>/`
 /// from a fake host rootfs and return its resolved path.
 fn install_unsigned_bundle(xdg_data_home: &Path, version: &str) -> PathBuf {
     let host = tempfile::tempdir().unwrap();
@@ -289,7 +271,7 @@ fn install_unsigned_bundle(xdg_data_home: &Path, version: &str) -> PathBuf {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, format!("stub {rel}")).unwrap();
     }
-    let dest = xdg_data_home.join("qos-runtime").join(version);
+    let dest = xdg_data_home.join("tilo-runtime").join(version);
     runtime_bundle::build_bundle_with(
         &dest,
         version,
@@ -319,7 +301,7 @@ fn install_signed_bundle(
     let id_path = host.path().join("id.json");
     std::fs::write(&id_path, identity.to_json_bytes()).unwrap();
 
-    let dest = xdg_data_home.join("qos-runtime").join(version);
+    let dest = xdg_data_home.join("tilo-runtime").join(version);
     runtime_bundle::build_bundle_with(
         &dest,
         version,
@@ -335,7 +317,7 @@ fn install_signed_bundle(
 }
 
 /// When an app manifest declares a runtime bundle, the launcher's argv
-/// should: bind the bundle at /usr/lib/qos-runtime/<v>/, set
+/// should: bind the bundle at /run/tilo-runtime/<v>/, set
 /// `LD_LIBRARY_PATH` to <mount>/lib, and NOT include the --minimal-libs
 /// loader binds even if the flag is on.
 #[test]
@@ -363,7 +345,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
         icon: None,
         version: "0.0.0".to_string(),
         kind: "app".to_string(),
-        runtime: Some("qos-runtime/smoke-1.0.0".to_string()),
+        runtime: Some("tilo-runtime/smoke-1.0.0".to_string()),
         entrypoint: Entrypoint {
             bin: "bin/hello".to_string(),
             r#type: launcher::manifest::EntrypointType::Gui,
@@ -384,6 +366,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
         opens_ext: Vec::new(),
         opens_mime: Vec::new(),
         opens_schemes: Vec::new(),
+        continuity: launcher::manifest::ContinuityContract::default(),
     };
     // Assert the sandbox argv contains the runtime bind + LD_LIBRARY_PATH
     // for a manually-supplied runtime tuple (the pure-function surface).
@@ -399,13 +382,13 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
     assert!(
         argv.windows(3).any(|w| w[0] == "--ro-bind"
             && w[1] == bundle_dir.display().to_string()
-            && w[2] == "/usr/lib/qos-runtime/smoke-1.0.0"),
+            && w[2] == "/run/tilo-runtime/smoke-1.0.0"),
         "runtime bind not in argv: {argv:?}"
     );
     assert!(
         argv.windows(3).any(|w| w[0] == "--setenv"
             && w[1] == "LD_LIBRARY_PATH"
-            && w[2] == "/usr/lib/qos-runtime/smoke-1.0.0/lib"),
+            && w[2] == "/run/tilo-runtime/smoke-1.0.0/lib"),
         "LD_LIBRARY_PATH setenv not in argv: {argv:?}"
     );
 
@@ -451,7 +434,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     }
 
     // Build a signed bundle folding in stand-ins for the two shared
-    // objects a thin app links (Rust std + qOS runtime dylib), exercising
+    // objects a thin app links (Rust std + Tilo runtime dylib), exercising
     // the same `extra_libs` path the real bake uses.
     let version = "thin-smoke-1";
     let host = tempfile::tempdir().unwrap();
@@ -468,7 +451,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     let id_path = host.path().join("id.json");
     std::fs::write(&id_path, identity.to_json_bytes()).unwrap();
 
-    let bundle_dir = user_home.path().join("qos-runtime").join(version);
+    let bundle_dir = user_home.path().join("tilo-runtime").join(version);
     runtime_bundle::build_bundle_with(
         &bundle_dir,
         version,
@@ -487,13 +470,13 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     assert!(bundle_dir.join("lib/libruntime_dylib.so").exists());
 
     let m = MinimalManifest {
-        package_id: "dev.qos.thin".to_string(),
+        package_id: "dev.tilo.thin".to_string(),
         name: None,
         category: None,
         icon: None,
         version: "0.1.0".to_string(),
         kind: "app".to_string(),
-        runtime: Some(format!("qos-runtime/{version}")),
+        runtime: Some(format!("tilo-runtime/{version}")),
         entrypoint: Entrypoint {
             bin: "bin/thin".to_string(),
             r#type: launcher::manifest::EntrypointType::Cli,
@@ -514,6 +497,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
         opens_ext: Vec::new(),
         opens_mime: Vec::new(),
         opens_schemes: Vec::new(),
+        continuity: launcher::manifest::ContinuityContract::default(),
     };
 
     // The manifest's `runtime` field resolves to the signed bundle
@@ -540,7 +524,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
         None,
         &CapabilityPlan::empty(),
     );
-    let mount = format!("/usr/lib/qos-runtime/{version}");
+    let mount = format!("/run/tilo-runtime/{version}");
     assert!(
         argv.windows(3).any(|w| w[0] == "--ro-bind"
             && w[1] == resolved_path.display().to_string()
@@ -555,6 +539,49 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     );
 }
 
+#[test]
+#[serial_test::serial(process_env)]
+fn configured_runtime_root_wins_over_the_installed_fallback() {
+    let _guard = RUNTIME_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let overlay = tempfile::tempdir().unwrap();
+    let version = "developer-overlay-smoke";
+    let bundle = overlay.path().join(version);
+    let host = tempfile::tempdir().unwrap();
+    for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
+        let path = host.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, rel).unwrap();
+    }
+    let identity = runtime_bundle::Identity::generate();
+    let identity_path = host.path().join("identity.json");
+    std::fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+    runtime_bundle::build_bundle_with(
+        &bundle,
+        version,
+        &runtime_bundle::BuildOptions {
+            from: Some(host.path()),
+            arch: Some("x86_64"),
+            identity: Some(&identity_path),
+            ..runtime_bundle::BuildOptions::default()
+        },
+    )
+    .unwrap();
+    let mut manifest = hello_manifest(Path::new("/payload"), BTreeMap::new());
+    manifest.runtime = Some(format!("tilo-runtime/{version}"));
+    let old = std::env::var_os(runtime_bundle::RUNTIME_DIR_ENV);
+    unsafe { std::env::set_var(runtime_bundle::RUNTIME_DIR_ENV, overlay.path()) };
+    let resolved = launcher::run::resolve_runtime_test_helper(&manifest, &RunOptions::default());
+    unsafe {
+        match old {
+            Some(value) => std::env::set_var(runtime_bundle::RUNTIME_DIR_ENV, value),
+            None => std::env::remove_var(runtime_bundle::RUNTIME_DIR_ENV),
+        }
+    }
+    assert_eq!(resolved.unwrap().unwrap().0, bundle);
+}
+
 /// End-to-end: a manifest with `[sandbox.portals] notifications =
 /// "via-host"` and a working `xdg-dbus-proxy` (mocked) results in the
 /// launcher spawning the proxy, binding the *proxy* socket (not the
@@ -565,7 +592,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
 #[serial_test::serial(process_env)]
 fn dbus_proxy_wires_up_when_manifest_declares_via_host_portal() {
     use launcher::dbus_proxy::PROXY_BIN_ENV;
-    use launcher::sandbox::{DBusBindKind, build_bwrap_argv};
+    use launcher::sandbox::build_bwrap_argv;
     use std::os::unix::fs::PermissionsExt;
 
     // Point the launcher's proxy binary at a shell-script mock.
@@ -616,7 +643,6 @@ wait $!
     let plan = launcher::sandbox::DBusBindPlan {
         host_socket: guard.socket_path().to_path_buf(),
         sandbox_path: launcher::dbus_proxy::sandbox_bus_path(1234),
-        kind: DBusBindKind::Proxy,
     };
 
     // The proxy child exists.
@@ -667,39 +693,6 @@ wait $!
     }
 }
 
-/// Fallback path: when `xdg-dbus-proxy` is unavailable, the launcher
-/// still exposes the raw bus (path only), with `DBusBindKind::Direct`
-/// as documented.
-#[test]
-fn dbus_direct_bind_used_when_proxy_missing() {
-    use launcher::sandbox::{DBusBindKind, DBusBindPlan, build_bwrap_argv};
-    let mut m = hello_manifest(std::path::Path::new("/dev/null"), BTreeMap::new());
-    m.sandbox.portals.insert(
-        "notifications".to_string(),
-        launcher::manifest::PortalPolicy::ViaHost,
-    );
-    let plan = DBusBindPlan {
-        host_socket: PathBuf::from("/run/user/1234/bus"),
-        sandbox_path: PathBuf::from("/run/user/1234/bus"),
-        kind: DBusBindKind::Direct,
-    };
-    let argv = build_bwrap_argv(
-        &m,
-        std::path::Path::new("/host/pkg"),
-        None,
-        &[],
-        Some(&plan),
-        None,
-        &CapabilityPlan::empty(),
-    );
-    assert!(
-        argv.windows(3).any(|w| w[0] == "--ro-bind"
-            && w[1] == "/run/user/1234/bus"
-            && w[2] == "/run/user/1234/bus"),
-        "direct bind must appear when the caller supplies a Direct plan"
-    );
-}
-
 #[test]
 fn read_manifest_round_trips() {
     // Smoke: write a manifest, read it back, assert key fields.
@@ -747,7 +740,7 @@ fn unsigned_bundle_is_refused_unless_opted_in() {
     let _bundle = install_unsigned_bundle(user_home.path(), "sig-refuse-1");
 
     let mut m = hello_manifest(dir.path(), BTreeMap::new());
-    m.runtime = Some("qos-runtime/sig-refuse-1".to_string());
+    m.runtime = Some("tilo-runtime/sig-refuse-1".to_string());
 
     let opts = RunOptions {
         no_services: true,
@@ -791,7 +784,7 @@ fn trusted_publisher_file_gates_mount() {
     let (_bundle, identity) = install_signed_bundle(user_home.path(), "trust-file-1");
 
     let mut m = hello_manifest(dir.path(), BTreeMap::new());
-    m.runtime = Some("qos-runtime/trust-file-1".to_string());
+    m.runtime = Some("tilo-runtime/trust-file-1".to_string());
     let opts = RunOptions {
         no_services: true,
         landlock_enforce: false,
@@ -809,7 +802,7 @@ fn trusted_publisher_file_gates_mount() {
     )
     .unwrap();
     unsafe {
-        std::env::set_var("QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
+        std::env::set_var("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
     }
     launcher::run::resolve_runtime_test_helper(&m, &opts).expect("trusted pubkey ok");
 
@@ -839,7 +832,7 @@ fn trusted_publisher_file_gates_mount() {
     // 4. No trust file: any signed publisher works (verifies the env
     //    override above, since the default /etc file isn't readable here).
     unsafe {
-        std::env::remove_var("QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE");
+        std::env::remove_var("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE");
     }
     launcher::run::resolve_runtime_test_helper(&m, &opts).expect("no trust file = any signed");
 }
@@ -862,7 +855,7 @@ fn signed_bundle_publisher_pin_enforced() {
     let (_bundle, identity) = install_signed_bundle(user_home.path(), "sig-pin-1");
 
     let mut m = hello_manifest(dir.path(), BTreeMap::new());
-    m.runtime = Some("qos-runtime/sig-pin-1".to_string());
+    m.runtime = Some("tilo-runtime/sig-pin-1".to_string());
 
     // Default: accepted.
     let opts = RunOptions {

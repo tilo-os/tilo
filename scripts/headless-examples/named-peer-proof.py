@@ -58,7 +58,7 @@ from reaper import die_with_parent
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SHELL = REPO / "target" / "debug" / "shell"
 WORD_PROCESSOR = REPO / "target" / "debug" / "word-processor"
-APP_ID = "dev.qos.word-processor"
+APP_ID = "dev.tilo.word-processor"
 ACTIONS = "actions"
 
 # What quinten calls xaver when he invites him. The whole point of the
@@ -137,8 +137,8 @@ class Session:
         os.makedirs(self.home, exist_ok=True)
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "HOME": self.home,
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
@@ -149,15 +149,15 @@ class Session:
             # itself off, and the only visible symptom is that
             # `peer.invite` is never exported — which reads as a
             # capability refusal rather than a missing prerequisite.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
             # Distinct identities, or both sessions are the same person
             # and every claim about "somebody else" is meaningless.
-            "QOS_USER_ID": name,
+            "TILO_USER_ID": name,
             # The app-facing broker socket, named rather than defaulted
             # so the word processor this script starts can be pointed at
             # exactly this session's.
             "QUICK_COLLAB_SOCK": self.collab_sock,
-            "NIRIOS_HEADLESS_SIZE": "1600x1000",
+            "TILO_HEADLESS_SIZE": "1600x1000",
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
         }
@@ -242,7 +242,7 @@ class Session:
         return self.call({"op": "snapshot", "path": path}, timeout=180)
 
     def wayland_display(self) -> str | None:
-        path = os.path.join(self.runtime, "qos-session", "wayland-display")
+        path = os.path.join(self.runtime, "tilo-session", "wayland-display")
         try:
             with open(path) as fh:
                 return fh.read().strip() or None
@@ -271,8 +271,8 @@ class Session:
             # two machines' apps can reach each other.
             "QUICK_APP_ID": APP_ID,
             "QUICK_CLUSTER_ID": room,
-            "QOS_PACKAGE_ID": APP_ID,
-            "QOS_WORKSPACE_ID": room,
+            "TILO_PACKAGE_ID": APP_ID,
+            "TILO_WORKSPACE_ID": room,
             "QUICK_COLLAB_SOCK": self.collab_sock,
         }
         self.app_log = open(os.path.join(self.dir, "word-processor.log"), "w")
@@ -448,15 +448,15 @@ def main() -> int:
     # -- what is being run -------------------------------------------
     print("Binaries under test")
     shell_sources = [
-        REPO / "shell" / "src" / "shell" / "state.rs",
-        REPO / "shell" / "src" / "shell" / "collab_broker.rs",
-        REPO / "shell" / "src" / "shell" / "network.rs",
-        REPO / "shell" / "src" / "shell" / "search" / "providers" / "actions.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "state.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "collab_broker.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "network.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "search" / "providers" / "actions.rs",
     ]
     app_sources = [
         REPO / "apps" / "word-processor" / "src" / "widget.rs",
-        REPO / "ui" / "src" / "presence" / "mod.rs",
-        REPO / "ui" / "src" / "app.rs",
+        REPO / "crates" / "sdk" / "ui-core" / "src" / "presence" / "mod.rs",
+        REPO / "crates" / "sdk" / "ui-core" / "src" / "app.rs",
     ]
     stale = [s for s in (freshness(SHELL, shell_sources),
                          freshness(WORD_PROCESSOR, app_sources)) if s]
@@ -469,7 +469,7 @@ def main() -> int:
     print(f"  {SHELL}")
     print(f"  {WORD_PROCESSOR}")
 
-    root = tempfile.mkdtemp(prefix="qos-named-")
+    root = tempfile.mkdtemp(prefix="tilo-named-")
     # Sockets live somewhere short: `sun_path` is 108 bytes and both the
     # control socket and the Wayland socket hang off these directories.
     runtime_root = tempfile.mkdtemp(prefix="qs-", dir="/tmp")

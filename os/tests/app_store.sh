@@ -8,8 +8,8 @@
 # fails silently — as an empty launcher, or as an app that installs fine and
 # then refuses to start:
 #
-#   * Every apps/<name>/qos-app.toml declares `runtime = "qos-runtime/<v>"`.
-#     The launcher resolves that literal string to /usr/lib/qos-runtime/<v>/
+#   * Every apps/<name>/tilo-app.toml declares `runtime = "tilo-runtime/<v>"`.
+#     The launcher resolves that literal string to /usr/lib/tilo-runtime/<v>/
 #     and errors with RuntimeBundleMissing if it is not there. The image bakes
 #     exactly one version, from RUNTIME_VERSION in os/Containerfile. These
 #     were "2026.07" and "1" respectively, so every packaged app would have
@@ -28,6 +28,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 CONTAINERFILE="$REPO/os/Containerfile"
+# shellcheck source=lib/containerfile.sh
+. "$REPO/os/tests/lib/containerfile.sh"
 PACK="$REPO/os/scripts/pack-apps.sh"
 
 fail=0
@@ -38,15 +40,15 @@ for f in "$CONTAINERFILE" "$PACK" "$REPO/Cargo.toml"; do
   [ -r "$f" ] || { bad "missing $f"; exit 1; }
 done
 
-manifests=("$REPO"/apps/*/qos-app.toml)
-[ -e "${manifests[0]}" ] || { bad "no apps/*/qos-app.toml found"; exit 1; }
+manifests=("$REPO"/apps/*/tilo-app.toml)
+[ -e "${manifests[0]}" ] || { bad "no apps/*/tilo-app.toml found"; exit 1; }
 
 # --- 1. the baked runtime version is the one the apps ask for ----------------
 baked="$(sed -n 's/^ARG RUNTIME_VERSION=\(.*\)$/\1/p' "$CONTAINERFILE" | head -1)"
 if [ -z "$baked" ]; then
   bad "could not read ARG RUNTIME_VERSION — the declaration it is parsed out of moved"
 else
-  declared="$(sed -n 's/^runtime  *= *"qos-runtime\/\([^"]*\)".*/\1/p' "${manifests[@]}" \
+  declared="$(sed -n 's/^runtime  *= *"tilo-runtime\/\([^"]*\)".*/\1/p' "${manifests[@]}" \
                 | sort -u)"
   count="$(printf '%s\n' "$declared" | grep -c . || true)"
   if [ "$count" -ne 1 ]; then
@@ -55,8 +57,8 @@ else
   elif [ "$declared" = "$baked" ]; then
     ok "runtime bundle bakes $baked, which is what every app manifest declares"
   else
-    bad "os/Containerfile bakes qos-runtime/$baked but the apps declare qos-runtime/$declared
-      The launcher looks for /usr/lib/qos-runtime/$declared/ and will refuse every
+    bad "os/Containerfile bakes tilo-runtime/$baked but the apps declare tilo-runtime/$declared
+      The launcher looks for /usr/lib/tilo-runtime/$declared/ and will refuse every
       preinstalled app with RuntimeBundleMissing. Change ARG RUNTIME_VERSION in
       os/Containerfile, or the manifests, so the two agree."
   fi
@@ -120,10 +122,37 @@ for m in "${manifests[@]}"; do
 done
 [ "$thin_bad" = 1 ] || ok "all ${#manifests[@]} apps opt into one ABI-matched shared runtime"
 
-if grep -q 'MAX_QPKG_BYTES="${MAX_QPKG_BYTES:-10000000}"' "$PACK"; then
-  ok "pack-apps refuses qpkgs at or above 10 MB"
+# Cargo may compile two instances of the same dependency when their feature
+# sets differ across a Rust dylib boundary. That links, but the mangled crate
+# hashes differ and the loader later reports undefined symbols. Keep the
+# runtime UI feature set at the collection-wide superset and require a loader
+# smoke test before a bundle can be signed.
+runtime_manifest="$REPO/crates/runtime/runtime-dylib/Cargo.toml"
+thin_builder="$REPO/os/scripts/build-thin-apps.sh"
+if grep -Fq 'features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"]' \
+      "$runtime_manifest" \
+   && grep -Fq 'thin app/runtime ABI mismatch' "$thin_builder" \
+   && grep -Fq 'symbol lookup error|undefined symbol|error while loading shared libraries' "$thin_builder"; then
+  ok "thin apps and the shared runtime enforce one loadable UI ABI"
 else
-  bad "pack-apps no longer enforces the strict 10 MB qpkg ceiling"
+  bad "thin app packaging can still sign a runtime/app pair with incompatible Rust crate hashes"
+fi
+
+if grep -q '^POLICY_MAX_QPKG_BYTES=5242880$' "$PACK" \
+   && grep -q 'MAX_QPKG_BYTES cannot exceed the 5 MiB application policy' "$PACK" \
+   && ! grep -q 'RECOVERY_MAX_QPKG_BYTES' "$PACK"; then
+  ok "pack-apps enforces the canonical 5 MiB ceiling without app exceptions"
+else
+  bad "pack-apps does not enforce the canonical 5 MiB qpkg ceiling uniformly"
+fi
+
+weakening_output=$(MAX_QPKG_BYTES=5242881 "$PACK" 2>&1)
+weakening_status=$?
+if [ "$weakening_status" -ne 0 ] \
+   && grep -q 'cannot exceed the 5 MiB application policy' <<<"$weakening_output"; then
+  ok "pack-apps refuses an environment override that weakens the size policy"
+else
+  bad "MAX_QPKG_BYTES can weaken the canonical application size policy"
 fi
 
 if grep -q -- '--include /out/libruntime_dylib.so' "$CONTAINERFILE" \
@@ -139,7 +168,7 @@ fi
 store="$(sed -n 's/^STORE="\${STORE:-\(.*\)}"$/\1/p' "$PACK" | head -1)"
 if [ -z "$store" ]; then
   bad "could not read the default STORE out of os/scripts/pack-apps.sh"
-elif grep -q "^COPY --from=builder $store/ $store/\$" "$CONTAINERFILE"; then
+elif containerfile_has_copy "$CONTAINERFILE" "$store/" "$store/" builder; then
   ok "the image copies the app store from and to $store, so registry paths resolve"
 else
   bad "os/Containerfile does not copy $store/ to $store/
@@ -158,8 +187,8 @@ else
       store nothing reads."
 fi
 
-# --- 6. the runtime bundle is baked where qos-install looks for it ------------
-# pack-apps.sh installs each package with `qos-install install`, and that refuses
+# --- 6. the runtime bundle is baked where tilo-install looks for it ------------
+# pack-apps.sh installs each package with `tilo-install install`, and that refuses
 # any package whose declared runtime is absent (satisfy_runtime ->
 # RuntimeDependencyMissing). It only ever consults two directories: the per-user
 # one, which does not exist in a container build, and the system one from
@@ -171,7 +200,7 @@ fi
 # system_bundle_path fails here instead of at the next image build.
 BUNDLE_LIB="$REPO/crates/packaging/runtime-bundle/src/lib.rs"
 INSTALL_MAIN="$REPO/crates/packaging/install/src/main.rs"
-sysroot="$(sed -n 's|^ *PathBuf::from("\(/usr/lib/qos-runtime\)").join(version)$|\1|p' \
+sysroot="$(sed -n 's|^ *PathBuf::from("\(/usr/lib/tilo-runtime\)").join(version)$|\1|p' \
              "$BUNDLE_LIB" | head -1)"
 if [ ! -r "$BUNDLE_LIB" ] || [ ! -r "$INSTALL_MAIN" ]; then
   bad "missing $BUNDLE_LIB or $INSTALL_MAIN — cannot check where the bundle is looked up"
@@ -181,7 +210,7 @@ elif [ -z "$sysroot" ]; then
       cannot see its subject and must not pass."
 else
   if grep -q 'system_bundle_path' "$INSTALL_MAIN"; then
-    ok "qos-install resolves a declared runtime against $sysroot"
+    ok "tilo-install resolves a declared runtime against $sysroot"
   else
     bad "$INSTALL_MAIN no longer consults system_bundle_path, so baking into
         $sysroot would no longer satisfy the install-time runtime check."
@@ -190,11 +219,11 @@ else
     ok "os/Containerfile bakes the runtime bundle into $sysroot/\${RUNTIME_VERSION}"
   else
     bad "os/Containerfile does not bake the runtime bundle into $sysroot/\${RUNTIME_VERSION}
-      qos-install looks there and nowhere else that exists during a container
+      tilo-install looks there and nowhere else that exists during a container
       build, so every packaged app is refused at install time with
       RuntimeDependencyMissing and the image never builds."
   fi
-  if grep -q "^COPY --from=builder $sysroot/ $sysroot/\$" "$CONTAINERFILE"; then
+  if containerfile_has_copy "$CONTAINERFILE" "$sysroot/" "$sysroot/" builder; then
     ok "the image copies the runtime bundle from and to $sysroot"
   else
     bad "os/Containerfile does not copy $sysroot/ to $sysroot/ — the booted system
@@ -206,14 +235,15 @@ fi
 # --- 7. every REQUIRED sandbox service has something serving it --------------
 # `[sandbox.services]` entries marked `required@<v>` are hard launch
 # dependencies: resolve_service_binds returns RequiredMissing when
-# $XDG_RUNTIME_DIR/qos/services/<name>.sock is absent, so the app does not
+# $XDG_RUNTIME_DIR/tilo/services/<name>.sock is absent, so the app does not
 # start at all. An optional one only warns. Shipping an app whose required
 # service has no supervisor in the image is therefore shipping an app that
 # cannot run — which is how the Terminal came to declare `ush = "required@1"`
 # while nothing built, installed or started a `ush`.
 #
 # The convention this asserts: a required service `<name>` is served by
-# /usr/lib/systemd/user/qos-<name>.service, globally enabled, whose ExecStart
+# /usr/lib/systemd/user/tilo-<name>.service, enabled directly or through a
+# shipped socket activation unit, whose ExecStart
 # runs a binary the image installs on the socket the launcher looks at.
 required="$(grep -rh '^[a-z_-]* *= *"required@' "${manifests[@]}" \
               | sed 's/^\([a-z_-]*\) *=.*/\1/' | sort -u)"
@@ -221,11 +251,8 @@ if [ -z "$required" ]; then
   ok "no app declares a required sandbox service"
 else
   for svc in $required; do
-    # The public service is `models`; its implementation is deliberately named
-    # model-manager to distinguish it from the root-owned inference runtime.
     unit_name=$svc
-    [ "$svc" != models ] || unit_name=model-manager
-    unit_rel="os/usr/lib/systemd/user/qos-$unit_name.service"
+    unit_rel="os/usr/lib/systemd/user/tilo-$unit_name.service"
     unit="$REPO/$unit_rel"
     users="$(grep -l "^$svc *= *\"required@" "${manifests[@]}" \
                | sed 's|.*/apps/\([^/]*\)/.*|\1|' | tr '\n' ' ')"
@@ -234,7 +261,7 @@ else
     # for the same socket and split apps across two CRDT sessions. Prove the
     # image ships the owner and that it binds the launcher's canonical path.
     if [ "$svc" = "collab" ]; then
-      native="$REPO/shell/src/compositor/native.rs"
+      native="$REPO/crates/session/shell/src/compositor/native.rs"
       if grep -Eq 'let (mut )?collab_broker.*=' "$native" \
           && grep -q 'spawn_session_collab_broker' "$native" \
           && grep -q 'launcher::services::collab_socket()' "$native"; then
@@ -242,35 +269,72 @@ else
       else
         bad "apps [$users] require 'collab', but the native compositor does not visibly start its broker on launcher::services::collab_socket()."
       fi
-      grep -q '^COPY --from=builder /out/shell /usr/bin/shell$' "$CONTAINERFILE" \
+      containerfile_has_copy "$CONTAINERFILE" /out/shell /usr/bin/shell builder \
         && ok "the image installs the compositor that owns 'collab'" \
         || bad "os/Containerfile does not install /usr/bin/shell, so the compositor-owned 'collab' broker cannot start."
+      continue
+    fi
+    # Typed tool launches are also compositor-owned session state. Their
+    # handler dispatches into the shell and pumps workspace routes on its UI
+    # loop; a separate systemd daemon cannot supply that ownership.
+    if [ "$svc" = "tools" ]; then
+      native="$REPO/crates/session/shell/src/compositor/native.rs"
+      service="$REPO/crates/session/shell/src/shell/tool_intents.rs"
+      if grep -Fq 'let tool_service = match crate::shell::tool_intents::spawn()' "$native" \
+          && python3 -c '
+import pathlib, re, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+# Keep the call connected to the compositor chrome handle, including when
+# a local binding is shared with adjacent workspace/identity handlers.
+pattern = r"if let Some\(service\) = tool_service\.as_ref\(\)\s*\{\s*(?:service\.pump_workspace_settings\(&frame_builder\.chrome_handle\(\)\)|let (\w+) = frame_builder\.chrome_handle\(\);\s*service\.pump_workspace_settings\(&\1\))"
+sys.exit(0 if re.search(pattern, source) else 1)
+' "$native" \
+          && grep -Fq 'pub const TOOL_SERVICE: &str = "tools";' "$service" \
+          && grep -Fq 'launcher::services::socket_for(TOOL_SERVICE)' "$service"; then
+        ok "the native compositor starts 'tools' on the canonical socket and handles workspace routes"
+      else
+        bad "apps [$users] require 'tools', but its compositor-owned socket and workspace handler are not wired."
+      fi
+      containerfile_has_copy "$CONTAINERFILE" /out/shell /usr/bin/shell builder \
+        && ok "the image installs the compositor that owns 'tools'" \
+        || bad "os/Containerfile does not install the compositor-owned 'tools' service."
       continue
     fi
     if [ ! -r "$unit" ]; then
       bad "apps [$users] declare '$svc' as a required service, but $unit_rel does not exist.
       The launcher refuses to start those apps when
-      \$XDG_RUNTIME_DIR/qos/services/$svc.sock is absent, so they would be
+      \$XDG_RUNTIME_DIR/tilo/services/$svc.sock is absent, so they would be
       shipped unable to launch."
       continue
     fi
-    grep -q "systemctl --global enable qos-$unit_name.service" "$CONTAINERFILE" \
-      && ok "qos-$unit_name.service is globally enabled, so '$svc' is served for every session" \
-      || bad "$unit_rel exists but os/Containerfile never runs
-      'systemctl --global enable qos-$unit_name.service' — the unit would ship disabled
-      and apps [$users] still could not launch."
-    grep -q "ExecStart=.*%t/qos/services/$svc\.sock" "$unit" \
-      && ok "qos-$unit_name.service serves the socket path the launcher resolves" \
-      || bad "$unit_rel does not serve %t/qos/services/$svc.sock, which is where
+    socket_rel="os/usr/lib/systemd/user/tilo-$unit_name.socket"
+    socket="$REPO/$socket_rel"
+    if grep -q "systemctl --global enable tilo-$unit_name.service" "$CONTAINERFILE"; then
+      ok "tilo-$unit_name.service is globally enabled, so '$svc' is served for every session"
+    elif [ -r "$socket" ] \
+        && grep -q "systemctl --global enable tilo-$unit_name.socket" "$CONTAINERFILE" \
+        && containerfile_has_copy "$CONTAINERFILE" "$socket_rel" "/usr/lib/systemd/user/tilo-$unit_name.socket" \
+        && grep -Fxq "ListenStream=%t/tilo/services/$svc.sock" "$socket" \
+        && grep -Fxq "Service=tilo-$unit_name.service" "$socket" \
+        && grep -Eq '^WantedBy=.+\.target$' "$socket"; then
+      ok "tilo-$unit_name.socket is installed and globally enabled on the canonical '$svc' socket"
+    else
+      bad "$unit_rel has neither a globally enabled service nor an installed, enabled
+      activation socket serving '$svc' and activating tilo-$unit_name.service."
+    fi
+    grep -q "ExecStart=.*%t/tilo/services/$svc\.sock" "$unit" \
+      && ok "tilo-$unit_name.service serves the socket path the launcher resolves" \
+      || bad "$unit_rel does not serve %t/tilo/services/$svc.sock, which is where
       launcher::services::socket_for('$svc') looks."
     svc_bin="$(sed -n 's|^ExecStart=\([^ ]*\).*|\1|p' "$unit" | head -1)"
     if [ -z "$svc_bin" ]; then
       bad "$unit_rel has no ExecStart, so nothing checks that its binary ships"
-    elif grep -q "^COPY --from=builder [^ ]* $svc_bin\$" "$CONTAINERFILE"; then
+    elif containerfile_copy_contract "$CONTAINERFILE" | \
+         awk -F '\t' -v d="$svc_bin" '$1 == "builder" && $3 == d { found=1 } END { exit !found }'; then
       ok "the image installs $svc_bin for '$svc'"
     else
       bad "os/Containerfile never copies $svc_bin into the image, so
-      qos-$unit_name.service would fail at every start and apps [$users] could not launch."
+      tilo-$unit_name.service would fail at every start and apps [$users] could not launch."
     fi
   done
 fi
@@ -286,7 +350,7 @@ fi
 # contains these features"), so the image build dies — but it dies *after* the
 # builder stage's 600-odd package install and the cold Rust compile, tens of
 # minutes in, at the one step whose log nobody reads to the end. That is how
-# `video_editor/portal` reached this file: video_editor enables `ui`'s portal
+# `video-editor/portal` reached this file: video-editor enables `ui`'s portal
 # unconditionally and has no portal feature of its own, so the pair looked exactly
 # like the twelve valid ones next to it.
 #

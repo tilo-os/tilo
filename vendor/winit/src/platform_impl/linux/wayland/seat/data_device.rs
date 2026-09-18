@@ -2,7 +2,7 @@
 //!
 //! Upstream winit never implemented this on Wayland: `DroppedFile` /
 //! `HoveredFile` / `HoveredFileCancelled` are X11, macOS and Windows only.
-//! qOS apps are Wayland clients of a compositor that starts drags from its
+//! Tilo apps are Wayland clients of a compositor that starts drags from its
 //! own chrome (a file dragged out of the built-in file manager), so the
 //! events have to come from somewhere.
 //!
@@ -181,7 +181,7 @@ pub fn extension_for_mime(mime: &str) -> &'static str {
 /// which looks exactly like a drag that was never accepted.
 ///
 /// So each candidate is *probed* rather than assumed, ending at the app's
-/// own directory, which a qOS app always has and always owns.
+/// own directory, which a Tilo app always has and always owns.
 fn spool_dir() -> PathBuf {
     let candidates = [
         std::env::var_os("XDG_RUNTIME_DIR"),

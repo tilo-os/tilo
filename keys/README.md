@@ -1,4 +1,4 @@
-# qOS signing keys
+# Tilo signing keys
 
 > ## ⛔ AGENTS / AUTOMATED TOOLS — STOP
 >
@@ -32,14 +32,12 @@
 | `tpm2-pcr-signing.private.pem` | **YES** (git-excluded) | Measured-boot PCR-prediction signing key (RSA-2048). Signs the *expected* PCR set so TPM disk-unlock survives updates. |
 | `tpm2-pcr-signing.public.pem` | no (tracked) | PCR-prediction **public** key. Baked into the image; `systemd-cryptenroll --tpm2-public-key=` binds the LUKS keyslot to predictions signed by the matching private key. |
 
-## How they're used (per the security plan)
+## Use
 
-- **Image signing (security plan §9):** release CI runs `cosign sign --key
-  "$COSIGN_KEY_REF"` where the URI names a non-exportable KMS/HSM key. The A3
-  auto-update path verifies the signature against `cosign.pub` **before**
-  applying — refuse unsigned/untrusted images. Local development may use the
-  file key, but the release workflow explicitly rejects that shape.
-- **Measured boot (security plan §4):** the build/update pipeline runs `systemd-measure sign --private-key tpm2-pcr-signing.private.pem …` to publish a **signed PCR prediction** for each new UKI, so the TPM keeps auto-releasing the disk key across updates (no recovery-key prompt on every update). LUKS is enrolled with `--tpm2-public-key=tpm2-pcr-signing.public.pem`.
+- **Image signing:** release CI uses a non-exportable KMS/HSM key. Updates
+  verify against `cosign.pub` before applying; releases reject file-based keys.
+- **Measured boot:** each UKI publishes a signed PCR prediction. LUKS binds to
+  `tpm2-pcr-signing.public.pem`, allowing TPM unlock across trusted updates.
 
 ## Custody
 

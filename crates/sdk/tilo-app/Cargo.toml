@@ -1,0 +1,24 @@
+[package]
+name = "tilo-app"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[features]
+default = []
+webview-adblock = ["ui-core/webview-adblock"]
+webview-wpe = ["ui-core/webview-wpe"]
+dmabuf-import = ["ui-core/dmabuf-import"]
+gpu-video = ["ui-core/gpu-video"]
+mpris = ["ui-core/mpris"]
+portal = ["ui-core/portal"]
+# Optional native presentation diagnostics shared by app entrypoints.
+presentation-feedback = ["ui-core/presentation-feedback"]
+notifications = ["ui-core/notifications"]
+
+[dependencies]
+ui-core = { package = "ui", path = "../ui-core" }
+
+[lints]
+workspace = true

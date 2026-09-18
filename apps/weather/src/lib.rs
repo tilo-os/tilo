@@ -1,4 +1,4 @@
-//! Weather — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! Weather — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A clean weather client: current conditions, a 24h temperature chart,
 //! and a 7-day forecast for multiple saved locations, powered by the

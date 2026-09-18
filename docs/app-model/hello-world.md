@@ -1,17 +1,16 @@
-# Hello, world: from `cargo new` to `qos-install run`
+# Hello, world: from `cargo new` to `tilo-install run`
 
-The full recipe. Every command below was executed against tools built
-from `origin/main`; the exact output is what you'll see if you follow
-along verbatim.
+The full recipe. Run the commands from a current checkout; exact output varies
+with the toolchain, host, and installed services.
 
 ## Prerequisites
 
 You need:
 
-- A Rust toolchain (rustc / cargo). The examples were verified with
-  Rust 1.96.0.
-- The qOS packaging tools: `qos-pkg`, `qos-install`, `qos-launcher`,
-  `qos-cli-shim`, `qos-runtime-bundle`. Build them from the workspace:
+- A Rust toolchain (rustc / cargo), as pinned by the repository's
+  `rust-toolchain.toml`.
+- The Tilo packaging tools: `tilo-pkg`, `tilo-install`, `tilo-launcher`,
+  `tilo-cli-shim`, `tilo-runtime-bundle`. Build them from the workspace:
 
   ```bash
   cargo build --release -p pkg-cli -p install -p launcher -p cli-shim -p runtime-bundle
@@ -19,14 +18,14 @@ You need:
 
 - `bubblewrap` (`sudo dnf install bubblewrap` on Fedora). The launcher
   invokes it under the hood.
-- A checkout of the qOS repo (for the workspace path to `runtime`). Once
+- A checkout of the Tilo repo (for the workspace path to `runtime`). Once
   a crates.io release exists this will simplify to
   `runtime = "<version>"`.
 
 Add the release binaries to your PATH, e.g.:
 
 ```bash
-export PATH="/path/to/quickdesktop/target/release:$PATH"
+export PATH="/path/to/tilo/target/release:$PATH"
 ```
 
 ## Step 1: `cargo new`
@@ -54,7 +53,7 @@ name = "my-example-hello"
 path = "src/main.rs"
 
 [dependencies]
-runtime = { path = "/path/to/quickdesktop/crates/runtime/runtime" }
+runtime = { path = "/path/to/tilo/crates/runtime/runtime" }
 ```
 
 ## Step 3: write a `main.rs`
@@ -62,10 +61,10 @@ runtime = { path = "/path/to/quickdesktop/crates/runtime/runtime" }
 `my-example-hello/src/main.rs`:
 
 ```rust
-use runtime::{collab, fs, identity, is_qos_native};
+use runtime::{collab, fs, identity, is_tilo_native};
 
 fn main() {
-    println!("my-example-hello: running as qOS-native = {}", is_qos_native());
+    println!("my-example-hello: running as Tilo-native = {}", is_tilo_native());
 
     match collab::try_connect() {
         Ok(_) => println!("  collab  : connected"),
@@ -103,19 +102,19 @@ $ ls -la target/release/my-example-hello
 -rwxr-xr-x. 2 quinten quinten 3075216  4. Jul 16:49 target/release/my-example-hello
 ```
 
-3 MB. That's a stripped release build; running under `qos-install` on
+3 MB. That's a stripped release build; running under `tilo-install` on
 stock Linux (with a runtime bundle already installed) will produce the
 service / sandbox output.
 
 ## Step 5: install a runtime bundle
 
 Once per system. Copy the host loader + libc into a content-addressed
-bundle qOS's launcher can mount into the sandbox:
+bundle Tilo's launcher can mount into the sandbox:
 
 ```
-$ qos-install runtime install --version 2026.07 --from-host --force
-installed runtime bundle: qos-runtime/2026.07
-  path     : /tmp/qos-hw-data/qos-runtime/2026.07
+$ tilo-install runtime install --version 2026.07 --from-host --force
+installed runtime bundle: tilo-runtime/2026.07
+  path     : /tmp/tilo-hw-data/tilo-runtime/2026.07
   files    : 11
   root-hash: blake3:1e7dedc8881ab7e8225b0c680e832e2332e3b1c14406f34fd1b2a70edec3e58d
 ```
@@ -134,7 +133,7 @@ copy of `/etc/ld.so.cache`. All content-addressed by their BLAKE3 hash;
 id       = "my.example.hello"
 version  = "0.1.0"
 kind     = "app"
-runtime  = "qos-runtime/2026.07"
+runtime  = "tilo-runtime/2026.07"
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -142,7 +141,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
-seccomp    = "qos-default"
+seccomp    = "tilo-default"
 landlock   = "strict"
 
 [sandbox.net]
@@ -162,9 +161,9 @@ the launcher supplies both, and a manifest that declares `sandbox.fs.read`
 or `sandbox.fs.write` is refused at install and at launch. See
 [`sandbox.md`](./sandbox.md).
 
-Notes on the placeholder `publisher.identity`: `qos-pkg pack` with no
+Notes on the placeholder `publisher.identity`: `tilo-pkg pack` with no
 `--identity` flag generates a fresh Ed25519 keypair, signs the package
-with it, and overwrites this field with the actual public key. What you
+with it, and overwrites this field with the generated public key. What you
 put here is discarded. For repeatable publishing, pass
 `--identity <keyfile.json>`.
 
@@ -175,15 +174,15 @@ $ mkdir -p /tmp/hw-walkthrough/pkg-workdir/payload/bin
 $ cp target/release/my-example-hello /tmp/hw-walkthrough/pkg-workdir/payload/bin/
 ```
 
-The payload's structure IS the shape your binary will see inside the
-sandbox (rooted at `/var/qos-apps/my.example.hello/`). Manifest field
+The payload's structure is the shape your binary will see inside the
+sandbox (rooted at `/var/tilo-apps/my.example.hello/`). Manifest field
 `entrypoint.bin = "bin/my-example-hello"` is relative to the payload
 root.
 
 ## Step 8: pack
 
 ```
-$ qos-pkg pack \
+$ tilo-pkg pack \
     --manifest /tmp/hw-walkthrough/pkg-workdir/manifest.toml \
     --payload  /tmp/hw-walkthrough/pkg-workdir/payload \
     --output   /tmp/hw-walkthrough/my-example-hello.qpkg
@@ -197,15 +196,15 @@ and the entrypoint binary.
 ## Step 9: install
 
 ```
-$ qos-install install /tmp/hw-walkthrough/my-example-hello.qpkg
-qos-install: WARN — package self-signed by ed25519:d7830a490384cbbebdc713adec05dddb4ff7db090ca9bf9dd95d775841e47d4a (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
+$ tilo-install install /tmp/hw-walkthrough/my-example-hello.qpkg
+tilo-install: WARN — package self-signed by ed25519:d7830a490384cbbebdc713adec05dddb4ff7db090ca9bf9dd95d775841e47d4a (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
 installed: my.example.hello 0.1.0
-  payload  : /tmp/qos-hw-data/qos-apps/payloads/my.example.hello
+  payload  : /tmp/tilo-hw-data/tilo-apps/payloads/my.example.hello
   pinned   : false
-run with:  qos-install run my.example.hello
+run with:  tilo-install run my.example.hello
 ```
 
-The self-signed warning is expected — `qos-pkg pack` generated a fresh
+The self-signed warning is expected — `tilo-pkg pack` generated a fresh
 keypair for this build. Everything works; add an attestor and use
 `--require-attestor` (see [`trust.md`](./trust.md)) when you're ready to
 harden.
@@ -213,9 +212,9 @@ harden.
 ## Step 10: run
 
 ```
-$ qos-install run my.example.hello --no-services
-qos-sandbox-exec: landlock: partially enforced (kernel ABI dropped some rights) (12 ro, 2 rw, net_restricted=true)
-my-example-hello: running as qOS-native = false
+$ tilo-install run my.example.hello --no-services
+tilo-sandbox-exec: landlock: partially enforced (kernel ABI dropped some rights) (12 ro, 2 rw, net_restricted=true)
+my-example-hello: running as Tilo-native = false
   collab  : not available (graceful)
   fs      : not available (graceful)
   identity: not available (graceful)
@@ -227,15 +226,15 @@ The launcher:
 1. Verified the trust policy (no revocation, no `--require-attestor`).
 2. Built a bubblewrap argv from the manifest and the fixed system read
    profile.
-3. Bind-mounted your payload → `/var/qos-apps/my.example.hello/` and the
-   runtime bundle → `/usr/lib/qos-runtime/2026.07/`, both read-only, plus
-   your app's own directory → `/run/qos/app`, read-write.
+3. Bind-mounted your payload → `/var/tilo-apps/my.example.hello/` and the
+   runtime bundle → `/usr/lib/tilo-runtime/2026.07/`, both read-only, plus
+   your app's own directory → `/run/tilo/app`, read-write.
 4. Installed the seccomp filter.
 5. Forked bwrap, which fork-execed the sandbox-exec shim.
 6. The shim installed the Landlock ruleset — read rights on the profile
-   entries and the payload, write rights on `/run/qos/app` and `/tmp` —
+   entries and the payload, write rights on `/run/tilo/app` and `/tmp` —
    enforced the network restriction, and finally execvp'd
-   `/var/qos-apps/my.example.hello/bin/my-example-hello`. The rule counts
+   `/var/tilo-apps/my.example.hello/bin/my-example-hello`. The rule counts
    in the line above track the profile and what your kernel's Landlock
    ABI accepts, so they move between hosts.
 7. Your `main()` ran. The `collab`/`fs`/`identity` calls all returned
@@ -243,26 +242,26 @@ The launcher:
    pass any fds because `--no-services` was set and the manifest
    declared no `[sandbox.services]` deps anyway.
 
-## Optional: install into your real user data
+## Optional: install into your user data
 
 The walkthrough above scoped `XDG_DATA_HOME` and `XDG_CONFIG_HOME` to
-`/tmp/qos-hw-data` / `/tmp/qos-hw-config` for isolation. To install
-into your actual home:
+`/tmp/tilo-hw-data` / `/tmp/tilo-hw-config` for isolation. To install
+into your home directory:
 
 ```bash
 unset XDG_DATA_HOME XDG_CONFIG_HOME
-qos-install runtime install --version 2026.07 --from-host --force
-qos-install install /tmp/hw-walkthrough/my-example-hello.qpkg
-qos-install list
-qos-install run my.example.hello
+tilo-install runtime install --version 2026.07 --from-host --force
+tilo-install install /tmp/hw-walkthrough/my-example-hello.qpkg
+tilo-install list
+tilo-install run my.example.hello
 ```
 
-The install tree lands under `~/.local/share/qos-apps/` and
-`~/.local/share/qos-runtime/`. Removal:
+The install tree lands under `~/.local/share/tilo-apps/` and
+`~/.local/share/tilo-runtime/`. Removal:
 
 ```bash
-qos-install remove my.example.hello
-qos-install runtime remove 2026.07
+tilo-install remove my.example.hello
+tilo-install runtime remove 2026.07
 ```
 
 ## Where to go next
@@ -270,7 +269,7 @@ qos-install runtime remove 2026.07
 - **Add a `[cli]` block** to your manifest for PATH commands. See
   [`cli-apps.md`](./cli-apps.md).
 - **Get a real signing identity** and store it out-of-band. See
-  [`trust.md`](./trust.md) for `qos-pkg pack --identity`.
+  [`trust.md`](./trust.md) for `tilo-pkg pack --identity`.
 - **Ship a Flatpak alongside** for stock Linux. See
   [`cross-target.md`](./cross-target.md).
 - **Publish a format codec** as a WASM Component. See

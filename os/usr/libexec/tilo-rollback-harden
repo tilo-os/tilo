@@ -1,0 +1,50 @@
+#!/usr/bin/bash
+# Give the TPM's dictionary-attack lockout a real reset authorisation, and tighten
+# the parameters the vendor shipped.
+#
+# A short PIN is only defensible because the TPM throttles guesses. The throttle
+# has a reset command, TPM2_DictionaryAttackLockReset, authorised by lockoutAuth —
+# and on a machine that has only ever been cleared, lockoutAuth is empty, so
+# anyone can reset the counter and the PIN protects nothing.
+#
+# Runs once, on the installed system rather than on the live medium, because the
+# generated authorisation belongs on the encrypted root: that keeps it away from
+# an attacker holding a powered-off machine, which is the only attacker the
+# throttle exists for.
+set -uo pipefail
+# shellcheck source=/dev/null
+. /usr/libexec/tilo-rollback-common
+
+AUTH_FILE=/var/lib/tilo/rollback/lockout-auth
+
+if [ ! -e /dev/tpmrm0 ] && [ ! -e /dev/tpm0 ]; then
+  log "no TPM on this machine — nothing to harden"
+  exit 0
+fi
+
+if [ -s "$AUTH_FILE" ]; then
+  log "lockout authorisation already recorded; reporting current state"
+  exec tilo-rollback tpm-status
+fi
+
+DEV="$(rollback_luks_device)"
+if [ -z "$DEV" ]; then
+  # With no encrypted root there is no PIN to throttle, and no safe place to keep
+  # the authorisation. Setting it anyway would mean a TPM whose lockout can never
+  # be reset.
+  log "root is not on LUKS — leaving the lockout authorisation alone"
+  exec tilo-rollback tpm-status
+fi
+
+# SAFETY-CRITICAL gate. Once the reset authorisation is set, a forgotten PIN plus
+# an exhausted lockout counter can only be resolved with a recovery key or by
+# clearing the TPM, which destroys every sealed keyslot. So refuse unless the disk
+# demonstrably still has an unlock path that does not involve the TPM.
+if ! rollback_has_independent_keyslot "$DEV"; then
+  warn "$DEV has no keyslot outside the TPM-sealed ones — refusing to set the lockout"
+  warn "authorisation, because a forgotten PIN would then be unrecoverable."
+  exit 1
+fi
+
+log "hardening the TPM lockout (an independent keyslot exists on $DEV)"
+exec tilo-rollback harden --auth-file "$AUTH_FILE" --i-have-a-recovery-key

@@ -1,7 +1,7 @@
 # Identity signing boundary
 
-qOS applications do not receive private identity material. For each authored
-launch, `qos-launcher` resolves the selected identity on the host, opens exactly
+Tilo applications do not receive private identity material. For each authored
+launch, `tilo-launcher` resolves the selected identity on the host, opens exactly
 one Unix socket pair, retains the signing share, and places the app end at file
 descriptor 15. The runtime supports two bounded operations: read public
 metadata and sign a message up to 4 MiB. Read-only workspace participation gets
@@ -13,7 +13,7 @@ Legacy schema-1 records contain a 32-byte share. Migration validates that a
 single-device share derives the recorded public key before storing anything.
 It then prefers the freedesktop Secret Service through libsecret's standard
 `secret-tool` client. If no client, session bus, unlocked collection, or usable
-service exists, qOS falls back to `identity/secrets/<public-key>.key`, mode 0600,
+service exists, Tilo falls back to `identity/secrets/<public-key>.key`, mode 0600,
 inside mode-0700 user-owned directories. Sandboxes cannot name or mount this
 fallback. Settings labels it **Private session file + app-scoped signing
 broker**; it is intentionally not described as encrypted or hardware-backed.
@@ -34,8 +34,8 @@ after it actually sealed the secret. The default resolver deliberately refuses
 
 ## Compatibility and limits
 
-`runtime_identity::load()` prefers `QOS_IDENTITY_BROKER_FD`. The old
-`QOS_USER_IDENTITY` path remains for unsandboxed development, but the qOS
+`runtime_identity::load()` prefers `TILO_IDENTITY_BROKER_FD`. The old
+`TILO_USER_IDENTITY` path remains for unsandboxed development, but the Tilo
 launcher never sets or mounts it. Existing application call sites keep the same
 `SigningIdentity` API.
 

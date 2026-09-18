@@ -1,14 +1,13 @@
-//! The package-manager lifecycle, end to end, against the real binary.
+//! End-to-end package-manager lifecycle through the binary.
 //!
 //! install → list → verify → update → uninstall, plus the two things
 //! that make it a package manager rather than an unpacker: it knows
 //! what it depends on (the runtime bundle), and it distinguishes the
 //! publisher's files from the user's data.
 //!
-//! Every test drives `qos-install` as a subprocess with `XDG_DATA_HOME`
-//! and `XDG_CONFIG_HOME` pointed at a tempdir, so nothing here touches
-//! the developer's real installs — and so what is asserted is the
-//! production code path, not a library call that resembles it.
+//! Every test drives `tilo-install` as a subprocess with `XDG_DATA_HOME`
+//! and `XDG_CONFIG_HOME` pointed at a tempdir, isolating the test data while
+//! exercising the command's install path.
 
 #![allow(
     clippy::unwrap_used,
@@ -31,7 +30,7 @@ use rand::rngs::OsRng;
 use serde::Serialize;
 
 fn install_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_qos-install"))
+    PathBuf::from(env!("CARGO_BIN_EXE_tilo-install"))
 }
 
 /// A package that declares no runtime bundle, so the lifecycle tests
@@ -44,7 +43,7 @@ fn manifest_src(version: &str, pub_hex: &str, runtime: Option<&str>) -> String {
     format!(
         r#"
 [package]
-id      = "dev.qos.lifecycle"
+id      = "dev.tilo.lifecycle"
 version = "{version}"
 kind    = "app"
 {runtime_line}
@@ -54,7 +53,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
-seccomp    = "qos-default"
+seccomp    = "tilo-default"
 landlock   = "strict"
 
 [sandbox.net]
@@ -79,7 +78,7 @@ fn fresh_key() -> (SigningKey, String) {
     (sk, pub_hex)
 }
 
-/// Build a `.qpkg` with the layout `qos-pkg pack` writes.
+/// Build a `.qpkg` with the layout `tilo-pkg pack` writes.
 fn build_qpkg(qpkg_path: &Path, manifest: &Manifest, sk: &SigningKey, payload_dir: &Path) {
     #[derive(Serialize)]
     struct QpkgHeader {
@@ -143,16 +142,16 @@ impl Env {
         self.home.path().join("data")
     }
 
-    fn qos_apps(&self) -> PathBuf {
-        self.xdg_data().join("qos-apps")
+    fn tilo_apps(&self) -> PathBuf {
+        self.xdg_data().join("tilo-apps")
     }
 
     fn payload_root(&self) -> PathBuf {
-        self.qos_apps().join("payloads/dev.qos.lifecycle")
+        self.tilo_apps().join("payloads/dev.tilo.lifecycle")
     }
 
     fn registry_toml(&self) -> String {
-        std::fs::read_to_string(self.qos_apps().join("registry.toml")).unwrap_or_default()
+        std::fs::read_to_string(self.tilo_apps().join("registry.toml")).unwrap_or_default()
     }
 
     /// Pack a `.qpkg` at `version` whose entrypoint holds `body`.
@@ -175,7 +174,7 @@ impl Env {
         c.env("XDG_DATA_HOME", self.xdg_data());
         c.env("HOME", self.home.path());
         c.args(args);
-        let out = c.output().expect("spawn qos-install");
+        let out = c.output().expect("spawn tilo-install");
         (
             out.status.success(),
             String::from_utf8_lossy(&out.stdout).to_string(),
@@ -188,9 +187,9 @@ impl Env {
         for room in ["personal", "b7c1-workspace"] {
             let dir = self
                 .xdg_data()
-                .join("qos-rooms")
+                .join("tilo-rooms")
                 .join(room)
-                .join("dev.qos.lifecycle");
+                .join("dev.tilo.lifecycle");
             std::fs::create_dir_all(dir.join(".local/share")).unwrap();
             std::fs::write(dir.join(".local/share/notes.bin"), b"the user's work").unwrap();
         }
@@ -198,9 +197,9 @@ impl Env {
 
     fn state_exists(&self, room: &str) -> bool {
         self.xdg_data()
-            .join("qos-rooms")
+            .join("tilo-rooms")
             .join(room)
-            .join("dev.qos.lifecycle")
+            .join("dev.tilo.lifecycle")
             .exists()
     }
 }
@@ -213,7 +212,7 @@ fn install_list_verify_update_uninstall() {
     // --- install -----------------------------------------------------
     let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap()]);
     assert!(ok, "install failed: {out}{err}");
-    assert!(out.contains("installed: dev.qos.lifecycle 1.0.0"), "{out}");
+    assert!(out.contains("installed: dev.tilo.lifecycle 1.0.0"), "{out}");
     assert!(env.payload_root().join("bin/app").exists());
     assert_eq!(
         std::fs::read(env.payload_root().join("bin/app")).unwrap(),
@@ -228,13 +227,13 @@ fn install_list_verify_update_uninstall() {
     // --- list --------------------------------------------------------
     let (ok, out, _) = env.cmd(&["list"]);
     assert!(ok);
-    assert!(out.contains("dev.qos.lifecycle"), "{out}");
+    assert!(out.contains("dev.tilo.lifecycle"), "{out}");
     assert!(out.contains("1.0.0"), "{out}");
 
     // --- verify ------------------------------------------------------
     let (ok, out, err) = env.cmd(&["verify"]);
     assert!(ok, "verify failed: {out}{err}");
-    assert!(out.contains("ok       dev.qos.lifecycle 1.0.0"), "{out}");
+    assert!(out.contains("ok       dev.tilo.lifecycle 1.0.0"), "{out}");
 
     // The app saves something. From here on the payload and the state
     // have to be treated differently.
@@ -244,13 +243,13 @@ fn install_list_verify_update_uninstall() {
     let v2 = env.qpkg("1.1.0", b"version two", None);
     let (ok, out, err) = env.cmd(&[
         "update",
-        "dev.qos.lifecycle",
+        "dev.tilo.lifecycle",
         "--from",
         v2.to_str().unwrap(),
     ]);
     assert!(ok, "update failed: {out}{err}");
     assert!(
-        out.contains("updated: dev.qos.lifecycle 1.0.0 -> 1.1.0"),
+        out.contains("updated: dev.tilo.lifecycle 1.0.0 -> 1.1.0"),
         "{out}"
     );
     assert_eq!(
@@ -266,20 +265,20 @@ fn install_list_verify_update_uninstall() {
 
     // Verification has to follow the swap: the recorded evidence is
     // now the new version's, and the old record would fail.
-    let (ok, out, err) = env.cmd(&["verify", "dev.qos.lifecycle"]);
+    let (ok, out, err) = env.cmd(&["verify", "dev.tilo.lifecycle"]);
     assert!(ok, "verify after update failed: {out}{err}");
-    assert!(out.contains("ok       dev.qos.lifecycle 1.1.0"), "{out}");
+    assert!(out.contains("ok       dev.tilo.lifecycle 1.1.0"), "{out}");
 
     // --- uninstall ---------------------------------------------------
-    let (ok, out, err) = env.cmd(&["uninstall", "dev.qos.lifecycle", "--keep-state"]);
+    let (ok, out, err) = env.cmd(&["uninstall", "dev.tilo.lifecycle", "--keep-state"]);
     assert!(ok, "uninstall failed: {out}{err}");
     assert!(
-        out.contains("uninstalled: dev.qos.lifecycle 1.1.0"),
+        out.contains("uninstalled: dev.tilo.lifecycle 1.1.0"),
         "{out}"
     );
     assert!(!env.payload_root().exists(), "the payload must be gone");
     assert!(
-        !env.registry_toml().contains("dev.qos.lifecycle"),
+        !env.registry_toml().contains("dev.tilo.lifecycle"),
         "the registry entry must be gone: {}",
         env.registry_toml()
     );
@@ -300,7 +299,7 @@ fn purge_removes_the_state_that_keep_state_would_have_left() {
     assert!(ok, "{err}");
     env.seed_state();
 
-    let (ok, out, err) = env.cmd(&["uninstall", "dev.qos.lifecycle", "--purge"]);
+    let (ok, out, err) = env.cmd(&["uninstall", "dev.tilo.lifecycle", "--purge"]);
     assert!(ok, "{out}{err}");
     assert!(out.contains("state    : deleted in 2 room(s)"), "{out}");
     assert!(!env.state_exists("personal"));
@@ -317,7 +316,7 @@ fn a_non_interactive_uninstall_keeps_state_by_default() {
     env.seed_state();
 
     // No --purge, no --keep-state, and stdin is not a terminal.
-    let (ok, out, err) = env.cmd(&["uninstall", "dev.qos.lifecycle"]);
+    let (ok, out, err) = env.cmd(&["uninstall", "dev.tilo.lifecycle"]);
     assert!(ok, "{out}{err}");
     assert!(
         env.state_exists("personal"),
@@ -334,7 +333,7 @@ fn dry_run_reports_the_change_without_making_it() {
     let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap(), "--dry-run"]);
     assert!(ok, "{out}{err}");
     assert!(
-        out.contains("plan: install dev.qos.lifecycle 1.0.0"),
+        out.contains("plan: install dev.tilo.lifecycle 1.0.0"),
         "{out}"
     );
     assert!(out.contains("signature : verified"), "{out}");
@@ -354,14 +353,14 @@ fn dry_run_reports_the_change_without_making_it() {
     let v2 = env.qpkg("2.0.0", b"two", None);
     let (ok, out, _) = env.cmd(&[
         "update",
-        "dev.qos.lifecycle",
+        "dev.tilo.lifecycle",
         "--from",
         v2.to_str().unwrap(),
         "--dry-run",
     ]);
     assert!(ok);
     assert!(
-        out.contains("plan: update dev.qos.lifecycle 1.0.0 -> 2.0.0"),
+        out.contains("plan: update dev.tilo.lifecycle 1.0.0 -> 2.0.0"),
         "{out}"
     );
     assert!(out.contains("state     : KEPT"), "{out}");
@@ -371,10 +370,10 @@ fn dry_run_reports_the_change_without_making_it() {
         "--dry-run must not swap the payload"
     );
 
-    let (ok, out, _) = env.cmd(&["uninstall", "dev.qos.lifecycle", "--dry-run"]);
+    let (ok, out, _) = env.cmd(&["uninstall", "dev.tilo.lifecycle", "--dry-run"]);
     assert!(ok);
     assert!(
-        out.contains("plan: uninstall dev.qos.lifecycle 1.0.0"),
+        out.contains("plan: uninstall dev.tilo.lifecycle 1.0.0"),
         "{out}"
     );
     assert!(out.contains("saved data: 2 room(s)"), "{out}");
@@ -393,9 +392,9 @@ fn verify_catches_a_modified_payload() {
 
     std::fs::write(env.payload_root().join("bin/app"), b"malicious").unwrap();
 
-    let (ok, out, err) = env.cmd(&["verify", "dev.qos.lifecycle"]);
+    let (ok, out, err) = env.cmd(&["verify", "dev.tilo.lifecycle"]);
     assert!(!ok, "a tampered payload must fail verification: {out}{err}");
-    assert!(out.contains("FAILED   dev.qos.lifecycle"), "{out}");
+    assert!(out.contains("FAILED   dev.tilo.lifecycle"), "{out}");
     assert!(out.contains("modified: bin/app"), "{out}");
 }
 
@@ -405,16 +404,16 @@ fn verify_catches_a_modified_payload() {
 #[test]
 fn a_missing_runtime_bundle_refuses_the_install_and_says_how_to_fix_it() {
     let env = Env::new();
-    let pkg = env.qpkg("1.0.0", b"one", Some("qos-runtime/2025.06"));
+    let pkg = env.qpkg("1.0.0", b"one", Some("tilo-runtime/2025.06"));
 
     let (ok, out, err) = env.cmd(&["install", pkg.to_str().unwrap()]);
     assert!(!ok, "install must refuse: {out}{err}");
     assert!(
-        err.contains("declares runtime `qos-runtime/2025.06`"),
+        err.contains("declares runtime `tilo-runtime/2025.06`"),
         "{err}"
     );
     assert!(
-        err.contains("qos-install runtime install --version 2025.06"),
+        err.contains("tilo-install runtime install --version 2025.06"),
         "the refusal must name the command that fixes it: {err}"
     );
     assert!(err.contains("--ignore-missing-runtime"), "{err}");
@@ -430,7 +429,7 @@ fn a_missing_runtime_bundle_refuses_the_install_and_says_how_to_fix_it() {
 
     // And `list` keeps saying so, rather than showing it as ready.
     let (_, out, _) = env.cmd(&["list"]);
-    assert!(out.contains("qos-runtime/2025.06 (MISSING)"), "{out}");
+    assert!(out.contains("tilo-runtime/2025.06 (MISSING)"), "{out}");
 }
 
 /// The dry run has to report the dependency too, or the plan is not a
@@ -438,10 +437,10 @@ fn a_missing_runtime_bundle_refuses_the_install_and_says_how_to_fix_it() {
 #[test]
 fn dry_run_names_a_missing_runtime_dependency() {
     let env = Env::new();
-    let pkg = env.qpkg("1.0.0", b"one", Some("qos-runtime/2025.06"));
+    let pkg = env.qpkg("1.0.0", b"one", Some("tilo-runtime/2025.06"));
     let (ok, out, err) = env.cmd(&["install", pkg.to_str().unwrap(), "--dry-run"]);
     assert!(ok, "{out}{err}");
-    assert!(out.contains("qos-runtime/2025.06 MISSING"), "{out}");
+    assert!(out.contains("tilo-runtime/2025.06 MISSING"), "{out}");
     assert!(out.contains("--with-runtime"), "{out}");
 }
 
@@ -456,7 +455,7 @@ fn update_refuses_a_downgrade_unless_told_to() {
     let v1 = env.qpkg("1.0.0", b"one", None);
     let (ok, out, err) = env.cmd(&[
         "update",
-        "dev.qos.lifecycle",
+        "dev.tilo.lifecycle",
         "--from",
         v1.to_str().unwrap(),
     ]);
@@ -470,7 +469,7 @@ fn update_refuses_a_downgrade_unless_told_to() {
 
     let (ok, out, err) = env.cmd(&[
         "update",
-        "dev.qos.lifecycle",
+        "dev.tilo.lifecycle",
         "--from",
         v1.to_str().unwrap(),
         "--allow-downgrade",
@@ -489,7 +488,7 @@ fn update_with_the_same_version_is_a_no_op() {
     assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
     let (ok, out, err) = env.cmd(&[
         "update",
-        "dev.qos.lifecycle",
+        "dev.tilo.lifecycle",
         "--from",
         v1.to_str().unwrap(),
     ]);
@@ -509,24 +508,74 @@ fn update_refuses_a_qpkg_for_a_different_package() {
     let build = env.home.path().join("other");
     let payload = build.join("payload");
     write_payload(&payload, b"other app");
-    let src =
-        manifest_src("9.0.0", &env.pub_hex, None).replace("dev.qos.lifecycle", "dev.qos.impostor");
+    let src = manifest_src("9.0.0", &env.pub_hex, None)
+        .replace("dev.tilo.lifecycle", "dev.tilo.impostor");
     let manifest = Manifest::from_toml_str(&src).unwrap();
     let other = build.join("other.qpkg");
     build_qpkg(&other, &manifest, &env.sk, &payload);
 
     let (ok, out, err) = env.cmd(&[
         "update",
-        "dev.qos.lifecycle",
+        "dev.tilo.lifecycle",
         "--from",
         other.to_str().unwrap(),
     ]);
     assert!(!ok, "{out}{err}");
-    assert!(err.contains("dev.qos.impostor"), "{err}");
+    assert!(err.contains("dev.tilo.impostor"), "{err}");
     assert_eq!(
         std::fs::read(env.payload_root().join("bin/app")).unwrap(),
         b"one"
     );
+}
+
+/// A local qpkg does not have a registry owner's signed publisher
+/// authorization. Matching the package id is therefore insufficient: an
+/// unrelated key must not silently take over the installed app's update slot.
+#[test]
+fn local_update_requires_explicit_authority_for_a_publisher_change() {
+    let env = Env::new();
+    let v1 = env.qpkg("1.0.0", b"one", None);
+    assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
+
+    let (replacement_key, replacement_pub_hex) = fresh_key();
+    let build = env.home.path().join("replacement-publisher");
+    let payload = build.join("payload");
+    write_payload(&payload, b"new publisher");
+    let manifest =
+        Manifest::from_toml_str(&manifest_src("2.0.0", &replacement_pub_hex, None)).unwrap();
+    let replacement = build.join("replacement.qpkg");
+    build_qpkg(&replacement, &manifest, &replacement_key, &payload);
+
+    let (ok, out, err) = env.cmd(&[
+        "update",
+        "dev.tilo.lifecycle",
+        "--from",
+        replacement.to_str().unwrap(),
+    ]);
+    assert!(!ok, "publisher takeover must be refused: {out}{err}");
+    assert!(err.contains("changed publisher"), "{err}");
+    assert!(err.contains("--require-publisher"), "{err}");
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"one",
+        "a refused publisher change must preserve the installed payload"
+    );
+    assert!(env.registry_toml().contains(&env.pub_hex));
+
+    let (ok, out, err) = env.cmd(&[
+        "update",
+        "dev.tilo.lifecycle",
+        "--from",
+        replacement.to_str().unwrap(),
+        "--require-publisher",
+        &replacement_pub_hex,
+    ]);
+    assert!(ok, "explicit publisher rotation failed: {out}{err}");
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"new publisher"
+    );
+    assert!(env.registry_toml().contains(&replacement_pub_hex));
 }
 
 /// `info` is the alias people reach for; it must show the things the
@@ -538,7 +587,7 @@ fn info_reports_the_runtime_the_integrity_record_and_the_saved_data() {
     assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
     env.seed_state();
 
-    let (ok, out, err) = env.cmd(&["info", "dev.qos.lifecycle"]);
+    let (ok, out, err) = env.cmd(&["info", "dev.tilo.lifecycle"]);
     assert!(ok, "{out}{err}");
     assert!(out.contains("runtime       : (none declared)"), "{out}");
     assert!(out.contains("integrity     : recorded"), "{out}");

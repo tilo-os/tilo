@@ -1,4 +1,4 @@
-//! Filter chip row — the `[All] [qOS] [Flatpak] [Installed]` band.
+//! Filter chip row — the `[All] [Tilo] [Flatpak] [Installed]` band.
 //!
 //! Implemented as a `ToggleGroup` because the segments are
 //! mutually-exclusive and the widget already draws focus, active-state

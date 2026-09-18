@@ -20,7 +20,7 @@ pub type ConnectionId = Uuid;
 /// The transport / protocol a connection speaks.
 ///
 /// RDP remains a variant so saved, older connection profiles can round-trip
-/// without data loss. qOS device control is backed by the shell's authenticated
+/// without data loss. Tilo device control is backed by the shell's authenticated
 /// workspace transport and is available for new profiles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnectionKind {
@@ -30,10 +30,10 @@ pub enum ConnectionKind {
     Vnc,
     /// Remote Desktop Protocol — a streamed remote desktop.
     Rdp,
-    /// A peer qOS device reached through the canonical device mesh. The shell
+    /// A peer Tilo device reached through the canonical device mesh. The shell
     /// requires an authenticated exact-target route while reusing the
     /// target's consented surface stream and input firewall.
-    Qos,
+    Tilo,
 }
 
 impl ConnectionKind {
@@ -43,7 +43,7 @@ impl ConnectionKind {
             ConnectionKind::Ssh => "SSH",
             ConnectionKind::Vnc => "VNC",
             ConnectionKind::Rdp => "RDP",
-            ConnectionKind::Qos => "qOS",
+            ConnectionKind::Tilo => "Tilo",
         }
     }
 
@@ -53,7 +53,7 @@ impl ConnectionKind {
             ConnectionKind::Ssh => "SSH",
             ConnectionKind::Vnc => "VNC",
             ConnectionKind::Rdp => "RDP",
-            ConnectionKind::Qos => "qOS device",
+            ConnectionKind::Tilo => "Tilo device",
         }
     }
 
@@ -63,9 +63,9 @@ impl ConnectionKind {
             ConnectionKind::Ssh => 22,
             ConnectionKind::Vnc => 5900,
             ConnectionKind::Rdp => 3389,
-            // qOS device control rides the compositor's P2P fabric and has no
+            // Tilo device control rides the compositor's P2P fabric and has no
             // application-owned TCP port.
-            ConnectionKind::Qos => 0,
+            ConnectionKind::Tilo => 0,
         }
     }
 
@@ -75,13 +75,13 @@ impl ConnectionKind {
         matches!(self, ConnectionKind::Ssh)
     }
 
-    /// Whether the remote side streams a graphical surface to us. qOS reuses
+    /// Whether the remote side streams a graphical surface to us. Tilo reuses
     /// the compositor's existing consented surface stream rather than defining
     /// a parallel remote-desktop protocol.
     pub fn streams_framebuffer(self) -> bool {
         matches!(
             self,
-            ConnectionKind::Vnc | ConnectionKind::Rdp | ConnectionKind::Qos
+            ConnectionKind::Vnc | ConnectionKind::Rdp | ConnectionKind::Tilo
         )
     }
 
@@ -93,15 +93,15 @@ impl ConnectionKind {
         [
             ConnectionKind::Ssh,
             ConnectionKind::Vnc,
-            ConnectionKind::Qos,
+            ConnectionKind::Tilo,
         ]
     }
 
-    /// Whether qOS can genuinely open this transport today.
+    /// Whether Tilo can open this transport today.
     pub fn is_supported(self) -> bool {
         matches!(
             self,
-            ConnectionKind::Ssh | ConnectionKind::Vnc | ConnectionKind::Qos
+            ConnectionKind::Ssh | ConnectionKind::Vnc | ConnectionKind::Tilo
         )
     }
 
@@ -109,7 +109,7 @@ impl ConnectionKind {
     pub fn can_attempt(self) -> bool {
         matches!(
             self,
-            ConnectionKind::Ssh | ConnectionKind::Vnc | ConnectionKind::Qos
+            ConnectionKind::Ssh | ConnectionKind::Vnc | ConnectionKind::Tilo
         )
     }
 
@@ -120,7 +120,7 @@ impl ConnectionKind {
             ConnectionKind::Ssh,
             ConnectionKind::Vnc,
             ConnectionKind::Rdp,
-            ConnectionKind::Qos,
+            ConnectionKind::Tilo,
         ]
     }
 
@@ -130,7 +130,7 @@ impl ConnectionKind {
         match s {
             "VNC" => ConnectionKind::Vnc,
             "RDP" => ConnectionKind::Rdp,
-            "qOS" => ConnectionKind::Qos,
+            "Tilo" => ConnectionKind::Tilo,
             _ => ConnectionKind::Ssh,
         }
     }
@@ -145,7 +145,7 @@ pub enum AuthMethod {
     Password,
     /// Public-key auth (an agent or on-disk key handles the secret).
     PublicKey,
-    /// qOS device identity — the P2P fabric authenticates the peer, so
+    /// Tilo device identity — the P2P fabric authenticates the peer, so
     /// there is no separate credential to manage.
     DeviceIdentity,
 }
@@ -167,7 +167,7 @@ impl AuthMethod {
         ]
     }
 
-    /// Authentication methods that the selected protocol can actually use.
+    /// Authentication methods supported by the selected protocol.
     ///
     /// This keeps the form from advertising a credential shape that the live
     /// transport would silently ignore or reinterpret.
@@ -175,7 +175,7 @@ impl AuthMethod {
         match kind {
             ConnectionKind::Ssh => &[Self::Password, Self::PublicKey],
             ConnectionKind::Vnc | ConnectionKind::Rdp => &[Self::Password],
-            ConnectionKind::Qos => &[Self::DeviceIdentity],
+            ConnectionKind::Tilo => &[Self::DeviceIdentity],
         }
     }
 
@@ -213,11 +213,11 @@ pub struct Connection {
     /// Display name shown in the list (e.g. "Home Server").
     pub name: String,
     /// Hostname or IP (e.g. "10.0.0.4" or "build.example.com"). For a
-    /// qOS relay this is the exact certified device endpoint id; `name` is
+    /// Tilo relay this is the exact certified device endpoint id; `name` is
     /// the friendly label shown in the UI.
     pub host: String,
     pub port: u16,
-    /// Login user. Empty for kinds that don't need one (qOS relay).
+    /// Login user. Empty for kinds that don't need one (Tilo relay).
     pub user: String,
     pub kind: ConnectionKind,
     pub auth: AuthMethod,
@@ -234,11 +234,11 @@ pub struct Connection {
 impl Connection {
     /// Compact address line, omitting parts that don't apply.
     pub fn address(&self) -> String {
-        if self.kind == ConnectionKind::Qos {
+        if self.kind == ConnectionKind::Tilo {
             // A certified endpoint id is intentionally long. The row already
             // carries the user-assigned connection name; show a stable prefix
             // here while the editable form retains the exact target id.
-            return format!("qOS device {}", compact_qos_endpoint(&self.host));
+            return format!("Tilo device {}", compact_tilo_endpoint(&self.host));
         }
         let host_part = if self.port == 0 {
             self.host.clone()
@@ -263,10 +263,10 @@ impl Connection {
     }
 }
 
-/// Compact an exact qOS endpoint id for list rows and device-picker labels.
+/// Compact an exact Tilo endpoint id for list rows and device-picker labels.
 /// The editable form retains the full identity; this rendering helper avoids
 /// overflow and never slices user-controlled UTF-8 by byte offset.
-pub fn compact_qos_endpoint(endpoint: &str) -> String {
+pub fn compact_tilo_endpoint(endpoint: &str) -> String {
     let prefix: String = endpoint.chars().take(12).collect();
     if endpoint.chars().nth(12).is_some() {
         format!("{prefix}…")
@@ -281,14 +281,14 @@ fn profile_issue(kind: ConnectionKind, host: &str, auth: AuthMethod) -> Option<&
             ConnectionKind::Ssh => "SSH profiles support password or public-key authentication.",
             ConnectionKind::Vnc => "VNC profiles support password authentication only.",
             ConnectionKind::Rdp => "RDP profiles support password authentication only.",
-            ConnectionKind::Qos => "qOS device profiles must use qOS device identity.",
+            ConnectionKind::Tilo => "Tilo device profiles must use Tilo device identity.",
         });
     }
-    if kind == ConnectionKind::Qos
+    if kind == ConnectionKind::Tilo
         && !host.trim().is_empty()
         && host.trim().parse::<iroh::EndpointId>().is_err()
     {
-        return Some("qOS device node must be an exact certified endpoint id.");
+        return Some("Tilo device node must be an exact certified endpoint id.");
     }
     None
 }
@@ -356,8 +356,8 @@ impl ConnectionDraft {
         if self.host.trim().is_empty() {
             out.push("Host is required".into());
         }
-        // qOS relay uses a logical channel, no numeric port.
-        if self.kind != ConnectionKind::Qos {
+        // Tilo relay uses a logical channel, no numeric port.
+        if self.kind != ConnectionKind::Tilo {
             match self.port.trim().parse::<u16>() {
                 Ok(0) | Err(_) => out.push("Port must be 1–65535".into()),
                 Ok(_) => {}
@@ -371,7 +371,7 @@ impl ConnectionDraft {
 
     /// Build a [`Connection`] from a validated draft, reusing `id`.
     pub fn build(&self, id: ConnectionId) -> Connection {
-        let port = if self.kind == ConnectionKind::Qos {
+        let port = if self.kind == ConnectionKind::Tilo {
             0
         } else {
             self.port
@@ -520,19 +520,19 @@ mod tests {
     }
 
     #[test]
-    fn qos_address_drops_port() {
-        let mut c = sample("q", ConnectionKind::Qos);
+    fn tilo_address_drops_port() {
+        let mut c = sample("q", ConnectionKind::Tilo);
         c.host = "studio-node".into();
         c.user = String::new();
         c.port = 0;
-        assert_eq!(c.address(), "qOS device studio-node");
+        assert_eq!(c.address(), "Tilo device studio-node");
     }
 
     #[test]
-    fn qos_address_compacts_a_long_endpoint_without_string_slicing() {
-        let mut c = sample("q", ConnectionKind::Qos);
+    fn tilo_address_compacts_a_long_endpoint_without_string_slicing() {
+        let mut c = sample("q", ConnectionKind::Tilo);
         c.host = "abcdefghijklmnopqrstuvwxyz".into();
-        assert_eq!(c.address(), "qOS device abcdefghijkl…");
+        assert_eq!(c.address(), "Tilo device abcdefghijkl…");
     }
 
     #[test]
@@ -542,16 +542,16 @@ mod tests {
             [
                 ConnectionKind::Ssh,
                 ConnectionKind::Vnc,
-                ConnectionKind::Qos
+                ConnectionKind::Tilo
             ]
         );
         assert!(ConnectionKind::Ssh.is_supported());
         assert!(ConnectionKind::Vnc.is_supported());
         assert!(!ConnectionKind::Rdp.is_supported());
-        assert!(ConnectionKind::Qos.is_supported());
-        assert!(ConnectionKind::Qos.can_attempt());
-        assert!(ConnectionKind::Qos.streams_framebuffer());
-        assert_eq!(ConnectionKind::Qos.label(), "qOS device");
+        assert!(ConnectionKind::Tilo.is_supported());
+        assert!(ConnectionKind::Tilo.can_attempt());
+        assert!(ConnectionKind::Tilo.streams_framebuffer());
+        assert_eq!(ConnectionKind::Tilo.label(), "Tilo device");
         assert!(!ConnectionKind::Rdp.can_attempt());
     }
 
@@ -601,9 +601,9 @@ mod tests {
     }
 
     #[test]
-    fn qos_draft_ignores_port() {
+    fn tilo_draft_ignores_port() {
         let d = ConnectionDraft {
-            kind: ConnectionKind::Qos,
+            kind: ConnectionKind::Tilo,
             name: "node".into(),
             host: iroh::SecretKey::from_bytes(&[7; 32]).public().to_string(),
             port: String::new(),
@@ -617,18 +617,18 @@ mod tests {
 
     #[test]
     fn q_os_profiles_require_an_exact_device_identity_and_endpoint() {
-        let mut connection = sample("q", ConnectionKind::Qos);
+        let mut connection = sample("q", ConnectionKind::Tilo);
         connection.host = "friendly-name".into();
         connection.auth = AuthMethod::Password;
         assert_eq!(
             connection.profile_issue(),
-            Some("qOS device profiles must use qOS device identity.")
+            Some("Tilo device profiles must use Tilo device identity.")
         );
 
         connection.auth = AuthMethod::DeviceIdentity;
         assert_eq!(
             connection.profile_issue(),
-            Some("qOS device node must be an exact certified endpoint id.")
+            Some("Tilo device node must be an exact certified endpoint id.")
         );
 
         connection.host = iroh::SecretKey::generate().public().to_string();
@@ -646,7 +646,7 @@ mod tests {
             &[AuthMethod::Password]
         );
         assert_eq!(
-            AuthMethod::available_for(ConnectionKind::Qos),
+            AuthMethod::available_for(ConnectionKind::Tilo),
             &[AuthMethod::DeviceIdentity]
         );
     }

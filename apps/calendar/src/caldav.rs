@@ -435,6 +435,14 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             location: String::new(),
             color: Palette::Red,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             calendar_id: None,
             project: None,
@@ -448,6 +456,14 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             location: String::new(),
             color: Palette::Amber,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             calendar_id: None,
             project: None,
@@ -461,6 +477,14 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             location: "Home".into(),
             color: Palette::Emerald,
             recurrence: Recurrence::Weekly,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: Some(30),
             calendar_id: None,
             project: None,
@@ -475,6 +499,14 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             location: "Meet".into(),
             color: Palette::Indigo,
             recurrence: Recurrence::Weekdays,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: Some(10),
             calendar_id: None,
             project: None,
@@ -627,7 +659,7 @@ mod live {
     ) -> (SyncResult, SyncOutcome) {
         let client = match reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
-            .user_agent("qOS-Calendar/0.1")
+            .user_agent("Tilo-Calendar/0.1")
             .build()
         {
             Ok(c) => c,
@@ -857,7 +889,7 @@ mod live {
     ) -> Vec<crate::model::Id> {
         let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
-            .user_agent("qOS-Calendar/0.1")
+            .user_agent("Tilo-Calendar/0.1")
             .build()
         else {
             return Vec::new();
@@ -884,7 +916,7 @@ mod live {
     pub fn push_jobs_live(jobs: &[super::UploadJob]) -> super::MutationResult {
         let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
-            .user_agent("qOS-Calendar/0.1")
+            .user_agent("Tilo-Calendar/0.1")
             .build()
         else {
             return super::MutationResult::default();
@@ -949,7 +981,7 @@ mod live {
     ) -> Vec<crate::model::Id> {
         let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
-            .user_agent("qOS-Calendar/0.1")
+            .user_agent("Tilo-Calendar/0.1")
             .build()
         else {
             return Vec::new();
@@ -974,7 +1006,7 @@ mod live {
     pub fn remove_jobs_live(jobs: &[super::RemoveJob]) -> super::MutationResult {
         let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
-            .user_agent("qOS-Calendar/0.1")
+            .user_agent("Tilo-Calendar/0.1")
             .build()
         else {
             return super::MutationResult::default();
@@ -1324,6 +1356,14 @@ mod tests {
             location: "Room 1".into(),
             color: Palette::Indigo,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             calendar_id: Some(cal.id.clone()),
             project: None,
@@ -1389,6 +1429,14 @@ mod tests {
             location: String::new(),
             color: crate::model::Palette::Indigo,
             recurrence: crate::model::Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             calendar_id: Some(cal.id.clone()),
             project: None,

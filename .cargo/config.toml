@@ -1,73 +1,23 @@
 [build]
-# `tools/cargo-shim`, if installed as `cargo`, routes builds into the container named in
-# `.build-container` and picks that namespace's sccache server. See DEVELOPMENT.md.
-#
-# Jobs are memory-bound, not core-bound: rustc peaks ~7 GB here. The shim derives
-# CARGO_BUILD_JOBS from RAM; this is the floor when it is bypassed (CI).
-jobs = 6
-# CPU floor is `x86-64-v3` — Haswell/Excavator (2013+), the intersection
-# of "vast majority of installed hardware" and "enough SIMD to matter"
-# (AVX2, BMI2, FMA). NOT `native` — that pins to the current build
-# host's CPU, breaks reproducibility, and can't ship in the same OS
-# image across users. Not `x86-64-v4` (AVX-512) — too narrow, that's a
-# per-app opt-in ship.
-#
-# `force-frame-pointers=yes` keeps `perf record` + BOLT able to walk
-# stacks; the runtime cost is negligible on x86-64 and the sampling-
-# tooling win is large.
-#
-# The three hardening flags below are link-time properties of every binary this
-# workspace produces. They cost nothing at steady state, which is the whole
-# reason they are set here rather than per-crate:
-#
-#   relro-level=full     GOT/PLT mapped read-only after the loader finishes
-#                        relocating, plus `-z now` so nothing is bound lazily
-#                        through a writable PLT. rustc's linux-gnu targets
-#                        already default to this; pinning it means a target or
-#                        toolchain change can't silently drop it, and
-#                        os/scripts/verify-elf-hardening.sh asserts the result.
-#   -Wl,-z,noexecstack   A single object file that requests an executable stack
-#                        (hand-written .S in a vendored C dep is the usual
-#                        culprit) makes the stack executable for the entire
-#                        process. Forcing it at link time removes that path.
-#   -Wl,-z,shstk         Marks the binary as compatible with hardware shadow
-#                        stacks (GNU_PROPERTY_X86_FEATURE_1_SHSTK). Rust emits
-#                        no .note.gnu.property at all on stable, and glibc
-#                        needs the mark on the executable AND on every DSO it
-#                        loads before it will turn shadow stacks on, so an
-#                        unmarked binary silently opts the whole process out.
-#                        Marking alone changes no behaviour: Fedora's glibc
-#                        activates shadow stacks only when
-#                        `GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK` also asks for
-#                        them, which is how they get scoped to the processes
-#                        that have been proven to run under them (see
-#                        os/usr/lib/systemd/system/*.d/ hardening drop-ins).
-#                        IBT is deliberately NOT marked — endbr64 landing pads
-#                        have to come from the compiler, and stable Rust does
-#                        not emit them, so claiming IBT would trap on the first
-#                        indirect call.
-# Keep each architecture's complete flag floor in its one target list. Cargo
-# does not merge target rustflags with build.rustflags; the previous global
-# x86-64 target-cpu/shadow-stack flags made every aarch64 build fail before it
-# reached the workspace.
+# The cargo shim derives parallelism from available memory; this is the CI floor.
+jobs = 4
+# Use the reproducible x86-64-v3 baseline and frame pointers for profiling.
+# Keep hardening in target lists: Cargo does not merge target and build flags.
+# IBT is disabled because stable Rust does not emit the required landing pads.
 
-[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))']
+[target.'cfg(all(target_arch = "x86_64", target_os = "linux"))']
 rustflags = [
     "-C", "target-cpu=x86-64-v3",
     "-C", "force-frame-pointers=yes",
     "-C", "relro-level=full",
     "-C", "link-arg=-Wl,-z,noexecstack",
     "-C", "link-arg=-Wl,-z,shstk",
-    # Reproducible paths for the in-image build, which compiles under /build.
-    # This lives here rather than in a RUSTFLAGS environment variable because
-    # that variable REPLACES this list rather than adding to it — setting it in
-    # the Containerfile silently dropped every hardening flag above, and the
-    # binaries shipped without shadow-stack marking. On a host build no path
-    # starts with /build, so it does nothing.
+    # Keep in-image paths reproducible without allowing RUSTFLAGS to replace
+    # this target's hardening flags.
     "--remap-path-prefix=/build=.",
 ]
 
-[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))']
+[target.'cfg(all(target_arch = "aarch64", target_os = "linux"))']
 rustflags = [
     "-C", "target-cpu=generic",
     "-C", "force-frame-pointers=yes",
@@ -76,79 +26,37 @@ rustflags = [
     "--remap-path-prefix=/build=.",
 ]
 
-[target.'cfg(target_os = "macos")']
+# Imager also builds on Windows and macOS, whose linkers do not accept ELF
+# -z options. Keep the architecture floor and reproducible paths on those hosts.
+[target.'cfg(all(target_arch = "x86_64", not(target_os = "linux")))']
+rustflags = [
+    "-C", "target-cpu=x86-64-v3",
+    "-C", "force-frame-pointers=yes",
+    "--remap-path-prefix=/build=.",
+]
+
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "linux")))']
+# Preserve each platform's ABI CPU baseline (Apple ARM requires AES/SHA2).
 rustflags = [
     "-C", "force-frame-pointers=yes",
     "--remap-path-prefix=/build=.",
 ]
 
-# Hardening for every C/C++ file compiled through a `build.rs` (the `cc` crate).
-#
-# This is not redundant with the distribution's build flags: `cc` builds its own
-# compiler invocation from scratch and inherits nothing from
-# `redhat-rpm-config`, so without this block every vendored C dependency in the
-# tree — the H.264 encoder, the ffmpeg shims, freetype/harfbuzz glue, zlib,
-# sqlite, the BoringSSL fork — compiles with no fortification, no stack
-# protector and no stack-clash probes. That C is also exactly where the memory
-# unsafety lives; the Rust it is linked into does not produce these bug classes.
-#
-# `cc` appends `CFLAGS`/`CXXFLAGS` last, after both its own defaults and any
-# flags the dependency's build script set, so these win. That is deliberate: a
-# vendored crate that hard-codes `-fno-stack-protector` or
-# `-D_FORTIFY_SOURCE=2` does not get to lower the floor.
-#
-# Flag by flag:
-#   -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3
-#       Level 3 over 2 replaces `__builtin_object_size` with
-#       `__builtin_dynamic_object_size`, which is what lets the checks fire on
-#       heap buffers whose size is only known at run time — the common shape in
-#       a decoder. Measured on this toolchain: a `memcpy` into a `malloc(n)`
-#       buffer resolves to plain `memcpy` at level 2 and to `__memcpy_chk` at
-#       level 3. The `-U` first is because our flags land after the
-#       dependency's, and redefining the macro to a different value warns.
-#   -Wno-cpp
-#       glibc's features.h emits `#warning _FORTIFY_SOURCE requires compiling
-#       with optimization` when the translation unit is built at -O0, which is
-#       what `cc` uses for dev profiles. The define is inert there; this drops
-#       the noise without weakening release builds.
-#   -fstack-protector-strong
-#       Canary on every function with a local array or an address-taken local.
-#   -fstack-clash-protection
-#       Probes each page as the stack grows, so a large or attacker-influenced
-#       stack allocation cannot jump the guard page into another mapping.
-#   -fcf-protection=full
-#       endbr64 landing pads + shadow-stack-compatible prologues, and the
-#       per-object CET property note. C is where the marking can be honest,
-#       because here it really is compiler-backed.
-#   -Wa,--noexecstack
-#       Assembly sources (`.S`) compiled through the C driver default to
-#       *requesting* an executable stack on some assemblers; one such object is
-#       enough to make the whole process's stack executable.
-#
-# What it costs, measured rather than assumed. The heaviest vendored C in the
-# tree that is anywhere near a frame is openh264's software H.264 encoder, which
-# is what carries a shared screen. Encoding 120 frames of 1920x1080 through
-# `qos_callstream::encoder::H264Encoder`, best-of-eight median frame time:
-# 26.8 ms without these flags, 24.2 ms with them. The hardened build measuring
-# *faster* is the point — the difference is under this machine's run-to-run
-# noise, so the cost on the one path where it could have shown is not
-# measurable. Both compilers were checked: gcc 15 and clang 21 accept the whole
-# set and both resolve the dynamic-size `memcpy` to `__memcpy_chk`.
-#
-# Not set, on purpose: `-ftrivial-auto-var-init=zero` would close uninitialised
-# locals too, but it writes on every function entry in the hot decode paths and
-# this tree has not measured that cost.
-#
-# Override channel, and its footgun: `cc` picks exactly one of
-# `CFLAGS_<target>`, `TARGET_CFLAGS`, `CFLAGS` — the most specific one wins
-# outright rather than appending. So setting `TARGET_CFLAGS` for a cross build
-# replaces this list and silently un-hardens the vendored C. Copy the flags
-# across if you ever need to.
+# `cc` builds vendored C/C++ outside distribution flag defaults. Force the
+# fortify, stack-protector, stack-clash, CET, and non-executable-stack floor.
+# cc-rs combines generic and target-specific flags. Keep platform flags scoped
+# to their target, and avoid incompatible native LTO in distribution overrides.
 [env]
-CFLAGS_x86_64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
-CXXFLAGS_x86_64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
+# Scope GNU C/assembler options to Linux targets, too. Global CFLAGS would
+# send -Wa,--noexecstack to MSVC/Apple clang while building the host Imager.
 CFLAGS_aarch64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
 CXXFLAGS_aarch64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+CFLAGS_x86_64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
+CXXFLAGS_x86_64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
+CFLAGS_aarch64_unknown_linux_musl = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+CXXFLAGS_aarch64_unknown_linux_musl = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+CFLAGS_x86_64_unknown_linux_musl = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+CXXFLAGS_x86_64_unknown_linux_musl = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
 # GNU assembler/ELF switches such as `-Wa,--noexecstack` must not reach Darwin,
 # whose Apple toolchain does not accept them. Keep its cc-rs flags target-specific
 # so the supported stack protector is applied without leaking Linux-only switches.
@@ -157,8 +65,7 @@ CXXFLAGS_aarch64_apple_darwin = { value = "-fstack-protector-strong", force = tr
 CFLAGS_x86_64_apple_darwin = { value = "-fstack-protector-strong", force = true }
 CXXFLAGS_x86_64_apple_darwin = { value = "-fstack-protector-strong", force = true }
 
-# sccache refuses `-C incremental=`; with it on, 13,417/16,947 requests refused.
-# Here rather than Cargo.toml: a config [profile] overrides the manifest.
+# Keep incremental compilation off so sccache can serve these profiles.
 [profile.dev]
 incremental = false
 

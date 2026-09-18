@@ -1,8 +1,8 @@
 # The demo — shot list
 
-The technical grounding for every claim is in **`plan/yc-demo.md`**, which
-reads each beat against the code. This file is the shot list: what is filmed,
-in order, and whether it can be filmed today.
+This is the executable demo's shot list: what is filmed and in what order.
+Assertions in `scripts/demo/run.py` are the source of truth for whether a beat
+passes; this document explains the intended story and the operator's cuts.
 
 One continuous story. Agent work is only ever shown from someone else's
 desktop — the point is that the other participants see it happen, not that a
@@ -42,7 +42,7 @@ is the one excursion, and beat 7 happens inside it rather than after a return.
 
 **The boot bumper ends where the desktop arrives**, not after it: the demo
 opens on an empty desktop, so holding one first shows the same picture on both
-sides of a cut. See `boot-bumper-cut.md`.
+sides of a cut.
 
 ## 1 · Empty desktop, Quinten opens Files ✅
 
@@ -61,7 +61,7 @@ Nobody types it. The invite card mints the token onto the system
 clipboard and says so where the host is looking — "Copied — paste it on
 the other machine" — beside a **Copy** button; the connect prompt on the
 other machine has a **Paste** button that fills itself from the
-clipboard, and a **Join** that redeems it. `scripts/yc-demo.py` clicks
+clipboard, and a **Join** that redeems it. `scripts/demo/run.py` clicks
 all four and asserts the round trip: the token that leaves the card is
 read back off the clipboard, and the prompt is asserted to hold exactly
 it, so a copy that silently truncated fails the join rather than being
@@ -109,7 +109,7 @@ triggering is per *session*, and the agent is a session, so it publishes
 a pointer it has never moved — a pill reading `Claude` sits on Quinten's
 desktop in `target/v1/shots/05-word-processor.png`. Nothing in the demo
 script moves it (there is no `agent.pointer_move` anywhere in
-`scripts/yc-demo.py`), so this is a `shell` fix. The run reports it as a
+`scripts/demo/run.py`), so this is a `shell` fix. The run reports it as a
 gap rather than shooting around it. A pointer is an instrument for
 pointing at something you are looking at; the agent's presence should be
 a caret in the document at the moment it acts, and nothing else.
@@ -132,8 +132,8 @@ second and a half is the word processor's own startup.
 
 It read as 6.7s, and on a busy machine 16–21s, for as long as the payload was
 a 449 MB **debug** build — the packaging was moving and hashing eighteen times
-the bytes it needed to. Build it with `scripts/demo-apps-live.sh`, which packs
-an optimised profile by default; `QOS_DEMO_PROFILE=debug` reproduces the old
+the bytes it needed to. Build it with `scripts/demo/apps-live.sh`, which packs
+an optimised profile by default; `TILO_DEMO_PROFILE=debug` reproduces the old
 number if you want to see it.
 
 Say "about two seconds", never "instant" — a viewer can time this one off the
@@ -157,7 +157,7 @@ Either alone produces "assertion green, screen blank" — and any
 unrelated click that bumped the revision made the window appear, which
 is why it looked intermittent rather than broken.
 
-Keep this beat on qOS's own apps. They replicate through the document
+Keep this beat on Tilo's own apps. They replicate through the document
 and are drawn from it; a foreign Wayland surface has nothing to
 replicate and degrades to a card reading "coming soon".
 
@@ -203,9 +203,9 @@ text.
 
 The cause is a broker fan-out. It computes an addressed channel key and
 then routes room-wide anyway — visible as `room_wide=true` beside
-`addressed=<room>#app:dev.qos.word-processor` in any session log — so a
+`addressed=<room>#app:dev.tilo.word-processor` in any session log — so a
 handshake addressed to the word processor is answered by whatever else
-is in the room. `[app dev.qos.file-explorer] recv Arrived; replying full
+is in the room. `[app dev.tilo.file-explorer] recv Arrived; replying full
 state 4904B` is the file manager answering for a document it does not
 own. The reader therefore gets the text from an app that is not the one
 drawn, and the claim passes without Xaver's word processor holding
@@ -230,7 +230,7 @@ cluster and passes the same check.
 The same fan-out defect hangs beat 9: the agent addresses the word
 processor, every app in the room answers, and it waits out its timeout.
 
-`scripts/yc-demo.py` now hashes Xaver's screen before and after and
+`scripts/demo/run.py` now hashes Xaver's screen before and after and
 raises a gap when the socket says yes and not a pixel moved — so this
 cannot pass silently again. **This beat is not claimed until a frame
 shows the text on the other machine**, which no frame yet does.
@@ -240,10 +240,10 @@ shows the text on the other machine**, which no frame yet does.
 **The launched Files app starts a real client drag now.** The toolkit
 grew one: `ui::dnd::start_file_drag` reads the file, offers its bytes
 under a mime type, and hands the gesture to the window
-(`ui/src/dnd/mod.rs`), and `apps/file-explorer/src/files_app.rs:997`
+(`crates/sdk/ui-core/src/dnd/mod.rs`), and `apps/file-explorer/src/files_app.rs:997`
 calls it. The compositor promotes that to a server-side
 `wl_data_device` drag, and the receiving client gets the offer and the
-drop. `scripts/yc-demo.py` asserts both halves off the compositor's own
+drop. `scripts/demo/run.py` asserts both halves off the compositor's own
 log — the source handing the gesture out, and the compositor taking it —
 so a run where the toolkit quietly reported it started nothing fails
 here rather than producing a drag that carries nothing.
@@ -252,7 +252,7 @@ here rather than producing a drag that carries nothing.
 `wl_data_source` anywhere, and sent people to the toolbar **Insert
 image** route instead. That route still exists and still works —
 `apps/word-processor/src/widget.rs:2250` against
-`shell/src/portal/file_chooser.rs` — it is simply no longer the only
+`crates/session/shell/src/portal/file_chooser.rs` — it is simply no longer the only
 one.)*
 
 What makes the beat worth running is what crosses. Files and the word
@@ -271,7 +271,7 @@ its own minute rather than fifteen seconds of this one.
 
 ## 9 · Claude does something ⏳ — blocked on the same broker defect
 
-`qos-agent` joins the document the way a second copy of the app would:
+`tilo-agent` joins the document the way a second copy of the app would:
 same `(app, room, record)` route, asks the room for state, holds a live
 replica. No window, no pointer. Addressed inside the document — `Claude:
 make this a proper document` — it edits through the word processor's
@@ -292,11 +292,11 @@ run records which path decided, and the harness asserts it — a fallback
 run can never be written up later as a live one. That matters more now
 that the name on screen is Claude.
 
-**It does not currently complete.** `qos-agent` joins, receives the
+**It does not currently complete.** `tilo-agent` joins, receives the
 document, and then waits out its timeout without applying anything —
 because every app in the room answers a handshake addressed to the word
 processor, so it is offered documents it did not ask for. Same broker
-fan-out as beat 7; `scripts/yc-demo.py` quotes the `room_wide=true`
+fan-out as beat 7; `scripts/demo/run.py` quotes the `room_wide=true`
 lines from the session log when the timeout fires, so nobody has to
 re-diagnose a hung process.
 
@@ -310,7 +310,7 @@ Two endings, both live, both attributed, both from before that:
   action.
 
 The edit arriving on a *second* session is asserted:
-`scripts/yc-demo.py` reads Xaver's own word processor back over his
+`scripts/demo/run.py` reads Xaver's own word processor back over his
 session's broker and checks the row text survived into the table, not
 merely that a table exists. It is asserted and **not** filmed from his
 screen — the same edit lands in the document already on camera, and an
@@ -343,14 +343,14 @@ the run fails if any frame came from its session.
 # Reproducing
 
 ```bash
-# The demo rig needs debug-assertions on for QOS_TEST_CONTROL, and
+# The demo rig needs debug-assertions on for TILO_TEST_CONTROL, and
 # refuses to record a binary older than the sources under test.
-cargo build --profile demo -p shell --bin shell --bin qos-control
-cargo build -p launcher --bin qos-launcher
-cargo build -p agent --bin qos-agent                # beat 9
+cargo build --profile demo -p shell --bin shell --bin tilo-control
+cargo build -p launcher --bin tilo-launcher
+cargo build -p agent --bin tilo-agent                # beat 9
 cargo build -p app-catalogue --bins --examples      # beat 5's registry
-cargo build -p qos-install --bin qos-install
-scripts/demo-apps-live.sh                           # the payload it serves
+cargo build -p tilo-install --bin tilo-install
+scripts/demo/apps-live.sh                           # the payload it serves
 
 scripts/headless-examples/app-launch-proof.py                 # apps launch and paint
 scripts/headless-examples/app-collab-proof.py                 # what crosses between sessions
@@ -359,6 +359,6 @@ scripts/headless-examples/word-processor-convergence-proof.py # two apps converg
 scripts/headless-examples/mcp-live-proof.py                   # a model driving the surface
 ```
 
-Each exits non-zero if a claim fails. A session needs `QOS_APPS_DATA_DIR`,
-`QOS_RUNTIME_BUNDLE_DIR`, its own `XDG_RUNTIME_DIR` and `QOS_PEER_KEY_PATH`,
+Each exits non-zero if a claim fails. A session needs `TILO_APPS_DATA_DIR`,
+`TILO_RUNTIME_BUNDLE_DIR`, its own `XDG_RUNTIME_DIR` and `TILO_PEER_KEY_PATH`,
 and a short session root — an AF_UNIX path over ~108 bytes fails to bind.

@@ -181,6 +181,41 @@ impl AddressSuggestions {
         self.chosen.take()
     }
 
+    /// Route an accessibility action addressed to a virtual suggestion row.
+    ///
+    /// The overlay is painted above Browser's retained content tree, so the
+    /// Browser root owns the final dispatch. Keeping target resolution here
+    /// makes that bridge use the same stable URL hash that this widget exports
+    /// to AT-SPI, rather than trusting a stale visible-row index.
+    pub fn perform_accessibility_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+    ) -> bool {
+        let Some(hash) = target.strip_prefix("browser.address-suggestion:") else {
+            return false;
+        };
+        let Some(index) = self
+            .items
+            .iter()
+            .position(|entry| blake3::hash(entry.url.as_bytes()).to_hex().as_str() == hash)
+        else {
+            return false;
+        };
+        match action {
+            ui::a11y::Action::Focus => {
+                self.selected = index;
+                true
+            }
+            ui::a11y::Action::Activate => {
+                self.selected = index;
+                self.chosen = self.items.get(index).cloned();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Total panel height for the current item count (0 when hidden).
     fn panel_height(&self) -> f64 {
         if self.items.is_empty() {
@@ -254,10 +289,10 @@ impl AddressSuggestions {
         // hands them to the renderer so the scale is applied exactly once.
         // Drawing the resolved size through the legacy size API scaled it a
         // second time on the live desktop at large text.
-        let title_style = text_renderer
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
-        let url_style = text_renderer
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.xs));
+        let title_style =
+            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+        let url_style =
+            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.xs));
         let line_gap = f64::from(theme.tokens.spacing.s1);
         let text_max = (f64::from(self.width) - ROW_PAD_X * 2.0).max(0.0) as f32;
 
@@ -479,6 +514,76 @@ impl Widget for AddressSuggestions {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let children = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let title = if entry.title.trim().is_empty() {
+                    entry.url.as_str()
+                } else {
+                    entry.title.as_str()
+                };
+                let row_top = self.rect.y0 + PAD + index as f64 * self.row_height();
+                AccessNode::new(Role::ListItem)
+                    .with_action_target(format!(
+                        "browser.address-suggestion:{}",
+                        blake3::hash(entry.url.as_bytes()).to_hex()
+                    ))
+                    .with_name(title)
+                    .with_description(entry.url.clone())
+                    .with_bounds(Rect::new(
+                        self.rect.x0,
+                        row_top,
+                        self.rect.x1,
+                        row_top + self.row_height(),
+                    ))
+                    .with_position(index.saturating_add(1), self.items.len())
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: index == self.selected,
+                        selected: index == self.selected,
+                        ..Default::default()
+                    })
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::List)
+                .with_name("Address suggestions")
+                .with_bounds(self.rect)
+                .with_state(AccessState {
+                    hidden: self.items.is_empty(),
+                    expanded: Some(!self.items.is_empty()),
+                    ..Default::default()
+                })
+                .with_children(children),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else {
+            return None;
+        };
+        (*index < self.items.len()).then(|| {
+            let top = self.rect.y0 + PAD + *index as f64 * self.row_height();
+            Rect::new(self.rect.x0, top, self.rect.x1, top + self.row_height())
+        })
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let [index] = path else {
+            return false;
+        };
+        if *index >= self.items.len() {
+            return false;
+        }
+        self.selected = *index;
+        true
+    }
+
     /// While the overlay is up it behaves like a transient popover anchored
     /// over the page, so it reports its rect as a modal capture — matching
     /// the toolkit's other dropdown-style overlays.
@@ -570,6 +675,34 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_target_uses_the_stable_row_identity() {
+        let mut w = AddressSuggestions::new();
+        w.set_suggestions(three());
+        let target = format!(
+            "browser.address-suggestion:{}",
+            blake3::hash(b"https://c.test").to_hex()
+        );
+
+        assert!(w.perform_accessibility_action(&target, &ui::a11y::Action::Focus));
+        assert_eq!(
+            w.selected().map(|entry| entry.url.as_str()),
+            Some("https://c.test")
+        );
+        assert!(w.perform_accessibility_action(&target, &ui::a11y::Action::Activate));
+        assert_eq!(
+            w.take_chosen().map(|entry| entry.url),
+            Some("https://c.test".into())
+        );
+        assert!(
+            !w.perform_accessibility_action(
+                "browser.address-suggestion:stale",
+                &ui::a11y::Action::Activate
+            ),
+            "a stale AT-SPI row must never select a different suggestion"
+        );
+    }
+
+    #[test]
     fn enlarged_text_expands_rows_and_pointer_hit_targets_together() {
         let mut w = AddressSuggestions::new();
         w.set_suggestions(three());
@@ -583,6 +716,25 @@ mod tests {
             Some(1),
             "hit testing follows the larger visual row rather than the old 46px grid"
         );
+    }
+
+    #[test]
+    fn suggestions_expose_stable_selectable_screen_reader_rows() {
+        let mut w = AddressSuggestions::new();
+        w.set_suggestions(three());
+        w.set_anchor(Point::new(20.0, 40.0), 320.0);
+        let node = Widget::accessibility(&w).unwrap();
+        assert_eq!(node.children.len(), 3);
+        assert!(node.children[0].state.selected);
+        assert!(
+            node.children[0]
+                .action_target
+                .as_deref()
+                .is_some_and(|target| target.starts_with("browser.address-suggestion:"))
+        );
+        assert!(w.focus_synthetic_accessibility(&[2]));
+        assert_eq!(w.selected_index(), Some(2));
+        assert!(w.synthetic_accessibility_rect(&[2]).is_some());
     }
 
     #[test]

@@ -149,12 +149,8 @@ fn the_find_bar_controls_share_the_find_fields_height_and_centre_line() {
 fn targets_with_theme(width: u32, height: u32, theme: ui::theme::Theme) -> HashMap<String, Rect> {
     let mut widget = BrowserWidget::new_headless();
     widget.debug_set_viewport_width(width);
-    let harness = FrameHarness::new_with_theme(
-        ui::State::new(),
-        Box::new(widget),
-        (width, height),
-        theme,
-    );
+    let harness =
+        FrameHarness::new_with_theme(ui::State::new(), Box::new(widget), (width, height), theme);
     harness.targets()
 }
 
@@ -166,10 +162,7 @@ fn the_roomy_tier_starts_at_a_thousand_pixels() {
     let under = targets_at(999, 700);
     let at = targets_at(1000, 700);
     for id in optional {
-        assert!(
-            !under.contains_key(id),
-            "{id} is still on a 999px toolbar"
-        );
+        assert!(!under.contains_key(id), "{id} is still on a 999px toolbar");
         assert!(at.contains_key(id), "{id} is missing from a 1000px toolbar");
     }
     assert!(
@@ -207,7 +200,7 @@ fn the_download_status_shares_the_toolbar_rows_height_and_centre_line() {
 
     let engine = std::sync::Arc::new(Downloading {
         inner: ui::webview::test_engine::TestEngine::new(),
-        pending: std::sync::Mutex::new(vec![WebViewEvent::DownloadRequested {
+        pending: std::sync::Mutex::new(vec![WebViewEvent::NativeDownloadRequested {
             id: 7,
             url: "https://example.test/archive.tar".into(),
             name: "archive.tar".into(),
@@ -222,10 +215,7 @@ fn the_download_status_shares_the_toolbar_rows_height_and_centre_line() {
         ui::theme::Theme::dark(),
     );
     harness
-        .wait_for_named(
-            "browser.download-status",
-            std::time::Duration::from_secs(2),
-        )
+        .wait_for_named("browser.download-status", std::time::Duration::from_secs(2))
         .expect("a requested download puts its status on the toolbar");
     let targets = harness.targets();
     let url = targets[URL_INPUT];
@@ -270,11 +260,7 @@ fn the_download_status_shares_the_toolbar_rows_height_and_centre_line() {
 #[test]
 fn labelled_toolbar_controls_grow_with_the_text_and_the_tiers_follow() {
     let base = targets_at(1200, 800);
-    let large = targets_with_theme(
-        1200,
-        800,
-        ui::theme::Theme::dark().with_text_scale(2.0),
-    );
+    let large = targets_with_theme(1200, 800, ui::theme::Theme::dark().with_text_scale(2.0));
     for id in ["browser.site.info", "browser.private-window"] {
         let (b, l) = (base[id], large[id]);
         assert!(

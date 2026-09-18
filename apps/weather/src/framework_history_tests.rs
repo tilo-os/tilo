@@ -39,7 +39,7 @@ fn production_root_and_launch_declare_saved_place_history() {
             .document_history_definition()
             .unwrap()
             .app_id,
-        "dev.qos.weather"
+        "dev.tilo.weather"
     );
     assert!(include_str!("main.rs").contains(".history(&weather::framework_history::HISTORY)"));
 }
@@ -86,7 +86,7 @@ fn native_legacy_and_blank_actual_live_sync_are_graph_preserving_and_effect_free
 }
 #[test]
 fn legacy_restore_preserves_exact_representation_current_selection_unknown_descendants_and_redo() {
-    use qos_actions::Action;
+    use tilo_actions::Action;
     let mut d = legacy_doc();
     let list = d.get(ROOT, "locations").unwrap().unwrap().1;
     let first = d.get(&list, 0).unwrap().unwrap().1;
@@ -166,7 +166,7 @@ fn legacy_restore_preserves_exact_representation_current_selection_unknown_desce
 }
 #[test]
 fn legacy_selection_does_not_migrate_but_next_authored_action_does() {
-    use qos_actions::Action;
+    use tilo_actions::Action;
     let mut d = legacy_doc();
     let id = WeatherDoc::read_model(&d).locations[0].id;
     crate::actions::WeatherAction::SelectLocation { id: id.to_string() }
@@ -272,7 +272,7 @@ fn exact_weather_review_refuses_another_record_owner() {
     let resource = HistoryResource::new(
         "profile",
         "workspace",
-        "dev.qos.weather",
+        "dev.tilo.weather",
         ui::RecordId::for_tab(55),
     );
     let mut controller = HistoryController::new(resource, &d).unwrap();
@@ -283,7 +283,7 @@ fn exact_weather_review_refuses_another_record_owner() {
         HistoryResource::new(
             "profile",
             "workspace",
-            "dev.qos.weather",
+            "dev.tilo.weather",
             ui::RecordId::for_tab(56),
         ),
         &d,
@@ -329,7 +329,7 @@ fn pinned_preview_recreation_retains_local_navigation_and_never_reads_live_updat
     let resource = HistoryResource::new(
         "profile",
         "workspace",
-        "dev.qos.weather",
+        "dev.tilo.weather",
         ui::RecordId::for_tab(1),
     );
     let mut c = HistoryController::new(resource, &d).unwrap();
@@ -383,7 +383,7 @@ fn pinned_preview_recreation_retains_local_navigation_and_never_reads_live_updat
 fn normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_sync() {
     if let Ok(stage) = std::env::var("QOS_WEATHER_SAVED_STAGE") {
         let kind = std::env::var("QOS_WEATHER_SAVED_KIND").unwrap();
-        let (mut state, mut saver) = ui::persist::try_open("dev.qos.weather").unwrap();
+        let (mut state, mut saver) = ui::persist::try_open("dev.tilo.weather").unwrap();
         if stage == "write" {
             let mut target = match kind.as_str() {
                 "legacy" => legacy_doc(),
@@ -448,7 +448,7 @@ fn normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_syn
             std::env::temp_dir().join(format!("weather-history-{kind}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         for stage in ["write", "read"] {
-            let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_sync","--nocapture"]).env("QOS_WEATHER_SAVED_STAGE",stage).env("QOS_WEATHER_SAVED_KIND",kind).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("QOS_PACKAGE_ID","dev.qos.weather").output().unwrap();
+            let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_sync","--nocapture"]).env("QOS_WEATHER_SAVED_STAGE",stage).env("QOS_WEATHER_SAVED_KIND",kind).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("TILO_PACKAGE_ID","dev.tilo.weather").output().unwrap();
             assert!(
                 out.status.success(),
                 "{kind}/{stage}: {} {}",
@@ -462,7 +462,7 @@ fn normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_syn
 
 #[test]
 fn legacy_next_content_action_preserves_the_current_stable_selection() {
-    use qos_actions::Action;
+    use tilo_actions::Action;
     let mut d = legacy_doc();
     let chosen = WeatherDoc::read_model(&d).locations[0].id;
     crate::actions::WeatherAction::SelectLocation {

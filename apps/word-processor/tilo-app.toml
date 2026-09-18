@@ -1,0 +1,82 @@
+# Word Processor — Tilo application manifest.
+#
+# Documents are the room's; the user dictionary and crash-recovery
+# copies are the app's own state and live in its own directory.
+#
+# Beyond the system read profile it needs, as a consented capability:
+# read+write on the directories the user opens documents from.
+#
+
+
+[package]
+id       = "dev.tilo.word-processor"
+name     = "Word Processor"
+category = "Office"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+file-chooser = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/word-processor"
+type            = "gui"
+splash-segments = ["bin/word-processor[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = [
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/markdown",
+    "text/html",
+]
+# Every extension qdoc has a rich-text codec for. An extension the
+# format registry calls a document but no installed package claims is a
+# reportable dead end ("nothing here opens .html") rather than an open,
+# so the list is kept in step with `qdoc::codecs::builtin_registry`.
+# `html`/`htm` and `rtf` are import-only there; opening them still works,
+# saving back to the same format does not yet.
+ext  = [
+    "odt",
+    "docx",
+    "md",
+    "markdown",
+    "rtf",
+    "html",
+    "htm",
+]

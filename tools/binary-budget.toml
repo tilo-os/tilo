@@ -2,15 +2,14 @@
 # build that exceeds one.
 #
 # These are static release builds. The ~2 MB figure in the README is the
-# thin build (crates/packaging/hello/build-thin.sh), where the SDK is a
+# thin build (examples/packaging/hello/build-thin.sh), where the SDK is a
 # shared library from the runtime bundle rather than linked into each
 # binary. That number is not what this file measures.
 #
-# Set at 15% over the measured size when the gate was added, rounded up to
-# the next MiB. Raising one is a decision, so it belongs in a diff.
+# Budgets include headroom; raising one is an intentional reviewed change.
 
 [budgets]
-"api_tester" = 26   # 22.3 MB
+"api-tester" = 26   # 22.3 MB
 "backups" = 22   # 18.9 MB
 "browser" = 27   # 23.0 MB
 "calculator" = 23   # 19.2 MB
@@ -18,10 +17,10 @@
 "camera" = 23   # 19.8 MB
 "chat" = 38   # 32.9 MB
 "click_test_client" = 3   # 1.9 MB
-"code_editor" = 27   # 23.0 MB
+"code-editor" = 27   # 23.0 MB
 "contacts" = 25   # 21.1 MB
 "containers" = 24   # 20.1 MB
-"db_client" = 26   # 22.6 MB
+"db-client" = 26   # 22.6 MB
 "diffmerge" = 25   # 20.9 MB
 "disks" = 24   # 20.4 MB
 "ebook" = 25   # 21.5 MB
@@ -31,8 +30,8 @@
 "flatpak-share-demo" = 4   # 2.9 MB
 "format-host" = 20   # 16.6 MB
 "fs" = 21   # 17.8 MB
-"git_client" = 24   # 20.1 MB
-"hex_editor" = 24   # 20.8 MB
+"git-client" = 24   # 20.1 MB
+"hex-editor" = 24   # 20.8 MB
 "imager" = 25   # 20.9 MB
 "logs" = 22   # 18.9 MB
 "mail" = 28   # 24.0 MB
@@ -41,34 +40,33 @@
 "music" = 35   # 29.8 MB
 "notes" = 1   # 0.6 MB
 "osk" = 23   # 19.9 MB
-"pdf_viewer" = 30   # 25.9 MB
+"pdf-viewer" = 30   # 25.9 MB
 "photos" = 25   # 21.0 MB
-"qos" = 1   # 0.7 MB
-"qos-agent" = 11   # 9.4 MB
-"qos-app-host" = 4   # 3.1 MB
-"qos-app-mount" = 1   # 0.8 MB
-"qos-catalogue" = 5   # 4.1 MB
-"qos-cli-shim" = 1   # 0.5 MB
-"qos-collab-link" = 1   # 0.4 MB
-"qos-collab-probe" = 3   # 2.4 MB
-"qos-control" = 1   # 0.5 MB
-"qos-desktop-scan" = 1   # 0.4 MB
-"qos-doc-text" = 2   # 1.6 MB
-"qos-greeter" = 22   # 18.7 MB
-"qos-hello" = 4   # 3.2 MB
-"qos-install" = 13   # 10.7 MB
-"qos-installer" = 22   # 18.7 MB
-"qos-launcher" = 4   # 2.8 MB
-"qos-loadclient" = 1   # 0.7 MB
-"qos-pkg" = 14   # 12.1 MB
-"qos-power" = 1   # 0.3 MB
-"qos-registry-server" = 4   # 2.8 MB
-"qos-relay" = 16   # 13.8 MB
-"qos-relay-admin" = 2   # 1.0 MB
-"qos-rollback" = 2   # 1.2 MB
-"qos-runtime-bundle" = 2   # 1.2 MB
-"qos-unlock-helper" = 1   # 0.3 MB
-"qos-ush" = 2   # 1.1 MB
+"tilo" = 1   # 0.7 MB
+"tilo-agent" = 11   # 9.4 MB
+"tilo-app-host" = 4   # 3.1 MB
+"tilo-app-mount" = 1   # 0.8 MB
+"tilo-catalogue" = 5   # 4.1 MB
+"tilo-cli-shim" = 1   # 0.5 MB
+"tilo-collab-link" = 1   # 0.4 MB
+"tilo-collab-probe" = 3   # 2.4 MB
+"tilo-control" = 1   # 0.5 MB
+"tilo-desktop-scan" = 1   # 0.4 MB
+"tilo-doc-text" = 2   # 1.6 MB
+"tilo-greeter" = 22   # 18.7 MB
+"tilo-hello" = 4   # 3.2 MB
+"tilo-install" = 13   # 10.7 MB
+"tilo-installer" = 22   # 18.7 MB
+"tilo-launcher" = 4   # 2.8 MB
+"tilo-loadclient" = 1   # 0.7 MB
+"tilo-pkg" = 14   # 12.1 MB
+"tilo-registry-server" = 4   # 2.8 MB
+"tilo-relay" = 16   # 13.8 MB
+"tilo-relay-admin" = 2   # 1.0 MB
+"tilo-rollback" = 2   # 1.2 MB
+"tilo-runtime-bundle" = 2   # 1.2 MB
+"tilo-unlock-helper" = 1   # 0.3 MB
+"tilo-ush" = 2   # 1.1 MB
 "remote" = 27   # 22.8 MB
 "settings" = 23   # 19.9 MB
 "sheets" = 26   # 22.5 MB
@@ -82,9 +80,9 @@
 "tinker" = 2   # 1.1 MB
 "totp" = 25   # 21.6 MB
 "tube" = 35   # 29.9 MB
-"typst_editor" = 63   # 54.4 MB
+"typst-editor" = 63   # 54.4 MB
 "video-player" = 25   # 21.5 MB
-"video_editor" = 25   # 21.1 MB
+"video-editor" = 25   # 21.1 MB
 "vpn" = 25   # 21.3 MB
 "weather" = 26   # 22.6 MB
 "word-processor" = 28   # 24.0 MB

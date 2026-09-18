@@ -1,0 +1,62 @@
+# Disks — Tilo application manifest.
+#
+# Two independent gates gate the privileged half: the `DISKS_LIVE` env
+# var (runtime) and cargo feature `live` (UDisks2 on the SYSTEM bus).
+#
+# Beyond the system read profile it needs, as consented capabilities:
+# read+exec on the host bin dirs (lsblk/smartctl/udisksctl/mount/mkfs)
+# and the block device nodes it benchmarks.
+#
+
+
+[package]
+id       = "dev.tilo.disks"
+name     = "Disks"
+category = "System"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/disks"
+type            = "gui"
+splash-segments = ["bin/disks[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

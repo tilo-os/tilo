@@ -42,13 +42,15 @@
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
-    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, RetryPolicy,
+use tilo_actions::{
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
+    Resource, ResourceProvider, ResultSpec, RetryPolicy,
 };
 
+use crate::attachment_store;
 use crate::doc::MailDoc;
-use crate::model::{Draft, Folder};
+use crate::model::{Draft, DraftAttachment, Folder};
 
 /// Registry `type_id` for every Mail action.
 pub const MAIL_ACTION_TYPE: &str = "mail.action";
@@ -64,6 +66,7 @@ const MAX_FOLDER_NAME_CHARS: usize = 96;
 const MAX_DRAFT_ADDRESS_CHARS: usize = 8 * 1024;
 const MAX_DRAFT_SUBJECT_CHARS: usize = 998;
 const MAX_DRAFT_BODY_CHARS: usize = 256 * 1024;
+const MAX_CALENDAR_ICS_BYTES: usize = 256 * 1024;
 
 /// Take at most `max` Unicode scalar values without slicing a UTF-8 byte
 /// offset.  Control characters are removed from one-line fields; bodies keep
@@ -96,6 +99,10 @@ fn bounded_ids(ids: &[String]) -> Vec<&str> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MailOperation {
+    /// Start a new local composition.  The body is intentionally not part of
+    /// this view operation: until it is saved as a draft or sent, a compose
+    /// buffer is private presentation state rather than shared mailbox data.
+    ComposeNew,
     RefreshCurrentFolder,
     /// Reveal a system folder without changing the collaborative document.
     RevealFolder {
@@ -125,10 +132,33 @@ pub enum MailOperation {
     InspectMessage {
         id: String,
     },
+    /// Start a reply to one loaded message.  This is a view operation because
+    /// it only opens a local, unsaved compose buffer; saving that buffer uses
+    /// the canonical `SaveDraft` document action.
+    Reply {
+        id: String,
+    },
+    /// Start a reply-all composition for one loaded message.
+    ReplyAll {
+        id: String,
+    },
+    /// Start a forward composition for one loaded message.
+    Forward {
+        id: String,
+    },
     RevealDraft,
     SaveAttachment {
         message_id: String,
         index: usize,
+    },
+    /// Validate bounded RFC 5545 invitation content, save it inline in a
+    /// durable draft through `MailAction`, and reveal it. No host path is
+    /// accepted or inferred.
+    PrepareCalendarInvitation {
+        to: String,
+        subject: String,
+        body: String,
+        calendar_ics: String,
     },
 }
 
@@ -157,6 +187,12 @@ pub struct DraftData {
     pub subject: String,
     pub body: String,
     pub html_body: Option<String>,
+    #[serde(default)]
+    pub calendar_ics: Option<String>,
+    /// Portable qdoc attachment references. This is structured metadata, not
+    /// a machine-local path, so collaborators can materialize the same bytes.
+    #[serde(default)]
+    pub attachments: Vec<DraftAttachment>,
 }
 
 impl DraftData {
@@ -171,6 +207,12 @@ impl DraftData {
                 .html_body
                 .as_deref()
                 .map(|body| bounded_text(body, MAX_DRAFT_BODY_CHARS, true)),
+            calendar_ics: d
+                .calendar_ics
+                .as_deref()
+                .filter(|value| valid_calendar_invitation(value))
+                .map(ToOwned::to_owned),
+            attachments: attachment_store::bounded(&d.attachments),
         }
     }
 
@@ -185,10 +227,24 @@ impl DraftData {
                 .html_body
                 .as_deref()
                 .map(|body| bounded_text(body, MAX_DRAFT_BODY_CHARS, true)),
-            attachments: Vec::new(),
+            calendar_ics: self
+                .calendar_ics
+                .as_deref()
+                .filter(|value| valid_calendar_invitation(value))
+                .map(ToOwned::to_owned),
+            attachments: attachment_store::bounded(&self.attachments),
             in_reply_to: None,
         }
     }
+}
+
+pub fn valid_calendar_invitation(value: &str) -> bool {
+    value.len() <= MAX_CALENDAR_ICS_BYTES
+        && !value.contains('\0')
+        && value.starts_with("BEGIN:VCALENDAR\r\n")
+        && value.contains("\r\nMETHOD:REQUEST\r\n")
+        && value.matches("BEGIN:VEVENT").count() == 1
+        && value.ends_with("END:VCALENDAR\r\n")
 }
 
 /// Every collaborative operation Mail exports on its shared mailbox state.
@@ -256,10 +312,25 @@ impl Action for MailAction {
                 }
             }
             MailAction::Purge { ids } => {
-                for id in bounded_ids(ids) {
-                    if MailDoc::is_present_message(doc, id) {
-                        MailDoc::mark_message_purged(doc, id);
-                    }
+                let ids = bounded_ids(ids);
+                // Purge is all-or-nothing. A stale search result or a message
+                // concurrently moved out of Trash must refuse the whole batch,
+                // rather than permanently delete whatever happens to remain
+                // valid. This preserves the atomic contract agents and the
+                // selection toolbar publish.
+                if ids.is_empty()
+                    || ids.iter().any(|id| {
+                        !MailDoc::is_present_message(doc, id)
+                            || MailDoc::get_folder_for(doc, id) != Some(Folder::Trash)
+                    })
+                {
+                    return Err(ActionError::Refused(
+                        "every message must still be present in Trash before permanent deletion"
+                            .into(),
+                    ));
+                }
+                for id in ids {
+                    MailDoc::mark_message_purged(doc, id);
                 }
             }
             MailAction::AddLabel { ids, label } => {
@@ -411,6 +482,27 @@ pub fn discard_draft_action() -> MailAction {
     MailAction::DiscardDraft
 }
 
+pub fn prepare_calendar_invitation_operation(
+    to: &str,
+    subject: &str,
+    body: &str,
+    calendar_ics: &str,
+) -> EncodedAction {
+    EncodedAction::encode_operation(
+        MAIL_OPERATION_TYPE,
+        &MailOperation::PrepareCalendarInvitation {
+            to: to.to_string(),
+            subject: subject.to_string(),
+            body: body.to_string(),
+            calendar_ics: calendar_ics.to_string(),
+        },
+    )
+    .unwrap_or_else(|_| EncodedAction {
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        payload: b"Mail invitation handoff could not be encoded".to_vec(),
+    })
+}
+
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -506,6 +598,54 @@ fn immediate_spec(id: &str, label: &str, action: &MailAction) -> ActionSpec {
         .reversible()
 }
 
+/// A bounded, typed mailbox-level batch action.  This is deliberately a
+/// mailbox capability rather than an implementation detail of the visible
+/// list: search and agents can therefore submit the same one-action atomic
+/// triage operation with stable message ids.  The document action remains the
+/// final defensive boundary; these checks make the published contract honest
+/// before a payload is authored.
+fn bulk_spec(
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+    reversible: bool,
+    build: impl Fn(Vec<String>) -> MailAction + Send + Sync + 'static,
+) -> ActionSpec {
+    let spec = ActionSpec::typed(
+        id,
+        label,
+        "message ids…",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("ids", ParamType::Array, description).with_schema(
+                serde_json::json!({
+                    "minItems": 1,
+                    "maxItems": MAX_MESSAGE_IDS_PER_ACTION,
+                    "items": {"type": "string", "minLength": 1, "maxLength": MAX_MESSAGE_ID_CHARS}
+                }),
+            ),
+        ],
+        move |args: &ActionArgs| {
+            let ids = args
+                .array("ids")
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str())
+                .map(str::trim)
+                .filter(|id| !id.is_empty() && id.chars().count() <= MAX_MESSAGE_ID_CHARS)
+                .fold(Vec::new(), |mut ids, id| {
+                    if ids.len() < MAX_MESSAGE_IDS_PER_ACTION && !ids.iter().any(|seen| seen == id)
+                    {
+                        ids.push(id.to_string());
+                    }
+                    ids
+                });
+            encode(&build(ids))
+        },
+    );
+    if reversible { spec.reversible() } else { spec }
+}
+
 #[allow(
     clippy::expect_used,
     reason = "MailOperation is a derived-Serialize enum; an unencodable operation is a programmer invariant violation"
@@ -567,6 +707,31 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
             id: message.id.clone(),
         },
     ));
+    // Composition is a first-class resource capability, rather than an
+    // on-screen-only context-menu convenience.  Each operation opens exactly
+    // the same local composer boundary as the reader buttons and shortcuts;
+    // no unsaved recipient/body data enters the shared mailbox document.
+    resource = resource.with_action(view_spec(
+        "reply",
+        "Reply",
+        &MailOperation::Reply {
+            id: message.id.clone(),
+        },
+    ));
+    resource = resource.with_action(view_spec(
+        "reply-all",
+        "Reply all",
+        &MailOperation::ReplyAll {
+            id: message.id.clone(),
+        },
+    ));
+    resource = resource.with_action(view_spec(
+        "forward",
+        "Forward",
+        &MailOperation::Forward {
+            id: message.id.clone(),
+        },
+    ));
     resource = resource.with_action(immediate_spec(
         "read",
         if message.read {
@@ -618,32 +783,45 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
         ));
     }
     for (index, attachment) in message.attachments.iter().enumerate() {
-        let save = effect_spec(
-            "save",
-            "Save attachment",
-            &MailOperation::SaveAttachment {
-                message_id: message.id.clone(),
-                index,
-            },
-        );
-        resource = resource.with_child(
-            Resource::new(
-                format!("mail.attachment:{}:{index}", message.id),
-                "mail.attachment",
-                format!(
-                    "{} · {}",
-                    attachment.filename,
-                    ui::format::bytes(attachment.size)
-                ),
-            )
-            .with_action(if attachment.downloadable {
-                save
-            } else {
-                save.unavailable("not_downloaded", "Attachment content is not downloaded yet")
-            }),
-        );
+        resource = resource.with_child(attachment_resource(&message.id, index, attachment));
     }
     resource
+}
+
+fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRow) -> Resource {
+    let save = effect_spec(
+        "save",
+        "Save attachment",
+        &MailOperation::SaveAttachment {
+            message_id: message_id.to_string(),
+            index,
+        },
+    )
+    .with_contract(ActionContract {
+        // A chosen destination can overwrite a user file. Retrying after a
+        // lost terminal acknowledgement must not silently repeat that effect.
+        retry: RetryPolicy::AtMostOnce,
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Resource {
+            resource_kind: "mail.attachment".into(),
+        },
+        tags: vec!["mail".into(), "attachment".into(), "file-save".into()],
+        ..ActionContract::default()
+    });
+    Resource::new(
+        format!("mail.attachment:{message_id}:{index}"),
+        "mail.attachment",
+        format!(
+            "{} · {}",
+            attachment.filename,
+            ui::format::bytes(attachment.size)
+        ),
+    )
+    .with_action(if attachment.downloadable {
+        save
+    } else {
+        save.unavailable("not_downloaded", "Attachment content is not downloaded yet")
+    })
 }
 
 /// Build Mail's resource tree: the mailbox root (exporting "New folder"),
@@ -652,14 +830,66 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
 /// user-defined local folder (rename / delete). The Drafts folder additionally
 /// exports "Discard draft" when a draft is in progress. Every operation is the
 /// same action the on-screen affordance dispatches.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the mailbox hierarchy is intentionally authored together so every visible entity and operation shares one contract"
-)]
 /// Stable mailbox root. Accounts, folders and messages are dynamic children
 /// served through Mail's retained provider rather than root browse pages.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the mailbox resource catalogue is intentionally kept together so its typed action surface can be audited as one unit"
+)]
 pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
     let mut root = Resource::new("mail.mailbox", "mail.mailbox", ctx.mailbox_label.clone());
+
+    root = root.with_action(view_spec(
+        "compose",
+        "Compose message",
+        &MailOperation::ComposeNew,
+    ));
+
+    // Search, history and agents need one *typed*, bounded operation for the
+    // same atomic batch work the selection toolbar performs.  These are kept
+    // as distinct operations (rather than a vague "delete" command with a
+    // hidden mode) so their risk and result are legible before execution.
+    root = root.with_action(bulk_spec(
+        "archive-messages",
+        "Archive messages",
+        "Stable ids of loaded messages to archive together",
+        true,
+        |ids| move_action(ids, Folder::Archive),
+    ));
+    root = root.with_action(bulk_spec(
+        "move-messages-to-trash",
+        "Move messages to Trash",
+        "Stable ids of loaded messages to move to Trash together",
+        true,
+        |ids| move_action(ids, Folder::Trash),
+    ));
+    root = root.with_action(bulk_spec(
+        "mark-messages-read",
+        "Mark messages read",
+        "Stable ids of loaded messages to mark read together",
+        true,
+        |ids| set_read_action(ids, true),
+    ));
+    root = root.with_action(bulk_spec(
+        "mark-messages-unread",
+        "Mark messages unread",
+        "Stable ids of loaded messages to mark unread together",
+        true,
+        |ids| set_read_action(ids, false),
+    ));
+    // Purge is intentionally not coupled to move-to-Trash.  It is a separate
+    // destructive, confirmed capability and the reducer below additionally
+    // refuses every id not currently in Trash.
+    root = root.with_action(
+        bulk_spec(
+            "purge-trashed-messages",
+            "Delete trashed messages permanently",
+            "Stable ids of messages already in Trash to delete permanently",
+            false,
+            purge_action,
+        )
+        .destructive(),
+    );
 
     if let Ok(refresh) = ActionSpec::operation(
         "refresh",
@@ -671,6 +901,7 @@ pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
         let refresh = refresh.with_contract(ActionContract {
             retry: RetryPolicy::Idempotent,
             execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
             tags: vec!["network".into(), "mail".into(), "refresh".into()],
             ..ActionContract::default()
         });
@@ -698,6 +929,54 @@ pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
         )
         .reversible(),
     );
+
+    let invitation = ActionSpec::typed_operation(
+        "prepare-calendar-invitation",
+        "Prepare calendar invitation",
+        "recipient, subject and calendar payload",
+        OperationKind::Effect,
+        MAIL_OPERATION_TYPE,
+        vec![
+            ActionParam::required("to", ParamType::Text, "Invitation recipient"),
+            ActionParam::required("subject", ParamType::Text, "Invitation subject"),
+            ActionParam::required("body", ParamType::Text, "Plain-text invitation message"),
+            ActionParam::required(
+                "calendar_ics",
+                ParamType::Text,
+                "Bounded text/calendar METHOD:REQUEST payload",
+            ),
+        ],
+        |args| {
+            prepare_calendar_invitation_operation(
+                args.text("to").unwrap_or_default(),
+                args.text("subject").unwrap_or_default(),
+                args.text("body").unwrap_or_default(),
+                args.text("calendar_ics").unwrap_or_default(),
+            )
+        },
+    )
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Invite,
+        retry: RetryPolicy::Idempotent,
+        result: ResultSpec::Resource {
+            resource_kind: "mail.draft".into(),
+        },
+        tags: vec![
+            "mail".into(),
+            "calendar".into(),
+            "invitation".into(),
+            "device-local-sensitive".into(),
+        ],
+        ..ActionContract::default()
+    });
+    root = root.with_action(if ctx.can_sync {
+        invitation
+    } else {
+        invitation.unavailable(
+            "account_offline",
+            "Connect a Mail account before preparing an invitation",
+        )
+    });
 
     root
 }
@@ -837,7 +1116,19 @@ pub(crate) fn thread_resource_key(folder: Folder, thread_id: &str) -> String {
 
 impl ResourceProvider for crate::app::MailApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.mail_resource_ctx(doc), doc)
+        let mut roots = provide_resources(&self.mail_resource_ctx(doc), doc);
+        if let Some(error) = self.mail_search_error()
+            && let Some(mailbox) = roots
+                .iter_mut()
+                .find(|resource| resource.id.as_str() == "mail.mailbox")
+        {
+            mailbox.children.push(Resource::new(
+                "mail.search-status",
+                "mail.search_status",
+                format!("Search index unavailable: {error}"),
+            ));
+        }
+        roots
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
@@ -883,6 +1174,15 @@ impl ResourceProvider for crate::app::MailApp {
                 .with_children(messages.iter().map(message_resource)),
             );
         }
+        if id == "mail.search-status" {
+            return self.mail_search_error().map(|error| {
+                Resource::new(
+                    "mail.search-status",
+                    "mail.search_status",
+                    format!("Search index unavailable: {error}"),
+                )
+            });
+        }
         let ctx = self.mail_resource_ctx(doc);
         find(provide_resources(&ctx, doc), id)
     }
@@ -895,7 +1195,7 @@ mod tests {
     use crate::model::Folder;
     use crate::state::{CtxAction, MailState};
 
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -928,7 +1228,7 @@ mod tests {
         let encoded = encode(action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
     /// A sample app synced into a fresh document, plus that document.
@@ -961,6 +1261,12 @@ mod tests {
             .expect("explicit preview action");
         assert_eq!(open.label, "Open message");
         assert_eq!(preview.label, "Preview without marking read");
+        for id in ["reply", "reply-all", "forward"] {
+            assert!(
+                resource.actions.iter().any(|action| action.id == id),
+                "message resource exports {id} as a canonical compose action"
+            );
+        }
         let ActionInput::Immediate(open_payload) = &open.input else {
             panic!("open is an immediate view operation");
         };
@@ -989,18 +1295,42 @@ mod tests {
     fn ctrl_k_publishes_the_mailbox_tree() {
         let (app, state) = seeded_app();
         let resources = Widget::resources(&app, &state.doc);
+        let handlers: std::collections::HashSet<String> = app
+            .local_resource_operation_handlers()
+            .iter()
+            .map(|handler| (*handler).to_string())
+            .collect();
+        let violations = tilo_actions::validate_surface(&resources, &registry(), &handlers);
+        assert!(violations.is_empty(), "{violations:?}");
         assert_eq!(resources.len(), 1, "one mailbox root");
         let mailbox = &resources[0];
         assert_eq!(mailbox.kind, "mail.mailbox");
         let mb_actions: Vec<&str> = mailbox.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(mb_actions.contains(&"compose"), "{mb_actions:?}");
         assert!(mb_actions.contains(&"new-folder"), "{mb_actions:?}");
         assert!(mb_actions.contains(&"refresh"), "{mb_actions:?}");
+        for id in [
+            "archive-messages",
+            "move-messages-to-trash",
+            "mark-messages-read",
+            "mark-messages-unread",
+            "purge-trashed-messages",
+        ] {
+            assert!(mb_actions.contains(&id), "mailbox exposes typed batch {id}");
+        }
         let refresh = mailbox.actions.iter().find(|a| a.id == "refresh").unwrap();
         assert_eq!(
             refresh.contract.execution,
-            qos_actions::ExecutionMode::Background { cancellable: false }
+            tilo_actions::ExecutionMode::Background { cancellable: false }
         );
-        assert_eq!(refresh.contract.result, qos_actions::ResultSpec::None);
+        assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::Job);
+        assert!(
+            refresh
+                .contract
+                .result
+                .validate(&tilo_actions::ActionOutput::default())
+                .is_ok()
+        );
 
         let folder = mailbox
             .children
@@ -1044,7 +1374,7 @@ mod tests {
                 .unwrap()
                 .contract
                 .risk,
-            qos_actions::RiskLevel::Destructive
+            tilo_actions::RiskLevel::Destructive
         );
 
         let mut palette = ui::ActionPalette::new();
@@ -1054,6 +1384,98 @@ mod tests {
         assert!(
             labels.iter().any(|l| l.contains("New folder")),
             "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn mailbox_batch_actions_bind_stable_ids_and_purge_is_confirmed() {
+        let (app, state) = seeded_app();
+        let resources = Widget::resources(&app, &state.doc);
+        let id = app.mail_resource_ctx(&state.doc).messages[0].id.clone();
+        let address = tilo_actions::ActionAddress::new("mail.mailbox", "archive-messages");
+        let args = serde_json::json!({"ids": [id.clone(), id]});
+        let encoded = tilo_actions::door::encode_json(
+            &resources,
+            &address,
+            args.as_object().expect("object arguments"),
+        )
+        .expect("typed ids bind through the external resource door");
+        assert_eq!(
+            serde_json::from_slice::<MailAction>(&encoded.payload).expect("mail action decodes"),
+            move_action(vec![id], Folder::Archive),
+            "duplicate ids collapse before the canonical batch action is authored"
+        );
+
+        let purge = tilo_actions::door::survey(&resources)
+            .into_iter()
+            .find(|descriptor| descriptor.address.action == "purge-trashed-messages")
+            .expect("published purge descriptor");
+        assert_eq!(purge.params.len(), 1);
+        assert_eq!(purge.params[0].name, "ids");
+        assert_eq!(purge.params[0].ty, ParamType::Array);
+        assert!(matches!(
+            purge.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        ));
+        assert!(
+            !purge.contract.reversible,
+            "a server-side permanent deletion must not claim local undo can restore it"
+        );
+    }
+
+    #[test]
+    fn purge_action_refuses_mixed_or_stale_ids_without_deleting_a_valid_subset() {
+        let mut doc = AutoCommit::new();
+        MailDoc::set_folder_for(&mut doc, "inbox", Folder::Inbox);
+        MailDoc::set_folder_for(&mut doc, "trash", Folder::Trash);
+        let heads_before = doc.get_heads();
+        let error = purge_action(vec!["inbox".into(), "missing".into(), "trash".into()])
+            .apply(&mut doc)
+            .expect_err("mixed/stale purge refuses rather than deleting a valid subset");
+        assert!(matches!(error, ActionError::Refused(_)));
+        assert!(MailDoc::is_present_message(&doc, "inbox"));
+        assert!(MailDoc::is_present_message(&doc, "trash"));
+        assert_eq!(MailDoc::get_folder_for(&doc, "inbox"), Some(Folder::Inbox));
+        assert_eq!(doc.get_heads(), heads_before);
+    }
+
+    #[test]
+    fn failed_search_refresh_stays_visible_and_addressable_until_a_good_snapshot() {
+        let (app, state) = seeded_app();
+        assert!(
+            app.mail_search_error().is_none(),
+            "the sample starts with a valid retained index"
+        );
+
+        app.inject_mail_search_snapshot_failure();
+        let resources = Widget::resources(&app, &state.doc);
+        let mailbox = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "mail.mailbox")
+            .expect("mailbox root");
+        assert!(
+            mailbox
+                .children
+                .iter()
+                .any(|resource| resource.id.as_str() == "mail.search-status"),
+            "the persistent index failure is published, not just shown in a toast"
+        );
+        let status =
+            <MailApp as ResourceProvider>::resource(&app, &state.doc, "mail.search-status")
+                .expect("diagnostic resource resolves exactly");
+        assert_eq!(status.kind, "mail.search_status");
+
+        app.refresh_mail_search_for_test()
+            .expect("a verified snapshot clears the old diagnostic");
+        assert!(
+            app.mail_search_error().is_none(),
+            "only a successful replacement clears the retained error"
+        );
+        assert!(
+            !Widget::resources(&app, &state.doc)
+                .iter()
+                .flat_map(|root| &root.children)
+                .any(|resource| resource.id.as_str() == "mail.search-status")
         );
     }
 
@@ -1164,8 +1586,8 @@ mod tests {
             can_sync: false,
         };
         let resources = provide_resources(&ctx, &AutoCommit::new());
-        let address = qos_actions::ActionAddress::new("mail.account:work-99", "open");
-        let encoded = qos_actions::door::encode(&resources, &address, None)
+        let address = tilo_actions::ActionAddress::new("mail.account:work-99", "open");
+        let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("the stable account address resolves through the mailbox tree");
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
@@ -1190,7 +1612,7 @@ mod tests {
         let encoded = encode(&move_action(vec![id.to_string()], Folder::Trash));
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -1229,8 +1651,8 @@ mod tests {
 
         let action = set_starred_action(vec!["m".to_string()], true);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1284,8 +1706,8 @@ mod tests {
 
         let action = move_action(vec!["m1".into(), "m2".into(), "m3".into()], Folder::Archive);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1309,8 +1731,8 @@ mod tests {
 
         let action = add_label_action(vec!["m".to_string()], "work");
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1353,7 +1775,7 @@ mod tests {
         let mut doc = state.doc;
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         let folders = MailDoc::list_folders(&doc);
         assert_eq!(folders.len(), 1, "one local folder created");
         assert_eq!(folders[0].1, "Receipts");
@@ -1494,8 +1916,8 @@ mod tests {
         let mut b = AutoCommit::load(&a.save()).unwrap();
 
         let action = purge_action(vec!["m".into()]);
-        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
-        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
         assert_eq!(a.get_heads(), b.get_heads(), "purge is replay-identical");
         assert!(!MailDoc::is_present_message(&b, "m"));
 

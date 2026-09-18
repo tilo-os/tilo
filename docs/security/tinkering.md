@@ -2,20 +2,19 @@
 
 *2026-07-30*
 
-An OS without `sudo` is a good idea. An OS that *feels* like it is hiding the
-machine from its owner is not, and to a power user those two things arrive
-together unless the design works to separate them. This document is about the
-separation.
+An OS without `sudo` must still provide owner-controlled system inspection and
+modification. This document describes how to separate that access from ambient
+root privileges.
 
 The constraint it is built to satisfy:
 
-> Unlocking elevated access should either not be necessary at all, or not wipe
-> user data if you do.
+> Unlocking elevated access should either be unnecessary, or preserve user data
+> when it is required.
 
 And the specific job:
 
-> the part that solves the "gimmicky feeling" without just handing out sudo to
-> every program even if it just needs a slight subset of elevated permissions.
+> the part that provides this access without handing `sudo` to every program
+> when it needs only a subset of elevated permissions.
 
 ---
 
@@ -24,7 +23,7 @@ And the specific job:
 ### 1.1 Sinty OS `ush` and `dsh`
 
 Sinty OS (`sinty.dev`, desktop "Singularity Desktop", by Mirko Brombin) announced
-its first public alpha on 2026-07-26. `ush` is real and its source is public:
+its first public alpha on 2026-07-26. `ush` is implemented and its source is public:
 [`github.com/singularityos-lab/ush`](https://github.com/singularityos-lab/ush),
 Go, GPL-3.0-or-later, one release (`v0.1.0`, 2026-07-25, empty release notes).
 
@@ -35,13 +34,12 @@ announcement. `/docs/under-the-hood` contains nothing on any of it. There is **n
 third-party coverage of any kind** — no HN thread, no Reddit thread, no Lobsters,
 no LWN, no Phoronix, no DistroWatch entry, no CVE, no independent review. The
 repository has one star. Everything below that is more specific than those 850
-words was read out of the Go source, which is genuine and non-trivial
+words was read out of the Go source, which is substantial
 (~450 KB, with unit tests and an adversarial harness) but has been reviewed by
 nobody outside the project.
 
-So: treat the design ideas as worth taking seriously and the implementation as
-unvalidated. Where this document leans on source rather than documentation, it
-says so.
+The design ideas are documented, but the implementation remains unvalidated.
+Where this document relies on source rather than documentation, it says so.
 
 #### Documented
 
@@ -132,9 +130,9 @@ From `/docs/dsh/`:
 
 `/docs/os/rooting/` describes bootloader unlock as designed and **not implemented**, and the intended flow ends in a **full data wipe**. The announcement says it is *"closer to unlocking an Android bootloader than to typing a password."*
 
-That is precisely the thing this workstream is required not to do. Sinty and qOS agree about the layer model and disagree about the escape hatch, and the disagreement is the whole point of the design below.
+That is precisely the thing this workstream is required not to do. Sinty and Tilo agree about the layer model and disagree about the escape hatch, and the disagreement is the whole point of the design below.
 
-### 1.2 Prior art, compared honestly
+### 1.2 Prior-art comparison
 
 | | Root to invoke | Ambient root inside | Real boundary | Discard | Layer is a first-class object |
 |---|---|---|---|---|---|
@@ -153,15 +151,15 @@ Per-item detail worth carrying into the design:
 
 The thing to internalise: **write access to `$HOME` is equivalent to code execution as the user at next login.** `~/.bashrc`, `~/.config/autostart/`, `~/.local/bin`, `~/.local/share/systemd/user/`. There is no gap between "can write my dotfiles" and "is me". A distrobox is best modelled as the same security principal as the desktop session with a different `/usr`, and `distrobox ephemeral` does not change that, because the discarded part is the rootfs and the shared part is the home directory.
 
-**toolbx.** Narrower, more conservative, same privilege model. Its honesty is its best feature — `toolbox(1)` says: *"Toolbx makes no promise about security beyond what's already available in the usual command line environment on the host that everybody is familiar with."* Copy that register.
+**toolbx.** Narrower, more conservative, same privilege model. `toolbox(1)` explicitly states that it provides no security beyond the usual host command-line environment. Tilo should use the same scope for this profile.
 
-**nix.** The most important entry, because it is the only one where the ergonomics are genuinely *good* rather than merely tolerable, and the reason is not the store — it is that **there is nothing to authorise**. `nix shell nixpkgs#ripgrep` is a pure user operation: no privilege, no prompt, no reboot, and exiting the shell *is* the discard. Composition is free because two packages never share a prefix. Friction is real too: no `/lib64/ld-linux-x86-64.so.2`, so every prebuilt binary fails, and the workarounds (`buildFHSEnv`, `nix-ld`) re-introduce impurity at exactly the point purity was the goal. The store is world-readable, so it is not a place for secrets, and writes go through a root daemon whose `trusted-users` are root-equivalent.
+**nix.** Its user-level package operations require no authorisation, prompt or reboot, and exiting the shell discards the environment. Composition is isolated because packages do not share a prefix. Prebuilt binaries that require `/lib64/ld-linux-x86-64.so.2` fail without compatibility tooling such as `buildFHSEnv` or `nix-ld`, which introduces impurity. The store is world-readable and unsuitable for secrets; writes go through a root daemon whose `trusted-users` are root-equivalent.
 
 **Flatpak.** `--devel` is a model of a *graduated* affordance: it swaps runtime for SDK and relaxes the seccomp filter by exactly three entries. From `common/flatpak-run.c`, the non-devel-only blocklist is `perf_event_open`, `personality` (non-default), and `ptrace`, with the reason in a comment — perf has been a CVE farm, and ptrace inside a shared sandbox lets a compromised process manipulate its siblings. A single named flag, ten auditable lines. The portal pattern is the best reusable idea in the survey: **the user's choice in the dialog *is* the grant**, and the File Chooser returns a document-portal path rather than widening the sandbox. The failure is that `--filesystem=host`, `--filesystem=home`, and `--talk-name=org.freedesktop.Flatpak` (a full silent escape via `flatpak-spawn --host`) all collapse the model with no visible cliff.
 
 **systemd-sysext / confext.** The right object model with the wrong authorisation model. An extension is named, versioned, self-describing, and declares host compatibility via `extension-release.d` (`ID=`, `SYSEXT_LEVEL=`/`VERSION_ID=`, `ARCHITECTURE=`). `merge` / `unmerge` / `refresh` are reversible verbs leaving no residue. `--mutable=ephemeral` (systemd 256+) puts the upper dir on tmpfs. But: `/usr` and `/opt` only (confext for `/etc`), purely additive by convention, **no dependency resolution whatsoever**, version pinning brittle by design, requires root for every operation, and — the chicken-and-egg that kills it on an atomic desktop — you need a build environment to build one.
 
-**bootc / ostree.** `bootc usr-overlay` is the closest existing thing to the goal and its ergonomics are excellent: one command, then `dnf install strace` works, and reboot restores integrity. Four problems. It requires root. It unlocks all of `/usr` for everything on the machine for the rest of the boot. The overlay is an anonymous upperdir in `/var/tmp` — you cannot name, list, export or diff it. And **`/etc` and `/var` writes escape the discard**: `dnf install` writes `/var/lib/rpm` and `/etc` too, so the RPM database and config drift permanently while the binaries vanish. "Discarded on reboot" is a partial truth that will bite. `ostree admin unlock --hotfix` is the one thing nothing else offers: clone the deployment as a rollback target, then persist the overlay to this deployment.
+**bootc / ostree.** `bootc usr-overlay` is close to the goal: one command enables `dnf install strace`, and reboot restores the base. It requires root and unlocks `/usr` for every process on the machine for the rest of the boot. The overlay is an anonymous upperdir in `/var/tmp`, so it cannot be named, listed, exported or diffed. **`/etc` and `/var` writes escape the discard**: `dnf install` writes `/var/lib/rpm` and `/etc` too, so the RPM database and configuration persist while the binaries disappear. `ostree admin unlock --hotfix` also clones the deployment as a rollback target before persisting the overlay.
 
 **Qubes disposables.** The gold standard for the *affordance*. `save_on_stop=false` at the storage layer plus `auto_cleanup` at the object layer: discard is a property of storage, not a cleanup script anyone can forget. The UI ideas are the valuable part — "Edit in disposable qube" on a file's right-click menu, coloured window borders so the trust level is ambiently visible, edited files written back to the originating qube so people do not route around the sandbox to save their work. **Named disposables** decouple identity from state: a stable, configured, addressable thing that is nonetheless amnesiac. And the privilege insight: you are root inside a disposable and it buys nothing, because the boundary is Xen. **Root inside is only dangerous when the boundary is weak.** Costs are brutal: 10–14 GB RAM for a modest setup, no GPU acceleration for guests as of 2025, seconds of startup latency, and preloaded disposables in 4.3 make the RAM problem worse rather than better.
 
@@ -205,7 +203,7 @@ whole `/etc/subuid` range fixes it. The consequence is that layer files belong t
 subordinate ids the plain host user has no authority over, so **anything that
 reads or deletes layer contents must re-enter the same mapping**.
 
-### 1.4 What qOS already has
+### 1.4 What Tilo already has
 
 Read from the tree; build on these rather than duplicating them.
 
@@ -213,30 +211,30 @@ Read from the tree; build on these rather than duplicating them.
 
   **The baseline filter denies `mount`, `unshare`, `setns`, `pivot_root`, `chroot`.** A layer session cannot use it unchanged. `[sandbox].seccomp` is already a *named* profile string, so the extension point is a second profile beside `compile_baseline()`, not a relaxation of the default.
 
-- **`netgate.rs` is the design precedent to imitate.** Per-host egress enforced by a SOCKS5/HTTP-CONNECT broker over a bind-mounted socket, with the property `plan/security.md:150` calls out: it *"needs no privilege and no kernel feature bwrap does not already require."* An earlier nftables draft was explicitly retracted because it needed `CAP_NET_ADMIN` the launcher does not have. That rejected-alternative note is the shape of argument this codebase expects.
+- **`netgate.rs` is the design precedent to imitate.** Per-host egress enforced by a SOCKS5/HTTP-CONNECT broker over a bind-mounted socket, with the property `docs/architecture/security.md:150` calls out: it *"needs no privilege and no kernel feature bwrap does not already require."* An earlier nftables draft was explicitly retracted because it needed `CAP_NET_ADMIN` the launcher does not have. That rejected-alternative note is the shape of argument this codebase expects.
 
-- **The typed capability vocabulary already exists** in `crates/collab/collab-types/src/caps.rs`: `Verb`, `Principal`, `Subject`, `Scope` (including `FsPath`, `Device`, `NetHost`), `Expiry`, `Effect`, `CapOverride`, and a fail-closed `decide()`. `shell/src/shell/state.rs` aliases `Expiry` as `GrantScope` with `GRANT_ONCE` / `GRANT_SESSION` / `GRANT_ALWAYS`, where session grants are **never written to disk**. Grants live on the workspace CRDT (`Workspace::capabilities: Vec<CapOverride>`), are evaluated at `shell/src/portal/mod.rs::permits`, and reach the launcher as a `0600` JSON file under `$XDG_RUNTIME_DIR/qos/capabilities/` that is deliberately *not* bound into the sandbox. **Do not add a second vocabulary.**
+- **The typed capability vocabulary already exists** in `crates/collab/collab-types/src/caps.rs`: `Verb`, `Principal`, `Subject`, `Scope` (including `FsPath`, `Device`, `NetHost`), `Expiry`, `Effect`, `CapOverride`, and a fail-closed `decide()`. `crates/session/shell/src/shell/state.rs` aliases `Expiry` as `GrantScope` with `GRANT_ONCE` / `GRANT_SESSION` / `GRANT_ALWAYS`, where session grants are **never written to disk**. Grants live on the workspace CRDT (`Workspace::capabilities: Vec<CapOverride>`), are evaluated at `crates/session/shell/src/portal/mod.rs::permits`, and reach the launcher as a `0600` JSON file under `$XDG_RUNTIME_DIR/tilo/capabilities/` that is deliberately *not* bound into the sandbox. **Do not add a second vocabulary.**
 
-- **The prompt UI exists**: `ui/src/widget/permission_prompt.rs`, with Allow / Allow this session / Always allow / Deny, and "Always" disabled for non-owners.
+- **The prompt UI exists**: `crates/sdk/ui-core/src/widget/permission_prompt.rs`, with Allow / Allow this session / Always allow / Deny, and "Always" disabled for non-owners.
 
-- **`docs/app-model/sandbox.md`** documents the three layers (bwrap → seccomp → Landlock shim) and notes that `[sandbox].namespaces` is parsed and ignored. Its hostname-allowlist section describes a DNS proxy that does not exist — `plan/security.md:140-154` is authoritative.
+- **`docs/app-model/sandbox.md`** documents the three layers (bwrap → seccomp → Landlock shim) and notes that `[sandbox].namespaces` is parsed and ignored. Its hostname-allowlist section describes a DNS proxy that does not exist — `docs/architecture/security.md:140-154` is authoritative.
 
 - **`docs/app-model/trust.md`**: Ed25519 publisher identity; signed root over `manifest_hash || payload_root_hash || publisher_identity` whose BLAKE3 *is* the `PackageId`; attestations signed over an 82-byte preimage deliberately excluding the `PackageId` to avoid a fixed point; revocation checked **at install and at every launch**, with no "trusted once" cache.
 
 - **distrobox and podman are installed in the image and completely unconfigured.** `os/Containerfile:255-268` installs `distrobox podman fuse3 bubblewrap`. There is **no `/etc/subuid` or `/etc/subgid` entry**, no `/etc/containers/{containers,storage}.conf`, no `user_allow_other` in `/etc/fuse.conf`, no podman socket. `apps/containers/` is a podman/distrobox manager built on `ui` but is not packaged and its binary is not in the image.
 
-- **`os/config.toml` puts `quickuser` in `wheel`.** qOS today has ordinary password `sudo`. There is one polkit rule, for the greeter's power actions. No `run0` usage. `os/dev/switch-to-stock-kernel.sh` is the tree's only `bootc usr-overlay` use, and it needs root.
+- **`os/config.toml` puts `quickuser` in `wheel`.** Tilo today has ordinary password `sudo`. There is one polkit rule, for the greeter's power actions. No `run0` usage. `os/dev/switch-to-stock-kernel.sh` is the tree's only `bootc usr-overlay` use, and it needs root.
 
-- SELinux targeted and expected Enforcing, with `qos_fs_t` shipped `permissive`. Kargs include `lockdown=integrity`. Unprivileged user namespaces intentionally allowed (bwrap needs them). `grep -rni tinker` returned nothing — greenfield.
+- SELinux targeted and expected Enforcing, with `tilo_fs_t` shipped `permissive`. Kargs include `lockdown=integrity`. Unprivileged user namespaces intentionally allowed (bwrap needs them). `grep -rni tinker` returned nothing — greenfield.
 
 ---
 
 ## Part 2 — The design
 
-### 2.1 Diagnosis: what "gimmicky" actually is
+### 2.1 Diagnosis: usability requirements
 
-Android-style lockdown reads as gimmicky to a power user for three specific
-reasons, and each has a matching design response.
+Lockdown creates three usability problems for power users, each with a matching
+design response.
 
 1. **The mechanism is hidden.** A denial is silent and indistinguishable from a
    bug. There is no shell, so there is no way to find out *why*. → **Every
@@ -247,29 +245,28 @@ reasons, and each has a matching design response.
    Sinty's own rooting page inherits this. → **Elevation never wipes. It is
    bounded and reversible, not a factory reset.**
 3. **The default posture is powerlessness**, with power as a rare exception. →
-   **The default posture is power, scoped.** A full root shell with a working
-   package manager is available immediately, with no prompt, because it is scoped
-   to a layer rather than to the machine.
+   A full root shell with a working package manager is available immediately,
+   with no prompt, because it is scoped to a layer rather than to the machine.
 
-The one-line version, which is also the ChromeOS lesson: **wanting a package
-manager must not put you on the path that weakens the OS.**
+The design requirement is: **wanting a package manager must not put you on the
+path that weakens the OS.**
 
 ### 2.2 Two mechanisms, deliberately separate
 
 **`tinker` — work layers.** Where you are root, where the package manager works,
-where you break things. Needs no privilege, prompts for nothing, cannot affect
-the next boot. This is the answer for approximately everything.
+where you break things. Needs no privilege, prompts for nothing, and cannot
+affect the next boot. This covers most package and configuration work.
 
-**`qos-hold` — capability leases.** For the genuinely host-level operations a
+**`tilo-hold` — capability leases.** For the genuinely host-level operations a
 layer cannot contain: change the firewall, mount a disk, restart a unit, load a
 signed module. Sub-root granular, brokered, leased, revocable, visible.
 
-They are separate on purpose. Conflating them is what makes `sudo` the failure it
-is, and what makes `bootc usr-overlay` the wrong convenient answer.
+They remain separate. Conflating them gives a process more authority than the
+requested operation requires, as with `sudo` and `bootc usr-overlay`.
 
-### 2.3 `tinker`: what it feels like
+### 2.3 `tinker`: interactive behavior
 
-The session's hostname is the layer name and `$QOS_LAYER` carries it too, so an
+The session's hostname is the layer name and `$TILO_LAYER` carries it too, so an
 ordinary prompt already says where you are. (A tint or an explicit `[layer …]`
 prefix, in the spirit of `run0`'s red background, is not built — see Part 3.)
 
@@ -311,7 +308,7 @@ The commands:
 Store layout, per user, on writable storage, outside every path the image owns:
 
 ```
-$XDG_DATA_HOME/qos/tinker/
+$XDG_DATA_HOME/tilo/tinker/
   bases/<name>/                 unpacked base rootfs, owned by the user
   layers/<name>/upper/          the layer's writes — and its diff
   layers/<name>/work/           overlayfs scratch
@@ -319,7 +316,7 @@ $XDG_DATA_HOME/qos/tinker/
   layers/<name>/layer.toml      name, base, kind, created, stacked_on, note
 ```
 
-### 2.4 The four design decisions that carry the feel
+### 2.4 The four design decisions
 
 **(a) Ephemeral is "persistent with a pending delete", not tmpfs.**
 
@@ -332,8 +329,8 @@ twenty minutes will be worth keeping. That is a guess made at the moment of
 least information.
 
 So an ephemeral layer here is an ordinary layer on disk marked for deletion at
-session end. It costs disk during the session. It buys the ability to change your
-mind, which is the single most reassuring property a tinkering tool can have.
+session end. It costs disk during the session and permits changes to be discarded
+or promoted later.
 Promotion is a **rename**, not a copy: `tinker keep scratch1 --as rust-dev` is
 instant regardless of layer size.
 
@@ -343,9 +340,8 @@ generates no noise.
 
 **(b) The upper directory *is* the diff.**
 
-No change journal, no snapshot, no bookkeeping at write time — therefore nothing
-that can drift out of sync with what actually happened. overlayfs already records
-everything, self-describingly:
+No change journal, snapshot, or write-time bookkeeping is needed, so the diff
+cannot drift from the filesystem. overlayfs records the required state:
 
 - a 0:0 character device is a whiteout → the path was **deleted**, and the base
   copy is intact underneath;
@@ -355,8 +351,7 @@ everything, self-describingly:
   up on first write);
 - anything else → **added**.
 
-That is the whole algorithm, and it is why `tinker discard` is exactly a return
-to the base rather than an approximation of one.
+This makes `tinker discard` a return to the base rather than an approximation.
 
 **(c) A diff must be legible or it will not be read twice.**
 
@@ -368,8 +363,7 @@ itself, every receipt found there is by construction a package this layer added 
 no comparison against the base needed.
 
 So files are attributed to the package that claims them, and what remains is what
-no package accounts for: the thing the person did with their own hands. Same
-worked example:
+no package accounts for: the user's changes. Same worked example:
 
 ```console
 $ tinker diff scratch1
@@ -386,10 +380,9 @@ packages (apt): cowsay libgdbm-compat4t64 libgdbm6t64 libperl5.40 libtext-charwi
 Base 'debian' is untouched; `tinker discard scratch1` returns to it exactly.
 ```
 
-Six lines, and every one is real: the config edited, the file deleted, ldconfig's
-caches, and two files netbase's maintainer script wrote. That last pair is
-exactly the "what did that install script actually do to me" question no
-container tool can answer.
+The six lines show the edited configuration, deleted file, ldconfig caches, and
+two files written by netbase's maintainer script. They expose changes made by
+package scripts as well as by the user.
 
 Deletions are **never** attributed away, even when a package owns the path.
 Removing a package's file is the user's doing and the most surprising thing a
@@ -400,13 +393,13 @@ layer can be hiding.
 Because the diff is the filesystem, `tinker revert <layer> <path>` is just
 deleting the corresponding upper entry. Remove a whiteout and the file
 un-deletes. Remove a copied-up file and it reverts. Nothing else in the layer
-moves. That is a genuinely useful affordance nothing else on the survey offers —
+moves. This supports selective undo —
 "my environment broke, revert the two files that broke it" without rebuilding it.
 
-Four reasons `diff` earns its place: *what did that installer do*; *before I keep
-this, show me*; *turn accident into a recipe*; *revert the specific thing*.
+`diff` supports four operations: inspect installer changes, review before keeping
+a layer, turn changes into a recipe, and revert a specific path.
 
-### 2.5 `qos-hold`: the sub-root answer
+### 2.5 `tilo-hold`: the sub-root answer
 
 `sudo`'s failure is that needing one capability grants all of them, permanently,
 to a whole process tree. The naive fix — prompt per operation — fails differently:
@@ -447,7 +440,7 @@ decorative.
 expiry)`. Default expiry is the session that asked. The existing
 `Expiry::{AfterUse, EndOfSession, Never}` is exactly this vocabulary, the existing
 prompt widget already offers exactly these four buttons, and `EndOfSession` is
-already never written to disk. `qos-hold list` shows live leases; `qos-hold drop`
+already never written to disk. `tilo-hold list` shows live leases; `tilo-hold drop`
 revokes one; the same list appears in the permissions panel.
 
 **Denial is legible.** For the user's own shell, every refusal prints what was
@@ -458,8 +451,8 @@ $ nft add rule inet filter input tcp dport 8080 accept
 nft: operation not permitted
 
   this needs the capability   net.firewall.rule
-  ask for it with             qos-hold net.firewall.rule --why "open 8080 for testing"
-  see what you hold           qos-hold list
+  ask for it with             tilo-hold net.firewall.rule --why "open 8080 for testing"
+  see what you hold           tilo-hold list
 ```
 
 This is in direct, deliberate tension with the `security-denial-as-absence` work,
@@ -469,25 +462,23 @@ own shell must be able to find out why something failed, or they will conclude
 the OS is hiding the machine — which is the entire feeling this design exists to
 avoid.
 
-**And the honest admission.** Some things need arbitrary root: a kernel debug
+**Owner operations requiring arbitrary root.** Some operations need arbitrary root: a kernel debug
 session, an out-of-tree driver. `usr.overlay` is that door. It is `bootc
 usr-overlay --read-only` remounted read-write **in a private mount namespace**,
 so — unlike plain `usr-overlay`, which unlocks `/usr` for everything on the
 machine for the rest of the boot — only the holding session sees a writable
-`/usr`. It is transient by default, loud (`qos-hold list` shows it; the terminal
-is tinted, per `run0`), recorded, and **it does not wipe anything**. That is the
-bootloader-unlock equivalent minus the punishment, and it is discoverable: the
-denial message names it.
+`/usr`. It is transient by default, loud (`tilo-hold list` shows it; the terminal
+is tinted, per `run0`), recorded, and **it does not wipe anything**. The denial
+message names this path.
 
-`usr.overlay` must also be honest about the thing bootc is not: **`/etc` and
+`usr.overlay` must also document a bootc limitation: **`/etc` and
 `/var` writes escape the discard.** `dnf install` under it writes `/var/lib/rpm`
 and `/etc` permanently while the binaries evaporate at reboot. The lease
-announces this when granted, because a partial truth about what is transient is
-worse than no claim at all.
+announces this behavior when granted.
 
 ### 2.6 Where the boundary is, concretely
 
-**What "root inside is not host root" buys.** All of it follows from the kernel
+**Namespace root and host authority.** All of it follows from the kernel
 rule measured in §1.3 — an unprivileged namespace grants authority over mapped
 ids only, and host root is not mapped:
 
@@ -498,23 +489,22 @@ ids only, and host root is not mapped:
 - **No effect on the next boot.** The base image is untouched, so `bootc upgrade`
   and rollback still work. Tinkering cannot brick the machine, and repair is
   `tinker discard`, not recovery media.
-- Real reduction for an *unprivileged* attacker who gets code execution inside.
+- Limits the authority of an *unprivileged* attacker who gets code execution inside.
 
-**What it does not protect against.** Bluntly, because the tool prints this and
-the docs must match:
+**What it does not protect against.** The tool and documentation must state these
+limits:
 
 - **The kernel.** An unprivileged user namespace is a large interface with a long
   CVE history, and handing users one with `CAP_SYS_ADMIN`-in-userns *increases*
   the machine's kernel attack surface. The layer seccomp profile must allow
   `mount`, `unshare` and `pivot_root` — the very calls the baseline denies — so
-  it is a weaker filter than an app gets, by construction. This is a real cost
-  paid for a real capability, and it is the honest reason `tinker` is a tool for
-  the machine's owner rather than a sandbox for untrusted code.
-- **Your own data.** Code in a layer runs as you. Anything `--share`d is exposed
-  for real, and `--share $HOME:rw` is equivalent to handing over your session.
+  it is a weaker filter than an app gets, by construction. `tinker` is therefore
+  intended for the machine's owner rather than as a sandbox for untrusted code.
+- **Your own data.** Code in a layer runs as you. Anything `--share`d is exposed,
+  and `--share $HOME:rw` is equivalent to handing over your session.
   `$HOME` is not shared by default precisely because distrobox and toolbx show
   where that ends.
-- **A lease you approved.** The broker executes it. That is the point.
+- **A lease you approved.** The broker executes it.
 - **What you installed.** Packages come from their repository's signing key. That
   trust is Debian's, not this machine's. A persistent layer is a persistent
   foothold that runs on every entry — which is the security argument for
@@ -523,42 +513,39 @@ the docs must match:
 - **Multi-tenancy.** Same-user confinement only. Not a boundary between users.
 - **A `dsh`-style profile, if one is added.** Nested rootless podman means nested
   userns plus `/dev/fuse` plus subuid — a much larger surface. Sinty says out
-  loud that `dsh` is not a security boundary; any qOS equivalent must say the
+  loud that `dsh` is not a security boundary; any Tilo equivalent must say the
   same, in the tool's own output, not only in docs.
 
-### 2.7 Why this is not gimmicky
+### 2.7 Why this design is usable
 
-The argument, made explicitly, because if it cannot be made the design is wrong.
+The design has six usability requirements:
 
-1. **The common case needs no permission at all.** This is nix's actual secret:
+1. **The common case needs no permission at all.** This is nix's key property:
    not the store, but that there is nothing to authorise. `tinker` prompts for
    nothing, ever. A power user's first ten minutes involve zero dialogs and a
    root prompt.
-2. **The real tools work.** `apt` is `apt`. Sinty blocks `apt`, `apt-get` and
-   `dpkg` and routes users through `pkg` — that is exactly the move that reads as
-   the OS knowing better, and knowledge a user already has being made worthless.
-   `tinker` wraps the environment, not the package manager.
+2. **Standard tools work.** `apt` remains `apt`. Sinty blocks `apt`, `apt-get` and
+   `dpkg` and routes users through `pkg`. `tinker` wraps the environment, not the
+   package manager.
 3. **Nothing is hidden.** `--explain` prints the literal `bwrap` vector that
    runs. `tinker explain` states the boundary *and* its holes. Denials name the
-   capability and the command. A tinkerer who can find out how it works does not
-   feel fought.
-4. **Elevation exists, is reachable, and never wipes.** This is the requirement,
-   and it is where the design diverges most sharply from Sinty, whose rooting
-   path ends in a full data wipe. `qos-hold` is bounded, revocable, visible, and
-   costs nothing but a prompt.
-5. **You can change your mind.** Retroactive `keep`, per-path `revert`, and a
+  capability and the command, so users can inspect the boundary and its
+  exceptions.
+4. **Elevation exists, is reachable, and never wipes.** Sinty's rooting path
+   ends in a full data wipe, while `tilo-hold` is bounded, revocable, visible,
+   and requires a prompt.
+5. **Users can change their mind.** Retroactive `keep`, per-path `revert`, and a
    discard that returns exactly to the base. Nothing about a session is a
    commitment made in advance.
 6. **The blast radius is legible.** "This cannot affect your next boot" is a
    claim a user can check — and `tinker diff` plus an untouched base is the
    check.
 
-The honest counter-argument, which the design does not fully defeat: a layer is
-not the host, and someone whose actual goal is *to modify this machine's `/usr`*
+Limitation: a layer is not the host, and someone whose goal is *to modify this machine's `/usr`*
 is being offered something adjacent to what they asked for. §1.3 says that cannot
 be fixed unprivileged. The mitigation is that `usr.overlay` exists, is named in
-the denial, and does not wipe — the door is real and signposted. Whether that is
-enough is genuinely a question for a user, not for me.
+the denial, and does not wipe — the interface is explicit. Whether that is
+sufficient depends on user needs.
 
 ### 2.8 What to reuse, and what has to change
 
@@ -574,8 +561,8 @@ Reuse:
   no-privilege property.
 - `collab-types::caps` as the lease vocabulary. `Expiry` already *is* lease
   duration. Add `Scope::Elevated(ElevatedCap)` rather than a second enum.
-- `ui/src/widget/permission_prompt.rs` for the lease prompt.
-- The `0600` capability-file handoff under `$XDG_RUNTIME_DIR/qos/capabilities/`,
+- `crates/sdk/ui-core/src/widget/permission_prompt.rs` for the lease prompt.
+- The `0600` capability-file handoff under `$XDG_RUNTIME_DIR/tilo/capabilities/`,
   which already deliberately does not let the sandbox see its own permissions.
 
 Must change:
@@ -585,13 +572,11 @@ Must change:
   the default. `[sandbox].seccomp` is already a named profile string.
 - **`/etc/subuid` and `/etc/subgid` must be provisioned by the image.** Nothing
   in `os/` writes them today, and without them `apt` fails in a layer and
-  rootless podman cannot work either. `os/usr/libexec/qos-firstboot-user` is the
+  rootless podman cannot work either. `os/usr/libexec/tilo-firstboot-user` is the
   place.
-- **`sudo` should go.** `os/config.toml` puts `quickuser` in `wheel`, so qOS has
-  ambient password root today. Removing it is the point of this workstream, and
-  it should not be removed before `qos-hold` covers the operations people
-  actually need — a lockdown that lands before its replacement is exactly how the
-  gimmicky feeling gets established.
+- **`sudo` should go.** `os/config.toml` puts `quickuser` in `wheel`, so Tilo has
+  ambient password root today. Removing it depends on `tilo-hold` covering the
+  operations people need; remove it only after that replacement is available.
 - **`docs/app-model/sandbox.md`**'s hostname-allowlist section still describes a
   DNS proxy that does not exist. Fix it while nearby.
 - **Base images need to ship in the OS image**, or first `tinker` needs a
@@ -608,11 +593,11 @@ Must change:
 cargo build -p tinker && ./crates/system/tinker/demo.sh
 ```
 
-`demo.sh` drives the entire loop from a cold start and fails loudly if the base
+`demo.sh` drives the entire loop from a cold start and fails if the base
 moved, so the load-bearing claim — that tinkering cannot affect the next boot —
 is checkable rather than asserted.
 
-**Working, proven end to end against a real Debian trixie base with no privilege
+**Working, proven end to end against a Debian trixie base with no privilege
 at any point:**
 
 - `tinker base add debian --from-image docker.io/library/debian:stable-slim` —
@@ -633,7 +618,7 @@ at any point:**
 
 **On paper only:**
 
-- `qos-hold` entirely. No broker, no lease store, no `ElevatedCap` enum, no
+- `tilo-hold` entirely. No broker, no lease store, no `ElevatedCap` enum, no
   prompt wiring. This is the larger and more contentious half of the design.
 - Reuse of `launcher`'s seccomp and Landlock. The prototype's sessions are
   namespace-confined but carry **no seccomp filter and no Landlock ruleset** —
@@ -648,19 +633,18 @@ at any point:**
 - Image work: subuid provisioning, shipped base images, `sudo` removal.
 - Disk accounting and garbage collection.
 
-**The single biggest unresolved question.** A layer is not the host, and §1.3
+**Unresolved question.** A layer is not the host, and §1.3
 says no amount of cleverness makes it the host without privilege. So the design
-routes the genuinely host-level cases through `usr.overlay` — and `usr.overlay`
+routes host-level cases through `usr.overlay` — and `usr.overlay`
 is the one capability in the set that *does* grant arbitrary root code execution,
 because a writable `/usr` in your own mount namespace is a writable `/usr`. It
 therefore violates the invariant that §2.5 leans on for everything else.
 
-Is a private-mount-namespace writable `/usr` a meaningfully weaker grant than
-`sudo`, or is it sudo with extra steps and a better name? The narrowing is real —
-it is scoped to one session rather than the machine, leased with an expiry,
-listed, and revocable. But a session that can write `/usr` can drop a binary that
-the next boot's *host* will run, so the transience is not integrity. Answering
-this properly probably means `usr.overlay` cannot be a lease at all, but a
-separate, louder, attested thing — closer to `ostree admin unlock --hotfix`,
-which at least clones a pristine rollback target first. That is the next design
-question, and it is not settled here.
+An open question is whether a private-mount-namespace writable `/usr` provides
+sufficiently narrower authority than `sudo`. It is scoped to one session rather
+than the machine, leased with an expiry, listed, and revocable. However, a
+session that can write `/usr` can drop a binary that the next boot's *host* will
+run, so a transient write does not preserve integrity. One option is to make
+`usr.overlay` a separate, louder, attested operation closer to
+`ostree admin unlock --hotfix`, which clones a pristine rollback target first.
+This remains unsettled.

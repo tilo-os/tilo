@@ -2,9 +2,9 @@
 """Measure the compositor's presentation loop.
 
 Spawns `shell --mode native` with the frame-loop instrumentation enabled
-(`QOS_FRAME_TRACE` / `QOS_FRAME_SUMMARY`, see
-`shell/src/compositor/metrics.rs`), optionally drives input through the
-`QOS_TEST_CONTROL` socket and/or runs a continuously-painting Wayland
+(`TILO_FRAME_TRACE` / `TILO_FRAME_SUMMARY`, see
+`crates/session/shell/src/compositor/metrics.rs`), optionally drives input through the
+`TILO_TEST_CONTROL` socket and/or runs a continuously-painting Wayland
 client against it, then reports the frame-time distribution.
 
 The point is repeatability: every number this prints comes from the same
@@ -251,7 +251,7 @@ def wait_for_socket(path: Path, timeout: float) -> bool:
 
 
 def wait_for_wayland_socket(name_file: Path, timeout: float) -> str | None:
-    """The compositor prints `nirios compositor listening on "wayland-N"`."""
+    """The compositor prints `tilo compositor listening on "wayland-N"`."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if name_file.exists():
@@ -264,7 +264,7 @@ def wait_for_wayland_socket(name_file: Path, timeout: float) -> str | None:
 
 
 class Control:
-    """Minimal QOS_TEST_CONTROL client (see scripts/headless-examples/)."""
+    """Minimal TILO_TEST_CONTROL client (see scripts/headless-examples/)."""
 
     def __init__(self, path: Path):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -314,24 +314,24 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
     if not shell_bin.exists():
         sys.exit(
             f"no shell binary at {shell_bin}\n"
-            f"build it first: .claude/qos-tools/qbuild-wt build -p shell --bin shell --release"
+            f"build it first: .claude/tilo-tools/qbuild-wt build -p shell --bin shell --release"
         )
     label = args.label or f"{args.backend}-{args.load}"
     trace = out_dir / f"{label}.csv"
     summary = out_dir / f"{label}.json"
     log = out_dir / f"{label}.log"
-    ctl_path = Path(f"/run/user/{os.getuid()}/qos-bench-{os.getpid()}.sock")
+    ctl_path = Path(f"/run/user/{os.getuid()}/tilo-bench-{os.getpid()}.sock")
     ctl_path.unlink(missing_ok=True)
 
     env = dict(os.environ)
-    env["QOS_FRAME_TRACE"] = str(trace)
-    env["QOS_FRAME_SUMMARY"] = str(summary)
-    env["QOS_FRAME_WARMUP_MS"] = str(args.warmup_ms)
-    env["QOS_RUN_SECONDS"] = str(args.seconds)
-    env["QOS_TEST_CONTROL"] = str(ctl_path)
-    env["NIRIOS_HEADLESS_SIZE"] = f"{args.width}x{args.height}"
+    env["TILO_FRAME_TRACE"] = str(trace)
+    env["TILO_FRAME_SUMMARY"] = str(summary)
+    env["TILO_FRAME_WARMUP_MS"] = str(args.warmup_ms)
+    env["TILO_RUN_SECONDS"] = str(args.seconds)
+    env["TILO_TEST_CONTROL"] = str(ctl_path)
+    env["TILO_HEADLESS_SIZE"] = f"{args.width}x{args.height}"
     if args.refresh_hz:
-        env["QOS_REFRESH_HZ"] = str(args.refresh_hz)
+        env["TILO_REFRESH_HZ"] = str(args.refresh_hz)
     env["RUST_BACKTRACE"] = "1"
     if args.backend == "headless":
         # A headless run must not pick up the operator's session.
@@ -368,7 +368,7 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
                 if wl is None:
                     print("[bench] warning: no wayland socket name in the log; skipping load")
                 else:
-                    client = shell_bin.parent / "qos-loadclient"
+                    client = shell_bin.parent / "tilo-loadclient"
                     if not client.exists():
                         print(f"[bench] warning: {client} missing; skipping load")
                     else:
@@ -465,7 +465,7 @@ def main() -> None:
     p.add_argument(
         "--refresh-hz",
         type=float,
-        help="force the compositor's presentation rate via QOS_REFRESH_HZ, "
+        help="force the compositor's presentation rate via TILO_REFRESH_HZ, "
         "and score the run against it. The only way to measure a non-60 Hz "
         "cadence on a machine whose backend reports no display rate.",
     )

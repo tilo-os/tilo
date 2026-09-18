@@ -218,7 +218,7 @@ pub fn text_in(
 /// per-function line limit — the groups have no semantic meaning.
 pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, w: f64) {
     match name {
-        "camera" | "scan" | "gallery" | "settings" => icon_screen(scene, t, name, rect, color, w),
+        "camera" | "scan" | "image" | "settings" => icon_screen(scene, t, name, rect, color, w),
         "flash" | "timer" | "grid" => icon_capture_prefs(scene, t, name, rect, color, w),
         "hdr" | "star" | "star_o" | "trash" | "copy" => {
             icon_status(scene, t, name, rect, color, w);
@@ -292,7 +292,7 @@ fn icon_screen(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Colo
                 w,
             );
         }
-        "gallery" => {
+        "image" => {
             let body = Rect::new(cx - h, cy - h * 0.78, cx + h, cy + h * 0.78);
             stroke_round(scene, t, body, h * 0.18, color, w);
             // sun

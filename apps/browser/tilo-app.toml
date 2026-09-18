@@ -1,0 +1,75 @@
+# Browser — Tilo application manifest.
+#
+# A web browser's egress set is the web, so `mode = "host"`. The
+# adblock filter lists (easylist.to, secure.fanboy.co.nz) are fetched
+# into the cache dir even in the hermetic default build; the WPE
+# engine (feature `wpe`) additionally needs the GStreamer plugin path
+# for media playback.
+#
+
+
+[package]
+id       = "dev.tilo.browser"
+name     = "Browser"
+category = "Network"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[continuity]
+required = ["presentation", "semantic"]
+semantic-schema = "web-location-v1"
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+    "net",
+]
+# JavaScriptCore requires JIT mappings, so the launcher grants this package
+# `tilo-jit` only when its image-owned entitlement lists the package id. The
+# profile lifts W^X while retaining the other deny rules.
+seccomp    = "tilo-jit"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "host"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+shell-ui = "optional@1"
+
+[entrypoint]
+bin             = "bin/browser"
+type            = "gui"
+splash-segments = ["bin/browser[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = [
+    "text/html",
+    "application/xhtml+xml",
+]
+ext  = [
+    "html",
+    "htm",
+]
+schemes = ["http", "https"]

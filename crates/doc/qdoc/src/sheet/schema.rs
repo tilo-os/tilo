@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! root
-//!   schema          = "qos.sheet"
+//!   schema          = "tilo.sheet"
 //!   schema_version  = 1
 //!   sheets : Map<sheet_id, sheet>
 //!     sheet
@@ -26,7 +26,7 @@
 //! editing *different* cells touch different map keys and merge; edits to the same
 //! cell resolve field-by-field (value vs. formula vs. style merge independently).
 
-pub const SHEET_SCHEMA_ID: &str = "qos.sheet";
+pub const SHEET_SCHEMA_ID: &str = "tilo.sheet";
 pub const SHEET_SCHEMA_VERSION: i64 = 1;
 
 pub const KEY_SHEET_SCHEMA: &str = "schema";

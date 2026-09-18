@@ -9,6 +9,7 @@
 //!   * `--scenario NAME` — seed a staged state (`detail`, `drag`, `scrolled`); see [`weather::app_root_for_shot`].
 //!   * `--viewport WxH` — render at a custom size (e.g. `--viewport 560x720` for the narrow full-screen city list, or pair with `--scenario detail` for the pushed forecast).
 
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
 // overflow is a tax a third-party app author would pay too. The lints that
@@ -57,7 +58,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe();
     }
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.weather", weather::app_root)
+        &LaunchSpec::new("dev.tilo.weather", weather::app_root)
             .history(&weather::framework_history::HISTORY)
             .shot_root(shot_root)
             .configure_app(|app| weather::actions::register(app.action_registry_mut()))
@@ -67,6 +68,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "detail",
                 "drag",
                 "scrolled",
+                "detail_scrolled",
                 "collapsed",
                 "search",
                 "search_loading",
@@ -88,11 +90,10 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     ))
 }
 
-/// Exercise the exact live networking stack the app uses (`net` + `api`)
-/// against the real keyless Open-Meteo endpoints and print what came back.
-/// This is the same [`weather::net::WeatherService`] the event loop drives —
-/// a standalone proof that the app fetches real data, not a mock. Invoked
-/// with `--probe`; it touches no UI and no window.
+/// Exercise the live networking stack the app uses (`net` + `api`) against the
+/// keyless Open-Meteo endpoints and print what came back. This is the same
+/// [`weather::net::WeatherService`] the event loop drives. Invoked with
+/// `--probe`; it touches no UI and no window.
 fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
     use weather::model::SavedLocation;

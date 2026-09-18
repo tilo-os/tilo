@@ -5,7 +5,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-helper="$repo_root/os/usr/libexec/qos-guided-partition"
+helper="$repo_root/os/usr/libexec/tilo-guided-partition"
 
 if [ "$(id -u)" -ne 0 ] && ! sudo -n true >/dev/null 2>&1; then
   printf 'SKIP  guided alongside loopback test needs root or passwordless sudo\n'
@@ -59,7 +59,7 @@ sed "s|@LOOP@|$loop|g" > "$tmp/bin/lsblk" <<'SH'
 if [ "$#" -eq 3 ] && [ "$1" = -dno ] && [ "$3" = @LOOP@ ]; then
   case "$2" in
     TYPE) printf 'disk\n'; exit 0 ;;
-    SERIAL) printf 'QOS-LOOPBACK-TEST\n'; exit 0 ;;
+    SERIAL) printf 'TILO-LOOPBACK-TEST\n'; exit 0 ;;
     PTTYPE) printf 'gpt\n'; exit 0 ;;
     PTUUID) printf '@PTUUID@\n'; exit 0 ;;
   esac
@@ -74,7 +74,7 @@ chmod 0755 "$tmp/bin/lsblk"
 helper_args=(
   create --disk "$loop"
   --expect-disk-size-bytes "$disk_size" --expect-disk-devnum "$devnum"
-  --expect-disk-serial QOS-LOOPBACK-TEST --expect-disk-ptuuid "$ptuuid"
+  --expect-disk-serial TILO-LOOPBACK-TEST --expect-disk-ptuuid "$ptuuid"
   --expect-logical-sector-size 512
   --free-start-bytes "$free_start" --free-size-bytes "$free_size"
   --efi-start-bytes "$free_start" --efi-size-bytes "$efi_size"
@@ -106,10 +106,10 @@ expected_map="$(printf '%s\n' \
   || { printf 'FAIL  final PARTUUID/geometry map differs from the reviewed plan\nexpected:\n%s\nactual:\n%s\n' "$expected_map" "$after_map" >&2; exit 1; }
 types="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print("\n".join("{}={}".format(p["uuid"].lower(),p["type"].lower()) for p in json.load(sys.stdin)["partitiontable"]["partitions"]))')"
 grep -Fqx "$efi_uuid=c12a7328-f81f-11d2-ba4b-00a0c93ec93b" <<<"$types"
-grep -Fqx "$root_uuid=0fc63daf-8483-4772-8e79-3d69d8477de4" <<<"$types"
+grep -Fqx "$root_uuid=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab" <<<"$types"
 
 # A second invocation must refuse even the exact UUID/geometry pair. Those
-# values live on the writable target and cannot authenticate qOS ownership.
+# values live on the writable target and cannot authenticate Tilo ownership.
 efi_partition="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1]; print(next(p["node"] for p in json.load(sys.stdin)["partitiontable"]["partitions"] if p["uuid"].lower()==u))' "$efi_uuid")"
 root_partition="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1]; print(next(p["node"] for p in json.load(sys.stdin)["partitiontable"]["partitions"] if p["uuid"].lower()==u))' "$root_uuid")"
 efi_fs_uuid="$(run_root blkid -p -s UUID -o value "$efi_partition")"
@@ -118,7 +118,7 @@ if invoke_helper; then
   exit 1
 fi
 [ "$(run_root blkid -p -s UUID -o value "$efi_partition")" = "$efi_fs_uuid" ] \
-  || { echo 'FAIL  refused retry changed the existing qOS ESP' >&2; exit 1; }
+  || { echo 'FAIL  refused retry changed the existing Tilo ESP' >&2; exit 1; }
 [ "$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["partitiontable"]["partitions"]))')" -eq 3 ] \
   || { echo 'FAIL  refused retry changed the partition map' >&2; exit 1; }
 

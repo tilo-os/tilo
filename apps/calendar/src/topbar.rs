@@ -4,18 +4,20 @@
 //! and pointer hit map. `CalendarApp` keeps the navigation policy: it applies
 //! the small [`Action`] values emitted here to the current view and anchor.
 
+use crate::draw_util::PaintContext;
 use chrono::{Datelike, NaiveDate};
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+use ui::icons::{Icon, draw_icon};
 
 use crate::app::{center_text, draw_chevron, draw_hamburger, draw_icon_button, draw_plus};
 use crate::draw_util::{fill_rect, fill_round, selected_row};
-use ui::surface::card;
 use crate::{date, model::View};
+use ui::surface::card;
 
 pub(crate) const HEIGHT: f64 = 60.0;
 const LARGE_TEXT_HEIGHT: f64 = 76.0;
@@ -247,7 +249,13 @@ impl Topbar {
             let track_radius = f64::from(theme.tokens.radii.lg);
             // Segmented track (HIG §9.5): raised tier with its derived edge;
             // the chosen view is the selection lift, never an accent fill.
-            card(scene, transform, segmented, track_radius, colors.surfaces.raised);
+            card(
+                scene,
+                transform,
+                segmented,
+                track_radius,
+                colors.surfaces.raised,
+            );
             let seg_inset = f64::from(theme.tokens.spacing.s1) / 2.0 + 1.0;
             for (index, candidate) in View::ALL.iter().enumerate() {
                 let cell = Rect::new(
@@ -463,11 +471,12 @@ mod tests {
         bar.layout(Rect::new(0.0, 0.0, 390.0, 844.0), LeadingControl::None);
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
+        let theme = Theme::dark();
         let hits = bar.draw(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
-            &Theme::dark(),
+            &theme,
             View::Month,
             anchor,
             Point::ZERO,
@@ -538,11 +547,12 @@ mod tests {
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
         text.set_text_scale(2.0);
+        let theme = Theme::dark().with_text_scale(2.0);
         let hits = bar.draw(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
-            &Theme::dark().with_text_scale(2.0),
+            &theme,
             View::Month,
             NaiveDate::from_ymd_opt(2026, 9, 3).expect("valid test date"),
             Point::ZERO,

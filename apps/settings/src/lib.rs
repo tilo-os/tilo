@@ -1,4 +1,4 @@
-//! Library root for the qOS native Personal Settings app — the device and
+//! Library root for the Tilo native Personal Settings app — the device and
 //! account settings hub. Workspace-owned policy stays in the shell's
 //! contextual Workspace Settings surface; cross-cutting domains share a
 //! resolver instead of letting either UI write the other's state.
@@ -8,6 +8,8 @@
 //! desktop layout and a single-pane narrow layout. The binary in `main.rs`
 //! is a thin shim that hands the widget to `ui::App` for the live event
 //! loop, or renders one offscreen frame for `--shots`.
+//! Release builds keep this composition app-local while service engines live
+//! in the shared runtime, preserving independently updatable settings UI.
 //!
 //! ## Module map
 //!
@@ -59,6 +61,7 @@ pub mod account_probe;
 pub mod accounts;
 pub mod actions;
 pub mod categories;
+mod continuity;
 mod device_fleet;
 pub mod dispatcher;
 pub(crate) mod input_sources;
@@ -67,11 +70,13 @@ pub mod prefs;
 pub mod region;
 pub mod search_provider;
 pub mod settings_app;
+#[cfg(not(feature = "thin"))]
 pub mod shots;
 pub mod sidebar;
 pub mod widgets;
 
 pub use settings_app::SettingsApp;
+#[cfg(not(feature = "thin"))]
 pub use shots::render_to_path;
 
 /// Ensure an Automerge `Text` object exists at `key` under `root`, returning it.

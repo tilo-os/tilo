@@ -420,7 +420,7 @@ impl BufferSizes {
         // well as paris-30k. These should instead get derived from the scene layout using
         // reasonable heuristics.
         //
-        // ---- qOS: derived from the scene, and then from measurement ----
+        // ---- Tilo: derived from the scene, and then from measurement ----
         //
         // Upstream's own comment above says these constants are picked
         // for a 30,000-path stress scene and ought to be derived. They

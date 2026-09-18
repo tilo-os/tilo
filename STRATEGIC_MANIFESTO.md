@@ -47,7 +47,7 @@ We do not compete with the "Brains" (OpenAI, Anthropic); we provide the "Body."
 ---
 
 ## 6. Capital Strategy: The War Chest
-We are targeting a high-leverage, high-valuation Seed round (e.g., **\$150M Pre / \$25M Raised**) to fund the transition from a technical breakthrough to a global standard. 
+We are targeting a high-leverage, high-valuation Seed round (e.g., **\$150M Pre / \$25M Raised**) to fund the transition from a technical breakthrough to a global standard.
 
 **Our capital will be deployed into four strategic pillars:**
 

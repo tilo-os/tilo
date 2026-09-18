@@ -1,0 +1,62 @@
+# Git — Tilo application manifest.
+#
+# Fetch/pull/push over https+ssh to arbitrary remotes with no feature
+# gate, so `mode = "host"`.
+#
+# Beyond the system read profile it needs, as consented capabilities:
+# read+write on the working copy AND its ancestors —
+# `Repository::discover()` walks upward — the SSH agent socket and
+# `~/.ssh`, and read+exec on the host bin dirs for credential helpers.
+#
+
+
+[package]
+id       = "dev.tilo.git-client"
+name     = "Git"
+category = "Development"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+    "net",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "host"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/git-client"
+type            = "gui"
+splash-segments = ["bin/git-client[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

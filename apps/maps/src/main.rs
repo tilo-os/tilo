@@ -10,13 +10,9 @@
 //!     (`--pois`, `--search`, `--offline`, `--panel …`, …)
 //!     stage a specific surface for the shot.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -65,7 +61,7 @@ pub fn main() {
     maps::net::ensure_crypto_provider();
 
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.maps", maps::app_root)
+        &LaunchSpec::new("dev.tilo.maps", maps::app_root)
             .shot_root(shot_root)
             .shot_handler(shot_handler)
             .allowed_flags(&[

@@ -18,19 +18,21 @@
 //! `MODEL`. That keeps us robust to multi-word model strings without
 //! depending on fixed column widths.
 
-use std::process::Command;
+use std::time::Duration;
 
 use serde_json::Value;
 
 /// GPT type used for an ordinary Linux data/filesystem partition.
 pub const LINUX_FILESYSTEM_GUID: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";
+/// Tilo-owned root GPT type used for target-independent same-disk discovery.
+pub const TILO_ROOT_GUID: &str = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab";
 /// GPT type used for an EFI System Partition.
 pub const EFI_SYSTEM_GUID: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
 /// Minimum prepared root accepted by the guided alongside flow (32 GiB).
 pub const MIN_ALONGSIDE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 /// Minimum ESP accepted for an alongside install (2 GiB).
 ///
-/// qOS keeps several signed UKIs for rollback, staged updates, and repair.
+/// Tilo keeps several signed UKIs for rollback, staged updates, and repair.
 /// A typical 100--512 MiB Windows/Linux ESP cannot safely hold that lifecycle,
 /// even if the first install happens to fit.
 pub const MIN_ALONGSIDE_ESP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -46,7 +48,7 @@ pub struct PartitionExtent {
     pub size_bytes: u64,
 }
 
-/// A non-destructive plan that appends qOS's two partitions inside one exact
+/// A non-destructive plan that appends Tilo's two partitions inside one exact
 /// unallocated GPT extent. It never represents space reclaimed by resizing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuidedAlongsidePlan {
@@ -82,7 +84,8 @@ impl DiskPartition {
             && !self.part_uuid.is_empty()
             && self.filesystem.is_empty()
             && self.mountpoint.is_empty()
-            && self.part_type.eq_ignore_ascii_case(LINUX_FILESYSTEM_GUID)
+            && (self.part_type.eq_ignore_ascii_case(LINUX_FILESYSTEM_GUID)
+                || self.part_type.eq_ignore_ascii_case(TILO_ROOT_GUID))
     }
 
     pub fn is_efi(&self) -> bool {
@@ -160,7 +163,7 @@ impl Disk {
             .count();
         if eligible > 1 {
             return Some(
-                "More than one prepared 2 GiB+ EFI partition is eligible; leave exactly one unmounted qOS EFI destination."
+                "More than one prepared 2 GiB+ EFI partition is eligible; leave exactly one unmounted Tilo EFI destination."
                     .to_string(),
             );
         }
@@ -181,7 +184,7 @@ impl Disk {
             }
             if partition.size_bytes < MIN_ALONGSIDE_ESP_BYTES {
                 return Some(format!(
-                    "{} is too small for qOS boot images; a prepared EFI partition must be at least 2 GiB.",
+                    "{} is too small for Tilo boot images; a prepared EFI partition must be at least 2 GiB.",
                     partition.name
                 ));
             }
@@ -210,7 +213,7 @@ impl Disk {
 
     /// Whether discovery found storage normally managed by Windows. This is a
     /// preparation hint, not proof that a bootable Windows installation is
-    /// present: an NTFS data partition is enough reason to avoid implying qOS
+    /// present: an NTFS data partition is enough reason to avoid implying Tilo
     /// can safely clear hibernation state or resize it.
     pub fn has_windows_storage(&self) -> bool {
         self.partitions.iter().any(|partition| {
@@ -441,7 +444,7 @@ fn parse_lsblk_json(json: &Value) -> Vec<Disk> {
                 .and_then(Value::as_array)
                 .map(|children| children.iter().filter_map(parse_partition).collect())
                 .unwrap_or_default();
-            // A normal encrypted Fedora/qOS root is not mounted directly from
+            // A normal encrypted Fedora/Tilo root is not mounted directly from
             // the partition: lsblk reports disk -> part -> crypt (and often
             // -> lvm) before the node carrying `/` or `/sysroot`. Keep only
             // direct partitions in the install plan, but inspect the complete
@@ -570,7 +573,13 @@ fn format_bytes(bytes: u64) -> String {
 /// Run `lsblk` and parse its output. Returns an empty vec when `lsblk`
 /// is missing or fails — the UI surfaces that as "No disks found".
 pub fn read_disks() -> Vec<Disk> {
-    match Command::new("lsblk").args(LSBLK_ARGS).output() {
+    match bounded_command::run(
+        "lsblk",
+        &LSBLK_ARGS,
+        None,
+        4 * 1024 * 1024,
+        Duration::from_secs(10),
+    ) {
         Ok(out) if out.status.success() => parse_lsblk(&String::from_utf8_lossy(&out.stdout)),
         _ => Vec::new(),
     }
@@ -632,7 +641,7 @@ mod tests {
     #[test]
     fn nested_non_system_mount_does_not_hide_an_installable_data_disk() {
         let fixture = format!(
-            r#"{{"blockdevices":[{{"name":"/dev/sdb","size":1000000000000,"model":"Data","type":"disk","rm":false,"ro":false,"serial":"DATA-DISK","maj:min":"8:16","children":[{{"name":"/dev/sdb1","size":900000000000,"start":2048,"type":"part","fstype":"crypto_LUKS","mountpoints":[null],"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004","children":[{{"name":"/dev/mapper/data","size":900000000000,"type":"crypt","fstype":"ext4","mountpoints":["/run/media/qos/data"]}}]}}]}}]}}"#
+            r#"{{"blockdevices":[{{"name":"/dev/sdb","size":1000000000000,"model":"Data","type":"disk","rm":false,"ro":false,"serial":"DATA-DISK","maj:min":"8:16","children":[{{"name":"/dev/sdb1","size":900000000000,"start":2048,"type":"part","fstype":"crypto_LUKS","mountpoints":[null],"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004","children":[{{"name":"/dev/mapper/data","size":900000000000,"type":"crypt","fstype":"ext4","mountpoints":["/run/media/tilo/data"]}}]}}]}}]}}"#
         );
         let disks = parse_lsblk(&fixture);
 
@@ -648,11 +657,11 @@ mod tests {
             "/run/rootfsbase",
             "/run/rootfsbase/subdir",
             "/sysroot",
-            "/sysroot/ostree/deploy/qos",
+            "/sysroot/ostree/deploy/tilo",
         ] {
             assert!(is_live_system_mount(mountpoint), "missed {mountpoint}");
         }
-        assert!(!is_live_system_mount("/run/media/qos/data"));
+        assert!(!is_live_system_mount("/run/media/tilo/data"));
     }
 
     #[test]
@@ -747,14 +756,14 @@ mod tests {
     #[test]
     fn json_discovery_finds_safe_alongside_root_and_efi() {
         let fixture = format!(
-            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"wwn":"eui.0011223344556677","serial":"QOS-NVME","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"Windows EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":500000000000,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":2147483648,"type":"part","fstype":"vfat","label":"qOS EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
+            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"wwn":"eui.0011223344556677","serial":"TILO-NVME","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"Windows EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":500000000000,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
         );
         let disks = parse_lsblk(&fixture);
         assert_eq!(disks.len(), 1);
         assert!(disks[0].identity_ready());
         assert_eq!(disks[0].major_minor, "259:0");
         assert_eq!(disks[0].wwn, "eui.0011223344556677");
-        assert_eq!(disks[0].serial, "QOS-NVME");
+        assert_eq!(disks[0].serial, "TILO-NVME");
         assert!(disks[0].can_install_alongside());
         assert_eq!(disks[0].alongside_root().unwrap().name, "/dev/nvme0n1p3");
         assert_eq!(
@@ -830,9 +839,9 @@ mod tests {
     }
 
     #[test]
-    fn linux_disk_keeps_existing_filesystems_out_of_the_qos_candidates() {
+    fn linux_disk_keeps_existing_filesystems_out_of_the_tilo_candidates() {
         let fixture = format!(
-            r#"{{"blockdevices":[{{"name":"/dev/sda","size":500000000000,"model":"Linux disk","type":"disk","rm":false,"ro":false,"serial":"QOS-SATA","maj:min":"8:0","children":[{{"name":"/dev/sda1","size":2147483648,"type":"part","fstype":"vfat","label":"qOS EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/sda2","size":200000000000,"type":"part","fstype":"ext4","label":"Existing Linux","mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/sda3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}}]}}]}}"#
+            r#"{{"blockdevices":[{{"name":"/dev/sda","size":500000000000,"model":"Linux disk","type":"disk","rm":false,"ro":false,"serial":"TILO-SATA","maj:min":"8:0","children":[{{"name":"/dev/sda1","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/sda2","size":200000000000,"type":"part","fstype":"ext4","label":"Existing Linux","mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/sda3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}}]}}]}}"#
         );
         let disks = parse_lsblk(&fixture);
         assert!(disks[0].can_install_alongside());
@@ -894,7 +903,7 @@ mod tests {
     #[test]
     fn alongside_refuses_ambiguous_root_or_efi_candidates() {
         let fixture = format!(
-            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":2147483648,"type":"part","fstype":"vfat","label":"qOS EFI A","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":2147483648,"type":"part","fstype":"vfat","label":"qOS EFI B","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
+            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI A","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI B","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
         );
         let disks = parse_lsblk(&fixture);
         assert_eq!(disks.len(), 1);
@@ -927,13 +936,15 @@ mod tests {
         assert!(!root.is_alongside_candidate());
         root.part_uuid = "00000000-0000-0000-0000-000000000003".into();
         assert!(root.is_alongside_candidate());
+        root.part_type = TILO_ROOT_GUID.into();
+        assert!(root.is_alongside_candidate());
     }
 
     #[test]
     fn guided_plan_uses_one_aligned_gpt_free_extent_without_resizing() {
         let gib = 1024_u64 * 1024 * 1024;
         let fixture = format!(
-            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":{},"start":null,"model":"NVMe","type":"disk","pttype":"gpt","ptuuid":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","log-sec":512,"rm":false,"ro":false,"wwn":"eui.0011223344556677","serial":"QOS-NVME","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":{},"start":2048,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic","partuuid":"00000000-0000-0000-0000-000000000001"}}]}}]}}"#,
+            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":{},"start":null,"model":"NVMe","type":"disk","pttype":"gpt","ptuuid":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","log-sec":512,"rm":false,"ro":false,"wwn":"eui.0011223344556677","serial":"TILO-NVME","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":{},"start":2048,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic","partuuid":"00000000-0000-0000-0000-000000000001"}}]}}]}}"#,
             200 * gib,
             100 * gib - PARTITION_ALIGNMENT_BYTES,
         );

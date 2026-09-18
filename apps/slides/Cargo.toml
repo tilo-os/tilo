@@ -18,9 +18,9 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
-# The qOS action model: doc-mutating operations are replayable, undoable actions.
-qos-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+# The Tilo action model: doc-mutating operations are replayable, undoable actions.
+tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -40,7 +40,7 @@ zip.workspace = true
 quick-xml.workspace = true
 # Host-native image open through the XDG Desktop Portal
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
-# chooser; on qOS the compositor's portal backend renders qOS's picker. The
+# chooser; on Tilo the compositor's portal backend renders Tilo's picker. The
 # portal call runs off the UI thread on its own small Tokio runtime and the
 # chosen path is delivered back over a shared `ui::portal` channel.
 

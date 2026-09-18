@@ -4,9 +4,7 @@
 //!
 //! The interactive GUI widget (draw/layout/keyboard over winit) is intentionally
 //! deferred — it is app polish, not part of CRDT-native file-format support. This
-//! crate currently provides the binding and proves the end-to-end integration
-//! (undo, two-peer convergence, timeline, codec round-trip) against the real
-//! `ui::State` via tests.
+//! crate currently provides the binding and its integration with `ui::State`.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -43,6 +41,7 @@ mod find_bar;
 pub mod history_panel;
 pub mod i18n;
 mod outline_pane;
+mod paint_context;
 mod recovery_banner;
 mod review_overlay;
 mod ruler;
@@ -186,18 +185,33 @@ impl WpFormat {
             // bytes.
             WpFormat::Html => {
                 let snap = dr.materialize();
-                Ok(qdoc_html::render_html(&snap, qdoc_html::HtmlOptions::default()).into_bytes())
+                #[cfg(feature = "thin")]
+                let rendered = qdoc::export_html::render_html(
+                    &snap,
+                    qdoc::export_html::HtmlOptions::default(),
+                );
+                #[cfg(not(feature = "thin"))]
+                let rendered = qdoc_html::render_html(&snap, qdoc_html::HtmlOptions::default());
+                Ok(rendered.into_bytes())
             }
             WpFormat::Rtf => {
                 let snap = dr.materialize();
-                Ok(qdoc_rtf::render_rtf(&snap).into_bytes())
+                #[cfg(feature = "thin")]
+                let rendered = qdoc::export_rtf::render_rtf(&snap);
+                #[cfg(not(feature = "thin"))]
+                let rendered = qdoc_rtf::render_rtf(&snap);
+                Ok(rendered.into_bytes())
             }
             // EPUB isn't a `FormatProvider` codec either — it assembles an OCF
             // ZIP container from the materialized snapshot via `qdoc-epub`. Map its
             // error into the shared `CodecError`.
             WpFormat::Epub => {
                 let snap = dr.materialize();
-                qdoc_epub::render_epub(&snap).map_err(|e| qdoc::CodecError::Export(e.to_string()))
+                #[cfg(feature = "thin")]
+                let rendered = qdoc::export_epub::render_epub(&snap);
+                #[cfg(not(feature = "thin"))]
+                let rendered = qdoc_epub::render_epub(&snap);
+                rendered.map_err(|e| qdoc::CodecError::Export(e.to_string()))
             }
         }
     }
@@ -353,7 +367,7 @@ pub fn save_document(state: &ui::State, path: &Path, format: WpFormat) -> std::i
     let bytes = format
         .export(dr)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    std::fs::write(path, bytes)
+    atomic_file::write_preserving_target(path, &bytes)
 }
 
 // ---- autosave / crash-recovery -------------------------------------------
@@ -361,7 +375,7 @@ pub fn save_document(state: &ui::State, path: &Path, format: WpFormat) -> std::i
 /// Best-effort autosave / crash-recovery store.
 ///
 /// While editing, the word processor periodically writes a **recovery copy**
-/// (always Markdown — lossless, trivially re-importable) to a stable per-document
+/// (Markdown, which does not retain every rich-document feature) to a stable per-document
 /// path under the user's state directory. If the app crashes before saving, the
 /// next session finds the newer recovery copy and can offer to restore it; a
 /// real save deletes it. Everything here is **best-effort**: an unwritable state
@@ -372,17 +386,31 @@ pub mod recovery {
     /// Environment override for the recovery base directory. Set by tests (and
     /// available to callers that want to relocate the store) so recovery never
     /// touches the real `$HOME` / `$XDG_STATE_HOME` during a test run.
-    pub const RECOVERY_BASE_ENV: &str = "QOS_WP_RECOVERY_DIR";
+    pub const RECOVERY_BASE_ENV: &str = "TILO_WP_RECOVERY_DIR";
 
     /// The directory recovery copies live in. Resolution order:
-    /// 1. `$QOS_WP_RECOVERY_DIR` (test / explicit override), used verbatim;
-    /// 2. `$XDG_STATE_HOME/qos/word-processor/recovery`;
-    /// 3. `$HOME/.local/state/qos/word-processor/recovery`;
-    /// 4. `./.qos-wp-recovery` as a last resort (no HOME at all).
+    /// 1. `$TILO_WP_RECOVERY_DIR` (test / explicit override), used verbatim;
+    /// On Windows, the default is `%LOCALAPPDATA%/tilo/word-processor/recovery`,
+    /// falling back to `%USERPROFILE%/AppData/Local` when necessary.
+    /// On other hosts, the remaining resolution order is:
+    /// 2. `$XDG_STATE_HOME/tilo/word-processor/recovery`;
+    /// 3. `$HOME/.local/state/tilo/word-processor/recovery`;
+    /// 4. `./.tilo-wp-recovery` as a last resort (no HOME at all).
     pub fn base_dir() -> PathBuf {
         if let Some(dir) = std::env::var_os(RECOVERY_BASE_ENV) {
             return PathBuf::from(dir);
         }
+        #[cfg(windows)]
+        let state_home = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_absolute())
+                    .map(|path| path.join("AppData").join("Local"))
+            });
+        #[cfg(not(windows))]
         let state_home = std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .filter(|p| !p.as_os_str().is_empty())
@@ -390,8 +418,8 @@ pub mod recovery {
                 std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state"))
             });
         match state_home {
-            Some(p) => p.join("qos").join("word-processor").join("recovery"),
-            None => PathBuf::from(".qos-wp-recovery"),
+            Some(p) => p.join("tilo").join("word-processor").join("recovery"),
+            None => PathBuf::from(".tilo-wp-recovery"),
         }
     }
 
@@ -442,6 +470,17 @@ pub mod recovery {
                     }
                     resolved
                 });
+                // Windows canonicalization adds a verbatim path prefix once a
+                // file exists. File URLs normalize both spellings, keeping the
+                // recovery slot stable across the document's first save.
+                #[cfg(windows)]
+                {
+                    url::Url::from_file_path(&abs).map_or_else(
+                        |()| abs.to_string_lossy().into_owned(),
+                        |url| url.to_string(),
+                    )
+                }
+                #[cfg(not(windows))]
                 abs.to_string_lossy().into_owned()
             }
             None => ":untitled:".to_string(),
@@ -490,7 +529,7 @@ pub mod recovery {
         {
             return None;
         }
-        std::fs::write(&path, markdown).ok().map(|()| path)
+        atomic_file::write(&path, markdown).ok().map(|()| path)
     }
 
     /// Read back a recovery copy's Markdown bytes for `doc_path`, if one exists.
@@ -1054,6 +1093,25 @@ mod tests {
     /// half-set by a sibling. `lock().unwrap_or_else(|e| e.into_inner())` keeps a
     /// panicking test from poisoning the suite.
     pub(super) static RECOVERY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(windows)]
+    #[test]
+    fn recovery_defaults_to_native_local_app_data() {
+        let _guard = RECOVERY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = std::env::var_os(recovery::RECOVERY_BASE_ENV);
+        // SAFETY: recovery environment tests hold RECOVERY_ENV_LOCK and run serially.
+        unsafe { std::env::remove_var(recovery::RECOVERY_BASE_ENV) };
+        let actual = recovery::base_dir();
+        if let Some(previous) = previous {
+            // SAFETY: restore while still holding RECOVERY_ENV_LOCK.
+            unsafe { std::env::set_var(recovery::RECOVERY_BASE_ENV, previous) };
+        }
+        let local = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+        assert_eq!(actual, local.join("tilo/word-processor/recovery"));
+        assert!(actual.is_absolute());
+    }
 
     /// A unique temp directory for a recovery test, cleaned up by the test (the
     /// recovery store never touches the real `$HOME` thanks to the base override).

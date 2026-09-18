@@ -32,8 +32,8 @@
 //!
 //! ## Manual verification
 //!
-//! Run the OSK with `--input-method` under the qOS compositor (or any compositor
-//! advertising `zwp_input_method_manager_v2`). Focus a native qOS text field:
+//! Run the OSK with `--input-method` under the Tilo compositor (or any compositor
+//! advertising `zwp_input_method_manager_v2`). Focus a native Tilo text field:
 //! the keyboard should appear; focus a password or terminal field and its layout
 //! changes. A third-party toolkit sending numeric/email content purposes selects
 //! those dedicated layouts too. Blur the field (focus something non-text): it

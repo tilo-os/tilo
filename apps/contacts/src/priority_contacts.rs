@@ -1,6 +1,6 @@
 //! Narrow Contacts → shell priority projection.
 //!
-//! Only launcher-started Contacts enables this publisher (`QOS_PACKAGE_ID`);
+//! Only launcher-started Contacts enables this publisher (`TILO_PACKAGE_ID`);
 //! tests, shots and standalone binaries stay hermetic. The shell independently
 //! verifies the D-Bus sender's process ancestry before accepting a replacement.
 
@@ -12,7 +12,7 @@ type WireContact = (String, String, Vec<String>);
 
 static LAST: LazyLock<Mutex<Vec<WireContact>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 static PUBLISHER: LazyLock<Option<mpsc::SyncSender<Vec<WireContact>>>> = LazyLock::new(|| {
-    if std::env::var("QOS_PACKAGE_ID").as_deref() != Ok("dev.qos.contacts") {
+    if std::env::var("TILO_PACKAGE_ID").as_deref() != Ok("dev.tilo.contacts") {
         return None;
     }
     let (sender, receiver) = mpsc::sync_channel::<Vec<WireContact>>(1);
@@ -32,7 +32,7 @@ static PUBLISHER: LazyLock<Option<mpsc::SyncSender<Vec<WireContact>>>> = LazyLoc
                     continue;
                 };
                 let published: Result<zbus::Message, _> =
-                    proxy.call_method("XQosReplacePriorityContacts", &(contacts.clone(),));
+                    proxy.call_method("XTiloReplacePriorityContacts", &(contacts.clone(),));
                 // Only acknowledge after the shell accepted the replacement.
                 // A missing notification service or an attribution failure is
                 // retried on the next app sync instead of becoming a silently

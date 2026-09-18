@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Assert that `qos-disk-encrypt enrol` leaves behind a volume its owner can
+# Assert that `tilo-disk-encrypt enrol` leaves behind a volume its owner can
 # actually open. Run against a BUILT image, or from a source tree:
 #
-#   podman run --rm --entrypoint /bin/bash localhost/qos:latest \
-#       /usr/libexec/qos/luks-enrolment-test.sh
+#   podman run --rm --entrypoint /bin/bash localhost/tilo:latest \
+#       /usr/libexec/tilo/luks-enrolment-test.sh
 #
-#   DISK_ENCRYPT=os/usr/libexec/qos-disk-encrypt bash os/tests/luks_enrolment.sh
+#   DISK_ENCRYPT=os/usr/libexec/tilo-disk-encrypt bash os/tests/luks_enrolment.sh
 #
 # The volume is a throwaway sparse file, not a block device: everything under
 # test here (luksFormat, systemd-cryptenroll, luksAddKey, --test-passphrase)
@@ -29,14 +29,14 @@
 
 set -uo pipefail
 
-DISK_ENCRYPT="${DISK_ENCRYPT:-/usr/libexec/qos-disk-encrypt}"
+DISK_ENCRYPT="${DISK_ENCRYPT:-/usr/libexec/tilo-disk-encrypt}"
 PASSPHRASE="${PASSPHRASE:-correct horse battery staple}"
 
 fail=0
 ok()  { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-[ -x "$DISK_ENCRYPT" ] || { bad "no executable qos-disk-encrypt at $DISK_ENCRYPT"; exit 1; }
+[ -x "$DISK_ENCRYPT" ] || { bad "no executable tilo-disk-encrypt at $DISK_ENCRYPT"; exit 1; }
 for t in cryptsetup systemd-cryptenroll; do
   command -v "$t" >/dev/null 2>&1 || { bad "missing required tool: $t"; exit 1; }
 done

@@ -19,6 +19,11 @@ pub type LocationId = Uuid;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedLocation {
     pub id: LocationId,
+    /// Sparse, absolute ordering rank persisted with this stable location.
+    /// It is deliberately independent per entry so concurrent moves of
+    /// different locations merge instead of replacing one shared list.
+    #[serde(default)]
+    pub order_rank: f64,
     pub name: String,
     /// Region / admin area (e.g. "California", "Bavaria"). May be empty.
     pub region: String,
@@ -42,6 +47,7 @@ impl SavedLocation {
     ) -> Self {
         Self {
             id: Uuid::new_v4(),
+            order_rank: 0.0,
             name: name.into(),
             region: region.into(),
             country: country.into(),
@@ -237,13 +243,17 @@ impl WeatherModel {
     /// Add a location if it isn't already pinned (matched by rounded
     /// coordinates). Returns the index of the (existing or new) entry and
     /// selects it.
-    pub fn add_location(&mut self, loc: SavedLocation) -> usize {
+    pub fn add_location(&mut self, mut loc: SavedLocation) -> usize {
         if let Some(idx) = self.locations.iter().position(|l| {
             (l.latitude - loc.latitude).abs() < 0.05 && (l.longitude - loc.longitude).abs() < 0.05
         }) {
             self.selected = idx;
             return idx;
         }
+        loc.order_rank = self
+            .locations
+            .last()
+            .map_or(1024.0, |location| location.order_rank + 1024.0);
         self.locations.push(loc);
         let idx = self.locations.len() - 1;
         self.selected = idx;
@@ -277,6 +287,23 @@ impl WeatherModel {
         let selected_id = self.selected_location().map(|l| l.id);
         let moved = self.locations.remove(from);
         self.locations.insert(to, moved);
+        let previous = to
+            .checked_sub(1)
+            .and_then(|index| self.locations.get(index))
+            .map(|location| location.order_rank);
+        let next = self
+            .locations
+            .get(to.saturating_add(1))
+            .map(|location| location.order_rank);
+        let rank = match (previous, next) {
+            (Some(previous), Some(next)) => f64::midpoint(previous, next),
+            (Some(previous), None) => previous + 1024.0,
+            (None, Some(next)) => next - 1024.0,
+            (None, None) => 1024.0,
+        };
+        if let Some(location) = self.locations.get_mut(to) {
+            location.order_rank = rank;
+        }
         self.reselect_by_id(selected_id);
         true
     }
@@ -370,12 +397,13 @@ mod tests {
         let a = SavedLocation::new("A", "", "C", "CC", 1.0, 1.0, "auto");
         let b = SavedLocation::new("B", "", "C", "CC", 2.0, 2.0, "auto");
         let c = SavedLocation::new("C", "", "C", "CC", 3.0, 3.0, "auto");
-        let (a_id, c_id) = (a.id, c.id);
+        let (a_id, b_id, c_id) = (a.id, b.id, c.id);
         m.locations = vec![a, b, c];
         m.selected = 0; // "A" in view.
         // Drag "A" (idx 0) to the end (idx 2): order becomes B, C, A.
         assert!(m.move_location(0, 2));
-        assert_eq!(m.locations[0].id, m.locations[0].id);
+        assert_eq!(m.locations[0].id, b_id, "B shifted to the front");
+        assert_eq!(m.locations[1].id, c_id, "C shifted into the middle");
         assert_eq!(m.locations[2].id, a_id, "A landed at the end");
         assert_eq!(m.selected_location().unwrap().id, a_id, "view still on A");
         // Moving C to the front.

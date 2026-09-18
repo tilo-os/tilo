@@ -21,10 +21,10 @@ use crate::widgets::{El, caption, card, card_with_action, rows, value_row};
 // These are edge-triggered, machine-local command latches, not settings.
 // Buttons may mutate them directly because the `.edit` namespace is never
 // exported or replayed; durable settings go through SettingsAction instead.
-const CLEAN_KEY: &str = "storage.cleanup.confirmed.edit";
-const DISKS_KEY: &str = "storage.open.disks.edit";
-const BACKUPS_KEY: &str = "storage.open.backups.edit";
-const SYNC_FREE_KEY: &str = "storage.sync.free.edit";
+pub const CLEAN_KEY: &str = "storage.cleanup.confirmed.edit";
+pub const DISKS_KEY: &str = "storage.open.disks.edit";
+pub const BACKUPS_KEY: &str = "storage.open.backups.edit";
+pub const SYNC_FREE_KEY: &str = "storage.sync.free.edit";
 
 pub struct StoragePane {
     roots: StorageRoots,
@@ -35,6 +35,10 @@ pub struct StoragePane {
     sync_busy: bool,
     sync_result: Option<std::sync::mpsc::Receiver<Result<EvictionReport, String>>>,
     snapshot_result: Option<std::sync::mpsc::Receiver<Result<SyncStorageSnapshot, String>>>,
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
+    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    local_doc: AutoCommit,
+    isolate_document: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -62,6 +66,10 @@ impl StoragePane {
             sync_busy: false,
             sync_result: None,
             snapshot_result: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
             composed: None,
             rect: Rect::ZERO,
         }
@@ -79,6 +87,50 @@ impl StoragePane {
             self.sync_message = Some("Loading synced storage…".into());
         }
         self.snapshot_result = Some(receiver);
+    }
+
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
+    }
+
+    #[must_use]
+    pub fn with_command_state(
+        mut self,
+        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    ) -> Self {
+        self.command_state = commands.clone();
+        self.isolate_document = true;
+        self
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "callers construct the exact typed request whose token is completed"
+    )]
+    fn finish_local_operation(
+        &self,
+        operation: crate::actions::StorageOperation,
+        result: Result<String, String>,
+    ) {
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::STORAGE_OPERATION_TYPE,
+            &operation,
+        );
+        if !matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: running } if running == token
+        ) {
+            return;
+        }
+        self.operation_status.set(match result {
+            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
+            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
+        });
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -204,7 +256,7 @@ impl StoragePane {
             "Largest items",
             if self.snapshot.entries.is_empty() {
                 rows(vec![caption(
-                    "No qOS application storage was found on this device.",
+                    "No Tilo application storage was found on this device.",
                 )])
             } else {
                 rows(largest_rows)
@@ -303,118 +355,186 @@ impl Widget for StoragePane {
         clippy::too_many_lines,
         reason = "one pass deliberately coordinates the storage snapshot and each independent command latch"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(receiver) = &self.snapshot_result {
-            match receiver.try_recv() {
-                Ok(Ok(snapshot)) => {
-                    self.sync_snapshot = Some(snapshot);
-                    self.snapshot_result = None;
-                    if self.sync_message.as_deref() == Some("Loading synced storage…") {
-                        self.sync_message = None;
-                    }
-                }
-                Ok(Err(error)) => {
-                    self.sync_snapshot = None;
-                    self.snapshot_result = None;
-                    self.sync_message = Some(format!("Sync storage service unavailable: {error}"));
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.sync_snapshot = None;
-                    self.snapshot_result = None;
-                    self.sync_message = Some("Sync storage service ended unexpectedly.".into());
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
+    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+        let isolated = self.isolate_document;
+        let mut state = if isolated {
+            std::mem::take(&mut self.local_doc)
+        } else {
+            std::mem::take(shared)
+        };
+        let root = automerge::ROOT;
+        if let Some(crate::actions::LocalPaneCommand::Storage(operation)) = self.command_state.get()
+        {
+            self.command_state.set(None);
+            let key = match operation {
+                crate::actions::StorageOperation::CleanupCaches => CLEAN_KEY,
+                crate::actions::StorageOperation::FreeSyncedFiles => SYNC_FREE_KEY,
+                crate::actions::StorageOperation::OpenDisks => DISKS_KEY,
+                crate::actions::StorageOperation::OpenBackups => BACKUPS_KEY,
+            };
+            let _ = state.put(&root, key, true);
         }
-        if let Some(receiver) = &self.sync_result {
-            match receiver.try_recv() {
-                Ok(Ok(report)) => {
-                    self.sync_busy = false;
-                    self.sync_result = None;
-                    self.refresh_sync();
-                    self.sync_message = Some(
-                        if report.queued_files > 0 && report.evicted_files > 0 {
-                            format!(
-                                "Freed {} from {} synced file(s); {} more queued for verified background reclamation.",
-                                human_bytes(report.freed_bytes),
-                                report.evicted_files,
-                                report.queued_files
-                            )
-                        } else if report.queued_files > 0 {
-                            format!(
-                                "{} synced file(s) queued for verified background reclamation; nothing is counted as free until GC confirms it.",
-                                report.queued_files
-                            )
-                        } else {
-                            format!(
-                                "Freed {} from {} synced files.",
-                                human_bytes(report.freed_bytes),
-                                report.evicted_files
-                            )
-                        },
-                    );
+        {
+            let state = &mut state;
+            let root = &root;
+            if let Some(receiver) = &self.snapshot_result {
+                match receiver.try_recv() {
+                    Ok(Ok(snapshot)) => {
+                        self.sync_snapshot = Some(snapshot);
+                        self.snapshot_result = None;
+                        if self.sync_message.as_deref() == Some("Loading synced storage…") {
+                            self.sync_message = None;
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        self.sync_snapshot = None;
+                        self.snapshot_result = None;
+                        self.sync_message =
+                            Some(format!("Sync storage service unavailable: {error}"));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.sync_snapshot = None;
+                        self.snapshot_result = None;
+                        self.sync_message = Some("Sync storage service ended unexpectedly.".into());
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 }
-                Ok(Err(error)) => {
-                    self.sync_busy = false;
-                    self.sync_result = None;
-                    self.sync_message = Some(format!("Nothing was removed: {error}"));
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.sync_busy = false;
-                    self.sync_result = None;
-                    self.sync_message = Some(
+            }
+            if let Some(receiver) = &self.sync_result {
+                match receiver.try_recv() {
+                    Ok(Ok(report)) => {
+                        self.sync_busy = false;
+                        self.sync_result = None;
+                        self.refresh_sync();
+                        self.sync_message = Some(
+                            if report.queued_files > 0 && report.evicted_files > 0 {
+                                format!(
+                                    "Freed {} from {} synced file(s); {} more queued for verified background reclamation.",
+                                    human_bytes(report.freed_bytes),
+                                    report.evicted_files,
+                                    report.queued_files
+                                )
+                            } else if report.queued_files > 0 {
+                                format!(
+                                    "{} synced file(s) queued for verified background reclamation; nothing is counted as free until GC confirms it.",
+                                    report.queued_files
+                                )
+                            } else {
+                                format!(
+                                    "Freed {} from {} synced files.",
+                                    human_bytes(report.freed_bytes),
+                                    report.evicted_files
+                                )
+                            },
+                        );
+                        self.finish_local_operation(
+                            crate::actions::StorageOperation::FreeSyncedFiles,
+                            Ok("Synced-file reclamation completed.".into()),
+                        );
+                    }
+                    Ok(Err(error)) => {
+                        self.sync_busy = false;
+                        self.sync_result = None;
+                        self.sync_message = Some(format!("Nothing was removed: {error}"));
+                        self.finish_local_operation(
+                            crate::actions::StorageOperation::FreeSyncedFiles,
+                            Err(format!("Nothing was removed: {error}")),
+                        );
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.sync_busy = false;
+                        self.sync_result = None;
+                        self.sync_message = Some(
                         "The sync storage request ended unexpectedly; nothing was assumed removed."
                             .into(),
                     );
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-        }
-        if Self::pressed(state, root, CLEAN_KEY) {
-            let _ = state.put(root, CLEAN_KEY, false);
-            if let Some(preview) = &self.cleanup {
-                let selected: Vec<usize> = (0..preview.items.len()).collect();
-                if desktop_policy::apply_cleanup(preview, &selected).is_ok() {
-                    self.snapshot = desktop_policy::scan_storage(&self.roots);
-                    self.cleanup = self
-                        .roots
-                        .app_cache
-                        .as_deref()
-                        .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
+                        self.finish_local_operation(
+                            crate::actions::StorageOperation::FreeSyncedFiles,
+                            Err("Sync storage service ended unexpectedly.".into()),
+                        );
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 }
             }
-        }
-        if Self::pressed(state, root, SYNC_FREE_KEY) {
-            let _ = state.put(root, SYNC_FREE_KEY, false);
-            if !self.sync_busy
-                && let Some(snapshot) = &self.sync_snapshot
-            {
-                let selected = reclaimable_selections(snapshot);
-                let (sender, receiver) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
-                    let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
-                        .and_then(|mut client| client.evict(selected))
-                        .map_err(|error| error.to_string());
-                    let _ = sender.send(result);
+            if Self::pressed(state, root, CLEAN_KEY) {
+                let _ = state.put(root, CLEAN_KEY, false);
+                if let Some(preview) = &self.cleanup {
+                    let selected: Vec<usize> = (0..preview.items.len()).collect();
+                    match desktop_policy::apply_cleanup(preview, &selected) {
+                        Ok(_) => {
+                            self.snapshot = desktop_policy::scan_storage(&self.roots);
+                            self.cleanup = self
+                                .roots
+                                .app_cache
+                                .as_deref()
+                                .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
+                            self.finish_local_operation(
+                                crate::actions::StorageOperation::CleanupCaches,
+                                Ok("Application caches cleaned.".into()),
+                            );
+                        }
+                        Err(error) => self.finish_local_operation(
+                            crate::actions::StorageOperation::CleanupCaches,
+                            Err(format!("Could not clean application caches: {error}")),
+                        ),
+                    }
+                } else {
+                    self.finish_local_operation(
+                        crate::actions::StorageOperation::CleanupCaches,
+                        Err("No reclaimable application cache is available.".into()),
+                    );
+                }
+            }
+            if Self::pressed(state, root, SYNC_FREE_KEY) {
+                let _ = state.put(root, SYNC_FREE_KEY, false);
+                if !self.sync_busy
+                    && let Some(snapshot) = &self.sync_snapshot
+                {
+                    let selected = reclaimable_selections(snapshot);
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+                            .and_then(|mut client| client.evict(selected))
+                            .map_err(|error| error.to_string());
+                        let _ = sender.send(result);
+                    });
+                    self.sync_busy = true;
+                    self.sync_result = Some(receiver);
+                } else {
+                    self.finish_local_operation(
+                        crate::actions::StorageOperation::FreeSyncedFiles,
+                        Err("No reclaimable synced files are available.".into()),
+                    );
+                }
+            }
+            if Self::pressed(state, root, DISKS_KEY) {
+                let _ = state.put(root, DISKS_KEY, false);
+                let result = os_actions::open_tool(ToolIntent::Disks {
+                    route: DisksRoute::Overview,
                 });
-                self.sync_busy = true;
-                self.sync_result = Some(receiver);
+                self.finish_local_operation(
+                    crate::actions::StorageOperation::OpenDisks,
+                    result.map(|()| "Opened Disks.".into()),
+                );
+            }
+            if Self::pressed(state, root, BACKUPS_KEY) {
+                let _ = state.put(root, BACKUPS_KEY, false);
+                let result = os_actions::open_tool(ToolIntent::Backups {
+                    route: BackupsRoute::Overview,
+                });
+                self.finish_local_operation(
+                    crate::actions::StorageOperation::OpenBackups,
+                    result.map(|()| "Opened Backups.".into()),
+                );
+            }
+            if let Some(c) = &mut self.composed {
+                c.sync(state, root);
             }
         }
-        if Self::pressed(state, root, DISKS_KEY) {
-            let _ = state.put(root, DISKS_KEY, false);
-            let _ = os_actions::open_tool(ToolIntent::Disks {
-                route: DisksRoute::Overview,
-            });
-        }
-        if Self::pressed(state, root, BACKUPS_KEY) {
-            let _ = state.put(root, BACKUPS_KEY, false);
-            let _ = os_actions::open_tool(ToolIntent::Backups {
-                route: BackupsRoute::Overview,
-            });
-        }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
+        if isolated {
+            self.local_doc = state;
+        } else {
+            *shared = state;
         }
     }
     fn build_layout(
@@ -531,8 +651,8 @@ mod tests {
     fn pane_reports_only_real_roots() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
-        std::fs::create_dir_all(cache.join("dev.qos.browser")).unwrap();
-        std::fs::write(cache.join("dev.qos.browser/http"), vec![0u8; 24]).unwrap();
+        std::fs::create_dir_all(cache.join("dev.tilo.browser")).unwrap();
+        std::fs::write(cache.join("dev.tilo.browser/http"), vec![0u8; 24]).unwrap();
         let pane = StoragePane::with_roots(StorageRoots {
             app_payloads: None,
             room_data: None,

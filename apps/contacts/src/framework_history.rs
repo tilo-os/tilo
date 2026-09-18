@@ -15,7 +15,7 @@ use vello::{
     peniko::{BlendMode, Fill},
 };
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.qos.contacts",
+    app_id: "dev.tilo.contacts",
     scopes: &[HistoryScopeDefinition {
         key: "contacts",
         title: "Address book",

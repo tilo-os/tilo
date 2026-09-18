@@ -82,6 +82,7 @@ impl StyleMenu {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.menu.set_text_scale(theme.text_scale);
         if self.is_open() {
             Widget::draw(
                 &mut self.menu,

@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! cargo run -p app-catalogue --example serve-test-registry -- \
-//!     --config-dir /tmp/qos-cfg --payload /bin/true
+//!     --config-dir /tmp/tilo-cfg --payload /bin/true
 //! ```
 //!
 //! Writes `registries.toml` into `--config-dir` pointing at itself,
@@ -54,7 +54,7 @@ fn main() {
 #[allow(clippy::too_many_lines)]
 fn run() -> Result<(), String> {
     let config_dir = PathBuf::from(arg("--config-dir").ok_or("--config-dir is required")?);
-    let package_id = arg("--package-id").unwrap_or_else(|| "dev.qos.sheets".to_string());
+    let package_id = arg("--package-id").unwrap_or_else(|| "dev.tilo.sheets".to_string());
     let name = arg("--name").unwrap_or_else(|| "Sheets".to_string());
     // The payload binary the packaged app runs. `/bin/true` proves the
     // install path; point it at a real client to prove the launch.

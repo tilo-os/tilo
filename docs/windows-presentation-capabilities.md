@@ -1,21 +1,21 @@
 # Windows presentation capability notes
 
 This is the implementation and operator note for the presentation pieces that
-depend on a particular Windows SKU, guest package, or GPU. It records what qOS
+depend on a particular Windows SKU, guest package, or GPU. It records what Tilo
 can probe and enforce; detection is not presented as hardware assignment.
 
 ## Native RemoteApp
 
 The Fedora 44 image installs the distribution packages `freerdp`,
-`xwayland-satellite`, and `virt-viewer` from qOS's digest-pinned RPM snapshot.
+`xwayland-satellite`, and `virt-viewer` from Tilo's digest-pinned RPM snapshot.
 Fedora's `freerdp` package provides `/usr/bin/xfreerdp`, and Fedora's
 `xwayland-satellite` package provides `/usr/bin/xwayland-satellite`. The latter
 forwards `-auth` and `-nolisten` to Xwayland in the 0.8 series used by the
-image. qOS checks both binaries and the active Wayland socket before selecting
+image. Tilo checks both binaries and the active Wayland socket before selecting
 native RAIL.
 
 FreeRDP's current command contract describes a published RemoteApp alias as
-`/app:program:||alias`. qOS supplies that exact prefix, certificate pinning,
+`/app:program:||alias`. Tilo supplies that exact prefix, certificate pinning,
 password input on stdin, and three bounded automatic reconnect attempts. It
 does not pass desktop-only dynamic-resolution, wallpaper, theme, Aero, or
 window-drag flags into a RAIL session. The upstream FreeRDP maintainer has
@@ -27,7 +27,7 @@ client Windows into a supported RemoteApp host. Windows Server with a licensed
 Remote Desktop Services RemoteApp deployment is the supported host. Client
 Windows still receives the native `TSAppAllowList` setup as best effort, with
 no RDP Wrapper, service patch, or replacement `termsrv` binary. If it rejects
-RAIL, qOS reports that backend failure and offers the explicitly labelled
+RAIL, Tilo reports that backend failure and offers the explicitly labelled
 whole-surface SPICE presentation.
 
 Primary references:
@@ -43,9 +43,9 @@ Primary references:
 
 ## Windows SPICE agent and resize
 
-qOS does not fetch `spice-guest-tools-latest.exe`. Provisioning already
+Tilo does not fetch `spice-guest-tools-latest.exe`. Provisioning already
 attaches `/usr/share/virtio-win/virtio-win.iso` from Fedora's `virtio-win`
-package. `Install-qOSRemoteApp.ps1` locates the versioned guest-tools bundle on
+package. `Install-TiloRemoteApp.ps1` locates the versioned guest-tools bundle on
 that read-only CD, requires its SHA-256 to match the installer in the host's
 digest-pinned RPM payload, requires Windows to validate its Authenticode
 publisher signature and trust chain, launches its visible passive installer,
@@ -65,7 +65,7 @@ so installing vdagent does not grant those capabilities.
 
 The guest-tools bundle and Windows vdagent are built from published open
 sources and distributed by Fedora's `virtio-win` package; its Fedora spec also
-ships corresponding sources and license notices. qOS redistributes only the
+ships corresponding sources and license notices. Tilo redistributes only the
 unchanged, repository-reviewed Fedora payload already present in the immutable
 image.
 
@@ -83,7 +83,7 @@ Primary references:
 
 ## Graphics on a one-GPU host
 
-`qos-windows-vm-control graphics-capabilities` is a read-only JSON probe which
+`tilo-windows-vm-control graphics-capabilities` is a read-only JSON probe which
 works before the Windows appliance exists. It examines only PCI display-class
 devices and the kernel's documented interfaces:
 
@@ -101,26 +101,26 @@ driver, or detaches a boot/display GPU.
 An owner may attach only a partition which the probe reports ready:
 
 ```console
-$ qos-windows-owner graphics-capabilities
-$ pkexec /usr/libexec/qos-windows-owner lifecycle shutdown
-$ pkexec /usr/libexec/qos-windows-owner graphics-attach sriov-vf 0000:03:00.1
+$ tilo-windows-owner graphics-capabilities
+$ pkexec /usr/libexec/tilo-windows-owner lifecycle shutdown
+$ pkexec /usr/libexec/tilo-windows-owner graphics-attach sriov-vf 0000:03:00.1
 # or: graphics-attach mdev 53764d0e-85a0-42b4-af5c-2046b460b1dc
-$ pkexec /usr/libexec/qos-windows-owner lifecycle start
+$ pkexec /usr/libexec/tilo-windows-owner lifecycle start
 ```
 
 The controller re-probes at attachment time, accepts only a display VF already
 bound to `vfio-pci` with an IOMMU group or an already-created `vfio-pci` mdev,
 and persists a `managed='no'` hostdev only while the singleton is off. It never
 unbinds or manages the parent device. Detach also requires shutdown and uses
-only qOS's root-only record of the exact device:
+only Tilo's root-only record of the exact device:
 
 ```console
-$ pkexec /usr/libexec/qos-windows-owner lifecycle shutdown
-$ pkexec /usr/libexec/qos-windows-owner graphics-detach
+$ pkexec /usr/libexec/tilo-windows-owner lifecycle shutdown
+$ pkexec /usr/libexec/tilo-windows-owner graphics-detach
 ```
 
 This makes prepared single-GPU partitions usable without pretending every GPU
-can be partitioned. The Windows vendor driver must support that VF/mdev; qOS
+can be partitioned. The Windows vendor driver must support that VF/mdev; Tilo
 does not claim hardware encode, RAIL, or SPICE framebuffer integration merely
 because PCI attachment succeeded.
 
@@ -129,7 +129,7 @@ graphics pipeline for RAIL or a 2D virtio-gpu/SPICE surface. Domain XML now
 states `accel3d='no'` explicitly: enabling virgl on the Linux host would not
 manufacture a supported Windows virgl driver. The Fedora virtio-win guest
 tools install the applicable Windows paravirtual driver and SPICE agent, which
-improves display, storage, input, and network behavior without taking qOS's
+improves display, storage, input, and network behavior without taking Tilo's
 only physical GPU away.
 
 Primary references:

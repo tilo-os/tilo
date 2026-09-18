@@ -1,7 +1,7 @@
 //! Data model shared across the store.
 //!
 //! Everything the UI renders is a [`StoreItem`] — one uniform shape whether
-//! the item came from a qOS registry or from Flathub. That merge happens in
+//! the item came from a Tilo registry or from Flathub. That merge happens in
 //! [`crate::sources`]; downstream (widget, filter, search) only ever sees
 //! [`StoreItem`].
 //!
@@ -20,9 +20,9 @@ use serde::{Deserialize, Serialize};
 /// label + colour (Add vs Install) without touching the source-of-truth.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StoreSource {
-    /// A qOS registry entry. The tuple carries the human-readable
-    /// registry name so the detail sheet can say "from qOS main".
-    Qos { registry_name: String },
+    /// A Tilo registry entry. The tuple carries the human-readable
+    /// registry name so the detail sheet can say "from Tilo main".
+    Tilo { registry_name: String },
     /// A Flathub-hosted Flatpak app.
     Flathub,
 }
@@ -31,7 +31,7 @@ impl StoreSource {
     /// Short label used on filter chips.
     pub fn short_label(&self) -> &'static str {
         match self {
-            StoreSource::Qos { .. } => "qOS",
+            StoreSource::Tilo { .. } => "Tilo",
             StoreSource::Flathub => "Flatpak",
         }
     }
@@ -70,7 +70,16 @@ pub enum InstalledState {
         available: String,
         #[serde(default)]
         pinned: bool,
+        /// Whether this package can be changed through the app-host
+        /// capability. Immutable system RPM packages are launchable but
+        /// cannot be pinned or removed from the user store.
+        #[serde(default = "default_user_managed")]
+        user_managed: bool,
     },
+}
+
+fn default_user_managed() -> bool {
+    true
 }
 
 impl InstalledState {
@@ -102,17 +111,17 @@ impl InstalledState {
 /// in [`crate::actions`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionKind {
-    /// qOS registry → **Open**. Fetch-on-demand (if not already
-    /// cached) + launch. The qOS path never shows a separate
+    /// Tilo registry → **Open**. Fetch-on-demand (if not already
+    /// cached) + launch. The Tilo path never shows a separate
     /// "Install" step — opening an app *is* adding it.
     Open,
-    /// qOS registry, installed → **Remove**.
+    /// Tilo registry, installed → **Remove**.
     Remove,
-    /// qOS registry, installed but older version available → **Update**.
+    /// Tilo registry, installed but older version available → **Update**.
     Update,
-    /// qOS registry, cached but not pinned → **Mark installed** (pin).
+    /// Tilo registry, cached but not pinned → **Keep on device** (pin).
     MarkInstalled,
-    /// qOS registry, pinned → **Installed** (click unpins).
+    /// Tilo registry, pinned → **Kept on device** (click allows cleanup).
     Unmark,
     /// Flatpak, not installed → **Install** (spawns `flatpak install`).
     FlatpakInstall,
@@ -123,11 +132,11 @@ pub enum ActionKind {
     /// Installing an app and then having no way to start it is not a
     /// store. An installed Flatpak's primary action is the same as
     /// every other installed app's — open it — and removal moves to the
-    /// secondary slot where the qOS side already keeps it.
+    /// secondary slot where the Tilo side already keeps it.
     ///
     /// It opens **unconfined**: a Flatpak brings its own sandbox and
-    /// cannot run inside qOS's, so the launch goes through
-    /// `qos-launcher run-host`, which says so. See `launcher::host`.
+    /// cannot run inside Tilo's, so the launch goes through
+    /// `tilo-launcher run-host`, which says so. See `launcher::host`.
     FlatpakOpen,
     /// Flatpak, installed → **Remove** (spawns `flatpak uninstall`).
     FlatpakRemove,
@@ -143,15 +152,15 @@ impl ActionKind {
             ActionKind::Open | ActionKind::FlatpakOpen => "Open",
             ActionKind::Remove | ActionKind::FlatpakRemove => "Remove",
             ActionKind::Update | ActionKind::FlatpakUpdate => "Update",
-            ActionKind::MarkInstalled => "Mark installed",
-            ActionKind::Unmark => "Installed",
+            ActionKind::MarkInstalled => "Keep on device",
+            ActionKind::Unmark => "Allow cleanup",
             ActionKind::FlatpakInstall => "Install",
             ActionKind::NeedsFlatpakHost => "Install flatpak first",
         }
     }
 
     /// Present-progress verb for the one card action currently running.
-    /// This stays coupled to the actual action identity so a qOS `Open`
+    /// This stays coupled to the actual action identity so a Tilo `Open`
     /// (which may fetch before launch) never misleadingly renders as a
     /// Flatpak installation, and vice versa.
     pub fn progress_label(self) -> &'static str {
@@ -159,8 +168,8 @@ impl ActionKind {
             Self::Open | Self::FlatpakOpen => "Starting",
             Self::Remove | Self::FlatpakRemove => "Removing",
             Self::Update | Self::FlatpakUpdate => "Updating",
-            Self::MarkInstalled => "Marking installed",
-            Self::Unmark => "Unmarking",
+            Self::MarkInstalled => "Keeping on device",
+            Self::Unmark => "Allowing cleanup",
             Self::FlatpakInstall => "Installing",
             Self::NeedsFlatpakHost => "Preparing Flatpak",
         }
@@ -187,10 +196,10 @@ pub struct StoreItemVersion {
     pub version: String,
     /// Unix seconds. `0` means the source didn't publish a release date.
     pub released_at_unix: u64,
-    /// Download URL — a `.qpkg` for qOS entries, `None` for Flatpak
+    /// Download URL — a `.qpkg` for Tilo entries, `None` for Flatpak
     /// (Flatpak installs go through the `flatpak` CLI, not a URL).
     pub download_url: Option<String>,
-    /// BLAKE3 hex root hash of the download. Only meaningful for qOS
+    /// BLAKE3 hex root hash of the download. Only meaningful for Tilo
     /// entries.
     pub root_hash_hex: Option<String>,
     /// Byte size. `0` when unknown.
@@ -200,8 +209,8 @@ pub struct StoreItemVersion {
 /// Unified store item: what every card renders from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreItem {
-    /// Stable identifier. For qOS this is the reverse-DNS package id
-    /// (`dev.qos.notes`). For Flathub it's the app-id
+    /// Stable identifier. For Tilo this is the reverse-DNS package id
+    /// (`dev.tilo.notes`). For Flathub it's the app-id
     /// (`org.gnome.Calculator`).
     pub id: String,
     /// Human-readable name shown in the card title.
@@ -220,7 +229,7 @@ pub struct StoreItem {
     pub screenshot_urls: Vec<String>,
     /// Project homepage URL, if known.
     pub homepage_url: Option<String>,
-    /// Source-code URL, if the item exposes it. qOS entries do; most
+    /// Source-code URL, if the item exposes it. Tilo entries do; most
     /// Flathub apps don't via the v2 API.
     pub source_url: Option<String>,
     /// Original local `.flatpakref` selected through file-open integration.
@@ -237,7 +246,7 @@ pub struct StoreItem {
     pub trust: StoreTrust,
     /// Newest → oldest.
     pub versions: Vec<StoreItemVersion>,
-    /// Publisher pubkey (hex) for qOS entries. `None` for Flatpak.
+    /// Publisher pubkey (hex) for Tilo entries. `None` for Flatpak.
     pub publisher_pubkey_hex: Option<String>,
     /// Cross-referenced install state at merge time.
     pub installed: InstalledState,
@@ -252,15 +261,15 @@ impl StoreItem {
 
     /// Which primary action the card should offer this frame.
     ///
-    /// For qOS apps the primary is always **Open** — it fetches the
+    /// For Tilo apps the primary is always **Open** — it fetches the
     /// package on demand the first time and launches it every time
     /// (never a distinct "Install" step). **Update** takes its place
     /// when a newer version is available. Flatpak apps keep the
     /// legacy Install / Remove semantics.
     pub fn action_kind(&self, flatpak_available: bool) -> ActionKind {
         match (&self.source, &self.installed, flatpak_available) {
-            (StoreSource::Qos { .. }, InstalledState::Not, _) => ActionKind::Open,
-            (StoreSource::Qos { .. }, InstalledState::Installed { .. }, _) => {
+            (StoreSource::Tilo { .. }, InstalledState::Not, _) => ActionKind::Open,
+            (StoreSource::Tilo { .. }, InstalledState::Installed { .. }, _) => {
                 if self.installed.update_available() {
                     ActionKind::Update
                 } else {
@@ -280,18 +289,23 @@ impl StoreItem {
         }
     }
 
-    /// The optional **pin** ("mark installed") toggle a qOS card
+    /// The optional **pin** ("mark installed") toggle a Tilo card
     /// offers once the app is cached. `None` for apps that aren't
     /// cached yet or for Flatpak apps (whose install *is* the pin).
     pub fn pin_action(&self) -> Option<ActionKind> {
         match (&self.source, &self.installed) {
-            (StoreSource::Qos { .. }, InstalledState::Installed { pinned, .. }) => {
-                Some(if *pinned {
-                    ActionKind::Unmark
-                } else {
-                    ActionKind::MarkInstalled
-                })
-            }
+            (
+                StoreSource::Tilo { .. },
+                InstalledState::Installed {
+                    pinned,
+                    user_managed,
+                    ..
+                },
+            ) if *user_managed => Some(if *pinned {
+                ActionKind::Unmark
+            } else {
+                ActionKind::MarkInstalled
+            }),
             _ => None,
         }
     }
@@ -299,12 +313,17 @@ impl StoreItem {
     /// The secondary **Remove** an installed card offers, if any.
     ///
     /// One function rather than a `bool` plus a guess at the caller,
-    /// because the two sources remove differently — `qos-install
+    /// because the two sources remove differently — `tilo-install
     /// uninstall` versus `flatpak uninstall` — and a caller that has to
     /// re-derive which is which is a caller that can get it wrong.
     pub fn remove_action(&self) -> Option<ActionKind> {
         match (&self.source, &self.installed) {
-            (StoreSource::Qos { .. }, InstalledState::Installed { .. }) => Some(ActionKind::Remove),
+            (
+                StoreSource::Tilo { .. },
+                InstalledState::Installed {
+                    user_managed: true, ..
+                },
+            ) => Some(ActionKind::Remove),
             (StoreSource::Flathub, InstalledState::Installed { .. }) => {
                 Some(ActionKind::FlatpakRemove)
             }
@@ -379,18 +398,19 @@ impl StoreItem {
 pub enum SourceFilter {
     /// Show everything.
     All,
-    /// Only qOS registry entries.
-    Qos,
+    /// Only Tilo registry entries.
+    Tilo,
     /// Only Flatpak entries.
     Flatpak,
-    /// Only installed items regardless of source.
+    /// Items already present on this device: cached Tilo apps or installed
+    /// Flatpaks. The variant name remains serialized for compatibility.
     Installed,
 }
 
 impl SourceFilter {
     pub const ALL: &'static [SourceFilter] = &[
         SourceFilter::All,
-        SourceFilter::Qos,
+        SourceFilter::Tilo,
         SourceFilter::Flatpak,
         SourceFilter::Installed,
     ];
@@ -398,9 +418,9 @@ impl SourceFilter {
     pub fn label(self) -> &'static str {
         match self {
             SourceFilter::All => "All",
-            SourceFilter::Qos => "qOS",
+            SourceFilter::Tilo => "Tilo",
             SourceFilter::Flatpak => "Flatpak",
-            SourceFilter::Installed => "Installed",
+            SourceFilter::Installed => "On device",
         }
     }
 
@@ -408,7 +428,7 @@ impl SourceFilter {
     pub fn accepts(self, item: &StoreItem) -> bool {
         match self {
             SourceFilter::All => true,
-            SourceFilter::Qos => matches!(item.source, StoreSource::Qos { .. }),
+            SourceFilter::Tilo => matches!(item.source, StoreSource::Tilo { .. }),
             SourceFilter::Flatpak => matches!(item.source, StoreSource::Flathub),
             SourceFilter::Installed => !matches!(item.installed, InstalledState::Not),
         }
@@ -419,9 +439,9 @@ impl SourceFilter {
 mod tests {
     use super::*;
 
-    fn qos_item(name: &str, installed: InstalledState, latest: &str) -> StoreItem {
+    fn tilo_item(name: &str, installed: InstalledState, latest: &str) -> StoreItem {
         StoreItem {
-            id: format!("dev.qos.{}", name.to_ascii_lowercase()),
+            id: format!("dev.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: format!("Some {name} app"),
             categories: vec!["Productivity".into()],
@@ -430,8 +450,8 @@ mod tests {
             homepage_url: None,
             source_url: None,
             install_ref_path: None,
-            source: StoreSource::Qos {
-                registry_name: "qOS main".into(),
+            source: StoreSource::Tilo {
+                registry_name: "Tilo main".into(),
             },
             trust: StoreTrust::PublisherSigned,
             versions: vec![StoreItemVersion {
@@ -476,29 +496,30 @@ mod tests {
             version: version.into(),
             available: available.into(),
             pinned,
+            user_managed: true,
         }
     }
 
     #[test]
     fn action_kind_reflects_source_and_install_state() {
-        // qOS not-installed → Open (fetch-on-demand + run).
-        let not_installed = qos_item("Notes", InstalledState::Not, "0.1.0");
+        // Tilo not-installed → Open (fetch-on-demand + run).
+        let not_installed = tilo_item("Notes", InstalledState::Not, "0.1.0");
         assert_eq!(not_installed.action_kind(true), ActionKind::Open);
         assert!(not_installed.pin_action().is_none());
 
-        // qOS installed + up-to-date → still Open (relaunch), and it
+        // Tilo installed + up-to-date → still Open (relaunch), and it
         // now offers the pin toggle + a secondary Remove.
-        let up_to_date = qos_item("Notes", qinstalled("0.1.0", "0.1.0", false), "0.1.0");
+        let up_to_date = tilo_item("Notes", qinstalled("0.1.0", "0.1.0", false), "0.1.0");
         assert_eq!(up_to_date.action_kind(true), ActionKind::Open);
         assert_eq!(up_to_date.pin_action(), Some(ActionKind::MarkInstalled));
         assert!(up_to_date.offers_remove());
 
-        // qOS installed but newer available → Update.
-        let stale = qos_item("Notes", qinstalled("0.1.0", "0.2.0", false), "0.2.0");
+        // Tilo installed but newer available → Update.
+        let stale = tilo_item("Notes", qinstalled("0.1.0", "0.2.0", false), "0.2.0");
         assert_eq!(stale.action_kind(true), ActionKind::Update);
 
-        // qOS pinned → pin toggle flips to Unmark.
-        let pinned = qos_item("Notes", qinstalled("0.1.0", "0.1.0", true), "0.1.0");
+        // Tilo pinned → pin toggle flips to Unmark.
+        let pinned = tilo_item("Notes", qinstalled("0.1.0", "0.1.0", true), "0.1.0");
         assert_eq!(pinned.pin_action(), Some(ActionKind::Unmark));
 
         let flatpak_not_installed = flatpak_item("Chess", InstalledState::Not);
@@ -527,7 +548,7 @@ mod tests {
             flatpak_installed.remove_action(),
             Some(ActionKind::FlatpakRemove),
             "removal moves to the secondary slot, and is Flatpak's own \
-             removal rather than qos-install's"
+             removal rather than tilo-install's"
         );
     }
 
@@ -539,17 +560,17 @@ mod tests {
     }
 
     /// The two sources remove differently, and the item is what knows
-    /// which. Routing a Flatpak through `qos-install uninstall` would
+    /// which. Routing a Flatpak through `tilo-install uninstall` would
     /// report "no such package installed" and leave it there.
     #[test]
     fn each_source_names_its_own_removal() {
-        let q = qos_item("Notes", qinstalled("1", "1", false), "1");
+        let q = tilo_item("Notes", qinstalled("1", "1", false), "1");
         assert_eq!(q.remove_action(), Some(ActionKind::Remove));
         let f = flatpak_item("Chess", qinstalled("1", "1", false));
         assert_eq!(f.remove_action(), Some(ActionKind::FlatpakRemove));
         // Nothing to remove until something is installed.
         assert_eq!(
-            qos_item("Notes", InstalledState::Not, "1").remove_action(),
+            tilo_item("Notes", InstalledState::Not, "1").remove_action(),
             None
         );
         assert_eq!(
@@ -560,12 +581,12 @@ mod tests {
 
     #[test]
     fn action_authorization_tracks_the_current_install_snapshot() {
-        let not_installed = qos_item("Notes", InstalledState::Not, "1");
+        let not_installed = tilo_item("Notes", InstalledState::Not, "1");
         assert!(not_installed.allows_action(ActionKind::Open, true));
         assert!(!not_installed.allows_action(ActionKind::Remove, true));
         assert!(!not_installed.allows_action(ActionKind::MarkInstalled, true));
 
-        let cached = qos_item("Notes", qinstalled("1", "1", false), "1");
+        let cached = tilo_item("Notes", qinstalled("1", "1", false), "1");
         assert!(cached.allows_action(ActionKind::Open, true));
         assert!(cached.allows_action(ActionKind::Remove, true));
         assert!(cached.allows_action(ActionKind::MarkInstalled, true));
@@ -574,16 +595,16 @@ mod tests {
 
     #[test]
     fn install_rank_orders_pinned_first() {
-        let not = qos_item("A", InstalledState::Not, "1");
-        let cached = qos_item("B", qinstalled("1", "1", false), "1");
-        let pinned = qos_item("C", qinstalled("1", "1", true), "1");
+        let not = tilo_item("A", InstalledState::Not, "1");
+        let cached = tilo_item("B", qinstalled("1", "1", false), "1");
+        let pinned = tilo_item("C", qinstalled("1", "1", true), "1");
         assert!(pinned.install_rank() > cached.install_rank());
         assert!(cached.install_rank() > not.install_rank());
     }
 
     #[test]
     fn search_matches_name_and_description_case_insensitive() {
-        let n = qos_item("Notes", InstalledState::Not, "0.1.0");
+        let n = tilo_item("Notes", InstalledState::Not, "0.1.0");
         assert!(n.matches_query(""));
         assert!(n.matches_query("Notes"));
         assert!(n.matches_query("notes"));
@@ -593,7 +614,7 @@ mod tests {
 
     #[test]
     fn fuzzy_score_prefers_name_prefix_hits() {
-        let mut n = qos_item("Notes", InstalledState::Not, "0.1.0");
+        let mut n = tilo_item("Notes", InstalledState::Not, "0.1.0");
         n.description = "great little app".into();
         let prefix = n.fuzzy_score("no");
         let mid = n.fuzzy_score("les");
@@ -610,13 +631,13 @@ mod tests {
 
     #[test]
     fn source_filter_gates_items() {
-        let q = qos_item("A", InstalledState::Not, "1");
+        let q = tilo_item("A", InstalledState::Not, "1");
         let f = flatpak_item("B", InstalledState::Not);
-        let installed_q = qos_item("C", qinstalled("1", "1", false), "1");
+        let installed_q = tilo_item("C", qinstalled("1", "1", false), "1");
         assert!(SourceFilter::All.accepts(&q));
         assert!(SourceFilter::All.accepts(&f));
-        assert!(SourceFilter::Qos.accepts(&q));
-        assert!(!SourceFilter::Qos.accepts(&f));
+        assert!(SourceFilter::Tilo.accepts(&q));
+        assert!(!SourceFilter::Tilo.accepts(&f));
         assert!(SourceFilter::Flatpak.accepts(&f));
         assert!(!SourceFilter::Flatpak.accepts(&q));
         assert!(SourceFilter::Installed.accepts(&installed_q));

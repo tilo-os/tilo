@@ -4,34 +4,37 @@
 # Rebuilt weekly by .forgejo/workflows/build-builder-image.yml. Fedora rather
 # than the runner's default Ubuntu image: the OS is Fedora-based, so the build
 # deps and their versions match what the image build uses.
-FROM github-assets AS github-assets
+FROM scratch AS external-assets
+COPY --from=github-assets / /
 
 FROM registry.fedoraproject.org/fedora:42
 
 # nodejs: actions/checkout. capnproto: runtime-collab build.rs.
 # vulkan-loader + mesa-vulkan-drivers: llvmpipe, so GPU tests run headless.
-# GNOME Text Editor, qt6-qtbase-examples and LibreOffice Writer are real-process
+# GNOME Text Editor, qt6-qtbase-examples and LibreOffice Writer are process-level
 # subjects for the legacy-app caret E2E. Keeping them in this weekly-built
 # image makes the path-gated PR job deterministic and avoids live dnf traffic.
 # bubblewrap is a test *subject*, not a tool — the launcher's confinement
-# suites drive the real sandbox and refuse to skip when it is absent. So is
+# suites drive the sandbox and refuse to skip when it is absent. So is
 # rust-analyzer, for the code editor's language-server suite, but it comes from
 # rustup below: the shims in /usr/local/cargo/bin precede /usr/bin, so a Fedora
 # package here would be shadowed by a shim reporting the component missing.
+# pulseaudio supplies only the private software endpoint started by
+# tools/with-headless-audio.sh; CI does not start or replace a host audio service.
 RUN dnf install -y \
       nodejs \
       capnproto \
-      gcc gcc-c++ make cmake perl perl-FindBin python3 git jq time yt-dlp \
+      gcc gcc-c++ make cmake perl perl-FindBin python3 git jq ripgrep time yt-dlp \
       clang clang-devel pkgconf-pkg-config \
       libxkbcommon-devel wayland-devel \
       libseat-devel libinput-devel systemd-devel libdrm-devel \
       mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
-      pipewire-devel \
+      pipewire-devel pulseaudio \
       ffmpeg-free-devel libva-devel \
       gstreamer1 gstreamer1-devel gstreamer1-plugins-base-devel \
       gstreamer1-plugins-good gstreamer1-plugins-bad-free \
       gstreamer1-plugin-openh264 \
-      openssl-devel sqlite-devel zlib-ng-compat-devel \
+      sqlite-devel zlib-ng-compat-devel \
       fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
       google-noto-sans-fonts google-noto-sans-mono-fonts \
       google-noto-serif-fonts google-noto-color-emoji-fonts \
@@ -46,6 +49,14 @@ RUN dnf install -y \
       bubblewrap \
       gnome-text-editor qt6-qtbase-examples libreoffice-writer \
     && dnf clean all
+
+# Required by production PDF capture tests. Use the same verified external
+# asset context as sccache; runtime/library upgrades do not touch Fedora packages.
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    --mount=type=bind,source=tools/ci/install-pdfium.sh,target=/tmp/install-pdfium.sh,ro \
+    --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
+    bash /tmp/install-pdfium.sh /tilo-assets /usr /tmp/tilo-assets.tsv
+ENV TILO_PDFIUM_LIB=/usr/lib64/libpdfium.so
 
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
@@ -68,15 +79,15 @@ RUN curl -fsSL https://sh.rustup.rs \
 ARG SCCACHE_VERSION=0.17.0
 ARG SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
 ARG SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     case "$(uname -m)" in \
       x86_64) sccache_arch=x86_64; sccache_sha="$SCCACHE_SHA256_X86_64" ;; \
       aarch64) sccache_arch=aarch64; sccache_sha="$SCCACHE_SHA256_AARCH64" ;; \
       *) echo "unsupported sccache architecture: $(uname -m)" >&2; exit 1 ;; \
     esac \
     && archive="sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl.tar.gz" \
-    && echo "${sccache_sha}  /qos-assets/${archive}" | sha256sum -c - \
-    && tar -xzf "/qos-assets/${archive}" -C /tmp \
+    && echo "${sccache_sha}  /tilo-assets/${archive}" | sha256sum -c - \
+    && tar -xzf "/tilo-assets/${archive}" -C /tmp \
     && install -m 0755 \
       "/tmp/sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl/sccache" \
       /usr/local/bin/sccache \
@@ -88,5 +99,5 @@ RUN cargo install --locked cargo-nextest cargo-deny cargo-machete \
 
 # Match the workspace's own check so a stale image fails loudly rather than
 # compiling against the wrong libraries.
-COPY tools/check-build-env.sh /usr/local/bin/qos-check-build-env
-RUN chmod +x /usr/local/bin/qos-check-build-env && qos-check-build-env
+COPY tools/ci/check-build-env.sh /usr/local/bin/tilo-check-build-env
+RUN chmod +x /usr/local/bin/tilo-check-build-env && tilo-check-build-env

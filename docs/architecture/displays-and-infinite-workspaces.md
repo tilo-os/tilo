@@ -1,4 +1,4 @@
-# Displays and qOS's infinite workspace plane
+# Displays and Tilo's infinite workspace plane
 
 Displays are viewports onto one continuous, infinitely scrolling workspace
 plane. They are not assigned independent numbered workspace stacks and
@@ -33,7 +33,7 @@ coordinates and stable surface IDs, never `monitor 1`.
 ## Applying changes safely
 
 Settings never probes DRM. The compositor writes an atomic capability snapshot
-to `$XDG_RUNTIME_DIR/qos/display-state.json`; the snapshot is tied to the
+to `$XDG_RUNTIME_DIR/tilo/display-state.json`; the snapshot is tied to the
 publisher's PID **and process start time**, so a file from a crashed session or
 reused PID is rejected. It contains exact KMS mode timings, usable output
 features, and the bounded ICC profile set. If no live compositor snapshot is

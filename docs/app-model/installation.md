@@ -1,6 +1,6 @@
-# Installation: `qos-install` and the on-disk layout
+# Installation: `tilo-install` and the on-disk layout
 
-`qos-install` is the one-command user-facing install surface. It verifies
+`tilo-install` is the one-command user-facing install surface. It verifies
 signatures, unpacks payloads, drops PATH shims, and launches. All state
 lives under `$XDG_DATA_HOME` and `$XDG_CONFIG_HOME`; no root, no system-
 wide side effects (except the packages themselves, which never need root).
@@ -8,39 +8,39 @@ wide side effects (except the packages themselves, which never need root).
 ## Verbs
 
 ```
-$ qos-install --help
-Install, launch, list, or remove qOS packages.
+$ tilo-install --help
+Install, launch, list, or remove Tilo packages.
 
-Usage: qos-install <COMMAND>
+Usage: tilo-install <COMMAND>
 
 Commands:
   install  Install a .qpkg into the local store. Verifies signature first
   update   Fetch a newer version and keep the app's per-room state
   list     List installed packages
   remove   Remove an installed package by id
-  run      Launch an installed package via qos-launcher
+  run      Launch an installed package via tilo-launcher
   inspect  Print manifest + install info for an installed package
   trust    Manage the trusted-attestor registry
   revoke   Revoke a publisher key
   revoked  List revoked keys
   path     Print the directory the shim installer writes PATH shims into
-  runtime  Manage installed qOS runtime bundles
+  runtime  Manage installed Tilo runtime bundles
 ```
 
-`add` is an alias for `install`, so `qos-install add ./app.qpkg` works for
-people who think of this as adding an app rather than installing a file.
+`add` is an alias for `install`, so `tilo-install add ./app.qpkg` is accepted
+as an alternative spelling.
 
-For catalogue apps, use `qos-catalogue install <package-id>` (or its `add`
+For catalogue apps, use `tilo-catalogue install <package-id>` (or its `add`
 alias). It resolves the configured repositories and pins both the expected
-publisher and package-root hash when handing the download to `qos-install`.
+publisher and package-root hash when handing the download to `tilo-install`.
 Repository management is available without hand-editing TOML:
 
 ```sh
-qos-catalogue repo list
-qos-catalogue repo add team https://apps.example.test --owner-key <64-hex-key>
-qos-catalogue repo disable team
-qos-catalogue repo enable team
-qos-catalogue repo remove team
+tilo-catalogue repo list
+tilo-catalogue repo add team https://apps.example.test --owner-key <64-hex-key>
+tilo-catalogue repo disable team
+tilo-catalogue repo enable team
+tilo-catalogue repo remove team
 ```
 
 Changes are atomically written to the same `registries.toml` used by the
@@ -50,7 +50,7 @@ Store. Repositories retain list order as their resolution priority.
 
 ```
 $XDG_DATA_HOME/                     # default: ~/.local/share
-  qos-apps/
+  tilo-apps/
     registry.toml                   # one entry per installed package
     payloads/
       <pkg-id>/                     # unpacked payload
@@ -58,10 +58,10 @@ $XDG_DATA_HOME/                     # default: ~/.local/share
         bin/…                       # entrypoint(s)
         …                           # everything from the payload/ tree
     bin/                            # PATH-shim install root
-      <command>                     # copy of qos-cli-shim
-      <command>.qos-shim            # sidecar (TOML)
+      <command>                     # copy of tilo-cli-shim
+      <command>.tilo-shim            # sidecar (TOML)
 
-  qos-runtime/
+  tilo-runtime/
     <version>/                      # e.g. 2026.07
       bundle.toml                   # manifest: version, root_hash, files[]
       lib/
@@ -71,57 +71,57 @@ $XDG_DATA_HOME/                     # default: ~/.local/share
         …
       etc/ld.so.cache
 
-  qos-rooms/                        # written by the launcher, not the installer
+  tilo-rooms/                        # written by the launcher, not the installer
     <room>/                         # workspace id, or `personal` for a launch with no workspace
       <pkg-id>/                     # the app's one writable directory
         .local/share/…              # HOME and every XDG_* point in here
 
 $XDG_CONFIG_HOME/                   # default: ~/.config
-  qos/
+  tilo/
     trusted-attestors.toml
     revoked-keys.toml
 ```
 
-Override `$XDG_DATA_HOME` per-app for tests, or set `QOS_APPS_DATA_DIR`
-to override just the qos-apps subtree (`qos-launcher::registry` reads
+Override `$XDG_DATA_HOME` per-app for tests, or set `TILO_APPS_DATA_DIR`
+to override just the tilo-apps subtree (`tilo-launcher::registry` reads
 the same var).
 
 ### The system store
 
 An OS image ships a second store, in the same shape, at
-`/usr/share/qos-apps/`:
+`/usr/share/tilo-apps/`:
 
 ```
-/usr/share/qos-apps/
+/usr/share/tilo-apps/
   registry.toml
   payloads/<pkg-id>/…
   bin/…
 ```
 
 It is written during the image build by `os/scripts/pack-apps.sh`, which
-runs the ordinary `qos-pkg pack` + `qos-install install` against a
-`QOS_APPS_DATA_DIR` pointed there — so every preinstalled package went
+runs the ordinary `tilo-pkg pack` + `tilo-install install` against a
+`TILO_APPS_DATA_DIR` pointed there — so every preinstalled package went
 through the same packing, signing and install path a user's own package
 goes through, and is described by the same `RegistryEntry` fields. It
 exists so a fresh install has apps to list before anyone has run
-`qos-install`.
+`tilo-install`.
 
-`qos-launcher::registry::list_installed` reads both stores, system first,
+`tilo-launcher::registry::list_installed` reads both stores, system first,
 and a user entry **shadows** a system entry with the same id — installing
 your own build of a preinstalled app replaces it in the launcher rather
-than producing a duplicate row. `QOS_APPS_SYSTEM_DIR` overrides the
-system path the same way `QOS_APPS_DATA_DIR` overrides the user one.
+than producing a duplicate row. `TILO_APPS_SYSTEM_DIR` overrides the
+system path the same way `TILO_APPS_DATA_DIR` overrides the user one.
 
 Being preinstalled grants a package nothing. The sandbox is still built
 from its manifest, the payload is still bound read-only, and the one
-writable directory still comes from `qos-rooms/` — there is no
+writable directory still comes from `tilo-rooms/` — there is no
 first-party branch anywhere in the launcher. The store is read-only only
-because it lives inside an immutable image; `qos-install` writes to the
+because it lives inside an immutable image; `tilo-install` writes to the
 user store, so removing or replacing a preinstalled app is a normal
 per-user install and needs no write access to `/usr`.
 
-`qos-rooms/` is the app-data side and belongs to the launcher: it creates
-`<room>/<pkg-id>` on first launch and binds it at `/run/qos/app`. Two rooms
+`tilo-rooms/` is the app-data side and belongs to the launcher: it creates
+`<room>/<pkg-id>` on first launch and binds it at `/run/tilo/app`. Two rooms
 are two directories, and no manifest field selects either. See
 [`sandbox.md`](./sandbox.md).
 
@@ -129,11 +129,11 @@ are two directories, and no manifest field selects either. See
 
 ```toml
 [[entry]]
-id                = "dev.qos.hello"
+id                = "dev.tilo.hello"
 version           = "0.1.0"
 package_id_hex    = "b8bde92e…"
-payload_root      = "/…/qos-apps/payloads/dev.qos.hello"
-manifest_path     = "/…/qos-apps/payloads/dev.qos.hello/manifest.toml"
+payload_root      = "/…/tilo-apps/payloads/dev.tilo.hello"
+manifest_path     = "/…/tilo-apps/payloads/dev.tilo.hello/manifest.toml"
 publisher_key_hex = "c4c627b5…"
 pinned            = false
 installed_at      = 1783176312
@@ -149,7 +149,7 @@ overwrite the same directory. If you need side-by-side versions (multiple
 ## `install`
 
 ```
-qos-install install <qpkg>
+tilo-install install <qpkg>
     [--pinned]                      # retained across size-pressure GC
     [--force]                       # overwrite same-id install
     [--require-package-root <hex>]  # bind to a signed registry version
@@ -176,35 +176,35 @@ Sequence:
    `bin/` per command.
 7. Append a `RegistryEntry` to `registry.toml`.
 
-Actual run against the hello demo:
+Example run against the hello demo:
 
 ```
-$ qos-install install /tmp/qos-hello-demo/qos-hello.qpkg
-qos-install: WARN — package self-signed by ed25519:c4c627b57… (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
-installed: dev.qos.hello 0.1.0
-  payload  : /tmp/qos-install-demo-data/qos-apps/payloads/dev.qos.hello
+$ tilo-install install /tmp/tilo-hello-demo/tilo-hello.qpkg
+tilo-install: WARN — package self-signed by ed25519:c4c627b57… (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
+installed: dev.tilo.hello 0.1.0
+  payload  : /tmp/tilo-install-demo-data/tilo-apps/payloads/dev.tilo.hello
   pinned   : false
-run with:  qos-install run dev.qos.hello
+run with:  tilo-install run dev.tilo.hello
 ```
 
 ## `list`
 
 ```
-$ qos-install list
+$ tilo-install list
 id                                version   pinned  attested-by         installed
-dev.qos.hello                     0.1.0     no      -                   0s ago
+dev.tilo.hello                     0.1.0     no      -                   0s ago
 ```
 
 ## `inspect`
 
 ```
-$ qos-install inspect dev.qos.hello
-id            : dev.qos.hello
+$ tilo-install inspect dev.tilo.hello
+id            : dev.tilo.hello
 version       : 0.1.0
 package-id    : qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3
 publisher     : ed25519:c4c627b57a518bc318c2854662b44f741345f6d55a45eb059d3b384048789e39
-payload-root  : /tmp/qos-install-demo-data/qos-apps/payloads/dev.qos.hello
-manifest      : /tmp/qos-install-demo-data/qos-apps/payloads/dev.qos.hello/manifest.toml
+payload-root  : /tmp/tilo-install-demo-data/tilo-apps/payloads/dev.tilo.hello
+manifest      : /tmp/tilo-install-demo-data/tilo-apps/payloads/dev.tilo.hello/manifest.toml
 pinned        : false
 attested-by   : (self-signed)
 installed     : 0 seconds ago
@@ -213,7 +213,7 @@ installed     : 0 seconds ago
 ## `run`
 
 ```
-qos-install run <pkg-id>
+tilo-install run <pkg-id>
     [--no-services]                 # skip service-fd resolution
     [--allow-missing-runtime]       # fall back to --minimal-libs if runtime bundle absent
     [--require-attestor <id>]       # re-check attestation at launch
@@ -221,23 +221,23 @@ qos-install run <pkg-id>
 ```
 
 Re-verifies the trust policy at launch (revocations may have arrived
-since install), then `exec()`s `qos-launcher run --manifest <path>
+since install), then `exec()`s `tilo-launcher run --manifest <path>
 --payload-root <path>`, which forks bwrap and starts the sandbox flow
 described in [`sandbox.md`](./sandbox.md).
 
-Because `run` uses `exec()`, this process's exit code IS the launcher's.
+Because `run` uses `exec()`, this process's exit code is the launcher's.
 
 ## `remove`
 
 ```
-$ qos-install remove dev.qos.hello
-removed: dev.qos.hello
+$ tilo-install remove dev.tilo.hello
+removed: dev.tilo.hello
 ```
 
 Deletes the payload dir, un-writes any registered PATH shims, and drops
 the registry entry.
 
-It does not touch the app's data. `<data home>/qos-rooms/<room>/<pkg-id>`
+It does not touch the app's data. `<data home>/tilo-rooms/<room>/<pkg-id>`
 survives removal, one directory per room the app was opened in; deleting
 those is a separate, deliberate act.
 
@@ -247,47 +247,47 @@ Prints the PATH-shim install directory + a snippet the user can drop
 into their shell rc:
 
 ```
-$ qos-install path
-/tmp/qos-install-demo-data/qos-apps/bin
+$ tilo-install path
+/tmp/tilo-install-demo-data/tilo-apps/bin
 
 # Prepend the above to your shell's PATH so CLI commands
-# installed via `qos-install install <pkg.qpkg>` are picked up.
+# installed via `tilo-install install <pkg.qpkg>` are picked up.
 #
 # bash / zsh (~/.bashrc, ~/.zshrc):
-export PATH="/tmp/qos-install-demo-data/qos-apps/bin:$PATH"
+export PATH="/tmp/tilo-install-demo-data/tilo-apps/bin:$PATH"
 #
 # fish (~/.config/fish/config.fish):
-fish_add_path -pg /tmp/qos-install-demo-data/qos-apps/bin
+fish_add_path -pg /tmp/tilo-install-demo-data/tilo-apps/bin
 ```
 
 ## `runtime`
 
-Manages the shared `qos-runtime/<version>` bundles. See
+Manages the shared `tilo-runtime/<version>` bundles. See
 [`packaging.md`](./packaging.md) for what a runtime bundle is
 (essentially: ld-linux + libc + libgcc_s + friends, content-addressed).
 
 ```
-$ qos-install runtime install --version 2026.07 --from-host --force
-installed runtime bundle: qos-runtime/2026.07
-  path     : /tmp/qos-install-demo-data/qos-runtime/2026.07
+$ tilo-install runtime install --version 2026.07 --from-host --force
+installed runtime bundle: tilo-runtime/2026.07
+  path     : /tmp/tilo-install-demo-data/tilo-runtime/2026.07
   files    : 11
   root-hash: blake3:1e7dedc8881ab7e8225b0c680e832e2332e3b1c14406f34fd1b2a70edec3e58d
 
-$ qos-install runtime list
+$ tilo-install runtime list
 version               path
-2026.07               /tmp/qos-install-demo-data/qos-runtime/2026.07
+2026.07               /tmp/tilo-install-demo-data/tilo-runtime/2026.07
 
-$ qos-install runtime verify 2026.07
-verified: qos-runtime/2026.07
-  path     : /tmp/qos-install-demo-data/qos-runtime/2026.07
+$ tilo-install runtime verify 2026.07
+verified: tilo-runtime/2026.07
+  path     : /tmp/tilo-install-demo-data/tilo-runtime/2026.07
   files    : 11
   root-hash: blake3:1e7dedc8881ab7e8225b0c680e832e2332e3b1c14406f34fd1b2a70edec3e58d
 
-$ qos-install runtime path --version 2026.07
-/tmp/qos-install-demo-data/qos-runtime/2026.07
+$ tilo-install runtime path --version 2026.07
+/tmp/tilo-install-demo-data/tilo-runtime/2026.07
 
-$ qos-install runtime remove 2026.07
-removed runtime bundle: qos-runtime/2026.07
+$ tilo-install runtime remove 2026.07
+removed runtime bundle: tilo-runtime/2026.07
 ```
 
 `--from-host` copies from the running host root; `--from <path>` copies
@@ -297,9 +297,9 @@ pairs — any byte change flips the root hash.
 
 Discovery order the launcher uses:
 
-1. `$XDG_DATA_HOME/qos-runtime/<version>/` — per-user (installed via
-   `qos-install runtime install`).
-2. `/usr/lib/qos-runtime/<version>/` — system-wide (baked into an OS
+1. `$XDG_DATA_HOME/tilo-runtime/<version>/` — per-user (installed via
+   `tilo-install runtime install`).
+2. `/usr/lib/tilo-runtime/<version>/` — system-wide (baked into an OS
    image).
 
 ## Updates
@@ -320,7 +320,7 @@ overwrite; a mistaken `install` without `--force` on a same-id package
 refuses:
 
 ```
-qos-install: package dev.qos.hello already installed (use --force to overwrite)
+tilo-install: package dev.tilo.hello already installed (use --force to overwrite)
 ```
 
 ## Trust management
@@ -328,12 +328,12 @@ qos-install: package dev.qos.hello already installed (use --force to overwrite)
 See [`trust.md`](./trust.md) for the full model. Quick reference:
 
 ```
-$ qos-install trust add --id "qos-curated/2026.07" --pubkey <hex> --scope "all"
-$ qos-install trust list
-$ qos-install trust remove <id>
+$ tilo-install trust add --id "tilo-curated/2026.07" --pubkey <hex> --scope "all"
+$ tilo-install trust list
+$ tilo-install trust remove <id>
 
-$ qos-install revoke <pubkey_hex> --reason "compromised 2026-Q3"
-$ qos-install revoked list
+$ tilo-install revoke <pubkey_hex> --reason "compromised 2026-Q3"
+$ tilo-install revoked list
 ```
 
 Next: [`trust.md`](./trust.md) — publisher identities, attestation

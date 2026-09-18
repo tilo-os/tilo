@@ -22,7 +22,7 @@ use crate::speaker::{Speaker, Utterance, rate_to_ssip};
 
 /// The application identity reported to speech-dispatcher (`SET self CLIENT_NAME
 /// user:component:instance`). speechd uses this for per-client settings.
-const SSIP_USER: &str = "qos";
+const SSIP_USER: &str = "tilo";
 const SSIP_COMPONENT: &str = "screen-reader";
 
 /// A [`Speaker`] that speaks through speech-dispatcher over SSIP.
@@ -46,7 +46,7 @@ impl SpeechDispatcherSpeaker {
     }
 
     /// Connect with an explicit `user:component` identity. Mainly for callers
-    /// that want to distinguish multiple qOS clients to the daemon.
+    /// that want to distinguish multiple Tilo clients to the daemon.
     ///
     /// # Errors
     ///
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn identity_constants_are_sane() {
-        assert_eq!(super::SSIP_USER, "qos");
+        assert_eq!(super::SSIP_USER, "tilo");
         assert_eq!(super::SSIP_COMPONENT, "screen-reader");
     }
 

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Bake a signed qOS runtime bundle for the current architecture.
+# Bake a signed Tilo runtime bundle for the current architecture.
 #
 # What this does:
-#   1. Ensures `qos-runtime-bundle` is built (uses cargo, honours SCCACHE).
+#   1. Ensures `tilo-runtime-bundle` is built (uses cargo, honours SCCACHE).
 #   2. Generates a fresh Ed25519 identity if $IDENTITY_JSON isn't already
 #      populated.
-#   3. Signs a bundle at $OUT_DIR/qos-runtime/$RUNTIME_VERSION/ from $FROM.
+#   3. Signs a bundle at $OUT_DIR/tilo-runtime/$RUNTIME_VERSION/ from $FROM.
 #   4. Writes the publisher pubkey to $OUT_DIR/runtime-bundle-publisher.hex
 #      and (if $TRUST_LIST is set) appends it to that file.
 #
 # Envs (overridable):
 #   RUNTIME_VERSION     bundle version tag written into bundle.toml + the
-#                       system path (/usr/lib/qos-runtime/<v>/) [default: 1]
+#                       system path (/usr/lib/tilo-runtime/<v>/) [default: 1]
 #   FROM                host prefix to copy source paths from [default: /]
 #   ARCH                target architecture [default: $(uname -m)]
 #   OUT_DIR             where the baked bundle + pubkey land
@@ -20,7 +20,7 @@
 #   IDENTITY_JSON       path to reuse a signing key. Generated fresh if
 #                       missing.
 #   TRUST_LIST          if set, append the pubkey to this file after signing.
-#   BUNDLE_BIN          path to a prebuilt qos-runtime-bundle binary. Cargo
+#   BUNDLE_BIN          path to a prebuilt tilo-runtime-bundle binary. Cargo
 #                       is used if unset.
 #   EXTRA_LIBS          whitespace-separated absolute paths to extra shared
 #                       objects to fold into the bundle's lib/ (empty by
@@ -59,11 +59,11 @@ EXTRA_LIBS="${EXTRA_LIBS:-}"
 msg() { printf '[bake-runtime-bundle] %s\n' "$*" >&2; }
 die() { printf '[bake-runtime-bundle] ERROR: %s\n' "$*" >&2; exit 1; }
 
-# 1. Locate the qos-runtime-bundle binary.
+# 1. Locate the tilo-runtime-bundle binary.
 if [ -z "$BUNDLE_BIN" ]; then
-    msg "building qos-runtime-bundle (release)"
+    msg "building tilo-runtime-bundle (release)"
     (cd "$REPO_DIR" && cargo build --release -p runtime-bundle)
-    BUNDLE_BIN="$REPO_DIR/target/release/qos-runtime-bundle"
+    BUNDLE_BIN="$REPO_DIR/target/release/tilo-runtime-bundle"
 fi
 if [ ! -x "$BUNDLE_BIN" ]; then
     echo "[bake-runtime-bundle] $BUNDLE_BIN not found or not executable" >&2
@@ -87,7 +87,7 @@ else
 fi
 
 # 3. Sign + bake.
-BUNDLE_DIR="$OUT_DIR/qos-runtime/$RUNTIME_VERSION"
+BUNDLE_DIR="$OUT_DIR/tilo-runtime/$RUNTIME_VERSION"
 msg "baking bundle at $BUNDLE_DIR (arch=$ARCH, from=$FROM)"
 
 # Shared objects to fold in beside the loader/libc set. Checked before the

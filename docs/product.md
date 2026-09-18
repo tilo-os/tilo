@@ -1,8 +1,7 @@
-# qOS product vision — apps & system surface
+# Tilo product vision — apps & system surface
 
-The bar: everything we ship must be **genuinely usable for most users**, not just
-toy/demo use cases. No mock/example data — apps start empty and operate on real
-state. Design is governed by `ui/HIG.md`; per-app open issues are tracked in
+Everything we ship must be usable for most users. Apps start empty and operate
+on user state. Design is governed by `crates/sdk/ui-core/HIG.md`; per-app open issues are tracked in
 the current [`ui-ux-overview.md`](ui-ux-overview.md) release ledger; this
 document is the canonical scope + intent.
 
@@ -55,7 +54,7 @@ the ordering can later become personal as usage history exists.
   - **Decision: bespoke chat + conferencing over MoQ** (not Matrix). Reasoning: we
     already have most of what Matrix buys, and its model (home servers) is
     architecturally incompatible with our ad-hoc P2P + auth model — bolting our auth
-    onto Matrix would be customization hell.
+    onto Matrix would require extensive customization.
   - Chat features: channels tied to workspaces (details TBD); permission-system
     integration; real-time + persistent messages; edits + edit history; emoji
     reactions; full media support (via FUSE fs); FUSE fs file sharing.
@@ -69,6 +68,9 @@ the ordering can later become personal as usage history exists.
 - **E-book reader** — annotations, bookmarks, comments (shares primitives with the
   PDF reader and word processor).
 - **2FA TOTP client**.
+- **Passwords and secrets** — encrypted credential custody, password generation,
+  exact-origin app autofill, and explicit once/session consent through the
+  system credential broker.
 - **Weather**.
 - **Maps** — OSM-based; car/bike/foot navigation (Organic Maps / OsmAnd class); strong
   **public-transport** support (à la oeffi / public-transport-enabler); a custom
@@ -79,8 +81,6 @@ the ordering can later become personal as usage history exists.
   detection, full-text search (objects/events/descriptions/people/dates) with proper
   complex-query support, galleries + shared galleries, dedup, simple RAW editing
   (rotate/flip/basic filters), timeline-oriented.
-- **Password manager** — very high-risk to build; not until much later. Option:
-  Bitwarden compatibility.
 
 ### Maker software (need not be separate apps)
 Code editor/IDE, git client, container/distrobox manager, API testing tool
@@ -91,17 +91,17 @@ diff/merge tool, text-snippet tool, hex editor.
 
 - **Settings** — network, mouse/keyboard, time, users, printers (visual previews of
   all print jobs + real printer status/settings — placement TBD), external account
-  management (email/WebDAV/Nextcloud/…), qOS identity management (transfer to/from
+  management (email/WebDAV/Nextcloud/…), Tilo identity management (transfer to/from
   device), update manager.
 - **Themes** — browse, change, customize, create themes.
 - **Firewall**.
 - **Software store** — open questions: how does installing work? how are apps
   distributed? role of Flatpaks? how does proper app isolation work?
-- **Remote machines** — start remote desktop sessions (to other qOS: render locally,
-  stream data only!); VNC + SSH. Goal: seamlessly operate your own NAS/homeserver,
-  which is just another qOS system running your selected workspaces in a "relay mode."
+- **Remote machines** — start remote desktop sessions (to other Tilo: render locally,
+  stream data only!); VNC + SSH. Goal: operate your own NAS/homeserver,
+  which runs your selected workspaces in "relay mode."
 - **Backups / snapshots** manager.
-- **ISO / installation creator** — install arbitrary .isos; install qOS (to USB or
+- **ISO / installation creator** — install arbitrary .isos; install Tilo (to USB or
   disk; option to make a USB a permanent install); customizable install options
   (user creation etc.) incl. fully headless install.
 - **Activity monitor**.

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "base_revision": "91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20",
+  "patches": [
+    {
+      "file": "0001-fix-sve-byte-addressing.patch",
+      "sha256": "c9980336098b9eb83adc2c2f2327638ef36424f7a7a1e2758364dcd5e51df709"
+    },
+    {
+      "file": "0002-reject-arm-vector-prctls-for-x86.patch",
+      "sha256": "e3233adc3b55d5d6dee18755d26f254e47f4a24fbe51de5a932274e258c7d493"
+    }
+  ]
+}

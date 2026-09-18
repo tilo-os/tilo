@@ -1,6 +1,6 @@
 # Typography
 
-qOS text has one central rule: measurement and painting must use the same
+Tilo text has one central rule: measurement and painting must use the same
 `TextStyle`. A style contains the font size, line-height multiplier, weight,
 italic state, and family. Passing one value through the whole layout pipeline
 prevents wrapping, clipping, and baseline drift.
@@ -47,7 +47,7 @@ let subsection = Text::new("Keyboard shortcuts")
 Body, label, caption, reading, and code roles remain static text. This makes
 screen-reader heading navigation match the visible hierarchy by default.
 
-Use an explicit style only when text has a real typographic requirement that
+Use an explicit style only when text has a specific typographic requirement that
 does not match a role:
 
 ```rust
@@ -67,9 +67,9 @@ let pull_quote = Text::new("Make the important thing unmistakable.")
 code. New code should prefer complete styles.
 
 Every application crate is kept behind this public boundary by
-`tools/check_app_text_contract.py`, which runs in the fast lint workflow and
+`tools/policy/check_app_text_contract.py`, which runs in the fast lint workflow and
 the pre-commit hook. Applications may compose `Text`, the shared input/editor
-widgets, `RichTextLayout`, or `TextRenderer` for a genuinely custom-painted
+widgets, `RichTextLayout`, or `TextRenderer` for a custom-painted
 surface. They may not depend on the private shaping crates, instantiate a
 second font system, emit raw Vello glyphs, or repeat the product font-family
 names. This keeps fallback, OpenType features, variable axes, wrapping and

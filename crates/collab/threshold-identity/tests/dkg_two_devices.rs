@@ -131,14 +131,14 @@ fn dkg_rotates_group_public_key_away_from_bootstrap() {
 }
 
 #[test]
-fn two_device_threshold_sign_verifies_via_qos_collab_types() {
+fn two_device_threshold_sign_verifies_via_tilo_collab_types() {
     // HEADLINE INTEROP TEST.
     let (a, b) = run_two_device_dkg();
     let payload: Vec<u8> = b"approve cluster invite".to_vec();
     let canon = canonical_bytes(&payload).unwrap();
     let sig = threshold_sign(&a, &b, &canon);
 
-    // Verify via qos-collab-types' Ed25519 path — the verifier the rest
+    // Verify via tilo-collab-types' Ed25519 path — the verifier the rest
     // of the system uses. If this passes, the threshold sig is
     // byte-compatible with ed25519-dalek.
     verify_event(&payload, &sig, &a.group_public_key)

@@ -40,13 +40,13 @@ use winit::event::WindowEvent;
 
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::tilo_actions::{
     ActionArgs, ActionContract, ActionParam, ActionSpec, Availability, DiscoveryScope,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
     Resource, ResultSpec, RetryPolicy,
 };
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::{Affordance, NavShell, ShellMode, Widget};
 
 use crate::actions::WeatherAction;
@@ -87,7 +87,7 @@ pub struct WeatherApp {
     seeded_doc: bool,
     seed_sample_document: bool,
     last_activity: Instant,
-    resource_refresh_invocation: Option<qos_actions::InvocationId>,
+    resource_refresh_invocation: Option<tilo_actions::InvocationId>,
     resource_refresh_failure: Option<String>,
     resource_refresh_tickets: std::collections::HashSet<u64>,
     actions: ui::ActionHost,
@@ -113,23 +113,24 @@ impl WeatherApp {
             doc,
             crate::actions::WEATHER_ACTION_TYPE,
             &dispatched,
-            qos_actions::ActionContext::for_action("org.qos.Weather", "Weather", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Weather", "Weather", action),
         );
     }
 
     /// Replay every user-owned mutation reported by the core through the
     /// framework action host. The core has already updated its render model;
     /// this is the authoritative history/collaboration write.
-    fn flush_durable_actions(&mut self, doc: &mut AutoCommit) {
+    fn flush_durable_actions(&mut self, doc: &mut AutoCommit) -> bool {
         self.adopt_document_changes(doc);
         let actions = self.core.borrow_mut().take_durable_actions();
         if actions.is_empty() {
-            return;
+            return false;
         }
         for action in actions {
             self.dispatch_durable_action(doc, &action);
         }
         self.doc_heads = doc.get_heads();
+        true
     }
 
     /// Create first-run state through the canonical action route, including
@@ -146,16 +147,6 @@ impl WeatherApp {
                 },
             );
         }
-        self.dispatch_durable_action(
-            doc,
-            &WeatherAction::SetLocationOrder {
-                ids: model
-                    .locations
-                    .iter()
-                    .map(|location| location.id.to_string())
-                    .collect(),
-            },
-        );
         if let Some(location) = model.selected_location() {
             self.dispatch_durable_action(
                 doc,
@@ -303,8 +294,16 @@ impl WeatherApp {
         if self.service.is_none() {
             self.service = Some(WeatherService::spawn());
         }
-        if !self.initial_fetch_done {
-            self.core.borrow_mut().refresh_all();
+        if !self.initial_fetch_done
+            && self.seeded_doc
+            && !self.core.borrow().model.locations.is_empty()
+        {
+            // The record may arrive after the first empty sync. Do not spend
+            // its initial refresh before its saved locations are available.
+            // A freshly selected search result already has a fetch queued.
+            if !self.core.borrow().is_fetching() {
+                self.core.borrow_mut().refresh_all();
+            }
             self.initial_fetch_done = true;
         }
     }
@@ -371,6 +370,7 @@ impl WeatherApp {
     ///   to capture the pushed detail + the Back button).
     /// * `"drag"` — a reorder drag of the second saved place is in flight.
     /// * `"scrolled"` — the forecast parked at the bottom.
+    /// * `"detail_scrolled"` — narrow pushed forecast parked at the bottom.
     /// * `"collapsed"` — the city list collapsed to its rail (wide viewport).
     /// * `"search"` — the live-search dropdown showing geocoded matches.
     /// * `"search_loading"` — the dropdown's in-flight loading state.
@@ -397,6 +397,11 @@ impl WeatherApp {
             }
             "drag" => self.core.borrow_mut().seed_drag(),
             "scrolled" => self.core.borrow_mut().seed_scrolled(),
+            "detail_scrolled" => {
+                self.nav.show_detail();
+                self.nav.snap();
+                self.core.borrow_mut().seed_scrolled();
+            }
             "collapsed" => {
                 self.set_overview_collapsed(true);
                 self.core.borrow_mut().set_overview_collapsible(true);
@@ -497,7 +502,7 @@ impl Widget for WeatherApp {
                             })
                         }
                         _ => EncodedAction {
-                            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                             payload: b"name, country, and valid latitude/longitude are required"
                                 .to_vec(),
                         },
@@ -531,7 +536,7 @@ impl Widget for WeatherApp {
                 retry: RetryPolicy::Idempotent,
                 execution: ExecutionMode::Background { cancellable: false },
                 discovery: DiscoveryScope::Launchable,
-                result: ResultSpec::None,
+                result: ResultSpec::Job,
                 ..ActionContract::default()
             }));
         }
@@ -578,7 +583,7 @@ impl Widget for WeatherApp {
                             retry: RetryPolicy::Idempotent,
                             execution: ExecutionMode::Background { cancellable: false },
                             discovery: DiscoveryScope::Launchable,
-                            result: ResultSpec::None,
+                            result: ResultSpec::Job,
                             ..ActionContract::default()
                         }));
                     }
@@ -591,15 +596,16 @@ impl Widget for WeatherApp {
                         resource.actions.push(spec.reversible());
                     }
                     if index > 0 {
-                        let mut order: Vec<_> =
-                            core.model.locations.iter().map(|item| item.id).collect();
-                        let moved = order.remove(index);
-                        order.insert(0, moved);
+                        let rank = core
+                            .model
+                            .locations
+                            .first()
+                            .map_or(0.0, |first| first.order_rank - 1024.0);
                         if let Ok(spec) = ActionSpec::immediate(
                             "move-to-top",
                             "Move to top",
                             crate::actions::WEATHER_ACTION_TYPE,
-                            &crate::actions::location_order_action(&order),
+                            &crate::actions::location_rank_action(location.id, rank),
                         ) {
                             resource.actions.push(spec.reversible());
                         }
@@ -668,7 +674,7 @@ impl Widget for WeatherApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
@@ -704,11 +710,11 @@ impl Widget for WeatherApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self.resource_refresh_invocation != Some(invocation) {
             return None;
         }
@@ -719,9 +725,9 @@ impl Widget for WeatherApp {
         self.resource_refresh_invocation = None;
         Some(
             if let Some(message) = self.resource_refresh_failure.take() {
-                qos_actions::InvocationUpdate::Failed {
+                tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "weather.refresh_failed".into(),
                         message,
                         details: None,
@@ -729,12 +735,23 @@ impl Widget for WeatherApp {
                     },
                 }
             } else {
-                qos_actions::InvocationUpdate::Succeeded {
+                tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 }
             },
         )
+    }
+
+    fn update(&mut self, state: &mut AutoCommit, _path: &ObjId) -> bool {
+        // Semantic actions reach the owning pane directly, so finish their
+        // canonical writes and navigation here as well as on pointer input.
+        let changed = self.flush_durable_actions(state);
+        let navigate = self.core.borrow_mut().take_nav_request();
+        if let Some(NavIntent::ShowDetail) = navigate {
+            self.nav.show_detail();
+        }
+        changed || navigate.is_some()
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -926,6 +943,15 @@ impl Widget for WeatherApp {
             core.is_fetching() || core.search_pending()
         };
         core_busy || self.nav.needs_idle_sync()
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.core
+            .borrow()
+            .search_deadline()
+            .into_iter()
+            .chain(self.nav.next_wake_deadline())
+            .min()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1256,6 +1282,55 @@ mod interaction_tests {
     }
 
     #[test]
+    fn accessible_city_selection_commits_and_navigates_without_pointer_input() {
+        let mut h = Harness::new(420.0, 720.0);
+        let results = crate::sample::sample_geocode_results();
+        let chosen = results[1].id;
+        h.app
+            .core
+            .borrow_mut()
+            .seed_search_highlighted("Par", results);
+        let tree = h.app.nav.children()[0].accessibility().unwrap();
+        let target = tree.children[0].children[1]
+            .action_target
+            .as_deref()
+            .unwrap();
+        assert!(h.app.nav.children_mut()[0].perform_semantic_action(
+            target,
+            &ui::a11y::Action::Activate,
+            &mut h.state.doc,
+            &h.state.root,
+        ));
+        assert!(h.app.update(&mut h.state.doc, &h.state.root));
+        let persisted = WeatherDoc::read_model(&h.state.doc);
+        assert_eq!(persisted.selected_location().unwrap().id, chosen);
+        assert!(h.app.nav.is_detail_shown());
+        assert!(!h.app.update(&mut h.state.doc, &h.state.root));
+    }
+
+    #[test]
+    fn initial_refresh_waits_for_restored_locations() {
+        let mut app = WeatherApp::live();
+        app.seeded_doc = true;
+        app.ensure_service();
+        assert!(!app.initial_fetch_done);
+        assert!(app.core.borrow_mut().take_outbox().is_empty());
+        app.core.borrow_mut().model = crate::sample::sample_model();
+        app.ensure_service();
+        assert!(app.initial_fetch_done);
+        let requests = app.core.borrow_mut().take_outbox();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| matches!(r, Request::Forecast { .. }))
+                .count(),
+            4
+        );
+        app.ensure_service();
+        assert!(app.core.borrow_mut().take_outbox().is_empty());
+    }
+
+    #[test]
     fn live_starts_empty_with_no_fabricated_places_or_readings() {
         // A fresh live launch must invent nothing: neither cities the user never
         // added nor readings for them. It lands on the onboarding empty state and
@@ -1423,7 +1498,7 @@ mod interaction_tests {
         h.key(Key::Named(NamedKey::ArrowDown), None);
         assert_eq!(
             h.app.core.borrow().search_highlight_label().as_deref(),
-            Some("Paris — Île-de-France, France"),
+            Some("FR · Paris, Île-de-France"),
             "Arrow Down exposes the first suggestion's place context"
         );
         h.key(Key::Named(NamedKey::Enter), None);
@@ -1835,6 +1910,7 @@ mod interaction_tests {
         h.redraw();
         assert_eq!(h.app.core.borrow().model.selected, 0);
         h.app.core.borrow_mut().take_outbox(); // drain startup
+        let _ = h.app.take_committed_action(); // drain first-run bootstrap
 
         h.key(Key::Named(NamedKey::ArrowDown), None);
         assert_eq!(
@@ -1852,12 +1928,12 @@ mod interaction_tests {
         assert!(fetched, "moving to a city queues its forecast fetch");
         assert_eq!(
             WeatherDoc::read_model(&h.state.doc).selected,
-            1,
-            "the new selection persisted to the CRDT"
+            0,
+            "navigating this window does not move a collaborator's durable default"
         );
         assert!(
-            h.app.take_committed_action().is_some(),
-            "the keyboard selection crossed one canonical ActionHost history boundary"
+            h.app.take_committed_action().is_none(),
+            "transient keyboard navigation does not create shared history noise"
         );
 
         h.key(Key::Named(NamedKey::ArrowUp), None);
@@ -1927,7 +2003,33 @@ mod interaction_tests {
     #[test]
     fn location_resources_separate_view_default_and_reorder_actions() {
         let h = Harness::new(1280.0, 720.0);
-        let root = Widget::resources(&h.app, &h.state.doc).pop().unwrap();
+        let resources = Widget::resources(&h.app, &h.state.doc);
+        let handlers: std::collections::HashSet<String> = h
+            .app
+            .local_resource_operation_handlers()
+            .iter()
+            .map(|handler| (*handler).to_string())
+            .collect();
+        let mut registry = tilo_actions::ActionRegistry::default();
+        crate::actions::register(&mut registry);
+        let violations = tilo_actions::validate_surface(&resources, &registry, &handlers);
+        assert!(violations.is_empty(), "{violations:?}");
+        let root = &resources[0];
+        for resource in std::iter::once(root).chain(root.children.iter()) {
+            let refresh = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "refresh")
+                .unwrap();
+            assert_eq!(refresh.contract.result, ResultSpec::Job);
+            assert!(
+                refresh
+                    .contract
+                    .result
+                    .validate(&tilo_actions::ActionOutput::default())
+                    .is_ok()
+            );
+        }
         let first = &root.children[0];
         let second = &root.children[1];
         assert!(first.actions.iter().any(|action| action.id == "open"));
@@ -1963,7 +2065,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn durable_action_does_not_drop_same_frame_device_local_provider_cache() {
+    fn local_navigation_does_not_drop_device_local_provider_cache() {
         let mut h = Harness::new(1280.0, 720.0);
         let id = h.app.core.borrow().model.locations[0].id;
         {
@@ -1978,7 +2080,7 @@ mod interaction_tests {
 
         h.key(Key::Named(NamedKey::ArrowDown), None);
 
-        assert_eq!(WeatherDoc::read_model(&h.state.doc).selected, 1);
+        assert_eq!(WeatherDoc::read_model(&h.state.doc).selected, 0);
         assert_eq!(
             h.app.core.borrow().model.snapshots[&id].current.temperature,
             31.25,
@@ -2070,6 +2172,36 @@ mod interaction_tests {
     }
 
     #[test]
+    fn detail_keyboard_controls_scroll_hourly_forecast_and_refresh() {
+        let mut h = Harness::new(1280.0, 720.0);
+        h.redraw();
+        assert!(
+            h.app.core.borrow().hourly_max_scroll() > 0.0,
+            "the populated hourly strip overflows at the standard detail width"
+        );
+        h.app.core.borrow_mut().take_outbox(); // drain startup requests
+
+        h.key(Key::Named(NamedKey::ArrowRight), None);
+        assert!(
+            h.app.core.borrow().hourly_scroll_x() > 0.0,
+            "Right Arrow pages the overflowing hourly forecast"
+        );
+        h.key(Key::Named(NamedKey::Home), None);
+        assert_eq!(h.app.core.borrow().hourly_scroll_x(), 0.0);
+
+        h.key(Key::Character(SmolStr::new("r")), Some("r"));
+        assert!(
+            h.app
+                .core
+                .borrow_mut()
+                .take_outbox()
+                .iter()
+                .any(|request| matches!(request, Request::Forecast { .. })),
+            "R refreshes the forecast through the same queued network path as the button"
+        );
+    }
+
+    #[test]
     fn root_accessibility_announces_weather_status() {
         let mut h = Harness::new(1280.0, 720.0);
         h.redraw();
@@ -2106,7 +2238,7 @@ mod history_regressions {
             app.service = Some(service);
             app.live = true;
             app.initial_fetch_done = true;
-            let invocation = qos_actions::InvocationId::new();
+            let invocation = tilo_actions::InvocationId::new();
             app.start_resource_operation(
                 invocation,
                 OperationKind::Effect,
@@ -2191,11 +2323,11 @@ mod history_regressions {
                 .unwrap();
             if failed {
                 assert!(
-                    matches!(outcome,qos_actions::InvocationUpdate::Failed{invocation:id,error} if id==invocation && error.message=="actual provider failure")
+                    matches!(outcome,tilo_actions::InvocationUpdate::Failed{invocation:id,error} if id==invocation && error.message=="actual provider failure")
                 );
             } else {
                 assert!(
-                    matches!(outcome,qos_actions::InvocationUpdate::Succeeded{invocation:id,..} if id==invocation)
+                    matches!(outcome,tilo_actions::InvocationUpdate::Succeeded{invocation:id,..} if id==invocation)
                 );
             }
             assert!(app.core.borrow().is_fetching());
@@ -2212,7 +2344,7 @@ mod history_regressions {
         app.service = Some(service);
         app.live = true;
         app.initial_fetch_done = true;
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.start_resource_operation(
             invocation,
             OperationKind::Effect,
@@ -2224,7 +2356,7 @@ mod history_regressions {
         .unwrap();
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &d, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Failed { .. })
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
     }
 
@@ -2252,7 +2384,7 @@ mod history_regressions {
         app.service = Some(service);
         app.live = true;
         app.initial_fetch_done = true;
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.start_resource_operation(
             invocation,
             OperationKind::Effect,
@@ -2267,7 +2399,7 @@ mod history_regressions {
         d.get_heads();
         app.sync(&mut d, &automerge::ROOT);
         assert!(
-            matches!(app.poll_resource_operation(invocation,false,&d,&automerge::ROOT),Some(qos_actions::InvocationUpdate::Failed{error,..}) if error.message.contains("before the refresh was dispatched"))
+            matches!(app.poll_resource_operation(invocation,false,&d,&automerge::ROOT),Some(tilo_actions::InvocationUpdate::Failed{error,..}) if error.message.contains("before the refresh was dispatched"))
         );
         assert!(requests.try_iter().next().is_none());
     }
@@ -2361,7 +2493,7 @@ mod history_round1_tests {
     fn accepted_worker_death(restore: bool) {
         let (mut app, mut doc, requests, responses) = fixture();
         app.initial_fetch_done = true;
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.start_resource_operation(
             invocation,
             OperationKind::Effect,
@@ -2393,7 +2525,7 @@ mod history_round1_tests {
         drop(requests);
         drop(responses);
         assert!(
-            matches!(app.poll_resource_operation(invocation,false,&doc,&ROOT),Some(qos_actions::InvocationUpdate::Failed{invocation:id,error}) if id==invocation && error.message.contains("disconnected")),
+            matches!(app.poll_resource_operation(invocation,false,&doc,&ROOT),Some(tilo_actions::InvocationUpdate::Failed{invocation:id,error}) if id==invocation && error.message.contains("disconnected")),
             "accepted request must fail when its worker dies; restore={restore}"
         );
         assert!(!app.core.borrow().is_fetching());
@@ -2424,7 +2556,7 @@ mod history_round1_tests {
         for complete_all in [false, true] {
             let (mut app, doc, requests, responses) = fixture();
             app.initial_fetch_done = true;
-            let invocation = qos_actions::InvocationId::new();
+            let invocation = tilo_actions::InvocationId::new();
             app.start_resource_operation(
                 invocation,
                 OperationKind::Effect,
@@ -2447,11 +2579,11 @@ mod history_round1_tests {
             let outcome = app.poll_resource_operation(invocation, false, &doc, &ROOT);
             if complete_all {
                 assert!(
-                    matches!(outcome, Some(qos_actions::InvocationUpdate::Succeeded { invocation:id, .. }) if id==invocation)
+                    matches!(outcome, Some(tilo_actions::InvocationUpdate::Succeeded { invocation:id, .. }) if id==invocation)
                 );
             } else {
                 assert!(
-                    matches!(outcome, Some(qos_actions::InvocationUpdate::Failed { invocation:id, error }) if id==invocation && error.message.contains("disconnected"))
+                    matches!(outcome, Some(tilo_actions::InvocationUpdate::Failed { invocation:id, error }) if id==invocation && error.message.contains("disconnected"))
                 );
             }
             assert!(
@@ -2473,7 +2605,7 @@ mod history_round1_tests {
         let target = app.core.borrow().model.locations[0].id;
         let other = app.core.borrow().model.locations[1].id;
         let payload = serde_json::to_vec(&target.to_string()).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.start_resource_operation(
             invocation,
             OperationKind::Effect,
@@ -2525,11 +2657,11 @@ mod history_round1_tests {
         let outcome = app.poll_resource_operation(invocation, false, &doc, &ROOT);
         if own_failure {
             assert!(
-                matches!(outcome,Some(qos_actions::InvocationUpdate::Failed{invocation:id,error}) if id==invocation && error.message=="own provider failure")
+                matches!(outcome,Some(tilo_actions::InvocationUpdate::Failed{invocation:id,error}) if id==invocation && error.message=="own provider failure")
             );
         } else {
             assert!(
-                matches!(outcome,Some(qos_actions::InvocationUpdate::Succeeded{invocation:id,..}) if id==invocation),
+                matches!(outcome,Some(tilo_actions::InvocationUpdate::Succeeded{invocation:id,..}) if id==invocation),
                 "only the requested place's requests belong to this invocation"
             );
         }

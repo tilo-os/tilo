@@ -25,7 +25,7 @@ use crate::{
     RuntimeRegistry, SandboxExecutor, ServiceError, VmDelegate,
 };
 
-const MANAGER_APP_ID: &str = "dev.qos.windows";
+const MANAGER_APP_ID: &str = "dev.tilo.windows";
 const MAX_HANDOFF_BYTES: usize = 4 * 1024;
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_CLIENT_WORKERS: usize = 8;
@@ -60,7 +60,7 @@ pub trait CapabilityAuthority: Send + Sync + 'static {
 
 /// Compositor-owned, single-use registry of launcher children. `/proc` facts
 /// are only corroboration; this record is the authority that a launch was
-/// actually initiated by qOS for this app/workspace.
+/// actually initiated by Tilo for this app/workspace.
 pub trait TrustedLauncherRegistry: Send + Sync + 'static {
     fn consume(
         &self,
@@ -163,7 +163,7 @@ where
             .explain(
                 query,
                 VmFallback::Disabled,
-                "dev.qos.windows.preview",
+                "dev.tilo.windows.preview",
                 &[],
                 now_unix(),
             )
@@ -517,7 +517,7 @@ where
     let active_workers = Arc::new(AtomicUsize::new(0));
     let thread_active_workers = Arc::clone(&active_workers);
     let listener_thread = std::thread::Builder::new()
-        .name("qos-windows-compat".to_string())
+        .name("tilo-windows-compat".to_string())
         .spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 reap_finished_workers(&thread_workers);
@@ -540,7 +540,7 @@ where
                         let authority = Arc::clone(&authority);
                         let authenticator = authenticator.clone();
                         let worker = std::thread::Builder::new()
-                            .name("qos-windows-compat-client".to_string())
+                            .name("tilo-windows-compat-client".to_string())
                             .spawn(move || {
                                 let _permit = permit;
                                 if authenticator.authenticate(&stream).is_ok() {
@@ -822,7 +822,7 @@ where
         }
         ProtocolRequest::Install { source_name, .. } => {
             let capabilities = authority
-                .capabilities_for(&handoff.workspace_id, "dev.qos.windows.import")
+                .capabilities_for(&handoff.workspace_id, "dev.tilo.windows.import")
                 .map_err(SessionError::Authority)?;
             let source = File::from(descriptor.ok_or(SessionError::DescriptorMissing)?);
             match managed.install(source, &source_name, &handoff.workspace_id, &capabilities)? {
@@ -848,7 +848,7 @@ where
                 .filter(|pending| now_unix().is_some_and(|now| now <= pending.expires_at_unix))
                 .ok_or(SessionError::VmInstallConfirmationExpired)?;
             let capabilities = authority
-                .capabilities_for(&handoff.workspace_id, "dev.qos.windows.import")
+                .capabilities_for(&handoff.workspace_id, "dev.tilo.windows.import")
                 .map_err(SessionError::Authority)?;
             let receipt = managed.install_in_capsule(
                 source,
@@ -904,7 +904,7 @@ where
         ProtocolRequest::RetryInstall { capsule_id, .. } => {
             require_authorized_capsule(managed, allowed_entry_ids, &capsule_id)?;
             let capabilities = authority
-                .capabilities_for(&handoff.workspace_id, "dev.qos.windows.import")
+                .capabilities_for(&handoff.workspace_id, "dev.tilo.windows.import")
                 .map_err(SessionError::Authority)?;
             let receipt =
                 managed.retry_install(&capsule_id, &handoff.workspace_id, &capabilities)?;
@@ -946,7 +946,7 @@ where
         ProtocolRequest::VendorUninstall { capsule_id, .. } => {
             require_authorized_capsule(managed, allowed_entry_ids, &capsule_id)?;
             let capabilities = authority
-                .capabilities_for(&handoff.workspace_id, "dev.qos.windows.import")
+                .capabilities_for(&handoff.workspace_id, "dev.tilo.windows.import")
                 .map_err(SessionError::Authority)?;
             let receipt =
                 managed.vendor_uninstall(&capsule_id, &handoff.workspace_id, &capabilities)?;
@@ -1058,7 +1058,7 @@ where
             ),
             // The resource broker gives every Wine/UMU launch a fresh
             // playback-only PipeWire/Pulse graph. A startup failure is a
-            // launch error, not an imaginary unavailable feature in the UI.
+            // launch error, not an unavailable feature in the UI.
             audio_output_available: true,
             audio_unavailable_reason: None,
             installation_status,
@@ -1291,7 +1291,7 @@ impl SessionClient {
 
     /// Take ownership of the launcher-inherited `compat` descriptor.
     pub fn from_env() -> Result<Self, SessionError> {
-        let raw = std::env::var("QOS_SVC_COMPAT_FD")
+        let raw = std::env::var("TILO_SVC_COMPAT_FD")
             .map_err(|_| SessionError::ServiceFdMissing)?
             .parse::<i32>()
             .map_err(|_| SessionError::ServiceFdMissing)?;
@@ -1310,7 +1310,7 @@ impl SessionClient {
     }
 
     /// Send one request together with the already-open file selected by the
-    /// standard qOS/XDG portal.  The only consumers are the installation
+    /// standard Tilo/XDG portal.  The only consumers are the installation
     /// flow and the descriptor-only `RemoteApp` file-launch flow; neither ever
     /// accepts a pathname from the client.
     pub fn request_with_file(

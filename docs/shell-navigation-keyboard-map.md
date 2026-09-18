@@ -1,9 +1,9 @@
-# qOS shell navigation and keyboard map
+# Tilo shell navigation and keyboard map
 
 Status: implemented contract, 2026-09-01. This is the compact product map for
 shell navigation. The executable chord ownership table remains in
-`shell/src/compositor/client_input.rs`; overlay-specific behavior lives in
-`shell/src/shell/overlay_host.rs`.
+`crates/session/shell/src/compositor/client_input.rs`; overlay-specific behavior lives in
+`crates/session/shell/src/shell/overlay_host/mod.rs`.
 
 ## Containment and focus
 
@@ -23,7 +23,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Intent | Keyboard | Pointer route |
 |---|---|---|
 | Search current app | Ctrl+K | Search |
-| Search all qOS | Super+K, Super+Space; Alt+Space when nested | Search |
+| Search all Tilo | Super+K, Super+Space; Alt+Space when nested | Search |
 | Open/close Overview | Super+Tab | Overview button |
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |

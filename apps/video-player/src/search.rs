@@ -4,7 +4,7 @@
 //! therefore goes through the same fresh action door as a click or an agent,
 //! rather than retaining a closure over a previously-opened file.
 
-use qos_actions::ActionAddress;
+use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
@@ -26,7 +26,7 @@ impl VideoPlayerSearchProvider {
         clippy::too_many_lines,
         reason = "all canonical search addresses live together so UI activation cannot drift from resource publication"
     )]
-    pub fn new(ctx: &PlayerResourceCtx<'_>) -> Self {
+    pub fn new(ctx: &PlayerResourceCtx<'_>, shared: &crate::shared::SharedLibrary) -> Self {
         let provider = Self {
             catalog: SearchCatalog::new(VIDEO_PLAYER_SEARCH_KIND),
         };
@@ -158,6 +158,60 @@ impl VideoPlayerSearchProvider {
                 .with_icon(Icon::Play),
             );
         }
+        for playlist in shared.playlists.iter().take(crate::shared::MAX_SHARED_ROWS) {
+            let _ = provider.catalog.upsert(
+                crate::actions::playlist_resource_id(&playlist.id),
+                format!("{}\0shared playlist\0collaboration", playlist.name),
+                SearchResult::for_action(
+                    VIDEO_PLAYER_SEARCH_KIND,
+                    &playlist.name,
+                    ActionAddress::new(crate::actions::playlist_resource_id(&playlist.id), "show"),
+                )
+                .with_subtitle("Shared playlist")
+                .with_icon(Icon::ListVideo),
+            );
+        }
+        for annotation in shared
+            .annotations
+            .iter()
+            .take(crate::shared::MAX_SHARED_ROWS)
+        {
+            let title = if annotation.text.is_empty() {
+                format!("Bookmark at {:.1}s", annotation.time_ms as f64 / 1000.0)
+            } else {
+                annotation.text.clone()
+            };
+            let action = if ctx.media.has_media
+                && ctx.media.can_control_transport
+                && ctx.media.media_ref.as_deref() == Some(annotation.media_ref.as_str())
+            {
+                "jump"
+            } else {
+                "show"
+            };
+            let subtitle = if action == "jump" {
+                format!("Jump to {:.1}s", annotation.time_ms as f64 / 1000.0)
+            } else {
+                format!("Timestamp · {:.1}s", annotation.time_ms as f64 / 1000.0)
+            };
+            let _ = provider.catalog.upsert(
+                crate::actions::annotation_resource_id(&annotation.id),
+                format!(
+                    "{title}\0timestamp annotation\0bookmark\0{}",
+                    annotation.time_ms
+                ),
+                SearchResult::for_action(
+                    VIDEO_PLAYER_SEARCH_KIND,
+                    &title,
+                    ActionAddress::new(
+                        crate::actions::annotation_resource_id(&annotation.id),
+                        action,
+                    ),
+                )
+                .with_subtitle(subtitle)
+                .with_icon(Icon::Pin),
+            );
+        }
         provider
     }
 }
@@ -217,6 +271,7 @@ mod tests {
             media: MediaAvailability {
                 has_media: true,
                 source_id: Some("fixture://munich".into()),
+                media_ref: Some("fixture-media://munich".into()),
                 can_control_transport: true,
             },
             settings: PlaybackSettingsState {
@@ -229,7 +284,8 @@ mod tests {
             chapters: &chapters,
             library: crate::actions::LocalLibraryState::default(),
         };
-        let provider = VideoPlayerSearchProvider::new(&context);
+        let provider =
+            VideoPlayerSearchProvider::new(&context, &crate::shared::SharedLibrary::default());
         let hits = provider.search("München");
         assert!(hits.iter().any(|result| {
             result.action_address()
@@ -264,6 +320,7 @@ mod tests {
             media: MediaAvailability {
                 has_media: false,
                 source_id: None,
+                media_ref: None,
                 can_control_transport: true,
             },
             settings: PlaybackSettingsState {
@@ -283,7 +340,8 @@ mod tests {
                 recent: Vec::new(),
             },
         };
-        let provider = VideoPlayerSearchProvider::new(&context);
+        let provider =
+            VideoPlayerSearchProvider::new(&context, &crate::shared::SharedLibrary::default());
         let hit = provider
             .search("Family")
             .into_iter()
@@ -318,6 +376,7 @@ mod tests {
             media: MediaAvailability {
                 has_media: true,
                 source_id: Some("fixture://large".into()),
+                media_ref: Some("fixture-media://large".into()),
                 can_control_transport: true,
             },
             settings: PlaybackSettingsState {
@@ -330,7 +389,8 @@ mod tests {
             chapters: &[],
             library: crate::actions::LocalLibraryState::default(),
         };
-        let provider = VideoPlayerSearchProvider::new(&context);
+        let provider =
+            VideoPlayerSearchProvider::new(&context, &crate::shared::SharedLibrary::default());
         let first = provider.search_page("Ωmega", None, 64, 4);
         assert!(first.inspected <= 64);
         let mut page = first;
@@ -343,5 +403,101 @@ mod tests {
             1,
             "late Unicode match is eventually found"
         );
+    }
+
+    #[test]
+    fn shared_playlists_and_annotations_search_to_canonical_show_actions() {
+        let context = PlayerResourceCtx {
+            title: "No media",
+            media: MediaAvailability {
+                has_media: false,
+                source_id: None,
+                media_ref: None,
+                can_control_transport: true,
+            },
+            settings: PlaybackSettingsState {
+                autoplay: true,
+                loop_enabled: false,
+                rate: 1.0,
+            },
+            audio_tracks: &[],
+            subtitle_tracks: &[],
+            chapters: &[],
+            library: crate::actions::LocalLibraryState::default(),
+        };
+        let shared = crate::shared::SharedLibrary {
+            playlists: vec![crate::shared::Playlist {
+                id: "team".into(),
+                name: "Team review".into(),
+            }],
+            items: Vec::new(),
+            annotations: vec![crate::shared::TimestampAnnotation {
+                id: "cut".into(),
+                media_ref: "media".into(),
+                time_ms: 12_500,
+                text: "Check this cut".into(),
+            }],
+        };
+        let provider = VideoPlayerSearchProvider::new(&context, &shared);
+        assert!(
+            provider
+                .search("Team review")
+                .iter()
+                .any(|hit| hit.action_address()
+                    == Some(ActionAddress::new(
+                        crate::actions::playlist_resource_id("team"),
+                        "show"
+                    )))
+        );
+        assert!(
+            provider
+                .search("Check this cut")
+                .iter()
+                .any(|hit| hit.action_address()
+                    == Some(ActionAddress::new(
+                        crate::actions::annotation_resource_id("cut"),
+                        "show"
+                    )))
+        );
+    }
+
+    #[test]
+    fn matching_current_media_prefers_the_marker_jump_action() {
+        let context = PlayerResourceCtx {
+            title: "Review.mp4",
+            media: MediaAvailability {
+                has_media: true,
+                source_id: Some("fixture://review-open-2".into()),
+                media_ref: Some("fixture-media://review".into()),
+                can_control_transport: true,
+            },
+            settings: PlaybackSettingsState {
+                autoplay: true,
+                loop_enabled: false,
+                rate: 1.0,
+            },
+            audio_tracks: &[],
+            subtitle_tracks: &[],
+            chapters: &[],
+            library: crate::actions::LocalLibraryState::default(),
+        };
+        let shared = crate::shared::SharedLibrary {
+            playlists: Vec::new(),
+            items: Vec::new(),
+            annotations: vec![crate::shared::TimestampAnnotation {
+                id: "review-cut".into(),
+                media_ref: "fixture-media://review".into(),
+                time_ms: 12_500,
+                text: "Check this cut".into(),
+            }],
+        };
+        let provider = VideoPlayerSearchProvider::new(&context, &shared);
+        assert!(provider.search("Check this cut").iter().any(|hit| {
+            hit.action_address()
+                == Some(ActionAddress::new(
+                    crate::actions::annotation_resource_id("review-cut"),
+                    "jump",
+                ))
+        }));
     }
 }

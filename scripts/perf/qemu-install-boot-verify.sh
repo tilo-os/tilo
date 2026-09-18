@@ -7,7 +7,7 @@
 # /usr/lib/bootc/install/*.toml baked into the image. If bib produced a
 # qcow2 whose ESP holds systemd-bootx64.efi + loader.conf (and NOT
 # grubx64.efi), the swap is live for every install path that shares that
-# code path — including the custom installer (`qos-install` -> `bootc install
+# code path — including the custom installer (`tilo-install` -> `bootc install
 # to-disk`) and the Anaconda `ostreecontainer` install path.
 #
 # Fully non-interactive. No window pops open; nothing waits for a keypress.
@@ -54,7 +54,7 @@ done
 
 # The env where qemu-system-x86_64, qemu-img, OVMF and socat live. On the
 # reference machine that's a Fedora distrobox; on a host with those tools
-# native, set QOS_DISTROBOX="" (see os/dev/_common.sh). The ESP inspection
+# native, set TILO_DISTROBOX="" (see os/dev/_common.sh). The ESP inspection
 # needs mtools (mattrib + mdir) on the host — that's the only requirement
 # outside the distrobox.
 # shellcheck disable=SC1091
@@ -66,7 +66,7 @@ CONSOLE="$OUT_DIR/boot.console.log"
 # AF_UNIX socket paths are capped at 108 bytes; a deep $OUT_DIR overflows
 # that on the qemu -monitor arg. Keep the monitor socket under a short
 # fixed prefix so the -monitor arg stays valid regardless of $OUT_DIR.
-SHORT_RUN="${SHORT_RUN:-/tmp/qos-vb-$$}"
+SHORT_RUN="${SHORT_RUN:-/tmp/tilo-vb-$$}"
 MON="$SHORT_RUN/mon.sock"
 PID="$OUT_DIR/qemu.pid"
 LOG="$OUT_DIR/verify.log"
@@ -121,7 +121,7 @@ EOF
 }
 
 firmware_setup
-inenv "cp -f '$QOS_FW_VARS' '$VARS'"
+inenv "cp -f '$TILO_FW_VARS' '$VARS'"
 
 # Backing-file snapshot so the input qcow2 stays byte-for-byte identical.
 # Same trick scripts/perf/qemu-boot-measure.sh uses.
@@ -214,7 +214,7 @@ BOOT_ARGS="\
   -nic user,model=virtio-net-pci \
   -monitor unix:$MON,server,nowait \
   -serial file:$CONSOLE \
-  -pidfile $PID -name qos-systemd-boot-verify"
+  -pidfile $PID -name tilo-systemd-boot-verify"
 
 inenv "setsid nohup qemu-system-x86_64 $BOOT_ARGS >/dev/null 2>&1 & disown"
 sleep 2

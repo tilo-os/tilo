@@ -1,0 +1,67 @@
+#!/usr/bin/python3
+"""Validate actual cycle option parsing and both VM boot argument paths."""
+from pathlib import Path
+import subprocess
+import hashlib
+import os
+import tempfile
+import unittest
+
+SCRIPT = (Path(__file__).resolve().parents[1] / 'dev/test-installer-cycle.sh').read_text()
+
+
+class CycleGraphicsTests(unittest.TestCase):
+    def test_selected_graphics_reaches_both_boots_with_either_tpm_mode(self):
+        parser = SCRIPT[SCRIPT.index('medium="${1:?'):SCRIPT.index('[ -f "$medium" ]')]
+        blocks = []
+        for boot in ('boot-installer', 'boot-target'):
+            start = SCRIPT.index('if [ "$software_tpm" -eq 1 ]; then\n  "$vm" ' + boot)
+            end = SCRIPT.index('\nfi', start) + 3
+            blocks.append(SCRIPT[start:end])
+        script = 'set -euo pipefail\n' + parser + '\nvm=fixture\nfixture() { printf "%s|%s|%s\\n" "$1" "$2" "$3"; }\n' + '\n'.join(blocks)
+        for graphics, flag in (('gl', '--gl'), ('software', '--2d')):
+            for tpm in (False, True):
+                args = ['bash', '-c', script, 'cycle', '/fixture/medium', '--graphics', graphics]
+                if tpm:
+                    args.append('--software-tpm')
+                result = subprocess.run(args, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                tpm_flag = '--tpm' if tpm else '--no-tpm'
+                self.assertEqual(result.stdout.splitlines(),
+                    [f'boot-installer|{flag}|{tpm_flag}', f'boot-target|{flag}|{tpm_flag}'])
+        result = subprocess.run(['bash', '-c', script, 'cycle', '/fixture/medium', '--graphics', 'bad'],
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, '')
+
+    def test_prebuilt_encoder_pin_and_explicit_local_fallback(self):
+        start = SCRIPT.index('encoder="${TILO_PROFILE_ENCODER:-}"')
+        end = SCRIPT.index('command -v tesseract', start)
+        admission = SCRIPT[start:end]
+        with tempfile.TemporaryDirectory() as temporary:
+            encoder = Path(temporary) / 'profile-encoder'
+            encoder.write_text('#!/bin/sh\nprintf "encoder:%s\\n" "$1"\n')
+            encoder.chmod(0o755)
+            digest = hashlib.sha256(encoder.read_bytes()).hexdigest()
+            script = 'set -euo pipefail\nbuild_profile_encoder=0\ndev_dir=/fixture/os/dev\n' + admission + '\n"${encoder_command[@]}" fixture-argument\n'
+            env = dict(os.environ, TILO_PROFILE_ENCODER=str(encoder), TILO_PROFILE_ENCODER_SHA256=digest)
+            good = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
+            self.assertEqual(good.returncode, 0, good.stderr)
+            self.assertEqual(good.stdout.strip(), 'encoder:fixture-argument')
+            env['TILO_PROFILE_ENCODER_SHA256'] = '0' * 64
+            bad = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
+            self.assertEqual(bad.returncode, 2)
+            self.assertEqual(bad.stdout, '')
+            self.assertIn('SHA256 differs', bad.stderr)
+            local_script = 'set -euo pipefail\nbuild_profile_encoder=1\ndev_dir=/fixture/os/dev\n' + admission + '\nprintf "%s\\n" "${encoder_command[@]}"\n'
+            clean = dict(os.environ)
+            clean.pop('TILO_PROFILE_ENCODER', None)
+            clean.pop('TILO_PROFILE_ENCODER_SHA256', None)
+            local = subprocess.run(['bash', '-c', local_script], env=clean, capture_output=True, text=True)
+            self.assertEqual(local.returncode, 0, local.stderr)
+            self.assertIn('/tools/imager-profile/Cargo.toml', local.stdout)
+            self.assertNotIn('--example', local.stdout)
+
+
+if __name__ == '__main__':
+    unittest.main()

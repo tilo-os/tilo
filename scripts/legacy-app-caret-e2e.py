@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Drive caret focus through real legacy Linux applications.
+"""Drive caret focus through legacy Linux applications.
 
-This is deliberately a process-level test.  Each case boots a fresh qOS
+This is deliberately a process-level test.  Each case boots a fresh Tilo
 headless compositor, launches an application built with a different desktop
 toolkit, and uses the compositor's developer-only control socket for input.
 The assertion is semantic: text typed after the pointer leaves the app must
-still be selected and copied by that app through the real Wayland clipboard.
+still be selected and copied through the Wayland clipboard.
 """
 
 from __future__ import annotations
@@ -164,6 +164,27 @@ def frame_for(control: Control, app_id: str) -> dict | None:
     return None
 
 
+def frame_or_process_exit(
+    control: Control, case: Case, process: subprocess.Popen
+) -> dict | None:
+    """Return the first real frame, or fail immediately if its app died.
+
+    A dead toolkit process cannot become a compositor timeout. Keeping these
+    failure modes distinct is important when the matrix catches a broken host
+    package before the application ever connects to Wayland.
+    """
+    frame = frame_for(control, case.app_id)
+    if frame is not None:
+        return frame
+    status = process.poll()
+    if status is not None:
+        raise Failure(
+            f"{case.name}: real application exited with status {status} "
+            "before publishing a Wayland frame; see app.log"
+        )
+    return None
+
+
 def wait_for_frame_after(control: Control, app_id: str, sequence: int) -> dict:
     return wait_until(
         f"{app_id} to render after input frame {sequence}",
@@ -218,7 +239,7 @@ def verify_focus_and_select_probe(control: Control, app_id: str, frame: dict) ->
     and leave it selected so the payload's first character replaces it
     atomically without a separate empty-document transition.
     """
-    probe = "qosfocusprobe"
+    probe = "tilofocusprobe"
     control.chord("a")
     frame = wait_for_frame_after(control, app_id, frame["frame_seq"])
     frame = type_with_frame_barriers(control, app_id, frame, probe)
@@ -261,6 +282,56 @@ def complete_onboarding(control: Control) -> None:
     )
 
 
+def preflight_toolkit_runtime(
+    case: Case, executable: str, env: dict[str, str], root: Path, log
+) -> None:
+    """Distinguish a broken toolkit installation from a Wayland failure."""
+    if case.name not in {"qt6", "libreoffice"}:
+        return
+
+    preflight_env = env.copy()
+    preflight_env.pop("WAYLAND_DISPLAY", None)
+    preflight_env.pop("DISPLAY", None)
+    if case.name == "qt6":
+        # The copied plugin tree is needed only for the Wayland run on hosts
+        # whose checkout is virtiofs.  Loading the offscreen backend from that
+        # tmpfs copy aborts in Qt before it can produce diagnostics, so let the
+        # compositor-independent health check use the installed plugin tree.
+        preflight_env.pop("QT_PLUGIN_PATH", None)
+        preflight_env["QT_QPA_PLATFORM"] = "offscreen"
+        command = [executable, *case.args]
+    else:
+        preflight_env["SAL_USE_VCLPLUGIN"] = "svp"
+        command = [
+            executable,
+            *case.args,
+            "--headless",
+            f"-env:UserInstallation=file://{root / 'libreoffice-preflight-profile'}",
+        ]
+
+    process = subprocess.Popen(
+        command,
+        env=preflight_env,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        status = None
+        deadline = time.monotonic() + 3.0
+        while status is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+            status = process.poll()
+        if status is not None and status != 0:
+            raise Failure(
+                f"{case.name}: installed application exits with status {status} "
+                "on its toolkit's compositor-independent backend; this host "
+                "runtime cannot exercise Tilo (see preflight.log)"
+            )
+    finally:
+        terminate(process)
+
+
 def run_case(shell: Path, case: Case, artifacts: Path) -> None:
     executable = case.executable()
     if executable is None:
@@ -271,13 +342,19 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
     # Keep Unix socket paths comfortably below SUN_LEN. TemporaryDirectory
     # removes this tree on success and failure; durable diagnostics live in
     # ``artifacts`` instead.
-    with tempfile.TemporaryDirectory(prefix="qos-legacy-") as raw_root:
+    temp_parent = (
+        "/dev/shm"
+        if case.name in {"qt6", "libreoffice"} and os.access("/dev/shm", os.W_OK)
+        else None
+    )
+    with tempfile.TemporaryDirectory(prefix="tilo-legacy-", dir=temp_parent) as raw_root:
         root = Path(raw_root)
         runtime = root / "runtime"
         runtime.mkdir(mode=0o700)
         control_path = root / "control.sock"
         compositor_log = (case_artifacts / "compositor.log").open("wb")
         app_log = (case_artifacts / "app.log").open("wb")
+        preflight_log = (case_artifacts / "preflight.log").open("wb")
 
         env = os.environ.copy()
         env.update({
@@ -286,19 +363,19 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             "XDG_DATA_HOME": str(root / "data"),
             "XDG_STATE_HOME": str(root / "state"),
             "XDG_CACHE_HOME": str(root / "cache"),
-            "QOS_STATE_PATH": str(root / "state.json"),
-            "QOS_IDENTITY_ROOT": str(root / "identity"),
-            "QOS_WORKSPACE_ROOTS": "",
-            "QOS_TEST_CONTROL": str(control_path),
-            "NIRIOS_HEADLESS_SIZE": f"{SCREEN[0]}x{SCREEN[1]}",
+            "TILO_STATE_PATH": str(root / "state.json"),
+            "TILO_IDENTITY_ROOT": str(root / "identity"),
+            "TILO_WORKSPACE_ROOTS": "",
+            "TILO_TEST_CONTROL": str(control_path),
+            "TILO_HEADLESS_SIZE": f"{SCREEN[0]}x{SCREEN[1]}",
             "RUST_LOG": "warn,shell::compositor::client_input=debug",
         })
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("DISPLAY", None)
-
         compositor = None
         app = None
         try:
+            preflight_toolkit_runtime(case, executable, env, root, preflight_log)
             compositor = subprocess.Popen(
                 [str(shell), "--mode", "native", "--backend", "headless"],
                 env=env,
@@ -310,7 +387,7 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             control = Control(control_path)
             wait_until("initial workspace", lambda: control.send({"op": "state_dump"}))
             complete_onboarding(control)
-            display_file = runtime / "qos-session" / "wayland-display"
+            display_file = runtime / "tilo-session" / "wayland-display"
             display = wait_until(
                 "published Wayland display",
                 lambda: display_file.read_text().strip() if display_file.exists() else None,
@@ -337,12 +414,12 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
 
             frame = wait_until(
                 f"{case.name} to render a real frame",
-                lambda: frame_for(control, case.app_id),
+                lambda: frame_or_process_exit(control, case, app),
             )
             rect = frame["rect"]
             click_x = rect["x"] + rect["w"] * case.click_fraction[0]
             click_y = rect["y"] + rect["h"] * case.click_fraction[1]
-            prefix = f"qos{case.name}before"
+            prefix = f"tilo{case.name}before"
             suffix = "after"
             expected = prefix + suffix
 
@@ -399,6 +476,7 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             terminate(compositor)
             compositor_log.close()
             app_log.close()
+            preflight_log.close()
 
 
 def parse_args() -> argparse.Namespace:

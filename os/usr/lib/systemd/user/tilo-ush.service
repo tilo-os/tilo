@@ -1,0 +1,38 @@
+[Unit]
+Description=Tilo confined shell runtime supervisor
+# Every packaged app that declares `ush = "required@<v>"` in its manifest is
+# refused at launch when this socket is absent — tilo-launcher's
+# resolve_service_binds returns RequiredMissing rather than starting an app
+# whose shell would be unconfined. apps/terminal declares exactly that, so
+# without this unit the Terminal cannot start at all.
+#
+# Socket-activated: the endpoint exists before an app can launch while the
+# supervisor process, store discovery, and guest machinery stay off the login
+# path until the first terminal actually connects.
+
+[Service]
+Type=simple
+# Serves on $XDG_RUNTIME_DIR/tilo/services/ush.sock and builds guests from the
+# running root — both are the defaults, spelled out here because they are the
+# contract with tilo-launcher rather than an implementation detail.
+ExecStart=/usr/libexec/tilo-ush serve --socket %t/tilo/services/ush.sock --base /
+Restart=on-failure
+RestartSec=1s
+TimeoutStopSec=10s
+
+# The supervisor must retain user-namespace/mount functionality for bubblewrap
+# and must not hide the user's package layer, but it has no reason to mutate
+# host kernel state or share IPC/keyring state with the desktop session.
+PrivateTmp=yes
+PrivateIPC=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native

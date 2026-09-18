@@ -1,0 +1,62 @@
+# Weather — Tilo application manifest.
+#
+# Two fixed endpoints, so it gets a two-host allowlist rather than
+# `host`: Open-Meteo's forecast and geocoding APIs. Reads the shared
+# settings file for units/locale.
+#
+
+
+[package]
+id       = "dev.tilo.weather"
+name     = "Weather"
+category = "Utility"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+    "net",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "allowlist"
+hosts = [
+    "api.open-meteo.com",
+    "geocoding-api.open-meteo.com",
+]
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/weather"
+type            = "gui"
+splash-segments = ["bin/weather[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

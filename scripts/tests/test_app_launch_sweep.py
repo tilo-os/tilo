@@ -20,7 +20,7 @@ class SweepCheckpointTest(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.out = pathlib.Path(self.tempdir.name) / "out"
         self.config = {
-            "packages": ["org.qos.calculator", "org.qos.notes"],
+            "packages": ["org.tilo.calculator", "org.tilo.notes"],
             "worktree": "/worktree",
             "data_dir": "/data",
             "pin": False,
@@ -32,7 +32,7 @@ class SweepCheckpointTest(unittest.TestCase):
             "startup_timeout": 45.0,
         }
         self.result = {
-            "adopted": ["org.qos.calculator#1"],
+            "adopted": ["org.tilo.calculator#1"],
             "errors": [],
             "compositor_started": True,
             "launched": True,
@@ -46,13 +46,13 @@ class SweepCheckpointTest(unittest.TestCase):
 
     def test_checkpoint_persists_each_completed_result_for_resume(self):
         checkpoint, completed = SWEEP.prepare_checkpoint(self.out, self.config, False)
-        completed["org.qos.calculator"] = self.result
+        completed["org.tilo.calculator"] = self.result
         SWEEP.save_checkpoint(checkpoint, self.config, completed)
 
         resumed_path, resumed = SWEEP.prepare_checkpoint(self.out, self.config, True)
 
         self.assertEqual(resumed_path, checkpoint)
-        self.assertEqual(resumed, {"org.qos.calculator": self.result})
+        self.assertEqual(resumed, {"org.tilo.calculator": self.result})
         self.assertEqual(
             json.loads(checkpoint.read_text())["version"], SWEEP.PROGRESS_VERSION
         )
@@ -60,7 +60,7 @@ class SweepCheckpointTest(unittest.TestCase):
 
     def test_fresh_run_replaces_an_old_checkpoint(self):
         checkpoint, completed = SWEEP.prepare_checkpoint(self.out, self.config, False)
-        completed["org.qos.calculator"] = self.result
+        completed["org.tilo.calculator"] = self.result
         SWEEP.save_checkpoint(checkpoint, self.config, completed)
 
         _, restarted = SWEEP.prepare_checkpoint(self.out, self.config, False)
@@ -133,7 +133,7 @@ class SweepCheckpointTest(unittest.TestCase):
             {
                 "version": SWEEP.PROGRESS_VERSION,
                 "configuration": self.config,
-                "completed": {"org.qos.calculator": bad_result},
+                "completed": {"org.tilo.calculator": bad_result},
             },
         )
         with self.assertRaisesRegex(SWEEP.SweepStateError, "invalid completed"):
@@ -144,11 +144,11 @@ class SweepCheckpointTest(unittest.TestCase):
         worktree = root / "repo"
         (worktree / "target/debug").mkdir(parents=True)
         (worktree / "target/debug/shell").write_text("")
-        (worktree / "target/debug/qos-launcher").write_text("")
+        (worktree / "target/debug/tilo-launcher").write_text("")
         data_dir = root / "data"
-        (data_dir / "payloads/org.qos.cli").mkdir(parents=True)
-        (data_dir / "registry.toml").write_text('id = "org.qos.cli"\n')
-        (data_dir / "payloads/org.qos.cli/manifest.toml").write_text('type = "cli"\n')
+        (data_dir / "payloads/org.tilo.cli").mkdir(parents=True)
+        (data_dir / "registry.toml").write_text('id = "org.tilo.cli"\n')
+        (data_dir / "payloads/org.tilo.cli/manifest.toml").write_text('type = "cli"\n')
         return worktree, data_dir, root / "out"
 
     def _run_cli(self, worktree, data_dir, out, *extra):
@@ -190,14 +190,14 @@ class SweepCheckpointTest(unittest.TestCase):
         worktree = root / "repo"
         (worktree / "target/debug").mkdir(parents=True)
         (worktree / "target/debug/shell").write_text("")
-        (worktree / "target/debug/qos-launcher").write_text("")
+        (worktree / "target/debug/tilo-launcher").write_text("")
         data_dir = root / "data"
-        for package_id in ("org.qos.first", "org.qos.second"):
+        for package_id in ("org.tilo.first", "org.tilo.second"):
             (data_dir / "payloads" / package_id).mkdir(parents=True)
         (data_dir / "registry.toml").write_text(
-            'id = "org.qos.first"\nid = "org.qos.second"\n'
+            'id = "org.tilo.first"\nid = "org.tilo.second"\n'
         )
-        for package_id in ("org.qos.first", "org.qos.second"):
+        for package_id in ("org.tilo.first", "org.tilo.second"):
             (data_dir / "payloads" / package_id / "manifest.toml").write_text(
                 'type = "gui"\n'
             )
@@ -213,12 +213,12 @@ class SweepCheckpointTest(unittest.TestCase):
             "--settle",
             "0",
         ]
-        result = dict(self.result, adopted=["org.qos.first#1"])
+        result = dict(self.result, adopted=["org.tilo.first#1"])
         calls = []
 
         def interrupt_on_second(_args, package_id, _out, _env_extra):
             calls.append(package_id)
-            if package_id == "org.qos.second":
+            if package_id == "org.tilo.second":
                 raise KeyboardInterrupt
             return dict(result)
 
@@ -229,11 +229,11 @@ class SweepCheckpointTest(unittest.TestCase):
 
         checkpoint = out / SWEEP.PROGRESS_FILENAME
         saved = json.loads(checkpoint.read_text())
-        self.assertEqual(list(saved["completed"]), ["org.qos.first"])
-        self.assertEqual(calls, ["org.qos.first", "org.qos.second"])
+        self.assertEqual(list(saved["completed"]), ["org.tilo.first"])
+        self.assertEqual(calls, ["org.tilo.first", "org.tilo.second"])
         calls.clear()
 
-        second_result = dict(self.result, adopted=["org.qos.second#1"])
+        second_result = dict(self.result, adopted=["org.tilo.second#1"])
 
         def record_second_run(_args, package_id, _out, _env_extra):
             calls.append(package_id)
@@ -243,11 +243,11 @@ class SweepCheckpointTest(unittest.TestCase):
             with mock.patch.object(sys, "argv", argv + ["--resume"]):
                 self.assertEqual(SWEEP.main(), 0)
 
-        self.assertEqual(calls, ["org.qos.second"])
+        self.assertEqual(calls, ["org.tilo.second"])
         completed = json.loads(checkpoint.read_text())["completed"]
-        self.assertEqual(set(completed), {"org.qos.first", "org.qos.second"})
+        self.assertEqual(set(completed), {"org.tilo.first", "org.tilo.second"})
         report = json.loads((out / "results.json").read_text())
-        self.assertEqual(set(report), {"org.qos.first", "org.qos.second"})
+        self.assertEqual(set(report), {"org.tilo.first", "org.tilo.second"})
 
 
 if __name__ == "__main__":

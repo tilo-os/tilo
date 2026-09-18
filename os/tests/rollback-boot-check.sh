@@ -1,8 +1,8 @@
 #!/usr/bin/bash
-# Boot-side checks for bounded rollback. Run INSIDE a booted qOS guest.
+# Boot-side checks for bounded rollback. Run INSIDE a booted Tilo guest.
 #
 #   ./os/dev/vm.sh boot --tpm          # then, in the guest:
-#   sudo /usr/libexec/qos-rollback-boot-check
+#   sudo /usr/libexec/tilo-rollback-boot-check
 #
 # Everything here needs a real boot and cannot be established from the host:
 # whether the generation number arrived on the sealed command line, whether the
@@ -23,25 +23,25 @@ info() { printf '[info]   %s\n' "$*"; }
 echo "=== bounded rollback: boot-side checks ==="
 
 # --- the generation number ---------------------------------------------------
-GEN="$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^qos\.generation=\([0-9][0-9]*\)$/\1/p' | head -1)"
+GEN="$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^tilo\.generation=\([0-9][0-9]*\)$/\1/p' | head -1)"
 if [ -n "$GEN" ]; then
-  ok "qos.generation=$GEN is on the kernel command line"
+  ok "tilo.generation=$GEN is on the kernel command line"
 else
-  no "no qos.generation= on the kernel command line — rollback protection is not bound to anything"
+  no "no tilo.generation= on the kernel command line — rollback protection is not bound to anything"
 fi
 
 # It has to come from the UKI, not from a bootloader config. The strongest
 # evidence available inside the guest is that the stub measured a command line and
 # that the number is in the image too.
-if [ -r /usr/lib/qos/generation ]; then
-  FILE_GEN="$(cat /usr/lib/qos/generation)"
+if [ -r /usr/lib/tilo/generation ]; then
+  FILE_GEN="$(cat /usr/lib/tilo/generation)"
   if [ "$FILE_GEN" = "$GEN" ]; then
-    ok "/usr/lib/qos/generation agrees with the command line ($FILE_GEN)"
+    ok "/usr/lib/tilo/generation agrees with the command line ($FILE_GEN)"
   else
-    no "/usr/lib/qos/generation says $FILE_GEN but the command line says ${GEN:-<absent>}"
+    no "/usr/lib/tilo/generation says $FILE_GEN but the command line says ${GEN:-<absent>}"
   fi
 else
-  no "/usr/lib/qos/generation is missing — a staged deployment's generation cannot be read"
+  no "/usr/lib/tilo/generation is missing — a staged deployment's generation cannot be read"
 fi
 
 if [ -d /sys/firmware/efi ]; then
@@ -122,12 +122,12 @@ fi
 
 # --- the encrypted root and the unlock hand-off ------------------------------
 # shellcheck source=/dev/null
-if [ -r /usr/libexec/qos-rollback-common ]; then
-  . /usr/libexec/qos-rollback-common
+if [ -r /usr/libexec/tilo-rollback-common ]; then
+  . /usr/libexec/tilo-rollback-common
   DEV="$(rollback_luks_device)"
 else
   DEV=""
-  no "/usr/libexec/qos-rollback-common is missing"
+  no "/usr/libexec/tilo-rollback-common is missing"
 fi
 
 if [ -n "$DEV" ]; then
@@ -144,16 +144,16 @@ if [ -n "$DEV" ]; then
   # match, journalctl dies of SIGPIPE, and pipefail makes the pipeline fail — so
   # finding the record would be reported as not finding it. -c consumes all input.
   unsealed="$(journalctl -b --no-pager -o cat 2>/dev/null \
-              | grep -c "qos-rollback: generation .* unsealed to /run/cryptsetup-keys.d/" || true)"
+              | grep -c "tilo-rollback: generation .* unsealed to /run/cryptsetup-keys.d/" || true)"
   if [ "${unsealed:-0}" -gt 0 ]; then
     ok "early userspace unsealed a generation into /run/cryptsetup-keys.d/"
   else
-    no "no journal record of qos-rollback unlocking into /run/cryptsetup-keys.d/"
+    no "no journal record of tilo-rollback unlocking into /run/cryptsetup-keys.d/"
   fi
 
   # Ordering: our unlock has to finish before systemd-cryptsetup starts, or
   # systemd-cryptsetup falls back to prompting.
-  unlock_at="$(journalctl -b --no-pager -o short-unix -u qos-rollback-unlock.service 2>/dev/null | head -1 | cut -d. -f1)"
+  unlock_at="$(journalctl -b --no-pager -o short-unix -u tilo-rollback-unlock.service 2>/dev/null | head -1 | cut -d. -f1)"
   crypt_at="$(journalctl -b --no-pager -o short-unix "-u" "systemd-cryptsetup@${VOL}.service" 2>/dev/null | head -1 | cut -d. -f1)"
   if [ -n "$unlock_at" ] && [ -n "$crypt_at" ]; then
     if [ "$unlock_at" -le "$crypt_at" ]; then
@@ -177,9 +177,9 @@ if [ -n "$DEV" ]; then
     ok "no leftover key file in /run/cryptsetup-keys.d/"
   fi
 
-  if [ -e /var/lib/qos/rollback/state.json ]; then
+  if [ -e /var/lib/tilo/rollback/state.json ]; then
     ok "rollback enrollment state is present"
-    command -v qos-rollback >/dev/null 2>&1 && qos-rollback status --device "$DEV" | sed 's/^/         /'
+    command -v tilo-rollback >/dev/null 2>&1 && tilo-rollback status --device "$DEV" | sed 's/^/         /'
   else
     na "no rollback enrollment on this device yet"
   fi
@@ -195,7 +195,7 @@ else
 fi
 
 # --- the units ---------------------------------------------------------------
-for unit in qos-rollback-harden.service qos-rollback-confirm.timer; do
+for unit in tilo-rollback-harden.timer tilo-rollback-confirm.timer; do
   if systemctl list-unit-files "$unit" >/dev/null 2>&1 && \
      [ "$(systemctl is-enabled "$unit" 2>/dev/null)" = "enabled" ]; then
     ok "$unit is enabled"
@@ -207,27 +207,27 @@ done
 # systemd answers Result=success for a unit it has never heard of, so a missing
 # unit would otherwise be reported as one that ran and succeeded. Ask whether it
 # exists first, and treat "not loaded" as its own answer.
-if ! systemctl cat qos-rollback-harden.service >/dev/null 2>&1; then
-  no "qos-rollback-harden.service does not exist in this image"
+if ! systemctl cat tilo-rollback-harden.service >/dev/null 2>&1; then
+  no "tilo-rollback-harden.service does not exist in this image"
 else
-  state="$(systemctl show -p Result --value qos-rollback-harden.service 2>/dev/null)"
-  active="$(systemctl show -p ActiveState --value qos-rollback-harden.service 2>/dev/null)"
+  state="$(systemctl show -p Result --value tilo-rollback-harden.service 2>/dev/null)"
+  active="$(systemctl show -p ActiveState --value tilo-rollback-harden.service 2>/dev/null)"
   case "$state:$active" in
-    success:active|success:activating) ok "qos-rollback-harden ran successfully" ;;
+    success:active|success:activating) ok "tilo-rollback-harden ran successfully" ;;
     success:inactive)
       # Never started this boot. Its conditions may have skipped it, which is a
       # legitimate outcome; "it ran and worked" is not what that means.
-      na "qos-rollback-harden has not run on this boot" ;;
-    *) no "qos-rollback-harden result: $state (state: $active)"
-       journalctl -b --no-pager -u qos-rollback-harden.service | tail -10 | sed 's/^/         /' ;;
+      na "tilo-rollback-harden has not run on this boot" ;;
+    *) no "tilo-rollback-harden result: $state (state: $active)"
+       journalctl -b --no-pager -u tilo-rollback-harden.service | tail -10 | sed 's/^/         /' ;;
   esac
 fi
 
-if command -v qos-rollback >/dev/null 2>&1; then
-  ok "qos-rollback is installed"
-  qos-rollback tpm-status 2>&1 | sed 's/^/         /'
+if command -v tilo-rollback >/dev/null 2>&1; then
+  ok "tilo-rollback is installed"
+  tilo-rollback tpm-status 2>&1 | sed 's/^/         /'
 else
-  no "qos-rollback is not installed"
+  no "tilo-rollback is not installed"
 fi
 
 printf '\n%s passed, %s failed, %s not applicable\n' "$pass" "$fail" "$skip"

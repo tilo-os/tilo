@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1.7
+# Resolution job ONLY. A native Fedora 44 x86-64 or ARM64 buildroot must contain
+# dnf5, rpm/rpmkeys, createrepo_c, Python and Fedora's RPM signing keys.
+# Consumers pin this scratch output by digest, independently from RPMS_REF.
+ARG WINDOWS_GUEST_BUILDROOT_REF
+ARG DEVELOPMENT_WINE_REF=scratch
+FROM ${DEVELOPMENT_WINE_REF} AS development-wine
+FROM ${WINDOWS_GUEST_BUILDROOT_REF} AS resolve
+ARG WINDOWS_GUEST_BUILDROOT_REF
+ARG DEVELOPMENT_WINE_REF
+ARG DEVELOPMENT_WINE_KEY_SHA256
+COPY os/dev/windows-guest-packages.txt os/dev/windows_guest_contract.py os/dev/resolve-windows-guest-rpms.sh os/dev/development-wine-repository.py os/dev/wine-source.json /tilo/
+RUN --mount=type=bind,from=development-wine,source=/,target=/development-wine,ro \
+    bash /tilo/resolve-windows-guest-rpms.sh
+# RPM content targets x86 even when the download-only resolver runs on ARM.
+# This stage executes nothing on the foreign architecture.
+FROM --platform=linux/amd64 scratch
+COPY --from=resolve /repo /repo

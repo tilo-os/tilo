@@ -1,7 +1,7 @@
 //! Service-socket discovery + `SCM_RIGHTS` handoff.
 //!
 //! Each declared service maps to a Unix socket at
-//! `$XDG_RUNTIME_DIR/qos/services/<name>.sock`. The launcher:
+//! `$XDG_RUNTIME_DIR/tilo/services/<name>.sock`. The launcher:
 //!
 //! 1. Looks up the socket per the manifest's service requirements.
 //! 2. For `required@<v>` whose socket is absent → exit 70 with a
@@ -14,7 +14,7 @@
 //!    dup2s it onto the agreed `child_fd` in the forked child, and `dup2`
 //!    leaves that copy without CLOEXEC, so it survives bwrap's exec and
 //!    the `__sandbox-exec` re-exec at that number. The app reads the
-//!    number from `QOS_SVC_<NAME>_FD`. **The launcher's own copy keeps
+//!    number from `TILO_SVC_<NAME>_FD`. **The launcher's own copy keeps
 //!    CLOEXEC** — nothing else it starts has any business holding an
 //!    app's connection to a session service — and is released once the
 //!    child has been forked.
@@ -25,18 +25,8 @@
 //! makes bwrap block reading for an EOF that never arrives, hanging the
 //! launch before it ever execs the app.
 //!
-//! ### Open design question — where to mediate the handoff?
-//!
-//! Three plausible mediation points: inherited descriptors (this
-//! module's choice — simplest, no broker, fd at a known number), a
-//! dedicated broker over `SCM_RIGHTS` (richer — revoke/audit/hot-swap —
-//! but adds latency and a daemon dependency), or the compositor itself
-//! handing fds to an inherited launcher (tightest coupling, hardest to
-//! test).
-//!
-//! Today we pick option 1. If revocation/auditing matters later, the
-//! launcher's API stays the same — only `resolve_service_binds` changes
-//! to dial the broker instead of opening the socket directly.
+//! The launcher receives inherited descriptors directly: this keeps the
+//! handoff local, avoids another daemon, and gives each service a fixed fd.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -71,7 +61,7 @@ pub const COMPAT_SERVICE: &str = "compat";
 /// Settings credential operation by merely connecting to the socket.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
 pub const APP_HOST_SERVICE: &str = "app-host";
-const STORE_APP_ID: &str = "dev.qos.store";
+const STORE_APP_ID: &str = "dev.tilo.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 const COMPAT_PROTOCOL_VERSION: u16 = 1;
 /// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
@@ -110,7 +100,7 @@ impl ResolvedService {
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
     #[error(
-        "required service `{name}` (protocol qos.svc.{name}@{version}) was not found at `{path}`"
+        "required service `{name}` (protocol tilo.svc.{name}@{version}) was not found at `{path}`"
     )]
     RequiredMissing {
         name: String,
@@ -141,7 +131,7 @@ pub enum ServiceError {
         #[source]
         source: std::io::Error,
     },
-    #[error("service `app-host` is restricted to the signed qOS Store package")]
+    #[error("service `app-host` is restricted to the signed Tilo Store package")]
     AppHostUnauthorized,
 }
 
@@ -151,7 +141,7 @@ pub struct ServiceLaunchContext<'a> {
     pub workspace_id: Option<&'a str>,
 }
 
-/// Discover `$XDG_RUNTIME_DIR/qos/services/`.
+/// Discover `$XDG_RUNTIME_DIR/tilo/services/`.
 pub fn services_root() -> PathBuf {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
         || {
@@ -160,7 +150,7 @@ pub fn services_root() -> PathBuf {
         },
         PathBuf::from,
     );
-    runtime.join("qos/services")
+    runtime.join("tilo/services")
 }
 
 pub fn socket_for(name: &str) -> PathBuf {
@@ -283,7 +273,7 @@ pub fn resolve_identity_bind(
     }))
 }
 
-/// Create `$XDG_RUNTIME_DIR/qos/services/` if it does not exist.
+/// Create `$XDG_RUNTIME_DIR/tilo/services/` if it does not exist.
 ///
 /// Called by whoever binds a service socket — a `bind` into a missing
 /// parent is `ENOENT`. Mode 0700: the sandbox boundary assumes only
@@ -646,13 +636,13 @@ mod tests {
             stream.read_exact(&mut bytes).expect("payload");
             serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
         });
-        let bind = resolve_identity_bind("dev.qos.notes", Some("room-7"), false)
+        let bind = resolve_identity_bind("dev.tilo.notes", Some("room-7"), false)
             .expect("resolve")
             .expect("identity bind");
         assert_eq!(bind.name, IDENTITY_SERVICE);
         assert_eq!(bind.child_fd, 31);
         let handshake = reader.join().expect("reader");
-        assert_eq!(handshake["app_id"], "dev.qos.notes");
+        assert_eq!(handshake["app_id"], "dev.tilo.notes");
         assert_eq!(handshake["workspace_id"], "room-7");
 
         unsafe {
@@ -693,7 +683,7 @@ mod tests {
             &services,
             false,
             ServiceLaunchContext {
-                app_id: "dev.qos.notes",
+                app_id: "dev.tilo.notes",
                 workspace_id: Some("room-7"),
             },
         )
@@ -702,7 +692,7 @@ mod tests {
         let (magic, handoff) = reader.join().expect("reader");
         assert_eq!(magic, COLLAB_LAUNCH_MAGIC);
         assert_eq!(handoff["protocol"], COLLAB_LAUNCH_PROTOCOL_VERSION);
-        assert_eq!(handoff["app_id"], "dev.qos.notes");
+        assert_eq!(handoff["app_id"], "dev.tilo.notes");
         assert_eq!(handoff["workspace_id"], "room-7");
 
         unsafe {
@@ -798,14 +788,14 @@ mod tests {
         let mut services = BTreeMap::new();
         services.insert(SHELL_UI_SERVICE.to_string(), "optional@1".to_string());
         let resolved = resolve_service_binds(&services, false).unwrap();
-        authenticate_shell_ui_bind(&resolved, "dev.qos.chat").unwrap();
+        authenticate_shell_ui_bind(&resolved, "dev.tilo.chat").unwrap();
 
         let (stream, _) = listener.accept().unwrap();
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line).unwrap();
         let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(handshake["protocol"], 1);
-        assert_eq!(handshake["app_id"], "dev.qos.chat");
+        assert_eq!(handshake["app_id"], "dev.tilo.chat");
     }
 
     /// What `/proc/self/fd/<n>` says a descriptor points at — `socket:[<inode>]`

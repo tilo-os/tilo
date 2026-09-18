@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut blocks = vec![
         block(
             "heading",
-            "qOS Document Export",
+            "Tilo Document Export",
             &[("level", AttrVal::Int(1))],
         ),
         block(
@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     blocks.push(table);
 
     let snap = DocSnapshot {
-        schema: "qos.richtext".into(),
+        schema: "tilo.richtext".into(),
         schema_version: 1,
         blocks,
         blobs: BTreeMap::new(),

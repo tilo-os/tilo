@@ -6,12 +6,12 @@
 //! operation, while the `select` document action retains the durable choice.
 //! Network refresh remains a separate [`Effect`] operation.
 //!
-//! [`View`]: qos_actions::OperationKind::View
-//! [`Effect`]: qos_actions::OperationKind::Effect
+//! [`View`]: tilo_actions::OperationKind::View
+//! [`Effect`]: tilo_actions::OperationKind::Effect
 
 use automerge::AutoCommit;
-use qos_actions::{Action, ActionAddress, ActionError, ActionRegistry, ExecutionLocus};
 use serde::{Deserialize, Serialize};
+use tilo_actions::{Action, ActionAddress, ActionError, ActionRegistry, ExecutionLocus};
 
 use crate::doc::WeatherDoc;
 use crate::model::{LocationId, SavedLocation};
@@ -54,6 +54,11 @@ pub enum WeatherAction {
     SetLocationOrder {
         ids: Vec<String>,
     },
+    /// Absolute, granular reorder operation for one stable location.
+    SetLocationRank {
+        id: String,
+        rank: f64,
+    },
 }
 
 impl Action for WeatherAction {
@@ -83,6 +88,11 @@ impl Action for WeatherAction {
                 let ids: Vec<LocationId> = ids.iter().filter_map(|id| id.parse().ok()).collect();
                 WeatherDoc::set_location_order(doc, &ids);
             }
+            Self::SetLocationRank { id, rank } => {
+                if let Ok(id) = id.parse::<LocationId>() {
+                    WeatherDoc::set_location_rank(doc, id, *rank);
+                }
+            }
         }
         Ok(())
     }
@@ -98,9 +108,9 @@ pub fn register(registry: &mut ActionRegistry) {
 
 /// Serialize a Weather mutation for direct replay tests and integrations that
 /// do not own a widget `ActionHost`.
-pub fn encode(action: &WeatherAction) -> qos_actions::EncodedAction {
-    qos_actions::EncodedAction::encode(WEATHER_ACTION_TYPE, action).unwrap_or_else(|_| {
-        qos_actions::EncodedAction {
+pub fn encode(action: &WeatherAction) -> tilo_actions::EncodedAction {
+    tilo_actions::EncodedAction::encode(WEATHER_ACTION_TYPE, action).unwrap_or_else(|_| {
+        tilo_actions::EncodedAction {
             type_id: WEATHER_ACTION_TYPE.to_string(),
             payload: Vec::new(),
         }
@@ -118,6 +128,13 @@ pub fn select_location_action(id: LocationId) -> WeatherAction {
 pub fn location_order_action(ids: &[LocationId]) -> WeatherAction {
     WeatherAction::SetLocationOrder {
         ids: ids.iter().map(ToString::to_string).collect(),
+    }
+}
+
+pub fn location_rank_action(id: LocationId, rank: f64) -> WeatherAction {
+    WeatherAction::SetLocationRank {
+        id: id.to_string(),
+        rank,
     }
 }
 
@@ -183,8 +200,8 @@ mod tests {
         ];
 
         for action in actions {
-            let envelope = qos_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
-            qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+            let envelope = tilo_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
+            tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
         }
 
         assert_eq!(first.get_heads(), second.get_heads());
@@ -258,5 +275,46 @@ mod tests {
                 .iter()
                 .any(|location| location.id == tokyo.id)
         );
+    }
+
+    #[test]
+    fn encoded_moves_of_different_locations_converge_across_divergent_replicas() {
+        let mut base = seeded_doc();
+        let bytes = base.save();
+        let mut left = AutoCommit::load(&bytes).unwrap();
+        let mut right = AutoCommit::load(&bytes).unwrap();
+        let locations = WeatherDoc::read_model(&base).locations;
+        let first = locations[0].id;
+        let last = locations[3].id;
+        let left_action = WeatherAction::SetLocationRank {
+            id: last.to_string(),
+            rank: -1024.0,
+        };
+        let right_action = WeatherAction::SetLocationRank {
+            id: first.to_string(),
+            rank: 8192.0,
+        };
+
+        let left_envelope =
+            tilo_actions::apply_local(&mut left, &left_action, encode(&left_action)).unwrap();
+        let right_envelope =
+            tilo_actions::apply_local(&mut right, &right_action, encode(&right_action)).unwrap();
+        tilo_actions::replay(&mut left, &right_envelope, &registry()).unwrap();
+        tilo_actions::replay(&mut right, &left_envelope, &registry()).unwrap();
+
+        assert_eq!(left.get_heads(), right.get_heads());
+        let left_ids: Vec<_> = WeatherDoc::read_model(&left)
+            .locations
+            .into_iter()
+            .map(|location| location.id)
+            .collect();
+        let right_ids: Vec<_> = WeatherDoc::read_model(&right)
+            .locations
+            .into_iter()
+            .map(|location| location.id)
+            .collect();
+        assert_eq!(left_ids, right_ids);
+        assert_eq!(left_ids.first(), Some(&last));
+        assert_eq!(left_ids.last(), Some(&first));
     }
 }

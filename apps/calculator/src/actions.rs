@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
     OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
@@ -58,11 +58,12 @@ use crate::model::{HistoryEntry, Mode, PlotFn};
 pub const CALCULATOR_ACTION_TYPE: &str = "calculator.action";
 pub const CALCULATOR_OPERATION_TYPE: &str = "calculator.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CalculatorOperation {
     ShowCalculator,
     ShowGraph2d,
     ShowGraph3d,
+    RecallHistory { id: String },
 }
 
 /// # Errors
@@ -544,7 +545,7 @@ fn graph_resources(kind: GraphKind, rows: &[PlotFn], stable_ids: &[String]) -> V
 #[allow(
     clippy::expect_used,
     clippy::missing_panics_doc,
-    reason = "the operation payload is a derived enum with only unit variants; serialization cannot fail"
+    reason = "the operation payload contains only derived enum variants and strings; serialization cannot fail"
 )]
 pub fn provide_resources(ctx: &CalcResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("calculator.workspace", "calculator.workspace", "Calculator");
@@ -622,6 +623,17 @@ pub fn provide_resources(ctx: &CalcResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 "calculator.history_entry",
                 history_label(e),
             )
+            .with_action(
+                ActionSpec::operation(
+                    "open",
+                    "Recall calculation",
+                    OperationKind::View,
+                    CALCULATOR_OPERATION_TYPE,
+                    &CalculatorOperation::RecallHistory { id: stable.clone() },
+                )
+                .expect("CalculatorOperation is always serializable")
+                .retry_policy(RetryPolicy::Idempotent),
+            )
             .with_action(immediate_spec(
                 "delete",
                 "Delete entry",
@@ -653,7 +665,7 @@ impl ResourceProvider for crate::app::CalculatorApp {
 mod tests {
     use super::*;
     use crate::model::CalcModel;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -687,7 +699,7 @@ mod tests {
         let encoded = encode(action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
@@ -866,7 +878,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -914,8 +926,8 @@ mod tests {
         // A applies a formula edit locally; B replays the envelope.
         let action = set_graph_expr_action(GraphKind::Curve2d, 1, "x^3+1");
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
         assert_eq!(
             doc_a.get_heads(),
@@ -939,8 +951,8 @@ mod tests {
 
         let action = toggle_graph_visible_action(GraphKind::Surface3d, 0);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
         assert_eq!(
             doc_a.get_heads(),
@@ -1220,7 +1232,7 @@ mod tests {
 
         let decoded = registry().decode(&exposed).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut via_a11y, decoded.as_ref(), exposed, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut via_a11y, decoded.as_ref(), exposed, &mut tx).unwrap();
         let id = crate::doc::row_id_at(&via_affordance, "history", 0).expect("stable id");
         dispatch(
             &mut via_affordance,

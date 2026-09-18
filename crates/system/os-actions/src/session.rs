@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::process::run;
 
-const LOGOUT_REQUEST_ENV: &str = "QOS_SESSION_LOGOUT_REQUEST";
+const LOGOUT_REQUEST_ENV: &str = "TILO_SESSION_LOGOUT_REQUEST";
 static LOGOUT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,11 +57,11 @@ pub fn perform_session_action(action: SessionAction) -> Result<(), String> {
 
 fn logout_request_path() -> Result<PathBuf, String> {
     let path = std::env::var_os(LOGOUT_REQUEST_ENV).ok_or_else(|| {
-        "qOS session wrapper did not provide a logout request channel".to_string()
+        "Tilo session wrapper did not provide a logout request channel".to_string()
     })?;
     let path = PathBuf::from(path);
     if !path.is_absolute() {
-        return Err("qOS session logout request path is not absolute".into());
+        return Err("Tilo session logout request path is not absolute".into());
     }
     Ok(path)
 }
@@ -72,10 +72,10 @@ fn request_wrapper_logout_at(path: &Path) -> Result<(), String> {
         .create_new(true)
         .mode(0o600)
         .open(path)
-        .map_err(|error| format!("creating qOS logout request: {error}"))?;
+        .map_err(|error| format!("creating Tilo logout request: {error}"))?;
     request
         .write_all(b"logout\n")
-        .map_err(|error| format!("writing qOS logout request: {error}"))
+        .map_err(|error| format!("writing Tilo logout request: {error}"))
 }
 
 fn request_wrapper_logout() -> Result<(), String> {

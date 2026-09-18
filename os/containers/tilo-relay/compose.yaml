@@ -1,0 +1,38 @@
+# Composite relay and complete filesystem replica for a user-owned Tilo home peer.
+#
+# Create the identity/config directories, then run `podman compose up -d` and
+# approve the nearby server from Tilo Settings. Identity and the signed
+# home-peer bundle are provisioned over the LAN without copying a token.
+services:
+  tilo-relay:
+    image: ${TILO_RELAY_IMAGE:-code.podesta.ai/qos/tilo-relay:latest}
+    command: ["--config", "/etc/tilo/relay.toml", "run"]
+    restart: unless-stopped
+    environment:
+      TILO_DEVICE_NAME: ${TILO_DEVICE_NAME:-Home server}
+    # Enrollment uses authenticated LAN broadcast on UDP 45831. A bridged
+    # container cannot receive/reply on the physical LAN broadcast domain, so
+    # the composite home peer deliberately joins the host network.
+    network_mode: host
+    volumes:
+      # Enrollment writes the full-sync bundle here on first start.
+      - ./config:/etc/tilo:Z
+      # A pre-enrolled, host-capable device identity. Never put a user-root
+      # private key in this directory or image.
+      - ./identity:/var/lib/tilo:Z
+      # CRDT snapshots, offline pending queues, metrics, and the stable Iroh
+      # endpoint secret. Back this volume up as relay state.
+      - tilo-relay-state:/var/lib/tilo-relay:Z
+      - tilo-full-replica:/var/lib/tilo/full-replica:Z
+    healthcheck:
+      # Written only after the daemon has started and its periodic metrics
+      # task is live. It is not a claim that an external peer can reach us.
+      test: ["CMD-SHELL", "test -s /var/lib/tilo-relay/metrics.json && grep -q '\"state\": \"ready\"' /var/lib/tilo/full-replica/status.json"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  tilo-relay-state:
+  tilo-full-replica:

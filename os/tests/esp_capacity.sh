@@ -5,7 +5,7 @@
 #
 # Two settings that had no knowledge of each other:
 #
-#   * qos-rollback keeps a sealed LUKS keyslot for the last `retained_generations`
+#   * tilo-rollback keeps a sealed LUKS keyslot for the last `retained_generations`
 #     generations (default 3), plus up to RETAINED_NEWER_GENERATIONS (2) staged
 #     ahead of the running one. Every one of those has to be *bootable*, so every
 #     one of them needs its kernel on disk.
@@ -25,8 +25,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 DISK_IMAGE="$REPO/os/dev/disk-image.sh"
-ROLLBACK_LIB="$REPO/crates/system/qos-rollback/src/lib.rs"
-RETENTION="$REPO/crates/system/qos-rollback/src/retention.rs"
+ROLLBACK_LIB="$REPO/crates/system/tilo-rollback/src/lib.rs"
+RETENTION="$REPO/crates/system/tilo-rollback/src/retention.rs"
 
 fail=0
 ok()  { printf 'ok    %s\n' "$*"; }
@@ -41,7 +41,7 @@ retain="$(sed -n 's/^ *retained_generations: \([0-9]\+\),$/\1/p' "$ROLLBACK_LIB"
 newer="$(sed -n 's/^pub const RETAINED_NEWER_GENERATIONS: usize = \([0-9]\+\);$/\1/p' "$RETENTION" | head -1)"
 esp="$(sed -n 's/^COMPOSEFS=auto; BOOTLOADER=""; SIZE=""; ROOT_MIN=\([0-9]\+G\); ESP_SIZE=\([0-9]\+\)G$/\2/p' "$DISK_IMAGE" | head -1)"
 budget="$(sed -n 's/^RETAIN=.*UKI_BUDGET=\([0-9]\+\)M$/\1/p' "$DISK_IMAGE" | head -1)"
-script_retain="$(sed -n 's/^RETAIN="\${QOS_RETAINED_GENERATIONS:-\([0-9]\+\)}".*$/\1/p' "$DISK_IMAGE" | head -1)"
+script_retain="$(sed -n 's/^RETAIN="\${TILO_RETAINED_GENERATIONS:-\([0-9]\+\)}".*$/\1/p' "$DISK_IMAGE" | head -1)"
 slack="$(sed -n 's/^KERNEL_FS_SLACK_MIB=\([0-9]\+\)$/\1/p' "$DISK_IMAGE" | head -1)"
 script_newer="$(sed -n 's/^RETAINED_NEWER=\([0-9]\+\)$/\1/p' "$DISK_IMAGE" | head -1)"
 repair="$(sed -n 's/^REPAIR_UKI=\([0-9]\+\)$/\1/p' "$DISK_IMAGE" | head -1)"
@@ -56,9 +56,9 @@ done
 
 # --- the defaults have to agree ----------------------------------------------
 if [ "$script_retain" = "$retain" ]; then
-  ok "disk-image.sh --retain default ($script_retain) matches qos-rollback retained_generations"
+  ok "disk-image.sh --retain default ($script_retain) matches tilo-rollback retained_generations"
 else
-  bad "disk-image.sh --retain defaults to $script_retain but qos-rollback retains $retain generations"
+  bad "disk-image.sh --retain defaults to $script_retain but tilo-rollback retains $retain generations"
 fi
 if [ "$script_newer" = "$newer" ]; then
   ok "disk-image.sh RETAINED_NEWER ($script_newer) matches RETAINED_NEWER_GENERATIONS"
@@ -87,7 +87,7 @@ if [ "$esp_mib" -ge "$need" ]; then
 else
   bad "ESP ${esp}G (${esp_mib} MiB) cannot hold $(( retain + newer + repair )) x ${budget} MiB + ${slack} MiB = ${need} MiB
       Raise ESP_SIZE in os/dev/disk-image.sh, or lower retained_generations in
-      crates/system/qos-rollback/src/lib.rs. Highest window this ESP supports:
+      crates/system/tilo-rollback/src/lib.rs. Highest window this ESP supports:
       $(( (esp_mib - slack) / budget - newer - repair ))."
 fi
 

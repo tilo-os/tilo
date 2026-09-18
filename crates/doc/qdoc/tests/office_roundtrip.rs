@@ -19,13 +19,11 @@ use qdoc::diff::{BlockOp, RunOp, diff_snapshots};
 use qdoc::{BlockView, DocSnapshot, Document, DocxCodec, FormatProvider, MarkSpan, OdtCodec};
 use std::fmt::Write as _;
 
-const SAMPLE_ODT: &[u8] = include_bytes!("fixtures/sample.odt");
-const SAMPLE_DOCX: &[u8] = include_bytes!("fixtures/sample.docx");
-const ZIPBOMB_DOCX: &[u8] = include_bytes!("fixtures/zipbomb.docx");
-const XXE_DOCX: &[u8] = include_bytes!("fixtures/xxe.docx");
-const XXE_ODT: &[u8] = include_bytes!("fixtures/xxe.odt");
-
-// ---- helpers ---------------------------------------------------------------
+const SAMPLE_ODT: &[u8] = include_bytes!("../../fixtures/sample.odt");
+const SAMPLE_DOCX: &[u8] = include_bytes!("../../fixtures/sample.docx");
+const ZIPBOMB_DOCX: &[u8] = include_bytes!("../../fixtures/zipbomb.docx");
+const XXE_DOCX: &[u8] = include_bytes!("../../fixtures/xxe.docx");
+const XXE_ODT: &[u8] = include_bytes!("../../fixtures/xxe.odt");
 
 #[allow(
     clippy::expect_used,
@@ -126,8 +124,6 @@ fn assert_sample_structure(snap: &DocSnapshot, format: &str) {
     );
 }
 
-// ---- 1. parse real office files into the CRDT model ------------------------
-
 #[test]
 fn odt_parses_real_file_into_crdt_model() {
     let d = import(&OdtCodec, SAMPLE_ODT);
@@ -139,8 +135,6 @@ fn docx_parses_real_file_into_crdt_model() {
     let d = import(&DocxCodec, SAMPLE_DOCX);
     assert_sample_structure(&d.materialize(), "docx");
 }
-
-// ---- 2. edit as a CRDT op, serialize, and reopen ---------------------------
 
 /// Apply two edits as real CRDT operations (a text splice into the
 /// heading, a newly inserted paragraph), export to `format`, reopen,
@@ -156,7 +150,6 @@ fn docx_parses_real_file_into_crdt_model() {
 fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
     let mut d = import(codec, bytes);
 
-    // Locate the heading block and append " (DRAFT)" to it — a CRDT text splice.
     let heading_id = d
         .blocks_in_order()
         .into_iter()
@@ -170,7 +163,6 @@ fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
     let versions_before = d.versions().len();
     d.splice_text(&heading_id, hlen, 0, " (DRAFT)");
 
-    // Insert a brand-new paragraph at the end — a CRDT block insertion + splice.
     let last = d.blocks_in_order().pop().expect("a last block");
     let new_para = d.insert_block(Some(&last), "paragraph");
     d.splice_text(&new_para, 0, 0, "Appended by CRDT edit");
@@ -180,8 +172,6 @@ fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
         "{format}: edits must extend the CRDT change history ({versions_before} -> {versions_after})"
     );
 
-    // Time-travel: some earlier version has the heading edit but NOT
-    // the appended paragraph — independent, replayable changes, not a blob rewrite.
     let saw_intermediate = (0..d.versions().len()).any(|v| {
         let s = d.materialize_at(v).unwrap();
         let has_draft = s
@@ -196,14 +186,12 @@ fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
         "{format}: expected an intermediate version with only the first edit"
     );
 
-    // Serialize back to the format and reopen it.
     let out = codec
         .export(d.as_ref())
         .unwrap_or_else(|e| panic!("{format}: export failed: {e}"));
     let reopened = import(codec, &out);
     let snap = reopened.materialize();
 
-    // Both edits survived the format round-trip...
     assert!(
         snap.blocks
             .iter()
@@ -222,7 +210,6 @@ fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
         "{format}: appended paragraph lost on reopen"
     );
 
-    // ...and so did everything else the model captured (marks, list, table, meta).
     let para = snap
         .blocks
         .iter()
@@ -263,14 +250,11 @@ fn docx_edit_as_crdt_op_survives_reopen() {
     edit_and_reopen(&DocxCodec, SAMPLE_DOCX, "docx");
 }
 
-// ---- 3. version diff -------------------------------------------------------
-
 #[test]
 fn version_diff_reports_structural_changes_on_real_docx() {
     let mut d = import(&DocxCodec, SAMPLE_DOCX);
     let v1 = d.materialize();
 
-    // Edit the heading text and append a new paragraph.
     let heading_id = d
         .blocks_in_order()
         .into_iter()
@@ -292,7 +276,6 @@ fn version_diff_reports_structural_changes_on_real_docx() {
     assert_eq!(diff.summary.removed, 0, "nothing removed");
     assert_eq!(diff.summary.changed, 1, "the heading changed");
 
-    // The changed heading carries a minimal run diff.
     let ch = diff
         .blocks
         .iter()
@@ -314,17 +297,13 @@ fn version_diff_reports_structural_changes_on_real_docx() {
         "run diff must keep the shared prefix"
     );
 
-    // The added block reports its new text and no old text.
     let added = diff.blocks.iter().find(|b| b.op == BlockOp::Added).unwrap();
     assert_eq!(added.new_text.as_deref(), Some("New section"));
     assert!(added.old_text.is_none());
 
-    // The diff is plain serializable data a UI can render.
     let json = serde_json::to_string(&diff).expect("diff serializes to JSON");
     assert!(json.contains("New section") && json.contains("DRAFT"));
 }
-
-// ---- 4. security: untrusted-input hardening --------------------------------
 
 #[test]
 fn zip_bomb_is_rejected_not_inflated() {
@@ -380,8 +359,6 @@ fn garbage_input_is_rejected_cleanly() {
             .is_err()
     );
 }
-
-// ---- 5. performance: large document parse + serialize ----------------------
 
 /// Build a large book-length document in the CRDT model, export +
 /// reimport for both formats.

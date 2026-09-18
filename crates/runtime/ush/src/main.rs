@@ -1,9 +1,9 @@
-//! `qos-ush` — one binary, three roles, dispatched on `argv[0]`.
+//! `tilo-ush` — one binary, three roles, dispatched on `argv[0]`.
 //!
 //! - `ush` / `dsh` on the host: build a guest and run a shell in it.
 //! - `pkg`, `perm`, `scan`, `guard`, `quarantine`, `restart` inside a guest:
 //!   the runtime's own commands, symlinks to this binary on the guest's `PATH`.
-//! - `qos-ush serve`: the session supervisor an app asks for a guest.
+//! - `tilo-ush serve`: the session supervisor an app asks for a guest.
 //!
 //! One binary because the guest has to run the *same* build that built its
 //! confinement, and because `pkg` inside a guest and the supervisor outside it
@@ -70,7 +70,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// `qos-ush <subcommand>` — the spelling used when the binary is invoked by
+/// `tilo-ush <subcommand>` — the spelling used when the binary is invoked by
 /// its own name rather than through a shim.
 fn dispatch(args: &[String]) -> anyhow::Result<i32> {
     let rest = args.get(1..).unwrap_or(&[]);
@@ -93,12 +93,12 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
 }
 
 const USAGE: &str = "\
-qos-ush — an application runtime that hosts a shell.
+tilo-ush — an application runtime that hosts a shell.
 
 On the host:
   ush [-c COMMAND] [-v] [--ephemeral]   open a sandboxed shell
   dsh [-c COMMAND] [-v]                 open a developer shell (NOT a sandbox)
-  qos-ush serve [--socket PATH]         hand guests to apps that ask
+  tilo-ush serve [--socket PATH]         hand guests to apps that ask
 
 Inside a guest:
   pkg install [--one-time] PKG…    pkg remove PKG…    pkg list
@@ -201,14 +201,14 @@ fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
     Ok(0)
 }
 
-/// `$XDG_RUNTIME_DIR/qos/services/ush.sock` — the path `qos-launcher` looks in
+/// `$XDG_RUNTIME_DIR/tilo/services/ush.sock` — the path `tilo-launcher` looks in
 /// for a `[sandbox.services]` entry named `ush`.
 fn default_service_socket() -> PathBuf {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
         || PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })),
         PathBuf::from,
     );
-    runtime.join("qos/services/ush.sock")
+    runtime.join("tilo/services/ush.sock")
 }
 
 fn init_tracing(verbose: bool) {
@@ -229,7 +229,7 @@ mod guest {
     use ush::pkg::{InstalledPackage, Manifest};
 
     fn broker_socket() -> PathBuf {
-        std::env::var_os("QOS_USH_BROKER")
+        std::env::var_os("TILO_USH_BROKER")
             .map_or_else(|| PathBuf::from(ush::GUEST_BROKER_SOCK), PathBuf::from)
     }
 

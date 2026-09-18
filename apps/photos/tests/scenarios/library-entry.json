@@ -1,0 +1,18 @@
+[
+  {
+    "perform": {
+      "target": "PhotosApp[0]",
+      "semantic_target": "photos:toolbar:photos-library",
+      "action": "activate"
+    }
+  },
+  {
+    "expect": {
+      "target": "PhotosApp[0]",
+      "semantic_target": "photos:toolbar:photos-library",
+      "role": "button",
+      "name": "Library",
+      "enabled": true
+    }
+  }
+]

@@ -52,7 +52,7 @@ impl ExpandModal {
             .into_iter()
             .map(|name| Field {
                 input: TextInput::local()
-                    .with_id(&format!("snippets.expand.{name}"))
+                    .with_id(&format!("snippets.expand.field.{name}"))
                     .with_placeholder("type a value…")
                     .with_font_size(13.0)
                     .with_plain_chrome(),
@@ -542,9 +542,68 @@ impl ExpandModal {
     }
 
     pub fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.fields
-            .get(self.focused)
-            .and_then(|f| f.input.accessibility())
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut children: Vec<_> = self
+            .fields
+            .iter()
+            .filter_map(|field| {
+                field.input.accessibility().map(|node| {
+                    node.with_name(&field.name)
+                        .with_action_target(format!("snippets.expand.field.{}", field.name))
+                })
+            })
+            .collect();
+        for (target, label, bounds) in [
+            ("snippets.expand.copy", "Copy", self.copy_rect),
+            ("snippets.expand.cancel", "Cancel", self.cancel_rect),
+        ] {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(label)
+                    .with_action_target(target)
+                    .with_bounds(bounds)
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
+            );
+        }
+        Some(
+            AccessNode::new(Role::Dialog)
+                .with_name(&self.title)
+                .with_children(children),
+        )
+    }
+
+    pub fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Option<ExpandOutcome> {
+        if matches!(action, ui::a11y::Action::Activate) {
+            match target {
+                "snippets.expand.copy" => {
+                    return Some(ExpandOutcome::Copy(self.preview(), self.snippet_id));
+                }
+                "snippets.expand.cancel" => return Some(ExpandOutcome::Cancel),
+                _ => {}
+            }
+        }
+        let index = self
+            .fields
+            .iter()
+            .position(|field| target == format!("snippets.expand.field.{}", field.name))?;
+        if matches!(action, ui::a11y::Action::Focus) {
+            self.focused = index;
+            self.focus_field(index);
+            return Some(ExpandOutcome::Stay);
+        }
+        let field = self.fields.get_mut(index)?;
+        let accepted = field.input.perform_action(action, state, path);
+        field.input.take_dirty();
+        accepted.then_some(ExpandOutcome::Stay)
     }
 
     pub fn needs_commit(&self) -> bool {

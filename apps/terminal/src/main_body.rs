@@ -2,7 +2,7 @@ use ui::ColorCompat;
 use ui::{
     Theme,
     text_render::{FontChoice, TextRenderer, TextStyle, TextWeight},
-    widget::Widget,
+    widget::{PressOutcome, ScrollMetrics, Scrollbar, TextInput, Widget},
 };
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
 // reuses these rather than re-implementing word/line boundary walking, multi-
@@ -21,7 +21,7 @@ use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
+use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -67,6 +67,20 @@ const MAX_VISIBLE_RESOURCE_LINKS: usize = 32;
 /// Resource labels are navigation chrome, not a second copy of an arbitrarily
 /// long OSC URL. The full validated target stays in the operation payload.
 const MAX_LINK_RESOURCE_LABEL_CHARS: usize = 120;
+/// Find is deliberately bounded separately from retained scrollback. A noisy
+/// log may contain thousands of identical hits; keeping a focused review
+/// surface responsive matters more than counting every occurrence forever.
+const MAX_FIND_MATCHES: usize = 2_048;
+/// A find string is local presentation state, but cap it before repeatedly
+/// scanning history on each keystroke or pasting an accidental large blob.
+const MAX_FIND_QUERY_CHARS: usize = 256;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FindMatch {
+    row: usize,
+    start_col: usize,
+    end_col: usize,
+}
 
 fn link_resource_label(url: &str) -> String {
     let mut label: String = url.chars().take(MAX_LINK_RESOURCE_LABEL_CHARS).collect();
@@ -120,26 +134,53 @@ impl Selection {
     }
 }
 
-/// Open a URL from an OSC 8 hyperlink click. Best-effort: spawns the OS opener
-/// (`xdg-open`) detached and never blocks or panics — a missing opener or a
-/// malformed URL is silently ignored, exactly like the clipboard helpers.
-/// Only `http(s)`, `file`, and `mailto` schemes are launched so a hostile
-/// program can't smuggle a `javascript:`/`data:` URI (or a shell argument)
-/// into the opener.
+/// Open an OSC 8 hyperlink through the toolkit's native opener without waiting
+/// for the browser. A launch failure is logged; malformed URLs are ignored.
+/// Only plain public `http(s)` targets are launched. In particular, terminal
+/// output never gets to turn an OSC 8 link into access to a local `file:` URL,
+/// a `mailto:` draft, credentials in an authority, or a query/fragment that
+/// might contain a bearer token. A user can still select and copy any text the
+/// process printed; the opener is deliberately the narrower, explicit effect.
 pub(crate) fn open_url(url: &str) {
-    let ok = url.starts_with("http://")
-        || url.starts_with("https://")
-        || url.starts_with("file://")
-        || url.starts_with("mailto:");
-    if !ok {
+    if !is_public_web_link(url) {
         return;
     }
-    let _ = std::process::Command::new("xdg-open")
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    ui::widget::open_external_url(url);
+}
+
+/// An OSC 8 target that is safe to publish to the action directory and hand to
+/// the external opener. This intentionally accepts a small URL subset instead
+/// of attempting to parse and redact arbitrary process-provided metadata: a
+/// redaction mistake would disclose a secret in a resource payload.
+pub(crate) fn is_public_web_link(url: &str) -> bool {
+    let Some(authority_and_path) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    if authority_and_path.is_empty()
+        || authority_and_path.contains(['?', '#', '@', '\\'])
+        || authority_and_path
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return false;
+    }
+    // An authority is required. A slash is optional (for example
+    // `https://tilo.example`), but a path cannot be mistaken for one.
+    authority_and_path
+        .split_once('/')
+        .map_or(!authority_and_path.is_empty(), |(authority, _)| {
+            !authority.is_empty()
+        })
+}
+
+/// Prompted resource input is text, not an escape hatch for arbitrary terminal
+/// control bytes. This keeps the typed `send` promise truthful and lets `run`
+/// guarantee precisely one appended Enter.
+fn is_reviewable_terminal_text(value: &str) -> bool {
+    !value.chars().any(|ch| ch.is_control() && ch != '\t')
 }
 
 /// Convert an OSC metadata field into a compact, single-line label. OSC is
@@ -434,6 +475,8 @@ pub struct TerminalWidget {
     /// fails, or a write fails. A live session cannot be honestly revived by
     /// retrying arbitrary input, so this is local terminal lifecycle state.
     session_disconnected: Arc<AtomicBool>,
+    #[cfg(windows)]
+    child_killer: Option<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
     /// Stable, non-sensitive reason shown in the retained terminal surface and
     /// its accessibility description. Kept local with the transport state.
     session_status_message: Arc<Mutex<&'static str>>,
@@ -496,6 +539,26 @@ pub struct TerminalWidget {
     /// Rows scrolled up from the bottom of the buffer. 0 == pinned to the
     /// live output; a new keystroke or fresh PTY output snaps it back to 0.
     scroll_offset: usize,
+    /// Sub-row precision retained between high-resolution touchpad events.
+    /// Terminal storage is row based, but discarding each fractional delta
+    /// made slow two-finger gestures feel sticky and unpredictable.
+    wheel_remainder_px: f64,
+    /// Shared toolkit interaction model for the terminal history bar.
+    scrollbar: Scrollbar,
+
+    /// Local find-in-scrollback state. It is intentionally not mirrored into
+    /// the CRDT or resource tree: a find term and its matching output can be
+    /// sensitive, while the shared terminal transcript already has its own
+    /// carefully bounded collaboration contract.
+    find_open: bool,
+    find_input: TextInput,
+    find_matches: Vec<FindMatch>,
+    find_current: usize,
+    find_query: String,
+    find_rect: Rect,
+    find_previous_rect: Rect,
+    find_next_rect: Rect,
+    find_close_rect: Rect,
 
     /// Last palette-derived cursor color, captured on every `draw`. Exposed
     /// for behavioural tests that want to verify palette swaps actually
@@ -632,14 +695,26 @@ pub struct TerminalWidget {
     /// presence (`PresenceKey::App { sub }`), so a peer's caret/selection is
     /// attributed to this pane rather than colliding with another terminal.
     pane_id: String,
+    /// Identifies the local PTY whose presentation is mirrored into this
+    /// record. A terminal tab is durable, but its process is not: after a
+    /// logout the next login spawns a new shell. Without an incarnation
+    /// marker that new shell inherited the previous process' persisted grid
+    /// and appended a second prompt to it, making a fresh session look as if
+    /// several terminals had been restored. Headless/replica widgets leave
+    /// this `None` because they intentionally render an existing transcript.
+    local_session_id: Option<String>,
+    /// The record scope arrives before the first sync. We reset stale
+    /// process-owned presentation exactly once at that boundary, never on a
+    /// collaborator's ordinary document update.
+    local_session_bound: bool,
 
     /// Wakes the `ui::App` event loop when the PTY reader has new output, so a
     /// standalone terminal can idle (`ControlFlow::Wait`) instead of polling at
     /// ~60 Hz. The binary arms it via `App::run_with_setup` (see
     /// [`waker_handle`](Self::waker_handle)); it stays `None` when the terminal
-    /// is embedded in a host that pumps it, or before the loop starts, in which
-    /// case [`needs_animation_frame`](Widget::needs_animation_frame) keeps
-    /// requesting frames.
+    /// is embedded in a host that pumps it. Embedded hosts call `sync`/`update`
+    /// independently of painting, so they can remain visually idle until the
+    /// channel actually contains output.
     waker: Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>,
     /// Coalesces reader wakes: set when a wake is in flight, cleared when the
     /// App delivers the resulting `External` event (`on_external_event`), so a
@@ -670,6 +745,8 @@ impl TerminalWidget {
             output_rx,
             deferred_output: None,
             session_disconnected: Arc::new(AtomicBool::new(false)),
+            #[cfg(windows)]
+            child_killer: None,
             session_status_message: Arc::new(Mutex::new("Session ended — input unavailable")),
             parser: Parser::new(),
             grid,
@@ -702,6 +779,17 @@ impl TerminalWidget {
             scroll_bottom: height - 1,
             modes: TermModes::default(),
             scroll_offset: 0,
+            wheel_remainder_px: 0.0,
+            scrollbar: Scrollbar::vertical(),
+            find_open: false,
+            find_input: TextInput::local().with_id("terminal_find"),
+            find_matches: Vec::new(),
+            find_current: 0,
+            find_query: String::new(),
+            find_rect: Rect::ZERO,
+            find_previous_rect: Rect::ZERO,
+            find_next_rect: Rect::ZERO,
+            find_close_rect: Rect::ZERO,
             last_cursor_color: Color::from_rgba8(0, 0, 0, 0),
             last_fg_default: Color::from_rgba8(0, 0, 0, 0),
             last_bg_default: Color::from_rgba8(0, 0, 0, 0),
@@ -737,11 +825,84 @@ impl TerminalWidget {
             image_cache: HashMap::new(),
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
+            local_session_id: None,
+            local_session_bound: false,
             waker: Arc::new(Mutex::new(None)),
             wake_pending: Arc::new(AtomicBool::new(false)),
             mouse_buttons: 0,
             focused: false,
         }
+    }
+
+    /// Mark this widget as the presentation of a newly spawned local PTY.
+    /// The transcript is collaborative state only while the process that
+    /// produced it is alive; a new process must start from a clean screen.
+    fn with_local_session(mut self) -> Self {
+        self.local_session_id = Some(uuid::Uuid::new_v4().to_string());
+        self
+    }
+
+    fn reset_stale_local_session(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let Some(session_id) = self.local_session_id.as_deref() else {
+            return;
+        };
+        if self.local_session_bound {
+            return;
+        }
+        self.local_session_bound = true;
+
+        let stored_session = state
+            .get(root, "terminal_local_session")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(value) => value.to_str().map(ToOwned::to_owned),
+                Value::Object(_) => None,
+            });
+        if stored_session.as_deref() == Some(session_id) {
+            return;
+        }
+
+        // These objects describe one live PTY, not the durable identity of
+        // the tab. Delete the old objects atomically before `init_crdt`
+        // creates blank replacements for the new process. Notes/editor data
+        // and the tab itself are separate records and remain untouched.
+        for key in [
+            "terminal_grid",
+            "terminal_grid_alt",
+            "cursor",
+            "terminal_links",
+            "terminal_images",
+            "terminal_title",
+            "terminal_pane_id",
+        ] {
+            let _ = state.delete(root, key);
+        }
+        let _ = state.put(root, "terminal_local_session", session_id);
+
+        self.grid_id = None;
+        self.alt_grid_id = None;
+        self.cursor_id = None;
+        self.links_id = None;
+        self.images_id = None;
+        self.line_ids.clear();
+        self.alt_line_ids.clear();
+        self.grid.clear();
+        self.grid_attrs.clear();
+        self.links.clear();
+        self.image_placements.clear();
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.alt_active = false;
+        self.saved_cursor = None;
+        self.mirror_valid = false;
+        self.force_resync = true;
+        self.pending_local_edit = true;
+        self.synced_len = 0;
+        self.trimmed_front = 0;
+        self.ever_nonblank = false;
+        self.title = "Terminal".to_string();
+        self.pane_id = uuid::Uuid::new_v4().to_string();
     }
 
     /// Handle used to arm the event-loop waker. A binary running the terminal
@@ -788,6 +949,13 @@ impl TerminalWidget {
         self.session_status_message
             .lock()
             .map_or("Session ended — input unavailable", |message| *message)
+    }
+
+    /// A compact visual lifecycle state. The detailed transport cause stays in
+    /// the accessible description/live region, where it is neither clipped at
+    /// 200% text scale nor mistaken for a recoverable command prompt.
+    pub(crate) const fn disconnected_badge_label() -> &'static str {
+        "Session ended"
     }
     /// Current window title (OSC 0/2), defaulting to "Terminal". Host/test
     /// accessor — also what `AppWidget::app_title` returns.
@@ -853,7 +1021,10 @@ impl TerminalWidget {
             for attr in row {
                 if attr.link_id != 0
                     && seen.insert(attr.link_id)
-                    && self.links.contains_key(&attr.link_id)
+                    && self
+                        .links
+                        .get(&attr.link_id)
+                        .is_some_and(|url| is_public_web_link(url))
                 {
                     ids.push(attr.link_id);
                     if ids.len() >= MAX_VISIBLE_RESOURCE_LINKS {
@@ -1174,6 +1345,99 @@ impl TerminalWidget {
     pub fn find_row_last(&self, needle: &str) -> Option<usize> {
         self.grid.iter().rposition(|l| l.contains(needle))
     }
+
+    /// Open the local find surface. This does not publish the query, the
+    /// result positions, or a command to collaborators/agents: scrollback may
+    /// contain credentials and the feature is only a viewport aid.
+    pub fn open_find(&mut self) {
+        self.find_open = true;
+        self.find_input.set_focus(true);
+        self.refresh_find_matches();
+    }
+
+    /// Set the local find text for a host or screenshot. Production typing
+    /// routes through the same [`TextInput`] then calls
+    /// [`refresh_find_matches`](Self::refresh_find_matches).
+    pub fn set_find_query(&mut self, query: &str) {
+        let bounded: String = query.chars().take(MAX_FIND_QUERY_CHARS).collect();
+        self.find_input.set_text(&bounded);
+        self.refresh_find_matches();
+    }
+
+    fn close_find(&mut self) {
+        self.find_open = false;
+        self.find_input.set_focus(false);
+        self.find_matches.clear();
+        self.find_current = 0;
+        self.find_query.clear();
+        self.find_rect = Rect::ZERO;
+        self.find_previous_rect = Rect::ZERO;
+        self.find_next_rect = Rect::ZERO;
+        self.find_close_rect = Rect::ZERO;
+    }
+
+    /// Re-scan the bounded local mirror only when the query changes or fresh
+    /// terminal output has reached a sync. Matches are literal and
+    /// case-sensitive: terminal identifiers, paths and hashes are commonly
+    /// case-significant, so silently folding case would be misleading.
+    fn refresh_find_matches(&mut self) {
+        let bounded: String = self
+            .find_input
+            .value()
+            .chars()
+            .take(MAX_FIND_QUERY_CHARS)
+            .collect();
+        if bounded != self.find_input.value() {
+            self.find_input.set_text(&bounded);
+        }
+        self.find_query = bounded;
+        self.find_matches.clear();
+        self.find_current = 0;
+        if self.find_query.is_empty() {
+            return;
+        }
+        'rows: for (row, line) in self.grid.iter().enumerate() {
+            for (start_byte, _) in line.match_indices(&self.find_query) {
+                let start_col = line.get(..start_byte).map_or(0, UnicodeWidthStr::width);
+                let end_col = start_col + UnicodeWidthStr::width(self.find_query.as_str());
+                self.find_matches.push(FindMatch {
+                    row,
+                    start_col,
+                    end_col,
+                });
+                if self.find_matches.len() == MAX_FIND_MATCHES {
+                    break 'rows;
+                }
+            }
+        }
+        self.reveal_current_find_match();
+    }
+
+    fn reveal_current_find_match(&mut self) {
+        let Some(found) = self.find_matches.get(self.find_current).copied() else {
+            return;
+        };
+        if self.alt_active {
+            return;
+        }
+        let visible = self.current_visible_rows().max(1);
+        let max_top = self.grid.len().saturating_sub(visible);
+        let top = found.row.saturating_sub(visible / 2).min(max_top);
+        self.scroll_offset = max_top.saturating_sub(top);
+    }
+
+    fn step_find_match(&mut self, backwards: bool) {
+        let len = self.find_matches.len();
+        if len == 0 {
+            return;
+        }
+        self.find_current = if backwards {
+            self.find_current.checked_sub(1).unwrap_or(len - 1)
+        } else {
+            (self.find_current + 1) % len
+        };
+        self.reveal_current_find_match();
+    }
     /// Resolve the OSC 8 hyperlink URL for the cell at absolute buffer
     /// `(row, col)`, if any. Host/test accessor: powers click-to-open and
     /// lets a test assert a parsed hyperlink landed on the right cells.
@@ -1263,6 +1527,31 @@ impl TerminalWidget {
         };
         let start = max_top.saturating_sub(scroll);
         self.grid.iter().skip(start).take(vis).cloned().collect()
+    }
+    /// Find overlay state for geometry and privacy regressions. Kept
+    /// test-only: production hosts use the explicit open/set APIs and do not
+    /// inspect another person's local query/matches.
+    #[cfg(test)]
+    pub fn find_test_state(&self) -> (bool, Vec<usize>) {
+        (
+            self.find_open,
+            self.find_matches.iter().map(|found| found.row).collect(),
+        )
+    }
+    /// The overlay and its three controls after the real draw pass.
+    #[cfg(test)]
+    pub fn find_test_geometry(&self) -> (Rect, Rect, Rect, Rect, Rect) {
+        (
+            self.find_rect,
+            self.find_input.get_rect(),
+            self.find_previous_rect,
+            self.find_next_rect,
+            self.find_close_rect,
+        )
+    }
+    #[cfg(test)]
+    pub fn find_test_target(&self, control: &str) -> String {
+        format!("terminal.find:{}:{control}", self.pane_id)
     }
     /// The parsed attribute for the mirrored grid cell at `(row, col)`.
     /// Test accessor for SGR-parsing assertions.
@@ -1378,6 +1667,28 @@ impl TerminalWidget {
         self.grid.len().saturating_sub(self.current_visible_rows())
     }
 
+    fn scrollbar_track(&self) -> Rect {
+        let x1 = self.rect.x1 - self.chrome_body_pad;
+        let width = (self.chrome_scrollbar_w - 2.0).max(3.0);
+        Rect::new(x1 - width, self.grid_rect.y0, x1, self.grid_rect.y1)
+    }
+
+    fn scrollbar_metrics(&self) -> ScrollMetrics {
+        let visible = self.current_visible_rows() as f64;
+        let total = self.grid.len() as f64;
+        // Scrollbar offsets are measured from the top; terminal history is
+        // measured back from the live bottom.
+        let from_top = self.max_scroll().saturating_sub(self.scroll_offset) as f64;
+        ScrollMetrics::new(total, visible, from_top)
+    }
+
+    fn set_scrollbar_offset(&mut self, from_top: f64) {
+        let max = self.max_scroll();
+        let top = from_top.round().clamp(0.0, max as f64) as usize;
+        self.scroll_offset = max.saturating_sub(top);
+        self.wheel_remainder_px = 0.0;
+    }
+
     /// Scroll the viewport back (toward older output) by `n` rows.
     pub fn scroll_up(&mut self, n: usize) {
         if self.alt_active {
@@ -1399,6 +1710,7 @@ impl TerminalWidget {
     /// Pin the viewport back to the live output.
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0;
+        self.wheel_remainder_px = 0.0;
     }
 
     /// Drain queued PTY bytes and replay them through the vte parser into the
@@ -1919,6 +2231,11 @@ impl Widget for TerminalWidget {
                         MAX_RESOURCE_SEND_BYTES / 1024
                     ));
                 }
+                if !is_reviewable_terminal_text(&value) {
+                    return Err(
+                        "text to send may not contain terminal control characters".to_string()
+                    );
+                }
                 self.try_write_input(value.as_bytes())?;
             }
             "terminal.run" => {
@@ -1933,6 +2250,12 @@ impl Widget for TerminalWidget {
                         "command exceeds the {} KiB reviewed-command limit",
                         MAX_RESOURCE_SEND_BYTES / 1024
                     ));
+                }
+                if !is_reviewable_terminal_text(&value) {
+                    return Err(
+                        "command must be one line and may not contain terminal control characters"
+                            .to_string(),
+                    );
                 }
                 let mut command = value.into_bytes();
                 command.push(b'\r');
@@ -1957,12 +2280,9 @@ impl Widget for TerminalWidget {
                     return Ok(false);
                 }
                 if safe_osc_text(value.as_bytes(), MAX_OSC_LINK_BYTES).is_none()
-                    || !(value.starts_with("http://")
-                        || value.starts_with("https://")
-                        || value.starts_with("file://")
-                        || value.starts_with("mailto:"))
+                    || !is_public_web_link(&value)
                 {
-                    return Err("link target is not a supported safe URL".to_string());
+                    return Err("link target is not a safe public web URL".to_string());
                 }
                 open_url(&value);
             }
@@ -2014,13 +2334,15 @@ impl Widget for TerminalWidget {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.reset_stale_local_session(state, root);
+        self.find_input.sync(state, root);
         // Drain any bytes the PTY reader thread has queued and replay them
         // through the vte parser *here*, before reading the grid back out.
         // The plain `ui::App` event loop only ever calls `sync` (never
         // `update`), so if the pty were only pumped from `update` the live
         // terminal would never advance. Pumping from `sync` — combined with
-        // `needs_animation_frame` keeping the loop ticking — is what makes a
-        // standalone or embedded terminal actually show output.
+        // the standalone waker (or an embedding host's app pump) driving the
+        // loop — is what makes a terminal actually show output.
         self.pump(state, root);
 
         let current_heads = state.get_heads();
@@ -2061,27 +2383,26 @@ impl Widget for TerminalWidget {
         self.refresh_title_and_links(state, root);
         self.refresh_image_placements(state);
         self.refresh_cursor_from_crdt(state, line_ids.len());
+        if self.find_open {
+            self.refresh_find_matches();
+        }
     }
 
     fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
         self.pump(state, root)
     }
 
-    /// Whether the App should keep ticking at ~60 Hz. Once the PTY reader can
-    /// wake the loop (a standalone terminal that armed its `waker` via
-    /// `App::run_with_setup`), we idle instead: the reader sends a
-    /// `UserEvent::External` on new output, which drives a re-sync + redraw, so
-    /// there is no reason to poll while nothing is happening. Until the waker is
-    /// armed — embedded in a host that pumps us, or during startup before the
-    /// loop runs — we keep requesting frames so output still surfaces.
+    /// Whether queued output needs another visual frame. A standalone terminal
+    /// is woken by its event-loop proxy; an embedded terminal is pumped by its
+    /// host independently of painting. Treating an absent standalone proxy as
+    /// animation demand made every idle embedded terminal repaint the complete
+    /// desktop continuously.
     fn needs_animation_frame(&self) -> bool {
         // A bounded pump deliberately leaves excess output queued. Keep frames
         // flowing until it is drained even when the reader's coalesced wake is
         // already in flight; otherwise a saturated producer could strand the
         // final queue behind `ControlFlow::Wait`.
-        self.deferred_output.is_some()
-            || !self.output_rx.is_empty()
-            || self.waker.lock().map_or(true, |g| g.is_none())
+        self.deferred_output.is_some() || !self.output_rx.is_empty()
     }
 
     /// The event-loop wake we requested has been delivered. Clear the coalescing
@@ -2137,6 +2458,10 @@ impl Widget for TerminalWidget {
         self.set_geometry(rect);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Terminal painting intentionally keeps grid, selection, cursor, and local find overlays in one ordered compositing pass"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -2176,8 +2501,6 @@ impl Widget for TerminalWidget {
         // grid origin is single-sourced. `set_geometry` and hit-testing read the
         // cached metrics — neither sees a `Theme` — mirroring `last_padding_x`.
         self.refresh_chrome_metrics(theme);
-        self.grid_rect = self.grid_content_rect(self.rect);
-        let grid_rect = self.grid_rect;
 
         // The terminal body fills the whole widget in the theme's terminal
         // background (a deliberate deep surface, not an accidental void). No
@@ -2201,6 +2524,15 @@ impl Widget for TerminalWidget {
             text_renderer.measure_font(" ", font_size, None, TextWeight::Regular, false, &mono);
         self.char_w = f64::from(w).max(1.0);
         self.char_h = Self::cell_h(h);
+
+        // `measure` happens before we can resolve the theme's actual
+        // monospace face. Reconcile the PTY geometry after that exact
+        // measurement as well: at 200% text scale a fallback/default advance
+        // can be much narrower than the rendered mono advance, otherwise the
+        // process sees more columns than fit on screen and its right side is
+        // silently clipped. This is a no-op on steady frames.
+        self.set_geometry(self.rect);
+        let grid_rect = self.grid_rect;
 
         let visible_rows = (grid_rect.height() / self.char_h).floor() as usize;
         let max_top = self.grid.len().saturating_sub(visible_rows);
@@ -2249,6 +2581,7 @@ impl Widget for TerminalWidget {
                     presence,
                 );
             }
+            self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
             return;
         }
 
@@ -2262,6 +2595,15 @@ impl Widget for TerminalWidget {
         // Paint the selection BEFORE the cell text so glyphs read on top of
         // the highlight.
         self.draw_selection_highlight(
+            scene,
+            transform,
+            theme,
+            grid_rect,
+            padding_x,
+            start_y,
+            visible_rows,
+        );
+        self.draw_find_match_highlight(
             scene,
             transform,
             theme,
@@ -2315,6 +2657,7 @@ impl Widget for TerminalWidget {
             );
         }
         self.draw_disconnected_status(scene, transform, text_renderer, theme);
+        self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(
@@ -2353,6 +2696,38 @@ impl Widget for TerminalWidget {
                 self.activate_context_menu_item(index);
             }
             *handled |= menu_handled;
+            return;
+        }
+
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+            && modifiers.state().control_key()
+            && matches!(logical_key, Key::Character(key) if key.eq_ignore_ascii_case("f"))
+        {
+            self.open_find();
+            *handled = true;
+            return;
+        }
+
+        if self.find_open {
+            self.handle_find_event(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                root,
+                focus_target,
+                node_id,
+                taffy,
+                handled,
+            );
             return;
         }
 
@@ -2474,6 +2849,57 @@ impl Widget for TerminalWidget {
         transcript
             .children
             .extend(self.visible_link_accessibility());
+        if self.find_open {
+            let prefix = format!("terminal.find:{}", self.pane_id);
+            let result = if self.find_query.is_empty() {
+                "Type to find in retained local scrollback".to_string()
+            } else if self.find_matches.is_empty() {
+                "No matches in retained local scrollback".to_string()
+            } else if self.find_matches.len() == MAX_FIND_MATCHES {
+                format!(
+                    "Match {} of {} or more",
+                    self.find_current + 1,
+                    MAX_FIND_MATCHES
+                )
+            } else {
+                format!(
+                    "Match {} of {}",
+                    self.find_current + 1,
+                    self.find_matches.len()
+                )
+            };
+            transcript.children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Find in scrollback")
+                    .with_description("Local only. Find text and matches are not shared with collaborators or exposed as terminal resources.")
+                    .with_bounds(self.find_rect)
+                    .with_children(vec![
+                        AccessNode::new(Role::TextInput)
+                            .with_name("Find in scrollback")
+                            .with_value(self.find_input.value())
+                            .with_action_target(format!("{prefix}:query"))
+                            .with_bounds(self.find_input.get_rect())
+                            .with_state(AccessState::new().focusable(true).focused(self.find_input.is_focused())),
+                        AccessNode::new(Role::Button)
+                            .with_name("Previous match")
+                            .with_value(result.clone())
+                            .with_action_target(format!("{prefix}:previous"))
+                            .with_bounds(self.find_previous_rect)
+                            .with_state(AccessState::new().focusable(true)),
+                        AccessNode::new(Role::Button)
+                            .with_name("Next match")
+                            .with_value(result)
+                            .with_action_target(format!("{prefix}:next"))
+                            .with_bounds(self.find_next_rect)
+                            .with_state(AccessState::new().focusable(true)),
+                        AccessNode::new(Role::Button)
+                            .with_name("Close find")
+                            .with_action_target(format!("{prefix}:close"))
+                            .with_bounds(self.find_close_rect)
+                            .with_state(AccessState::new().focusable(true)),
+                    ]),
+            );
+        }
         if let Some(menu) = self.context_menu_accessibility() {
             transcript.children.push(menu);
         }
@@ -2516,6 +2942,33 @@ impl Widget for TerminalWidget {
         _state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        let find_prefix = format!("terminal.find:{}:", self.pane_id);
+        if let Some(control) = target.strip_prefix(&find_prefix) {
+            match (control, action) {
+                ("query", ui::a11y::Action::Focus | ui::a11y::Action::Activate) => {
+                    self.open_find();
+                    return true;
+                }
+                ("query", ui::a11y::Action::SetValue(value)) => {
+                    self.open_find();
+                    self.set_find_query(value);
+                    return true;
+                }
+                ("previous", ui::a11y::Action::Activate) => {
+                    self.step_find_match(true);
+                    return true;
+                }
+                ("next", ui::a11y::Action::Activate) => {
+                    self.step_find_match(false);
+                    return true;
+                }
+                ("close", ui::a11y::Action::Activate) => {
+                    self.close_find();
+                    return true;
+                }
+                _ => return false,
+            }
+        }
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -2617,6 +3070,97 @@ impl Widget for TerminalWidget {
 }
 
 impl TerminalWidget {
+    /// Route the local find overlay before terminal input. Once Find is open,
+    /// keystrokes must not leak into the foreground process: the query is a
+    /// private viewport aid, not shell input. Enter cycles matches, Shift
+    /// Enter reverses, and Escape restores direct terminal typing.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Widget event forwarding requires the framework context for the embedded shared TextInput"
+    )]
+    fn handle_find_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+        handled: &mut bool,
+    ) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            match logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.close_find();
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    self.step_find_match(modifiers.state().shift_key());
+                    *handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            if self.find_previous_rect.contains(self.last_cursor_pos) {
+                self.step_find_match(true);
+                *handled = true;
+                return;
+            }
+            if self.find_next_rect.contains(self.last_cursor_pos) {
+                self.step_find_match(false);
+                *handled = true;
+                return;
+            }
+            if self.find_close_rect.contains(self.last_cursor_pos) {
+                self.close_find();
+                *handled = true;
+                return;
+            }
+        }
+        let before = self.find_input.value().to_string();
+        let mut input_handled = false;
+        Widget::handle_event(
+            &mut self.find_input,
+            event,
+            scale_factor,
+            &modifiers,
+            state,
+            root,
+            &mut input_handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+        if self.find_input.value() != before {
+            self.refresh_find_matches();
+        }
+        // A find overlay is a focus boundary. Even navigation keys and clicks
+        // outside its panel must not reach a running shell behind it.
+        *handled = true;
+    }
+
     /// Helper for [`Widget::handle_event`]'s `WindowEvent::MouseWheel` arm.
     fn handle_wheel_event(
         &mut self,
@@ -2629,7 +3173,12 @@ impl TerminalWidget {
         }
         let lines = match delta {
             MouseScrollDelta::LineDelta(_, y) => (*y * 3.0).round() as i32,
-            MouseScrollDelta::PixelDelta(pos) => (pos.y / self.char_h.max(1.0)).round() as i32,
+            MouseScrollDelta::PixelDelta(pos) => {
+                self.wheel_remainder_px += pos.y;
+                let lines = (self.wheel_remainder_px / self.char_h.max(1.0)).trunc() as i32;
+                self.wheel_remainder_px -= f64::from(lines) * self.char_h.max(1.0);
+                lines
+            }
         };
         if lines == 0 {
             return;
@@ -2685,6 +3234,18 @@ impl TerminalWidget {
         // winit (Pressed arrives without coordinates).
         let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.last_cursor_pos = logical;
+        if self.scrollbar.is_dragging() {
+            let track = self.scrollbar_track();
+            let metrics = self.scrollbar_metrics();
+            if let Some(offset) = self.scrollbar.drag_to(track, metrics, logical) {
+                self.set_scrollbar_offset(offset);
+                *handled = true;
+            }
+            return;
+        }
+        let track = self.scrollbar_track();
+        let metrics = self.scrollbar_metrics();
+        self.scrollbar.update_hover(track, metrics, logical);
         if self.modes.mouse_report
             && !modifiers.state().shift_key()
             && (self.modes.mouse_tracking == 1003
@@ -2723,6 +3284,27 @@ impl TerminalWidget {
         // selection, primary paste, and the context menu reachable while a TUI
         // owns ordinary pointer input.
         let pressed = matches!(element_state, ElementState::Pressed);
+        if button == MouseButton::Left && !self.alt_active {
+            if pressed && self.scrollbar_visible(self.current_visible_rows()) {
+                let track = self.scrollbar_track();
+                let metrics = self.scrollbar_metrics();
+                match self.scrollbar.press(track, metrics, self.last_cursor_pos) {
+                    PressOutcome::Thumb => {
+                        *handled = true;
+                        return;
+                    }
+                    PressOutcome::Page(offset) => {
+                        self.set_scrollbar_offset(offset);
+                        *handled = true;
+                        return;
+                    }
+                    PressOutcome::Miss => {}
+                }
+            } else if !pressed && self.scrollbar.release() {
+                *handled = true;
+                return;
+            }
+        }
         if self.modes.mouse_report
             && !modifiers.state().shift_key()
             && (self.grid_rect.contains(self.last_cursor_pos)
@@ -3157,6 +3739,234 @@ impl TerminalWidget {
         }
     }
 
+    /// Paint only the active find match. The index remains local and the
+    /// overlay never serializes query/match information into the shared
+    /// transcript; this is a visual locator over already-rendered cells.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The terminal grid's shared paint metrics keep selection and find-match overlays pixel-aligned"
+    )]
+    fn draw_find_match_highlight(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        grid_rect: Rect,
+        padding_x: f64,
+        start_y: usize,
+        visible_rows: usize,
+    ) {
+        let Some(found) = self.find_matches.get(self.find_current).copied() else {
+            return;
+        };
+        if found.row < start_y || found.row >= start_y.saturating_add(visible_rows) {
+            return;
+        }
+        let row = found.row - start_y;
+        let x0 = grid_rect.x0 + padding_x + found.start_col as f64 * self.char_w;
+        let x1 = grid_rect.x0 + padding_x + found.end_col as f64 * self.char_w;
+        let y0 = grid_rect.y0 + row as f64 * self.char_h;
+        let marker = Rect::new(x0, y0, x1.max(x0 + self.char_w), y0 + self.char_h);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.semantic.warning.with_alpha_factor(0.38),
+            None,
+            &marker,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.semantic.warning,
+            None,
+            &marker,
+        );
+    }
+
+    /// Shared-text-input find overlay. On narrow or large-text layouts the
+    /// field occupies its own row and the three explicit controls stack below
+    /// it, avoiding tiny/overlapping targets at 200% text.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The overlay owns a single responsive geometry and paint path so its focus targets cannot diverge from its visible controls"
+    )]
+    fn draw_find_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if !self.find_open {
+            return;
+        }
+        let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
+        let compact = self.rect.width() < 620.0 || scale >= 1.5;
+        let margin = 8.0 * scale.min(1.25);
+        let panel_w = (340.0 * scale)
+            .min(self.rect.width() - margin * 2.0)
+            .max(0.0);
+        let panel_h = if compact {
+            104.0 * scale.min(1.35)
+        } else {
+            42.0 * scale
+        };
+        let x1 = self.rect.x1 - margin;
+        self.find_rect = Rect::new(
+            x1 - panel_w,
+            self.rect.y0 + margin,
+            x1,
+            self.rect.y0 + margin + panel_h,
+        );
+        let panel = RoundedRect::from_rect(self.find_rect, f64::from(theme.tokens.radii.md));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &panel,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_focus,
+            None,
+            &panel,
+        );
+
+        let gap = 6.0 * scale.min(1.25);
+        let button = 28.0 * scale.min(1.25);
+        if compact {
+            self.find_input.apply_layout_external(Rect::new(
+                self.find_rect.x0 + gap,
+                self.find_rect.y0 + gap,
+                self.find_rect.x1 - gap,
+                self.find_rect.y0 + gap + 34.0 * scale.min(1.25),
+            ));
+            let y = self.find_input.get_rect().y1 + gap;
+            self.find_previous_rect = Rect::new(
+                self.find_rect.x0 + gap,
+                y,
+                self.find_rect.x0 + gap + button,
+                y + button,
+            );
+            self.find_next_rect = Rect::new(
+                self.find_previous_rect.x1 + gap,
+                y,
+                self.find_previous_rect.x1 + gap + button,
+                y + button,
+            );
+            self.find_close_rect = Rect::new(
+                self.find_rect.x1 - gap - button,
+                y,
+                self.find_rect.x1 - gap,
+                y + button,
+            );
+        } else {
+            self.find_close_rect = Rect::new(
+                self.find_rect.x1 - gap - button,
+                self.find_rect.y0 + (panel_h - button) / 2.0,
+                self.find_rect.x1 - gap,
+                self.find_rect.y0 + f64::midpoint(panel_h, button),
+            );
+            self.find_next_rect = Rect::new(
+                self.find_close_rect.x0 - gap - button,
+                self.find_close_rect.y0,
+                self.find_close_rect.x0 - gap,
+                self.find_close_rect.y1,
+            );
+            self.find_previous_rect = Rect::new(
+                self.find_next_rect.x0 - gap - button,
+                self.find_close_rect.y0,
+                self.find_next_rect.x0 - gap,
+                self.find_close_rect.y1,
+            );
+            self.find_input.apply_layout_external(Rect::new(
+                self.find_rect.x0 + gap,
+                self.find_rect.y0 + gap,
+                self.find_previous_rect.x0 - gap,
+                self.find_rect.y1 - gap,
+            ));
+        }
+        self.find_input.draw(scene, transform, tr, theme, presence);
+        if self.find_input.value().is_empty() && !self.find_input.is_focused() {
+            tr.draw_text(
+                scene,
+                "Find in scrollback",
+                12.0,
+                theme.tokens.colors.text_dim,
+                transform
+                    * Affine::translate((
+                        self.find_input.get_rect().x0 + 10.0,
+                        self.find_input.get_rect().center().y - 7.0,
+                    )),
+                None,
+            );
+        }
+        for (rect, icon) in [
+            (self.find_previous_rect, Icon::ChevronUp),
+            (self.find_next_rect, Icon::ChevronDown),
+            (self.find_close_rect, Icon::X),
+        ] {
+            let active = rect.contains(self.last_cursor_pos);
+            let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if active {
+                    theme.tokens.colors.overlay_medium
+                } else {
+                    theme.tokens.colors.overlay_subtle
+                },
+                None,
+                &shape,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &shape,
+            );
+            draw_icon(
+                scene,
+                transform,
+                rect.inset(5.0),
+                icon,
+                theme.tokens.colors.text_primary,
+                1.5,
+            );
+        }
+        let count = if self.find_query.is_empty() {
+            "Type to find".to_string()
+        } else if self.find_matches.is_empty() {
+            "No matches".to_string()
+        } else if self.find_matches.len() == MAX_FIND_MATCHES {
+            format!("{} / {}+", self.find_current + 1, MAX_FIND_MATCHES)
+        } else {
+            format!("{} / {}", self.find_current + 1, self.find_matches.len())
+        };
+        let count_x = if compact {
+            self.find_next_rect.x1 + gap + 2.0
+        } else {
+            self.find_input.get_rect().x1 - 58.0 * scale
+        };
+        let count_y = if compact {
+            self.find_next_rect.center().y - 7.0
+        } else {
+            self.find_input.get_rect().center().y - 7.0
+        };
+        tr.draw_text(
+            scene,
+            &count,
+            10.0,
+            theme.tokens.colors.text_dim,
+            transform * Affine::translate((count_x, count_y)),
+            None,
+        );
+    }
+
     /// Decode and paint graphics only when their buffer rows are visible.  The
     /// cache holds successful decodes only: a blob which has not arrived at a
     /// collaborator yet is retried on a later frame, rather than being latched
@@ -3559,35 +4369,29 @@ impl TerminalWidget {
         if !self.scrollbar_visible(visible_rows) {
             return;
         }
-        let total = self.grid.len();
-        let gr = self.grid_rect;
-        let track_x1 = self.rect.x1 - self.chrome_body_pad;
-        let track_w = (self.chrome_scrollbar_w - 2.0).max(3.0);
-        let track_x0 = track_x1 - track_w;
-        let track_h = (gr.y1 - gr.y0).max(1.0);
-
-        let thumb_frac = (visible_rows as f64 / total as f64).clamp(0.06, 1.0);
-        let thumb_h = (track_h * thumb_frac).max(24.0).min(track_h);
-        let max_top = total.saturating_sub(visible_rows).max(1);
-        let pos_frac = (start_y as f64 / max_top as f64).clamp(0.0, 1.0);
-        let thumb_y0 = gr.y0 + pos_frac * (track_h - thumb_h);
+        let track = self.scrollbar_track();
+        let track_w = track.width();
 
         // Faint track groove so the bar has a visible extent even when pinned.
-        let track =
-            RoundedRect::from_rect(Rect::new(track_x0, gr.y0, track_x1, gr.y1), track_w / 2.0);
         scene.fill(
             Fill::NonZero,
             transform,
             theme.tokens.colors.lift(0.2),
             None,
-            &track,
+            &RoundedRect::from_rect(track, track_w / 2.0),
         );
 
-        let thumb_alpha = if self.scroll_offset > 0 { 0.85 } else { 0.4 };
-        let thumb = RoundedRect::from_rect(
-            Rect::new(track_x0, thumb_y0, track_x1, thumb_y0 + thumb_h),
-            track_w / 2.0,
-        );
+        let thumb_alpha = if self.scrollbar.is_active() || self.scroll_offset > 0 {
+            0.9
+        } else {
+            0.4
+        };
+        let metrics =
+            ScrollMetrics::new(self.grid.len() as f64, visible_rows as f64, start_y as f64);
+        let Some(thumb_rect) = self.scrollbar.thumb_rect(track, metrics) else {
+            return;
+        };
+        let thumb = RoundedRect::from_rect(thumb_rect, track_w / 2.0);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -3629,7 +4433,7 @@ impl TerminalWidget {
             2.0,
         );
 
-        let label = "qOS Terminal";
+        let label = "Tilo Terminal";
         let size = tr
             .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.lg))
             .size;
@@ -3663,7 +4467,13 @@ impl TerminalWidget {
         let size = tr
             .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
             .size;
-        let (label_w, label_h) = tr.measure(label, size, None);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let label = tr.elide_to_width(
+            label,
+            size,
+            (self.grid_rect.width() - pad * 4.0).max(0.0) as f32,
+        );
+        let (label_w, label_h) = tr.measure(&label, size, None);
         let pad = f64::from(theme.tokens.spacing.s2);
         // The card wraps the measured line box plus half a pad above and
         // below, so the label stays seated at every text scale.
@@ -3687,7 +4497,7 @@ impl TerminalWidget {
         );
         tr.draw_text_weighted(
             scene,
-            label,
+            &label,
             size,
             theme.text_primary,
             transform * Affine::translate((rect.x0 + pad, rect.y0 + pad / 2.0)),
@@ -3725,7 +4535,7 @@ impl TerminalWidget {
 
     /// The buffer-absolute word span containing `pos`, using the toolkit's
     /// shared `word_boundaries` walker over the row's reconstructed text so
-    /// terminal word selection matches every other qOS text surface. Returns
+    /// terminal word selection matches every other Tilo text surface. Returns
     /// `(start, end)` as `GridPos`es on the same row, `end` exclusive.
     fn word_span_at(&self, pos: GridPos) -> (GridPos, GridPos) {
         let line = self.grid.get(pos.row).map_or("", String::as_str);
@@ -3973,15 +4783,27 @@ impl TerminalWidget {
             menu.push(MenuItem::action("Select all output", || {}));
         }
         menu.push(MenuItem::action("Clear screen", || {}));
-        menu.push(MenuItem::separator());
-        menu.push(MenuItem::action(
-            if self.select_to_copy {
-                "Copy on select: On"
-            } else {
-                "Copy on select: Off"
-            },
-            || {},
-        ));
+        // This preference is useful secondary chrome, but never at the cost
+        // of an unreachable context menu. A 160px-high embedded/narrow pane
+        // can fit the copy/paste/selection/process essentials, not another
+        // row plus separator; its keyboard shortcut and desktop-sized menu
+        // still expose the toggle.
+        if self.rect.height() >= 180.0 {
+            menu.push(MenuItem::separator());
+            menu.push(MenuItem::action(
+                if self.select_to_copy {
+                    "Copy on select: On"
+                } else {
+                    "Copy on select: Off"
+                },
+                || {},
+            ));
+        }
+        // Keep the shared popup aware of the terminal's real viewport. The
+        // popup refreshes its geometry when the current theme applies an
+        // accessibility text scale during draw; without this viewport it can
+        // grow past a narrow pane's edge after that refresh.
+        menu.set_viewport(Some(self.rect));
         let p = self.last_cursor_pos;
         // The shared primitive owns the menu's geometry: anchored at the
         // pointer, kept inside the terminal's viewport (flipping above the
@@ -4109,7 +4931,7 @@ impl TerminalWidget {
         let mod_param = Self::key_mod_param(shift, alt, ctrl);
 
         // GUI-terminal quality-of-life bindings that map to established shell
-        // editing bytes rather than inventing a qOS-only protocol.
+        // editing bytes rather than inventing a Tilo-only protocol.
         if matches!(key, Key::Named(NamedKey::Backspace)) {
             if ctrl && !alt {
                 return Some(vec![0x17]); // ^W: erase previous word
@@ -4323,8 +5145,8 @@ pub struct PrintBuf {
 }
 
 /// Name this emulator reports for itself in the XTVERSION reply
-/// (`CSI > 0 q` → `DCS > | qos-terminal(<version>) ST`).
-pub const TERMINAL_NAME: &str = "qos-terminal";
+/// (`CSI > 0 q` → `DCS > | tilo-terminal(<version>) ST`).
+pub const TERMINAL_NAME: &str = "tilo-terminal";
 
 /// Numeric build version reported in the Secondary Device Attributes (DA2)
 /// reply `CSI > 1 ; Pv ; 0 c`. Encoded `major*10000 + minor*100 + patch` so a
@@ -5427,7 +6249,7 @@ impl TerminalPerformer<'_> {
         }
     }
 
-    /// XTVERSION reply — DCS `> | qos-terminal(<version>) ST`.
+    /// XTVERSION reply — DCS `> | tilo-terminal(<version>) ST`.
     fn reply_xtversion(&mut self) {
         self.respond(
             format!(
@@ -5645,9 +6467,10 @@ pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Colo
     palette.fg_default.with_alpha_factor(230.0 / 255.0)
 }
 
-/// Resolve the user's login shell for the unconfined `$SHELL` fallback path.
+/// Resolve the user's native shell for the standalone fallback path.
+/// Windows uses `COMSPEC`, falling back to `cmd.exe`.
 ///
-/// Order:
+/// Unix resolution order:
 /// 1. **`$SHELL`** when set and non-empty — the user's explicit preference
 ///    (this is how fish, when it is the login shell, gets launched here).
 /// 2. **The passwd database** (`getpwuid(getuid()).pw_shell`) — the login
@@ -5656,12 +6479,21 @@ pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Colo
 ///    the right shell instead of a hardcoded `/bin/sh`.
 /// 3. **`/bin/sh`** — last resort so a session never fails to start.
 pub fn resolve_login_shell() -> String {
+    #[cfg(windows)]
+    {
+        std::env::var("COMSPEC")
+            .ok()
+            .filter(|shell| !shell.trim().is_empty())
+            .unwrap_or_else(|| "cmd.exe".into())
+    }
+    #[cfg(unix)]
     resolve_login_shell_with(std::env::var("SHELL").ok(), login_shell_from_passwd())
 }
 
 /// Pure core of [`resolve_login_shell`], with the two environment lookups
 /// injected so the precedence is testable without mutating process-global
 /// state (which would race parallel tests).
+#[cfg(unix)]
 pub(crate) fn resolve_login_shell_with(
     shell_env: Option<String>,
     passwd_shell: Option<String>,
@@ -5681,6 +6513,7 @@ pub(crate) fn resolve_login_shell_with(
 
 /// The login shell recorded for the current real user in the passwd database
 /// (`pw_shell`). `None` if the entry is missing or has an empty shell field.
+#[cfg(unix)]
 pub(crate) fn login_shell_from_passwd() -> Option<String> {
     use std::ffi::CStr;
     // SAFETY: `getpwuid` returns a pointer into a static buffer owned by libc
@@ -5706,11 +6539,13 @@ pub struct TerminalBackend {
     pub reader: Box<dyn Read + Send>,
     pub master: Box<dyn MasterPty + Send>,
     pub shell_name: String,
+    #[cfg(windows)]
+    pub child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 impl TerminalBackend {
     /// Open a PTY running a shell.
     ///
-    /// **Not `$SHELL` directly.** Inside a qOS app sandbox there is no `/bin`
+    /// **Not `$SHELL` directly.** Inside a Tilo app sandbox there is no `/bin`
     /// at all: `launcher::profile` binds the loader, fonts, `/sys` and the CA
     /// bundle, and deliberately binds no executable directory — so `exec`ing
     /// `$SHELL` fails with `ENOENT`, and would still leave `vim` and `less`
@@ -5725,32 +6560,32 @@ impl TerminalBackend {
     /// Three routes, and the order is the trust boundary. The route is chosen by
     /// [`confinement_route`] from a capability probe, not by trying each in turn
     /// and hoping — so a machine that cannot host a guest is never handed one to
-    /// fail in, and confinement is never silently downgraded on qOS.
+    /// fail in, and confinement is never silently downgraded on Tilo.
     ///
     /// 1. **The service socket.** A sandboxed app cannot build a namespace —
     ///    its seccomp filter denies `unshare` and `mount`. So it asks the
     ///    session's supervisor and receives a pty master over `SCM_RIGHTS`.
-    ///    This is the production path inside qOS, and it is **mandatory when
+    ///    This is the production path inside Tilo, and it is **mandatory when
     ///    available**: if the launcher opened the service descriptor, we use it
     ///    and *fail closed* on any handshake error rather than falling through
-    ///    to an unconfined shell. That is what makes the qOS path non-optional —
+    ///    to an unconfined shell. That is what makes the Tilo path non-optional —
     ///    nothing an app controls (its own environment) can select best-effort
     ///    while the supervisor is reachable.
     /// 2. **Spawning the runtime.** An unconfined host that can genuinely build
     ///    the namespace a guest needs (unprivileged user namespaces enabled, not
     ///    already behind a seccomp filter) *and* has the runtime installed — a
     ///    development tree, mostly. The terminal starts a guest itself so that
-    ///    session is confined the same way qOS confines it.
-    /// 3. **`$SHELL` (best-effort).** No qOS confinement is available on this
+    ///    session is confined the same way Tilo confines it.
+    /// 3. **`$SHELL` (best-effort).** No Tilo confinement is available on this
     ///    machine: a plain distribution, or a build of the terminal running
-    ///    outside qOS. Start the user's login shell directly so normal work
+    ///    outside Tilo. Start the user's login shell directly so normal work
     ///    still functions. The child inherits whatever ambient sandbox the
     ///    process already has, so it runs truly unconfined only on a truly
     ///    unconfined host — and this route is unreachable whenever route 1 is.
     ///
     /// The two kernel-feature probes ([`seccomp_filtered`],
     /// [`unprivileged_userns_enabled`]) are the robust discriminator between "I
-    /// am a confined qOS app" and "I am on a normal host": a seccomp filter
+    /// am a confined Tilo app" and "I am on a normal host": a seccomp filter
     /// cannot be removed once installed, so an attacker inside the sandbox
     /// cannot flip route 2 on to escape, and cannot reach an *escalated*
     /// best-effort shell — route 3's child is still bounded by the launcher's
@@ -5773,9 +6608,9 @@ impl TerminalBackend {
             }
             ConfineRoute::BestEffort => {
                 // A single quiet line, not a wall of errors: this is the normal,
-                // expected state off qOS.
+                // expected state off Tilo.
                 tracing::info!(
-                    "terminal: qOS app confinement is not available here; \
+                    "terminal: Tilo app confinement is not available here; \
                      starting your login shell directly"
                 );
                 let shell = resolve_login_shell();
@@ -5805,22 +6640,26 @@ impl TerminalBackend {
             pixel_width: 0,
             pixel_height: 0,
         })?;
-        let _child = pair.slave.spawn_command(cmd)?;
-        drop(pair.slave);
         let reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
+        let child = pair.slave.spawn_command(cmd)?;
+        drop(pair.slave);
+        #[cfg(unix)]
+        drop(child);
         Ok(Self {
             writer,
             reader,
             master: pair.master,
             shell_name,
+            #[cfg(windows)]
+            child,
         })
     }
 }
 
 /// The environment variable the launcher sets when it has opened the `ush`
 /// service socket on this app's behalf, per `[sandbox.services]`.
-pub const USH_SERVICE_FD_ENV: &str = "QOS_SVC_USH_FD";
+pub const USH_SERVICE_FD_ENV: &str = "TILO_SVC_USH_FD";
 
 /// Which way the terminal will obtain its shell, decided by capability probe.
 ///
@@ -5829,39 +6668,50 @@ pub const USH_SERVICE_FD_ENV: &str = "QOS_SVC_USH_FD";
 /// [`confinement_route`] and [`TerminalBackend::new`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConfineRoute {
-    /// The supervisor service is reachable — the qOS production path. Mandatory
+    /// The supervisor service is reachable — the Tilo production path. Mandatory
     /// when chosen: the caller must not fall back to an unconfined shell if the
     /// handshake fails.
     Service,
     /// This unconfined host can build a guest itself and has the runtime at the
     /// given path.
     SelfHosted(std::path::PathBuf),
-    /// No qOS confinement is available; start `$SHELL` directly.
+    /// No Tilo confinement is available; start `$SHELL` directly.
     BestEffort,
 }
 
 /// Choose how to obtain the shell from a capability probe, security-first.
 ///
-/// The ordering encodes the invariant "on qOS, always confine; off qOS, best
-/// effort — and best-effort can never be forced on qOS":
+/// The ordering encodes the invariant "on Tilo, always confine; off Tilo, best
+/// effort — and best-effort can never be forced on Tilo":
 ///
 /// 1. If the launcher handed us a live supervisor descriptor, take it. This is
-///    the only signal that positively identifies "confined qOS app with a
+///    the only signal that positively identifies "confined Tilo app with a
 ///    supervisor", and it wins unconditionally.
 /// 2. Otherwise self-host *only* when we could actually succeed: the kernel
 ///    lets this process build a user namespace (so we are not behind a seccomp
 ///    filter that would deny `unshare`, and unprivileged userns are enabled)
 ///    and the runtime binary exists. Gating on the probe — rather than
-///    launching `qos-ush` and letting it fail — is what removes the wall of
+///    launching `tilo-ush` and letting it fail — is what removes the wall of
 ///    `bwrap`/mount errors on a machine that could never host a guest.
 /// 3. Otherwise there is no confinement to be had here; best-effort.
 ///
 /// The security argument for (1)+(2): a seccomp filter cannot be lifted once
-/// installed, so on qOS an app cannot clear it to unlock route 2, and clearing
+/// installed, so on Tilo an app cannot clear it to unlock route 2, and clearing
 /// the service env var only drops it to route 3 — whose shell is still bounded
 /// by the launcher's seccomp + namespace + bind mounts. Best-effort therefore
 /// never grants more than the ambient sandbox already allows.
 pub fn confinement_route() -> ConfineRoute {
+    #[cfg(windows)]
+    {
+        // A claimed hosted grant must fail closed until native service
+        // transport exists; never silently replace it with a local shell.
+        if std::env::var_os(USH_SERVICE_FD_ENV).is_some() {
+            ConfineRoute::Service
+        } else {
+            ConfineRoute::BestEffort
+        }
+    }
+    #[cfg(unix)]
     decide_route(
         ush_service_fd().is_some(),
         can_build_namespace(),
@@ -5899,7 +6749,8 @@ pub fn decide_route(
 ///
 /// An env var alone is not enough: the descriptor slot must actually be open,
 /// so a stale or spoofed number pointing at nothing does not select the service
-/// path (it falls through to the probe below and, off qOS, to best-effort).
+/// path (it falls through to the probe below and, off Tilo, to best-effort).
+#[cfg(unix)]
 pub(crate) fn ush_service_fd() -> Option<i32> {
     let raw: i32 = std::env::var(USH_SERVICE_FD_ENV).ok()?.parse().ok()?;
     if raw < 0 {
@@ -5919,16 +6770,18 @@ pub(crate) fn ush_service_fd() -> Option<i32> {
 /// the runtime shells out to for the actual namespace setup — is not installed.
 /// Any of those means launching the runtime here would only produce errors, so
 /// we don't.
+#[cfg(unix)]
 fn can_build_namespace() -> bool {
     !seccomp_filtered() && unprivileged_userns_enabled() && bwrap_present()
 }
 
-/// True if a seccomp filter is installed on this process — i.e. the qOS launcher
+/// True if a seccomp filter is installed on this process — i.e. the Tilo launcher
 /// (or any foreign sandbox) is confining our syscalls.
 ///
 /// Read from `/proc/self/status` (`Seccomp:` ≥ 2 is "filter mode"). A filter
 /// cannot be removed once installed and survives `exec`, so an attacker inside
 /// a sandbox cannot clear this to make [`can_build_namespace`] return true.
+#[cfg(unix)]
 fn seccomp_filtered() -> bool {
     std::fs::read_to_string("/proc/self/status")
         .ok()
@@ -5946,6 +6799,7 @@ fn seccomp_filtered() -> bool {
 /// Reads the two sysctls distributions use to gate this. An absent file means
 /// the kernel default (enabled), so this only reports `false` on an explicit
 /// disable — never guessing "no" just because a knob is missing.
+#[cfg(unix)]
 fn unprivileged_userns_enabled() -> bool {
     // Debian/Ubuntu knob: `0` disables unprivileged user namespaces entirely.
     if let Ok(v) = std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone")
@@ -5964,6 +6818,7 @@ fn unprivileged_userns_enabled() -> bool {
 
 /// Whether `bwrap` (Bubblewrap) is on `PATH`. The runtime builds the guest's
 /// namespace with it, so its absence means a self-hosted guest cannot start.
+#[cfg(unix)]
 fn bwrap_present() -> bool {
     std::env::var_os("PATH")
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("bwrap").exists()))
@@ -5971,23 +6826,24 @@ fn bwrap_present() -> bool {
 
 /// Where the runtime binary is when the terminal has to start one itself.
 ///
-/// `$QOS_USH_BIN` first so a development tree can point at `target/debug`,
+/// `$TILO_USH_BIN` first so a development tree can point at `target/debug`,
 /// then the installed location, then `PATH`. Absent from all three means this
 /// machine has no runtime and the caller falls back to `$SHELL`.
+#[cfg(unix)]
 pub fn ush_binary() -> Option<std::path::PathBuf> {
-    if let Some(explicit) = std::env::var_os("QOS_USH_BIN") {
+    if let Some(explicit) = std::env::var_os("TILO_USH_BIN") {
         let path = std::path::PathBuf::from(explicit);
         if path.exists() {
             return Some(path);
         }
     }
-    let installed = std::path::PathBuf::from("/usr/libexec/qos-ush");
+    let installed = std::path::PathBuf::from("/usr/libexec/tilo-ush");
     if installed.exists() {
         return Some(installed);
     }
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
-        .map(|dir| dir.join("qos-ush"))
+        .map(|dir| dir.join("tilo-ush"))
         .find(|candidate| candidate.exists())
 }
 
@@ -5997,18 +6853,25 @@ pub fn ush_binary() -> Option<std::path::PathBuf> {
 /// back. What crosses the sandbox boundary is a terminal, not a namespace: the
 /// guest is built on the supervisor's side, by the supervisor's rules, and this
 /// app never learns where its layer is or what it was granted.
+#[cfg(unix)]
 fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> {
     use std::os::fd::{FromRawFd, RawFd};
     use std::os::unix::net::UnixStream;
 
     let raw: RawFd = std::env::var(USH_SERVICE_FD_ENV)?.parse()?;
     // SAFETY: the launcher passed this descriptor as a connected socket and
-    // documents it in `QOS_SVC_<NAME>_FD`. `from_raw_fd` takes ownership, which
+    // documents it in `TILO_SVC_<NAME>_FD`. `from_raw_fd` takes ownership, which
     // is correct — nothing else in this process refers to it.
     let stream = unsafe { UnixStream::from_raw_fd(raw) };
     ush_backend_on(&stream)
 }
 
+#[cfg(windows)]
+fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> {
+    Err("Tilo hosted terminal service transport is unavailable on Windows".into())
+}
+
+#[cfg(unix)]
 fn ush_backend_on(
     stream: &std::os::unix::net::UnixStream,
 ) -> Result<TerminalBackend, Box<dyn std::error::Error>> {
@@ -6050,10 +6913,12 @@ fn ush_backend_on(
 /// that matters here was created by the supervisor and passed over a socket.
 /// Resizing has to keep working — the grid reflows on every window change — so
 /// this is a real `TIOCSWINSZ`, not a stub.
+#[cfg(unix)]
 struct FdMaster {
     file: std::fs::File,
 }
 
+#[cfg(unix)]
 impl MasterPty for FdMaster {
     fn get_size(&self) -> Result<PtySize, anyhow::Error> {
         use std::os::fd::AsRawFd;
@@ -6125,7 +6990,39 @@ impl TerminalWidget {
         let master = std::sync::Arc::new(std::sync::Mutex::new(backend.master));
         let (output_tx, output_rx) = bounded(PTY_QUEUE_CHUNKS);
 
-        let widget = TerminalWidget::new(writer, master, output_rx);
+        let widget = TerminalWidget::new(writer, master, output_rx).with_local_session();
+        #[cfg(windows)]
+        let widget = {
+            let mut widget = widget;
+            // ConPTY keeps its output pipe open while the pseudoconsole exists.
+            // Observe the child handle too, so exit is visible before closing
+            // the terminal window. Keep a killer for normal window teardown.
+            widget.child_killer = Some(backend.child.clone_killer());
+            let disconnected = widget.session_disconnected.clone();
+            let status = widget.session_status_message.clone();
+            let waker = widget.waker.clone();
+            let pending = widget.wake_pending.clone();
+            let mut child = backend.child;
+            if std::thread::Builder::new()
+                .name("tilo-terminal-child-wait".into())
+                .spawn(move || {
+                    let message = if child.wait().is_ok() {
+                        "Session ended — input unavailable"
+                    } else {
+                        "Terminal process status failed — input unavailable"
+                    };
+                    set_terminal_disconnected(&disconnected, &status, message);
+                    request_terminal_wake(&waker, &pending);
+                })
+                .is_err()
+            {
+                if let Some(killer) = &mut widget.child_killer {
+                    let _ = killer.kill();
+                }
+                widget.mark_disconnected("Terminal unavailable — process monitor could not start");
+            }
+            widget
+        };
         // Share the waker + coalescing flag with the reader thread so fresh PTY
         // output can wake an idle `ui::App` loop (instead of a ~60 Hz poll).
         let waker = widget.waker.clone();
@@ -6135,7 +7032,7 @@ impl TerminalWidget {
 
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));
         let reader_result = std::thread::Builder::new()
-            .name("qos-terminal-pty-reader".to_string())
+            .name("tilo-terminal-pty-reader".to_string())
             .spawn(move || {
                 let mut buf = [0u8; 8192];
                 loop {
@@ -6187,6 +7084,7 @@ impl TerminalWidget {
     /// # Errors
     ///
     /// Returns an error if PTY creation fails.
+    #[cfg(unix)]
     pub fn spawn_hosted(
         services: crate::HostedProcessServices,
     ) -> Result<Self, crate::HostedTerminalError> {
@@ -6196,6 +7094,17 @@ impl TerminalWidget {
         let backend = ush_backend_on(&stream)
             .map_err(|error| crate::HostedTerminalError::ServiceFailed(error.to_string()))?;
         Ok(Self::from_backend(backend))
+    }
+
+    /// Construct a hosted terminal only when the host provides its service.
+    ///
+    /// # Errors
+    /// Windows currently has no Tilo hosted process-service transport.
+    #[cfg(windows)]
+    pub fn spawn_hosted(
+        _services: crate::HostedProcessServices,
+    ) -> Result<Self, crate::HostedTerminalError> {
+        Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
     }
 
     /// Spawn the standalone user login shell.
@@ -6249,12 +7158,15 @@ impl TerminalWidget {
             fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
                 Ok(Box::new(std::io::empty()))
             }
+            #[cfg(unix)]
             fn process_group_leader(&self) -> Option<i32> {
                 None
             }
+            #[cfg(unix)]
             fn as_raw_fd(&self) -> Option<i32> {
                 None
             }
+            #[cfg(unix)]
             fn tty_name(&self) -> Option<std::path::PathBuf> {
                 None
             }
@@ -6266,5 +7178,14 @@ impl TerminalWidget {
             std::sync::Arc::new(std::sync::Mutex::new(Box::new(NullMaster))),
             output_rx,
         ))
+    }
+}
+
+#[cfg(windows)]
+impl Drop for TerminalWidget {
+    fn drop(&mut self) {
+        if let Some(killer) = &mut self.child_killer {
+            let _ = killer.kill();
+        }
     }
 }

@@ -1,4 +1,4 @@
-//! `fuser::Filesystem` implementation that serves a qOS package
+//! `fuser::Filesystem` implementation that serves a Tilo package
 //! payload from a content-addressed [`BlobStore`] through an
 //! [`PageCache`].
 //!
@@ -38,7 +38,7 @@ use crate::store::{BlobError, BlobStore};
 /// doesn't re-export the ABI constant, so mirror it inline.
 pub const FUSE_ROOT_ID: u64 = 1;
 
-/// Attribute/entry kernel TTL — generous, since a qOS payload is
+/// Attribute/entry kernel TTL — generous, since a Tilo payload is
 /// immutable for the mount's lifetime (content-addressed; a new
 /// package id publishes rather than mutates).
 pub const TTL: Duration = Duration::from_secs(3600);
@@ -48,7 +48,7 @@ pub const TTL: Duration = Duration::from_secs(3600);
 pub const MAX_READAHEAD: u32 = 1024 * 1024;
 
 /// Default page-cache capacity: 4096 pages * 4 KiB = 16 MiB per
-/// mount; tunable via [`QosAppFs::with_cache_pages`].
+/// mount; tunable via [`TiloAppFs::with_cache_pages`].
 pub const DEFAULT_CACHE_PAGES: usize = 4096;
 
 /// Convert a 1-based inode number (the numbering FUSE and
@@ -61,7 +61,7 @@ fn index_of(ino: u64) -> Option<usize> {
 }
 
 /// The Filesystem implementation.
-pub struct QosAppFs<S: BlobStore + 'static> {
+pub struct TiloAppFs<S: BlobStore + 'static> {
     /// Indexed by inode-1 (`FUSE_ROOT_ID` is inode 1, stored at index 0).
     entries: Vec<Entry>,
     /// Cache fronting `store`, wrapped in `Arc` so concurrent FUSE workers share state cheaply.
@@ -86,7 +86,7 @@ enum Entry {
     },
 }
 
-impl<S: BlobStore + 'static> QosAppFs<S> {
+impl<S: BlobStore + 'static> TiloAppFs<S> {
     /// Build a filesystem rooted at `collection`'s payload tree, reading
     /// blobs from `store`, with the default page cache size.
     ///
@@ -208,7 +208,7 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
     }
 
     /// Borrow the underlying page cache — lets tests assert hit counters
-    /// and `qos-app-host` plumb introspection.
+    /// and `tilo-app-host` plumb introspection.
     pub fn cache(&self) -> Arc<PageCache<S>> {
         Arc::clone(&self.cache)
     }
@@ -238,7 +238,7 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
 
     /// The (hash, size) for a file inode; `None` for directories or
     /// unknown inodes. Test-only — exercises the same cache path as the
-    /// FUSE `read` handler without a real kernel mount.
+    /// FUSE `read` handler without a kernel mount.
     pub fn blob_at(&self, ino: u64) -> Option<([u8; 32], u64)> {
         match self.entries.get(index_of(ino)?)? {
             Entry::Blob { hash, size } => Some((*hash, *size)),
@@ -289,7 +289,7 @@ impl<S: BlobStore + 'static> QosAppFs<S> {
     }
 }
 
-/// Errors from [`QosAppFs::new`] / [`QosAppFs::with_cache_pages`].
+/// Errors from [`TiloAppFs::new`] / [`TiloAppFs::with_cache_pages`].
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
     /// A Collection entry's path is empty, has an empty segment, `.`, `..`, or `//`.
@@ -309,7 +309,7 @@ pub enum BuildError {
     Internal(String),
 }
 
-impl<S: BlobStore + 'static> Filesystem for QosAppFs<S> {
+impl<S: BlobStore + 'static> Filesystem for TiloAppFs<S> {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> Result<(), std::io::Error> {
         let _ = config.set_max_readahead(MAX_READAHEAD);
         Ok(())

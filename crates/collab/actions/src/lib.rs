@@ -1,4 +1,4 @@
-//! # qOS ACTION model
+//! # Tilo ACTION model
 //!
 //! The state layer behind Ctrl+K and cross-peer collaboration: a
 //! serializable, **replayable** unit of CRDT mutation.
@@ -47,7 +47,7 @@
 //!
 //! ## Sharing this vocabulary with the compositor
 //!
-//! [`params`] is deliberately the *same* vocabulary the compositor's headless
+//! [`params`] is the *same* vocabulary the compositor's headless
 //! action API speaks — [`ParamType`], [`ActionParam`], [`ArgValue`], and the
 //! strict [`ActionArgs::bind`] — lifted into one definition rather than left to
 //! converge by accident. The wire spellings of `text` / `integer` / `boolean`
@@ -56,7 +56,7 @@
 //! `const` constructors keep a `const PARAMS: &[ActionParam] = &[…]` compiling
 //! as written.
 //!
-//! Two deliberate supersets, both additive: [`ParamType::Number`], because the
+//! Two additive extensions: [`ParamType::Number`], because the
 //! app-side arguments this replaces are overwhelmingly fractional and rounding
 //! them would discard the values they exist to carry; and
 //! [`ActionParam::choices`], which turns a prose list into something a caller
@@ -128,8 +128,8 @@ pub use protocol::{ContractViolation, validate_surface, validate_surface_contrac
 pub use registry::ActionRegistry;
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
-    ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId, ResourceProvider,
-    flatten,
+    ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId,
+    ResourcePresentation, ResourceProvider, flatten,
 };
 
 #[cfg(test)]

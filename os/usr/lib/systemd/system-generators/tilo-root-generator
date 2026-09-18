@@ -1,0 +1,32 @@
+#!/usr/bin/bash
+# Generate the fixed target-independent Tilo root discovery path in the initrd.
+set -eu
+out="${1:-/run/systemd/generator}"
+grep -qw 'root=tilo-auto' "${TILO_ROOT_CMDLINE_FILE:-/proc/cmdline}" 2>/dev/null || exit 0
+install -d -m 0755 "$out"
+cat >"$out/tilo-root-discover.service" <<'EOF'
+[Unit]
+Description=Discover the Tilo root on the boot ESP's disk
+DefaultDependencies=no
+After=systemd-udev-trigger.service
+Before=initrd-root-device.target sysroot.mount
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-root-discover
+EOF
+cat >"$out/sysroot.mount" <<'EOF'
+[Unit]
+DefaultDependencies=no
+Requires=tilo-root-discover.service
+After=tilo-root-discover.service
+Before=initrd-root-fs.target
+
+[Mount]
+What=/run/tilo-root/device
+Where=/sysroot
+Type=auto
+Options=rw
+EOF
+install -d -m 0755 "$out/initrd-root-device.target.wants"
+ln -s ../tilo-root-discover.service "$out/initrd-root-device.target.wants/tilo-root-discover.service"

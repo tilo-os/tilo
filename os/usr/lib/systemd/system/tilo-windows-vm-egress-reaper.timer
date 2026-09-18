@@ -1,0 +1,12 @@
+[Unit]
+Description=Reap expired Tilo Windows egress leases
+ConditionKernelCommandLine=!tilo.install
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

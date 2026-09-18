@@ -1,4 +1,4 @@
-//! File-explorer places as a qOS global-search source.
+//! File-explorer places as a Tilo global-search source.
 //!
 //! Mirrors the reference wiring in [`apps/contacts`]: the file explorer declares
 //! its searchable type by implementing [`SearchProvider`] over the user's
@@ -16,14 +16,14 @@ use std::sync::{Arc, RwLock};
 
 use sha2::{Digest as _, Sha256};
 
-use ui::qos_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
 use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
+    SearchPage, SearchProvider, SearchResult,
 };
+use ui::tilo_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
 
 #[cfg(test)]
-use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, SearchTextIndex};
+use ui::search::SearchTextIndex;
 
 use crate::favorites::Favorite;
 use crate::model::WorkspaceRecord;
@@ -46,10 +46,9 @@ pub fn place_resource_id(path: &std::path::Path) -> String {
 /// escaping scheme. Keep this shared by folders and entries so every local
 /// Files resource has the same privacy boundary.
 fn path_identity_suffix(path: &std::path::Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
-    let bytes = path.as_os_str().as_bytes();
+    let bytes = path.as_os_str().as_encoded_bytes();
     let mut digest = Sha256::new();
-    digest.update(b"qos.files.local-resource.v1\\0");
+    digest.update(b"tilo.files.local-resource.v1\\0");
     digest.update((bytes.len() as u64).to_be_bytes());
     digest.update(bytes);
     // 128 bits makes collisions infeasible for a local, bounded directory
@@ -67,7 +66,7 @@ fn path_identity_suffix(path: &std::path::Path) -> String {
 
 /// Stable, wire-safe identity for a currently presented directory.  The path
 /// is deliberately the identity here: ordinary host folders do not have a
-/// qOS record UUID, while collaborative records use [`record_resource_id`].
+/// Tilo record UUID, while collaborative records use [`record_resource_id`].
 pub fn folder_resource_id(path: &std::path::Path) -> String {
     format!("files.folder:{}", path_identity_suffix(path))
 }
@@ -230,8 +229,12 @@ impl SearchProvider for PlacesSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+        self.catalog.query_page(
+            query,
+            cursor,
+            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+        )
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
@@ -387,8 +390,12 @@ impl SearchProvider for CollaborativeRecordSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+        self.catalog.query_page(
+            query,
+            cursor,
+            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+        )
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
@@ -531,8 +538,12 @@ impl SearchProvider for RemoteAccountSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+        self.catalog.query_page(
+            query,
+            cursor,
+            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+        )
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
@@ -657,7 +668,7 @@ mod tests {
             .resolve_action_resource(&address)
             .expect("the omitted account is materialized exactly");
         let resources = [resource];
-        let spec = ui::qos_actions::door::resolve(&resources, &address)
+        let spec = ui::tilo_actions::door::resolve(&resources, &address)
             .expect("the lazy action matches the search address");
         assert_eq!(spec.id, REMOTE_ACCOUNT_OPEN_ACTION);
     }
@@ -841,7 +852,7 @@ mod tests {
         use ui::widget::Widget;
 
         // Build the app against real temp dirs so navigation actually loads.
-        let base = std::env::temp_dir().join(format!("qos-fe-search-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("tilo-fe-search-{}", std::process::id()));
         let home = base.join("home");
         let sub = home.join("sub");
         let cfg = base.join("cfg");
@@ -868,13 +879,13 @@ mod tests {
         let doc = AutoCommit::new();
         let address = hit.action_address().expect("canonical action address");
         let resources = app.resources(&doc);
-        let spec = ui::qos_actions::door::resolve(&resources, &address)
+        let spec = ui::tilo_actions::door::resolve(&resources, &address)
             .expect("search address is exported");
-        assert_eq!(spec.kind, ui::qos_actions::OperationKind::View);
-        assert_eq!(spec.contract, ui::qos_actions::ActionContract::view());
+        assert_eq!(spec.kind, ui::tilo_actions::OperationKind::View);
+        assert_eq!(spec.contract, ui::tilo_actions::ActionContract::view());
         let kind = spec.kind;
         let encoded =
-            ui::qos_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
+            ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
                 .expect("search address is exported");
         assert!(
             app.invoke_resource_operation(kind, &encoded.type_id, &encoded.payload, &doc, &ROOT)

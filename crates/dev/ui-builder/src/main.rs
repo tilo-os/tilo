@@ -4,7 +4,7 @@ use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, run_or_exit};
 use ui::persist::Autosave;
 use ui::{State, Theme, UiGraphEditor, UiGraphHandle, Widget};
 
-const APP_ID: &str = "dev.qos.ui-builder";
+const APP_ID: &str = "dev.tilo.ui-builder";
 
 fn main() {
     run_or_exit(
@@ -26,7 +26,7 @@ fn root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         .positionals()
         .first()
         .map(PathBuf::from)
-        .ok_or_else(|| LaunchError::Operation("qos-ui-builder requires a UI graph path".into()))?;
+        .ok_or_else(|| LaunchError::Operation("tilo-ui-builder requires a UI graph path".into()))?;
     let source =
         std::fs::read_to_string(&path).map_err(|error| operation("read", &path, &error))?;
     let handle = UiGraphHandle::from_json(&source)
@@ -68,7 +68,7 @@ mod tests {
     #[test]
     fn save_replaces_a_graph_without_leaving_a_partial_file() {
         let directory = std::env::temp_dir().join(format!(
-            "qos-ui-builder-test-{}-{}",
+            "tilo-ui-builder-test-{}-{}",
             std::process::id(),
             std::thread::current().name().unwrap_or("save")
         ));

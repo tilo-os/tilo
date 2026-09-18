@@ -9,8 +9,8 @@
 #
 # Requires:
 #   - root or `sudo` (ip netns operations need CAP_NET_ADMIN)
-#   - a `cargo test` build of shell that includes the
-#     `two_netns_share` integration test
+#   - a `cargo test` build of shell that includes the `it` integration
+#     target's opt-in `netns-e2e` roles
 #
 # Usage:
 #   ./scripts/two-netns-share.sh
@@ -23,8 +23,8 @@ VETH_A_IP="${VETH_A_IP:-10.42.0.1}"
 VETH_B_IP="${VETH_B_IP:-10.42.0.2}"
 VIDEO_PORT="${VIDEO_PORT:-9080}"
 INPUT_PORT="${INPUT_PORT:-9081}"
-NS_A="${NS_A:-qos-share-a}"
-NS_B="${NS_B:-qos-share-b}"
+NS_A="${NS_A:-tilo-share-a}"
+NS_B="${NS_B:-tilo-share-b}"
 
 if [[ $EUID -ne 0 ]]; then
     echo "netns creation requires root; re-run under sudo." >&2
@@ -54,13 +54,18 @@ ip netns exec "$NS_B" ip link set lo up
 ip netns exec "$NS_A" ping -c 1 -W 2 "$VETH_B_IP" >/dev/null
 echo "== veth link up"
 
+# Compile before either timed role starts. Letting two `cargo test` processes
+# race the build lock can consume the viewer's entire four-second window
+# before the host has bound its socket.
+cargo test -p shell --test it --features netns-e2e --locked --no-run
+
 echo "== spawning viewer in $NS_B (background)"
 ip netns exec "$NS_B" env \
     TWO_NETNS_ROLE=viewer \
     TWO_NETNS_VIDEO_ADDR="$VETH_B_IP:$VIDEO_PORT" \
     TWO_NETNS_INPUT_ADDR="$VETH_A_IP:$INPUT_PORT" \
-    cargo test -p shell --test two_netns_share \
-    -- --exact netns_viewer_process --include-ignored --nocapture &
+    cargo test -p shell --test it --features netns-e2e --locked \
+    -- --exact two_netns_share::netns_viewer_process --nocapture &
 VIEWER_PID=$!
 
 # Give the viewer a beat to bind.
@@ -71,8 +76,8 @@ ip netns exec "$NS_A" env \
     TWO_NETNS_ROLE=host \
     TWO_NETNS_VIDEO_ADDR="$VETH_B_IP:$VIDEO_PORT" \
     TWO_NETNS_INPUT_ADDR="$VETH_A_IP:$INPUT_PORT" \
-    cargo test -p shell --test two_netns_share \
-    -- --exact netns_host_process --include-ignored --nocapture
+    cargo test -p shell --test it --features netns-e2e --locked \
+    -- --exact two_netns_share::netns_host_process --nocapture
 
 wait $VIEWER_PID
 echo "== netns pipeline test complete"

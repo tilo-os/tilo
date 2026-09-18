@@ -100,7 +100,7 @@ fn content_xml(deck: &Deck, picture_hrefs: &HashMap<&str, &str>) -> String {
     let mut s = String::new();
     s.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     s.push_str(
-        r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:qslides="urn:qos:slides:1.0" office:version="1.3">"#,
+        r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:qslides="urn:tilo:slides:1.0" office:version="1.3">"#,
     );
     s.push_str("<office:automatic-styles/>");
     s.push_str("<office:body><office:presentation");
@@ -253,7 +253,7 @@ fn styles_xml() -> String {
 
 fn meta_xml(deck: &Deck) -> String {
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" office:version="1.3"><office:meta><dc:title>{}</dc:title><meta:generator xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0">qOS Slides</meta:generator></office:meta></office:document-meta>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" office:version="1.3"><office:meta><dc:title>{}</dc:title><meta:generator xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0">Tilo Slides</meta:generator></office:meta></office:document-meta>"#,
         xml_text(&deck.title)
     )
 }
@@ -831,7 +831,7 @@ mod tests {
     #[test]
     fn odp_bundles_local_pictures_and_reopens_them_from_the_package() {
         let source =
-            std::env::temp_dir().join(format!("qos-slides-picture-{}.png", std::process::id()));
+            std::env::temp_dir().join(format!("tilo-slides-picture-{}.png", std::process::id()));
         // Packaging only needs the real image signature; rendering/decode is
         // separately covered by ImageStore tests.
         let picture = b"\x89PNG\r\n\x1a\nportable-picture";

@@ -23,11 +23,11 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
-use qos_actions::{
+use serde::{Deserialize, Serialize};
+use tilo_actions::{
     Action, ActionError, ActionRegistry, Doc, EncodedAction, LocalTransport, apply_local, dispatch,
     replay,
 };
-use serde::{Deserialize, Serialize};
 
 /// A real action: set a scalar under a key, or append to a list. Pure
 /// function of `(self, doc)` — no wall-clock, no RNG — so replay is deterministic.

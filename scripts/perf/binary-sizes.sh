@@ -4,7 +4,7 @@
 set -euo pipefail
 
 TARGET="${1:-target/release}"
-BINS=(shell terminal file-explorer qos-relay qos-install qos-relay-admin fs)
+BINS=(shell terminal file-explorer tilo-relay tilo-install tilo-relay-admin fs)
 
 echo '{'
 first=1

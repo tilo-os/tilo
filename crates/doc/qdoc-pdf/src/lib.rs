@@ -56,6 +56,103 @@ pub enum DocPdfError {
     ImageDecode(String),
 }
 
+/// One raster page for a searchable scanned-document PDF.
+pub struct ScannedPdfPage {
+    pub width: u32,
+    pub height: u32,
+    /// Packed RGB8 pixels, row-major.
+    pub rgb: Vec<u8>,
+    /// OCR text associated with this page. It is embedded invisibly so copy,
+    /// search, and indexing work without drawing over the original scan.
+    pub recognized_text: String,
+}
+
+/// Export ordered scanned pages as a self-contained searchable A4 PDF.
+#[must_use]
+pub fn render_scanned_pdf(pages: &[ScannedPdfPage]) -> Vec<u8> {
+    use std::io::Write as _;
+
+    const W: f64 = 595.0;
+    const H: f64 = 842.0;
+    const MARGIN: f64 = 18.0;
+    let mut writer = PdfWriter::new();
+    let font = writer.add(font_dict("Helvetica").into_bytes());
+    let pages_obj = writer.reserve();
+    let mut page_objects = Vec::with_capacity(pages.len());
+
+    for (index, page) in pages.iter().enumerate() {
+        if page.width == 0 || page.height == 0 {
+            continue;
+        }
+        let expected = usize::try_from(page.width)
+            .ok()
+            .and_then(|w| {
+                usize::try_from(page.height)
+                    .ok()
+                    .and_then(|h| w.checked_mul(h))
+            })
+            .and_then(|pixels| pixels.checked_mul(3));
+        if expected != Some(page.rgb.len()) {
+            continue;
+        }
+        let image_data = pdf::flate(&page.rgb);
+        let image = writer.add_stream(
+            &format!(
+                " /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode",
+                page.width, page.height
+            ),
+            &image_data,
+        );
+        let available_w = W - MARGIN * 2.0;
+        let available_h = H - MARGIN * 2.0;
+        let scale = (available_w / f64::from(page.width)).min(available_h / f64::from(page.height));
+        let draw_w = f64::from(page.width) * scale;
+        let draw_h = f64::from(page.height) * scale;
+        let x = (W - draw_w) * 0.5;
+        let y = (H - draw_h) * 0.5;
+        let mut content = Vec::new();
+        let _ = writeln!(
+            content,
+            "q {draw_w} 0 0 {draw_h} {x} {y} cm /Im{index} Do Q"
+        );
+        if !page.recognized_text.trim().is_empty() {
+            let escaped = pdf::escape_pdf_text(&page.recognized_text);
+            let _ = write!(content, "BT /F1 10 Tf 3 Tr 18 18 Td (");
+            content.extend_from_slice(&escaped);
+            content.extend_from_slice(b") Tj ET\n");
+        }
+        // Content commands are tiny compared with the compressed raster and
+        // remain uncompressed so document indexers can recover the invisible
+        // OCR layer even when they implement only the core PDF filters.
+        let contents = writer.add_stream("", &content);
+        let resources = format!(
+            "<< /Font << /F1 {} 0 R >> /XObject << /Im{index} {} 0 R >> >>",
+            font.0, image.0
+        );
+        let body = format!(
+            "<< /Type /Page /Parent {} 0 R /MediaBox [0 0 595 842] /Resources {resources} /Contents {} 0 R >>",
+            pages_obj.0, contents.0
+        );
+        page_objects.push(writer.add(body.into_bytes()));
+    }
+    let kids = page_objects
+        .iter()
+        .map(|object| format!("{} 0 R", object.0))
+        .collect::<Vec<_>>()
+        .join(" ");
+    writer.set(
+        pages_obj,
+        format!(
+            "<< /Type /Pages /Count {} /Kids [{kids}] >>",
+            page_objects.len()
+        )
+        .into_bytes(),
+    );
+    let catalog =
+        writer.add(format!("<< /Type /Catalog /Pages {} 0 R >>", pages_obj.0).into_bytes());
+    writer.finish(catalog)
+}
+
 impl fmt::Display for DocPdfError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

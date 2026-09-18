@@ -8,7 +8,7 @@
 //! normalization aligns them).
 //!
 //! [`FutoSwipeModel::default_load`] returns `None` when the FUTO libs aren't
-//! linked (crate built without `QOS_SWIPE_LIB`) or the model assets are
+//! linked (crate built without `TILO_SWIPE_LIB`) or the model assets are
 //! absent — the widget then keeps its geometric decoder. So this is a pure
 //! upgrade: best-in-class swipe when available, graceful fallback otherwise.
 
@@ -80,11 +80,11 @@ impl FutoSwipeModel {
 
 fn candidate_dirs() -> Vec<PathBuf> {
     let mut v = Vec::new();
-    if let Some(p) = std::env::var_os("QOS_SWIPE_MODELS") {
+    if let Some(p) = std::env::var_os("TILO_SWIPE_MODELS") {
         v.push(PathBuf::from(p));
     }
     // System install path (shipped in the OS image).
-    v.push(PathBuf::from("/usr/share/qos/swipe-models"));
+    v.push(PathBuf::from("/usr/share/tilo/swipe-models"));
     // Dev: vendored next to the crate.
     v.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models"));
     v
@@ -141,7 +141,7 @@ impl SwipeModel for FutoSwipeModel {
 }
 
 // Self-skips unless the FUTO libs are linked (real `swipe` backend) AND
-// the model dir is resolvable (env `QOS_SWIPE_MODELS` or an install path) —
+// the model dir is resolvable (env `TILO_SWIPE_MODELS` or an install path) —
 // i.e. `FutoSwipeModel::default_load()` returns `Some`.
 #[cfg(test)]
 mod tests {
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn futo_decodes_through_osk_adapter() {
         let Some(model) = FutoSwipeModel::default_load() else {
-            eprintln!("FUTO model unavailable (set QOS_SWIPE_MODELS) — skipping");
+            eprintln!("FUTO model unavailable (set TILO_SWIPE_MODELS) — skipping");
             return;
         };
         let (layout, geom) = qwerty_geom();

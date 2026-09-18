@@ -78,7 +78,7 @@
 //!
 //! ## Device-local is network
 //!
-//! qOS runs its own services (collaboration broker, registry, …) on the
+//! Tilo runs its own services (collaboration broker, registry, …) on the
 //! network like anything else, so device-local addresses get the same
 //! policy: no network capability means an empty namespace (the
 //! sandbox's `127.0.0.1` is its own); a host allowlist means the gate's
@@ -128,12 +128,12 @@ pub const RELAY_PORT: u16 = 9050;
 /// Where the gate socket is bind-mounted inside the sandbox. Short on
 /// purpose: `sun_path` is 108 bytes, so a long path fails
 /// `ENAMETOOLONG` at connect.
-pub const SANDBOX_GATE_PATH: &str = "/run/qos/net/gate.sock";
+pub const SANDBOX_GATE_PATH: &str = "/run/tilo/net/gate.sock";
 
 /// Host-side path the gate listens on. Mirrors
 /// [`crate::dbus_proxy::proxy_socket_path`] — one per launcher process.
 pub fn gate_socket_path(uid: u32, launcher_pid: u32) -> PathBuf {
-    PathBuf::from(format!("/run/user/{uid}/qos/net/{launcher_pid}.sock"))
+    PathBuf::from(format!("/run/user/{uid}/tilo/net/{launcher_pid}.sock"))
 }
 
 /// What outbound access an app ends up with, after the packager's

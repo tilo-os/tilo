@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 //! Contacts — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
@@ -5,13 +7,9 @@
 //! * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!   (headless screenshot; identical passes to the live app).
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -78,6 +76,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("new") => Box::new(|a: &mut contacts::ContactsApp| a.shots_new_contact()),
         Some("edit") => Box::new(|a: &mut contacts::ContactsApp| a.shots_edit_contact()),
         Some("editfocus") => Box::new(|a: &mut contacts::ContactsApp| a.shots_edit_focused()),
+        Some("edit-lower") => Box::new(|a: &mut contacts::ContactsApp| a.shots_edit_lower()),
         Some("export") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_export()),
         Some("unsaved") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_unsaved()),
         Some("groups") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_group_filter()),
@@ -86,7 +85,16 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("import-conflict") => {
             Box::new(|a: &mut contacts::ContactsApp| a.shots_show_import_conflict())
         }
+        Some("duplicate-review") => {
+            Box::new(|a: &mut contacts::ContactsApp| a.shots_show_duplicate_review())
+        }
+        Some("duplicates") => {
+            Box::new(|a: &mut contacts::ContactsApp| a.shots_show_duplicate_discovery())
+        }
         Some("empty") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_empty()),
+        Some("search") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_search()),
+        Some("loading") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_loading()),
+        Some("error") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_error()),
         _ => Box::new(|_: &mut contacts::ContactsApp| {}),
     };
     render_shot_to_png(app, viewport, ui::launch::shot_theme(args), out, setup)
@@ -183,7 +191,7 @@ fn render_shot_to_png(
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("dev.qos.contacts", contacts::app_root)
+    LaunchSpec::new("dev.tilo.contacts", contacts::app_root)
         .history(&contacts::framework_history::HISTORY)
         .shot_handler(shot_handler)
         .allowed_flags(&["--detail"])
@@ -211,7 +219,7 @@ fn production_launch_registers_history() {
 #[test]
 fn actual_migrating_opener_keeps_saved_graph() {
     use automerge::{ReadDoc, transaction::Transactable};
-    const APP: &str = "dev.qos.contacts";
+    const APP: &str = "dev.tilo.contacts";
     if let Ok(stage) = std::env::var("QOS_CONTACTS_HISTORY_STARTUP") {
         let legacy = contacts::storage::default_path().unwrap();
         if stage == "write" {

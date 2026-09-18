@@ -2,7 +2,7 @@
 //!
 //! This entire module is gated behind the `live-capture` feature so the
 //! default build — and the `--shots` headless path — never need the
-//! `GStreamer` dev libraries or a `/dev/video*` device. On a real qOS install
+//! `GStreamer` dev libraries or a `/dev/video*` device. On a real Tilo install
 //! the app is built with `--features live-capture` and the compositor grants
 //! the cluster access to the camera device.
 //!

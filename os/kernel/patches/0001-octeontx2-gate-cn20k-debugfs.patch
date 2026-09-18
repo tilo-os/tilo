@@ -1,0 +1,20 @@
+From: Tilo maintainers
+Subject: [PATCH] octeontx2-af: only build CN20K debugfs with CONFIG_DEBUG_FS
+
+The debugfs member of struct rvu and the CN20K debugfs caller in
+rvu_debugfs.c are already guarded by CONFIG_DEBUG_FS. Building the new
+CN20K debugfs implementation unconditionally fails with DEBUG_FS=n.
+Keep the hardware driver enabled and select only its debugfs object
+conditionally, matching the existing caller and data layout.
+
+--- a/drivers/net/ethernet/marvell/octeontx2/af/Makefile
++++ b/drivers/net/ethernet/marvell/octeontx2/af/Makefile
+@@ -12,5 +12,7 @@
+ 		  rvu_reg.o rvu_npc.o rvu_debugfs.o ptp.o rvu_npc_fs.o \
+ 		  rvu_cpt.o rvu_devlink.o rpm.o rvu_cn10k.o rvu_switch.o \
+ 		  rvu_sdp.o rvu_npc_hash.o mcs.o mcs_rvu_if.o mcs_cnf10kb.o \
+-		  rvu_rep.o cn20k/mbox_init.o cn20k/nix.o cn20k/debugfs.o \
++		  rvu_rep.o cn20k/mbox_init.o cn20k/nix.o \
+ 		  cn20k/npa.o cn20k/npc.o
++
++rvu_af-$(CONFIG_DEBUG_FS) += cn20k/debugfs.o

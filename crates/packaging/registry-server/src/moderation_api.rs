@@ -602,7 +602,7 @@ mod tests {
         let publisher = SigningKey::generate(&mut OsRng);
         let reviewer = SigningKey::generate(&mut OsRng);
         let mut entry = RegistryEntry {
-            package_id: "dev.qos.notes".into(),
+            package_id: "dev.tilo.notes".into(),
             name: "Notes".into(),
             description: String::new(),
             categories: vec![],
@@ -639,7 +639,7 @@ mod tests {
             200,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.qos.notes".into(),
+                package_id: "dev.tilo.notes".into(),
                 category: "security".into(),
                 summary: "Unexpected network connection".into(),
                 evidence_digest_hex: "aa".repeat(32),
@@ -699,7 +699,7 @@ mod tests {
             200,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.qos.notes".into(),
+                package_id: "dev.tilo.notes".into(),
                 category: "quality".into(),
                 summary: "A different signed report".into(),
                 evidence_digest_hex: "bb".repeat(32),
@@ -811,7 +811,7 @@ mod tests {
         // the API can append its public event.
         service
             .moderation
-            .restore_quarantined("dev.qos.notes", "owner", "fixed", 113, &allowlist)
+            .restore_quarantined("dev.tilo.notes", "owner", "fixed", 113, &allowlist)
             .unwrap();
         let restore = sign_moderation_mutation(
             "restore-after-crash".into(),

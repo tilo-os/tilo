@@ -149,7 +149,7 @@ def main() -> int:
             NAMES[i],
             os.path.join(out, NAMES[i]),
             # Short: a Unix socket address caps at ~108 bytes and the
-            # broker lives at <runtime>/qos/services/collab.sock. A
+            # broker lives at <runtime>/tilo/services/collab.sock. A
             # runtime dir under the repo overflows that, the broker fails
             # to bind, and every app then starts with collaboration
             # silently off.

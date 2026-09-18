@@ -41,7 +41,7 @@ OUT = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/newer-state").resolve()
 # NOT inside OUT. AF_UNIX paths cap at ~108 bytes and the compositor refuses a
 # longer one with "path must be shorter than SUN_LEN" — while carrying on
 # running, so the failure looks like a compositor that never came up.
-SOCK = os.environ.get("QOS_NEWER_STATE_SOCK", "/tmp/qos-newer-state.sock")
+SOCK = os.environ.get("TILO_NEWER_STATE_SOCK", "/tmp/tilo-newer-state.sock")
 
 failures = []
 
@@ -87,11 +87,11 @@ def main():
     before = state.read_bytes()
 
     env = dict(os.environ)
-    env["QOS_TEST_CONTROL"] = SOCK
-    env["QOS_STATE_PATH"] = str(state)
-    # A session that writes into the real ~/.config/qos would be testing the
+    env["TILO_TEST_CONTROL"] = SOCK
+    env["TILO_STATE_PATH"] = str(state)
+    # A session that writes into the real ~/.config/tilo would be testing the
     # developer's desktop, not this.
-    env["QOS_FS_ACL_PATH"] = str(OUT / "fs-capabilities.json")
+    env["TILO_FS_ACL_PATH"] = str(OUT / "fs-capabilities.json")
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
 

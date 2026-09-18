@@ -12,7 +12,7 @@ esac
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 : "${GITHUB_ENV:?GITHUB_ENV is required}"
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
-container_cli="${QOS_WPE_CONTAINER_CLI:-docker}"
+container_cli="${TILO_WPE_CONTAINER_CLI:-docker}"
 now="$(date +%s)"
 
 bounded_expiry() {
@@ -43,8 +43,7 @@ trusted_root_executable() {
   done
 }
 
-broker="${WPE_SNAPSHOT_CREDENTIAL_BROKER:-}"
-if [ -n "$broker" ]; then
+broker="${WPE_SNAPSHOT_CREDENTIAL_BROKER:?configure the WPE snapshot credential broker}"
   : "${ACTIONS_ID_TOKEN_REQUEST_URL:?Forgejo OIDC request URL is required}"
   : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?Forgejo OIDC request token is required}"
   trusted_root_executable "$broker" 'WPE snapshot credential broker'
@@ -55,7 +54,7 @@ if [ -n "$broker" ]; then
       ;;
   esac
 
-  lease_dir="$(mktemp -d "$RUNNER_TEMP/qos-wpe-snapshot.XXXXXX")"
+  lease_dir="$(mktemp -d "$RUNNER_TEMP/tilo-wpe-snapshot.XXXXXX")"
   lease="$lease_dir/lease.env"
   trap 'rm -f "$lease"; rmdir "$lease_dir" 2>/dev/null || true' EXIT
   [ ! -e "$lease" ] \
@@ -85,10 +84,10 @@ if [ -n "$broker" ]; then
       || { printf 'credential broker returned a malformed or duplicate setting\n' >&2; exit 1; }
     seen[$name]=1
     case "$name" in
-      QOS_REGISTRY_USERNAME) registry_username="$value" ;;
-      QOS_REGISTRY_PASSWORD) registry_password="$value" ;;
-      QOS_WPE_SIGNER) signer="$value" ;;
-      QOS_LEASE_EXPIRES_AT) lease_expiry="$value" ;;
+      TILO_REGISTRY_USERNAME) registry_username="$value" ;;
+      TILO_REGISTRY_PASSWORD) registry_password="$value" ;;
+      TILO_WPE_SIGNER) signer="$value" ;;
+      TILO_LEASE_EXPIRES_AT) lease_expiry="$value" ;;
       *) printf 'credential broker returned unsupported setting %s\n' "$name" >&2; exit 1 ;;
     esac
   done < "$lease"
@@ -109,9 +108,9 @@ if [ -n "$broker" ]; then
         exit 1
         ;;
     esac
-    printf 'QOS_WPE_SIGNER=%s\n' "$signer" >> "$GITHUB_ENV"
+    printf 'TILO_WPE_SIGNER=%s\n' "$signer" >> "$GITHUB_ENV"
   else
-    [ "${#seen[@]}" = 3 ] && [ -z "${seen[QOS_WPE_SIGNER]+x}" ] \
+    [ "${#seen[@]}" = 3 ] && [ -z "${seen[TILO_WPE_SIGNER]+x}" ] \
       || { printf 'non-publish lease must return exactly three settings without a signer\n' >&2; exit 1; }
   fi
 
@@ -122,15 +121,3 @@ if [ -n "$broker" ]; then
   rmdir "$lease_dir"
   trap - EXIT
   exit 0
-fi
-
-[ "${WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP:-}" = 1 ] \
-  || { printf 'configure WPE_SNAPSHOT_CREDENTIAL_BROKER; static credentials are disabled\n' >&2; exit 1; }
-bounded_expiry "${WPE_STATIC_BOOTSTRAP_EXPIRES_AT:-}" 86400 'static credential bootstrap'
-[ -n "${REGISTRY_TOKEN:-}" ] \
-  || { printf 'static credential bootstrap requires REGISTRY_TOKEN\n' >&2; exit 1; }
-if [[ "$mode" = publish-* ]]; then
-  printf 'QOS_WPE_STATIC_BOOTSTRAP=1\n' >> "$GITHUB_ENV"
-fi
-printf '%s' "$REGISTRY_TOKEN" | "$container_cli" login code.podesta.ai \
-  --username "${GITHUB_ACTOR:?GITHUB_ACTOR is required}" --password-stdin

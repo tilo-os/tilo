@@ -37,11 +37,11 @@ use ui::theme::Theme;
 use ui::tokens::Metrics;
 use ui::tokens::spacing::Spacing;
 use ui::tokens::typography::TypeScale;
-use ui::widget::{Button, ButtonFace};
 use ui::widget::{
     Autocomplete, AutocompleteOutcome, DragController, ListMetrics, PressOutcome, ScrollMetrics,
     Scrollbar, Suggestion, Widget,
 };
+use ui::widget::{Button, ButtonFace};
 
 use crate::actions::WeatherAction;
 use crate::api;
@@ -225,6 +225,17 @@ enum OverAction {
               state machine, and grouping them would mean churning every field access across \
               this widget and its panes for no behavioural gain"
 )]
+pub(crate) struct OverviewEventCtx<'a> {
+    pub(crate) event: &'a WindowEvent,
+    pub(crate) scale_factor: f64,
+    pub(crate) modifiers: winit::event::Modifiers,
+    pub(crate) state: &'a mut AutoCommit,
+    pub(crate) path: &'a ObjId,
+    pub(crate) focus_target: &'a mut Option<NodeId>,
+    pub(crate) node_id: NodeId,
+    pub(crate) taffy: &'a TaffyTree<()>,
+}
+
 pub struct Core {
     pub model: WeatherModel,
     /// Display units — read from the shared Settings store (`region`), never
@@ -485,6 +496,14 @@ impl Core {
             self.search.close();
             self.status.clear();
         }
+        if let Some(id) = self.model.selected_location().map(|location| location.id)
+            && let Some(index) = persisted
+                .locations
+                .iter()
+                .position(|location| location.id == id)
+        {
+            persisted.selected = index;
+        }
         persisted.units = self.units;
         self.model = persisted.clone();
     }
@@ -524,6 +543,10 @@ impl Core {
     /// than the loop parking on "Searching…" until the next input event).
     pub fn search_pending(&self) -> bool {
         self.geocode_inflight || self.pending_query_at.is_some()
+    }
+
+    pub fn search_deadline(&self) -> Option<Instant> {
+        self.pending_query_at.map(|at| at + GEOCODE_DEBOUNCE)
     }
 
     /// Whether a geocode debounce is armed (so the app keeps pumping frames
@@ -628,11 +651,6 @@ impl Core {
         if moved {
             self.scroll = 0.0;
             self.refresh_selected();
-            if let Some(location) = self.model.selected_location() {
-                self.queue_durable_action(WeatherAction::SelectLocation {
-                    id: location.id.to_string(),
-                });
-            }
         }
         moved
     }
@@ -860,8 +878,15 @@ impl Core {
                     .flatten()
             });
         if let Some(loc) = picked {
-            self.model.add_location(loc.clone());
-            self.queue_durable_action(WeatherAction::AddLocation { location: loc });
+            self.model.add_location(loc);
+            // Persist the retained identity/rank after coordinate deduplication,
+            // and the selection that add_location made in the live model.
+            let Some(location) = self.model.selected_location().cloned() else {
+                return false;
+            };
+            let id = location.id.to_string();
+            self.queue_durable_action(WeatherAction::AddLocation { location });
+            self.queue_durable_action(WeatherAction::SelectLocation { id });
             self.scroll = 0.0;
             self.refresh_selected();
             self.nav_request = Some(NavIntent::ShowDetail);
@@ -897,14 +922,10 @@ impl Core {
             }
             EntryAction::MoveToTop => {
                 let changed = self.model.move_location(index, 0);
-                if changed {
-                    self.queue_durable_action(WeatherAction::SetLocationOrder {
-                        ids: self
-                            .model
-                            .locations
-                            .iter()
-                            .map(|location| location.id.to_string())
-                            .collect(),
+                if changed && let Some(location) = self.model.locations.first() {
+                    self.queue_durable_action(WeatherAction::SetLocationRank {
+                        id: location.id.to_string(),
+                        rank: location.order_rank,
                     });
                 }
                 changed
@@ -980,14 +1001,29 @@ impl Core {
                     .with_position(index + 1, total)
                     .with_hashed_key(location.id)
                     .with_bounds(bounds)
-                    .with_state(AccessState::new().selected(index == self.model.selected))
+                    .with_state(
+                        AccessState::new()
+                            .selected(index == self.model.selected)
+                            .focusable(true),
+                    )
             })
             .collect();
-        AccessNode::new(Role::List)
+        let places = AccessNode::new(Role::List)
             .with_name("Saved places")
             .with_description("Use Up and Down Arrow to change city, Enter to open its forecast, or slash to search for another city.")
             .with_bounds(rect)
-            .with_children(items)
+            .with_children(items);
+        let mut children = Vec::new();
+        if let Some(search) = self.search.accessibility() {
+            children.push(search);
+        }
+        children.push(places);
+        AccessNode::new(Role::Group)
+            .with_name("Weather")
+            .with_bounds(rect)
+            .with_children(children)
+            .with_keyed_action_routes("weather-overview")
+            .with_keyed_action_routes("weather-overview")
     }
 
     /// Semantic summary of the currently painted forecast. This mirrors the
@@ -1289,7 +1325,12 @@ impl Core {
 
         // Expand chip: the shared button face with the chevron icon.
         let cs = 36.0;
-        let chip = Rect::new(cx - cs / 2.0, rect.y0 + s3, cx + cs / 2.0, rect.y0 + s3 + cs);
+        let chip = Rect::new(
+            cx - cs / 2.0,
+            rect.y0 + s3,
+            cx + cs / 2.0,
+            rect.y0 + s3 + cs,
+        );
         let hovered = chip.contains(self.last_mouse);
         Button::paint(
             scene,
@@ -1767,11 +1808,6 @@ impl Core {
         match action {
             OverAction::SelectLocation(i) => {
                 self.model.select(i);
-                if let Some(location) = self.model.selected_location() {
-                    self.queue_durable_action(WeatherAction::SelectLocation {
-                        id: location.id.to_string(),
-                    });
-                }
                 self.scroll = 0.0;
                 self.refresh_selected();
                 self.nav_request = Some(NavIntent::ShowDetail);
@@ -1796,34 +1832,15 @@ impl Core {
         clippy::too_many_arguments,
         reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event across this crate's app.rs/panes.rs — bundling it into a context struct would ripple across every event-routing method here, out of scope for this split"
     )]
-    pub fn handle_overview_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    pub(crate) fn handle_overview_event(&mut self, mut ctx: OverviewEventCtx<'_>) -> bool {
         // Keep the shared field placed so its overlay hit-tests correctly.
         self.search.apply_layout_external(self.search_field_rect);
 
-        if let Some(consumed) = self.route_overview_search_field(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if let Some(consumed) = self.route_overview_search_field(&mut ctx) {
             return consumed;
         }
 
-        let (handled, _changed) = self.dispatch_overview_event(event, scale_factor);
+        let (handled, _changed) = self.dispatch_overview_event(ctx.event, ctx.scale_factor);
         handled
     }
 
@@ -1837,17 +1854,7 @@ impl Core {
         clippy::too_many_arguments,
         reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event across this crate's app.rs/panes.rs — bundling it into a context struct would ripple across every event-routing method here, out of scope for this split"
     )]
-    fn route_overview_search_field(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> Option<bool> {
+    fn route_overview_search_field(&mut self, ctx: &mut OverviewEventCtx<'_>) -> Option<bool> {
         use winit::event::{ElementState, MouseButton};
 
         // A press over the field while not editing begins an edit.
@@ -1855,7 +1862,7 @@ impl Core {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
-        } = event
+        } = ctx.event
             && !self.search.is_editing()
             && self.search_field_rect.contains(self.last_mouse)
         {
@@ -1870,16 +1877,35 @@ impl Core {
         let before = self.search.text().to_string();
         let mut ac_handled = false;
         self.search.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
+            ctx.event,
+            ctx.scale_factor,
+            &ctx.modifiers,
+            ctx.state,
+            ctx.path,
             &mut ac_handled,
-            focus_target,
-            node_id,
-            taffy,
+            ctx.focus_target,
+            ctx.node_id,
+            ctx.taffy,
         );
+        self.finish_search_edit(&before, ac_handled)
+    }
+
+    pub fn perform_search_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !self.search.is_editing() {
+            self.begin_search();
+        }
+        let before = self.search.text().to_string();
+        let handled = self.search.perform_action_at(action, key_path, state, path);
+        self.finish_search_edit(&before, handled).unwrap_or(false)
+    }
+
+    fn finish_search_edit(&mut self, before: &str, ac_handled: bool) -> Option<bool> {
         match self.search.take_outcome() {
             AutocompleteOutcome::Accepted(value) => {
                 if self.commit_search_pick(&value) {
@@ -2069,14 +2095,10 @@ impl Core {
             } else if let Some((from, to)) = self.reorder.commit() {
                 // Commit the live insertion the controller tracked.
                 changed = self.model.move_location(from, to);
-                if changed {
-                    self.queue_durable_action(WeatherAction::SetLocationOrder {
-                        ids: self
-                            .model
-                            .locations
-                            .iter()
-                            .map(|location| location.id.to_string())
-                            .collect(),
+                if changed && let Some(location) = self.model.locations.get(to) {
+                    self.queue_durable_action(WeatherAction::SetLocationRank {
+                        id: location.id.to_string(),
+                        rank: location.order_rank,
                     });
                 }
             } else {
@@ -3132,7 +3154,13 @@ impl Core {
         // The range track derives against the card at track strength, so an
         // empty stretch of range still reads as a bar on both themes.
         let track = RoundedRect::new(geo.bar_x0, cy - 3.0, geo.bar_x1, cy + 3.0, 3.0);
-        scene.fill(Fill::NonZero, t, track_fill(c.surfaces.raised), None, &track);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            track_fill(c.surfaces.raised),
+            None,
+            &track,
+        );
         let f0 = ((d.temp_min - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
         let f1 = ((d.temp_max - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
         let seg_x0 = geo.bar_x0 + f0 * (geo.bar_x1 - geo.bar_x0);
@@ -3690,6 +3718,9 @@ impl Core {
                 button: MouseButton::Left,
                 ..
             } => self.hourly_bar.release(),
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                self.handle_detail_key(&event.logical_key)
+            }
             _ => false,
         }
     }
@@ -3701,6 +3732,45 @@ impl Core {
     /// of the list has reflowed to open a gap near the tail where it will
     /// land. Insertion is finalised by `sync_insertion` against real geometry
     /// during the shot's draw pass.
+    fn handle_detail_key(&mut self, key: &winit::keyboard::Key) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+
+        let page = (self.hourly_viewport.width() * 0.8).max(80.0);
+        match key {
+            Key::Named(NamedKey::ArrowLeft) if self.hourly_max_scroll > 0.0 => {
+                self.hourly_scroll_x = (self.hourly_scroll_x - page).max(0.0);
+                true
+            }
+            Key::Named(NamedKey::ArrowRight) if self.hourly_max_scroll > 0.0 => {
+                self.hourly_scroll_x = (self.hourly_scroll_x + page).min(self.hourly_max_scroll);
+                true
+            }
+            Key::Named(NamedKey::Home) if self.hourly_max_scroll > 0.0 => {
+                self.hourly_scroll_x = 0.0;
+                true
+            }
+            Key::Named(NamedKey::End) if self.hourly_max_scroll > 0.0 => {
+                self.hourly_scroll_x = self.hourly_max_scroll;
+                true
+            }
+            Key::Character(text) if text.as_str().eq_ignore_ascii_case("r") => {
+                self.refresh_selected();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn detail_tooltip(&self) -> Option<&'static str> {
+        if self.refresh_btn.contains(self.last_mouse) {
+            Some("Refresh forecast (R)")
+        } else if self.hourly_viewport.contains(self.last_mouse) && self.hourly_max_scroll > 0.0 {
+            Some("Hourly forecast — use Left and Right Arrow to scroll")
+        } else {
+            None
+        }
+    }
+
     pub fn seed_drag(&mut self) {
         if self.model.locations.is_empty() {
             return;
@@ -4024,7 +4094,12 @@ impl DetailBodyLayout {
 
         // Metric tiles: label, value, unit stacked top to bottom.
         let n_tiles = 5usize;
-        let tile_cols = balanced_tile_columns(mw, n_tiles);
+        let large_text = text_scale >= 1.5;
+        let tile_cols = if large_text {
+            if mw >= 760.0 { 3 } else { 2 }
+        } else {
+            balanced_tile_columns(mw, n_tiles)
+        };
         let tile_rows = n_tiles.div_ceil(tile_cols);
         let tile_h = authored_h(
             d.tile_h,
@@ -4043,7 +4118,11 @@ impl DetailBodyLayout {
         // line.
         let hourly_band_top = f64::from(spacing.s8) + g(text_base());
         let hourly_h = at_least_whole(
-            d.hourly_h,
+            if large_text {
+                d.hourly_h.max(286.0)
+            } else {
+                d.hourly_h
+            },
             hourly_band_top + chart::strip_height(spacing, text_scale) + f64::from(spacing.s6),
         );
 
@@ -4057,15 +4136,27 @@ impl DetailBodyLayout {
         // Daily rows under the card title: the authored 42px, or the day
         // label plus an `s3` above and below.
         let n_days = snap.daily.len().max(1);
-        let day_row_h =
-            at_least_whole(d.day_row_h, line_h(d.day_label_text, text_scale) + 2.0 * s3);
+        let day_row_h = at_least_whole(
+            if large_text {
+                d.day_row_h.max(72.0)
+            } else {
+                d.day_row_h
+            },
+            line_h(d.day_label_text, text_scale) + 2.0 * s3,
+        );
         let days_block_h = card_header_h + n_days as f64 * day_row_h + s3;
 
         // Air-quality block: header + AQI hero (an `s16` band holding the band
         // word and its caption) + a row (or two) of pollutant tiles. Reserved
         // whether or not a reading is available yet, so the scroll geometry
         // stays stable while it loads.
-        let aq_cols = if mw >= 560.0 { 4 } else { 2 };
+        let aq_cols = if text_scale >= 1.5 {
+            2
+        } else if mw >= 560.0 {
+            4
+        } else {
+            2
+        };
         let aq_rows = 4usize.div_ceil(aq_cols);
         let aq_hero_h = authored_h(
             f64::from(spacing.s16),
@@ -4421,7 +4512,16 @@ fn result_value(loc: &SavedLocation) -> String {
 /// same text run prevents a long city name from colliding with a separate
 /// right-aligned detail column in a narrow search overlay.
 fn result_label(loc: &SavedLocation) -> String {
-    format!("{} — {}", loc.name, loc.subtitle())
+    let place = if loc.region.is_empty() || loc.region == loc.name {
+        loc.name.clone()
+    } else {
+        format!("{}, {}", loc.name, loc.region)
+    };
+    if loc.country_code.is_empty() {
+        format!("{} · {place}", loc.country)
+    } else {
+        format!("{} · {place}", loc.country_code)
+    }
 }
 
 #[cfg(test)]
@@ -4471,8 +4571,14 @@ mod day_row_geometry_tests {
             (884.0, 42.0),
         ] {
             let geo = DayRowGeometry::new(Rect::new(0.0, 0.0, card_w, 42.0), &sp, temp_w);
-            assert!(geo.icon_x0 - geo.inner_l >= s3, "{card_w}: glyph touches the label column");
-            assert!(geo.bar_x0 - geo.lo_x >= s2 - 1e-9, "{card_w}: lo label touches its bar");
+            assert!(
+                geo.icon_x0 - geo.inner_l >= s3,
+                "{card_w}: glyph touches the label column"
+            );
+            assert!(
+                geo.bar_x0 - geo.lo_x >= s2 - 1e-9,
+                "{card_w}: lo label touches its bar"
+            );
             assert!(
                 geo.inner_r - (geo.bar_x1 + s2) >= temp_w - 1e-9,
                 "{card_w}: a {temp_w}px hi label runs past the card gutter"
@@ -4705,13 +4811,62 @@ mod helper_tests {
     }
 
     #[test]
+    fn accessible_city_search_selects_a_result_and_queues_its_forecast() {
+        use super::*;
+        use std::{cell::RefCell, rc::Rc};
+        use ui::a11y::Action;
+        let mut core = Core::new(WeatherModel::default(), Units::METRIC);
+        let results = crate::sample::sample_model().locations;
+        let chosen = results[1].clone();
+        core.geocode_cache.insert("city".into(), results);
+        let core = Rc::new(RefCell::new(core));
+        let mut pane = crate::panes::OverviewPane::new(core.clone());
+        let mut state = AutoCommit::new();
+        let search = pane.accessibility().unwrap().children.remove(0);
+        assert!(pane.perform_semantic_action(
+            search.action_target.as_deref().unwrap(),
+            &Action::SetValue("city".into()),
+            &mut state,
+            &automerge::ROOT,
+        ));
+        assert_eq!(core.borrow().search_query, "city");
+        assert!(core.borrow().pending_query_at.is_some());
+        let deadline = core.borrow().search_deadline().unwrap();
+        assert_eq!(core.borrow().search_deadline(), Some(deadline));
+        let search = pane.accessibility().unwrap().children.remove(0);
+        let row = &search.children[1];
+        assert_eq!(row.name.as_deref(), Some(result_label(&chosen).as_str()));
+        assert!(pane.perform_semantic_action(
+            row.action_target.as_deref().unwrap(),
+            &Action::Activate,
+            &mut state,
+            &automerge::ROOT,
+        ));
+        let core = core.borrow();
+        assert_eq!(core.model.selected_location().unwrap().id, chosen.id);
+        assert!(
+            core.outbox
+                .iter()
+                .any(|request| matches!(request, Request::Forecast { .. }))
+        );
+        assert!(!core.search.is_editing());
+        assert!(core.search_query.is_empty());
+        assert!(core.search_deadline().is_none());
+    }
+
+    #[test]
     fn weather_accessibility_summarises_saved_places_and_forecast() {
         let model = crate::sample::sample_model();
         let core = Core::new(model, Units::METRIC);
         let overview = core.overview_accessibility(vello::kurbo::Rect::new(0.0, 0.0, 300.0, 700.0));
-        assert_eq!(overview.role, ui::a11y::Role::List);
-        assert_eq!(overview.children.len(), 4);
-        assert!(overview.children[0].state.selected);
+        assert_eq!(overview.role, ui::a11y::Role::Group);
+        assert_eq!(overview.children[0].role, ui::a11y::Role::TextInput);
+        assert_eq!(overview.children[0].name.as_deref(), Some("Search city…"));
+        let places = &overview.children[1];
+        assert_eq!(places.role, ui::a11y::Role::List);
+        assert_eq!(places.children.len(), 4);
+        assert!(places.children[0].state.selected);
+        assert!(places.children.iter().all(|item| item.state.focusable));
         let detail = core.detail_accessibility(vello::kurbo::Rect::new(300.0, 0.0, 1200.0, 700.0));
         assert_eq!(detail.name.as_deref(), Some("San Francisco forecast"));
         assert!(detail.description.unwrap().contains("hourly readings"));
@@ -4818,5 +4973,23 @@ mod history_regressions {
         let mut core = Core::new(model, Units::METRIC);
         core.apply_response(Response::Forecast(snapshot));
         assert!(core.model.snapshots.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod incoming_responsive_tests {
+    use super::*;
+    #[test]
+    fn large_text_allocates_intrinsic_vertical_space_and_fewer_columns() {
+        let model = crate::sample::sample_model();
+        let snapshot = model.selected_snapshot().unwrap();
+        let normal =
+            DetailBodyLayout::measure(334.0, snapshot, &Spacing::BASE, &Metrics::BASE, 1.0);
+        let large = DetailBodyLayout::measure(334.0, snapshot, &Spacing::BASE, &Metrics::BASE, 2.0);
+        assert!(large.body_h > normal.body_h * 1.5);
+        assert!(large.tile_h > normal.tile_h);
+        assert!(large.day_row_h > normal.day_row_h);
+        assert_eq!(large.tile_cols, 2);
+        assert_eq!(large.aq_cols, 2);
     }
 }

@@ -1,25 +1,14 @@
-//! On-disk persistence for the music library document.
+//! Device-local persistence for Music.
 //!
-//! The collaborative library is an Automerge document ([`crate::doc`]). For the
-//! qOS self-hosting model — and so a headless home server's replica survives
-//! restarts — the raw `doc.save()` bytes are persisted to disk (NOT a JSON
-//! projection), exactly like `chat/src/storage.rs`: persisting the Automerge
-//! save means a future peer can merge against the file directly.
-//!
-//! The default GUI app keeps its document in memory, starting from an **empty**
-//! library each run (real tracks arrive from playback, search, or a synced
-//! relay — never fabricated); this module is the seam the headless relay
-//! ([`crate::relay`]) uses to load and atomically persist its authoritative
-//! copy. Playback and credentials remain device-local effects and are
-//! intentionally absent from this file. Durable media bytes live in the
-//! separate device-local content-addressed cache below; they never enter the
-//! profile or replicated document.
+//! Collaborative library state is owned and persisted by the platform app
+//! document. This module owns only device-private playback preferences and a
+//! content-addressed media cache. Neither local file paths nor media bytes
+//! enter the shared document or collaboration channel.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -30,6 +19,9 @@ use crate::model::{CacheState, Playback};
 /// user gesture.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeviceProfile {
+    /// The last explicitly opened file belongs only to this device.
+    #[serde(default)]
+    pub local_file: Option<crate::local_file::LocalFile>,
     /// Legacy field accepted on read so older profiles migrate safely. Actual
     /// cache availability comes only from [`MediaCache`] objects, never this
     /// profile metadata.
@@ -62,12 +54,12 @@ const DEFAULT_MEDIA_CACHE_QUOTA: u64 = 1_073_741_824;
 /// Local media cache root. The explicit override makes tests and sandboxes
 /// hermetic; no cache path is ever exposed through a shared resource.
 pub fn media_cache_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("QOS_MUSIC_CACHE")
+    if let Ok(path) = std::env::var("TILO_MUSIC_CACHE")
         && !path.is_empty()
     {
         return PathBuf::from(path);
     }
-    dirs_data_dir().join("qos-music").join("media-cache")
+    dirs_data_dir().join("tilo-music").join("media-cache")
 }
 
 fn media_manifest_path(root: &Path) -> PathBuf {
@@ -341,7 +333,7 @@ pub fn install_completed_media_file(
 }
 
 pub fn media_cache_quota() -> u64 {
-    std::env::var("QOS_MUSIC_CACHE_QUOTA_BYTES")
+    std::env::var("TILO_MUSIC_CACHE_QUOTA_BYTES")
         .ok()
         .and_then(|value| value.parse().ok())
         .filter(|quota| *quota > 0)
@@ -356,25 +348,14 @@ impl DeviceProfile {
     }
 }
 
-/// Resolve the on-disk path for the library document. Honours an explicit
-/// override (`QOS_MUSIC_DATA`) so a relay can be pointed at a chosen location;
-/// otherwise `$XDG_DATA_HOME/qos-music/library.automerge`.
-pub fn doc_path() -> PathBuf {
-    if let Ok(p) = std::env::var("QOS_MUSIC_DATA") {
-        return PathBuf::from(p);
-    }
-    let base = dirs_data_dir();
-    base.join("qos-music").join("library.automerge")
-}
-
-/// Resolve the local-only profile path. `QOS_MUSIC_PROFILE` is useful for
-/// sandboxed tests; unlike `doc_path`, it is never a replication input.
+/// Resolve the local-only profile path. `TILO_MUSIC_PROFILE` is useful for
+/// sandboxed tests; it is never a replication input.
 pub fn device_profile_path() -> PathBuf {
-    if let Ok(p) = std::env::var("QOS_MUSIC_PROFILE") {
+    if let Ok(p) = std::env::var("TILO_MUSIC_PROFILE") {
         return PathBuf::from(p);
     }
     dirs_data_dir()
-        .join("qos-music")
+        .join("tilo-music")
         .join("device-profile.json")
 }
 
@@ -418,72 +399,23 @@ pub fn save_device_profile(profile: &DeviceProfile) -> std::io::Result<()> {
     save_device_profile_to(&device_profile_path(), profile)
 }
 
-/// Best-effort XDG data dir without pulling the `dirs` crate: honour
-/// `XDG_DATA_HOME`, else `$HOME/.local/share`, else the current dir.
+/// Native device-local data directory, with an absolute XDG override for
+/// sandboxed launches. Windows resolves to `LocalAppData` through `dirs`.
 fn dirs_data_dir() -> PathBuf {
-    if let Ok(x) = std::env::var("XDG_DATA_HOME")
-        && !x.is_empty()
-    {
-        return PathBuf::from(x);
-    }
-    if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty()
-    {
-        return PathBuf::from(home).join(".local").join("share");
-    }
-    PathBuf::from(".")
-}
-
-/// Load a document from `path`, or `None` if it doesn't exist / can't parse.
-pub fn load_from(path: &Path) -> Option<AutoCommit> {
-    let bytes = std::fs::read(path).ok()?;
-    AutoCommit::load(&bytes).ok()
-}
-
-/// Atomically persist `doc` to `path` (temp file + rename) so a crash mid-write
-/// can't corrupt the saved library.
-///
-/// # Errors
-///
-/// Returns an error if the parent directory can't be created, or if the
-/// atomic temp-file write/rename fails (e.g. permissions, no space left).
-pub fn save_to(path: &Path, doc: &mut AutoCommit) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let bytes = doc.save();
-    atomic_file::write(path, &bytes)?;
-    Ok(())
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(dirs::data_local_dir)
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{doc, seed};
-
-    #[test]
-    fn save_then_load_round_trips() {
-        let dir = std::env::temp_dir().join(format!("qos-music-test-{}", std::process::id()));
-        let path = dir.join("library.automerge");
-        let mut d = AutoCommit::new();
-        let lib = seed::sample_library();
-        doc::seed(&mut d, &lib, &seed::sample_playback(&lib));
-        save_to(&path, &mut d).expect("save");
-
-        let loaded = load_from(&path).expect("load");
-        assert_eq!(doc::load_library(&loaded).total_tracks(), lib.tracks.len());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_missing_is_none() {
-        let path = std::env::temp_dir().join("qos-music-nonexistent-xyz.automerge");
-        assert!(load_from(&path).is_none());
-    }
 
     #[test]
     fn device_profile_round_trips_locally_and_forces_paused_resume() {
-        let dir = std::env::temp_dir().join(format!("qos-music-profile-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-music-profile-{}", std::process::id()));
         let path = dir.join("device-profile.json");
         let mut profile = DeviceProfile::default();
         profile.cache.insert("tk_g1".into(), CacheState::Cached);
@@ -508,7 +440,7 @@ mod tests {
 
     #[test]
     fn media_cache_is_atomic_content_addressed_and_survives_reload() {
-        let root = std::env::temp_dir().join(format!("qos-music-media-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tilo-music-media-{}", std::process::id()));
         let mut cache = MediaCache::default();
         cache
             .install_bytes(&root, "track-a", b"real media bytes", 1024)
@@ -530,7 +462,7 @@ mod tests {
     #[test]
     fn media_cache_evicts_oldest_object_before_publishing_over_quota() {
         let root =
-            std::env::temp_dir().join(format!("qos-music-media-evict-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tilo-music-media-evict-{}", std::process::id()));
         let mut cache = MediaCache::default();
         cache
             .install_bytes(&root, "old", b"1234", 6)
@@ -551,7 +483,7 @@ mod tests {
     #[test]
     fn media_cache_rejects_same_size_corruption_before_playback() {
         let root =
-            std::env::temp_dir().join(format!("qos-music-media-same-size-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tilo-music-media-same-size-{}", std::process::id()));
         let mut cache = MediaCache::default();
         cache
             .install_bytes(&root, "track-a", b"real media bytes", 1024)
@@ -566,7 +498,7 @@ mod tests {
     #[test]
     fn media_cache_rejects_malicious_manifest_content_path() {
         let root =
-            std::env::temp_dir().join(format!("qos-music-media-malicious-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tilo-music-media-malicious-{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("root");
         let manifest = serde_json::json!({
             "entries": {

@@ -1,0 +1,45 @@
+[Unit]
+Description=Tilo first-boot user creation (from custom installer)
+# Only runs if the custom installer seeded a credential file.
+ConditionPathExists=/etc/tilo/install-user.conf
+After=local-fs.target
+# Must finish before the login greeter so the new account is loginable.
+Before=greetd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tilo-firstboot-user
+TimeoutStartSec=30
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+KeyringMode=private
+# useradd/chpasswd need to create and own the home and atomically replace the
+# local account databases, but they do not need mount, network, module, raw-I/O,
+# reboot, or audit-control authority.
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @debug @keyring @module @mount @network-io @obsolete @raw-io @reboot @resources @swap
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

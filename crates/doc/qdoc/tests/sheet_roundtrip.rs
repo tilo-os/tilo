@@ -21,8 +21,6 @@ use std::io::{Cursor, Read, Write};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-// ---- ZIP helpers -----------------------------------------------------------
-
 /// Build a ZIP (deflated) from `(name, bytes)` entries — a genuine OPC/ODF package.
 #[allow(
     clippy::unwrap_used,
@@ -49,8 +47,6 @@ fn imp(codec: &dyn SheetProvider, bytes: &[u8]) -> Workbook {
         .expect("import into workbook model");
     wb
 }
-
-// ---- genuine .xlsx fixture -------------------------------------------------
 
 /// A real two-sheet `.xlsx` exercising every modeled cell kind: a number, an
 /// inline string, a formula (with cached result), and a **shared string** (t="s"
@@ -83,8 +79,6 @@ fn sample_xlsx() -> Vec<u8> {
     ])
 }
 
-// ---- genuine .ods fixture --------------------------------------------------
-
 fn sample_ods() -> Vec<u8> {
     let content = br#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:spreadsheet><table:table table:name="Budget"><table:table-column table:number-columns-repeated="2"/><table:table-row><table:table-cell office:value-type="float" office:value="10"><text:p>10</text:p></table:table-cell><table:table-cell office:value-type="string"><text:p>Hello</text:p></table:table-cell></table:table-row><table:table-row><table:table-cell office:value-type="float" office:value="20" table:formula="of:=[.A1]*2"><text:p>20</text:p></table:table-cell></table:table-row></table:table><table:table table:name="Data"><table:table-row><table:table-cell office:value-type="string"><text:p>Region</text:p></table:table-cell><table:table-cell office:value-type="float" office:value="42"><text:p>42</text:p></table:table-cell><table:table-cell office:value-type="float" office:value="43" table:formula="of:=[.B1]+1"><text:p>43</text:p></table:table-cell></table:table-row></table:table></office:spreadsheet></office:body></office:document-content>"#.to_vec();
@@ -99,8 +93,6 @@ fn sample_ods() -> Vec<u8> {
         ("META-INF/manifest.xml", manifest),
     ])
 }
-
-// ---- shared structural assertions ------------------------------------------
 
 /// The invariant both fixtures encode: two sheets (Budget, Data), a number, an
 /// inline/plain string, and TWO formulas whose sources survive verbatim.
@@ -158,8 +150,6 @@ fn assert_sample(snap: &WorkbookSnapshot, fmt: &str, a2_formula: &str, formula_c
     );
 }
 
-// ---- 1. parse genuine files into the CRDT model ----------------------------
-
 #[test]
 fn xlsx_parses_real_file_into_crdt_model() {
     let wb = imp(&XlsxCodec, &sample_xlsx());
@@ -171,8 +161,6 @@ fn ods_parses_real_file_into_crdt_model() {
     let wb = imp(&OdsCodec, &sample_ods());
     assert_sample(&wb.materialize(), "ods", "of:=[.A1]*2", "of:=[.B1]+1");
 }
-
-// ---- 2. serialize back and reopen — formulas + cells survive ---------------
 
 #[test]
 fn xlsx_roundtrips_cells_types_and_formulas() {
@@ -242,13 +230,10 @@ fn ods_roundtrips_cells_types_and_formulas() {
     );
 }
 
-// ---- 3. edit as a CRDT op, serialize, reopen -------------------------------
-
 #[test]
 fn xlsx_edit_as_crdt_op_survives_reopen() {
     let mut wb = imp(&XlsxCodec, &sample_xlsx());
     let budget = wb.sheet_ids_in_order()[0].clone();
-    // A CRDT cell edit + a brand-new formula cell.
     wb.set_cell(&budget, "A1", CellInput::number("15"));
     wb.set_cell(
         &budget,
@@ -271,11 +256,8 @@ fn xlsx_edit_as_crdt_op_survives_reopen() {
         Some("SUM(A1:A2)"),
         "new formula survived reopen"
     );
-    // Untouched cells stayed.
     assert_eq!(b.cell("B1").unwrap().value, "Hello");
 }
-
-// ---- 4. security: untrusted-input hardening (shared with the doc codecs) ----
 
 #[test]
 fn xxe_dtd_is_rejected_in_both_spreadsheet_formats() {
@@ -349,8 +331,6 @@ fn garbage_input_is_rejected_cleanly() {
     assert!(XlsxCodec.import(b"not a zip at all", &mut wb).is_err());
     assert!(OdsCodec.import(&[0xff, 0x00, 0x13, 0x37], &mut wb).is_err());
 }
-
-// ---- 5. performance: large workbook parse + serialize ----------------------
 
 /// A workbook of several sheets × hundreds of formula cells, exported +
 /// reimported for both formats under a generous bound — a guard against a future

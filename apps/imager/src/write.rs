@@ -1,8 +1,8 @@
-//! The write / verify seam — the real, destructive work, safely gated.
+//! The write / verify seam for destructive work, safely gated.
 //!
 //! Writing a disk image onto a block device is **destructive** and needs
 //! privileged raw access. This module is the single choke point where that
-//! work happens. It ships a **real** streaming copy + read-back verify
+//! work happens. It ships a streaming copy + read-back verify
 //! engine ([`stream_copy`], [`verify_readback`], [`run_job_paths`]) — the
 //! exact byte loop that flashes a USB stick — and three independent safety
 //! gates in front of the block device:
@@ -19,7 +19,7 @@
 //!
 //! 3. **Capacity + fit checks** ([`WriteRequest`] / [`TargetDrive::fits`]).
 //!
-//! The engine is exercised in tests against **temp files** (a real copy +
+//! The engine is exercised in tests against **temp files** (a copy +
 //! verify, byte-for-byte) — never a block device — so the production loop is
 //! proven without any risk to hardware.
 
@@ -31,6 +31,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+use std::time::Instant;
 
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceIdentity, TargetDrive,
@@ -41,12 +43,7 @@ use sha2::{Digest, Sha256};
 /// to keep the device busy, small enough to report smooth progress.
 pub const CHUNK: usize = 4 * 1024 * 1024;
 
-/// Fixed block at the end of a flashed device carrying a secret-free profile.
-/// Keeping it outside the image partitions makes the handoff identical on
-/// Linux, macOS and Windows and lets the live medium read it before touching
-/// any target disk.
-pub const PROFILE_BLOCK_SIZE: usize = 64 * 1024;
-pub const PROFILE_MAGIC: &str = "QOS_INSTALL_PROFILE_V1";
+pub use crate::profile::{PROFILE_BLOCK_SIZE, PROFILE_MAGIC};
 
 /// Outcome of asking to start a job.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +60,7 @@ pub enum JobStart {
     /// Refused — the image is larger than the target drive.
     TooSmall,
     /// Refused because desktop imaging is restricted to external media. The
-    /// booted qOS installer owns internal-disk and dual-boot installation.
+    /// booted Tilo installer owns internal-disk and dual-boot installation.
     UnsafeTarget,
     /// Refused before any I/O because an installable image's embedded profile
     /// would be rejected by the live installer.
@@ -93,7 +90,7 @@ impl WriteBackend {
     /// helper, while tests and shots remain disabled.
     pub fn system() -> Self {
         if cfg!(all(target_os = "linux", feature = "flatpak-media-writer"))
-            && std::env::var("QOS_IMAGER_FLATPAK").as_deref() == Ok("1")
+            && std::env::var("TILO_IMAGER_FLATPAK").as_deref() == Ok("1")
         {
             WriteBackend::Udisks2
         } else if allow_write() {
@@ -118,17 +115,17 @@ impl WriteBackend {
 /// Whether the running process has a real raw-media write path.
 ///
 /// The live application normally returns `true` because it authenticates a
-/// narrow privileged helper at write time. `QOS_IMAGER_ALLOW_WRITE` is only
+/// narrow privileged helper at write time. `TILO_IMAGER_ALLOW_WRITE` is only
 /// the explicit diagnostic opt-in for writing directly in this process.
 pub fn write_available() -> bool {
     WriteBackend::system().is_available()
 }
 
-/// The env allow-gate. `QOS_IMAGER_ALLOW_WRITE=1` is the single switch that
+/// The env allow-gate. `TILO_IMAGER_ALLOW_WRITE=1` is the single switch that
 /// lets a real block-device write happen; unset (the default) keeps every
-/// path unavailable. Modelled on the VPN app's `QOS_VPN_ALLOW_EXEC`.
+/// path unavailable. Modelled on the VPN app's `TILO_VPN_ALLOW_EXEC`.
 pub fn allow_write() -> bool {
-    std::env::var("QOS_IMAGER_ALLOW_WRITE").as_deref() == Ok("1")
+    std::env::var("TILO_IMAGER_ALLOW_WRITE").as_deref() == Ok("1")
 }
 
 /// A validated request to write `source` to `target` using `action`
@@ -196,94 +193,8 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
     JobStart::Started
 }
 
-/// Encode the on-media profile block. The compact JSON contains no secrets;
-/// SHA-256 detects incomplete writes and accidental corruption. It is not an
-/// authenticity claim: the installer treats every field as untrusted input,
-/// validates it, and displays the result again on Review.
-///
-/// # Errors
-///
-/// Returns an error if the profile cannot be serialized or does not fit in the
-/// reserved block.
-pub fn encode_profile_block(profile: &InstallProfile) -> io::Result<Vec<u8>> {
-    profile
-        .validate_media_profile()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let payload = profile
-        .to_media_profile_json()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let digest = format!("{:x}", Sha256::digest(&payload));
-    let header = format!("{PROFILE_MAGIC}\n{digest}\n{}\n", payload.len());
-    if header.len() + payload.len() > PROFILE_BLOCK_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "installation profile exceeds reserved media block",
-        ));
-    }
-    let mut block = vec![0u8; PROFILE_BLOCK_SIZE];
-    let payload_at = header.len();
-    block
-        .get_mut(..payload_at)
-        .ok_or_else(|| io::Error::other("installation profile header is out of bounds"))?
-        .copy_from_slice(header.as_bytes());
-    block
-        .get_mut(payload_at..payload_at + payload.len())
-        .ok_or_else(|| io::Error::other("installation profile payload is out of bounds"))?
-        .copy_from_slice(&payload);
-    Ok(block)
-}
-
-/// Write and read back the complete profile block at the device tail.
-///
-/// # Errors
-///
-/// Returns an error if the target is too small, cannot be opened or written,
-/// or if the complete read-back differs from the encoded profile block.
-pub fn write_profile_block(
-    dst: &Path,
-    target_size: u64,
-    profile: &InstallProfile,
-) -> io::Result<()> {
-    write_profile_block_bound(dst, target_size, profile, &|| false)
-}
-
-fn write_profile_block_bound(
-    dst: &Path,
-    target_size: u64,
-    profile: &InstallProfile,
-    should_cancel: &impl Fn() -> bool,
-) -> io::Result<()> {
-    if should_cancel() {
-        return Err(cancelled_error());
-    }
-    let block = encode_profile_block(profile)?;
-    let offset = target_size
-        .checked_sub(PROFILE_BLOCK_SIZE as u64)
-        .ok_or_else(|| io::Error::other("target is too small for installation profile"))?;
-    let mut device = OpenOptions::new().read(true).write(true).open(dst)?;
-    if should_cancel() {
-        return Err(cancelled_error());
-    }
-    device.seek(SeekFrom::Start(offset))?;
-    device.write_all(&block)?;
-    device.flush()?;
-    device.sync_all()?;
-    if should_cancel() {
-        return Err(cancelled_error());
-    }
-    let mut actual = vec![0u8; PROFILE_BLOCK_SIZE];
-    device.seek(SeekFrom::Start(offset))?;
-    read_exact_fill(&mut device, &mut actual)?;
-    if actual != block {
-        return Err(io::Error::other(
-            "installation profile read-back did not match",
-        ));
-    }
-    if should_cancel() {
-        return Err(cancelled_error());
-    }
-    Ok(())
-}
+use crate::profile::write_profile_block_bound;
+pub use crate::profile::{encode_profile_block, write_profile_block};
 
 /// The terminal result of running a job to completion.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -388,7 +299,7 @@ fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
         {
             Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
-                "another qOS Imager helper is already using this drive",
+                "another Tilo Imager helper is already using this drive",
             ))
         } else {
             Err(error)
@@ -402,9 +313,9 @@ fn acquire_target_write_lock(target: &TargetDrive) -> io::Result<TargetWriteLock
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     #[cfg(target_os = "linux")]
-    let directory = Path::new("/run/lock/qos-imager");
+    let directory = Path::new("/run/lock/tilo-imager");
     #[cfg(not(target_os = "linux"))]
-    let directory = Path::new("/var/run/qos-imager");
+    let directory = Path::new("/var/run/tilo-imager");
 
     if !directory.exists() {
         std::fs::create_dir(directory)?;
@@ -417,7 +328,7 @@ fn acquire_target_write_lock(target: &TargetDrive) -> io::Result<TargetWriteLock
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "the privileged qOS Imager lock directory is not root-owned and private",
+            "the privileged Tilo Imager lock directory is not root-owned and private",
         ));
     }
     try_lock_file(&directory.join(target_lock_name(target)))
@@ -453,7 +364,7 @@ unsafe extern "system" {
 #[cfg(target_os = "windows")]
 fn acquire_target_write_lock(target: &TargetDrive) -> io::Result<TargetWriteLock> {
     const ERROR_ALREADY_EXISTS: u32 = 183;
-    let name = format!("Global\\qOS-Imager-target-{}", target_lock_name(target));
+    let name = format!("Global\\Tilo-Imager-target-{}", target_lock_name(target));
     let wide = name
         .encode_utf16()
         .chain(std::iter::once(0))
@@ -468,7 +379,7 @@ fn acquire_target_write_lock(target: &TargetDrive) -> io::Result<TargetWriteLock
         }
         return Err(io::Error::new(
             io::ErrorKind::WouldBlock,
-            "another qOS Imager helper is already using this drive",
+            "another Tilo Imager helper is already using this drive",
         ));
     }
     Ok(TargetWriteLock(handle))
@@ -857,7 +768,12 @@ fn run_job_file_bound(
         Ok(metadata) => metadata,
         Err(error) => return JobResult::WriteFailed(error.to_string()),
     };
-    if !metadata.is_file() || metadata.len() != req.source.size {
+    if !metadata.is_file()
+        || metadata.len() != req.source.size
+        || req.source.identity.is_some_and(|expected| {
+            SourceIdentity::from_file(&source).ok().flatten() != Some(expected)
+        })
+    {
         return JobResult::WriteFailed("source image changed after review".into());
     }
     if let Some(expected) = req.source.identity {
@@ -1247,7 +1163,7 @@ fn run_udisks_job(
     result
 }
 
-const WRITE_HELPER_ARG: &str = "--qos-write-helper";
+const WRITE_HELPER_ARG: &str = "--tilo-write-helper";
 
 // `Start-Process` flattens its `ArgumentList` into a native command line. A
 // literal double quote must therefore surround each path so spaces remain in
@@ -1255,7 +1171,7 @@ const WRITE_HELPER_ARG: &str = "--qos-write-helper";
 // single-quoted `'"'` is exactly one double-quote character; `\"` would be a
 // backslash followed by a quote and would not group the path.
 #[cfg(any(test, target_os = "windows"))]
-const WINDOWS_ELEVATION_SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] -Verb RunAs -Wait -PassThru -ArgumentList @('--qos-write-helper', ('"' + $args[1] + '"'), ('"' + $args[2] + '"'), $args[3], ('"' + $args[4] + '"')); exit $p.ExitCode"#;
+const WINDOWS_ELEVATION_SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] -Verb RunAs -Wait -PassThru -ArgumentList @('--tilo-write-helper', ('"' + $args[1] + '"'), ('"' + $args[2] + '"'), $args[3], ('"' + $args[4] + '"')); exit $p.ExitCode"#;
 
 /// Execute the privileged helper mode when `args` requests it. This is called
 /// before the windowing runtime is initialized.
@@ -1346,7 +1262,7 @@ fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> io::
         || !request_parent
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("qos-imager-write-"))
+            .is_some_and(|name| name.starts_with("tilo-imager-write-"))
     {
         return Err(io::Error::other(
             "write helper paths are outside its private job directory",
@@ -1384,7 +1300,7 @@ fn run_privileged_helper(
     tx: &Sender<Progress>,
 ) -> io::Result<()> {
     let work = tempfile::Builder::new()
-        .prefix("qos-imager-write-")
+        .prefix("tilo-imager-write-")
         .tempdir()?;
     let request_path = work.path().join("request.json");
     let progress_path = work.path().join("progress.jsonl");
@@ -1413,7 +1329,7 @@ fn run_privileged_helper(
 
 fn helper_executable() -> io::Result<std::path::PathBuf> {
     #[cfg(target_os = "linux")]
-    if let Some(appimage) = std::env::var_os("QOS_IMAGER_APPIMAGE") {
+    if let Some(appimage) = std::env::var_os("TILO_IMAGER_APPIMAGE") {
         let path = std::path::PathBuf::from(appimage);
         if path.is_absolute() && path.is_file() {
             return Ok(path);
@@ -1578,7 +1494,7 @@ fn elevated_helper_command(
     cancel: &Path,
 ) -> io::Result<Command> {
     const SCRIPT: &str = r#"on run argv
-set helperCommand to quoted form of item 1 of argv & " --qos-write-helper " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv & " " & quoted form of item 4 of argv & " " & quoted form of item 5 of argv
+set helperCommand to quoted form of item 1 of argv & " --tilo-write-helper " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv & " " & quoted form of item 4 of argv & " " & quoted form of item 5 of argv
 do shell script helperCommand with administrator privileges
 end run"#;
     let mut command = Command::new("osascript");
@@ -1670,9 +1586,17 @@ fn target_identity_matches(selected: &TargetDrive, current: &TargetDrive) -> boo
 
 #[cfg(target_os = "linux")]
 fn prepare_target(target: &TargetDrive) -> io::Result<()> {
-    let out = std::process::Command::new("lsblk")
-        .args(["-lnpo", "NAME,MOUNTPOINT", &target.dev_path()])
-        .output()?;
+    const PREPARE_OUTPUT_LIMIT: usize = 1024 * 1024;
+    const PREPARE_TIMEOUT: Duration = Duration::from_secs(10);
+    let device_path = target.dev_path();
+    let out = bounded_command::run(
+        "lsblk",
+        &["-lnpo", "NAME,MOUNTPOINT", &device_path],
+        None,
+        PREPARE_OUTPUT_LIMIT,
+        PREPARE_TIMEOUT,
+    )
+    .map_err(|error| io::Error::other(format!("lsblk probe failed: {error}")))?;
     if !out.status.success() {
         return Err(io::Error::other("lsblk could not inspect mount state"));
     }
@@ -1682,8 +1606,15 @@ fn prepare_target(target: &TargetDrive) -> io::Result<()> {
             continue;
         };
         if fields.next().is_some() {
-            let status = std::process::Command::new("umount").arg(device).status()?;
-            if !status.success() {
+            let out = bounded_command::run(
+                "umount",
+                &[device],
+                None,
+                PREPARE_OUTPUT_LIMIT,
+                PREPARE_TIMEOUT,
+            )
+            .map_err(|error| io::Error::other(format!("unmount failed: {error}")))?;
+            if !out.status.success() {
                 return Err(io::Error::other(format!("failed to unmount {device}")));
             }
         }
@@ -1693,9 +1624,9 @@ fn prepare_target(target: &TargetDrive) -> io::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn prepare_target(target: &TargetDrive) -> io::Result<()> {
-    let status = std::process::Command::new("diskutil")
-        .args(["unmountDisk", &format!("/dev/{}", target.name)])
-        .status()?;
+    let mut command = Command::new("diskutil");
+    command.args(["unmountDisk", &format!("/dev/{}", target.name)]);
+    let status = run_finite_status(command, Duration::from_secs(10))?;
     status
         .success()
         .then_some(())
@@ -1709,9 +1640,9 @@ fn prepare_target(target: &TargetDrive) -> io::Result<()> {
         .strip_prefix("PhysicalDrive")
         .ok_or_else(|| io::Error::other("invalid Windows physical-drive name"))?;
     let script = format!("Set-Disk -Number {number} -IsOffline $true -ErrorAction Stop");
-    let status = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .status()?;
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    let status = run_finite_status(command, Duration::from_secs(10))?;
     status
         .success()
         .then_some(())
@@ -1732,9 +1663,9 @@ fn finish_target(target: &TargetDrive, result: &JobResult) {
     // also the safe state for another raw-write attempt. Successful media is
     // ejected so it can be removed immediately.
     if macos_should_eject(result) {
-        let _ = std::process::Command::new("diskutil")
-            .args(["eject", &format!("/dev/{}", target.name)])
-            .status();
+        let mut command = Command::new("diskutil");
+        command.args(["eject", &format!("/dev/{}", target.name)]);
+        let _ = run_finite_status(command, Duration::from_secs(10));
     }
 }
 
@@ -1750,9 +1681,38 @@ fn finish_target(target: &TargetDrive, _result: &JobResult) {
     if let Some(number) = target.name.strip_prefix("PhysicalDrive") {
         let script =
             format!("Set-Disk -Number {number} -IsOffline $false -ErrorAction SilentlyContinue");
-        let _ = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .status();
+        let mut command = Command::new("powershell.exe");
+        command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        let _ = run_finite_status(command, Duration::from_secs(10));
+    }
+}
+
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+fn run_finite_status(
+    mut command: Command,
+    timeout: Duration,
+) -> io::Result<std::process::ExitStatus> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = command.spawn()?;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "platform media command timed out",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -1873,7 +1833,7 @@ mod tests {
     fn default_backend_is_disabled_without_gate() {
         let _g = ENV_LOCK.lock().unwrap();
         // No opt-in env var set → unavailable, never a fake success.
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
         unsafe { std::env::remove_var("IMAGER_LIVE") };
         assert_eq!(WriteBackend::system(), WriteBackend::Disabled);
         assert!(!allow_write());
@@ -1883,7 +1843,7 @@ mod tests {
     #[cfg(feature = "host-media-writer")]
     fn packaged_host_build_enables_the_short_lived_helper_without_an_environment_flag() {
         let _g = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
         unsafe { std::env::remove_var("IMAGER_LIVE") };
         assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
         assert!(write_available());
@@ -1892,7 +1852,7 @@ mod tests {
     #[test]
     fn live_ui_uses_short_lived_privileged_helper() {
         let _g = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
         unsafe { std::env::set_var("IMAGER_LIVE", "1") };
         assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
         assert!(write_available());
@@ -1903,12 +1863,12 @@ mod tests {
     #[test]
     fn flatpak_selects_udisks_without_enabling_direct_device_writes() {
         let _g = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
         unsafe { std::env::remove_var("IMAGER_LIVE") };
-        unsafe { std::env::set_var("QOS_IMAGER_FLATPAK", "1") };
+        unsafe { std::env::set_var("TILO_IMAGER_FLATPAK", "1") };
         assert_eq!(WriteBackend::system(), WriteBackend::Udisks2);
         assert!(!allow_write(), "the sandbox never gains direct /dev access");
-        unsafe { std::env::remove_var("QOS_IMAGER_FLATPAK") };
+        unsafe { std::env::remove_var("TILO_IMAGER_FLATPAK") };
     }
 
     #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
@@ -1938,10 +1898,10 @@ mod tests {
         // The real block-device backend is chosen ONLY when the operator opts
         // in explicitly; flipping the gate is the single switch between the
         // disabled path and the real device write.
-        unsafe { std::env::set_var("QOS_IMAGER_ALLOW_WRITE", "1") };
+        unsafe { std::env::set_var("TILO_IMAGER_ALLOW_WRITE", "1") };
         assert!(allow_write());
         assert_eq!(WriteBackend::system(), WriteBackend::System);
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
         let expected = if cfg!(feature = "host-media-writer") {
             WriteBackend::PrivilegedHelper
         } else {
@@ -1965,7 +1925,7 @@ mod tests {
     #[test]
     fn helper_rejects_a_request_changed_after_authorization() {
         let work = tempfile::Builder::new()
-            .prefix("qos-imager-write-")
+            .prefix("tilo-imager-write-")
             .tempdir()
             .unwrap();
         let request_path = work.path().join("request.json");
@@ -1989,7 +1949,7 @@ mod tests {
     #[test]
     fn helper_never_follows_or_overwrites_a_planted_progress_path() {
         let work = tempfile::Builder::new()
-            .prefix("qos-imager-write-")
+            .prefix("tilo-imager-write-")
             .tempdir()
             .unwrap();
         let progress_path = work.path().join("progress.jsonl");
@@ -2002,7 +1962,7 @@ mod tests {
     #[test]
     fn cancellation_marker_is_separate_from_digest_bound_request() {
         let work = tempfile::Builder::new()
-            .prefix("qos-imager-write-")
+            .prefix("tilo-imager-write-")
             .tempdir()
             .unwrap();
         let request_path = work.path().join("request.json");
@@ -2027,7 +1987,7 @@ mod tests {
     #[test]
     fn failed_cancellation_delivery_remains_retryable() {
         let work = tempfile::tempdir().unwrap();
-        let job_dir = work.path().join("qos-imager-write-retry");
+        let job_dir = work.path().join("tilo-imager-write-retry");
         let cancel_path = job_dir.join("cancel");
         let control = JobControl::new();
         control.cancel();
@@ -2067,10 +2027,22 @@ mod tests {
         assert!(child.try_wait().unwrap().is_some());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn finite_platform_command_is_reaped_at_its_deadline() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 10"]);
+        let started = Instant::now();
+        let error = run_finite_status(command, Duration::from_millis(20)).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
     #[test]
     fn helper_rejects_cancellation_marker_outside_private_job_directory() {
         let work = tempfile::Builder::new()
-            .prefix("qos-imager-write-")
+            .prefix("tilo-imager-write-")
             .tempdir()
             .unwrap();
         let outside = tempfile::tempdir().unwrap();
@@ -2095,7 +2067,7 @@ mod tests {
     #[test]
     fn linux_elevates_only_the_hidden_helper_mode() {
         let command = elevated_helper_command(
-            Path::new("/opt/qos-imager-bin"),
+            Path::new("/opt/tilo-imager-bin"),
             Path::new("/tmp/request"),
             Path::new("/tmp/progress"),
             &"a".repeat(64),
@@ -2104,7 +2076,7 @@ mod tests {
         .unwrap();
         assert_eq!(command.get_program(), "pkexec");
         let args: Vec<_> = command.get_args().collect();
-        assert_eq!(args[0], "/opt/qos-imager-bin");
+        assert_eq!(args[0], "/opt/tilo-imager-bin");
         assert_eq!(args[1], WRITE_HELPER_ARG);
         assert_eq!(args.len(), 6);
     }
@@ -2235,11 +2207,11 @@ mod tests {
         write_profile_block(&media, PROFILE_BLOCK_SIZE as u64 * 2, &profile).unwrap();
 
         let extractor = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../os/usr/libexec/qos-installer-profile-extract");
+            .join("../../os/usr/libexec/tilo-installer-profile-extract");
         let status = std::process::Command::new(extractor)
-            .env("QOS_INSTALLER_PROFILE_DEVICE", &media)
-            .env("QOS_INSTALLER_PROFILE_ALLOW_FILE", "1")
-            .env("QOS_INSTALLER_PROFILE_OUT_DIR", &out)
+            .env("TILO_INSTALLER_PROFILE_DEVICE", &media)
+            .env("TILO_INSTALLER_PROFILE_ALLOW_FILE", "1")
+            .env("TILO_INSTALLER_PROFILE_OUT_DIR", &out)
             .status()
             .unwrap();
         assert!(status.success());
@@ -2261,7 +2233,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         // Validation remains pure, but the live start refuses rather than
         // reporting synthetic progress and success.
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
         unsafe { std::env::remove_var("IMAGER_LIVE") };
         let r = req();
         assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
@@ -2380,6 +2352,7 @@ mod tests {
         request.source.size = data.len() as u64;
         request.source.identity = SourceIdentity::from_file(source.as_file()).unwrap();
         request.source.installable = true;
+        request.source.expected_sha256 = None;
         request.target.size = target_size;
 
         let mut phases = Vec::new();
@@ -2477,7 +2450,7 @@ mod tests {
     #[test]
     fn target_revalidation_failure_still_reports_an_actionable_terminal_event() {
         let mut request = req();
-        request.target.name = "qos-test-device-that-cannot-exist".into();
+        request.target.name = "tilo-test-device-that-cannot-exist".into();
         let mut updates = Vec::new();
 
         let result = run_system_job(&request, &|| false, |progress| updates.push(progress));

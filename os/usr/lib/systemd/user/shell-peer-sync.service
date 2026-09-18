@@ -1,6 +1,6 @@
 [Unit]
-Description=qOS Iroh peer-sync legacy compatibility marker
-Documentation=file:///usr/share/doc/qos/peer-sync.md
+Description=Tilo Iroh peer-sync legacy compatibility marker
+Documentation=file:///usr/share/doc/tilo/peer-sync.md
 # Normal sessions now start peer sync directly. Keep this independent from
 # graphical-session.target only for upgraded installations that enabled the
 # former marker unit.
@@ -13,12 +13,12 @@ After=graphical-session-pre.target
 Type=oneshot
 RemainAfterExit=yes
 # Marker path mirrors what the `shell` binary actually reads
-# (see `shell/src/compositor/mod.rs::XdgConfigMarkerSource`):
-# `$XDG_CONFIG_HOME/quick-desktop/peer-sync.enabled` with a fallback
-# to `~/.config/quick-desktop/peer-sync.enabled`. Persistent across
+# (see `crates/session/shell/src/compositor/mod.rs::XdgConfigMarkerSource`):
+# `$XDG_CONFIG_HOME/tilo-desktop/peer-sync.enabled` with a fallback
+# to `~/.config/tilo-desktop/peer-sync.enabled`. Persistent across
 # reboots for compatibility with earlier releases.
-ExecStart=/usr/bin/sh -c 'XDG="${XDG_CONFIG_HOME:-$HOME/.config}"; mkdir -p "$XDG/quick-desktop" && touch "$XDG/quick-desktop/peer-sync.enabled"'
-ExecStop=/usr/bin/sh -c 'XDG="${XDG_CONFIG_HOME:-$HOME/.config}"; rm -f "$XDG/quick-desktop/peer-sync.enabled"'
+ExecStart=/usr/bin/sh -c 'XDG="${XDG_CONFIG_HOME:-$HOME/.config}"; mkdir -p "$XDG/tilo-desktop" && touch "$XDG/tilo-desktop/peer-sync.enabled"'
+ExecStop=/usr/bin/sh -c 'XDG="${XDG_CONFIG_HOME:-$HOME/.config}"; rm -f "$XDG/tilo-desktop/peer-sync.enabled"'
 
 [Install]
 # Keep the historical install target for already-enabled user units.

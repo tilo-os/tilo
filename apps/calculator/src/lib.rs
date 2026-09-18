@@ -1,8 +1,8 @@
-//! Calculator — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! Calculator — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! An everyday scientific calculator that also does proper 2D and 3D
 //! graphing. Durable artifacts (history and plotted functions) live in an
-//! Automerge document so undo/redo and live collaboration come for free;
+//! Automerge document so undo/redo and live collaboration use the same state;
 //! per-window expression, selection, angle unit, and camera state stay local.
 //! The panels are custom Vello-drawn widgets.
 //!
@@ -54,15 +54,14 @@ pub use app::CalculatorApp;
 
 use ui::widget::Widget;
 
-/// Build the live app's root widget tree: boots EMPTY in Calculator mode.
+/// Build the live app's root widget tree in Calculator mode.
 /// Any persisted state is adopted from the CRDT on the first sync.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(CalculatorApp::new())
 }
 
-/// Build a lived-in root for the headless `--shots` renderer and demos: a
-/// populated calculator + graphs. This is the ONLY path that seeds sample
-/// content; the live [`app_root`] never does.
+/// Build a seeded root for the headless `--shots` renderer and demos. This is
+/// the path that seeds sample content; the live [`app_root`] does not.
 pub fn app_root_offline() -> Box<dyn Widget> {
     Box::new(CalculatorApp::seeded())
 }

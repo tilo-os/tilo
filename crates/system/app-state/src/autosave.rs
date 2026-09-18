@@ -454,6 +454,7 @@ fn commit(pending: &mut Option<Pending>, store: &DocStore, status: &Status) -> R
         {
             return Err(error);
         }
+        let started = Instant::now();
         let result = if pending.full {
             store.write_full(&pending.bytes)
         } else {
@@ -462,12 +463,21 @@ fn commit(pending: &mut Option<Pending>, store: &DocStore, status: &Status) -> R
         let mut state = status_lock(status);
         match result {
             Ok(()) => {
+                tracing::debug!(
+                    target: "tilo.state",
+                    event = "document_persist",
+                    kind = if pending.full { "full" } else { "append" },
+                    bytes = pending.bytes.len(),
+                    elapsed_us = started.elapsed().as_micros(),
+                    "persisted application document"
+                );
                 state.snapshot.durable_heads = Some(pending.heads);
                 if pending.checkpoint {
                     state.snapshot.error = None;
                 }
             }
             Err(e) => {
+                tracing::error!(error = %e, "app state write failed");
                 state.snapshot.error = Some(e.to_string());
             }
         }
@@ -573,7 +583,7 @@ mod tests {
     #[test]
     fn canonical_initial_spawn_failure_and_duplicate_handle_keep_gate() {
         let tmp = TempDir::new().unwrap();
-        let store = Arc::new(DocStore::open_canonical_at("dev.qos.test", tmp.path()).unwrap());
+        let store = Arc::new(DocStore::open_canonical_at("dev.tilo.test", tmp.path()).unwrap());
         store
             .faults
             .spawn_failures
@@ -584,8 +594,8 @@ mod tests {
         ));
         assert_eq!(Arc::strong_count(&store), 1);
         assert!(!store.document.exists());
-        assert!(DocStore::open_canonical_at("dev.qos.test", tmp.path()).is_err());
-        assert!(DocStore::open_in("dev.qos.test", tmp.path().to_path_buf()).is_err());
+        assert!(DocStore::open_canonical_at("dev.tilo.test", tmp.path()).is_err());
+        assert!(DocStore::open_in("dev.tilo.test", tmp.path().to_path_buf()).is_err());
         let saver = Autosave::try_spawn_canonical(&store, DEFAULT_DEBOUNCE).unwrap();
         assert!(matches!(
             Autosave::try_spawn_canonical(&store, DEFAULT_DEBOUNCE),
@@ -599,7 +609,7 @@ mod tests {
     fn canonical_worker_death_joins_before_restart_and_retains_latest_edits() {
         for unwind in [false, true] {
             let tmp = TempDir::new().unwrap();
-            let store = Arc::new(DocStore::open_canonical_at("dev.qos.test", tmp.path()).unwrap());
+            let store = Arc::new(DocStore::open_canonical_at("dev.tilo.test", tmp.path()).unwrap());
             let mut doc = store.new_canonical_document().unwrap();
             doc.put(ROOT, "body", "original").unwrap();
             let mut saver =
@@ -629,7 +639,7 @@ mod tests {
             assert_eq!(saver.durability_snapshot().durable_heads, durable);
             assert!(saver.last_error().is_some());
             assert!(Autosave::try_spawn_canonical(&store, DEFAULT_DEBOUNCE).is_err());
-            assert!(DocStore::open_canonical_at("dev.qos.test", tmp.path()).is_err());
+            assert!(DocStore::open_canonical_at("dev.tilo.test", tmp.path()).is_err());
             release.send(()).unwrap();
             while !saver.join.as_ref().unwrap().is_finished() {
                 thread::yield_now();
@@ -665,7 +675,7 @@ mod tests {
             );
             drop(saver);
             drop(store);
-            let mut store = DocStore::open_canonical_at("dev.qos.test", tmp.path()).unwrap();
+            let mut store = DocStore::open_canonical_at("dev.tilo.test", tmp.path()).unwrap();
             let loaded = store.load_canonical().unwrap().unwrap();
             let mut restored = store.accept_canonical(loaded).unwrap();
             assert_eq!(restored.get_heads(), heads);
@@ -679,7 +689,7 @@ mod tests {
     #[test]
     fn canonical_partial_append_failure_requires_full_checkpoint_without_duplicates() {
         let tmp = TempDir::new().unwrap();
-        let store = Arc::new(DocStore::open_canonical_at("dev.qos.test", tmp.path()).unwrap());
+        let store = Arc::new(DocStore::open_canonical_at("dev.tilo.test", tmp.path()).unwrap());
         let mut doc = store.new_canonical_document().unwrap();
         doc.put(ROOT, "body", "original").unwrap();
         let mut saver = Autosave::try_spawn_canonical(&store, Duration::from_secs(600)).unwrap();
@@ -707,7 +717,7 @@ mod tests {
     #[test]
     fn canonical_background_ack_and_older_checkpoint_do_not_save_newer_edits() {
         let tmp = TempDir::new().unwrap();
-        let store = Arc::new(DocStore::open_canonical_at("dev.qos.test", tmp.path()).unwrap());
+        let store = Arc::new(DocStore::open_canonical_at("dev.tilo.test", tmp.path()).unwrap());
         let mut doc = store.new_canonical_document().unwrap();
         let mut saver = Autosave::try_spawn_canonical(&store, Duration::ZERO).unwrap();
         let (reached, ready) = mpsc::channel();
@@ -765,7 +775,7 @@ mod tests {
     #[test]
     fn canonical_failed_flush_retains_error_and_latest_snapshot() {
         let tmp = TempDir::new().unwrap();
-        let store = DocStore::open_canonical_at("dev.qos.test", tmp.path()).unwrap();
+        let store = DocStore::open_canonical_at("dev.tilo.test", tmp.path()).unwrap();
         let mut doc = store.new_canonical_document().unwrap();
         doc.put(ROOT, "body", "first").unwrap();
         let path = store.document_path().to_path_buf();
@@ -799,7 +809,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
         tmp
     }
@@ -808,7 +818,7 @@ mod tests {
     #[serial_test::serial]
     fn a_burst_of_edits_lands_on_disk_after_a_flush() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.autosave").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.autosave").unwrap();
         let mut doc = store.new_document();
         let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         let mut saver = Autosave::spawn(store, Duration::from_millis(50));
@@ -821,7 +831,7 @@ mod tests {
         saver.flush();
         assert_eq!(saver.last_error(), None, "no write may have failed");
 
-        let mut reopened = DocStore::open_for("dev.qos.autosave").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.autosave").unwrap();
         let loaded = reopened.load().unwrap().expect("document on disk");
         let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
         assert_eq!(loaded.text(&body).unwrap(), "persisted");
@@ -831,7 +841,7 @@ mod tests {
     #[serial_test::serial]
     fn dropping_the_handle_flushes() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.autosave-drop").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.autosave-drop").unwrap();
         let mut doc = store.new_document();
         {
             let mut saver = Autosave::spawn(store, Duration::from_secs(600));
@@ -841,7 +851,7 @@ mod tests {
             // Debounce is 10 minutes: only Drop's flush can get this out.
         }
         drop(doc);
-        let mut reopened = DocStore::open_for("dev.qos.autosave-drop").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.autosave-drop").unwrap();
         let loaded = reopened.load().unwrap().expect("document on disk");
         assert!(matches!(loaded.get(&ROOT, "k"), Ok(Some(_))));
     }
@@ -853,7 +863,7 @@ mod tests {
     #[serial_test::serial]
     fn steady_edits_append_rather_than_rewrite() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.autosave-growth").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.autosave-growth").unwrap();
         let mut doc = store.new_document();
         let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         doc.splice_text(&body, 0, 0, "seed").unwrap();
@@ -882,7 +892,7 @@ mod tests {
         assert!(grown > base, "the edits must have reached the file");
 
         drop((saver, doc));
-        let mut reopened = DocStore::open_for("dev.qos.autosave-growth").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.autosave-growth").unwrap();
         let loaded = reopened.load().unwrap().unwrap();
         let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
         assert_eq!(
@@ -897,7 +907,7 @@ mod tests {
     #[serial_test::serial]
     fn the_append_log_is_eventually_compacted() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.autosave-compact").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.autosave-compact").unwrap();
         let mut doc = store.new_document();
         let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         doc.splice_text(&body, 0, 0, "seed").unwrap();
@@ -922,7 +932,7 @@ mod tests {
         assert_eq!(saver.last_error(), None);
 
         drop((saver, doc));
-        let mut reopened = DocStore::open_for("dev.qos.autosave-compact").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.autosave-compact").unwrap();
         let loaded = reopened.load().unwrap().unwrap();
         let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
         assert_eq!(loaded.text(&body).unwrap().chars().count(), 4 + 1200);
