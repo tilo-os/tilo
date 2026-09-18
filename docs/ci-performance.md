@@ -1,9 +1,14 @@
 # CI performance and cache budget
 
-CI has two distinct feedback paths:
+Current deployment and measured startup results are recorded in the
+[emergency runbook](ci-emergency-relief.md). CI has three complementary paths:
 
 - `check.yml` selects affected packages (including reverse dependencies) and
-  balances them across two shards. It is the required per-change path.
+  balances them across up to two shards per native architecture (x86-64 and ARM64).
+  Small selections use one shard per architecture to avoid rebuilding shared
+  dependencies in a second clean target tree. It is the required per-change path.
+- `lint.yml` runs formatting, repository policy, dependency policy and dependency
+  usage checks on the reserved quality lane with its pinned lean tools image.
 - `nightly.yml` runs the complete workspace, all targets, examples, and live
   integration coverage. It is the coverage backstop rather than duplicated on
   every push.
@@ -27,17 +32,50 @@ references together only after reviewing the new image's candidate bundle.
 The candidate workflow uploads changed PNGs, a binary patch, its SHA-256, and a
 diff inventory; it deliberately has no repository-write step.
 
-Two affected shards are intentional. A third, permanently dedicated "heavy
+The maximum of two affected shards per architecture is intentional. A third, permanently dedicated "heavy
 apps" shard was measured as the wrong trade-off for this workspace: it repeats
 large shared dependency graphs and adds runner CPU even when a change does not
 touch those apps. `tools/ci_select.py` already weights costly packages while
 preserving dependency-correct selection, so heavy packages receive their own
 capacity when they are affected without creating an always-on third compile.
 
+## Documentation feedback
+
+Rust compilation is explicitly inapplicable when the complete change consists
+only of `docs/designs/*.md` and/or the audited files `AGENTS.md`, `DEVELOPMENT.md`,
+`docs/ci-performance.md`, and `docs/ci-emergency-relief.md`. This is an allowlist,
+not an exemption for all Markdown. Compiled docs such as `ui/CHARTS.md`, packaging
+contracts and unknown paths keep normal selection. Mixed Rust changes still
+select their affected closure, and manual full checks override the exception.
+
+The workflow retains a skipped sentinel matrix row because a literally empty
+matrix removed the job and stranded its aggregate on this Forgejo installation.
+Selection and security must succeed before the aggregate accepts intentional
+Rust non-applicability. Repository policy, cargo-deny and cargo-machete remain
+active, so a docs-only change can still expose a broken baseline; a skipped Rust
+matrix does not certify those independent checks.
+
+For local documentation of installer or packaging behavior, run the relevant
+existing contract directly before waiting for CI:
+
+```sh
+python3 tools/dev.py check installer --step target-modes
+python3 tools/dev.py check app-packaging --plan
+```
+
+Use the reported step names to select the contract you changed. Subset receipts
+list omitted coverage and do not replace the full required CI result. The warm
+production lint result in the runbook still took about 128 seconds including
+policy/dependency checks. A future dependency-audit reuse optimization must bind
+an accepted result to all relevant source/manifests, policy and tool identities;
+path-only skipping of cargo-machete would hide pre-existing failures. That reuse
+is not implemented or claimed here.
+
 ## Cache layers
 
-- sccache stores compiler outputs in the repository-scoped S3 prefix
-  `tilo/v1/`. This is the main cross-runner Rust cache. The builder
+- sccache stores compiler outputs in repository-scoped S3 namespaces configured
+  by the builder and `tools/ci-sccache.sh`. Inspect the effective namespace rather
+  than assuming all lanes use one historical prefix. This is the main cross-runner Rust cache. The builder
   workflow proves a cold write and a warm read in separate containers against
   an isolated canary prefix whenever the image changes.
 - `actions/cache` stores only Cargo registry indexes, crate archives, and Git
