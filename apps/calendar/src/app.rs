@@ -268,6 +268,10 @@ struct FormRects {
     start_time: Rect,
     end_date: Rect,
     end_time: Rect,
+    /// Read-only scheduling feedback. It is present only when this locally
+    /// available event overlaps another saved event, and is deliberately not a
+    /// fake remote free/busy claim.
+    conflict: Rect,
     location: Rect,
     calendar: Rect,
     invite: Rect,
@@ -285,6 +289,7 @@ impl FormRects {
             &mut self.start_time,
             &mut self.end_date,
             &mut self.end_time,
+            &mut self.conflict,
             &mut self.location,
             &mut self.calendar,
             &mut self.invite,
@@ -749,6 +754,27 @@ impl CalendarApp {
             "error" => "Sync failed · check the account in Settings and retry".into(),
             _ => return,
         });
+        self.dirty = true;
+    }
+
+    /// Add a deterministic overlapping event to the demo model for visual
+    /// review of the editor's local scheduling warning. This is screenshot
+    /// staging only: the live app never fabricates a conflicting booking.
+    pub fn shots_show_schedule_conflict(&mut self) {
+        let Some(Sel::Event(id)) = self.selection else {
+            return;
+        };
+        let Some(edited) = self.model.event(id).cloned() else {
+            return;
+        };
+        let mut overlapping = edited.clone();
+        overlapping.id = Uuid::new_v4();
+        overlapping.title = "Design review follow-up".into();
+        overlapping.start = edited.start + Duration::minutes(15);
+        overlapping.end = edited.end + Duration::minutes(30);
+        overlapping.recurrence = Recurrence::Weekly;
+        self.model.events.push(overlapping);
+        self.detail_open = true;
         self.dirty = true;
     }
 
@@ -1630,12 +1656,12 @@ impl CalendarApp {
     /// from an agent or screen-reader invocation of the same resource action.
     fn invoke_local_calendar_effect(
         &mut self,
-        operation: crate::actions::CalendarOperation,
+        operation: &crate::actions::CalendarOperation,
         doc: &AutoCommit,
     ) -> Result<(), String> {
         let encoded = tilo_actions::EncodedAction::encode_operation(
             crate::actions::CALENDAR_OPERATION_TYPE,
-            &operation,
+            operation,
         )
         .map_err(|error| error.to_string())?;
         #[cfg(test)]
@@ -3313,6 +3339,95 @@ impl CalendarApp {
         }
     }
 
+    /// Names of locally-known events that overlap the edited event's first
+    /// occurrence. Calendar does not have a free/busy endpoint, so this is
+    /// intentionally limited to the events already saved in this device's
+    /// model; it never claims that a remote participant is available.
+    fn local_schedule_conflicts(&self, edited: &Event) -> Vec<String> {
+        let (start, end) = Self::event_interval(edited, edited.start.date());
+        let window_start = start.date() - Duration::days(1);
+        let window_end = end.date();
+        let mut conflicts = Vec::new();
+
+        for candidate in &self.model.events {
+            if candidate.id == edited.id {
+                continue;
+            }
+
+            let overlaps = if candidate.all_day {
+                // An all-day range can start before a timed event's date, so
+                // ask the model's recurrence-aware predicate about every day
+                // in the edited range instead of comparing only seed values.
+                let mut day = start.date();
+                let mut found = false;
+                while day <= end.date() {
+                    if candidate.occurs_on(day) {
+                        found = true;
+                        break;
+                    }
+                    day += Duration::days(1);
+                }
+                found
+            } else {
+                candidate
+                    .occurrences_in(window_start, window_end)
+                    .into_iter()
+                    .any(|date| {
+                        let (other_start, other_end) = Self::event_interval(candidate, date);
+                        start < other_end && other_start < end
+                    })
+            };
+            if overlaps {
+                conflicts.push(candidate.display_title().to_string());
+            }
+        }
+        conflicts.sort_unstable();
+        conflicts.dedup();
+        conflicts
+    }
+
+    /// Bounds one materialized occurrence in the editor's wall-time domain.
+    /// Overrides already moved by CalDAV/ICS are respected; a base recurring
+    /// event keeps its duration while moving to the requested occurrence date.
+    fn event_interval(event: &Event, occurrence_date: NaiveDate) -> (NaiveDateTime, NaiveDateTime) {
+        if event.all_day {
+            let start = occurrence_date.and_time(NaiveTime::MIN);
+            return (start, start + Duration::days(event.all_day_span_days()));
+        }
+        let override_for_date = event.occurrence_overrides.iter().find(|override_| {
+            override_.original_date == occurrence_date
+                || override_
+                    .start
+                    .is_some_and(|start| start.date() == occurrence_date)
+        });
+        let start = override_for_date
+            .and_then(|override_| override_.start)
+            .unwrap_or_else(|| occurrence_date.and_time(event.start.time()));
+        let duration = (event.end - event.start).max(Duration::minutes(1));
+        let end = override_for_date
+            .and_then(|override_| override_.end)
+            .unwrap_or(start + duration)
+            .max(start + Duration::minutes(1));
+        (start, end)
+    }
+
+    /// Complete schedule-conflict statement for assistive technology. The
+    /// paint surface uses a compact count to retain its geometry at 200% text,
+    /// while this semantic value retains every affected event name.
+    fn local_schedule_conflict_summary(&self) -> Option<String> {
+        let Sel::Event(id) = self.selection? else {
+            return None;
+        };
+        let event = self.model.event(id)?;
+        let conflicts = self.local_schedule_conflicts(event);
+        (!conflicts.is_empty()).then(|| {
+            format!(
+                "Schedule conflict: this event overlaps {}.",
+                conflicts.join(", ")
+            )
+        })
+    }
+
     /// Compute the event-form field rects from the current detail panel. Pure
     /// function of the detail rect, body width, detail mode and the selected
     /// event's all-day flag, so `draw`, the hit map, and the embedded widgets
@@ -3378,6 +3493,22 @@ impl CalendarApp {
             Rect::new(x + label_w + date_w + gap, y, x + w, y + field_h)
         };
         y += field_h + 16.0;
+
+        let has_schedule_conflict = self
+            .selection
+            .and_then(|selection| match selection {
+                Sel::Event(id) => self.model.event(id),
+                Sel::Task(_) => None,
+            })
+            .is_some_and(|event| !self.local_schedule_conflicts(event).is_empty());
+        if has_schedule_conflict {
+            // The notice carries two independently meaningful lines. Give
+            // scaled glyphs their own vertical lanes instead of allowing the
+            // count line to touch the warning border at 200% text.
+            let conflict_h = if large_text { 72.0 } else { 40.0 };
+            f.conflict = Rect::new(x, y, x + w, y + conflict_h);
+            y += conflict_h + 14.0;
+        }
 
         f.location = Rect::new(x, y, x + w, y + field_h);
         y += field_h + 14.0;
@@ -3499,7 +3630,7 @@ impl CalendarApp {
             }
             Action::SetCalendarVisible { id, visible } => {
                 if let Err(error) = self.invoke_local_calendar_effect(
-                    crate::actions::CalendarOperation::SetCalendarVisible { id, visible },
+                    &crate::actions::CalendarOperation::SetCalendarVisible { id, visible },
                     doc,
                 ) {
                     self.status = Some(error);
@@ -5245,6 +5376,14 @@ impl CalendarApp {
 
         self.draw_event_form_dates(&mut paint, &f, &e, mouse, label_x, &mut hits);
 
+        if f.conflict.area() > 0.0 {
+            Self::draw_event_conflict_notice(
+                &mut paint,
+                f.conflict,
+                self.local_schedule_conflicts(&e).len(),
+            );
+        }
+
         // --- Location (real text input) ---------------------------------
         self.location_input.draw(
             paint.scene,
@@ -5370,6 +5509,65 @@ impl CalendarApp {
             FormPopover::EndDate,
             FormPopover::EndTime,
             self.event_popovers.active(),
+        );
+    }
+
+    /// Compact, read-only feedback for an overlap discovered in the local
+    /// model. The count is intentionally kept short enough to remain legible
+    /// in the 200% form; the complete event names are exposed in the matching
+    /// accessibility status node.
+    fn draw_event_conflict_notice(paint: &mut PaintContext<'_>, rect: Rect, conflict_count: usize) {
+        let scene = &mut *paint.scene;
+        let t = paint.transform;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let c = &theme.tokens.colors;
+        let large_text = theme.text_scale >= LARGE_TEXT_SCALE;
+        fill_round(scene, t, c.semantic.warning.with_alpha(0.14), rect, 8.0);
+        stroke_round(
+            scene,
+            t,
+            c.semantic.warning.with_alpha(0.75),
+            rect,
+            8.0,
+            1.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            t,
+            c.semantic.warning,
+            None,
+            &Circle::new(Point::new(rect.x0 + 15.0, rect.y0 + 15.0), 4.0),
+        );
+        tr.draw_text(
+            scene,
+            "Schedule overlap",
+            11.5,
+            c.semantic.warning,
+            t * Affine::translate((
+                rect.x0 + 27.0,
+                rect.y0 + if large_text { 10.0 } else { 7.0 },
+            )),
+            None,
+        );
+        let label = format!(
+            "{conflict_count} saved event{} overlaps this time",
+            if conflict_count == 1 { "" } else { "s" }
+        );
+        tr.draw_text(
+            scene,
+            &label,
+            10.0,
+            c.text_primary,
+            t * Affine::translate((
+                rect.x0 + 12.0,
+                if large_text {
+                    rect.y0 + 43.0
+                } else {
+                    rect.y1 - 17.0
+                },
+            )),
+            Some((rect.width() - 24.0).max(0.0) as f32),
         );
     }
 
@@ -7223,6 +7421,10 @@ impl Widget for CalendarApp {
                 AccessNode::new(Role::StaticText)
                     .with_name("Event editor. Changes save automatically."),
             );
+            if let Some(conflict) = self.local_schedule_conflict_summary() {
+                root.children
+                    .push(AccessNode::new(Role::StaticText).with_name(conflict));
+            }
         }
         Some(root)
     }
