@@ -5,7 +5,9 @@ param(
     [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client')]
     [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client'),
     [ValidateSet('dev', 'release')]
-    [string]$Profile = 'release'
+    [string]$Profile = 'release',
+    [ValidateRange(1, 256)]
+    [int]$Jobs = 2
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,7 +16,7 @@ if (-not $IsWindows) { throw 'Run this installer from PowerShell on Windows.' }
 if ($Apps.Count -eq 0) { throw 'Select at least one application.' }
 $repository = Split-Path -Parent $PSScriptRoot
 $applications = $Apps | Select-Object -Unique
-$buildArguments = @('build', '--locked', '--profile', $Profile, '--message-format=json-render-diagnostics')
+$buildArguments = @('build', '--locked', '--profile', $Profile, '--jobs', $Jobs, '--message-format=json-render-diagnostics')
 foreach ($application in $applications) { $buildArguments += @('-p', $application) }
 
 Push-Location -LiteralPath $repository
@@ -48,7 +50,7 @@ $hostHelper = $null
 if ('clocks' -in $applications) {
     Push-Location -LiteralPath $repository
     try {
-        $hostMessages = & cargo build --locked --profile $Profile -p ui --example windows-host --features notifications --message-format=json-render-diagnostics
+        $hostMessages = & cargo build --locked --profile $Profile --jobs $Jobs -p ui --example windows-host --features notifications --message-format=json-render-diagnostics
         $hostExitCode = $LASTEXITCODE
     } finally {
         Pop-Location

@@ -105,6 +105,9 @@ Start menu entries under **Tilo**:
 ```
 
 This builds before copying executables to `%LOCALAPPDATA%\Tilo\Applications`.
+The installer limits Cargo to two concurrent jobs to bound memory use during
+release linking. Use `-Jobs 1` on a memory-constrained machine; `-Jobs` also
+applies to the Windows notification helper build.
 Unoptimized builds spend substantially longer validating and loading fonts at
 startup. The installer includes Microsoft's pinned DXC 1.8.2505.1 compiler and
 its MIT/LLVM notices beside the apps. Without DXC, wgpu's FXC fallback spends
