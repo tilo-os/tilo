@@ -7129,12 +7129,9 @@ mod record_publisher_integration_tests {
         let record_file = repository_path
             .join(workspace_id.to_string())
             .join(format!("{}.json", record_id.0));
-        let atomic_temp = record_file.parent().unwrap().join(format!(
-            ".{}.{}.tmp",
-            record_file.file_name().unwrap().to_string_lossy(),
-            std::process::id()
-        ));
-        std::fs::create_dir(&atomic_temp).unwrap();
+        let record_backup = record_file.with_extension("json.test-backup");
+        std::fs::rename(&record_file, &record_backup).unwrap();
+        std::fs::create_dir(&record_file).unwrap();
         assert!(
             fs.commit_content(ino, edited).is_err(),
             "namespace mutation must wait for durable signed publication"
@@ -7147,7 +7144,8 @@ mod record_publisher_integration_tests {
             Some(original_manifest)
         );
         assert_eq!(history.snapshot(record_id).unwrap().versions.len(), 1);
-        std::fs::remove_dir(&atomic_temp).unwrap();
+        std::fs::remove_dir(&record_file).unwrap();
+        std::fs::rename(record_backup, &record_file).unwrap();
 
         fs.commit_content(ino, edited).unwrap();
         let after_edit = published_snapshot(&repository, &publisher, record_id);
