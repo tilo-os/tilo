@@ -89,6 +89,7 @@ pub mod gpu_video;
 pub mod graph_editor;
 pub mod headless;
 pub mod history_source;
+pub mod standalone_history_pane;
 #[cfg(all(windows, feature = "notifications"))]
 pub mod host_notifications;
 pub mod i18n;
@@ -128,6 +129,7 @@ pub mod scale;
 pub mod screen_reader;
 pub mod search;
 pub mod selection;
+mod standalone_history;
 pub mod state;
 pub mod status_bubble;
 pub mod surface;

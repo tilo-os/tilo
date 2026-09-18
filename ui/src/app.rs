@@ -8,6 +8,9 @@ use winit::{
 
 use std::cell::{Cell, RefCell};
 
+mod document_history;
+pub use document_history::DocumentHistorySnapshot;
+
 /// Toolkit-owned continuation schema used when an app has no narrower
 /// domain-specific projection. The CRDT document travels on its stable record
 /// route; this payload restores the complementary local presentation state.
@@ -827,6 +830,7 @@ pub struct App {
     room_index: Option<crate::state::DocumentReplica>,
 
     action_palette: Option<crate::action_palette::ActionPalette>,
+    document_history: Option<crate::standalone_history::StandaloneHistory>,
     action_registry: tilo_actions::ActionRegistry,
     action_transport: Box<dyn tilo_actions::ActionTransport>,
     /// Resource declarations are expensive tree materialisations and used by
@@ -1405,6 +1409,7 @@ impl App {
             records: None,
             room_index: None,
             action_palette: None,
+            document_history: None,
             action_registry: tilo_actions::ActionRegistry::new(),
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
             resource_cache: RefCell::new(None),
@@ -15756,6 +15761,128 @@ mod bound_component_tests {
         bindings: Vec<crate::bound_dispatch::CallbackBinding>,
         permissions: Rc<RefCell<crate::permissions::PermissionContext>>,
     }
+
+    #[test]
+    fn document_history_keeps_focused_record_after_focus_moves_and_revokes_live() {
+        let mut fixture = ActionFixture::new();
+        let mut entry_ids = Vec::new();
+        for (index, binding) in fixture.bindings.iter().enumerate() {
+            let hash = fixture
+                .records
+                .with(&binding.checkout.id, |doc| {
+                    doc.put(ROOT, "history_marker", format!("record-{index}"))
+                        .unwrap();
+                    doc.commit().unwrap()
+                })
+                .unwrap();
+            entry_ids.push(crate::history_source::entry_id_from_hash(&hash.to_string()));
+        }
+        fixture
+            .app
+            .state
+            .doc
+            .put(ROOT, "history_marker", "outer")
+            .unwrap();
+        let pending = fixture.app.state.doc.pending_ops();
+        let focus_for = |app: &App, instance| {
+            app.node_map
+                .keys()
+                .copied()
+                .find(|node| {
+                    app.bindings
+                        .binding_for(*node)
+                        .is_some_and(|binding| binding.instance_id == instance)
+                })
+                .unwrap()
+        };
+        fixture.app.focused_node = Some(focus_for(&fixture.app, fixture.bindings[0].instance_id));
+        fixture.app.open_document_history().unwrap();
+        fixture.app.focused_node = Some(focus_for(&fixture.app, fixture.bindings[1].instance_id));
+        fixture
+            .app
+            .select_document_history(&[entry_ids[0]])
+            .unwrap();
+        let snapshot = fixture.app.document_history_snapshot().unwrap().unwrap();
+        let after =
+            automerge::AutoCommit::load(&snapshot.comparison.unwrap().after_document).unwrap();
+        assert_eq!(
+            after
+                .get(ROOT, "history_marker")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_str(),
+            Some("record-0")
+        );
+        assert!(
+            fixture
+                .app
+                .select_document_history(&[entry_ids[1]])
+                .is_err()
+        );
+        assert_eq!(fixture.app.state.doc.pending_ops(), pending);
+        *fixture.permissions.borrow_mut() =
+            crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(None, "fixture-user"),
+                vec![],
+            )
+            .at_unix_time(100);
+        assert!(fixture.app.document_history_snapshot().is_err());
+        assert!(
+            fixture
+                .app
+                .document_history
+                .as_ref()
+                .unwrap()
+                .rows()
+                .is_empty()
+        );
+        assert!(
+            fixture
+                .app
+                .document_history
+                .as_ref()
+                .unwrap()
+                .comparison()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn document_history_does_not_fall_back_when_component_closes() {
+        let mut fixture = ActionFixture::new();
+        let binding = &fixture.bindings[0];
+        fixture.app.focused_node = fixture.app.node_map.keys().copied().find(|node| {
+            fixture
+                .app
+                .bindings
+                .binding_for(*node)
+                .is_some_and(|candidate| candidate.instance_id == binding.instance_id)
+        });
+        assert!(fixture.app.focused_node.is_some());
+        fixture.app.open_document_history().unwrap();
+        binding.closing.set(true);
+        fixture.app.focused_node = None;
+        assert!(fixture.app.document_history_snapshot().is_err());
+        assert!(
+            fixture
+                .app
+                .document_history
+                .as_ref()
+                .unwrap()
+                .rows()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn document_history_requires_a_choice_when_multiple_components_have_no_focus() {
+        let mut fixture = ActionFixture::new();
+        fixture.app.focused_node = None;
+        assert!(fixture.app.open_document_history().is_err());
+        assert!(fixture.app.document_history_snapshot().unwrap().is_none());
+    }
+
     impl ActionFixture {
         fn new() -> Self {
             Self::with_same_record(false)

@@ -788,6 +788,9 @@ impl UndoLog {
 
 /// The unified state object that holds our CRDT document.
 pub struct State {
+    /// Process-local document lifetime, distinct from a persistent record name
+    /// or committed frontier. Captured readers must not survive replacement.
+    document_identity: uuid::Uuid,
     pub doc: AutoCommit,
     pub root: ObjId,
     /// The primary collaboration route's explicit outbound frontier. Kept
@@ -811,6 +814,7 @@ impl State {
         let undo = UndoLog::new(&mut doc);
         let outbound = DocumentFrontier::at_document(&mut doc);
         Self {
+            document_identity: uuid::Uuid::new_v4(),
             doc,
             root,
             outbound,
@@ -836,11 +840,19 @@ impl State {
             return false;
         };
         self.doc = doc;
+        self.document_identity = uuid::Uuid::new_v4();
         self.root = automerge::ROOT;
         self.undo = UndoLog::new(&mut self.doc);
         self.outbound = DocumentFrontier::at_document(&mut self.doc);
         self.undo.revision = next;
         true
+    }
+
+    /// The lifetime of the currently adopted document. Commit, undo, merge and
+    /// save keep it stable; successful `adopt_doc` changes it even for identical
+    /// bytes. Replace documents through `adopt_doc`, not direct field assignment.
+    pub fn document_identity(&self) -> uuid::Uuid {
+        self.document_identity
     }
 
     /// This document's history, for a caller that drives undo itself.
@@ -1111,6 +1123,7 @@ impl State {
         let undo = UndoLog::new(&mut doc);
         let outbound = DocumentFrontier::at_document(&mut doc);
         Self {
+            document_identity: uuid::Uuid::new_v4(),
             doc,
             root: automerge::ROOT,
             outbound,
@@ -1130,6 +1143,7 @@ impl State {
         let undo = UndoLog::new(&mut doc);
         let outbound = DocumentFrontier::at_document(&mut doc);
         Ok(Self {
+            document_identity: uuid::Uuid::new_v4(),
             doc,
             root,
             outbound,
@@ -1366,6 +1380,59 @@ fn live_insert_boundary(
 mod tests {
     use super::*;
     use automerge::{ReadDoc, ScalarValue, transaction::Transactable};
+
+    #[test]
+    fn document_identity_is_stable_for_edits_and_fresh_for_adoption() {
+        let mut state = State::new();
+        let identity = state.document_identity();
+        state.doc.put(automerge::ROOT, "body", "first").unwrap();
+        state.commit_action(None, None);
+        assert_eq!(state.document_identity(), identity);
+        assert!(state.undo(None, None).is_some());
+        assert_eq!(state.document_identity(), identity);
+        assert!(state.redo(None, None).is_some());
+        assert_eq!(state.document_identity(), identity);
+        let bytes = state.save();
+        assert_eq!(state.document_identity(), identity);
+
+        // Reopening the same exact record bytes still creates a new lifetime.
+        assert!(state.adopt_doc(AutoCommit::load(&bytes).unwrap()));
+        assert_ne!(state.document_identity(), identity);
+        assert_eq!(
+            state
+                .doc
+                .get(automerge::ROOT, "body")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_str(),
+            Some("first")
+        );
+    }
+
+    #[test]
+    fn document_identity_is_unique_for_each_constructor_and_stable_on_failed_adoption() {
+        let mut original = State::new();
+        let bytes = original.save();
+        let loaded = State::load(&bytes).unwrap();
+        let wrapped = State::from_doc(AutoCommit::load(&bytes).unwrap());
+        let identities = [
+            original.document_identity(),
+            loaded.document_identity(),
+            wrapped.document_identity(),
+        ];
+        assert_eq!(
+            identities
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
+        let identity = original.document_identity();
+        original.undo.revision = u64::MAX;
+        assert!(!original.adopt_doc(AutoCommit::new()));
+        assert_eq!(original.document_identity(), identity);
+    }
 
     #[test]
     fn explicit_frontier_is_independent_of_automerge_save_cursor() {
