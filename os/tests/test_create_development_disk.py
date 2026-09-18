@@ -62,6 +62,9 @@ class CreationTests(unittest.TestCase):
             def retain(inner):
                 events.append('retained')
                 inner.keep = True
+            def file_identity(inner):
+                info = inner.path.stat()
+                return {'device':info.st_dev, 'inode':info.st_ino, 'size':info.st_size}
             def __exit__(inner, kind, error, trace):
                 if kind or not inner.keep:
                     inner.path.unlink()
@@ -105,6 +108,7 @@ class CreationTests(unittest.TestCase):
         self.assertNotIn('--skip-fetch-check', argv)
         self.assertFalse(receipt['installable'])
         self.assertFalse(receipt['installed_bytes_verified'])
+        self.assertEqual(receipt['file_identity']['inode'], self.path.stat().st_ino)
         self.assertLess(self.events.index('unmounted'), self.events.index('retained'))
         self.assertEqual(self.predict.call_args.args[-1], '259.8')
 
