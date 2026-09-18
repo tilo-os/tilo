@@ -688,23 +688,28 @@ impl CollaboratorsOverlay {
             );
         }
 
-        let separator = vello::kurbo::Line::new(
-            Point::new(self.activity.x0, self.activity.y0 - 4.0),
-            Point::new(self.activity.x1, self.activity.y0 - 4.0),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
+        // Separator inside a Panel (HIG §9.5): derived against the panel
+        // ground and inset `s3` from both panel edges, never full-bleed into
+        // the corner radius — it was a declared `border_standard` line that
+        // vanished on the dark preset.
+        ui::surface::separator(
+            scene,
             transform,
-            colors.border_standard,
-            None,
-            &separator,
+            self.panel.x0,
+            self.panel.x1,
+            self.activity.y0 - 4.0,
+            f64::from(tokens.spacing.s3),
+            ui::chrome::shell::panel_ground(theme),
         );
-        scene.fill(
-            Fill::NonZero,
+        // Control role (HIG §9.1): the activity row takes the Control radius
+        // (`radii.sm` is for details inside a control) and rests on the lift
+        // floor with an edge derived from that floor.
+        ui::surface::card(
+            scene,
             transform,
+            self.activity,
+            ui::chrome::ChromeRole::Control.radius(theme, self.activity.height()),
             colors.lift(0.35),
-            None,
-            &RoundedRect::from_rect(self.activity, f64::from(tokens.radii.sm)),
         );
         let size = tokens.typography.scale.sm;
         let (_, height) = text_renderer.measure("Workspace activity", size, None);
@@ -826,6 +831,43 @@ fn active_tab_title(tree: &WorkspaceTree, tab_id: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HIG §9.5: the footer separator (derived against the Panel ground) and
+    /// the activity row's edge (derived against its lift floor) must both
+    /// register on every shipped palette.
+    #[test]
+    fn footer_separator_and_row_edge_register_on_every_palette() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = ui::chrome::shell::panel_ground(&theme);
+            let floor = theme.tokens.colors.lift(0.35);
+            for (what, fill) in [("separator", ground), ("activity row", floor)] {
+                let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
+                assert!(
+                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: the {what} must separate from its ground (Δ luminance {delta:.4})",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// Nothing in the footer touches (HIG §7): the separator clears the
+    /// action band, the row clears the separator and the panel's edge, and
+    /// the row keeps its inset from the panel sides.
+    #[test]
+    fn footer_keeps_a_token_gap_around_the_activity_row() {
+        let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
+        let mut overlay = CollaboratorsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0), 2, false, true);
+        let panel = overlay.panel_rect();
+        let activity = overlay.activity_rect();
+        let (invite, _join) = overlay.action_rects();
+        let separator_y = activity.y0 - 4.0;
+        assert!(separator_y - invite.y1 >= s1, "separator clears the action band");
+        assert!(activity.y0 - separator_y >= s1, "row clears the separator");
+        assert!(panel.y1 - activity.y1 >= s1, "row clears the panel edge");
+        assert!(activity.x0 - panel.x0 >= s1 && panel.x1 - activity.x1 >= s1);
+    }
 
     #[test]
     fn every_button_is_at_least_one_pointer_target_and_centred_in_its_band() {
