@@ -71,15 +71,10 @@ jobs:
           bash tools/ci-sccache.sh prepare
 
       # This golden-pinned image predates the audio fixture. Install only new
-      # packages: never upgrade/remove its reviewed fonts, Mesa or libraries.
+      # packages or replace the audio daemon: never update fonts, Mesa or libraries.
       # A dependency requiring an existing package upgrade must fail the job.
       - name: Ensure isolated audio test dependency
-        run: |
-          if ! command -v pulseaudio >/dev/null; then
-            installed=$(rpm -qa --qf '%{NAME}\n' | sort -u | paste -sd, -)
-            dnf install -y --setopt=install_weak_deps=False --setopt=obsoletes=False --setopt=best=False \
-              --exclude="$installed" pulseaudio
-          fi
+        run: bash tools/ensure-headless-audio.sh
 
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
