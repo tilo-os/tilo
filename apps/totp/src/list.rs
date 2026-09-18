@@ -42,7 +42,12 @@ const NARROW_ROW_HEIGHT: f64 = 108.0;
 /// Rows narrower than this always stack the code under the identity; wider
 /// rows stack only when the measured identity + code + ring do not fit.
 const NARROW_BREAKPOINT: f64 = 480.0;
-const ROW_GAP: f64 = 10.0;
+/// Gap between two account cards — siblings of equal weight, so the `s3`
+/// step (HIG §7b), spelled out because the list lays out without a theme.
+const ROW_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s3 as f64;
+/// Air above the first card and below the last one (`s2`): the first card
+/// never touches the header's hairline.
+const LIST_PAD_V: f64 = ui::tokens::spacing::Spacing::BASE.s2 as f64;
 const PAD: f64 = 16.0;
 const AVATAR_R: f64 = 24.0;
 const RING_R: f64 = 22.0;
@@ -191,7 +196,11 @@ impl AccountList {
     }
 
     fn content_height(&self) -> f64 {
-        self.accounts.len() as f64 * (self.row_height() + ROW_GAP)
+        let n = self.accounts.len() as f64;
+        if n == 0.0 {
+            return 0.0;
+        }
+        n * self.row_height() + (n - 1.0) * ROW_GAP + 2.0 * LIST_PAD_V
     }
 
     fn max_scroll(&self) -> f64 {
@@ -205,7 +214,7 @@ impl AccountList {
     /// Bounding rect of visible row `i` (in absolute coords, scrolled).
     fn row_rect(&self, i: usize) -> Rect {
         let row_height = self.row_height();
-        let y0 = self.rect.y0 + ROW_GAP / 2.0 + i as f64 * (row_height + ROW_GAP) - self.scroll;
+        let y0 = self.rect.y0 + LIST_PAD_V + i as f64 * (row_height + ROW_GAP) - self.scroll;
         Rect::new(self.rect.x0 + PAD, y0, self.rect.x1 - PAD, y0 + row_height)
     }
 
@@ -551,6 +560,13 @@ impl AccountList {
     /// Paint the row background card, tinted for selection/hover, plus the
     /// accent left-edge marker on the selected row. Split out of
     /// [`Self::draw_row`] to keep that function's line count in check.
+    ///
+    /// The card is an opaque raised surface with its derived rest edge
+    /// (`ui::surface::card`, HIG §7 / §9.5): a translucent wash over the base
+    /// had no edge at all on the dark preset, so five stacked rows read as
+    /// one undivided block. Hover and selection step the same way the shared
+    /// controls do (`bg_hover`, `bg_active`), so the pointer always lifts a
+    /// row rather than sinking it.
     fn draw_row_card(
         scene: &mut Scene,
         transform: Affine,
@@ -560,15 +576,14 @@ impl AccountList {
         is_selected: bool,
         is_hovered: bool,
     ) {
-        let card = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.lg));
         let bg = if is_selected {
-            theme.tokens.colors.lift(0.72)
+            theme.bg_active
         } else if is_hovered {
-            theme.tokens.colors.lift(0.35)
+            theme.bg_hover
         } else {
-            theme.tokens.colors.surfaces.raised.with_alpha_factor(0.55)
+            theme.tokens.colors.surfaces.raised
         };
-        scene.fill(Fill::NonZero, transform, bg, None, &card);
+        ui::surface::card(scene, transform, r, f64::from(theme.tokens.radii.lg), bg);
         if is_selected {
             // accent left-edge marker
             let marker = RoundedRect::new(r.x0, r.y0 + 10.0, r.x0 + 3.0, r.y1 - 10.0, 2.0);
