@@ -473,6 +473,24 @@ pub fn verify_rsa_sha256(
         .map_err(|_| "RSA signature verification failed".into())
 }
 
+/// Validate an RSA SubjectPublicKeyInfo PEM and return its modulus size and
+/// canonical DER SHA-256 identity.
+pub fn rsa_public_key_info(public_key_pem: &str) -> Result<(u32, String), String> {
+    use rsa::{
+        RsaPublicKey,
+        pkcs8::{DecodePublicKey, EncodePublicKey},
+        traits::PublicKeyParts,
+    };
+    use sha2::{Digest as _, Sha256};
+
+    let key = RsaPublicKey::from_public_key_pem(public_key_pem)
+        .map_err(|_| "invalid RSA SubjectPublicKeyInfo")?;
+    let der = key
+        .to_public_key_der()
+        .map_err(|_| "cannot canonicalize RSA public key")?;
+    Ok((key.n().bits(), hex::encode(Sha256::digest(der.as_bytes()))))
+}
+
 /// Append a Linux kernel PKCS#7 module signature made with RSA/SHA-512.
 ///
 /// The envelope intentionally omits certificates, content, and signed
@@ -1250,6 +1268,9 @@ mod tests {
     fn rsa_signature_round_trips_and_rejects_tampering() {
         let generated = generate_secure_boot_certificate("Tilo signer").expect("generate RSA cert");
         let public = rsa_public_key_pem(&generated.private_key_pem).expect("derive public key");
+        let (bits, identity) = rsa_public_key_info(&public).expect("inspect public key");
+        assert!(bits >= 2048);
+        assert_eq!(identity.len(), 64);
         let signature =
             sign_rsa_sha256(&generated.private_key_pem, b"measured image").expect("sign message");
         verify_rsa_sha256(&public, b"measured image", &signature).expect("verify signature");

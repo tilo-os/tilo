@@ -15,6 +15,7 @@ from pathlib import Path
 FILES = ('cosign.pub', 'tpm2-pcr-signing.public.pem',
          'efi-signing.crt', 'registry-owner.pub')
 LIMIT = 65536
+CRYPTO = Path('/usr/local/bin/tilo-crypto')
 
 
 def reject_redirected_path(path):
@@ -42,6 +43,14 @@ def openssl(args, data):
     return result.stdout
 
 
+def rust_crypto(*args):
+    result = subprocess.run([CRYPTO, *map(str, args)],
+                            capture_output=True)
+    if result.returncode:
+        raise ValueError('Rust-native crypto rejected the public key or certificate')
+    return result.stdout
+
+
 def pem(data, label):
     pattern = (rb'\s*-----BEGIN ' + label.encode() + rb'-----\r?\n'
                rb'[A-Za-z0-9+/=\r\n]+-----END ' + label.encode() + rb'-----\s*')
@@ -49,23 +58,26 @@ def pem(data, label):
         raise ValueError(f'expected exactly one public {label} PEM block')
 
 
-def identities(inputs):
+def identities(inputs, paths):
     result = {}
-    for name in FILES[:2]:
-        data = inputs[name]
-        pem(data, 'PUBLIC KEY')
-        openssl(['pkey', '-pubin', '-pubcheck', '-noout'], data)
-        der = openssl(['pkey', '-pubin', '-outform', 'DER'], data)
-        result[name] = hashlib.sha256(der).hexdigest()
+    cosign = inputs['cosign.pub']
+    pem(cosign, 'PUBLIC KEY')
+    openssl(['pkey', '-pubin', '-pubcheck', '-noout'], cosign)
+    der = openssl(['pkey', '-pubin', '-outform', 'DER'], cosign)
+    result['cosign.pub'] = hashlib.sha256(der).hexdigest()
     pcr = inputs['tpm2-pcr-signing.public.pem']
-    description = openssl(['rsa', '-pubin', '-text', '-noout'], pcr)
-    bits = re.search(rb'Public-Key: \((\d+) bit\)', description)
-    if bits is None or int(bits[1]) < 2048:
+    pem(pcr, 'PUBLIC KEY')
+    info = rust_crypto('rsa-public-key-info', paths['tpm2-pcr-signing.public.pem'])
+    parsed = re.fullmatch(rb'(\d+) ([0-9a-f]{64})\n?', info)
+    if parsed is None or int(parsed[1]) < 2048:
         raise ValueError('PCR signing requires an RSA public key of at least 2048 bits')
+    result['tpm2-pcr-signing.public.pem'] = parsed[2].decode('ascii')
     certificate = inputs['efi-signing.crt']
     pem(certificate, 'CERTIFICATE')
-    der = openssl(['x509', '-outform', 'DER'], certificate)
-    result['efi-signing.crt'] = hashlib.sha256(der).hexdigest()
+    certificate_identity = rust_crypto('certificate-sha256', paths['efi-signing.crt']).strip()
+    if not re.fullmatch(rb'[0-9a-f]{64}', certificate_identity):
+        raise ValueError('Rust-native crypto returned an invalid certificate identity')
+    result['efi-signing.crt'] = certificate_identity.decode('ascii')
     owner = inputs['registry-owner.pub'].strip()
     if not re.fullmatch(rb'[0-9a-f]{64}', owner) or owner == b'0' * 64:
         raise ValueError('registry owner must be a nonzero lowercase Ed25519 public key')
@@ -104,13 +116,15 @@ def validate(directory, expected_manifest_sha256=None):
     for name, data in inputs.items():
         if hashlib.sha256(data).hexdigest() != manifest['sha256'][name]:
             raise ValueError(f'public input digest mismatch: {name}')
+    paths = {name: directory / name for name in FILES}
     return {'schema': 1, 'purpose': 'tilo-development', 'manifest_sha256': manifest_digest,
-            'identities': identities(inputs)}
+            'identities': identities(inputs, paths)}
 
 
 def create(sources, output):
     inputs = {name: read_public(path) for name, path in zip(FILES, sources, strict=True)}
-    identities(inputs)
+    paths = dict(zip(FILES, map(Path, sources), strict=True))
+    identities(inputs, paths)
     output = Path(output)
     reject_redirected_path(output)
     # Exclusive creation: never replace an existing bundle or tracked key tree.
