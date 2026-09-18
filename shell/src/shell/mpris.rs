@@ -49,8 +49,15 @@ const CANCELLED_RESUME_TTL: Duration = Duration::from_secs(30);
 #[derive(Default)]
 struct ResumeState {
     pending: BTreeMap<[u8; 16], Arc<Mutex<bool>>>,
-    accepted: VecDeque<[u8; 16]>,
+    accepted: VecDeque<AcceptedResume>,
     cancelled: BTreeMap<[u8; 16], Instant>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AcceptedResume {
+    pub(crate) request_id: [u8; 16],
+    pub(crate) controller_bus_name: Option<String>,
+    pub(crate) expected_uri: Option<String>,
 }
 
 static RESUMES: LazyLock<Mutex<ResumeState>> = LazyLock::new(|| Mutex::new(ResumeState::default()));
@@ -121,33 +128,63 @@ impl ResumeState {
             }
             .revoke();
         }
-        let accepted = self.accepted.iter().any(|accepted| accepted == &request_id);
-        self.accepted.retain(|accepted| accepted != &request_id);
+        let accepted = self
+            .accepted
+            .iter()
+            .any(|accepted| accepted.request_id == request_id);
+        self.accepted
+            .retain(|accepted| accepted.request_id != request_id);
         self.cancelled.insert(request_id, now);
         self.prune_cancelled(now);
         pending.is_some() || accepted
     }
 
     fn finish(&mut self, authority: &ResumeAuthority, accepted: bool) {
+        self.finish_with_player(authority, accepted.then_some(None));
+    }
+
+    fn finish_with_player(
+        &mut self,
+        authority: &ResumeAuthority,
+        accepted_player: Option<Option<(String, String)>>,
+    ) {
         let still_authorized = self
             .pending
             .get(&authority.request_id)
             .is_some_and(|gate| Arc::ptr_eq(gate, &authority.gate))
             && authority.is_active();
         self.pending.remove(&authority.request_id);
-        if accepted
+        if accepted_player.is_some()
             && still_authorized
             && !self.cancelled.contains_key(&authority.request_id)
-            && !self.accepted.contains(&authority.request_id)
+            && !self
+                .accepted
+                .iter()
+                .any(|accepted| accepted.request_id == authority.request_id)
         {
             if self.accepted.len() >= MAX_PENDING_RESUMES {
                 self.accepted.pop_front();
             }
-            self.accepted.push_back(authority.request_id);
+            self.accepted.push_back(AcceptedResume {
+                request_id: authority.request_id,
+                controller_bus_name: accepted_player
+                    .as_ref()
+                    .and_then(|player| player.as_ref().map(|(bus_name, _)| bus_name.clone())),
+                expected_uri: accepted_player
+                    .flatten()
+                    .map(|(_, expected_uri)| expected_uri),
+            });
         }
     }
 
     fn take_accepted(&mut self) -> Vec<[u8; 16]> {
+        self.accepted
+            .drain(..)
+            .map(|accepted| accepted.request_id)
+            .collect()
+    }
+
+    fn take_accepted_resumes(&mut self) -> Vec<AcceptedResume> {
         self.accepted.drain(..).collect()
     }
 }
@@ -240,7 +277,7 @@ pub fn resume_after_launch(request: ResumeRequest) -> bool {
         .spawn(move || {
             let accepted = run_resume(&request, &authority);
             if let Ok(mut resumes) = RESUMES.lock() {
-                resumes.finish(&authority, accepted);
+                resumes.finish_with_player(&authority, accepted.map(Some));
             }
         })
         .is_err()
@@ -275,22 +312,29 @@ pub fn take_accepted_handoff_requests() -> Vec<[u8; 16]> {
         .map_or_else(|_| Vec::new(), |mut resumes| resumes.take_accepted())
 }
 
-fn run_resume(request: &ResumeRequest, authority: &ResumeAuthority) -> bool {
+pub(crate) fn take_accepted_handoff_resumes() -> Vec<AcceptedResume> {
+    RESUMES.lock().map_or_else(
+        |_| Vec::new(),
+        |mut resumes| resumes.take_accepted_resumes(),
+    )
+}
+
+fn run_resume(request: &ResumeRequest, authority: &ResumeAuthority) -> Option<(String, String)> {
     let Some(expected_uri) = resume_uri(&request.source) else {
-        return false;
+        return None;
     };
     let Ok(connection) = zbus::blocking::Connection::session() else {
-        return false;
+        return None;
     };
     let started = Instant::now();
     let mut opened = BTreeSet::new();
     while started.elapsed() < RESUME_DEADLINE {
         if !authority.is_active() {
-            return false;
+            return None;
         }
         for bus_name in verified_player_names(&connection, &request.package_id) {
             if !authority.is_active() {
-                return false;
+                return None;
             }
             let Ok(player) = zbus::blocking::Proxy::new(
                 &connection,
@@ -303,7 +347,8 @@ fn run_resume(request: &ResumeRequest, authority: &ResumeAuthority) -> bool {
             if player_reports_uri(&player, &expected_uri) {
                 if drive_and_verify_player(&player, request.position_ms, request.playing, authority)
                 {
-                    return authority.is_active() && started.elapsed() <= RESUME_DEADLINE;
+                    return (authority.is_active() && started.elapsed() <= RESUME_DEADLINE)
+                        .then(|| (bus_name.clone(), expected_uri.clone()));
                 }
             } else if opened.insert(bus_name.clone()) {
                 let _ = open_uri_if_supported(&connection, &bus_name, &expected_uri, authority);
@@ -313,7 +358,7 @@ fn run_resume(request: &ResumeRequest, authority: &ResumeAuthority) -> bool {
             std::thread::sleep(RESUME_POLL);
         }
     }
-    false
+    None
 }
 
 fn verified_player_names(connection: &zbus::blocking::Connection, package_id: &str) -> Vec<String> {
@@ -795,6 +840,49 @@ pub fn pause_named(bus_name: &str) -> bool {
                         PLAYER_IFACE,
                     )
                     .ok()?;
+                    proxy.call_method("Pause", &()).ok()?;
+                    Some(true)
+                })
+                .unwrap_or(false);
+            let _ = tx.send(result);
+        })
+        .is_err()
+    {
+        return false;
+    }
+    rx.recv_timeout(DEADLINE).unwrap_or(false)
+}
+
+/// Pause one exact player only while it still owns the URI that this handoff
+/// opened. This prevents compensation for a failed acknowledgement from
+/// pausing unrelated playback that started immediately afterwards.
+pub(crate) fn pause_named_if_uri(bus_name: &str, expected_uri: &str) -> bool {
+    if !bus_name.starts_with(MPRIS_PREFIX)
+        || bus_name.len() > 256
+        || expected_uri.is_empty()
+        || expected_uri.len() > 8192
+    {
+        return false;
+    }
+    let owned = bus_name.to_string();
+    let expected = expected_uri.to_string();
+    let (tx, rx) = mpsc::channel();
+    if std::thread::Builder::new()
+        .name("tilo-mpris-compensate".to_string())
+        .spawn(move || {
+            let result = zbus::blocking::Connection::session()
+                .ok()
+                .and_then(|connection| {
+                    let proxy = zbus::blocking::Proxy::new(
+                        &connection,
+                        owned.as_str(),
+                        MPRIS_PATH,
+                        PLAYER_IFACE,
+                    )
+                    .ok()?;
+                    if !player_reports_uri(&proxy, &expected) {
+                        return None;
+                    }
                     proxy.call_method("Pause", &()).ok()?;
                     Some(true)
                 })
