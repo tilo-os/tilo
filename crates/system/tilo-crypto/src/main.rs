@@ -101,7 +101,26 @@ fn read_private_key(path: &Path) -> Result<Zeroizing<String>, String> {
 }
 
 fn usage() -> String {
-    "usage:\n  tilo-crypto hash-password < password\n  tilo-crypto certificate-subject CERT\n  tilo-crypto certificate-sha256 CERT\n  tilo-crypto certificate-der CERT OUTPUT\n  tilo-crypto certificate-esl CERT OUTPUT\n  tilo-crypto firmware-read-esl EFIVARS VARIABLE OUTPUT\n  tilo-crypto firmware-write-esl EFIVARS VARIABLE INPUT [SIGNING_KEY SIGNING_CERT]\n  tilo-crypto generate-secure-boot-cert COMMON_NAME KEY CERT\n  tilo-crypto key-matches-certificate PRIVATE_KEY CERT\n  tilo-crypto rsa-public-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto sign-rsa-sha256 KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto sign-module KEY CERT INPUT OUTPUT\n  tilo-crypto verify-module CERT INPUT\n  tilo-crypto sign-efi KEY CERT INPUT OUTPUT\n  tilo-crypto verify-efi CERT INPUT\n  tilo-crypto verify-efi-signature-list CERT ESL\n  tilo-crypto verify-exclusive-efi-signature-list CERT ESL\n  tilo-crypto efi-signature-count INPUT\n  tilo-crypto durable-unlink PATH".into()
+    "usage:\n  tilo-crypto hash-password < password\n  tilo-crypto certificate-subject CERT\n  tilo-crypto certificate-sha256 CERT\n  tilo-crypto certificate-der CERT OUTPUT\n  tilo-crypto certificate-esl CERT OUTPUT\n  tilo-crypto firmware-read-esl EFIVARS VARIABLE OUTPUT\n  tilo-crypto firmware-write-esl EFIVARS VARIABLE INPUT [SIGNING_KEY SIGNING_CERT]\n  tilo-crypto generate-ed25519-key PRIVATE_KEY PUBLIC_HEX\n  tilo-crypto generate-secure-boot-cert COMMON_NAME KEY CERT\n  tilo-crypto key-matches-certificate PRIVATE_KEY CERT\n  tilo-crypto p256-public-key-sha256 PUBLIC_KEY\n  tilo-crypto rsa-public-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto rsa-public-key-info PUBLIC_KEY\n  tilo-crypto sign-rsa-sha256 KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto sign-module KEY CERT INPUT OUTPUT\n  tilo-crypto verify-module CERT INPUT\n  tilo-crypto sign-efi KEY CERT INPUT OUTPUT\n  tilo-crypto verify-efi CERT INPUT\n  tilo-crypto verify-efi-signature-list CERT ESL\n  tilo-crypto verify-exclusive-efi-signature-list CERT ESL\n  tilo-crypto efi-signature-count INPUT\n  tilo-crypto durable-unlink PATH".into()
+}
+
+fn generate_ed25519_key(private_path: &Path, public_path: &Path) -> Result<(), String> {
+    if private_path == public_path {
+        return Err("private and public key paths must differ".into());
+    }
+    use ring::rand::{SecureRandom as _, SystemRandom};
+    let mut seed = Zeroizing::new([0_u8; 32]);
+    SystemRandom::new()
+        .fill(&mut *seed)
+        .map_err(|_| "operating-system random generator failed")?;
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    write_new(private_path, &*seed, 0o600)?;
+    let public = format!("{}\n", hex::encode(signing.verifying_key().to_bytes()));
+    if let Err(error) = write_new(public_path, public.as_bytes(), 0o644) {
+        let _ = fs::remove_file(private_path);
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn durable_unlink_command(
@@ -542,6 +561,14 @@ fn run() -> Result<(), String> {
         Some("certificate-esl") => certificate_esl_command(args),
         Some("firmware-read-esl") => firmware_read_esl_command(args),
         Some("firmware-write-esl") => firmware_write_esl_command(args),
+        Some("generate-ed25519-key") => {
+            let private = args.next().map(PathBuf::from).ok_or_else(usage)?;
+            let public = args.next().map(PathBuf::from).ok_or_else(usage)?;
+            if args.next().is_some() {
+                return Err(usage());
+            }
+            generate_ed25519_key(&private, &public)
+        }
         Some("generate-secure-boot-cert") => {
             let common_name = args.next().ok_or_else(usage)?;
             let key = args.next().map(PathBuf::from).ok_or_else(usage)?;
@@ -556,6 +583,15 @@ fn run() -> Result<(), String> {
                 &key,
                 &cert,
             )
+        }
+        Some("p256-public-key-sha256") => {
+            let public = args.next().map(PathBuf::from).ok_or_else(usage)?;
+            if args.next().is_some() {
+                return Err(usage());
+            }
+            let public = read_text_bounded(&public, MAX_CERTIFICATE_BYTES, "public key")?;
+            println!("{}", tilo_crypto::p256_public_key_sha256(&public)?);
+            Ok(())
         }
         Some("sign-rsa-sha256") => {
             let key = args.next().map(PathBuf::from).ok_or_else(usage)?;
@@ -578,6 +614,16 @@ fn run() -> Result<(), String> {
             let private = read_private_key(&private)?;
             let public = tilo_crypto::rsa_public_key_pem(&private)?;
             write_new(&output, public.as_bytes(), 0o644)
+        }
+        Some("rsa-public-key-info") => {
+            let public = args.next().map(PathBuf::from).ok_or_else(usage)?;
+            if args.next().is_some() {
+                return Err(usage());
+            }
+            let public = read_text_bounded(&public, MAX_CERTIFICATE_BYTES, "public key")?;
+            let (bits, identity) = tilo_crypto::rsa_public_key_info(&public)?;
+            println!("{bits} {identity}");
+            Ok(())
         }
         Some("key-matches-certificate") => {
             let private = args.next().map(PathBuf::from).ok_or_else(usage)?;
@@ -643,6 +689,28 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn ed25519_generation_is_exclusive_and_emits_matching_public_identity() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let private = temp.path().join("owner.key");
+        let public = temp.path().join("owner.pub");
+        generate_ed25519_key(&private, &public).expect("generate owner identity");
+        let seed: [u8; 32] = fs::read(&private)
+            .expect("read private seed")
+            .try_into()
+            .expect("32-byte private seed");
+        let expected = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+        assert_eq!(
+            fs::read_to_string(&public).expect("read public identity"),
+            format!("{}\n", hex::encode(expected.to_bytes()))
+        );
+        assert_eq!(
+            fs::metadata(&private).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(generate_ed25519_key(&private, &public).is_err());
+    }
 
     #[test]
     fn durable_rename_is_same_directory_and_rejects_symlink_sources() {

@@ -473,6 +473,41 @@ pub fn verify_rsa_sha256(
         .map_err(|_| "RSA signature verification failed".into())
 }
 
+/// Validate an RSA SubjectPublicKeyInfo PEM and return its modulus size and
+/// canonical DER SHA-256 identity.
+pub fn rsa_public_key_info(public_key_pem: &str) -> Result<(u32, String), String> {
+    use rsa::{
+        RsaPublicKey,
+        pkcs8::{DecodePublicKey, EncodePublicKey},
+        traits::PublicKeyParts,
+    };
+    use sha2::{Digest as _, Sha256};
+
+    let key = RsaPublicKey::from_public_key_pem(public_key_pem)
+        .map_err(|_| "invalid RSA SubjectPublicKeyInfo")?;
+    let der = key
+        .to_public_key_der()
+        .map_err(|_| "cannot canonicalize RSA public key")?;
+    Ok((key.n().bits(), hex::encode(Sha256::digest(der.as_bytes()))))
+}
+
+/// Validate a P-256 SubjectPublicKeyInfo PEM and return its canonical DER
+/// SHA-256 identity.
+pub fn p256_public_key_sha256(public_key_pem: &str) -> Result<String, String> {
+    use p256::{
+        ecdsa::VerifyingKey,
+        pkcs8::{DecodePublicKey, EncodePublicKey},
+    };
+    use sha2::{Digest as _, Sha256};
+
+    let key = VerifyingKey::from_public_key_pem(public_key_pem)
+        .map_err(|_| "invalid P-256 SubjectPublicKeyInfo")?;
+    let der = key
+        .to_public_key_der()
+        .map_err(|_| "cannot canonicalize P-256 public key")?;
+    Ok(hex::encode(Sha256::digest(der.as_bytes())))
+}
+
 /// Append a Linux kernel PKCS#7 module signature made with RSA/SHA-512.
 ///
 /// The envelope intentionally omits certificates, content, and signed
@@ -1250,10 +1285,29 @@ mod tests {
     fn rsa_signature_round_trips_and_rejects_tampering() {
         let generated = generate_secure_boot_certificate("Tilo signer").expect("generate RSA cert");
         let public = rsa_public_key_pem(&generated.private_key_pem).expect("derive public key");
+        let (bits, identity) = rsa_public_key_info(&public).expect("inspect public key");
+        assert!(bits >= 2048);
+        assert_eq!(identity.len(), 64);
         let signature =
             sign_rsa_sha256(&generated.private_key_pem, b"measured image").expect("sign message");
         verify_rsa_sha256(&public, b"measured image", &signature).expect("verify signature");
         assert!(verify_rsa_sha256(&public, b"tampered image", &signature).is_err());
+    }
+
+    #[test]
+    fn p256_public_identity_validates_curve_point_and_is_stable() {
+        use p256::pkcs8::{EncodePublicKey as _, LineEnding};
+        let signing = p256::ecdsa::SigningKey::from_slice(&[7_u8; 32]).expect("P-256 key");
+        let public = signing
+            .verifying_key()
+            .to_public_key_pem(LineEnding::LF)
+            .expect("public PEM");
+        let identity = p256_public_key_sha256(&public).expect("P-256 identity");
+        assert_eq!(identity.len(), 64);
+        assert!(
+            p256_public_key_sha256("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n")
+                .is_err()
+        );
     }
 
     #[test]
