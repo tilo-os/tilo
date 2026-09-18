@@ -1719,6 +1719,7 @@ impl Widget for MusicApp {
         // resolution, so its result is drained (and applied to the audio
         // engine) promptly without waiting for the next input event.
         self.pb.playing
+            || self.audio.needs_poll()
             || self.toast.is_some()
             || self.live_search_pending.is_some()
             || self.resolve_in_flight > 0

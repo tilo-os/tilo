@@ -19,7 +19,7 @@ chrono-tz = "0.10"
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["notifications"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["notifications"] }
 atomic-file = { path = "../../crates/system/atomic-file" }
 private-fs = { path = "../../crates/system/private-fs" }
 vello.workspace = true

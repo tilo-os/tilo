@@ -7172,7 +7172,7 @@ fn cargo_toml(spec: &AppSpec) -> String {
         .ui_path
         .parent()
         .unwrap_or_else(|| Path::new(".."))
-        .join("crates/app/tilo-app");
+        .join("crates/sdk/tilo-app");
     format!(
         "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{lints}",
         name = spec.package_name,
@@ -10435,7 +10435,7 @@ mod tests {
             "[package]\nname = \"ui\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
-        let sdk = temp.path().join("crates/app/tilo-app");
+        let sdk = temp.path().join("crates/sdk/tilo-app");
         std::fs::create_dir_all(&sdk).unwrap();
         std::fs::write(
             sdk.join("Cargo.toml"),
@@ -10464,7 +10464,7 @@ mod tests {
         )));
         let manifest = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
         assert!(
-            manifest.contains("path = \"../crates/app/tilo-app\""),
+            manifest.contains("path = \"../crates/sdk/tilo-app\""),
             "{manifest}"
         );
     }
@@ -10499,7 +10499,7 @@ mod tests {
         let sdk = discovered
             .parent()
             .expect("toolkit checkout root")
-            .join("crates/app/tilo-app");
+            .join("crates/sdk/tilo-app");
         let relative = relative_path(&destination, &sdk);
         assert!(
             manifest.contains(&format!("path = {:?}", relative.display().to_string())),
@@ -11759,7 +11759,7 @@ mod tests {
         assert_eq!(
             roots[1],
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../app/tilo-app")
+                .join("../../sdk/tilo-app")
                 .canonicalize()
                 .unwrap()
         );

@@ -397,7 +397,7 @@ pub fn save_device_profile(profile: &DeviceProfile) -> std::io::Result<()> {
 }
 
 /// Native device-local data directory, with an absolute XDG override for
-/// sandboxed launches. Windows resolves to LocalAppData through `dirs`.
+/// sandboxed launches. Windows resolves to `LocalAppData` through `dirs`.
 fn dirs_data_dir() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
