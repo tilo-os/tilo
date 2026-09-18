@@ -312,6 +312,31 @@ retirement_marker_is_safe() {
     && grep -Fqx "$expected" "$path"
 }
 
+enrollment_boot_marker_is_safe() {
+  local path="$KEYDIR/enrollment-boot-id"
+  private_key_file_is_safe "$path" \
+    && grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "$path"
+}
+
+current_boot_id() {
+  local source="${TILO_SB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}" value
+  value="$(cat "$source" 2>/dev/null)" \
+    || die "cannot read the kernel boot identity"
+  printf '%s\n' "$value" \
+    | grep -E '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+    || die "kernel boot identity is malformed"
+}
+
+publish_enrollment_boot_marker() {
+  local marker="$KEYDIR/enrollment-boot-id" temporary
+  temporary="$(mktemp "$KEYDIR/.enrollment-boot-id.XXXXXX")"
+  TEMP_FILES+=("$temporary")
+  current_boot_id >"$temporary"
+  chmod 0600 "$temporary"
+  tilo-crypto durable-rename "$temporary" "$marker" \
+    || die "cannot publish the Secure Boot enrollment boot identity"
+}
+
 select_tpm_device() {
   if [ -n "${TILO_SB_TPM_DEVICE:-}" ]; then
     [ -c "$TILO_SB_TPM_DEVICE" ] \
@@ -750,7 +775,14 @@ cmd_retire_enrollment_keys() {
 Back them up offline first, then pass --yes. The db signing key remains online."
   need tilo-crypto
   validate_keydir
+  sb_enabled || die "Secure Boot is not enabled; boot once under the enrolled owner policy before retiring PK/KEK"
   setup_mode && die "firmware is still in setup mode; enroll and verify PK/KEK before retiring their keys"
+  if [ -e "$KEYDIR/enrollment-boot-id" ] || [ -L "$KEYDIR/enrollment-boot-id" ]; then
+    enrollment_boot_marker_is_safe \
+      || die "Secure Boot enrollment boot identity is unsafe or malformed"
+    [ "$(cat "$KEYDIR/enrollment-boot-id")" != "$(current_boot_id)" ] \
+      || die "this is still the enrollment boot; reboot under Secure Boot before retiring PK/KEK"
+  fi
   private_key_file_is_safe "$KEYDIR/db.key" \
     || die "ongoing db signing key is absent or unsafe; refusing to retire recovery authority"
   public_key_file_is_safe "$KEYDIR/db.crt" \
@@ -786,13 +818,12 @@ Back them up offline first, then pass --yes. The db signing key remains online."
 }
 
 cmd_enroll() {
-  local assume_no_vendor=0 owner_only_db=0 yes=0 retire_enrollment_keys=0
+  local assume_no_vendor=0 owner_only_db=0 yes=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --yes|-y) yes=1; shift ;;
       --no-vendor-keys) assume_no_vendor=1; shift ;;
       --owner-only-db) owner_only_db=1; shift ;;
-      --retire-enrollment-keys) retire_enrollment_keys=1; shift ;;
       *) die "enroll: unknown option $1" ;;
     esac
   done
@@ -908,6 +939,11 @@ ROMs may stop verifying)."
   efi_signature_list_with_owner_is_safe "$KEYDIR/KEK.crt" "$kek_src" \
     || die "combined KEK signature list is oversized, malformed, or missing the owner certificate"
 
+  # Record this kernel boot before changing firmware. PK/KEK retirement later
+  # requires a different boot ID, proving the machine crossed a reboot boundary
+  # after enrollment rather than deleting recovery authority immediately.
+  publish_enrollment_boot_marker
+
   # Order is load-bearing: db and KEK while the firmware still accepts unsigned
   # writes, PK last because setting it is what leaves setup mode.
   log "writing db"
@@ -930,12 +966,8 @@ ROMs may stop verifying)."
   log "Enrolled. Turn Secure Boot ON in firmware setup and reboot."
   log "If it does not boot: clear the Secure Boot keys in firmware setup again —"
   log "that returns the machine to setup mode and it boots as before."
-  if [ "$retire_enrollment_keys" -eq 1 ]; then
-    cmd_retire_enrollment_keys --yes
-  else
-    log "After an offline backup, run 'tilo-secureboot retire-enrollment-keys --yes'"
-    log "to remove PK/KEK private keys from the routinely exposed machine."
-  fi
+  log "After an offline backup and one verified Secure Boot reboot, run"
+  log "'tilo-secureboot retire-enrollment-keys --yes' to remove online PK/KEK keys."
 }
 
 sub="${1:-status}"; shift || true
