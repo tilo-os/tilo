@@ -17,8 +17,8 @@
 //! - **caption gap** ([`spacing`]`().s1`) — a description hugs the label it
 //!   explains;
 //! - **[`ROW_GAP`]** — related rows inside one card (the scale's `s3`);
-//! - **[`CARD_GAP`]** — one grouped surface to the next (deliberately between
-//!   `s4` and `s6`).
+//! - **[`CARD_GAP`]** — one grouped surface to the next (the scale's `s6`,
+//!   the "before the next group" step).
 //!
 //! Helpers run before a `Theme` exists (a pane composes its tree and the host
 //! resolves the theme at layout time), so every measure here comes from the
@@ -51,10 +51,14 @@ pub fn spacing() -> Spacing {
 /// heading and this deliberate air do the grouping work, so card outlines do
 /// not have to carry every level of hierarchy.
 ///
-/// Deliberately off the token scale: `s4` (16) reads as one more row inside a
-/// card, `s6` (24) matches the page-level gap between heading and body, so a
-/// card boundary needs a step of its own between the two.
-pub const CARD_GAP: f32 = 20.0;
+/// The scale's "before the next group" step (HIG §7b): a card is one grouped
+/// surface, the next card is the next group, so the boundary between them is
+/// `s6`. It is also the page's vertical gutter, so the first card sits the
+/// same distance under the heading block as it does above its neighbour.
+/// The earlier 20 px value was authored off the scale to sit between `s4`
+/// and `s6`; a step that belongs to no relationship is a defect under the
+/// one-rhythm rule, not a nuance.
+pub const CARD_GAP: f32 = Spacing::BASE.s6;
 
 /// Vertical gap (logical px) between rows inside a single card — the toolkit's
 /// `s3` step. Smaller than [`CARD_GAP`] so rows feel related within a group
