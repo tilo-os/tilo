@@ -223,6 +223,7 @@ impl ContinuationRegistry {
         )
     }
 
+    #[cfg(test)]
     fn report_with_required_facets(
         &mut self,
         room: RoomId,
