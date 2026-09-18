@@ -55,8 +55,8 @@ A/B or troubleshooting control, not an optimization recommendation.
 | `VELLO_DIRECT_PATH_DISPATCH` | Default-on | Bounded direct GPU path-count/tiling dispatch, avoiding setup dispatches. Not used for full CPU rendering. |
 | `VELLO_ZERO_GRADIENT_REUSE` | Default-on | Reuses an engine-owned zero-gradient texture for scenes without gradient ramps. |
 
-Sources: [offscreen.rs](../ui/src/offscreen.rs),
-[render_thread.rs](../ui/src/render_thread.rs),
+Sources: [offscreen.rs](../crates/sdk/ui-core/src/offscreen.rs),
+[render_thread.rs](../crates/sdk/ui-core/src/render_thread.rs),
 [wgpu_engine.rs](../vendor/vello/src/wgpu_engine.rs),
 [shaders.rs](../vendor/vello/src/shaders.rs),
 [Vello renderer](../vendor/vello/src/lib.rs).
@@ -104,7 +104,7 @@ TILO_DRM_XRGB_DAMAGE=1 VELLO_AREA_PPT8=1`; these are not production defaults.
 | `VELLO_GPU_DISPATCH_TIMESTAMPS` | Exact-1, off | Per-dispatch GPU timing; requires `VELLO_GPU_TIMESTAMPS=1`, inside-pass query support, GPU execution, and no `wgpu-profiler` feature. The harness rejects the missing-parent-flag combination. |
 
 Sources: [bump_budget.rs](../vendor/vello/src/bump_budget.rs),
-[gpu.rs](../ui/src/gpu.rs), [wgpu_engine.rs](../vendor/vello/src/wgpu_engine.rs).
+[gpu.rs](../crates/sdk/ui-core/src/gpu.rs), [wgpu_engine.rs](../vendor/vello/src/wgpu_engine.rs).
 Tracked GPU bytes exclude driver-private allocations. CPU XRGB bytes written,
 GPU readback payload, GPU-to-GPU copies, and physical VRAM are separate metrics.
 The completion/map phase includes rendering and synchronization, not only copy
@@ -131,9 +131,9 @@ removing animation. Likewise keep UI scale, text scale, theme, and overlays
 constant. `TILO_SHOTS_THEME` selects the offscreen launch fixture (`light`,
 `high-contrast`, otherwise dark); it is not a renderer optimization switch.
 
-Sources: [app.rs](../ui/src/app.rs), [nav_split.rs](../ui/src/widget/nav_split.rs),
-[profiling.rs](../ui/src/profiling.rs),
-[WebView profiling](../ui/src/webview/profile.rs).
+Sources: [app.rs](../crates/sdk/ui-core/src/app.rs), [nav_split.rs](../crates/sdk/ui-core/src/widget/nav_split.rs),
+[profiling.rs](../crates/sdk/ui-core/src/profiling.rs),
+[WebView profiling](../crates/sdk/ui-core/src/webview/profile.rs).
 
 ## Startup warmup and DMA-BUF routing
 
@@ -149,9 +149,9 @@ selection. Keep their values identical across steady-state comparisons.
 | `TILO_WEBVIEW_DRM_NODE` | `/dev/dri/renderD128`; path | DRM node for WPE EGL setup when DMA-BUF export is requested. Empty/unusable paths fail setup and fall back to SHM. Not the wgpu adapter selector. |
 | `TILO_DMABUF_DEVICE` | Unset: automatic probe; path | Selects the render node advertised to compositor clients. Empty explicitly disables DMA-BUF advertisement; an unusable override is rejected. Automatic selection requires an openable, known CPU-mappable driver; an override bypasses that driver allow-list. The compositor's foreign-surface route CPU-maps the buffer, so DMA-BUF advertisement does **not** imply a GPU-only zero-copy import. |
 
-Sources: [warmup.rs](../ui/src/warmup.rs), [shell startup](../shell/src/main.rs),
+Sources: [warmup.rs](../crates/sdk/ui-core/src/warmup.rs), [shell startup](../shell/src/main.rs),
 [startup metrics](../crates/system/tilo-startup-metrics/src/lib.rs),
-[WPE export](../ui/src/webview/wpe/mod.rs), [EGL node](../ui/src/webview/wpe/egl.rs),
+[WPE export](../crates/sdk/ui-core/src/webview/wpe/mod.rs), [EGL node](../crates/sdk/ui-core/src/webview/wpe/egl.rs),
 [compositor render node](../shell/src/compositor/render_node.rs).
 
 ## UI dashboard benchmark
@@ -201,7 +201,7 @@ Always check that the expected gate actually printed a result: a misspelled
 budget or an invalid value in an ignore-on-error parser is not a passing gate.
 A 16,667 µs p99 gate is a useful 60 Hz screen, not proof that every frame met
 its deadline. The million-event frozen test measures **zero redraws**, not a
-million rendered frames. Source: [dashboard harness](../ui/examples/dashboard_perf_bench.rs).
+million rendered frames. Source: [dashboard harness](../crates/sdk/ui-core/examples/dashboard_perf_bench.rs).
 
 ### Other UI performance scenarios
 
@@ -216,9 +216,9 @@ results are not interchangeable with native-4K dashboard redraws:
 | `ui-shots perf_hud_shot` / `PERF_HUD_FRAMES` | `90` usize frames; invalid falls back. Feeds real CPU pass timings into a HUD screenshot at 1280×800, not an acceptance run. |
 | `PERF_HUD_OUT` | `/tmp/perf_hud/hud.png`; PNG output path for the HUD fixture, which creates parent directories and writes the image. Use a dedicated path to avoid replacing an existing image. |
 
-Sources: [perf_scenario.rs](../ui/examples/perf_scenario.rs),
-[widget_perf_bench.rs](../ui/examples/widget_perf_bench.rs),
-[perf_hud_shot.rs](../ui/examples/perf_hud_shot.rs).
+Sources: [perf_scenario.rs](../crates/sdk/ui-core/examples/perf_scenario.rs),
+[widget_perf_bench.rs](../crates/sdk/ui-core/examples/widget_perf_bench.rs),
+[perf_hud_shot.rs](../crates/sdk/ui-core/examples/perf_hud_shot.rs).
 
 ## Shell redraw and cold-scene harnesses
 
@@ -382,7 +382,7 @@ an application can enable them through dependency feature unification):
 | `shell/hevc-codec-tests` | Off | Codec-dependent tests only; enables `hdr-decode`, not a speed optimization. |
 | `shell/hosted-test-control` | On | Hosted input-control test socket; remove from production feature selection when that test surface is unwanted. Not a frame-rate optimization. |
 
-See [UI features](../ui/Cargo.toml) and [shell features](../shell/Cargo.toml).
+See [UI features](../crates/sdk/ui-core/Cargo.toml) and [shell features](../shell/Cargo.toml).
 `--no-default-features` changes the workload/capability set; document it in any
 benchmark recipe rather than silently comparing different feature sets.
 

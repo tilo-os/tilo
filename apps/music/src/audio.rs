@@ -1744,6 +1744,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
     fn delayed_backend_applies_latest_source_volume_seek_and_pause() {
         use gstreamer::prelude::*;
         let scratch = tempfile::tempdir().unwrap();
@@ -1779,9 +1780,9 @@ mod tests {
         });
         let backend = engine.backend.as_ref().unwrap();
         assert_eq!(backend.current_uri.as_deref(), Some(uri.as_str()));
-        assert_eq!(
-            backend.inner.playbin.property::<f64>("volume"),
-            f64::from(0.05f32)
+        assert!(
+            (backend.inner.playbin.property::<f64>("volume") - f64::from(0.05f32)).abs() < 0.000_01,
+            "GStreamer preserves the requested volume within its normalization precision"
         );
         assert!(!engine.is_playing_real());
         engine.play();
@@ -1974,6 +1975,7 @@ mod tests {
     /// prerequisites fail this proof; a fake sink cannot establish playback.
     #[cfg(feature = "audio")]
     #[test]
+    #[serial_test::serial(audio_backend)]
     fn real_sink_renders_audio_and_is_not_fakesink() {
         assert!(gstreamer::init().is_ok(), "gstreamer initialises");
         // The decode graph playbin needs for a local WAV, plus the real sink.
@@ -2054,6 +2056,7 @@ mod tests {
     /// Requires decode/sink plugins and a real platform audio endpoint.
     #[cfg(feature = "audio")]
     #[test]
+    #[serial_test::serial(audio_backend)]
     fn seek_while_playing_repositions_and_keeps_playing() {
         assert!(gstreamer::init().is_ok(), "gstreamer initialises");
         let need = [

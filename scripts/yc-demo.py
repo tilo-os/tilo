@@ -2658,7 +2658,7 @@ class DocumentReader:
 
     So this asks the app instead, in the app's own protocol. It speaks
     the length-prefixed JSON `CollabRequest`/`CollabEvent` the toolkit
-    speaks (`ui/src/collaboration.rs`), announces the same
+    speaks (`crates/sdk/ui-core/src/collaboration.rs`), announces the same
     `(app_id, cluster_id, record)` address the word processor announces,
     and then sends the one frame every toolkit answers with its whole
     document: `Presence { Arrived }` (`collab_broker.rs:1149`, and the

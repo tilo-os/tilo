@@ -215,7 +215,7 @@ Read from the tree; build on these rather than duplicating them.
 
 - **The typed capability vocabulary already exists** in `crates/collab/collab-types/src/caps.rs`: `Verb`, `Principal`, `Subject`, `Scope` (including `FsPath`, `Device`, `NetHost`), `Expiry`, `Effect`, `CapOverride`, and a fail-closed `decide()`. `shell/src/shell/state.rs` aliases `Expiry` as `GrantScope` with `GRANT_ONCE` / `GRANT_SESSION` / `GRANT_ALWAYS`, where session grants are **never written to disk**. Grants live on the workspace CRDT (`Workspace::capabilities: Vec<CapOverride>`), are evaluated at `shell/src/portal/mod.rs::permits`, and reach the launcher as a `0600` JSON file under `$XDG_RUNTIME_DIR/tilo/capabilities/` that is deliberately *not* bound into the sandbox. **Do not add a second vocabulary.**
 
-- **The prompt UI exists**: `ui/src/widget/permission_prompt.rs`, with Allow / Allow this session / Always allow / Deny, and "Always" disabled for non-owners.
+- **The prompt UI exists**: `crates/sdk/ui-core/src/widget/permission_prompt.rs`, with Allow / Allow this session / Always allow / Deny, and "Always" disabled for non-owners.
 
 - **`docs/app-model/sandbox.md`** documents the three layers (bwrap → seccomp → Landlock shim) and notes that `[sandbox].namespaces` is parsed and ignored. Its hostname-allowlist section describes a DNS proxy that does not exist — `docs/architecture/security.md:140-154` is authoritative.
 
@@ -561,7 +561,7 @@ Reuse:
   no-privilege property.
 - `collab-types::caps` as the lease vocabulary. `Expiry` already *is* lease
   duration. Add `Scope::Elevated(ElevatedCap)` rather than a second enum.
-- `ui/src/widget/permission_prompt.rs` for the lease prompt.
+- `crates/sdk/ui-core/src/widget/permission_prompt.rs` for the lease prompt.
 - The `0600` capability-file handoff under `$XDG_RUNTIME_DIR/tilo/capabilities/`,
   which already deliberately does not let the sandbox see its own permissions.
 

@@ -29,6 +29,20 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(result["queue_seconds"], 1)
         self.assertIsNone(result["jobs"][0]["queue_seconds"])
 
+    def test_create_without_pull_keeps_startup_time_and_unknown_pull_time(self):
+        # Sanitized normal-main lint timestamps (job 83571); absence of a pull
+        # alone is not proof of a cache hit if the supplied log is incomplete.
+        log = ("2026-09-18T22:55:20.276Z Runner fixture received task 75056 of job 83571\n"
+               "2026-09-18T22:55:20.620Z   🐳  docker create image=lean\n"
+               "2026-09-18T22:55:20.700Z   🐳  docker run image=lean\n"
+               "2026-09-18T22:55:21Z   🐳  docker pull image=action\n"
+               "2026-09-18T22:55:22Z   🐳  docker pull image=lean\n")
+        job = timing.report({"runs": [{"id": 1, "jobs": [{"id": 83571, "log": log}]}]})["runs"][0]["jobs"][0]
+        self.assertEqual(job["runner_to_create_seconds"], .344)
+        self.assertEqual(job["create_to_run_seconds"], .08)
+        self.assertIsNone(job["pull_to_create_seconds"])
+        self.assertNotIn("pull_requested", job["events"])
+
     def test_no_raw_logs_or_untrusted_commands_in_report(self):
         secret = "DO_NOT_RETAIN_SECRET"
         events = timing.extract_events("2026-09-18T21:00:00Z " + secret + "\n"

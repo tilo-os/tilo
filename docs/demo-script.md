@@ -240,7 +240,7 @@ shows the text on the other machine**, which no frame yet does.
 **The launched Files app starts a real client drag now.** The toolkit
 grew one: `ui::dnd::start_file_drag` reads the file, offers its bytes
 under a mime type, and hands the gesture to the window
-(`ui/src/dnd/mod.rs`), and `apps/file-explorer/src/files_app.rs:997`
+(`crates/sdk/ui-core/src/dnd/mod.rs`), and `apps/file-explorer/src/files_app.rs:997`
 calls it. The compositor promotes that to a server-side
 `wl_data_device` drag, and the receiving client gets the offer and the
 drop. `scripts/yc-demo.py` asserts both halves off the compositor's own

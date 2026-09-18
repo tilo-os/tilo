@@ -922,6 +922,7 @@ mod tests {
                 scope: "shared".into(),
                 ..crate::model::AnalysisProvenance::default()
             },
+            ..crate::model::ImageAnalysis::default()
         });
         PhotosDoc::set_library(&mut doc, &library);
 
