@@ -111,7 +111,12 @@ impl QuickSettingsRoot {
     const GAP: f64 = 8.0;
     const POWER: f64 = 48.0;
     const EDIT_ROW: f64 = 46.0;
-    const EDIT_HELP: f64 = 28.0;
+    // Edit mode has three distinct header lines: title, a concise interaction
+    // hint, and the active-controls section label.  Keeping this as a real
+    // measured band prevents the hint and section label from sharing the same
+    // line box at ordinary text sizes (and from colliding outright with large
+    // text).
+    const EDIT_HELP: f64 = 42.0;
     const EDIT_FOOTER: f64 = 38.0;
 
     fn header_baseline_offset(&self) -> f64 {
@@ -444,6 +449,14 @@ impl QuickSettingsRoot {
             + self.scaled(Self::HEADER)
             + self.scaled(Self::EDIT_HELP)
             + self.scaled(Self::GAP)
+    }
+
+    fn edit_help_baseline(&self) -> f64 {
+        self.panel.y0 + self.scaled(Self::PAD + Self::HEADER - 5.0)
+    }
+
+    fn edit_section_baseline(&self) -> f64 {
+        self.panel.y0 + self.scaled(Self::PAD + Self::HEADER + 17.0)
     }
     fn available_edit_top(&self, state: &QuickSettingsState) -> f64 {
         let active = self.active_edit_controls(state).len();
@@ -1520,7 +1533,7 @@ impl QuickSettingsRoot {
             transform.pre_translate(
                 (
                     self.panel.x0 + self.scaled(Self::PAD),
-                    self.panel.y0 + self.scaled(Self::PAD + Self::HEADER - 7.0),
+                    self.edit_help_baseline(),
                 )
                     .into(),
             ),
@@ -1534,7 +1547,7 @@ impl QuickSettingsRoot {
             transform.pre_translate(
                 (
                     self.panel.x0 + self.scaled(Self::PAD),
-                    self.panel.y0 + self.scaled(Self::PAD + Self::HEADER + 11.),
+                    self.edit_section_baseline(),
                 )
                     .into(),
             ),
@@ -2288,6 +2301,23 @@ mod tests {
                 let overlap = r.intersect(root.control_card(panel, j, root.control_count(&state)));
                 assert!(overlap.width() <= 0.0 || overlap.height() <= 0.0);
             }
+        }
+    }
+
+    #[test]
+    fn edit_header_keeps_help_section_and_first_control_visually_separate() {
+        let mut root = QuickSettingsRoot::default();
+        root.edit_mode = true;
+        let state = QuickSettingsState::default();
+        for scale in [1.0, 1.2] {
+            root.set_layout_text_scale(scale);
+            root.panel = Rect::new(0.0, 48.0, 400.0, 48.0 + root.preferred_height(&state));
+
+            let help = root.edit_help_baseline();
+            let section = root.edit_section_baseline();
+            let first_control = root.card(root.panel, 0, true);
+            assert!(section - help >= root.scaled(20.0));
+            assert!(first_control.y0 - section >= root.scaled(10.0));
         }
     }
     #[test]
