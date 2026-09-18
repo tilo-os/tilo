@@ -114,6 +114,8 @@ pub fn open_article_address(id: Id) -> ActionAddress {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FeedsOperation {
     RefreshAll,
+    ImportOpml,
+    ExportOpml,
     RevealFeed { id: String },
     RevealArticle { id: String },
     RevealTag { tag: String },
@@ -538,6 +540,17 @@ fn feed_label(f: &FeedRef) -> String {
 )]
 pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("feeds.reader", "feeds.reader", "Feeds");
+
+    // These open host-owned choosers locally; the selected path is never
+    // serialized into a collaborative action or replayed on another host.
+    for (id, label, operation) in [
+        ("import-opml", "Import OPML…", FeedsOperation::ImportOpml),
+        ("export-opml", "Export OPML…", FeedsOperation::ExportOpml),
+    ] {
+        if let Some(spec) = view_spec(id, label, &operation) {
+            root = root.with_action(spec);
+        }
+    }
 
     if let Ok(refresh) = ActionSpec::operation(
         "refresh-all",
@@ -1018,6 +1031,15 @@ mod tests {
             "{reader_actions:?}"
         );
         assert!(reader_actions.contains(&"new-folder"), "{reader_actions:?}");
+        for id in ["import-opml", "export-opml"] {
+            let action = reader
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap();
+            assert_eq!(action.kind, OperationKind::View);
+            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+        }
         assert!(
             reader_actions.contains(&"refresh-all"),
             "{reader_actions:?}"
