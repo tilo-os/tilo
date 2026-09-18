@@ -2,6 +2,7 @@ FROM registry.fedoraproject.org/fedora@sha256:61beafd34111e1cb85fb49377ceadeee0a
 RUN dnf -y install podman skopeo python3 openssl ca-certificates sbsigntools cpio squashfs-tools gzip xz zstd systemd-boot-unsigned /usr/bin/bootctl /usr/bin/objcopy /usr/lib/systemd/systemd-measure && \
     test -x /usr/bin/bootctl && dnf clean all
 COPY cosign /usr/local/bin/cosign
+COPY tilo-crypto /usr/local/bin/tilo-crypto
 COPY dev/ /fixture/os/dev/
 COPY development_source_registry.py /fixture/os/tests/development_source_registry.py
 COPY development_signer.py /fixture/os/tests/development_signer.py
