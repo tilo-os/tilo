@@ -41,6 +41,11 @@ pub enum Mark {
     /// `[[Page Title]]` — renders accent-coloured + underlined.
     /// Clicking navigates to the page identified by the embedded id.
     Link(PageId),
+    /// `![[Page Title]]` — a block-level live projection of another page.
+    /// The UUID, rather than the visible title, is the durable identity.
+    Transclusion(PageId),
+    /// `[label](https://example.test)` — a host-opened external URI.
+    ExternalLink(String),
 }
 
 impl Mark {
@@ -55,6 +60,8 @@ impl Mark {
                 | (Mark::Underline, Mark::Underline)
                 | (Mark::Strikethrough, Mark::Strikethrough)
                 | (Mark::Link(_), Mark::Link(_))
+                | (Mark::Transclusion(_), Mark::Transclusion(_))
+                | (Mark::ExternalLink(_), Mark::ExternalLink(_))
         )
     }
 }
@@ -289,6 +296,7 @@ pub struct MarkSegment {
     pub underline: bool,
     pub strikethrough: bool,
     pub link: Option<PageId>,
+    pub external_link: bool,
 }
 
 impl MarkSegment {
@@ -301,6 +309,7 @@ impl MarkSegment {
             underline: false,
             strikethrough: false,
             link: None,
+            external_link: false,
         }
     }
 }
@@ -347,7 +356,8 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
                     Mark::Code => seg.code = true,
                     Mark::Underline => seg.underline = true,
                     Mark::Strikethrough => seg.strikethrough = true,
-                    Mark::Link(id) => seg.link = Some(*id),
+                    Mark::Link(id) | Mark::Transclusion(id) => seg.link = Some(*id),
+                    Mark::ExternalLink(_) => seg.external_link = true,
                 }
             }
         }
@@ -505,6 +515,17 @@ mod tests {
         let spans = vec![MarkSpan::new(0..5, Mark::Link(i))];
         let segs = segments_for(5, &spans);
         assert_eq!(segs[0].link, Some(i));
+    }
+
+    #[test]
+    fn external_link_segment_gets_link_presentation_without_a_page_id() {
+        let spans = vec![MarkSpan::new(
+            0..5,
+            Mark::ExternalLink("https://example.test".into()),
+        )];
+        let segs = segments_for(5, &spans);
+        assert!(segs[0].external_link);
+        assert_eq!(segs[0].link, None);
     }
 
     #[test]
