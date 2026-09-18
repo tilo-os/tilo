@@ -91,6 +91,12 @@ pub enum PhotosOperation {
     ViewPeople,
     /// Open the signed local-model manager for face recognition.
     ManagePeopleRecognition,
+    /// Explicit per-device opt-in. This changes no collaborative metadata and
+    /// does not begin a scan; it only permits the separate scan action.
+    EnablePeopleRecognition,
+    /// Scan the next bounded local library batch with the separately signed
+    /// face model. Suggestions remain device-local until approved.
+    AnalyzePeopleLibrary,
     /// Show the durable favourites collection without changing any shared
     /// favourite marker. This is intentionally its own addressable resource,
     /// rather than a hidden in-app filter, so search, agents, history and a
@@ -242,11 +248,24 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
             "local-analysis".into(),
             "explicit-share".into(),
         ],
+        PhotosOperation::AnalyzePeopleLibrary => vec![
+            "device-local".into(),
+            "privacy-sensitive".into(),
+            "local-analysis".into(),
+            "biometric".into(),
+            "explicit-consent".into(),
+            "not-shared".into(),
+        ],
         PhotosOperation::ManagePeopleRecognition => vec![
             "device-local".into(),
             "privacy-sensitive".into(),
             "signed-model".into(),
             "settings-route".into(),
+        ],
+        PhotosOperation::EnablePeopleRecognition => vec![
+            "device-local".into(),
+            "privacy-sensitive".into(),
+            "explicit-consent".into(),
         ],
     };
     let contract = if kind == OperationKind::View {
@@ -256,7 +275,9 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         }
     } else if matches!(
         op,
-        PhotosOperation::AnalyzeText { .. } | PhotosOperation::AnalyzeImage { .. }
+        PhotosOperation::AnalyzeText { .. }
+            | PhotosOperation::AnalyzeImage { .. }
+            | PhotosOperation::AnalyzePeopleLibrary
     ) {
         ActionContract {
             tags,
@@ -294,8 +315,11 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ImportCameraMedia { .. }
         | PhotosOperation::ReindexDirectory { .. }
         | PhotosOperation::AnalyzeText { .. }
-        | PhotosOperation::AnalyzeImage { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
-        PhotosOperation::ManagePeopleRecognition => spec.retry_policy(RetryPolicy::Idempotent),
+        | PhotosOperation::AnalyzeImage { .. }
+        | PhotosOperation::AnalyzePeopleLibrary => spec.retry_policy(RetryPolicy::AtMostOnce),
+        PhotosOperation::ManagePeopleRecognition | PhotosOperation::EnablePeopleRecognition => {
+            spec.retry_policy(RetryPolicy::Idempotent)
+        }
     })
 }
 
@@ -1355,6 +1379,24 @@ pub(crate) fn people_root_resource(library: &crate::model::PhotoLibrary) -> Reso
     ) {
         resource = resource.with_action(spec.with_description(
             "Install or manage a signed local face-recognition model in Settings",
+        ));
+    }
+    if let Some(spec) = operation(
+        "enable-local-recognition",
+        "Enable private People recognition",
+        &PhotosOperation::EnablePeopleRecognition,
+    ) {
+        resource = resource.with_action(spec.with_description(
+            "Allow signed local face recognition on this device; it does not scan or share anything yet",
+        ));
+    }
+    if let Some(spec) = operation(
+        "scan-local-library",
+        "Scan local library for faces",
+        &PhotosOperation::AnalyzePeopleLibrary,
+    ) {
+        resource = resource.with_action(spec.with_description(
+            "Use the opt-in signed local face model on a bounded local batch; suggestions remain private until approved",
         ));
     }
     resource
