@@ -181,6 +181,41 @@ impl AddressSuggestions {
         self.chosen.take()
     }
 
+    /// Route an accessibility action addressed to a virtual suggestion row.
+    ///
+    /// The overlay is painted above Browser's retained content tree, so the
+    /// Browser root owns the final dispatch. Keeping target resolution here
+    /// makes that bridge use the same stable URL hash that this widget exports
+    /// to AT-SPI, rather than trusting a stale visible-row index.
+    pub fn perform_accessibility_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+    ) -> bool {
+        let Some(hash) = target.strip_prefix("browser.address-suggestion:") else {
+            return false;
+        };
+        let Some(index) = self
+            .items
+            .iter()
+            .position(|entry| blake3::hash(entry.url.as_bytes()).to_hex().as_str() == hash)
+        else {
+            return false;
+        };
+        match action {
+            ui::a11y::Action::Focus => {
+                self.selected = index;
+                true
+            }
+            ui::a11y::Action::Activate => {
+                self.selected = index;
+                self.chosen = self.items.get(index).cloned();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Total panel height for the current item count (0 when hidden).
     fn panel_height(&self) -> f64 {
         if self.items.is_empty() {
@@ -623,6 +658,34 @@ mod tests {
         w.move_selection(2); // now on row 2
         w.set_suggestions(three()); // fresh list
         assert_eq!(w.selected_index(), Some(0), "a new list resets to the top");
+    }
+
+    #[test]
+    fn accessibility_target_uses_the_stable_row_identity() {
+        let mut w = AddressSuggestions::new();
+        w.set_suggestions(three());
+        let target = format!(
+            "browser.address-suggestion:{}",
+            blake3::hash(b"https://c.test").to_hex()
+        );
+
+        assert!(w.perform_accessibility_action(&target, &ui::a11y::Action::Focus));
+        assert_eq!(
+            w.selected().map(|entry| entry.url.as_str()),
+            Some("https://c.test")
+        );
+        assert!(w.perform_accessibility_action(&target, &ui::a11y::Action::Activate));
+        assert_eq!(
+            w.take_chosen().map(|entry| entry.url),
+            Some("https://c.test".into())
+        );
+        assert!(
+            !w.perform_accessibility_action(
+                "browser.address-suggestion:stale",
+                &ui::a11y::Action::Activate
+            ),
+            "a stale AT-SPI row must never select a different suggestion"
+        );
     }
 
     #[test]
