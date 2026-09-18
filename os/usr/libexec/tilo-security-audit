@@ -67,12 +67,13 @@ else
   ok "general signing tools and Git/OpenVPN/OpenSSH consumers absent from the immutable host"
 fi
 optional_openssl_module="$(find /usr/lib /usr/lib64 \
-  \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \) \
+  \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
+     -o -path '*/gstreamer-1.0/libgstdtls.so' \) \
   \( -type f -o -type l \) -print -quit 2>/dev/null || true)"
 if [ -n "$optional_openssl_module" ]; then
-  warn "optional OpenSSL legacy provider/engine remains: $optional_openssl_module"
+  warn "optional OpenSSL provider/engine/DTLS plugin remains: $optional_openssl_module"
 else
-  ok "optional OpenSSL legacy provider and engines absent"
+  ok "optional OpenSSL provider, engines, and GStreamer DTLS plugin absent"
 fi
 case "$(readlink /etc/resolv.conf 2>/dev/null || true)" in
   ../run/NetworkManager/resolv.conf|/run/NetworkManager/resolv.conf)

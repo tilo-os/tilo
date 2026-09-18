@@ -2234,15 +2234,18 @@ RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
 # place, so one kernel is still one kernel; `nonempty-boot` is a warning, not a
 # fatal, so a UKI in /boot does not fail it either.
 # Fedora's OpenSSL libraries carry optional legacy-provider and ENGINE DSOs for
-# compatibility with old applications. Tilo has no consumer for either plugin
-# API: Rust-native code owns signing/TLS, while foundational distro consumers
-# use the built-in provider. Delete the loadable algorithm surface before the
-# composefs root is sealed, on both Fedora library layouts.
+# compatibility with old applications. The GStreamer bad-free bundle also
+# carries an OpenSSL-backed DTLS plugin; Tilo uses none of its WebRTC/DTLS/SRTP
+# path. Rust-native code owns network security, while foundational distro
+# consumers use the built-in provider. Delete these loadable algorithm and
+# protocol surfaces before the composefs root is sealed.
 RUN find /usr/lib /usr/lib64 \
-      \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \) \
+      \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
+         -o -path '*/gstreamer-1.0/libgstdtls.so' \) \
       \( -type f -o -type l \) -delete \
     && ! find /usr/lib /usr/lib64 \
-      \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \) \
+      \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
+         -o -path '*/gstreamer-1.0/libgstdtls.so' \) \
       \( -type f -o -type l \) -print -quit | grep -q . \
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh \
