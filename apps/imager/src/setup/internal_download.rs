@@ -651,12 +651,24 @@ fn write_chunk(
 ) -> Result<(), String> {
     #[cfg(test)]
     let mut file = tests::FaultWriter(file);
-    // Each successful write advances a finite (at most 64-KiB) slice. A zero
-    // write or error terminates immediately, preserving all successful counts.
+    // Each successful write advances a finite (at most 64-KiB) slice. Bound
+    // Interrupted results cumulatively per chunk, including across partial writes.
     let mut remaining = chunk;
+    let mut interrupted = 0_u8;
     while !remaining.is_empty() {
         cancelled(cancel)?;
-        let count = file.write(remaining).map_err(io_error)?;
+        let count = match file.write(remaining) {
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                cancelled(cancel)?;
+                interrupted += 1;
+                if interrupted == 8 {
+                    return Err(format!("Working-file write interrupted 8 times: {error}"));
+                }
+                continue;
+            }
+            Err(error) => return Err(io_error(error)),
+        };
         if count == 0 {
             return Err(io_error(std::io::ErrorKind::WriteZero.into()));
         }
