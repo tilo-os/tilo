@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .open_state_with_args(open_state)
             .shot_handler(render_shot)
             .allowed_options(&["--size"])
-            .allowed_live_flags(&["--analyze-imports"])
+            .allowed_live_flags(&["--analyze-imports", "--library"])
             .allowed_live_options(&["--open", "--import-directory"])
             .max_positionals(1)
             .scenarios(photos::SHOT_SCENARIOS)
@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     photos::strings::install();
     let mut app = photos::PhotosApp::new();
-    if args.value("--import-directory").is_some() {
+    if args.value("--import-directory").is_some() || args.has("--library") {
         app.show_library();
     }
     Ok(Box::new(app))
