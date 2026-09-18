@@ -26,6 +26,9 @@ jobs:
     runs-on: runner-disk-100g-arm64
     timeout-minutes: 170
     env:
+      # This runner allocates four CPUs. Two jobs left roughly half idle;
+      # measured compiler memory fits four jobs within its existing limit.
+      KERNEL_BUILD_JOBS: "4"
       SOURCE_REVISION: ${{ inputs.source_revision }}
       BASE_REF: ${{ inputs.base_candidate }}
       RPMS_REF: ${{ inputs.rpms_candidate }}
@@ -94,7 +97,7 @@ jobs:
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
-            KERNEL_BUILD_JOBS=2
+            KERNEL_BUILD_JOBS=${{ env.KERNEL_BUILD_JOBS }}
           cache-from: |
             type=registry,ref=code.podesta.ai/qos/tilo-development-kernel-buildcache:aarch64
             type=registry,ref=code.podesta.ai/qos/qos-kernel-buildcache:aarch64
@@ -168,7 +171,7 @@ jobs:
               rpms=os.environ['RPMS_REF'], recipe_sha256=recipes,
               package=dict(name=package.name, sha256=hashlib.file_digest(package.open('rb'), 'sha256').hexdigest()),
               run_id=os.environ['GITHUB_RUN_ID'], attempt=os.environ['GITHUB_RUN_ATTEMPT'],
-              kernel_build_jobs=2, production_signed=False, boot_validated=False)
+              kernel_build_jobs=int(os.environ['KERNEL_BUILD_JOBS']), production_signed=False, boot_validated=False)
           pathlib.Path('kernel-evidence/receipt.json').write_text(json.dumps(receipt, sort_keys=True, indent=2) + '\n')
           print(reference)
           PY
