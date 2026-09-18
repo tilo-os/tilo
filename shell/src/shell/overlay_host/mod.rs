@@ -27,7 +27,7 @@ use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 #[cfg(test)]
-#[path = "../../tests/support/offscreen.rs"]
+#[path = "../../../tests/support/offscreen.rs"]
 mod overlay_test_offscreen;
 
 use ui::ColorCompat;

@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_COPY_FILES = (
     "shell/src/compositor/native.rs",
     "shell/src/shell/collaborators_overlay.rs",
-    "shell/src/shell/overlay_host.rs",
+    "shell/src/shell/overlay_host/mod.rs",
     "shell/src/shell/overview.rs",
     "shell/src/shell/peer_sync_overlay.rs",
     "shell/src/shell/peer_windows.rs",
