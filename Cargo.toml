@@ -133,6 +133,7 @@ members = [
     # Media
     "crates/media",
     "crates/media/ocr",
+    "crates/media/thumbnail",
     "crates/media/vision",
 
     # Packaging
@@ -194,9 +195,6 @@ members = [
 
     # Text
     "crates/text/spellcheck",
-
-    # Thumbnail
-    "crates/thumbnail",
 
     # Windows
     "crates/windows/compat-catalogue",
