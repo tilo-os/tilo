@@ -272,12 +272,16 @@ jobs:
       # release-app workflow separately compiles the shipped thin-app feature;
       # `--all-features` is deliberately invalid here because it also selects
       # ui/webview-wpe, whose native SDK exists only in the OS image builder.
+      # Clippy's Rust-level analysis is authoritative once per selected package
+      # set on x86_64; ARM still runs the complete native test and all-target
+      # check paths above, without compiling two more isolated lint graphs.
       #
       # Compilation deliberately stays here rather than in the pre-commit
       # hook: local hooks are bypassable and must remain fast enough to keep
       # their formatting, secret, and staged-diff checks useful. This is the
       # authoritative, base-aware lint gate.
       - name: Clippy shard ${{ matrix.shard }}
+        if: matrix.arch == 'x86_64'
         env:
           XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-

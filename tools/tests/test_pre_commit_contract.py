@@ -33,6 +33,12 @@ class PreCommitContractTests(unittest.TestCase):
         self.assertIn("ui/webview-wpe", workflow)
         self.assertIn("release-app workflow", workflow)
 
+    def test_differential_clippy_runs_once_per_selected_package_set(self) -> None:
+        workflow = CHECK_WORKFLOW.read_text(encoding="utf-8")
+        step = workflow.split("- name: Clippy shard", 1)[1].split("- name:", 1)[0]
+
+        self.assertIn("if: matrix.arch == 'x86_64'", step)
+
     def test_manual_ci_retry_has_a_real_clippy_baseline(self) -> None:
         workflow = CHECK_WORKFLOW.read_text(encoding="utf-8")
 
