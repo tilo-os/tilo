@@ -8886,7 +8886,9 @@ impl AppHandler {
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             let app_ref: &mut App = app;
             let scale = f64::from(scale_factor);
-            adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale));
+            adapter.update_if_active(|| {
+                crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale))
+            });
         }
 
         // Painted last, after the frame timing was committed above,
@@ -9642,7 +9644,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         if let Some(adapter) = self.a11y_adapter.as_mut() {
                             let scale = window.scale_factor();
                             let app_ref: &mut App = &mut self.app;
-                            adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale));
+                            adapter.update_if_active(|| {
+                                crate::accesskit_bridge::native_tree_update(
+                                    app_ref.build_a11y_tree_update(scale),
+                                )
+                            });
                         }
                         window.request_redraw();
                     }
