@@ -378,6 +378,15 @@ impl OwnerHistoryStore {
     fn force_compact_for_test(&mut self) -> std::io::Result<()> {
         self.compact_snapshot()
     }
+
+    #[cfg(test)]
+    pub(crate) fn recovery_disabled_for_test() -> Self {
+        Self {
+            doc: AutoCommit::new(),
+            path: None,
+            recovery_disabled: true,
+        }
+    }
 }
 
 fn newest_record(records: impl Iterator<Item = HistoryEntryRecord>) -> Option<HistoryEntryRecord> {
