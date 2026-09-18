@@ -18,17 +18,17 @@ ROOT = '0fc63daf-8483-4772-8e79-3d69d8477de4'
 ROOT_UUID = '12345678-1234-4234-8234-123456789abc'
 
 
-def gpt_fixture(path, *, overlap=False):
+def gpt_fixture(path, *, overlap=False, root_type=ROOT, root_attributes=0, esp_attributes=0):
     """Real 512-byte-sector GPT encoding, arbitrary partition fixture bytes."""
     data = bytearray(128 * 512)
     data[510:512] = b'\x55\xaa'
     struct.pack_into('<B3sB3sII', data, 446, 0, b'\0'*3, 0xee, b'\0'*3, 1, 127)
     entries = bytearray(128 * 128)
-    for i, (kind, first, last) in enumerate([(ESP, 34, 41), (ROOT, 40 if overlap else 42, 57)]):
+    for i, (kind, first, last) in enumerate([(ESP, 34, 41), (root_type, 40 if overlap else 42, 57)]):
         off = i * 128
         entries[off:off+16] = uuid.UUID(kind).bytes_le
         entries[off+16:off+32] = uuid.UUID(int=i+1).bytes_le
-        struct.pack_into('<QQQ', entries, off+32, first, last, 0)
+        struct.pack_into('<QQQ', entries, off+32, first, last, esp_attributes if i == 0 else root_attributes)
     data[2*512:34*512] = entries
     data[95*512:127*512] = entries
     disk = uuid.UUID(int=3).bytes_le
@@ -57,6 +57,8 @@ def fixture_manifest(image, output):
     components = bundle.export_ranges(image, output)
     fs = evidence()['filesystems']
     for component in components:
+        # Structural source attributes are not staging flags or a schema expansion.
+        component.pop('source_attributes', None)
         component['filesystem_type'] = fs[component['role']]['type']
         component['filesystem_uuid'] = fs[component['role']]['uuid']
     boot = evidence()
@@ -174,11 +176,13 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(bundle.parse_manifest(json.dumps(manifest).encode()), manifest)
 
 
-def pe_fixture(cmdline=None, machine=0x8664):
+def pe_fixture(cmdline=None, machine=0x8664, profile=False):
     """Structurally meaningful PE fixture, not executable kernel/initrd content."""
     cmdline = cmdline or evidence()['uki_cmdline']
     sections = [(b'.linux', b'fixture kernel'), (b'.initrd', b'fixture initrd'),
                 (b'.osrel', b'ID=qos\n'), (b'.cmdline', cmdline.encode()+b'\0')]
+    if profile:
+        sections.append((b'.profile', b'ID=fixture-profile\n'))
     data = bytearray(4096)
     data[:2] = b'MZ'
     struct.pack_into('<I', data, 0x3c, 128)
@@ -214,7 +218,7 @@ class UkiTests(unittest.TestCase):
 
 
 class FailureTests(unittest.TestCase):
-    def test_partial_copy_failure_cleans_only_own_output(self):
+    def test_post_copy_failure_reports_and_retains_owned_output(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as tmp:
             image, output = Path(tmp) / 'fixture.raw', Path(tmp) / 'bundle'
@@ -224,9 +228,36 @@ class FailureTests(unittest.TestCase):
                 original(*args, **kwargs)
                 raise OSError('injected file-copy failure')
             with patch.object(bundle, 'copy_extent', fail_after_copy):
-                with self.assertRaises(OSError): bundle.export_ranges(image, output)
-            self.assertFalse(output.exists())
+                with self.assertRaisesRegex(OSError, 'partial output retained.*count=1'):
+                    bundle.export_ranges(image, output)
+            self.assertEqual((output / 'staging-esp.img').read_bytes(), b'E'*4096)
+            self.assertFalse((output / 'manifest.json').exists())
             self.assertTrue(image.exists())
+
+    def test_partial_owned_write_is_retained_with_truthful_error(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            image, output = Path(tmp) / 'fixture.raw', Path(tmp) / 'bundle'
+            gpt_fixture(image)
+            original = bundle.copy_extent
+            class FailingReader:
+                def __init__(self, stream):
+                    self.stream, self.reads = stream, 0
+                def seek(self, offset):
+                    return self.stream.seek(offset)
+                def read(self, size):
+                    self.reads += 1
+                    if self.reads > 1:
+                        raise OSError('injected read failure after 1024 bytes')
+                    return self.stream.read(min(size, 1024))
+            def fail_partway(stream, *args, **kwargs):
+                return original(FailingReader(stream), *args, **kwargs)
+            with patch.object(bundle, 'copy_extent', fail_partway):
+                with self.assertRaisesRegex(OSError, 'partial output retained.*count=1'):
+                    bundle.export_ranges(image, output)
+            self.assertEqual((output / 'staging-esp.img').read_bytes(), b'E'*1024)
+            self.assertFalse((output / 'staging-root.img').exists())
+            self.assertFalse((output / 'manifest.json').exists())
 
     def test_existing_output_symlink_and_directory_are_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -349,6 +380,128 @@ class ProfileTests(unittest.TestCase):
         struct.pack_into('<I', data, 152+108, 16)
         struct.pack_into('<II', data, 152+112+4*8, 3500, 100)
         with self.assertRaises(ValueError): bundle.specialize_uki(bytes(data), ROOT_UUID)
+
+
+class CorrectionTests(unittest.TestCase):
+    def test_next_component_exclusive_open_preserves_unrelated_sentinel(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            image, output = Path(tmp) / 'fixture.raw', Path(tmp) / 'bundle'
+            gpt_fixture(image)
+            original = bundle.copy_extent
+            def introduce_collision(*args, **kwargs):
+                result = original(*args, **kwargs)
+                (output / 'staging-root.img').write_bytes(b'unrelated')
+                return result
+            with patch.object(bundle, 'copy_extent', introduce_collision):
+                with self.assertRaises(OSError): bundle.export_ranges(image, output)
+            self.assertTrue((output / 'staging-root.img').exists())
+            self.assertEqual((output / 'staging-root.img').read_bytes(), b'unrelated')
+
+    def test_directory_substituted_before_open_is_preserved(self):
+        from unittest.mock import patch
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            image, output = Path(tmp) / 'fixture.raw', Path(tmp) / 'bundle'
+            moved = Path(tmp) / 'original-directory'
+            gpt_fixture(image)
+            original_open = os.open
+            def replace_before_open(path, flags, *args, **kwargs):
+                if Path(path) == output and flags & os.O_DIRECTORY:
+                    output.rename(moved)
+                    output.mkdir(mode=0o700)
+                    (output / 'staging-root.img').write_bytes(b'unrelated')
+                return original_open(path, flags, *args, **kwargs)
+            with patch.object(bundle.os, 'open', replace_before_open):
+                with self.assertRaises((OSError, ValueError)): bundle.export_ranges(image, output)
+            self.assertTrue((output / 'staging-root.img').exists())
+            self.assertEqual((output / 'staging-root.img').read_bytes(), b'unrelated')
+
+    def test_substitution_before_first_stat_preserves_nonempty_replacement(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            image, output = Path(tmp) / 'fixture.raw', Path(tmp) / 'bundle'
+            moved = Path(tmp) / 'original-directory'
+            gpt_fixture(image)
+            original_stat = Path.stat
+            substituted = False
+            def replace_before_stat(path, *args, **kwargs):
+                nonlocal substituted
+                if path == output and not substituted:
+                    substituted = True
+                    output.rename(moved)
+                    output.mkdir(mode=0o700)
+                    (output / 'sentinel').write_bytes(b'unrelated')
+                return original_stat(path, *args, **kwargs)
+            with patch.object(bundle.Path, 'stat', replace_before_stat):
+                with self.assertRaisesRegex(OSError, 'partial output retained.*count=0'):
+                    bundle.export_ranges(image, output)
+            self.assertEqual((output / 'sentinel').read_bytes(), b'unrelated')
+            self.assertFalse((output / 'staging-esp.img').exists())
+
+    def test_later_owned_filename_substitution_is_preserved(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            image, output = Path(tmp) / 'fixture.raw', Path(tmp) / 'bundle'
+            gpt_fixture(image)
+            original = bundle.copy_extent
+            def substitute_after_copy(*args, **kwargs):
+                original(*args, **kwargs)
+                (output / 'staging-esp.img').unlink()
+                (output / 'staging-esp.img').write_bytes(b'unrelated-replacement')
+                raise OSError('injected failure after file substitution')
+            with patch.object(bundle, 'copy_extent', substitute_after_copy):
+                with self.assertRaises(OSError): bundle.export_ranges(image, output)
+            self.assertTrue((output / 'staging-esp.img').exists())
+            self.assertEqual((output / 'staging-esp.img').read_bytes(), b'unrelated-replacement')
+
+    def test_later_replacement_is_detected_without_injected_failure(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            image, output = Path(tmp) / 'fixture.raw', Path(tmp) / 'bundle'
+            gpt_fixture(image)
+            original = bundle.copy_extent
+            def substitute_after_copy(stream, filename, *args, **kwargs):
+                result = original(stream, filename, *args, **kwargs)
+                if filename == 'staging-esp.img':
+                    (output / filename).rename(output / 'moved-original.img')
+                    (output / filename).write_bytes(b'X'*4096)
+                return result
+            with patch.object(bundle, 'copy_extent', substitute_after_copy):
+                with self.assertRaisesRegex(OSError, 'partial output retained.*component replaced'):
+                    bundle.export_ranges(image, output)
+            self.assertEqual((output / 'staging-esp.img').read_bytes(), b'X'*4096)
+
+    def test_profile_specialization_is_refused(self):
+        cmdline = 'rw qos.root='+'0'*37+' composefs='+'b'*128+' qos.install'
+        data = bytes(pe_fixture(cmdline, profile=True))
+        self.assertEqual(bundle.inspect_uki(data)['uki_cmdline'], cmdline)
+        with self.assertRaises(ValueError): bundle.specialize_uki(data, ROOT_UUID)
+
+    def test_grow_root_attributes_are_retained_by_structural_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / 'fixture.raw'
+            for i, kind in enumerate(('4f68bce3-e8cd-4db1-96e7-fbcaf984b709',
+                                      'b921b045-1df0-41c3-af44-4c6f280d3fae')):
+                gpt_fixture(image, root_type=kind, root_attributes=1<<59)
+                try:
+                    partitions = bundle.read_gpt(image)
+                    components = bundle.export_ranges(image, Path(tmp) / ('bundle'+str(i)))
+                except ValueError as error:
+                    self.fail('producer grow-filesystem fixture rejected: ' + str(error))
+                self.assertEqual(partitions[1].get('attributes'), 1<<59)
+                self.assertEqual(components[1].get('source_attributes'), 1<<59)
+                self.assertEqual(components[0].get('source_attributes'), 0)
+
+    def test_unsupported_gpt_attribute_combinations_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / 'fixture.raw'
+            for options in ({'esp_attributes': 1<<59}, {'root_attributes': 1<<59},
+                            {'root_type': '4f68bce3-e8cd-4db1-96e7-fbcaf984b709', 'root_attributes': 1},
+                            {'root_type': '4f68bce3-e8cd-4db1-96e7-fbcaf984b709', 'root_attributes': (1<<59)|1}):
+                with self.subTest(options=options):
+                    gpt_fixture(image, **options)
+                    with self.assertRaises(ValueError): bundle.read_gpt(image)
 
 
 if __name__ == '__main__':
