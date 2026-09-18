@@ -5484,11 +5484,11 @@ impl MailApp {
             // uses the same `open_message` path as a list click and Ctrl+K’s
             // normal Open action, including the canonical SetRead action.
             Key::Named(NamedKey::Enter) if plain && list_context && !bulk_selecting => {
-                if let Some(id) = selected {
-                    if self.shared.borrow_mut().open_message(state, id) {
-                        self.process_intents();
-                        *handled = true;
-                    }
+                if let Some(id) = selected
+                    && self.shared.borrow_mut().open_message(state, id)
+                {
+                    self.process_intents();
+                    *handled = true;
                 }
             }
             Key::Named(NamedKey::Escape) if bulk_selecting => {
@@ -5499,13 +5499,13 @@ impl MailApp {
             // flag untouched and shows the same persistent reader disclosure
             // as the explicit resource operation.
             Key::Character(ch) if plain && ch.eq_ignore_ascii_case("p") && !bulk_selecting => {
-                if let Some(id) = selected {
-                    if self.shared.borrow_mut().preview_message(id) {
-                        self.shared.borrow_mut().status =
-                            Some("Previewing without changing this message’s read state".into());
-                        self.process_intents();
-                        *handled = true;
-                    }
+                if let Some(id) = selected
+                    && self.shared.borrow_mut().preview_message(id)
+                {
+                    self.shared.borrow_mut().status =
+                        Some("Previewing without changing this message’s read state".into());
+                    self.process_intents();
+                    *handled = true;
                 }
             }
             Key::Character(ch) if plain && ch == "?" => {
