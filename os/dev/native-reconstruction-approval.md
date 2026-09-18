@@ -42,3 +42,36 @@ Only a matching receipt yields an exclusive new approval file binding
 the explicit reconstructed-native consumer. Registry identity, seed contents,
 complete artifact inventory and boot are **not** established offline; the normal
 full inventory importer and later installation acceptance still apply.
+# Cache-assisted producer admission
+
+The existing assembly consumer can import expanded reconstruction provenance:
+it checks the independently approved reconstruction hash and the complete
+mounted payload inventory. Keep the frozen application source and its existing
+consumer contract. The offline approval tool must reproduce the additional
+provenance before supplying that hash.
+
+For the cache-assisted producer, select its exact helper commit (currently
+`2d09fac4a71547f0c0a9c30be757ffac8a642930`), all four original checkpoint
+receipt/path hash pairs, and the actual successful run/attempt. In addition to
+the existing arguments, supply:
+
+```
+--partial-admission PATH SHA256
+--partial-metadata RECONSTRUCTED_RELEASE_RECEIPT_SHA256 RELEASE_METADATA_PATH
+--partial-metadata RECONSTRUCTED_WINDOWS_RECEIPT_SHA256 WINDOWS_METADATA_PATH
+--thin-cache-admission PATH SHA256
+--thin-cache-receipt PATH SHA256
+--source-metadata PATH SHA256
+```
+
+Each pair is independently pinned. Partial metadata bytes are checked against
+the corresponding pinned receipt's metadata hash, then passed through the
+pinned producer's depth-one derivation validator. Cache runtime evidence is
+recreated from the admitted cache counts, source timestamp count, RPM hash,
+reviewed restore-helper hash and approval identities. The exact runtime JSON
+serialization is hashed independently. A self-consistent remote reconstruction
+hash cannot approve changed runtime counts or unsupported freshness claims.
+
+The tool does not import an image or verify its ELF inventory. Successful offline
+approval still requires the assembly consumer's registry and complete-inventory
+verification. No future artifact is approved by preparing this invocation.
