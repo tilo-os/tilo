@@ -41,6 +41,10 @@ fn main() {
             version: "0.1.0".into(),
             available: "0.1.0".into(),
             pinned: false,
+            // The driver represents an app added by the current user, so it
+            // exercises the same pin control the Store exposes for a
+            // user-managed cache rather than the system-provided variant.
+            user_managed: true,
         }
     } else {
         InstalledState::Not
