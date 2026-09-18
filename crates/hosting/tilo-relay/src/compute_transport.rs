@@ -238,6 +238,12 @@ struct ComputeSubscriber {
 }
 
 impl ComputeTransportState {
+    /// Publish or refresh an authenticated worker advertisement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the advertisement is malformed, expired, or does
+    /// not belong to the authenticated worker and workspace.
     pub fn advertise(
         &mut self,
         authenticated_worker: DeviceKey,
@@ -272,6 +278,13 @@ impl ComputeTransportState {
         self.workers.remove(device);
     }
 
+    /// Durably enqueue an envelope and attempt immediate delivery when the
+    /// target currently has a live session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the delivery cannot be encoded within protocol
+    /// bounds or persisted to the workspace queue.
     pub fn route(
         &mut self,
         target: DeviceKey,
@@ -300,6 +313,12 @@ impl ComputeTransportState {
         Ok(())
     }
 
+    /// Validate and durably claim a new compute request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for forged or conflicting routes, unavailable workers,
+    /// invalid job specifications, or durable-store failures.
     pub fn accept_request(
         &self,
         authenticated_requester: DeviceKey,
@@ -332,6 +351,12 @@ impl ComputeTransportState {
         }
     }
 
+    /// Record a cancellation request for an existing job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requester does not own the route, the job is
+    /// unknown, its binding is inconsistent, or durable persistence fails.
     pub fn accept_cancel(
         &self,
         authenticated_requester: DeviceKey,
@@ -355,6 +380,12 @@ impl ComputeTransportState {
         Ok(ComputeRouteOutcome::Route(binding.worker))
     }
 
+    /// Apply a non-terminal lifecycle update from the job's bound worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for forged routes, invalid lifecycle transitions,
+    /// oversized metadata, unknown jobs, or durable-store failures.
     pub fn accept_status(
         &self,
         authenticated_worker: DeviceKey,
@@ -367,7 +398,7 @@ impl ComputeTransportState {
         ) {
             return Err(ComputeTransportError::InvalidLifecycle);
         }
-        self.accept_worker_update(
+        Self::accept_worker_update(
             authenticated_worker,
             store,
             &update.binding,
@@ -377,6 +408,12 @@ impl ComputeTransportState {
         )
     }
 
+    /// Apply a terminal result from the job's bound worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for forged routes, non-terminal or invalid lifecycle
+    /// transitions, oversized metadata, unknown jobs, or store failures.
     pub fn accept_result(
         &self,
         authenticated_worker: DeviceKey,
@@ -386,7 +423,7 @@ impl ComputeTransportState {
         if !update.phase.is_terminal() {
             return Err(ComputeTransportError::InvalidLifecycle);
         }
-        self.accept_worker_update(
+        Self::accept_worker_update(
             authenticated_worker,
             store,
             &update.binding,
@@ -397,7 +434,6 @@ impl ComputeTransportState {
     }
 
     fn accept_worker_update(
-        &self,
         authenticated_worker: DeviceKey,
         store: &WorkspaceStore,
         binding: &ComputeJobBinding,
@@ -651,7 +687,7 @@ mod tests {
             Err(ComputeTransportError::RouteMismatch)
         ));
 
-        let mut oversized = status.clone();
+        let mut oversized = status;
         oversized.sequence = 2;
         oversized.log_tail = vec![0; MAX_COMPUTE_LOG_BYTES + 1];
         assert!(matches!(

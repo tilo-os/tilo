@@ -518,7 +518,7 @@ fn inspect_health() -> Result<WorkerHealth, ComputeWorkerError> {
             "system energy saver is active".into(),
         ));
     }
-    let power = read_power_availability()?;
+    let power = read_power_availability();
     if matches!(power, PowerAvailability::Battery(percent) if percent <= 15) {
         return Err(ComputeWorkerError::Health(
             "battery is critically constrained".into(),
@@ -565,10 +565,10 @@ fn bubblewrap_available() -> bool {
         .any(|path| Path::new(path).is_file())
 }
 
-fn read_power_availability() -> Result<PowerAvailability, ComputeWorkerError> {
+fn read_power_availability() -> PowerAvailability {
     let root = Path::new("/sys/class/power_supply");
     let Ok(entries) = fs::read_dir(root) else {
-        return Ok(PowerAvailability::External);
+        return PowerAvailability::External;
     };
     let mut battery = None;
     let mut external = false;
@@ -586,9 +586,9 @@ fn read_power_availability() -> Result<PowerAvailability, ComputeWorkerError> {
         }
     }
     match (battery, external) {
-        (Some(percent), true) => Ok(PowerAvailability::Charging(percent)),
-        (Some(percent), false) => Ok(PowerAvailability::Battery(percent)),
-        (None, _) => Ok(PowerAvailability::External),
+        (Some(percent), true) => PowerAvailability::Charging(percent),
+        (Some(percent), false) => PowerAvailability::Battery(percent),
+        (None, _) => PowerAvailability::External,
     }
 }
 
