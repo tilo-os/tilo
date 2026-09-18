@@ -96,7 +96,8 @@ class CreationTests(unittest.TestCase):
         receipt = self.execute()
         argv = self.calls[-1]
         for flag in ('--remote=false', '--pull=never', '--generic-image',
-                     '--enforce-container-sigpolicy', '--run-fetch-check'):
+                     '--enforce-container-sigpolicy', '--run-fetch-check',
+                     '--filesystem=btrfs'):
             self.assertIn(flag, argv)
         self.assertIn(self.image, argv)
         self.assertIn('--source-imgref=docker://' + self.args.source, argv)
