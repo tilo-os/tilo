@@ -22,10 +22,24 @@ def hydrate(repo, raw, digest, source, environment):
     approval = json.loads(raw)
     if approval.get('assembly_source_revision') != source:
         raise ValueError('compatibility source differs')
-    paths = set(approval['changes']) | {'os/dev/build-wpe.sh'}
+    extra_revisions = set()
+    extra_paths = set()
+    if approval.get('purpose') == 'tilo-reviewed-cache-source-compatibility':
+        from native_source_compatibility import CACHE_BASE, CACHE_TRUST, CACHE_API, CACHE_SOURCE
+        if source != CACHE_SOURCE:
+            raise ValueError('cache correction source differs')
+        previous = approval['previous_approval_json'].encode()
+        if hashlib.sha256(previous).hexdigest() != approval['previous_approval_sha256']:
+            raise ValueError('previous admission digest differs')
+        approval = json.loads(previous)
+        if approval.get('assembly_source_revision') != CACHE_BASE:
+            raise ValueError('previous assembly source differs')
+        extra_revisions = {CACHE_BASE, CACHE_TRUST, CACHE_API, CACHE_SOURCE}
+        extra_paths = {'os/dev/build-image.sh'}
+    paths = set(approval['changes']) | {'os/dev/build-wpe.sh'} | extra_paths
     if not paths <= PATHS:
         raise ValueError('unexpected historical source path')
-    revisions = {approval[key] for key in REVISION_FIELDS if key in approval}
+    revisions = {approval[key] for key in REVISION_FIELDS if key in approval} | extra_revisions
     if not revisions or any(not re.fullmatch('[0-9a-f]{40}', revision) for revision in revisions):
         raise ValueError('exact source revisions required')
     def git(*args, env=environment):
