@@ -487,14 +487,16 @@ impl Pane {
         let r = self.rect;
         hits.push((self.refresh_box_rect(), Hit::Refresh));
         hits.push((self.bulk_mode_rect(), Hit::ToggleBulkSelection));
-        let sr = self.search_box_rect();
-        *search_rect = Some(Rect::new(sr.x0 + 30.0, sr.y0, sr.x1 - 26.0, sr.y1));
-        hits.push((sr, Hit::SearchFocus));
-        if !st.search.is_empty() {
-            hits.push((
-                Rect::new(sr.x1 - 26.0, sr.y0, sr.x1, sr.y1),
-                Hit::SearchClear,
-            ));
+        if !st.bulk_selecting {
+            let sr = self.search_box_rect();
+            *search_rect = Some(Rect::new(sr.x0 + 30.0, sr.y0, sr.x1 - 26.0, sr.y1));
+            hits.push((sr, Hit::SearchFocus));
+            if !st.search.is_empty() {
+                hits.push((
+                    Rect::new(sr.x1 - 26.0, sr.y0, sr.x1, sr.y1),
+                    Hit::SearchClear,
+                ));
+            }
         }
         if st.bulk_selecting {
             hits.extend(self.bulk_action_rects());
@@ -906,7 +908,16 @@ impl Pane {
         let (layout_title_x, title_y, header_cy) = list_header_layout(r, chip_here, gap, s);
         let mode_rect = self.bulk_mode_rect();
         let title_x = (mode_rect.x1 + 10.0 * s).max(layout_title_x);
-        let title_budget = sr.x0 - title_x - 12.0 * s;
+        // Selection mode is an action state, not a second search state. Hide
+        // the search input while it is active so the explicit count has a
+        // proper, non-ellipsized title instead of competing with two compact
+        // controls in a 340px list column.
+        let title_right = if st.bulk_selecting {
+            self.refresh_box_rect().x0 - 12.0 * s
+        } else {
+            sr.x0 - 12.0 * s
+        };
+        let title_budget = title_right - title_x;
         let title_full = if st.bulk_selecting {
             "Selected"
         } else {
@@ -931,7 +942,7 @@ impl Pane {
             st.mailbox.count(st.folder)
         };
         let count_x = title_x + f64::from(twd) + 10.0 * s;
-        if f64::from(twd) <= title_budget && count_x + 26.0 * s < sr.x0 {
+        if f64::from(twd) <= title_budget && count_x + 26.0 * s < title_right {
             let count_y = header_cy - 12.0 * 1.25 * s / 2.0;
             tr.draw_text(
                 scene,
@@ -963,52 +974,54 @@ impl Pane {
         } else {
             Icon::Square.draw(scene, t, mode_rect.inset(-8.0 * s), c.neutral[7]);
         }
-        fill_round(scene, t, sr, 9.0 * s, c.surfaces.raised);
-        stroke_round(
-            scene,
-            t,
-            sr,
-            9.0 * s,
-            1.0,
-            if st.search_focused {
-                c.border_focus
-            } else {
-                c.border_standard
-            },
-        );
-        Icon::Search.draw(
-            scene,
-            t,
-            Rect::new(
-                sr.x0 + 8.0 * s,
-                sr.y0 + 8.0 * s,
-                sr.x0 + 24.0 * s,
-                sr.y0 + 24.0 * s,
-            ),
-            c.text_dim,
-        );
-        if st.search.is_empty() && !st.search_focused {
-            tr.draw_text(
+        if !st.bulk_selecting {
+            fill_round(scene, t, sr, 9.0 * s, c.surfaces.raised);
+            stroke_round(
                 scene,
-                "Search",
-                13.0,
-                c.text_dim,
-                t * Affine::translate((sr.x0 + 30.0 * s, sr.y0 + 9.0 * s)),
-                None,
+                t,
+                sr,
+                9.0 * s,
+                1.0,
+                if st.search_focused {
+                    c.border_focus
+                } else {
+                    c.border_standard
+                },
             );
-        }
-        if !st.search.is_empty() {
-            Icon::X.draw(
+            Icon::Search.draw(
                 scene,
                 t,
                 Rect::new(
-                    sr.x1 - 24.0 * s,
+                    sr.x0 + 8.0 * s,
                     sr.y0 + 8.0 * s,
-                    sr.x1 - 8.0 * s,
+                    sr.x0 + 24.0 * s,
                     sr.y0 + 24.0 * s,
                 ),
                 c.text_dim,
             );
+            if st.search.is_empty() && !st.search_focused {
+                tr.draw_text(
+                    scene,
+                    "Search",
+                    13.0,
+                    c.text_dim,
+                    t * Affine::translate((sr.x0 + 30.0 * s, sr.y0 + 9.0 * s)),
+                    None,
+                );
+            }
+            if !st.search.is_empty() {
+                Icon::X.draw(
+                    scene,
+                    t,
+                    Rect::new(
+                        sr.x1 - 24.0 * s,
+                        sr.y0 + 8.0 * s,
+                        sr.x1 - 8.0 * s,
+                        sr.y0 + 24.0 * s,
+                    ),
+                    c.text_dim,
+                );
+            }
         }
 
         // Manual sync / refresh button.
