@@ -7738,6 +7738,31 @@ impl ShellOverlayHost {
         )
     }
 
+    /// Rebuild one exact semantic action from current provider state.
+    pub fn exact_action_catalog(
+        &self,
+        provider: &str,
+        id: &str,
+        chrome: &crate::shell::chrome_state::ChromeState,
+        doc: &automerge::AutoCommit,
+        root: &ObjId,
+        visibility: &dyn crate::shell::search::action_api::ActionVisibility,
+    ) -> crate::shell::search::action_api::ActionCatalog {
+        let scope = chrome.search_scope;
+        let active_provider = active_tab_provider_id(chrome, &self.search_registry);
+        crate::shell::search::action_api::ActionCatalog::build_exact(
+            &self.search_registry,
+            provider,
+            id,
+            scope,
+            active_provider.as_deref(),
+            chrome,
+            doc,
+            root,
+            visibility,
+        )
+    }
+
     /// The command-palette query buffer, for the `shots` harness to
     /// assert a synthetic `Type("…")` landed.
     pub fn palette_query(&self) -> &str {
