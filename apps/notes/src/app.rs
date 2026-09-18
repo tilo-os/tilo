@@ -125,7 +125,7 @@ pub struct NotesApp {
     /// takes seconds, and measuring from spawn would let a late joiner's
     /// grace lapse before its first sync, making it seed its own welcome
     /// instead of adopting an existing peer's.
-    started: std::time::Instant,
+    started: ui::clock::Instant,
     /// Whether the first `sync` has run (which (re)bases `started`).
     synced_once: bool,
     /// True once we've taken on shared document state — either by
@@ -375,7 +375,7 @@ impl NotesApp {
             canonical_marks: Vec::new(),
             palette: PageJumpPalette::new(),
             last_mouse: Point::ZERO,
-            started: std::time::Instant::now(),
+            started: ui::clock::Instant::now(),
             synced_once: false,
             adopted: canonical,
             seeded: canonical,
@@ -471,7 +471,7 @@ impl NotesApp {
         // flip, a page switch, a word-count tick) — refresh_status runs every
         // frame, so poking unconditionally would pin the bubble open forever.
         if changed {
-            self.status_bubble.poke(std::time::Instant::now());
+            self.status_bubble.poke(ui::clock::Instant::now());
         }
     }
 
@@ -479,7 +479,7 @@ impl NotesApp {
     /// frame captures the floating chip.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(std::time::Instant::now());
+        self.status_bubble.poke(ui::clock::Instant::now());
     }
 
     /// `--shots`: capture an actual save-state presentation deterministically,
@@ -503,7 +503,7 @@ impl NotesApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = std::time::Instant::now();
+        let now = ui::clock::Instant::now();
         let label = self.status.bubble_text();
         let text_size = 12.0f32;
         let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
@@ -728,7 +728,7 @@ impl NotesApp {
         // Base the seed-grace window on the first sync (collab is live by
         // now), not spawn — see `started`'s doc comment.
         if !self.synced_once {
-            self.started = std::time::Instant::now();
+            self.started = ui::clock::Instant::now();
             self.synced_once = true;
         }
         // Apply local deletions through their canonical action BEFORE reading
@@ -1039,9 +1039,9 @@ impl NotesApp {
     /// seeds immediately (tests can't wait 800 ms of wall-clock).
     #[doc(hidden)]
     pub fn bypass_seed_grace_for_test(&mut self) {
-        self.started = std::time::Instant::now()
+        self.started = ui::clock::Instant::now()
             .checked_sub(SEED_GRACE + Duration::from_secs(1))
-            .unwrap_or_else(std::time::Instant::now);
+            .unwrap_or_else(ui::clock::Instant::now);
         // Mark first-sync as done so `sync` doesn't re-base `started`
         // back to "now" and undo the bypass.
         self.synced_once = true;
@@ -2654,7 +2654,7 @@ impl Widget for NotesApp {
         // Keep frames coming only while the floating status bubble is lingering
         // / fading, so it hides itself without needing a stray pointer event.
         // Idle otherwise (no idle redraw spin).
-        self.status_bubble.needs_frame(std::time::Instant::now())
+        self.status_bubble.needs_frame(ui::clock::Instant::now())
     }
 
     fn handle_event(

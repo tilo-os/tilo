@@ -47,6 +47,7 @@ pub enum ReconcileOutcome {
 pub struct DesktopSurface {
     root: Box<dyn Widget>,
     component_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    retained_wakes: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     wake_sink: std::sync::Arc<dyn Fn() + Send + Sync>,
     context: Option<(crate::WorkspaceId, RoomId)>,
     empty_workspace_visible: Option<bool>,
@@ -85,7 +86,11 @@ pub fn build_group(
         .iter()
         .map(|tab| {
             let resolution = resolver.resolve(TileRequest { room, tab });
-            let checked = matches!(&resolution, crate::resolver::TileResolution::Component(_));
+            let checked = matches!(
+                &resolution,
+                crate::resolver::TileResolution::Component(_)
+                    | crate::resolver::TileResolution::Retained(_)
+            );
             let mut host = resolution.mount(failures, wake.clone());
             if !checked {
                 host.bind_record(records.clone(), crate::records::scratch_tab_record(tab.id));
@@ -205,6 +210,7 @@ impl DesktopSurface {
             context: tree.active_workspace().map(|w| (w.id, w.room)),
             empty_workspace_visible,
             component_wake,
+            retained_wakes: vec![],
             wake_sink,
             rows,
             order,
@@ -235,8 +241,13 @@ impl DesktopSurface {
         }
     }
     pub fn take_component_wake(&self) -> bool {
-        self.component_wake
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        let mut pending = self
+            .component_wake
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        for wake in &self.retained_wakes {
+            pending |= wake.swap(false, std::sync::atomic::Ordering::AcqRel);
+        }
+        pending
     }
     pub fn workspace_context(&self) -> Option<(crate::WorkspaceId, RoomId)> {
         self.context
@@ -537,8 +548,11 @@ impl DesktopSurface {
                             room: workspace.room,
                             tab,
                         });
-                        let checked =
-                            matches!(&resolution, crate::resolver::TileResolution::Component(_));
+                        let checked = matches!(
+                            &resolution,
+                            crate::resolver::TileResolution::Component(_)
+                                | crate::resolver::TileResolution::Retained(_)
+                        );
                         let mut host = resolution.mount(&mut failures, wake_sink.clone());
                         if !checked {
                             host.bind_record(
@@ -582,6 +596,81 @@ impl DesktopSurface {
             ReconcileOutcome::Unchanged
         }
     }
+    /// Rebuild chrome/container structure while retaining unchanged checked
+    /// owners in the same admitted room, including input and unsaved history.
+    pub fn rebuild_retaining(
+        &mut self,
+        tree: &WorkspaceTree,
+        records: &RecordStore,
+        resolver: &mut dyn TileResolver,
+        chrome: SurfaceChrome,
+    ) {
+        struct Retained<'a> {
+            hosts: HashMap<u64, ui::widget::TileHost>,
+            inner: &'a mut dyn TileResolver,
+        }
+        impl TileResolver for Retained<'_> {
+            fn resolve(&mut self, request: TileRequest<'_>) -> crate::resolver::TileResolution {
+                if let Some(host) = self.hosts.remove(&request.tab.id) {
+                    crate::resolver::TileResolution::Retained(host)
+                } else {
+                    self.inner.resolve(request)
+                }
+            }
+            fn ready_to_replace(&self, tab: &crate::Tab) -> bool {
+                self.inner.ready_to_replace(tab)
+            }
+            fn creation_refusal(&self, tab: &crate::Tab) -> Option<String> {
+                self.inner.creation_refusal(tab)
+            }
+        }
+        let mut hosts = HashMap::new();
+        if let Some(workspace) = tree
+            .active_workspace()
+            .filter(|w| self.context.is_some_and(|(_, room)| room == w.room))
+        {
+            let keep: Vec<u64> = workspace
+                .strips
+                .iter()
+                .flat_map(|s| &s.window_groups)
+                .flat_map(|g| &g.tabs)
+                .filter(|tab| {
+                    self.tiles.get(&tab.id).is_some_and(|old| {
+                        serde_json::to_vec(old).ok() == serde_json::to_vec(&tab.tile).ok()
+                    })
+                })
+                .map(|tab| tab.id)
+                .collect();
+            for strip in self.strip_ids() {
+                if let Some(row) = self.row_mut(strip) {
+                    for group in &mut row.groups {
+                        for id in &keep {
+                            if let Some((_, host)) = group.detach_tab(*id) {
+                                hosts.insert(*id, host);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let reports = self.close_components();
+        let mut inherited = std::mem::take(&mut self.retained_wakes);
+        inherited.push(self.component_wake.clone());
+        let failures = std::mem::take(&mut self.failures);
+        let mut retained = Retained {
+            hosts,
+            inner: resolver,
+        };
+        let mut next = Self::build(tree, records, &mut retained, chrome);
+        for (_, mut host) in retained.hosts {
+            next.close_reports.extend(host.close_components());
+        }
+        next.close_reports.extend(reports);
+        next.failures.extend(failures);
+        *self = next;
+        inherited.retain(|wake| std::sync::Arc::strong_count(wake) > 1);
+        self.retained_wakes = inherited;
+    }
     /// Separate recordings preserve native retained scene and capture layering.
     pub fn draw_sections(
         &mut self,
@@ -619,6 +708,10 @@ impl Widget for DesktopSurface {
     fn needs_redraw(&self) -> bool {
         self.component_wake
             .load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .retained_wakes
+                .iter()
+                .any(|wake| wake.load(std::sync::atomic::Ordering::Acquire))
             || self.root.needs_redraw()
     }
     fn build_layout(

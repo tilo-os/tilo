@@ -202,9 +202,10 @@ return async function connectPeer(options={}){
       async mountDesktop(target,mountOptions={}){
         if(closed||closing)throw Error('Session closed');
         if(snapshot.phase!=='ready')throw Error('Certified record hydration is incomplete');
-        const app=mountOptions.app??'writer';
-        const record=snapshot.records.find(row=>row.app_id===(app==='writer'?'dev.qos.word-processor':'dev.qos.chat'));
-        if(!record)throw Error('Canonical record missing');
+        const sessionDesktop=snapshot.desktop?.version===1&&snapshot.desktop.mode==='session'&&!mountOptions.app;
+        const app=sessionDesktop?'desktop':(mountOptions.app??'writer');
+        const record=sessionDesktop?undefined:snapshot.records.find(row=>row.app_id===(app==='writer'?'dev.qos.word-processor':'dev.qos.chat'));
+        if(!sessionDesktop&&!record)throw Error('Canonical record missing');
         surfaceAttempts.get(surfaceTargets.get(target))?.cancel();
         const controller=new AbortController();mountControllers.add(controller);
         const surface=String(++surfaceId);let allocation=0;
@@ -216,13 +217,13 @@ return async function connectPeer(options={}){
         };
         entry.cancel=abort;
         mountOptions.signal?.addEventListener('abort',abort,{once:true});if(mountOptions.signal?.aborted)abort();
-        health={...health,surfaces:[...health.surfaces,{id:surface,record:{roomId:namespace.room,appId:record.app_id,recordId:record.record_id},phase:'initializing',generation:'0',failureIds:[]}]};
+        health={...health,surfaces:[...health.surfaces,{id:surface,...(record?{record:{roomId:namespace.room,appId:record.app_id,recordId:record.record_id}}:{}),phase:'initializing',generation:'0',failureIds:[]}]};
         mountOptions.onSurface?.(surface);mountOptions.onStatus?.({phase:'gpu-pending',surfaceId:surface});report({});
         entry.run=()=>{
           if(entry.cancelled||closed||closing||surfaceTargets.get(target)!==surface)return Promise.reject(Error('Desktop attempt cancelled'));
           if(entry.pending)return entry.pending;
           const current=++allocation;
-          const pending=mountDesktop(target,{...mountOptions,...namespace,signal:controller.signal,peer:id,record:record.record_id||undefined,author:snapshot.deviceId,onStatus:status=>{
+          const pending=mountDesktop(target,{...mountOptions,...namespace,signal:controller.signal,app,peer:id,record:record?.record_id||undefined,author:snapshot.deviceId,onStatus:status=>{
             if(entry.cancelled||current!==allocation||closed||closing||surfaceTargets.get(target)!==surface)return;
             surfaceStatus(surface,status);mountOptions.onStatus?.({...status,surfaceId:surface});if(status.phase==='presented'||status.persistence==='committed')void persist().catch(()=>{});
           }});

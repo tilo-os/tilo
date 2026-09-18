@@ -331,3 +331,51 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
         store.try_flush().unwrap();
     }
 }
+
+#[test]
+fn hierarchy_rebuild_retains_checked_component_custody_for_unchanged_tabs() {
+    let (mut tree, mut resolver, records, _retained) = fixture();
+    let mut surface =
+        DesktopSurface::build(&tree, &records, &mut resolver, SurfaceChrome::default());
+    let before = match surface.row_mut(StripId(2)).unwrap().groups[0]
+        .host_for_tab_mut(10)
+        .unwrap()
+        .content()
+    {
+        ui::widget::TileContent::App(app) => std::ptr::from_ref(app.as_ref()) as *const (),
+        _ => panic!("checked component expected"),
+    };
+    tree.workspaces[0].strips.push(Strip {
+        id: StripId(99),
+        name: "Added".into(),
+        window_groups: vec![],
+    });
+    surface.rebuild_retaining(&tree, &records, &mut resolver, SurfaceChrome::default());
+    let after = match surface.row_mut(StripId(2)).unwrap().groups[0]
+        .host_for_tab_mut(10)
+        .unwrap()
+        .content()
+    {
+        ui::widget::TileContent::App(app) => std::ptr::from_ref(app.as_ref()) as *const (),
+        _ => panic!("checked component expected"),
+    };
+    assert_eq!(
+        before, after,
+        "adding a strip must retain the actual component allocation"
+    );
+    assert!(surface.take_component_close_reports().is_empty());
+    assert_eq!(surface.strip_ids(), vec![StripId(2), StripId(99)]);
+    surface.take_component_wake();
+    resolver.host.wakes[0].wake();
+    assert!(
+        surface.take_component_wake(),
+        "retained owner must keep its original wake binding"
+    );
+    surface.close_components();
+    surface.take_component_wake();
+    resolver.host.wakes[0].wake();
+    assert!(
+        !surface.take_component_wake(),
+        "closed retained owner must stop waking the surface"
+    );
+}

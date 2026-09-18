@@ -229,7 +229,7 @@ struct RowEntry {
 
 struct ClickRecord {
     page: PageId,
-    at: std::time::Instant,
+    at: ui::clock::Instant,
     pos: Point,
 }
 
@@ -1680,7 +1680,7 @@ impl NoteTreeView {
                 return;
             }
             // Double-click on the label → enter rename mode.
-            let now = std::time::Instant::now();
+            let now = ui::clock::Instant::now();
             let is_double = self.last_click.as_ref().is_some_and(|c| {
                 c.page == row_id
                     && now.duration_since(c.at).as_millis() < DOUBLE_CLICK_INTERVAL_MS

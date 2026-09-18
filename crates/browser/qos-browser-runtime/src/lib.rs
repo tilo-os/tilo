@@ -40,3 +40,8 @@ mod identity;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod peer_journal;
+
+mod desktop;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod desktop_host;

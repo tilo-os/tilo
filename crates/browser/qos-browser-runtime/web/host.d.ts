@@ -1,4 +1,4 @@
-export type Application = 'writer' | 'chat';
+export type Application = 'writer' | 'chat' | 'desktop';
 export interface RuntimeStatus {
   phase?: 'gpu-pending' | 'presented' | 'failed' | 'closed';
   error?: string;

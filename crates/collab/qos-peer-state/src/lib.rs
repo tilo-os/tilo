@@ -19,3 +19,5 @@ pub mod outbox;
 pub mod enrollment;
 
 pub mod durability;
+
+pub mod topology;

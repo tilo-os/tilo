@@ -1352,3 +1352,32 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     browser.publish_incremental("test.app","tab:1",doc.save_after(&heads),&b,now).unwrap();
     assert!(!browser.durable_covers_current("test.app","tab:1").unwrap(),"an older receipt never covers a newer local edit");
 }
+
+#[test]
+fn nonowner_topology_and_record_route_changes_are_rejected_before_admission() {
+    use automerge::{ObjType, ReadDoc};
+    let (a,ac,b,bc,now)=fixtures();
+    let room="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    let changes=seed_room(room,&ac,&[ac.clone(),bc.clone()]).unwrap();
+    let mut doc=room::candidate(None,&changes).unwrap();
+    let owners=doc.put_object(ROOT,"contents_owners_v1",ObjType::Map).unwrap();
+    doc.put(&owners,"0002",hex::encode(ac.device_public_key)).unwrap();
+    let contents=doc.put_object(ROOT,"contents",ObjType::Map).unwrap();
+    let strip=doc.put_object(contents,"0002000000000001",ObjType::Map).unwrap();
+    doc.put(&strip,"name","Shared").unwrap();doc.put(&strip,"order",0_u64).unwrap();
+    let groups=doc.put_object(&strip,"groups",ObjType::Map).unwrap();
+    let group=doc.put_object(groups,"0002000000000002",ObjType::Map).unwrap();
+    let tabs=doc.put_object(&group,"tabs",ObjType::Map).unwrap();
+    let tab=doc.put_object(tabs,"0002000000000003",ObjType::Map).unwrap();
+    doc.put(&tab,"title","Original").unwrap();doc.put(&tab,"record_id","tab:0000000000000001").unwrap();
+    doc.commit();
+    let mut peer=StatePeer::new(room,ac.clone(),vec![ac,bc],RevocationList::new(),now).unwrap();
+    peer.install_seed(SeedState{room_changes:doc.get_changes(&[]).iter().map(|c|c.raw_bytes().to_vec()).collect(),documents:vec![]},&a,now).unwrap();
+    let before=peer.durable().unwrap();
+    doc.set_actor(automerge::ActorId::from(b.verifying_key().to_bytes().to_vec()));
+    doc.put(&tab,"title","Stolen").unwrap();doc.put(&tab,"record_id","tab:0000000000000012").unwrap();doc.commit();
+    let result=peer.receive(b.verifying_key().to_bytes(),NeighbourMsg::SyncResp{room:room.into(),changes:doc.get_changes(&[]).iter().map(|c|c.raw_bytes().to_vec()).collect()},now);
+    assert!(result.is_err(),"another certified device must not overwrite owned topology");
+    assert_eq!(peer.durable().unwrap(),before,"unadmitted topology must never become visible");
+    let _=doc.get(ROOT,"contents").unwrap();
+}

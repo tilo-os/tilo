@@ -30,3 +30,5 @@ pub mod intents;
 pub mod records;
 pub mod resolver;
 pub mod topbar;
+
+pub mod projection;

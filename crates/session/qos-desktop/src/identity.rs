@@ -38,3 +38,16 @@ pub fn peer_salt_of(id: u64) -> u16 {
 pub fn counter_of(id: u64) -> u64 {
     id & PEER_ID_COUNTER_MASK
 }
+
+/// Mint in an explicitly owned namespace without process-global state. The
+/// resulting canonical IDs must be persisted before publication.
+pub fn mint_in_namespace(salt: u16, counter: &mut u64) -> Result<u64, String> {
+    if salt == 0 || *counter == 0 || *counter > PEER_ID_COUNTER_MASK {
+        return Err("invalid or exhausted desktop identity namespace".into());
+    }
+    let id = (u64::from(salt) << PEER_ID_SALT_SHIFT) | *counter;
+    *counter = counter
+        .checked_add(1)
+        .ok_or("desktop identity namespace exhausted")?;
+    Ok(id)
+}

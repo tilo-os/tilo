@@ -1,7 +1,8 @@
 import type {Application,DesktopMount,MountOptions} from './host.mjs';
-export interface CertifiedRecord {app_id:'dev.qos.word-processor'|'dev.qos.chat';record_id:string;heads:string[]}
+export interface CertifiedRecord {app_id:string;record_id:string;heads:string[]}
 export interface PeerSnapshot {
  health?:SessionHealth;
+ desktop?:{version:1;mode:'session'};
  phase:'authenticating'|'admitting'|'ready'|'incomplete'|'failed'|'closed';
  room?:string;deviceId?:string;records:CertifiedRecord[];error?:string|null;
  pendingPrerequisites?:number;persistenceNeeded?:boolean;

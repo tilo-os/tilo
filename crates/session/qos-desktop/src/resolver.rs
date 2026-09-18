@@ -14,6 +14,8 @@ pub struct TileRequest<'a> {
 }
 pub enum TileResolution {
     Component(AppComponent),
+    /// A retained checked owner moved through a hierarchy rebuild.
+    Retained(TileHost),
     Hosted(Box<dyn AppWidget>),
     Content(ui::widget::TileContent),
     Unavailable {
@@ -47,6 +49,18 @@ pub fn canonical_app_id(tile: &TileContent) -> Option<String> {
 }
 /// A checked context is provided by the host; this interface grants no authority.
 pub trait ComponentContextSource {
+    fn checkout(
+        &self,
+        definition: &'static ApplicationDefinition,
+        request: &TileRequest<'_>,
+    ) -> Result<RecordCheckout, LaunchError> {
+        Ok(crate::records::component_record(
+            definition.app_id,
+            request.tab.id,
+            definition.record_kind.clone(),
+        ))
+    }
+
     fn prepare(
         &mut self,
         definition: &'static ApplicationDefinition,
@@ -81,8 +95,10 @@ impl<H: ComponentContextSource> TileResolver for ApplicationCatalogTileResolver<
                 };
             }
         };
-        let checkout: RecordCheckout =
-            crate::records::component_record(&id, request.tab.id, definition.record_kind.clone());
+        let checkout = match self.host.checkout(definition, &request) {
+            Ok(checkout) => checkout,
+            Err(error) => return TileResolution::Failed(error),
+        };
         let target = LaunchTarget::Record {
             checkout,
             reveal: None,
@@ -104,6 +120,7 @@ impl TileResolution {
         wake: std::sync::Arc<dyn Fn() + Send + Sync>,
     ) -> TileHost {
         match self {
+            Self::Retained(host) => host,
             Self::Component(component) => {
                 match TileHost::mount_component(component, move |_| wake()) {
                     Ok(host) => host,

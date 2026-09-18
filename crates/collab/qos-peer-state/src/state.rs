@@ -317,6 +317,18 @@ impl StatePeer {
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
         Ok((role, caps, person.id().to_owned()))
     }
+    /// Committed, admitted room only. Callers cannot mutate the admission owner.
+    pub fn admitted_room(&self) -> Option<&AutoCommit> { self.room_doc.as_ref() }
+
+    /// Read permission for an exact canonical record using the same governed
+    /// actor/resource vocabulary as document mutation admission.
+    pub fn check_document_read(&self, device: [u8;32], app:&str, record:&str, now:SystemTime)->Result<(),String>{
+        let (role,caps,person)=self.permissions(device,now)?;
+        let actor=Actor::person(Some(role),&person).with_principal(Principal::App(app.into())).in_room(self.room.clone());
+        let resource=ResourceRef::Artifact{app:Some(app.into()),kind:ArtifactKind::Note,instance:collab_types::document_artifact_id(app,&self.room,record)};
+        if decide_capability(&actor,&resource,collab_types::caps::Verb::Read,&caps,Some(now_secs(now)))!=CapDecision::Allow{return Err(format!("record read forbidden: {app}/{record}"))}
+        Ok(())
+    }
     pub fn has_governance(&self) -> bool {
         self.room_doc.is_some()
     }
@@ -581,6 +593,7 @@ impl StatePeer {
                 ) {
                     return Err("governance writer is not pinned authority".into());
                 }
+                crate::topology::validate(self.room_doc.as_ref(), &candidate, &from, &pinned)?;
                 if !room::immutable_receipts(self.room_doc.as_ref(), &candidate) {
                     return Err("effect receipt is immutable".into());
                 }

@@ -69,18 +69,9 @@ fn error(e: impl ToString) -> JsValue {
 }
 fn report(peer: &Peer, phase: &str, error: Option<String>) {
     let state = peer.state.borrow();
-    let rows = state.rows();
-    let complete = state.pending_count() == 0
-        && rows.iter().any(|r| {
-            r.app_id == "dev.qos.word-processor"
-                && r.record_id == "tab:0000000000000001"
-                && !r.heads.is_empty()
-        })
-        && rows
-            .iter()
-            .any(|r| r.app_id == "dev.qos.chat" && r.record_id.is_empty() && !r.heads.is_empty());
+    let complete = crate::desktop::admission(&state).is_ok_and(|admission| admission.complete());
     let outgoing=state.outbox_status(&peer.outbox.borrow(),SystemTime::now());
-    let incomplete = state.incomplete_reason().or_else(||peer.admission_failure.borrow().clone())
+    let incomplete = required_read_failure(peer,&state).or_else(||state.incomplete_reason()).or_else(||peer.admission_failure.borrow().clone())
         .or_else(||(outgoing.blocked_expired>0).then(||"unsent durable edits await a fresh authorized checkpoint for reconciliation".into()));
     let phase = if incomplete.is_some() && !matches!(phase, "closed" | "failed") {
         "incomplete"
@@ -94,7 +85,7 @@ fn report(peer: &Peer, phase: &str, error: Option<String>) {
     let error = error.or(incomplete);
     let health=health(peer,&state,phase=="ready",error.as_deref());
     let synchronized=health["records"].as_array().is_some_and(|records|!records.is_empty()&&records.iter().all(|record|record["acknowledgement"]["coversCurrentBasis"]==true));
-    let value = serde_json::json!({"phase":phase,"room":state.room(),"deviceId":peer._key.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>(),"records":state.rows(),"pendingPrerequisites":state.pending_count(),"persistenceNeeded":!peer.cache.pending_writes().is_empty(),"outgoingPending":peer.outbox.borrow().len(),"outgoingBlocked":outgoing.blocked_expired,"synchronization":if outgoing.blocked_expired>0{"blocked"}else if synchronized{"acknowledged"}else{"pending"},"error":error,"health":health});
+    let value = serde_json::json!({"phase":phase,"desktop":{"version":1,"mode":"session"},"room":state.room(),"deviceId":peer._key.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>(),"records":state.rows(),"pendingPrerequisites":state.pending_count(),"persistenceNeeded":!peer.cache.pending_writes().is_empty(),"outgoingPending":peer.outbox.borrow().len(),"outgoingBlocked":outgoing.blocked_expired,"synchronization":if outgoing.blocked_expired>0{"blocked"}else if synchronized{"acknowledged"}else{"pending"},"error":error,"health":health});
     let _ = peer
         .callback
         .call1(&JsValue::NULL, &JsValue::from_str(&value.to_string()));
@@ -518,16 +509,7 @@ pub fn peer_committed(id: u32) -> Result<(), JsValue> {
         }
         // Keep durable outgoing bytes until a validated governor checkpoint covers them.
         // A queued transport send alone is not delivery acknowledgement.
-        let rows = peer.state.borrow().rows();
-        let complete = peer.state.borrow().pending_count() == 0
-            && rows.iter().any(|r| {
-                r.app_id == "dev.qos.word-processor"
-                    && r.record_id == "tab:0000000000000001"
-                    && !r.heads.is_empty()
-            })
-            && rows.iter().any(|r| {
-                r.app_id == "dev.qos.chat" && r.record_id.is_empty() && !r.heads.is_empty()
-            });
+        let complete = crate::desktop::admission(&peer.state.borrow()).is_ok_and(|admission| admission.complete());
         report(&peer, if complete { "ready" } else { "admitting" }, None);
         Ok(())
     })
@@ -580,6 +562,9 @@ pub fn acknowledge_peer_storage_batch(id:u32,raw:String)->Result<(),JsValue>{
         report(&peer,"admitting",None);Ok(())
     })
 }
+fn required_read_failure(peer:&Peer,state:&StatePeer)->Option<String>{
+    crate::desktop::admission(state).ok()?.required.iter().find_map(|record|state.check_document_read(peer._key.verifying_key().to_bytes(),&record.app_id,&record.record_id,SystemTime::now()).err())
+}
 fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>)->serde_json::Value{
     let journal_status=peer.cache.status(&StorageKey::Admission{workspace:state.room().into()});
     let journal=journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(_,bytes)|Journal::decode(&bytes.bytes).ok());
@@ -589,11 +574,16 @@ fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>)->s
         SystemTime::now(),
         peer.admission_failure.borrow().clone(),
     );
+    let required_failure=required_read_failure(peer,state);
+    let durable_failure=durable_failure.or(required_failure);
     let failure=durable_failure.as_deref().or(reported_error);
-    let failures=failure.map(|text|{
+    let mut failures=failure.map(|text|{
         let (code,message,recovery)=if text.contains("revoked"){("identity-revoked","This device no longer has access.","review-permissions")}else if text.contains("MLS")||text.contains("crypto"){("crypto-unavailable","Encrypted content is waiting for its security prerequisites.","refresh-checkpoint")}else if text.contains("timestamp")||text.contains("expired"){("checkpoint-expired","A fresh copy of the shared state is required.","refresh-checkpoint")}else if text.contains("forbidden")||text.contains("permission"){("permission-required","Access to this record needs permission.","review-permissions")}else if !peer.transport_connected.get(){("transport-ended","The connection was interrupted. Saved work is retained.","retry-connection")}else{("record-install-failed","Shared state could not be loaded yet.","refresh-checkpoint")};
         serde_json::json!({"id":"runtime:admission","code":code,"scope":{"kind":if !peer.transport_connected.get(){"connection"}else{"admission"}},"severity":if durable_failure.is_some(){"error"}else{"notice"},"message":message,"recovery":[if recovery=="review-permissions"{serde_json::json!({"kind":recovery,"failureId":"runtime:admission"})}else{serde_json::json!({"kind":recovery})}],"occurredAtMs":js_sys::Date::now()})
     }).into_iter().collect::<Vec<_>>();
+    if let Ok(admission)=crate::desktop::admission(state){for app in admission.unsupported{
+        failures.push(serde_json::json!({"id":format!("runtime:application:{app}"),"code":"runtime-unavailable","scope":{"kind":"admission"},"severity":"notice","message":format!("{app}: application integration or required service unavailable"),"recovery":[],"occurredAtMs":js_sys::Date::now()}));
+    }}
     let epoch=peer.storage_epoch.borrow().clone();
     let revision=|revision:u64|epoch.as_ref().map(|epoch|serde_json::json!({"epoch":epoch,"revision":revision.to_string()}));
     let pending=peer.cache.pending_writes();
@@ -608,8 +598,21 @@ fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>)->s
         let covered=is_durable&&receipt.is_some()&&state.durable_covers_current(&row.app_id,&row.record_id).unwrap_or(false);
         let outgoing=peer.outbox.borrow().iter().filter(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id==&row.app_id&&record_id==&row.record_id)).count();
         let durable_outgoing=journal.as_ref().map(|journal|journal.outbox.iter().filter(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id==&row.app_id&&record_id==&row.record_id)).count()).unwrap_or(0);
-        serde_json::json!({"record":{"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id},"admission":"admitted","current":{"heads":row.heads},"editing":{"mode":if durable_failure.is_some(){"blocked"}else if peer.transport_connected.get(){"online"}else{"offline-queued"}},"local":{"state":if failed{"failed"}else if is_durable{"durable"}else{"pending"},"durableBasis":durable_basis,"recordRevision":status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(r,_)|revision(*r)),"journalRevision":journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(r,_)|revision(*r)),"pendingWrites":pending.iter().filter(|write|write.key==key||matches!(write.key,StorageKey::Admission{..})).count(),"pendingBytes":pending.iter().filter(|write|write.key==key||matches!(write.key,StorageKey::Admission{..})).map(|write|write.value.bytes.len()).sum::<usize>(),"committedAtMs":peer.committed_at.get()},"outgoing":{"pendingOperations":outgoing,"durableOperations":durable_outgoing},"acknowledgement":{"state":if covered{"covered"}else if receipt.is_some(){"pending"}else{"unknown"},"targetPeerId":receipt.as_ref().map(|receipt|receipt.coverage.author.iter().map(|byte|format!("{byte:02x}")).collect::<String>()),"coveredBasis":receipt.as_ref().map(|receipt|serde_json::json!({"heads":receipt.coverage.heads})),"coversCurrentBasis":covered,"receiptId":receipt.map(|receipt|receipt.receipt_id),"observedAtMs":if covered{peer.committed_at.get()}else{None}},"failureIds":[]})
+        serde_json::json!({"record":{"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id},"admission":if state.check_document_read(peer._key.verifying_key().to_bytes(),&row.app_id,&row.record_id,SystemTime::now()).is_ok(){"admitted"}else{"unavailable"},"current":{"heads":row.heads},"editing":{"mode":if durable_failure.is_some(){"blocked"}else if peer.transport_connected.get(){"online"}else{"offline-queued"}},"local":{"state":if failed{"failed"}else if is_durable{"durable"}else{"pending"},"durableBasis":durable_basis,"recordRevision":status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(r,_)|revision(*r)),"journalRevision":journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(r,_)|revision(*r)),"pendingWrites":pending.iter().filter(|write|write.key==key||matches!(write.key,StorageKey::Admission{..})).count(),"pendingBytes":pending.iter().filter(|write|write.key==key||matches!(write.key,StorageKey::Admission{..})).map(|write|write.value.bytes.len()).sum::<usize>(),"committedAtMs":peer.committed_at.get()},"outgoing":{"pendingOperations":outgoing,"durableOperations":durable_outgoing},"acknowledgement":{"state":if covered{"covered"}else if receipt.is_some(){"pending"}else{"unknown"},"targetPeerId":receipt.as_ref().map(|receipt|receipt.coverage.author.iter().map(|byte|format!("{byte:02x}")).collect::<String>()),"coveredBasis":receipt.as_ref().map(|receipt|serde_json::json!({"heads":receipt.coverage.heads})),"coversCurrentBasis":covered,"receiptId":receipt.map(|receipt|receipt.receipt_id),"observedAtMs":if covered{peer.committed_at.get()}else{None}},"failureIds":[]})
     }).collect::<Vec<_>>();
     let admission_phase=crate::admission_health::admission_phase(state,ready,durable_failure.as_deref());
-    serde_json::json!({"version":1,"transport":{"phase":if peer.closed.get(){"closed"}else if peer.transport_connected.get(){"connected"}else{"offline"},"authenticated":peer.transport_connected.get(),"lastRelayContactAtMs":peer.last_relay_contact.get(),"lastSessionPeerContactAtMs":peer.last_peer_contact.get()},"admission":{"phase":admission_phase,"requiredRecords":state.rows().iter().map(|row|serde_json::json!({"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id})).collect::<Vec<_>>(),"pendingPrerequisites":state.pending_count(),"deadlineAtMs":null},"records":records,"capabilities":{"automaticRecovery":true,"retrySaving":true,"recoverRenderer":true,"durablePeerAcknowledgement":true},"failures":failures})
+    serde_json::json!({"version":1,"transport":{"phase":if peer.closed.get(){"closed"}else if peer.transport_connected.get(){"connected"}else{"offline"},"authenticated":peer.transport_connected.get(),"lastRelayContactAtMs":peer.last_relay_contact.get(),"lastSessionPeerContactAtMs":peer.last_peer_contact.get()},"admission":{"phase":admission_phase,"requiredRecords":crate::desktop::admission(state).map(|admission|admission.required.iter().map(|row|serde_json::json!({"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id})).collect::<Vec<_>>()).unwrap_or_default(),"pendingPrerequisites":state.pending_count(),"deadlineAtMs":null},"records":records,"capabilities":{"automaticRecovery":true,"retrySaving":true,"recoverRenderer":true,"durablePeerAcknowledgement":true},"failures":failures})
+}
+
+/// Read-only handoff from the committed admission owner to the retained desktop.
+pub(crate) fn desktop_state(id:u32)->Result<StatePeer,String>{
+    PEERS.with(|peers|{
+        let peer=peers.borrow().get(&id).cloned().ok_or("closed peer")?;
+        let state=peer.state.borrow();
+        let admission=crate::desktop::admission(&state)?;
+        if !admission.complete(){return Err("canonical desktop records are not admitted".into())}
+        if let Some(reason)=required_read_failure(&peer,&state){return Err(reason)}
+        if let Some(reason)=state.incomplete_reason(){return Err(reason)}
+        Ok(state.clone())
+    })
 }

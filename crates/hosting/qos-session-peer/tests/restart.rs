@@ -10,7 +10,7 @@ fn restart_preserves_canonical_state_and_journal() {
         .queue_pending("action-42", b"canonical invocation", true)
         .unwrap();
     let before = owner.status();
-    assert_eq!(before.records.len(), 2);
+    assert_eq!(before.records.len(), 3);
     assert!(before.outgoing > 0);
     assert!(SessionOwner::open(&path).is_err());
     drop(owner);
@@ -446,7 +446,7 @@ fn deferred_snapshot_stays_reachable_until_governed_coverage_then_commits() {
     let messages = source
         .bootstrap_messages(&key, web_time::SystemTime::now())
         .unwrap();
-    let snapshot=messages.iter().find(|message|matches!(message,NeighbourMsg::AppDocument{record_id,..} if !record_id.is_empty())).unwrap().clone();
+    let snapshot=messages.iter().find(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id=="dev.qos.word-processor" && record_id=="tab:0000000000000001")).unwrap().clone();
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     assert!(
         owner.receive(origin, snapshot).unwrap().is_none(),
@@ -476,17 +476,103 @@ fn deferred_snapshot_stays_reachable_until_governed_coverage_then_commits() {
 
 #[test]
 fn published_durability_receipts_bind_committed_generation_and_survive_failed_barrier() {
-    let dir=tempfile::tempdir().unwrap();let path=dir.path().join("owner");
-    let mut owner=SessionOwner::initialize(&path).unwrap();
-    let receipt=owner.refresh_checkpoint().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("owner");
+    let mut owner = SessionOwner::initialize(&path).unwrap();
+    let receipt = owner.refresh_checkpoint().unwrap();
     for row in &receipt.records {
-        let proof=owner.peer().durable_coverage(&row.app_id,&row.record_id).unwrap().expect("native checkpoint must carry barrier-bound durable proof");
-        assert_eq!(proof.generation,receipt.generation);assert_eq!(proof.coverage.heads,row.heads);
+        let proof = owner
+            .peer()
+            .durable_coverage(&row.app_id, &row.record_id)
+            .unwrap()
+            .expect("native checkpoint must carry barrier-bound durable proof");
+        assert_eq!(proof.generation, receipt.generation);
+        assert_eq!(proof.coverage.heads, row.heads);
     }
-    let outgoing=owner.outgoing().to_vec();let before=owner.status();
-    fs::rename(path.join("session.bin"),path.join("saved.bin")).unwrap();fs::create_dir(path.join("session.bin")).unwrap();
-    assert!(owner.refresh_checkpoint().is_err());assert!(!owner.permits_publication());assert_eq!(owner.outgoing(),outgoing);assert_eq!(owner.status(),before);
-    fs::remove_dir(path.join("session.bin")).unwrap();fs::rename(path.join("saved.bin"),path.join("session.bin")).unwrap();drop(owner);
-    let owner=SessionOwner::open(&path).unwrap();assert_eq!(owner.outgoing(),outgoing);
-    for row in receipt.records{assert_eq!(owner.peer().durable_coverage(&row.app_id,&row.record_id).unwrap().unwrap().generation,receipt.generation);}
+    let outgoing = owner.outgoing().to_vec();
+    let before = owner.status();
+    fs::rename(path.join("session.bin"), path.join("saved.bin")).unwrap();
+    fs::create_dir(path.join("session.bin")).unwrap();
+    assert!(owner.refresh_checkpoint().is_err());
+    assert!(!owner.permits_publication());
+    assert_eq!(owner.outgoing(), outgoing);
+    assert_eq!(owner.status(), before);
+    fs::remove_dir(path.join("session.bin")).unwrap();
+    fs::rename(path.join("saved.bin"), path.join("session.bin")).unwrap();
+    drop(owner);
+    let owner = SessionOwner::open(&path).unwrap();
+    assert_eq!(owner.outgoing(), outgoing);
+    for row in receipt.records {
+        assert_eq!(
+            owner
+                .peer()
+                .durable_coverage(&row.app_id, &row.record_id)
+                .unwrap()
+                .unwrap()
+                .generation,
+            receipt.generation
+        );
+    }
+}
+
+#[test]
+fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
+    use ui::automerge::{AutoCommit, ROOT, ReadDoc};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("desktop");
+    let owner = qos_session_peer::SessionOwner::initialize(&root).unwrap();
+    let before = owner.status();
+    assert!(
+        before.records.iter().any(|r| r.app_id == "dev.qos.notes"),
+        "desktop must include a real initialized Notes record"
+    );
+    let writer = owner
+        .peer()
+        .document("dev.qos.word-processor", "tab:0000000000000001")
+        .unwrap();
+    let chat = owner.peer().document("dev.qos.chat", "").unwrap();
+    let message = owner.peer().room_message();
+    let qos_peer_state::NeighbourMsg::SyncResp { changes, .. } = message else {
+        panic!("room state")
+    };
+    let mut doc = AutoCommit::new();
+    doc.apply_changes(
+        changes
+            .iter()
+            .map(|b| ui::automerge::Change::try_from(b.as_slice()).unwrap()),
+    )
+    .unwrap();
+    assert!(doc.get(ROOT, "contents").unwrap().is_some());
+    let heads = doc.get_heads();
+    drop(owner);
+    for _ in 0..2 {
+        let owner = qos_session_peer::SessionOwner::open(&root).unwrap();
+        assert_eq!(owner.status().room, before.room);
+        assert_eq!(owner.status().authority, before.authority);
+        assert_eq!(
+            owner.status().generation,
+            before.generation,
+            "reopen must not reseed topology"
+        );
+        assert_eq!(
+            owner
+                .peer()
+                .document("dev.qos.word-processor", "tab:0000000000000001")
+                .unwrap(),
+            writer
+        );
+        assert_eq!(owner.peer().document("dev.qos.chat", "").unwrap(), chat);
+        let qos_peer_state::NeighbourMsg::SyncResp { changes, .. } = owner.peer().room_message()
+        else {
+            panic!("room state")
+        };
+        let mut doc = AutoCommit::new();
+        doc.apply_changes(
+            changes
+                .iter()
+                .map(|b| ui::automerge::Change::try_from(b.as_slice()).unwrap()),
+        )
+        .unwrap();
+        assert_eq!(doc.get_heads(), heads);
+    }
 }

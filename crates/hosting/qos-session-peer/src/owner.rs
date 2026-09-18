@@ -182,6 +182,7 @@ impl SessionOwner {
             now,
         )
         .map_err(anyhow::Error::msg)?;
+        crate::seed::bootstrap_desktop(&mut peer, &identity.native).map_err(anyhow::Error::msg)?;
         let outgoing = peer
             .durable_bootstrap_messages(&identity.native, now, 1)
             .map_err(anyhow::Error::msg)?
@@ -225,12 +226,37 @@ impl SessionOwner {
         let peer = restore(&aggregate, &signed, &identity)?;
         // Re-establish the barrier even after an interrupted rename, before any publication.
         store.commit(&encode(&aggregate, &identity)?)?;
-        Ok(Self {
+        let mut owner = Self {
             store,
             identity,
             aggregate,
             peer,
-        })
+        };
+        let mut candidate = owner.peer.clone();
+        if crate::seed::bootstrap_desktop(&mut candidate, &owner.identity.native)
+            .map_err(anyhow::Error::msg)?
+        {
+            let messages = candidate
+                .durable_bootstrap_messages(
+                    &owner.identity.native,
+                    SystemTime::now(),
+                    owner
+                        .aggregate
+                        .generation
+                        .checked_add(1)
+                        .context("session generation exhausted")?,
+                )
+                .map_err(anyhow::Error::msg)?;
+            let mut next = owner.aggregate.clone();
+            next.outgoing.extend(
+                messages
+                    .iter()
+                    .map(postcard::to_stdvec)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            owner.commit(next, candidate)?;
+        }
+        Ok(owner)
     }
     pub fn permits_publication(&self) -> bool {
         !self.store.is_poisoned() && self.peer.incomplete_reason().is_none()
@@ -340,7 +366,14 @@ impl SessionOwner {
     pub fn refresh_checkpoint(&mut self) -> Result<CommitReceipt> {
         let mut candidate = self.peer.clone();
         let messages = candidate
-            .durable_bootstrap_messages(&self.identity.native, SystemTime::now(), self.aggregate.generation.checked_add(1).context("session generation exhausted")?)
+            .durable_bootstrap_messages(
+                &self.identity.native,
+                SystemTime::now(),
+                self.aggregate
+                    .generation
+                    .checked_add(1)
+                    .context("session generation exhausted")?,
+            )
             .map_err(anyhow::Error::msg)?;
         let mut next = self.aggregate.clone();
         next.outgoing = messages
@@ -378,7 +411,14 @@ impl SessionOwner {
             return self.commit(next, candidate).map(Some);
         }
         let messages = candidate
-            .durable_bootstrap_messages(&self.identity.native, SystemTime::now(), self.aggregate.generation.checked_add(1).context("session generation exhausted")?)
+            .durable_bootstrap_messages(
+                &self.identity.native,
+                SystemTime::now(),
+                self.aggregate
+                    .generation
+                    .checked_add(1)
+                    .context("session generation exhausted")?,
+            )
             .map_err(anyhow::Error::msg)?;
         // All entries here are authoritative complete checkpoints; newer committed checkpoints supersede older ones.
         next.outgoing = messages
@@ -399,7 +439,14 @@ impl SessionOwner {
         }
         self.validate_admission(&candidate, &directory)?;
         let messages = candidate
-            .durable_bootstrap_messages(&self.identity.native, SystemTime::now(), self.aggregate.generation.checked_add(1).context("session generation exhausted")?)
+            .durable_bootstrap_messages(
+                &self.identity.native,
+                SystemTime::now(),
+                self.aggregate
+                    .generation
+                    .checked_add(1)
+                    .context("session generation exhausted")?,
+            )
             .map_err(anyhow::Error::msg)?;
         let mut next = self.aggregate.clone();
         next.directory = directory;
@@ -420,7 +467,14 @@ impl SessionOwner {
         }
         self.validate_admission(&candidate, &directory)?;
         let messages = candidate
-            .durable_bootstrap_messages(&self.identity.native, SystemTime::now(), self.aggregate.generation.checked_add(1).context("session generation exhausted")?)
+            .durable_bootstrap_messages(
+                &self.identity.native,
+                SystemTime::now(),
+                self.aggregate
+                    .generation
+                    .checked_add(1)
+                    .context("session generation exhausted")?,
+            )
             .map_err(anyhow::Error::msg)?;
         let mut next = self.aggregate.clone();
         next.directory = directory;
@@ -598,5 +652,161 @@ mod enrollment_migration_tests {
             postcard::from_bytes(&std::fs::read(path.join("session.bin")).unwrap()).unwrap();
         let (version, _) = postcard::take_from_bytes::<u32>(&signed.payload).unwrap();
         assert_eq!(version, 2);
+    }
+}
+
+#[cfg(test)]
+mod desktop_migration_tests {
+    use super::*;
+    #[test]
+    fn existing_multi_namespace_topology_survives_native_restart_unchanged() {
+        use ui::automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("multi-owner");
+        let mut owner = SessionOwner::initialize(&path).unwrap();
+        let mut doc = owner.peer.admitted_room().unwrap().clone();
+        let contents = doc.get(ROOT, "contents").unwrap().unwrap().1;
+        for salt in [7_u16, 8] {
+            let strip = doc
+                .put_object(
+                    &contents,
+                    format!("{:016x}", (u64::from(salt) << 48) | 1),
+                    ObjType::Map,
+                )
+                .unwrap();
+            doc.put(&strip, "name", "Existing peer strip").unwrap();
+            doc.put(&strip, "order", u64::from(salt)).unwrap();
+            doc.put_object(strip, "groups", ObjType::Map).unwrap();
+        }
+        doc.commit();
+        owner
+            .peer
+            .install_seed(
+                qos_peer_state::SeedState {
+                    room_changes: doc
+                        .get_changes(&[])
+                        .iter()
+                        .map(|c| c.raw_bytes().to_vec())
+                        .collect(),
+                    documents: vec![],
+                },
+                &owner.identity.native,
+                SystemTime::now(),
+            )
+            .unwrap();
+        owner.aggregate.peer = owner.peer.durable().unwrap();
+        owner
+            .store
+            .commit(&encode(&owner.aggregate, &owner.identity).unwrap())
+            .unwrap();
+        let expected = owner.peer.durable().unwrap();
+        let generation = owner.status().generation;
+        drop(owner);
+        let owner = SessionOwner::open(&path).unwrap();
+        assert_eq!(owner.peer().durable().unwrap(), expected);
+        assert_eq!(owner.status().generation, generation);
+    }
+    #[test]
+    fn legacy_room_migration_preserves_authority_app_bytes_pending_and_outgoing_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy");
+        let mut owner = SessionOwner::initialize(&path).unwrap();
+        let room = owner.peer.room().to_owned();
+        let cert = owner.identity.native_cert.clone();
+        let now = SystemTime::now();
+        let mut legacy = StatePeer::new(
+            &room,
+            cert.clone(),
+            vec![cert.clone()],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        legacy
+            .install_seed(
+                crate::seed::seed(&room, &cert, &[cert.clone()]).unwrap(),
+                &owner.identity.native,
+                now,
+            )
+            .unwrap();
+        // A topology-free room may already reserve a certified owner's namespace.
+        // Migration must extend that registry rather than replacing it.
+        {
+            use ui::automerge::{ObjType, ROOT, transaction::Transactable};
+            let mut doc = legacy.admitted_room().unwrap().clone();
+            let owners = doc
+                .put_object(ROOT, "contents_owners_v1", ObjType::Map)
+                .unwrap();
+            doc.put(owners, "0007", hex::encode(cert.device_public_key))
+                .unwrap();
+            doc.commit();
+            legacy
+                .install_seed(
+                    qos_peer_state::SeedState {
+                        room_changes: doc
+                            .get_changes(&[])
+                            .iter()
+                            .map(|c| c.raw_bytes().to_vec())
+                            .collect(),
+                        documents: vec![],
+                    },
+                    &owner.identity.native,
+                    now,
+                )
+                .unwrap();
+        }
+        let writer = legacy
+            .document("dev.qos.word-processor", "tab:0000000000000001")
+            .unwrap();
+        let chat = legacy.document("dev.qos.chat", "").unwrap();
+        owner.aggregate.pending.push(PendingOperation {
+            invocation_id: "retained-intent".into(),
+            encoded_request: vec![1, 2, 3],
+            outcome_unknown: true,
+        });
+        owner.aggregate.outgoing = legacy
+            .durable_bootstrap_messages(&owner.identity.native, now, owner.aggregate.generation)
+            .unwrap()
+            .iter()
+            .map(|m| postcard::to_stdvec(m).unwrap())
+            .collect();
+        owner.aggregate.peer = legacy.durable().unwrap();
+        let pending = owner.aggregate.pending.clone();
+        let outgoing = owner.aggregate.outgoing.clone();
+        let generation = owner.aggregate.generation;
+        let authority = owner.aggregate.authority.clone();
+        let directory = owner.aggregate.directory.clone();
+        owner
+            .store
+            .commit(&encode(&owner.aggregate, &owner.identity).unwrap())
+            .unwrap();
+        drop(owner);
+        let owner = SessionOwner::open(&path).unwrap();
+        assert_eq!(owner.status().room, room);
+        assert_eq!(owner.aggregate.authority, authority);
+        assert_eq!(owner.directory(), directory);
+        assert_eq!(owner.pending(), pending);
+        assert!(owner.outgoing().starts_with(&outgoing));
+        assert_eq!(owner.status().generation, generation + 1);
+        assert_eq!(
+            owner
+                .peer()
+                .document("dev.qos.word-processor", "tab:0000000000000001")
+                .unwrap(),
+            writer
+        );
+        assert_eq!(owner.peer().document("dev.qos.chat", "").unwrap(), chat);
+        assert!(
+            owner
+                .status()
+                .records
+                .iter()
+                .any(|r| r.app_id == "dev.qos.notes")
+        );
+        let state = owner.peer().durable().unwrap();
+        drop(owner);
+        let owner = SessionOwner::open(&path).unwrap();
+        assert_eq!(owner.peer().durable().unwrap(), state);
+        assert_eq!(owner.status().generation, generation + 1);
     }
 }

@@ -5,7 +5,7 @@ import {recoverableClose,settleComponentClose} from './close-recovery.mjs';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
 function fixture({enroll,recoveryClock}={}){
  let next=0,held=0,storageRefs=0,failConnect=false,failClose=false,failCommit=false,pendingWrite=false,attempts=0,gate;
- const mountGates=[],mountSignals=[];
+ const mountGates=[],mountSignals=[],mountOptionsSeen=[];
  const peers=new Set(),mounts=new Set(),closed=[],rebound=[],suspended=new Set();let componentOwners=0,durableRecord,statusCallback,publishFailure=false,failMount=false;
  const locks={request:async(_name,_opts,fn)=>{held++;try{return await fn({});}finally{held--;}}};
  const runtime={identity_request:()=>'{public}',identity_complete:()=>'{proof}',bind_identity:()=> 'opaque-key',peer_enrollment:()=>JSON.stringify({profile:'p',device:'d',room:'r'}),refresh_storage_lease(){},
@@ -18,7 +18,7 @@ function fixture({enroll,recoveryClock}={}){
  };
  const storage={fresh:true,hydrate:async()=>[],commit:async()=>{if(failCommit)throw Error('durable write failed');},release:async()=>{storageRefs--;}};
  const connect=createConnectPeer({init:async()=>{},runtime,recoveryClock,acquireIdentity:async()=>{held++;return{material:'opaque-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:enroll??(async()=>({ok:true,text:async()=>'{raw}'})),acquireStorage:async()=>{storageRefs++;return storage;},mountDesktop:async(_target,options)=>{
-  mountSignals.push(options.signal);const mountGate=mountGates.shift();if(mountGate)await mountGate.promise;
+  mountOptionsSeen.push(options);mountSignals.push(options.signal);const mountGate=mountGates.shift();if(mountGate)await mountGate.promise;
   if(failMount)throw Error('initial fonts unavailable');
   const mount={id:next,cleanupCalls:0,flushCalls:0,async flush(){mount.flushCalls++;},state:()=>({phase:'presented',gpuGeneration:1}),recover(){options.onStatus({phase:'gpu-pending',gpuGeneration:2});},status(value){options.onStatus(value);},present(gpuGeneration){options.onStatus({phase:'presented',gpuGeneration});},failRenderer(){options.onStatus({phase:'failed',gpuGeneration:1,error:'GPU device lost'});},input(){if(!suspended.has(mount.id)){assert(peers.has(mount.id),'input addressed removed peer');}},setSuspended(){}};
   componentOwners++;
@@ -28,7 +28,7 @@ function fixture({enroll,recoveryClock}={}){
   }});
   mounts.add(mount);return mount;
  }});
- return{connect,peers,mounts,closed,mountSignals,queueMount:gate=>mountGates.push(gate),rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
+ return{connect,peers,mounts,closed,mountSignals,mountOptionsSeen,queueMount:gate=>mountGates.push(gate),rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
 }
 test('failed reconnect retains durable owner; next retry rebinds same mount and disposes',async()=>{
  const f=fixture(),peer=await f.connect();const mount=await peer.mountDesktop({});
@@ -170,4 +170,15 @@ test('checkpoint retry can recover after a prior timeout and rejects a failed tr
  const first=peer.recover({kind:'refresh-checkpoint'});await drain();await time.tick(10000);assert.equal(operation(peer,await first).state,'failed');
  let done=false;const retry=peer.recover({kind:'refresh-checkpoint'}).then(result=>{done=true;return result;});await drain();f.status(admissionStatus());await drain();assert.equal(done,false);
  f.status(admissionStatus(true));assert.equal(operation(peer,await retry).state,'succeeded');f.setFailConnect(true);assert.equal(operation(peer,await peer.recover({kind:'refresh-checkpoint'})).state,'failed');await peer.dispose();
+});
+
+test('canonical session capability mounts the entire empty desktop without selecting a record',async()=>{
+ const f=fixture(),peer=await f.connect();
+ f.status({phase:'ready',desktop:{version:1,mode:'session'},records:[],health:{admission:{phase:'ready',requiredRecords:[],pendingPrerequisites:0}}});
+ await Promise.resolve();
+ await peer.mountDesktop({});
+ assert.equal(f.mountOptionsSeen[0].app,'desktop');
+ assert.equal(f.mountOptionsSeen[0].record,undefined);
+ assert.equal(peer.getSnapshot().health.surfaces[0].record,undefined);
+ await peer.dispose();
 });

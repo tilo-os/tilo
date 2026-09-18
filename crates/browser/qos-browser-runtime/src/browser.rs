@@ -12,7 +12,7 @@ use ui::{
     headless::FrameHarness,
     permissions::{Actor, PermissionContext, Role, UserId},
     portable_storage::{PendingWrite, PortableStorage, StorageKey},
-    record::{RecordCheckout, RecordId, RecordOwners, RecordStore},
+    record::{RecordCheckout, RecordId, RecordOwners},
 };
 use wasm_bindgen::{JsCast, prelude::*};
 use winit::{
@@ -130,13 +130,12 @@ struct Gpu {
 struct Mount {
     peer_suspended: bool,
     peer:Option<u32>,
-    app_id:String,
+    desktop:Option<crate::desktop_host::DesktopHandle>,
+    record:Option<crate::desktop_host::OwnedRecord>,
     window: Arc<Window>,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
     storage: PortableStorage,
-    records: RecordStore,
-    checkout: RecordCheckout,
     gpu: Option<Gpu>,
     pending: bool,
     hidden: bool,
@@ -206,7 +205,7 @@ pub fn close(id: u64) -> Result<String, JsValue> {
         mount.publish(id);
         mount.frame.close_components();
         let reports=mount.frame.take_component_close_reports();
-        let _=mount.records.try_flush();
+        for record in mount.owned_records(){let _=record.store.try_flush();}
         let pending=mount.storage.pending_writes();
         // Bytes stay in the shared cache until the host's transaction completes.
         let writes=pending.iter().map(write_json).collect::<Vec<_>>();
@@ -365,6 +364,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hydrated,
         status,
     } = request;
+    if config.app == "desktop" { return begin_desktop(event_loop,id,canvas,config,fonts,hydrated,status); }
     let definition = match config.app.as_str() {
         "writer" => word_processor::definition(),
         "chat" => chat::definition(),
@@ -473,13 +473,12 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let mount = Mount {
         peer_suspended: false,
         peer:config.peer,
-        app_id:definition.app_id.into(),
+        desktop:None,
+        record:Some(crate::desktop_host::OwnedRecord{app:definition.app_id.into(),store:records,checkout}),
         window: window.clone(),
         canvas,
         frame,
         storage,
-        records,
-        checkout,
         gpu: None,
         pending: true,
         hidden: false,
@@ -494,6 +493,24 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     emit(&status, serde_json::json!({"phase":"gpu-pending","id":id}));
     initialize_gpu(id, 1, window);
     Ok(())
+}
+fn begin_desktop(event_loop:&ActiveEventLoop,id:u64,canvas:web_sys::HtmlCanvasElement,config:Config,fonts:JsValue,hydrated:JsValue,status:Function)->Result<(),JsValue>{
+    let peer=config.peer.ok_or_else(||error("canonical desktop requires an admitted certified peer"))?;
+    let state=crate::peer::desktop_state(peer).map_err(error)?;
+    if state.room()!=config.room{return Err(error("desktop room binding mismatch"))}
+    let admission=crate::desktop::admission(&state).map_err(error)?;
+    let storage=load_cache(&config.profile,&config.device,&hydrated)?;
+    let permissions=crate::peer::permissions(peer).map_err(error)?;
+    let system=ui::font_catalog::FontCatalog::product("","en-US").load_bytes(|name|Reflect::get(&fonts,&name.into()).ok().filter(|v|!v.is_undefined()).map(|v|Uint8Array::new(&v).to_vec())).map_err(error)?;
+    let window=Arc::new(event_loop.create_window(Window::default_attributes().with_canvas(Some(canvas.clone())).with_append(false).with_prevent_default(true)).map_err(error)?);
+    let size=window.inner_size();let dpr=window.scale_factor();let wake=proxy()?;
+    let (root,desktop)=crate::desktop_host::DesktopRoot::new(admission,storage.clone(),&config.room,&config.device,&config.author,config.instance,permissions,Arc::new(move||{let _=wake.send_event(id);})).map_err(error)?;
+    let mut frame=FrameHarness::new_with_controlled_inputs(ui::state::State::new(),Box::new(root),((size.width as f64/dpr).max(1.0) as u32,(size.height as f64/dpr).max(1.0) as u32),ui::Theme::dark(),ui::TextRenderer::with_font_system(system),UserId(config.author));
+    frame.set_input_scale(dpr).map_err(error)?;
+    frame.set_platform_conventions(ui::platform::PlatformConventions::new(if config.mac{ui::platform::Platform::MacOs}else{ui::platform::Platform::Linux}));
+    let images=std::mem::take(&mut *desktop.images.borrow_mut());
+    let mount=Mount{peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
+    MOUNTS.with_borrow_mut(|mounts|mounts.insert(id,mount));emit(&status,serde_json::json!({"phase":"gpu-pending","id":id}));initialize_gpu(id,1,window);Ok(())
 }
 fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
     wasm_bindgen_futures::spawn_local(async move {
@@ -563,6 +580,11 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
     });
 }
 impl Mount {
+    fn owned_records(&self)->Vec<crate::desktop_host::OwnedRecord>{
+        if let Some(desktop)=&self.desktop {desktop.records.borrow().values().cloned().collect()}else{self.record.iter().cloned().collect()}
+    }
+    fn collect_desktop(&mut self){if let Some(desktop)=&self.desktop{self.images.extend(std::mem::take(&mut *desktop.images.borrow_mut()));}}
+
     fn resize(&mut self) -> Result<(), String> {
         let size = self.window.inner_size();
         let dpr = self.window.scale_factor();
@@ -591,6 +613,7 @@ impl Mount {
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
+        self.collect_desktop();
         self.pending |= self.frame.poll_frame().map_err(|e| e.to_string())?;
         if !self.pending {
             return Ok(());
@@ -658,32 +681,27 @@ impl Mount {
     }
     fn publish(&self, id: u64) {
         if let Some(peer)=self.peer.filter(|_| !self.peer_suspended) {
-            let captured=crate::admitted_records::capture(&self.records,&self.checkout.id);
-            let record=if self.checkout.id.is_package_primary(){""}else{self.checkout.id.as_str()};
-            if let Err(error)=captured.and_then(|bytes|crate::peer::local_document(peer,&self.app_id,record,bytes)){crate::peer::mark_failure(peer,error.clone());emit(&self.status,serde_json::json!({"phase":"failed","error":error}));return;}
+            for record in self.owned_records(){
+                let captured=crate::admitted_records::capture(&record.store,&record.checkout.id);
+                let id=if record.checkout.id.is_package_primary(){""}else{record.checkout.id.as_str()};
+                if let Err(error)=captured.and_then(|bytes|crate::peer::local_document(peer,&record.app,id,bytes)){crate::peer::mark_failure(peer,error.clone());emit(&self.status,serde_json::json!({"phase":"failed","error":error}));return;}
+            }
         }
         let f = self.frame.frame_output();
-        let heads = self
-            .records
-            .read(&self.checkout.id, |doc| {
-                doc.base_heads()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let document = self
-            .records
-            .read(&self.checkout.id, |doc| {
-                automerge::AutoSerde::from(doc)
-                    .serialize(serde_json::value::Serializer)
-                    .ok()
-            })
-            .flatten();
+        let heads=self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>())).unwrap_or_default();
+        let document=self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|automerge::AutoSerde::from(doc).serialize(serde_json::value::Serializer).ok())).flatten();
+        let setup_errors=self.desktop.as_ref().map(|desktop|desktop.errors.borrow().clone()).unwrap_or_default();
+        // The frame retains the original close reports and their retry owners.
+        // Retry clones inspect current durability without discarding that custody.
+        let component_close_errors=self.frame.component_close_reports().iter().filter_map(|report|{
+            let mut report=report.clone();let _=report.retry_record();let _=report.retry_view();
+            (report.record_error.is_some()||report.view_error.is_some()||report.teardown_error.is_some()).then(||serde_json::json!({"record":report.record_error,"view":report.view_error,"teardown":report.teardown_error}))
+        }).collect::<Vec<_>>();
+        let pending_intents=self.desktop.as_ref().map(|desktop|desktop.session_requests.borrow().len()).unwrap_or(0);
         let ime=f.ime.map(|i|serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)}));
         emit(
             &self.status,
-            serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.window.scale_factor(),"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.checkout.id.as_str(),"actorId":self.records.read(&self.checkout.id,|doc|doc.get_actor().to_hex_string()),"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
+            serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.window.scale_factor(),"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.record.as_ref().map(|record|record.checkout.id.as_str()),"actorId":self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.get_actor().to_hex_string())),"desktopErrors":setup_errors,"componentCloseErrors":component_close_errors,"pendingSessionIntents":pending_intents,"sessionIntentStatus":if pending_intents>0{Some("pending-authorized-action-integration")}else{None},"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
         );
     }
 }
@@ -744,7 +762,7 @@ pub(crate) fn write_json(w: &PendingWrite) -> serde_json::Value {
 pub fn pending_writes(id: u64) -> Result<String, JsValue> {
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        let _ = m.records.try_flush();
+        for record in m.owned_records(){let _ = record.store.try_flush();}
         let writes = m.storage.pending_writes();
         for w in &writes {
             m.writes.insert(w.revision, w.clone());
@@ -926,6 +944,7 @@ pub async fn probe_pixels(id: u64) -> Result<String, JsValue> {
 pub fn asset_requests(id: u64) -> Result<String, JsValue> {
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+        m.collect_desktop();
         let requests = m
             .images
             .iter_mut()
@@ -1086,8 +1105,18 @@ pub(crate) fn load_cache(profile:&str,device:&str,hydrated:&JsValue)->Result<Por
 }
 
 pub(crate) fn refresh_peer_mounts(peer:u32){
+ let state=crate::peer::desktop_state(peer);let permissions=crate::peer::permissions(peer);
  MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(peer)){
-  mount.frame.relayout();mount.pending=true;mount.window.request_redraw();
+  if let Some(desktop)=&mount.desktop {
+    if let Ok(permissions)=&permissions{*desktop.permissions.borrow_mut()=permissions.clone();}
+    match (&state,&permissions){
+      (Ok(state),Ok(permissions))=>{if let Err(error)=desktop.admit(state,permissions.clone()){desktop.errors.borrow_mut().push(error);}else{mount.peer_suspended=false;}},
+      (Err(reason),_) if reason.contains("forbidden")||reason.contains("revoked")=>{mount.peer_suspended=true;desktop.errors.borrow_mut().push(reason.clone());},
+      (_,Err(reason))=>{mount.peer_suspended=true;desktop.errors.borrow_mut().push(reason.clone());},
+      _=>{}
+    }
+  }
+  mount.frame.relayout();mount.collect_desktop();mount.pending=true;mount.window.request_redraw();
  });
 }
 
@@ -1104,9 +1133,11 @@ pub fn suspend_peer(peer:u32,suspended:bool)->Result<(),JsValue>{
 pub(crate) fn prepare_peer_remote(peer:u32)->Result<(),String>{
  MOUNTS.with_borrow(|mounts|{
   for mount in mounts.values().filter(|mount|mount.peer==Some(peer)){
-   let bytes=crate::admitted_records::prepare_remote(&mount.records,&mount.checkout.id)?;
-   let record=if mount.checkout.id.is_package_primary(){""}else{mount.checkout.id.as_str()};
-   crate::peer::local_document(peer,&mount.app_id,record,bytes)?;
+   for record in mount.owned_records(){
+       let bytes=crate::admitted_records::prepare_remote(&record.store,&record.checkout.id)?;
+       let id=if record.checkout.id.is_package_primary(){""}else{record.checkout.id.as_str()};
+       crate::peer::local_document(peer,&record.app,id,bytes)?;
+   }
   }
   Ok(())
  })

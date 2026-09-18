@@ -25,6 +25,8 @@ qos-peer-state = { path = "../../collab/qos-peer-state" }
 qos-user-identity = { path = "../../identity/qos-user-identity" }
 qos-relay = { path = "../qos-relay" }
 ui = { path = "../../../ui" }
+qos-desktop = { path = "../../session/qos-desktop" }
+notes = { path = "../../../apps/notes" }
 word-processor = { path = "../../../apps/word-processor" }
 chat = { path = "../../../apps/chat", default-features = false }
 [dev-dependencies]

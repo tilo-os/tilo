@@ -1,0 +1,781 @@
+//! Portable retained host around the actual canonical DesktopSurface.
+use crate::desktop::{self, Admission};
+use automerge::{AutoCommit, ObjId};
+use qos_desktop::{
+    composition::{DesktopSurface, ReconcileOutcome, SurfaceChrome},
+    intents::{DesktopIntent, LocalViewIntent, SessionIntent},
+    resolver::{ApplicationCatalogTileResolver, ComponentContextSource, TileRequest},
+    *,
+};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashMap},
+    rc::Rc,
+    sync::Arc,
+};
+use taffy::{NodeId, TaffyTree};
+use ui::{TextRenderer, Theme, presence::PresenceCtx};
+use ui::{
+    application::{
+        ApplicationCatalog, ApplicationDefinition, ComponentCloseReport, HostContext, LaunchTarget,
+        RestoreInput,
+    },
+    application_view::InstanceViewStore,
+    portable_storage::{PortableStorage, StorageKey},
+    record::{RecordCheckout, RecordOwners, RecordStore},
+    widget::Widget,
+};
+use vello::{
+    Scene,
+    kurbo::{Affine, Point, Rect},
+};
+
+#[derive(Clone)]
+pub(crate) struct OwnedRecord {
+    pub app: String,
+    pub store: RecordStore,
+    pub checkout: RecordCheckout,
+}
+#[derive(Clone)]
+pub(crate) struct DesktopHandle {
+    pub tree: Rc<RefCell<WorkspaceTree>>,
+    pub permissions: Rc<RefCell<ui::permissions::PermissionContext>>,
+    pub records: Rc<RefCell<BTreeMap<(String, String), OwnedRecord>>>,
+    pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
+    pub errors: Rc<RefCell<Vec<String>>>,
+    pub session_requests: Rc<RefCell<Vec<SessionIntent>>>,
+    inbox: Rc<RefCell<Option<(Admission, ui::permissions::PermissionContext)>>>,
+}
+impl DesktopHandle {
+    pub fn admit(
+        &self,
+        state: &qos_peer_state::StatePeer,
+        permissions: ui::permissions::PermissionContext,
+    ) -> Result<(), String> {
+        let admission = desktop::admission(state)?;
+        if !admission.complete() {
+            return Err("waiting for required canonical desktop records".into());
+        }
+        *self.inbox.borrow_mut() = Some((admission, permissions));
+        Ok(())
+    }
+}
+struct Contexts {
+    owners: RecordOwners,
+    views: Rc<InstanceViewStore>,
+    routes: BTreeMap<u64, String>,
+    room: String,
+    device: String,
+    author: String,
+    permissions: Rc<RefCell<ui::permissions::PermissionContext>>,
+    handle: DesktopHandle,
+}
+impl ComponentContextSource for Contexts {
+    fn checkout(
+        &self,
+        definition: &'static ApplicationDefinition,
+        request: &TileRequest<'_>,
+    ) -> Result<RecordCheckout, ui::launch::LaunchError> {
+        desktop::checkout(definition, request.tab.id, &self.routes)
+            .map_err(ui::launch::LaunchError::Operation)
+    }
+    fn prepare(
+        &mut self,
+        definition: &'static ApplicationDefinition,
+        request: &TileRequest<'_>,
+        target: &LaunchTarget,
+    ) -> Result<(HostContext, RestoreInput), ui::launch::LaunchError> {
+        let store = self
+            .owners
+            .open(definition.app_id, &self.room)
+            .map_err(|e| ui::launch::LaunchError::Operation(e.to_string()))?;
+        let checkout = self.checkout(definition, request)?;
+        let restore = self
+            .views
+            .load(request.tab.id)
+            .map_err(|e| ui::launch::LaunchError::Operation(e.to_string()))?
+            .map_or(RestoreInput::None, RestoreInput::Local);
+        let context = HostContext::prepare(
+            definition,
+            store.clone(),
+            self.views.clone(),
+            self.device.clone(),
+            request.tab.id,
+            self.permissions.clone(),
+            ui::permissions::UserId(self.author.clone()),
+            qos_actions::ActionContext::default(),
+            target,
+        )?;
+        self.handle.records.borrow_mut().insert(
+            (definition.app_id.into(), checkout.id.as_str().into()),
+            OwnedRecord {
+                app: definition.app_id.into(),
+                store,
+                checkout,
+            },
+        );
+        Ok((context, restore))
+    }
+}
+struct ChromeSource {
+    tree: Rc<RefCell<WorkspaceTree>>,
+    intents: Rc<RefCell<Vec<qos_desktop::chrome::ChromeIntent>>>,
+}
+impl qos_desktop::chrome::DesktopChromeSource for ChromeSource {
+    fn snapshot(&self) -> qos_desktop::chrome::DesktopChromeSnapshot {
+        qos_desktop::chrome::DesktopChromeSnapshot::default()
+    }
+    fn tree(&self) -> WorkspaceTree {
+        self.tree.borrow().clone()
+    }
+    fn intent(&self, intent: qos_desktop::chrome::ChromeIntent) -> bool {
+        self.intents.borrow_mut().push(intent);
+        true
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LocalView {
+    active: WorkspaceId,
+    strips: HashMap<WorkspaceId, StripId>,
+    groups: HashMap<StripId, GroupId>,
+    tabs: Vec<(GroupId, TabId, WindowWidth, bool)>,
+}
+impl LocalView {
+    fn from_tree(tree: &WorkspaceTree) -> Self {
+        Self {
+            active: tree.active,
+            strips: tree.active_strip.clone(),
+            groups: tree.active_group.clone(),
+            tabs: tree
+                .workspaces
+                .iter()
+                .flat_map(|w| &w.strips)
+                .flat_map(|s| &s.window_groups)
+                .map(|g| (g.id, g.active_tab, g.width, g.maximized))
+                .collect(),
+        }
+    }
+    fn apply(&self, tree: &mut WorkspaceTree) {
+        if tree.workspaces.iter().any(|w| w.id == self.active) {
+            tree.active = self.active;
+        }
+        for w in &mut tree.workspaces {
+            if let Some(id) = self
+                .strips
+                .get(&w.id)
+                .filter(|id| w.strips.iter().any(|s| s.id == **id))
+            {
+                tree.active_strip.insert(w.id, *id);
+            }
+            for s in &mut w.strips {
+                if let Some(id) = self
+                    .groups
+                    .get(&s.id)
+                    .filter(|id| s.window_groups.iter().any(|g| g.id == **id))
+                {
+                    tree.active_group.insert(s.id, *id);
+                }
+                for g in &mut s.window_groups {
+                    if let Some((_, tab, width, maximized)) =
+                        self.tabs.iter().find(|(id, ..)| *id == g.id)
+                    {
+                        if g.tabs.iter().any(|t| t.id == *tab) {
+                            g.active_tab = *tab;
+                        }
+                        g.width = *width;
+                        g.maximized = *maximized;
+                    }
+                }
+            }
+        }
+    }
+}
+pub(crate) struct DesktopRoot {
+    surface: DesktopSurface,
+    handle: DesktopHandle,
+    resolver: ApplicationCatalogTileResolver<Contexts>,
+    fallback: RecordStore,
+    chrome: Rc<ChromeSource>,
+    chrome_intents: Rc<RefCell<Vec<qos_desktop::chrome::ChromeIntent>>>,
+    storage: PortableStorage,
+    view_key: StorageKey,
+    notify: Arc<dyn Fn() + Send + Sync>,
+    reports: Vec<ComponentCloseReport>,
+    failures: Vec<ui::launch::LaunchError>,
+    dirty: bool,
+}
+impl DesktopRoot {
+    pub fn new(
+        admission: Admission,
+        storage: PortableStorage,
+        room: &str,
+        device: &str,
+        author: &str,
+        instance: u64,
+        permissions: ui::permissions::PermissionContext,
+        notify: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(Self, DesktopHandle), String> {
+        if !admission.complete() {
+            return Err("required desktop records are not admitted".into());
+        }
+        let mut tree = admission.tree;
+        let view_key = StorageKey::View {
+            workspace: format!("desktop:{room}"),
+            instance,
+        };
+        if let Some(saved) = storage.get(&view_key) {
+            let view: LocalView = serde_json::from_slice(&saved.bytes)
+                .map_err(|e| format!("local desktop view: {e}"))?;
+            view.apply(&mut tree);
+        }
+        let handle = DesktopHandle {
+            tree: Rc::new(RefCell::new(tree)),
+            permissions: Rc::new(RefCell::new(permissions)),
+            records: Rc::default(),
+            images: Rc::default(),
+            errors: Rc::default(),
+            session_requests: Rc::default(),
+            inbox: Rc::default(),
+        };
+        let chrome_intents: Rc<RefCell<Vec<qos_desktop::chrome::ChromeIntent>>> = Rc::default();
+        let chrome = Rc::new(ChromeSource {
+            tree: handle.tree.clone(),
+            intents: chrome_intents.clone(),
+        });
+        let mut owners = RecordOwners::portable(storage.clone());
+        let fallback = owners
+            .open("dev.qos.desktop", room)
+            .map_err(|e| e.to_string())?;
+        let views =
+            Rc::new(InstanceViewStore::portable(storage.clone(), room).map_err(|e| e.to_string())?);
+        let mut catalog = ApplicationCatalog::new();
+        for definition in [
+            word_processor::definition(),
+            chat::definition(),
+            notes::definition(),
+            calculator::definition(),
+        ] {
+            catalog.register(definition).map_err(|e| e.to_string())?;
+        }
+        let mut resolver = ApplicationCatalogTileResolver {
+            catalog,
+            host: Contexts {
+                owners,
+                views,
+                routes: admission.routes,
+                room: room.into(),
+                device: device.into(),
+                author: author.into(),
+                permissions: handle.permissions.clone(),
+                handle: handle.clone(),
+            },
+        };
+        let tree = handle.tree.borrow();
+        let surface = ui::ImageStore::with_host_factory(Self::image_factory(&handle), || {
+            DesktopSurface::build(
+                &tree,
+                &fallback,
+                &mut resolver,
+                Self::chrome(&tree, chrome.clone(), notify.clone()),
+            )
+        });
+        drop(tree);
+        let mut root = Self {
+            surface,
+            handle: handle.clone(),
+            resolver,
+            fallback,
+            chrome,
+            chrome_intents,
+            storage,
+            view_key,
+            notify,
+            reports: vec![],
+            failures: vec![],
+            dirty: true,
+        };
+        root.collect_failures();
+        Ok((root, handle))
+    }
+    fn image_factory(handle: &DesktopHandle) -> Rc<dyn Fn() -> ui::ImageStore> {
+        let images = handle.images.clone();
+        Rc::new(move || {
+            let (store, loader) = ui::ImageStore::host_driven();
+            images.borrow_mut().push(loader);
+            store
+        })
+    }
+    fn chrome(
+        tree: &WorkspaceTree,
+        source: Rc<ChromeSource>,
+        notify: Arc<dyn Fn() + Send + Sync>,
+    ) -> SurfaceChrome {
+        SurfaceChrome {
+            topbar: Box::new(
+                qos_desktop::topbar::TopBarChrome::from_tree(tree).with_chrome(source),
+            ),
+            notify: Some(notify),
+            ..SurfaceChrome::default()
+        }
+    }
+    fn collect_failures(&mut self) {
+        for error in self.surface.take_setup_failures() {
+            self.handle.errors.borrow_mut().push(error.to_string());
+            self.failures.push(error);
+        }
+    }
+    fn local(tree: &mut WorkspaceTree, intent: LocalViewIntent) {
+        match intent {
+            LocalViewIntent::Workspace(id) => {
+                if tree.workspaces.iter().any(|w| w.id == id) {
+                    tree.active = id;
+                }
+            }
+            LocalViewIntent::Strip(id) => {
+                if let Some(w) = tree
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == tree.active && w.strips.iter().any(|s| s.id == id))
+                {
+                    tree.active_strip.insert(w.id, id);
+                }
+            }
+            LocalViewIntent::Group { strip, group } => {
+                if tree
+                    .workspaces
+                    .iter()
+                    .filter(|w| w.id == tree.active)
+                    .flat_map(|w| &w.strips)
+                    .any(|s| s.id == strip && s.window_groups.iter().any(|g| g.id == group))
+                {
+                    tree.active_group.insert(strip, group);
+                }
+            }
+            other => {
+                for w in &mut tree.workspaces {
+                    for s in &mut w.strips {
+                        for g in &mut s.window_groups {
+                            match other {
+                                LocalViewIntent::Tab { group, tab }
+                                    if group == g.id && g.tabs.iter().any(|t| t.id == tab) =>
+                                {
+                                    g.active_tab = tab;
+                                    if w.id == tree.active {
+                                        tree.active_strip.insert(w.id, s.id);
+                                        tree.active_group.insert(s.id, g.id);
+                                    }
+                                }
+                                LocalViewIntent::Width { group, width } if group == g.id => {
+                                    g.width = width
+                                }
+                                LocalViewIntent::Maximized { group, maximized }
+                                    if group == g.id =>
+                                {
+                                    g.maximized = maximized
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fn reconcile(&mut self) -> bool {
+        let intents = self.surface.take_intents();
+        let chrome = std::mem::take(&mut *self.chrome_intents.borrow_mut());
+        let inbox = self.handle.inbox.borrow_mut().take();
+        let mut tree = self.handle.tree.borrow_mut();
+        let mut changed = !intents.is_empty() || !chrome.is_empty() || inbox.is_some();
+        // Explicit workspace switches are newer than gestures harvested from the
+        // outgoing surface. Save those tab choices without stealing active focus.
+        for intent in chrome {
+            match intent {
+                qos_desktop::chrome::ChromeIntent::SwitchWorkspace(delta) => {
+                    if let Some(index) = tree.workspaces.iter().position(|w| w.id == tree.active) {
+                        let next = (index as i64 + i64::from(delta))
+                            .rem_euclid(tree.workspaces.len() as i64)
+                            as usize;
+                        tree.active = tree.workspaces[next].id;
+                    }
+                }
+                _ => self
+                    .handle
+                    .errors
+                    .borrow_mut()
+                    .push("This desktop service is not available in this peer yet".into()),
+            }
+        }
+        for intent in intents {
+            match intent {
+                DesktopIntent::Local(intent) => Self::local(&mut tree, intent),
+                DesktopIntent::Session(intent) => {
+                    self.handle.session_requests.borrow_mut().push(intent)
+                }
+            }
+        }
+        if let Some((admission, permissions)) = inbox {
+            let local = LocalView::from_tree(&tree);
+            *tree = admission.tree;
+            local.apply(&mut tree);
+            self.resolver.host.routes = admission.routes;
+            *self.resolver.host.permissions.borrow_mut() = permissions;
+        }
+        if changed {
+            let factory = Self::image_factory(&self.handle);
+            let result = ui::ImageStore::with_host_factory(factory.clone(), || {
+                self.surface
+                    .reconcile(&tree, &self.fallback, &mut self.resolver)
+            });
+            if result == ReconcileOutcome::RebuildRequired {
+                ui::ImageStore::with_host_factory(factory, || {
+                    self.surface.rebuild_retaining(
+                        &tree,
+                        &self.fallback,
+                        &mut self.resolver,
+                        Self::chrome(&tree, self.chrome.clone(), self.notify.clone()),
+                    )
+                });
+                self.dirty = true;
+            }
+            if let Ok(bytes) = serde_json::to_vec(&LocalView::from_tree(&tree)) {
+                if self
+                    .storage
+                    .get(&self.view_key)
+                    .is_none_or(|saved| saved.bytes != bytes)
+                {
+                    if let Err(e) = self.storage.put(self.view_key.clone(), bytes, None) {
+                        self.handle.errors.borrow_mut().push(e);
+                    }
+                }
+            }
+        }
+        drop(tree);
+        self.collect_failures();
+        for report in &mut self.reports {
+            let _ = report.retry_view();
+            let _ = report.retry_record();
+        }
+        changed |= self.dirty;
+        changed
+    }
+}
+
+impl Widget for DesktopRoot {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+        self.surface.sync(doc, path);
+    }
+    fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
+        let changed = self.reconcile();
+        let updated = self.surface.update(doc, path);
+        changed || updated
+    }
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.handle.inbox.borrow().is_some() || self.surface.needs_redraw()
+    }
+    fn build_layout(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        theme: &Theme,
+        map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.surface.build_layout(tree, theme, map)
+    }
+    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.surface.apply_layout(tree, node, origin);
+    }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.surface.draw(scene, transform, text, theme, presence);
+    }
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        tree: &TaffyTree<()>,
+    ) {
+        self.surface.handle_event(
+            event, scale, modifiers, doc, path, handled, focus, node, tree,
+        );
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.surface]
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.surface]
+    }
+    fn name(&self) -> &str {
+        "CertifiedDesktop"
+    }
+    fn get_rect(&self) -> Rect {
+        self.surface.get_rect()
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty) | self.surface.take_structure_dirty()
+    }
+    fn wants_pointer_capture(&self) -> bool {
+        self.surface.wants_pointer_capture()
+    }
+    fn close_components(&mut self) -> Vec<ComponentCloseReport> {
+        self.reports.extend(self.surface.close_components());
+        std::mem::take(&mut self.reports)
+    }
+    fn take_component_close_reports(&mut self) -> Vec<ComponentCloseReport> {
+        self.surface.take_component_close_reports()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn fixture() -> (DesktopRoot, DesktopHandle, PortableStorage) {
+        let cache = PortableStorage::new("desktop-host-test", "device").unwrap();
+        let mut owners = RecordOwners::portable(cache.clone());
+        let mut tree = WorkspaceTree::default();
+        let mut workspace = Workspace::new(WorkspaceId(1), "Work");
+        let room = workspace.room.to_string();
+        let mut tabs = vec![];
+        let mut routes = BTreeMap::new();
+        // Keep the real initialized stores alive until their checked components take custody.
+        let mut retained = vec![];
+        for (i, definition) in [
+            word_processor::definition(),
+            chat::definition(),
+            notes::definition(),
+            calculator::definition(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = (5 << 48) | ((i as u64) + 10);
+            let record = if i == 0 {
+                RecordCheckout::new(
+                    ui::record::RecordId::for_tab(1),
+                    definition.record_kind.clone(),
+                )
+            } else {
+                qos_desktop::records::component_record(
+                    definition.app_id,
+                    id,
+                    definition.record_kind.clone(),
+                )
+            };
+            let store = owners.open(definition.app_id, &room).unwrap();
+            store.create_record(&record).unwrap();
+            store.with(&record.id, |doc| match i {
+                0 => word_processor::initialize_empty_document(doc).unwrap(),
+                1 => chat::doc::ChatDoc::seed_starter(doc, "author", "Author", "AU"),
+                2 => notes::notebook::initialize_empty(doc).unwrap(),
+                _ => calculator::doc::initialize_empty(doc).unwrap(),
+            });
+            if i == 0 {
+                routes.insert(id, record.id.as_str().into());
+            }
+            tabs.push(Tab {
+                id,
+                title: definition.title.into(),
+                tile: TileContent::AppPlaceholder {
+                    kind: AppKind::Other(definition.app_id.into()),
+                    label: definition.title.into(),
+                },
+            });
+            retained.push(store);
+        }
+        workspace.strips = vec![Strip {
+            id: StripId(2),
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: 3,
+                active_tab: tabs[0].id,
+                tabs,
+                width: WindowWidth::Normal,
+                maximized: false,
+            }],
+        }];
+        tree.active = workspace.id;
+        tree.workspaces.push(workspace);
+        let permissions = ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "author"),
+            vec![],
+        );
+        let admission = Admission {
+            tree,
+            routes,
+            required: vec![],
+            missing: vec![],
+            unsupported: vec![],
+            pending: 0,
+        };
+        let (root, handle) = DesktopRoot::new(
+            admission,
+            cache.clone(),
+            &room,
+            "device",
+            "author",
+            1,
+            permissions,
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        assert!(
+            handle.errors.borrow().is_empty(),
+            "{:?}",
+            handle.errors.borrow()
+        );
+        (root, handle, cache)
+    }
+    #[test]
+    fn actual_desktop_hosts_checked_writer_chat_notes_calculator_and_preserves_writer_route() {
+        let (root, handle, cache) = fixture();
+        let mut frame =
+            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(root), (1280, 720));
+        frame.poll_frame().unwrap();
+        assert_eq!(handle.records.borrow().len(), 4);
+        assert!(
+            frame
+                .resources()
+                .iter()
+                .any(|r| r.kind == "word_processor.document")
+        );
+        frame
+            .perform_named("word_processor", &ui::a11y::Action::Focus)
+            .unwrap();
+        frame.type_text("Retained canonical desktop");
+        let writer = handle
+            .records
+            .borrow()
+            .values()
+            .find(|r| r.app == "dev.qos.word-processor")
+            .unwrap()
+            .clone();
+        assert_eq!(writer.checkout.id.as_str(), "tab:0000000000000001");
+        assert!(
+            writer
+                .store
+                .read(&writer.checkout.id, |doc| serde_json::to_string(
+                    &automerge::AutoSerde::from(doc)
+                )
+                .unwrap())
+                .unwrap()
+                .contains("Retained canonical desktop")
+        );
+        for (instance, resource, action, value) in [
+            (
+                (5 << 48) | 11,
+                "chat.channel:c_general",
+                "post",
+                "Desktop message",
+            ),
+            ((5 << 48) | 12, "notes.notebook", "new-page", "Desktop page"),
+            (
+                (5 << 48) | 13,
+                "calculator.workspace",
+                "add-function",
+                "sin(x)",
+            ),
+        ] {
+            frame
+                .invoke_bound_action(
+                    &ui::bound_dispatch::BoundActionAddress {
+                        instance_id: instance,
+                        address: qos_actions::ActionAddress::new(resource, action),
+                    },
+                    serde_json::json!({"value":value}).as_object().unwrap(),
+                )
+                .unwrap();
+        }
+        frame.close_components();
+        let mut reports = frame.take_component_close_reports();
+        assert_eq!(reports.len(), 4);
+        for write in cache.pending_writes() {
+            cache.acknowledge(&write, Ok(())).unwrap();
+        }
+        for report in &mut reports {
+            report.retry_record().unwrap();
+            report.retry_view().unwrap();
+        }
+    }
+    #[test]
+    fn admitted_same_workspace_refresh_keeps_pending_selection_and_checked_owner() {
+        let (mut root, handle, _) = fixture();
+        let before = match root.surface.row_mut(StripId(2)).unwrap().groups[0]
+            .host_for_tab_mut((5 << 48) | 10)
+            .unwrap()
+            .content()
+        {
+            ui::widget::TileContent::App(app) => std::ptr::from_ref(app.as_ref()) as *const (),
+            _ => panic!("checked owner"),
+        };
+        let mut refreshed = handle.tree.borrow().clone();
+        refreshed.workspaces[0].strips.push(Strip {
+            id: StripId(99),
+            name: "Remote strip".into(),
+            window_groups: vec![],
+        });
+        let admission = Admission {
+            tree: refreshed,
+            routes: root.resolver.host.routes.clone(),
+            required: vec![],
+            missing: vec![],
+            unsupported: vec![],
+            pending: 0,
+        };
+        *handle.inbox.borrow_mut() = Some((admission, handle.permissions.borrow().clone()));
+        root.surface.row_mut(StripId(2)).unwrap().groups[0].set_active_tab((5 << 48) | 12);
+        root.reconcile();
+        assert_eq!(
+            handle.tree.borrow().workspaces[0].strips[0].window_groups[0].active_tab,
+            (5 << 48) | 12
+        );
+        let after = match root.surface.row_mut(StripId(2)).unwrap().groups[0]
+            .host_for_tab_mut((5 << 48) | 10)
+            .unwrap()
+            .content()
+        {
+            ui::widget::TileContent::App(app) => std::ptr::from_ref(app.as_ref()) as *const (),
+            _ => panic!("checked owner"),
+        };
+        assert_eq!(before, after);
+        assert!(root.surface.take_component_close_reports().is_empty());
+    }
+    #[test]
+    fn pending_tab_choice_does_not_undo_a_newer_workspace_switch() {
+        let (mut root, handle, _) = fixture();
+        let new = Workspace::new(WorkspaceId(9), "Other");
+        {
+            let mut tree = handle.tree.borrow_mut();
+            tree.workspaces.push(new);
+            tree.active = WorkspaceId(9);
+        }
+        root.surface.row_mut(StripId(2)).unwrap().groups[0].set_active_tab((5 << 48) | 12);
+        root.reconcile();
+        let tree = handle.tree.borrow();
+        assert_eq!(tree.active, WorkspaceId(9));
+        assert_eq!(
+            tree.workspaces[0].strips[0].window_groups[0].active_tab,
+            (5 << 48) | 12
+        );
+        assert!(
+            !tree.active_group.contains_key(&StripId(2)),
+            "outgoing selection must not steal focus"
+        );
+    }
+}

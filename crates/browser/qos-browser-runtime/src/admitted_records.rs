@@ -29,11 +29,9 @@ pub(crate) fn install(
     let mut validator = RecordOwners::portable(validation.clone());
     let mut owners = RecordOwners::portable(cache.clone());
     for row in state.rows() {
-        let definition = match row.app_id.as_str() {
-            "dev.qos.word-processor" => word_processor::definition(),
-            "dev.qos.chat" => chat::definition(),
-            _ => return Err("unsupported canonical application in admitted workspace".into()),
-        };
+        // Unknown packages retain their admitted bytes in StatePeer's journal;
+        // the desktop renders an explicit unavailable tile instead of inventing a factory.
+        let Some(definition) = crate::desktop::definition(&row.app_id) else { continue; };
         let checkout = if row.app_id == "dev.qos.chat" && row.record_id.is_empty() {
             RecordCheckout::package_primary(definition.record_kind.clone())
         } else {
