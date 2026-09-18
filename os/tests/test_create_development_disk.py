@@ -118,6 +118,55 @@ class CreationTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
         self.assertEqual(self.events[-2:], ['unmounted', 'removed'])
 
+    def test_media_materialization_is_called_while_source_held(self):
+        self.args.boot_profile = 'installer-media'
+        self.args.source_live_uki = 'boot/EFI/Linux/live.efi'
+        def materialize(disk, verified, args):
+            self.assertNotIn('unmounted', self.events)
+            self.assertTrue(self.calls[-1][-1] == '/output/disk.raw')
+            self.events.append('materialized')
+            return {'files': ['fixture']}
+        with patch.object(disk_creator.inspector, 'require_private_namespace'), \
+                patch.object(disk_creator.inspector, 'source_boot_selection'), \
+                patch.object(disk_creator, 'materialize_created_media', side_effect=materialize):
+            receipt = self.execute()
+        self.assertEqual(receipt['target_materialization'], {'files': ['fixture']})
+        self.assertLess(self.events.index('materialized'), self.events.index('unmounted'))
+        self.assertLess(self.events.index('unmounted'), self.events.index('retained'))
+
+    def test_failed_media_copy_removes_entire_created_disk(self):
+        self.args.boot_profile = 'installer-media'
+        with patch.object(disk_creator.inspector, 'require_private_namespace'), \
+                patch.object(disk_creator.inspector, 'source_boot_selection'), \
+                patch.object(disk_creator, 'materialize_created_media', side_effect=ValueError('copy failed')):
+            with self.assertRaisesRegex(ValueError, 'copy failed'): self.execute()
+        self.assertFalse(self.path.exists())
+        self.assertNotIn('retained', self.events)
+
+    def test_media_esp_failure_unmounts_before_detaching_owned_loop(self):
+        calls = []
+        held = SimpleNamespace(validate=lambda: self.path, fileno=lambda: 42)
+        verified = SimpleNamespace(root=Path('/source'), public_bundle=Path('/public'))
+        def invoke(argv, **kwargs):
+            calls.append(argv)
+            if '--show' in argv:
+                self.assertEqual(argv[-1], '/proc/self/fd/42')
+                self.assertEqual(kwargs['pass_fds'], (42,))
+                return b'/dev/loop42\n'
+            if '--json' in argv: return b'{}'
+            return b''
+        with patch.object(disk_creator.inspector, 'require_private_namespace'), \
+                patch.object(disk_creator.inspector, 'command', side_effect=invoke), \
+                patch.object(disk_creator.inspector, 'partitions', return_value=['/dev/loop42p1', '/dev/loop42p2']), \
+                patch.object(disk_creator.installer_target_artifacts, 'materialize', side_effect=ValueError('copy failed')):
+            with self.assertRaisesRegex(ValueError, 'copy failed'):
+                disk_creator.materialize_created_media(held, verified, self.args)
+        self.assertEqual(calls[-2][0], '/usr/bin/umount')
+        self.assertEqual(calls[-1], ['/usr/sbin/losetup', '--detach', '/dev/loop42'])
+        mount = next(argv for argv in calls if argv[0] == '/usr/bin/mount')
+        self.assertEqual(mount[-2], '/dev/loop42p1')
+        self.assertIn('rw,nodev,nosuid,noexec', mount)
+
     def test_source_cleanup_failure_removes_output(self):
         self.fail_unmount = True
         with self.assertRaisesRegex(ValueError, 'unmount failed'):

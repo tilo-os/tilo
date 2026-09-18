@@ -282,7 +282,7 @@ def main():
         for path in Path(__file__).parent.glob('*.py'):
             archive.write(path,path.name)
     payload = {'observation':observation,'args':disk_args,'helpers':base64.b64encode(bundle.getvalue()).decode()}
-    output = checked(k+['-n',args.namespace,'exec','-i',args.pod,'-c',pod['spec']['containers'][0]['name'],'--','python3','-c',GUEST_RUN],json.dumps(payload))
+    output = checked(k+['-n',args.namespace,'exec','-i',args.pod,'-c',pod['spec']['containers'][0]['name'],'--','/usr/bin/unshare','--mount','--propagation','private','--','python3','-c',GUEST_RUN],json.dumps(payload))
     after = get('pod', args.pod, args.namespace)
     if inspect_pod(after,args.node,args.pod_uid,args.guest_image) != identity or after['spec'] != pod['spec']:
         raise ValueError('pod changed during disk creation; result not accepted')
