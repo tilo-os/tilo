@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import kernel_checkpoint_restore as restore
+import kernel_failure_checkpoint as failure
 
 
 def stage(source, destination, approval_bytes, approval_sha, checkpoint):
@@ -43,6 +44,7 @@ def stage(source, destination, approval_bytes, approval_sha, checkpoint):
         for correction in corrections:
             shutil.copyfile(correction,destination/'source-corrections'/correction.name)
     shutil.copyfile(helper, destination / 'kernel_checkpoint_restore.py')
+    shutil.copyfile(Path(failure.__file__), destination / 'kernel_failure_checkpoint.py')
     (destination / 'approval.json').write_bytes(approval_bytes)
 
 
@@ -52,6 +54,7 @@ if __name__ == '__main__':
           os.environ['CHECKPOINT_REF'])
     original = Path('os/kernel/Containerfile').read_bytes()
     recipe = restore.derive(original, os.environ['APPROVAL_SHA256'])
+    recipe = failure.derive(recipe)
     Path('kernel-recovery.Containerfile').write_bytes(recipe)
     # Named context alone supplies the checkpoint; keep its multi-GiB archive
     # out of the ordinary source context and exclude helper checkout metadata.
@@ -67,6 +70,8 @@ if __name__ == '__main__':
         derived_recipe_sha256=hashlib.sha256(recipe).hexdigest(),
         helper_revision=os.environ['HELPER_REVISION'],
         restore_helper_sha256=restore.sha(Path(restore.__file__)),
+        failure_capture_helper_sha256=restore.sha(Path(failure.__file__)),
+        failure_cache_identity=os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT'],
         checkpoint_reference=os.environ['CHECKPOINT_REF'],
         approval_sha256=os.environ['APPROVAL_SHA256'], kernel_build_jobs=4,
         admitted_input_sha256={key: json.loads(os.environ['CHECKPOINT_APPROVAL'])[key]
