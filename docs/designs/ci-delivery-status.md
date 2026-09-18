@@ -32,6 +32,11 @@ Main and the ongoing hardware bring-up remain untouched.
   OS tags and explicit manual main publication remain. RPM completion can still
   request a non-publishing integration candidate. These are branch-local changes,
   not a claim about the live instance's deployed policy.
+- Private isolated Forgejo merge probes now demonstrate missing-status and
+  expected-head rejection, exact-head fast-forward landing and refusal of a
+  sequential competing stale candidate. See `experiments/ci-forgejo/README.md`
+  for raw evidence and the initial inconclusive run. Product repository settings
+  remain unchanged; independent review and permission isolation are not proven.
 
 ## Validation of this implementation
 
@@ -64,7 +69,7 @@ Main and the ongoing hardware bring-up remain untouched.
 | Requirement | Evidence still needed |
 | --- | --- |
 | Cheap normal branch/PR path | Qualify the implemented trigger split on Forgejo; implement trusted affected-policy classification and relevant required proof before automatic merging |
-| Automatic routine integration and independent review | Prove exact-head review/check identity, stale-main handling, permissions and two competing merges in an isolated pilot before live protection/cutover |
+| Automatic routine integration and independent review | Build on the sequential live pilot: prove simultaneous/native automatic merges, exact-head independent review, trusted check identity, ordinary-user permissions and recovery before product protection/cutover |
 | First useful retained baseline | Discover/admit actual bootable image and unsigned inputs; preserve digests, trust, source/helper identities and separate VM/board evidence |
 | Targeted real installer/desktop testing | Supported commands consume that baseline, restore disposable state and produce actual test results without unrelated compilation/assembly |
 | End-to-end feedback measurements | Trace real planning, queue, compilation, layer snapshots, transfers, finalization/signing, worker setup and tests; current contract timings are only a small part |

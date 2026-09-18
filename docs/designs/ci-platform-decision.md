@@ -19,6 +19,13 @@ Run two early qualifications: build graph/invalidation/reuse, and scheduler/reco
 
 Confidence: good fit as a command executor; conditional fit as the complete scheduler. Current source and API inspection do not establish throughput or failure-recovery behavior on the incoming runner fleet. This is not a claim that Forgejo has passed a load test.
 
+Live integration evidence now supplements the schema inspection:
+[isolated merge probes](../../experiments/ci-forgejo/README.md) demonstrated
+required-status rejection, wrong-head rejection, a successful exact-head merge
+and rejection of a sequential competing stale candidate. This supports continuing
+with native primitives first. It does not qualify concurrent/native auto-merge,
+independent review, status issuers, ordinary-user permissions or runner scheduling.
+
 Follow-up: [isolated experiment results](ci-build-graph-experiments.md) demonstrate
 affected selection on this workspace and fine-grained caching on a small Linux
 module slice. They do **not** qualify a full toolkit/runtime graph, native Windows,

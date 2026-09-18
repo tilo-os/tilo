@@ -1,0 +1,21 @@
+{
+  "repository": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "base": "38118cab0151e7855d28754ce8fbca6ed2560833",
+  "probes": {
+    "a": {
+      "sha": "02d49e600045f5108dbbfb127033fe564d909a9e",
+      "number": 1
+    },
+    "b": {
+      "sha": "8cd4f2b033a8db425ab1b07a4e66ecb3153f77df",
+      "number": 2
+    }
+  },
+  "scope": "single-admin-identity API semantics; no independent review or runner qualification",
+  "missing_check_rejected": true,
+  "wrong_head_rejected": true,
+  "first_candidate_merged": true,
+  "stale_candidate_rejected": true,
+  "final_main": "02d49e600045f5108dbbfb127033fe564d909a9e",
+  "main_is_exact_tested_head": true
+}

@@ -1,0 +1,36 @@
+{
+  "private": true,
+  "repository": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "protection": {
+    "branch_name": "main",
+    "rule_name": "main",
+    "enable_push": false,
+    "enable_push_whitelist": false,
+    "push_whitelist_usernames": [],
+    "push_whitelist_teams": [],
+    "push_whitelist_deploy_keys": false,
+    "enable_merge_whitelist": false,
+    "merge_whitelist_usernames": [],
+    "merge_whitelist_teams": [],
+    "enable_status_check": true,
+    "status_check_contexts": [
+      "pilot/ready"
+    ],
+    "required_approvals": 0,
+    "enable_approvals_whitelist": false,
+    "approvals_whitelist_username": [],
+    "approvals_whitelist_teams": [],
+    "block_on_rejected_reviews": false,
+    "block_on_official_review_requests": false,
+    "block_on_outdated_branch": true,
+    "dismiss_stale_approvals": true,
+    "ignore_stale_approvals": false,
+    "require_signed_commits": false,
+    "protected_file_patterns": "",
+    "unprotected_file_patterns": "",
+    "apply_to_admins": true,
+    "created_at": "2026-09-18T20:32:33Z",
+    "updated_at": "2026-09-18T20:32:33Z"
+  },
+  "allow_fast_forward_only_merge": true
+}

@@ -1,0 +1,90 @@
+[
+  {
+    "method": "GET",
+    "path": "",
+    "exit_code": 0
+  },
+  {
+    "method": "GET",
+    "path": "/branches",
+    "exit_code": 0
+  },
+  {
+    "method": "PATCH",
+    "path": "",
+    "exit_code": 0
+  },
+  {
+    "method": "POST",
+    "path": "/branch_protections",
+    "exit_code": 0
+  },
+  {
+    "method": "POST",
+    "path": "/branches",
+    "exit_code": 0
+  },
+  {
+    "method": "POST",
+    "path": "/contents/a.txt",
+    "exit_code": 0
+  },
+  {
+    "method": "POST",
+    "path": "/pulls",
+    "exit_code": 0
+  },
+  {
+    "method": "POST",
+    "path": "/branches",
+    "exit_code": 0
+  },
+  {
+    "method": "POST",
+    "path": "/contents/b.txt",
+    "exit_code": 0
+  },
+  {
+    "method": "POST",
+    "path": "/pulls",
+    "exit_code": 0
+  },
+  {
+    "method": "POST",
+    "path": "/pulls/1/merge",
+    "exit_code": 1,
+    "error": "Error: HTTP 405\nUsage:\n  fgj api <endpoint> [flags]\n\nFlags:\n  -f, --field stringArray    Add a string parameter to the JSON body (key=value); may be repeated\n  -H, --header stringArray   Add a request header (Name: Value); may be repeated\n  -h, --help                 help for api\n  -i, --include              Include response headers in output\n  -X, --method string        HTTP method (default \"GET\")\n\nGlobal Flags:\n      --config string     config file (default is $HOME/.config/fgj/config.yaml)\n      --hostname string   Forgejo instance hostname\n\nHTTP 405\n"
+  },
+  {
+    "method": "POST",
+    "path": "/statuses/7b9bc3ca28174a6e4690f5f91efd0d38b72d0382",
+    "exit_code": 0
+  },
+  {
+    "method": "POST",
+    "path": "/statuses/e921ecc859dec9805c118b1d0459896a644a68d1",
+    "exit_code": 0
+  },
+  {
+    "method": "POST",
+    "path": "/pulls/1/merge",
+    "exit_code": 1,
+    "error": "Error: HTTP 409\nUsage:\n  fgj api <endpoint> [flags]\n\nFlags:\n  -f, --field stringArray    Add a string parameter to the JSON body (key=value); may be repeated\n  -H, --header stringArray   Add a request header (Name: Value); may be repeated\n  -h, --help                 help for api\n  -i, --include              Include response headers in output\n  -X, --method string        HTTP method (default \"GET\")\n\nGlobal Flags:\n      --config string     config file (default is $HOME/.config/fgj/config.yaml)\n      --hostname string   Forgejo instance hostname\n\nHTTP 409\n"
+  },
+  {
+    "method": "POST",
+    "path": "/pulls/1/merge",
+    "exit_code": 1,
+    "error": "Error: HTTP 405\nUsage:\n  fgj api <endpoint> [flags]\n\nFlags:\n  -f, --field stringArray    Add a string parameter to the JSON body (key=value); may be repeated\n  -H, --header stringArray   Add a request header (Name: Value); may be repeated\n  -h, --help                 help for api\n  -i, --include              Include response headers in output\n  -X, --method string        HTTP method (default \"GET\")\n\nGlobal Flags:\n      --config string     config file (default is $HOME/.config/fgj/config.yaml)\n      --hostname string   Forgejo instance hostname\n\nHTTP 405\n"
+  },
+  {
+    "method": "POST",
+    "path": "/pulls/2/merge",
+    "exit_code": 0
+  },
+  {
+    "method": "GET",
+    "path": "/branches/main",
+    "exit_code": 0
+  }
+]

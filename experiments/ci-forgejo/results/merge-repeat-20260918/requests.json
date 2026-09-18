@@ -1,0 +1,116 @@
+[
+  {
+    "method": "GET",
+    "path": "",
+    "exit_code": 0,
+    "http_status": 200
+  },
+  {
+    "method": "GET",
+    "path": "/branches",
+    "exit_code": 0,
+    "http_status": 200
+  },
+  {
+    "method": "PATCH",
+    "path": "",
+    "exit_code": 0,
+    "http_status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/branch_protections",
+    "exit_code": 0,
+    "http_status": 201
+  },
+  {
+    "method": "POST",
+    "path": "/branches",
+    "exit_code": 0,
+    "http_status": 201
+  },
+  {
+    "method": "POST",
+    "path": "/contents/a.txt",
+    "exit_code": 0,
+    "http_status": 201
+  },
+  {
+    "method": "POST",
+    "path": "/pulls",
+    "exit_code": 0,
+    "http_status": 201
+  },
+  {
+    "method": "POST",
+    "path": "/branches",
+    "exit_code": 0,
+    "http_status": 201
+  },
+  {
+    "method": "POST",
+    "path": "/contents/b.txt",
+    "exit_code": 0,
+    "http_status": 201
+  },
+  {
+    "method": "POST",
+    "path": "/pulls",
+    "exit_code": 0,
+    "http_status": 201
+  },
+  {
+    "method": "POST",
+    "path": "/pulls/1/merge",
+    "exit_code": 1,
+    "http_status": 405,
+    "error": {
+      "message": "not allowed to merge [reason: Not all required status checks successful]",
+      "url": "https://code.podesta.ai/api/swagger"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/statuses/02d49e600045f5108dbbfb127033fe564d909a9e",
+    "exit_code": 0,
+    "http_status": 201
+  },
+  {
+    "method": "POST",
+    "path": "/statuses/8cd4f2b033a8db425ab1b07a4e66ecb3153f77df",
+    "exit_code": 0,
+    "http_status": 201
+  },
+  {
+    "method": "POST",
+    "path": "/pulls/1/merge",
+    "exit_code": 1,
+    "http_status": 409,
+    "error": {
+      "message": "head out of date",
+      "url": "https://code.podesta.ai/api/swagger"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/pulls/1/merge",
+    "exit_code": 0,
+    "http_status": 200
+  },
+  {
+    "method": "POST",
+    "path": "/pulls/2/merge",
+    "exit_code": 1,
+    "http_status": 405,
+    "error": {
+      "message": "not allowed to merge [reason: The head branch is behind the base branch]",
+      "url": "https://code.podesta.ai/api/swagger"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/branches/main",
+    "exit_code": 0,
+    "http_status": 200
+  }
+]
