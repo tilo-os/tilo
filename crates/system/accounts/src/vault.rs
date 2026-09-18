@@ -9,7 +9,10 @@
 //!
 //! # Key custody
 //!
-//! On a normal desktop session the symmetric key is held by the freedesktop
+//! Windows protects keys with current-user DPAPI and private file ACLs, including
+//! explicit-root stores. Existing private plaintext keys migrate only after
+//! authenticated restoration; unavailable protected keys never fall back.
+//! On a Linux desktop session the symmetric key is held by the freedesktop
 //! Secret Service through `secret-tool`; it is not stored beside the
 //! ciphertext. Headless/test environments without Secret Service use an
 //! owner-only local key and can report that weaker custody to their caller.
@@ -28,6 +31,9 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::AccountId;
+
+#[cfg(windows)]
+mod windows;
 
 /// One account's secret material. Kept out of the plaintext account store entirely — it
 /// only ever lives in the sealed vault (or in memory while an app is connecting).
@@ -83,8 +89,20 @@ pub struct SecretVault {
 pub enum SecretCustody {
     SecretService,
     LocalFile,
+    #[cfg(windows)]
+    WindowsDpapi,
 }
 
+fn explicit_root_custody() -> SecretCustody {
+    #[cfg(windows)]
+    {
+        SecretCustody::WindowsDpapi
+    }
+    #[cfg(not(windows))]
+    {
+        SecretCustody::LocalFile
+    }
+}
 impl SecretVault {
     /// Open the vault at the default location (`$XDG_CONFIG_HOME/tilo/accounts/vault`). An empty
     /// vault when nothing is stored. Load failures yield an empty view with
@@ -93,27 +111,30 @@ impl SecretVault {
         match crate::config_root() {
             Some(root) => {
                 let dir = crate::vault_dir_in(&root);
+                #[cfg(not(windows))]
                 let custody = if secret_service_available() {
                     SecretCustody::SecretService
                 } else {
                     SecretCustody::LocalFile
                 };
+                #[cfg(windows)]
+                let custody = SecretCustody::WindowsDpapi;
                 Self::open_at(dir, custody)
             }
             None => Self {
                 dir: PathBuf::from("accounts/vault"),
                 entries: BTreeMap::new(),
-                custody: SecretCustody::LocalFile,
+                custody: explicit_root_custody(),
                 load_error: Some("user config directory unavailable".into()),
             },
         }
     }
 
-    /// Open the vault under an explicit config root (`root/accounts/vault`). The seam tests and
-    /// callers that want a non-default location use.
+    /// Open the vault under an explicit config root. Windows uses the same
+    /// DPAPI custody as the default store; other hosts use a private local key.
     pub fn open_in(config_root: &Path) -> Self {
         let dir = crate::vault_dir_in(config_root);
-        let custody = SecretCustody::LocalFile;
+        let custody = explicit_root_custody();
         Self::open_at(dir, custody)
     }
 
@@ -236,9 +257,18 @@ fn load_or_create_key(dir: &Path, custody: SecretCustody) -> Option<Zeroizing<[u
     match custody {
         SecretCustody::SecretService => secret_service_key(dir),
         SecretCustody::LocalFile => local_file_key(dir),
+        #[cfg(windows)]
+        SecretCustody::WindowsDpapi => match windows::load_or_create_key(dir) {
+            Ok(key) => Some(key),
+            Err(error) => {
+                tracing::warn!(%error, "accounts: Windows protected key unavailable; refusing fallback");
+                None
+            }
+        },
     }
 }
 
+#[cfg(not(windows))]
 fn secret_service_available() -> bool {
     Command::new("secret-tool")
         .arg("--version")
@@ -531,7 +561,7 @@ mod tests {
     #[test]
     fn insecure_windows_vault_key_does_not_rotate_or_overwrite_the_vault() {
         let root = temp_root();
-        let mut vault = SecretVault::open_in(&root);
+        let mut vault = SecretVault::open_at(crate::vault_dir_in(&root), SecretCustody::LocalFile);
         vault.put(&AccountId::from("protected"), &Secret::password("secret"));
         vault.try_save().unwrap();
         let directory = crate::vault_dir_in(&root);
@@ -563,10 +593,10 @@ mod tests {
         vault.try_save().unwrap();
         let dir = crate::vault_dir_in(&root);
         let before = std::fs::read(dir.join("vault.enc")).unwrap();
-        std::fs::remove_file(dir.join("vault.key")).unwrap();
+        std::fs::remove_file(dir.join(active_key_filename())).unwrap();
         let reopened = SecretVault::open_in(&root);
         assert!(reopened.try_save().is_err());
-        assert!(!dir.join("vault.key").exists());
+        assert!(!dir.join(active_key_filename()).exists());
         assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), before);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -580,10 +610,10 @@ mod tests {
         vault.try_save().unwrap();
         let dir = crate::vault_dir_in(&root);
         let before = std::fs::read(dir.join("vault.enc")).unwrap();
-        let key = std::fs::read(dir.join("vault.key")).unwrap();
-        std::fs::write(dir.join("vault.key"), [0u8; KEY_LEN]).unwrap();
+        let key = std::fs::read(dir.join(active_key_filename())).unwrap();
+        std::fs::write(dir.join(active_key_filename()), [0u8; KEY_LEN]).unwrap();
         let mut failed = SecretVault::open_in(&root);
-        std::fs::write(dir.join("vault.key"), key).unwrap();
+        std::fs::write(dir.join(active_key_filename()), key).unwrap();
         failed.put(&AccountId::from("new"), &Secret::password("new value"));
         assert!(failed.try_save().is_err());
         assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), before);
@@ -624,6 +654,13 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    fn active_key_filename() -> &'static str {
+        if cfg!(windows) {
+            "vault.key.dpapi"
+        } else {
+            "vault.key"
+        }
+    }
     fn temp_root() -> PathBuf {
         std::env::temp_dir().join(format!("tilo-accounts-vault-{}", uuid::Uuid::new_v4()))
     }
@@ -661,7 +698,10 @@ mod tests {
         let id = AccountId::from("ada@example.com");
         {
             let mut v = SecretVault::open_in(&root);
+            #[cfg(not(windows))]
             assert_eq!(v.custody(), SecretCustody::LocalFile);
+            #[cfg(windows)]
+            assert_eq!(v.custody(), SecretCustody::WindowsDpapi);
             v.put(&id, &Secret::password("hunter2"));
             v.save();
         }
@@ -698,7 +738,7 @@ mod tests {
         }
         // Corrupt the key file: the sealed vault can no longer be opened, and it degrades to empty
         // rather than surfacing garbage.
-        let key_path = crate::vault_dir_in(&root).join("vault.key");
+        let key_path = crate::vault_dir_in(&root).join(active_key_filename());
         std::fs::write(&key_path, [0u8; KEY_LEN]).unwrap();
         let v = SecretVault::open_in(&root);
         assert!(
@@ -722,5 +762,135 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o600, "vault key must be owner-only");
         std::fs::remove_dir_all(&root).ok();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_dpapi_secret_store_does_not_publish_plaintext_key() {
+        let root = temp_root();
+        let mut item = crate::SecretItem::login("Owned fixture", "user", "fixture secret");
+        let mut store = crate::SecretStore::open_in(&root);
+        store.put(&mut item).unwrap();
+        let dir = crate::vault_dir_in(&root);
+        assert!(!dir.join("vault.key").exists());
+        assert!(private_fs::read(&dir.join("vault.key.dpapi")).is_ok());
+        let reopened = crate::SecretStore::open_in(&root);
+        assert!(reopened.recovery_error().is_none());
+        assert_eq!(
+            reopened.reveal_password(&item.id).unwrap().as_str(),
+            "fixture secret"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_dpapi_migrates_legacy_key_without_changing_vault() {
+        let root = temp_root();
+        let dir = crate::vault_dir_in(&root);
+        let id = AccountId::from("migration");
+        let mut legacy = SecretVault::open_at(dir.clone(), SecretCustody::LocalFile);
+        legacy.put(&id, &Secret::password("preserve original"));
+        legacy.try_save().unwrap();
+        let key = read_key_bytes(&dir.join("vault.key")).unwrap();
+        let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
+        let migrated = SecretVault::open_in(&root);
+        assert_eq!(migrated.get(&id).unwrap().password, "preserve original");
+        assert!(!dir.join("vault.key").exists());
+        let protected = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
+        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
+
+        // Reconstruct interrupted cleanup after the protected key was published.
+        private_fs::create_atomic(&dir.join("vault.key"), &key).unwrap();
+        let reopened = SecretVault::open_in(&root);
+        assert_eq!(reopened.get(&id).unwrap().password, "preserve original");
+        assert!(!dir.join("vault.key").exists());
+        assert_eq!(
+            std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
+            protected
+        );
+        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_dpapi_insecure_protected_key_cannot_replace_existing_vault() {
+        let root = temp_root();
+        let mut vault = SecretVault::open_in(&root);
+        vault.put(&AccountId::from("protected"), &Secret::password("fixture"));
+        vault.try_save().unwrap();
+        let dir = crate::vault_dir_in(&root);
+        let key_path = dir.join("vault.key.dpapi");
+        let key_before = std::fs::read(&key_path).unwrap();
+        let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
+        let result = Command::new("icacls.exe")
+            .arg(&key_path)
+            .args(["/grant", "*S-1-1-0:(R)"])
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        assert!(SecretVault::open_in(&root).recovery_error().is_some());
+        assert!(vault.try_save().is_err());
+        assert!(!dir.join("vault.key").exists());
+        assert_eq!(std::fs::read(key_path).unwrap(), key_before);
+        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_dpapi_corrupt_protected_key_never_falls_back_to_legacy() {
+        let root = temp_root();
+        let dir = crate::vault_dir_in(&root);
+        let mut legacy = SecretVault::open_at(dir.clone(), SecretCustody::LocalFile);
+        legacy.put(&AccountId::from("original"), &Secret::password("fixture"));
+        legacy.try_save().unwrap();
+        let original_key = read_key_bytes(&dir.join("vault.key")).unwrap();
+        let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
+        let migrated = SecretVault::open_in(&root);
+        assert!(migrated.recovery_error().is_none());
+        assert!(!dir.join("vault.key").exists());
+        private_fs::create_atomic(&dir.join("vault.key"), &original_key).unwrap();
+        private_fs::write_atomic(&dir.join("vault.key.dpapi"), b"corrupt protected key").unwrap();
+        let failed = SecretVault::open_in(&root);
+        assert!(failed.recovery_error().is_some());
+        assert!(failed.try_save().is_err());
+        assert_eq!(
+            std::fs::read(dir.join("vault.key")).unwrap(),
+            original_key.as_slice()
+        );
+        assert_eq!(
+            std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
+            b"corrupt protected key"
+        );
+        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_dpapi_concurrent_creation_returns_one_persisted_key() {
+        let root = temp_root();
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let mut workers = Vec::new();
+        for _ in 0..4 {
+            let root = root.clone();
+            let gate = gate.clone();
+            workers.push(std::thread::spawn(move || {
+                gate.wait();
+                windows::load_or_create_key(&root).unwrap()
+            }));
+        }
+        let keys: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        let persisted = windows::load_or_create_key(&root).unwrap();
+        assert!(
+            keys.iter()
+                .all(|key| key.as_slice() == persisted.as_slice())
+        );
+        assert!(!root.join("vault.key").exists());
+        assert!(private_fs::read(&root.join("vault.key.dpapi")).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
