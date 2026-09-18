@@ -31,6 +31,7 @@ use ui::widget::{ActionEmitter, NavSplit, SplitMode, VideoPlayer, Widget};
 
 use crate::action::{self, Action, ActionBus, SettingFlag};
 use crate::api::{Request, Update, Worker};
+use crate::history_store::{HistoryEntryRecord, OwnerHistoryAction, OwnerHistoryStore};
 use crate::model::{Route, TubeModel};
 use crate::screens;
 use crate::widgets::{Flex, SharedPlayer};
@@ -95,12 +96,12 @@ fn resolve_history_owner() -> String {
     }
 }
 
-/// Deterministic materialization rule for concurrent private-history writes.
+/// Deterministic materialization rule for concurrent owner-history writes.
 /// The document may preserve several scalar values at one video key; authored
 /// time then the stable mutation id decides the same winner on every device.
 fn newest_history_record(
-    records: impl Iterator<Item = crate::actions::HistoryEntryRecord>,
-) -> Option<crate::actions::HistoryEntryRecord> {
+    records: impl Iterator<Item = HistoryEntryRecord>,
+) -> Option<HistoryEntryRecord> {
     records.max_by(|left, right| {
         left.watched_at_ms
             .cmp(&right.watched_at_ms)
@@ -137,6 +138,10 @@ pub struct TubeApp {
     model: TubeModel,
     /// Canonical document-operation dispatcher used by visible affordances.
     actions: ui::ActionHost,
+    /// History has a different replication boundary from collaborative Tube
+    /// state: it is owner-local and only crosses an approved device-sync link.
+    history_actions: ui::ActionHost,
+    history_store: OwnerHistoryStore,
     bus: ActionBus,
     worker: Option<Worker>,
     #[cfg(feature = "grayjay-sync")]
@@ -276,9 +281,12 @@ impl TubeApp {
     pub fn new() -> Self {
         let mut model = crate::sample::model();
         model.history_owner = resolve_history_owner();
+        let history_store = OwnerHistoryStore::open(&model.history_owner);
         Self {
             model,
             actions: ui::ActionHost::new(),
+            history_actions: ui::ActionHost::new(),
+            history_store,
             bus: action::new_bus(),
             worker: None,
             #[cfg(feature = "grayjay-sync")]
@@ -318,6 +326,10 @@ impl TubeApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per typed Tube resource operation keeps the canonical effect boundary auditable"
+    )]
     fn perform_resource_operation(&mut self, operation: crate::actions::TubeOperation) {
         match operation {
             crate::actions::TubeOperation::TogglePlayback => {
@@ -373,6 +385,43 @@ impl TubeApp {
                     "Downloads are unavailable for {video_id}: no storage capability"
                 ));
             }
+            crate::actions::TubeOperation::RecordHistory { video_id } => {
+                let watched_at_ms = history_now_ms();
+                if self.dispatch_history_action(OwnerHistoryAction::SetEntry {
+                    video_id: video_id.clone(),
+                    watched_at_ms,
+                    present: true,
+                    mutation_id: format!(
+                        "{}:watch:{video_id}:{watched_at_ms}",
+                        self.model.history_owner
+                    ),
+                }) {
+                    self.model.record_watch(&video_id);
+                }
+            }
+            crate::actions::TubeOperation::RemoveHistory { video_id } => {
+                let watched_at_ms = history_now_ms();
+                if self.dispatch_history_action(OwnerHistoryAction::SetEntry {
+                    video_id: video_id.clone(),
+                    watched_at_ms,
+                    present: false,
+                    mutation_id: format!(
+                        "{}:remove:{video_id}:{watched_at_ms}",
+                        self.model.history_owner
+                    ),
+                }) {
+                    self.model.history.retain(|id| id != &video_id);
+                }
+            }
+            crate::actions::TubeOperation::ClearHistory => {
+                let cleared_at_ms = history_now_ms();
+                if self.dispatch_history_action(OwnerHistoryAction::Clear {
+                    cleared_at_ms,
+                    clear_id: format!("{}:clear:all:{cleared_at_ms}", self.model.history_owner),
+                }) {
+                    self.model.history.clear();
+                }
+            }
             crate::actions::TubeOperation::PairDevice { invite } => {
                 #[cfg(feature = "grayjay-sync")]
                 if !self.device_sync.pair(invite) {
@@ -419,6 +468,10 @@ impl TubeApp {
     /// Automerge semantics and a normal activity/undo trail instead of a
     /// transient mutation that reconciliation can discard.
     #[cfg(feature = "grayjay-sync")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "explicit bounded validation per imported sync field keeps device effects reviewable"
+    )]
     fn import_device_sync_state(
         &mut self,
         remote: crate::sync::SyncState,
@@ -427,7 +480,7 @@ impl TubeApp {
         const MAX_SYNC_ENTITIES: usize = 100;
         const MAX_SYNC_ID_BYTES: usize = 256;
 
-        let mut changed = false;
+        let changed = Cell::new(false);
         let context = |action: &crate::actions::TubeAction| {
             tilo_actions::ActionContext::for_action(
                 "org.tilo.Tube",
@@ -443,7 +496,7 @@ impl TubeApp {
                 &action,
                 context(&action),
             ) {
-            Ok(()) => changed = true,
+            Ok(()) => changed.set(true),
             Err(error) => tracing::warn!(%error, "refused a pulled Tube device-sync action"),
         };
 
@@ -470,7 +523,7 @@ impl TubeApp {
                 dispatch(
                     self,
                     crate::actions::TubeAction::SetSubscription {
-                        channel_id: subscription.to_string(),
+                        channel_id: subscription.clone(),
                         subscribed: true,
                     },
                 );
@@ -495,19 +548,17 @@ impl TubeApp {
                 continue;
             }
             let authored_at_ms = watched_at_ms.saturating_sub(u64::try_from(offset).unwrap_or(0));
-            dispatch(
-                self,
-                crate::actions::TubeAction::SetHistoryEntry {
-                    owner_id: self.model.history_owner.clone(),
-                    video_id: video_id.to_string(),
-                    watched_at_ms: authored_at_ms,
-                    present: true,
-                    mutation_id: format!(
-                        "{}:device-sync:{video_id}:{authored_at_ms}",
-                        self.model.history_owner
-                    ),
-                },
-            );
+            if self.dispatch_history_action(OwnerHistoryAction::SetEntry {
+                video_id: video_id.to_string(),
+                watched_at_ms: authored_at_ms,
+                present: true,
+                mutation_id: format!(
+                    "{}:device-sync:{video_id}:{authored_at_ms}",
+                    self.model.history_owner
+                ),
+            }) {
+                changed.set(true);
+            }
         }
 
         if let Some(settings) = remote.settings {
@@ -560,7 +611,7 @@ impl TubeApp {
                 }
             }
         }
-        changed
+        changed.get()
     }
 
     /// Queue a visible device control through its currently published resource
@@ -707,7 +758,17 @@ impl TubeApp {
         self.search_query.set(model.search_query.clone());
         self.palette_query.set(model.palette_query.clone());
         self.model = model;
+        self.history_store = OwnerHistoryStore::memory();
         self
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "a by-value canonical action makes every caller construct one immutable dispatch payload"
+    )]
+    fn dispatch_history_action(&mut self, action: OwnerHistoryAction) -> bool {
+        self.history_store
+            .dispatch(&mut self.history_actions, &action)
     }
 
     /// `--shots` builder: start on an EMPTY Home in its loading state, so a still
@@ -1451,7 +1512,15 @@ impl TubeApp {
     /// Shared by the card/palette open paths and by autoplay-next so they stay
     /// in lockstep.
     fn open_video(&mut self, id: String) {
-        self.model.record_watch(&id);
+        let watched_at_ms = history_now_ms();
+        if self.dispatch_history_action(OwnerHistoryAction::SetEntry {
+            video_id: id.clone(),
+            watched_at_ms,
+            present: true,
+            mutation_id: format!("{}:watch:{id}:{watched_at_ms}", self.model.history_owner),
+        }) {
+            self.model.record_watch(&id);
+        }
         self.navigate_to(Route::Watch(id.clone()));
         self.model.playhead = 0.0;
         self.model.playing = true;
@@ -1525,9 +1594,15 @@ impl TubeApp {
     fn apply(&mut self, action: Action, _state: &AutoCommit, _root: &ObjId) -> bool {
         match action {
             Action::ClearHistory => {
-                self.model.history.clear();
-                self.model
-                    .push_notice("Watch history cleared for this profile");
+                let cleared_at_ms = history_now_ms();
+                if self.dispatch_history_action(OwnerHistoryAction::Clear {
+                    cleared_at_ms,
+                    clear_id: format!("{}:clear:all:{cleared_at_ms}", self.model.history_owner),
+                }) {
+                    self.model.history.clear();
+                    self.model
+                        .push_notice("Watch history cleared for this profile");
+                }
             }
             Action::ToggleSidebar => {
                 // Flip the rail relative to its current resolved openness, so
@@ -2116,74 +2191,6 @@ impl TubeApp {
                 changed = true;
             }
         }
-        if let Ok(Some((Value::Object(ObjType::Map), private_history))) =
-            state.get(&tube, "private_history")
-            && let Ok(Some((Value::Object(ObjType::Map), owner))) =
-                state.get(&private_history, self.model.history_owner.as_str())
-        {
-            // Private history is owner-keyed. We deliberately read only this
-            // signed-in profile's scope: the collection syncs across their
-            // devices, but collaborators' activity can never appear in this
-            // UI, palette, or resource tree.
-            let cleared_at_ms = state
-                .get(&owner, "clears")
-                .ok()
-                .flatten()
-                .and_then(|(value, clears)| match value {
-                    Value::Object(ObjType::Map) => Some(clears),
-                    _ => None,
-                })
-                .map_or(0, |clears| {
-                    state
-                        .keys(&clears)
-                        .filter_map(|id| {
-                            state.get_all(&clears, id.as_str()).ok().and_then(|values| {
-                                values
-                                    .into_iter()
-                                    .filter_map(|(value, _)| {
-                                        value.to_str().and_then(|v| v.parse().ok())
-                                    })
-                                    .max()
-                            })
-                        })
-                        .max()
-                        .unwrap_or(0)
-                });
-            let entries = state
-                .get(&owner, "entries")
-                .ok()
-                .flatten()
-                .and_then(|(value, entries)| match value {
-                    Value::Object(ObjType::Map) => Some(entries),
-                    _ => None,
-                })
-                .map_or_else(std::collections::BTreeMap::new, |entries| {
-                    state
-                        .keys(&entries)
-                        .filter_map(|video_id| {
-                            let records = state
-                                .get_all(&entries, video_id.as_str())
-                                .ok()?
-                                .into_iter()
-                                .filter_map(|(value, _)| value.to_str().map(str::to_owned))
-                                .filter_map(|value| {
-                                    serde_json::from_str::<crate::actions::HistoryEntryRecord>(
-                                        &value,
-                                    )
-                                    .ok()
-                                });
-                            let record = newest_history_record(records)?;
-                            (record.present && record.watched_at_ms > cleared_at_ms)
-                                .then_some((video_id, record.watched_at_ms))
-                        })
-                        .collect()
-                });
-            let before = self.model.history.clone();
-            self.model.set_history_projection(entries);
-            if self.model.history != before {
-                changed = true;
-            }
-        }
         if let Ok(Some((Value::Object(ObjType::Map), settings))) = state.get(&tube, "settings") {
             for (key, slot) in [
                 (
@@ -2254,6 +2261,158 @@ impl TubeApp {
             }
         }
         changed
+    }
+
+    /// One-way compatibility import for versions that incorrectly wrote watch
+    /// history into the collaborative document. This is explicitly marked in
+    /// the local store and never deletes/rewrites the shared document: a
+    /// tombstone would not recall its historic Automerge changes or old export
+    /// bytes. New history writes never target this legacy subtree.
+    fn migrate_legacy_shared_history_once(&mut self, state: &AutoCommit) -> bool {
+        if self.history_store.has_legacy_migration_marker() {
+            return false;
+        }
+        let Some((Value::Object(ObjType::Map), tube)) =
+            state.get(&automerge::ROOT, "tube").ok().flatten()
+        else {
+            return false;
+        };
+        let Some((Value::Object(ObjType::Map), private_history)) =
+            state.get(&tube, "private_history").ok().flatten()
+        else {
+            return false;
+        };
+        let Some((Value::Object(ObjType::Map), owner)) = state
+            .get(&private_history, self.model.history_owner.as_str())
+            .ok()
+            .flatten()
+        else {
+            return false;
+        };
+        let cleared_at_ms = state
+            .get(&owner, "clears")
+            .ok()
+            .flatten()
+            .and_then(|(value, clears)| {
+                matches!(value, Value::Object(ObjType::Map)).then_some(clears)
+            })
+            .map_or(0, |clears| {
+                state
+                    .keys(&clears)
+                    .filter_map(|id| {
+                        state.get_all(&clears, id.as_str()).ok().and_then(|values| {
+                            values
+                                .into_iter()
+                                .filter_map(|(value, _)| {
+                                    value.to_str().and_then(|value| value.parse::<u64>().ok())
+                                })
+                                .max()
+                        })
+                    })
+                    .max()
+                    .unwrap_or(0)
+            });
+        let records = state
+            .get(&owner, "entries")
+            .ok()
+            .flatten()
+            .and_then(|(value, entries)| {
+                matches!(value, Value::Object(ObjType::Map)).then_some(entries)
+            })
+            .map_or_else(Vec::new, |entries| {
+                state
+                    .keys(&entries)
+                    .filter_map(|video_id| {
+                        let values = state.get_all(&entries, video_id.as_str()).ok()?;
+                        let record = newest_history_record(
+                            values
+                                .into_iter()
+                                .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+                                .filter_map(|value| {
+                                    serde_json::from_str::<HistoryEntryRecord>(&value).ok()
+                                }),
+                        )?;
+                        (record.watched_at_ms > cleared_at_ms).then_some((video_id, record))
+                    })
+                    .collect()
+            });
+        for (video_id, record) in records {
+            if !self.dispatch_history_action(OwnerHistoryAction::SetEntry {
+                video_id,
+                watched_at_ms: record.watched_at_ms,
+                present: record.present,
+                mutation_id: format!("legacy:{}", record.mutation_id),
+            }) {
+                return false;
+            }
+        }
+        tracing::warn!(
+            "migrated legacy shared Tube history locally; existing shared replicas and exports cannot be recalled"
+        );
+        self.dispatch_history_action(OwnerHistoryAction::LegacyMigrationComplete)
+    }
+
+    /// Project only the separate owner-local document. This deliberately has
+    /// no path through `reconcile_collaborative_actions`: a shared replica is
+    /// never examined for watch history, including legacy `private_history`.
+    fn reconcile_owner_history(&mut self) -> bool {
+        let state = self.history_store.document();
+        let Some((Value::Object(ObjType::Map), history)) =
+            state.get(&automerge::ROOT, "owner_history").ok().flatten()
+        else {
+            return false;
+        };
+        let cleared_at_ms = state
+            .get(&history, "clears")
+            .ok()
+            .flatten()
+            .and_then(|(value, clears)| {
+                matches!(value, Value::Object(ObjType::Map)).then_some(clears)
+            })
+            .map_or(0, |clears| {
+                state
+                    .keys(&clears)
+                    .filter_map(|id| {
+                        state.get_all(&clears, id.as_str()).ok().and_then(|values| {
+                            values
+                                .into_iter()
+                                .filter_map(|(value, _)| {
+                                    value.to_str().and_then(|value| value.parse::<u64>().ok())
+                                })
+                                .max()
+                        })
+                    })
+                    .max()
+                    .unwrap_or(0)
+            });
+        let entries = state
+            .get(&history, "entries")
+            .ok()
+            .flatten()
+            .and_then(|(value, entries)| {
+                matches!(value, Value::Object(ObjType::Map)).then_some(entries)
+            })
+            .map_or_else(std::collections::BTreeMap::new, |entries| {
+                state
+                    .keys(&entries)
+                    .filter_map(|video_id| {
+                        let records = state
+                            .get_all(&entries, video_id.as_str())
+                            .ok()?
+                            .into_iter()
+                            .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+                            .filter_map(|value| {
+                                serde_json::from_str::<HistoryEntryRecord>(&value).ok()
+                            });
+                        let record = newest_history_record(records)?;
+                        (record.present && record.watched_at_ms > cleared_at_ms)
+                            .then_some((video_id, record.watched_at_ms))
+                    })
+                    .collect()
+            });
+        let before = self.model.history.clone();
+        self.model.set_history_projection(entries);
+        self.model.history != before
     }
 }
 
@@ -2368,6 +2527,12 @@ impl Widget for TubeApp {
             }
         }
         if self.reconcile_collaborative_actions(state) {
+            self.structure_dirty = true;
+        }
+        if self.migrate_legacy_shared_history_once(state) {
+            self.structure_dirty = true;
+        }
+        if self.reconcile_owner_history() {
             self.structure_dirty = true;
         }
         // First live frame: spawn the fetch worker and pull the home/trending
@@ -2681,27 +2846,6 @@ impl Widget for TubeApp {
         let mut changed = false;
         for a in actions {
             let document_action = match &a {
-                Action::OpenVideo(id) => {
-                    let watched_at_ms = history_now_ms();
-                    Some(crate::actions::TubeAction::SetHistoryEntry {
-                        owner_id: self.model.history_owner.clone(),
-                        video_id: id.clone(),
-                        watched_at_ms,
-                        present: true,
-                        mutation_id: format!(
-                            "{}:watch:{}:{watched_at_ms}",
-                            self.model.history_owner, id
-                        ),
-                    })
-                }
-                Action::ClearHistory => {
-                    let cleared_at_ms = history_now_ms();
-                    Some(crate::actions::TubeAction::ClearHistory {
-                        owner_id: self.model.history_owner.clone(),
-                        cleared_at_ms,
-                        clear_id: format!("{}:clear:all:{cleared_at_ms}", self.model.history_owner),
-                    })
-                }
                 Action::ToggleLike(id) => Some(crate::actions::TubeAction::SetVideoLiked {
                     video_id: id.clone(),
                     liked: !self.model.is_liked(id),
@@ -2743,7 +2887,8 @@ impl Widget for TubeApp {
             };
             if let Some(operation) = document_action {
                 // Visible collaborative mutations cross the exact ActionHost
-                // boundary used by search, agents and replay.
+                // boundary used by search, agents and replay. Owner history
+                // is intentionally absent from this public dispatcher.
                 self.actions.dispatch_with_context(
                     state,
                     crate::actions::TUBE_ACTION_TYPE,
@@ -2919,7 +3064,6 @@ impl Widget for TubeApp {
 mod tests {
     use super::*;
     use crate::model::Category;
-    use tilo_actions::Action as _;
 
     fn fresh() -> (TubeApp, AutoCommit) {
         (TubeApp::new(), AutoCommit::new())
@@ -3119,6 +3263,7 @@ mod tests {
             app.reconcile_collaborative_actions(&doc),
             "the action document—not a transient model write—projects the import"
         );
+        assert!(app.reconcile_owner_history());
         assert!(
             app.model
                 .subscriptions
@@ -3138,6 +3283,90 @@ mod tests {
                 .contains(&"https://youtube.com/@new-to-this-device".to_string())
         );
         assert!(app.actions.last_dispatched().is_some());
+    }
+
+    #[test]
+    fn owner_history_never_enters_a_collaborator_document() {
+        let (mut app, mut shared) = fresh();
+        app.history_store = OwnerHistoryStore::memory();
+        assert!(app.dispatch_history_action(OwnerHistoryAction::SetEntry {
+            video_id: "vid_donut".into(),
+            watched_at_ms: 1,
+            present: true,
+            mutation_id: "owner:watch:1".into(),
+        }));
+        let exported = shared.save();
+        let collaborator = AutoCommit::load(&exported).expect("shared replica reloads");
+        assert!(
+            !exported
+                .windows(b"vid_donut".len())
+                .any(|window| window == b"vid_donut"),
+            "shared Automerge bytes must not contain an owner video id"
+        );
+        assert!(
+            collaborator
+                .get(&automerge::ROOT, "owner_history")
+                .unwrap()
+                .is_none(),
+            "a collaborator replica cannot receive an owner history root"
+        );
+        assert!(shared.get(&automerge::ROOT, "tube").unwrap().is_none());
+        assert!(
+            app.history_store
+                .document()
+                .get(&automerge::ROOT, "owner_history")
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn legacy_shared_history_is_migrated_once_without_new_shared_writes() {
+        use automerge::{ScalarValue, transaction::Transactable};
+
+        let (mut app, mut shared) = fresh();
+        app.history_store = OwnerHistoryStore::memory();
+        let tube = shared
+            .put_object(&automerge::ROOT, "tube", ObjType::Map)
+            .expect("tube map");
+        let private = shared
+            .put_object(&tube, "private_history", ObjType::Map)
+            .expect("legacy map");
+        let owner = shared
+            .put_object(&private, app.model.history_owner.as_str(), ObjType::Map)
+            .expect("owner map");
+        let entries = shared
+            .put_object(&owner, "entries", ObjType::Map)
+            .expect("entries map");
+        let legacy_id = "legacy-history-video";
+        let record = HistoryEntryRecord {
+            present: true,
+            watched_at_ms: 7,
+            mutation_id: "old-device:7".into(),
+        };
+        shared
+            .put(
+                &entries,
+                legacy_id,
+                ScalarValue::Str(serde_json::to_string(&record).expect("serializable").into()),
+            )
+            .expect("legacy entry");
+        let before = shared.save();
+        assert!(
+            before
+                .windows(legacy_id.len())
+                .any(|window| window == legacy_id.as_bytes())
+        );
+        assert!(app.migrate_legacy_shared_history_once(&shared));
+        assert!(app.reconcile_owner_history());
+        assert_eq!(app.model.history, vec![legacy_id]);
+        assert!(app.history_store.has_legacy_migration_marker());
+        assert!(!app.migrate_legacy_shared_history_once(&shared));
+        assert_eq!(
+            shared.save(),
+            before,
+            "migration never mutates shared history"
+        );
     }
 
     #[test]
@@ -3800,6 +4029,9 @@ mod tests {
         assert!(store.pending() >= 1, "a load is in flight");
 
         let mut app = TubeApp::new().with_image_store(store);
+        // This test isolates image completion from an actual user's durable
+        // owner history, which is legitimately projected during first sync.
+        app.history_store = OwnerHistoryStore::memory();
         let mut doc = AutoCommit::new();
         let r = automerge::ROOT;
         app.sync(&mut doc, &r);
@@ -3831,93 +4063,52 @@ mod tests {
     }
 
     #[test]
-    fn private_history_projects_only_owner_and_resolves_conflicts_by_authored_order() {
+    fn owner_history_projects_local_actions_by_authored_order() {
         let mut model = crate::sample::model();
-        model.history_owner = "user:alice".into();
         model.history.clear();
         let mut app = TubeApp::new().with_model_for_test(model);
-        let mut base = AutoCommit::new();
-        crate::actions::TubeAction::SetHistoryEntry {
-            owner_id: "user:bob".into(),
-            video_id: "vid_donut".into(),
-            watched_at_ms: 99,
-            present: true,
-            mutation_id: "bob:watch:99".into(),
-        }
-        .apply(&mut base)
-        .expect("bob record");
-        base.commit();
-        let bytes = base.save();
-        let mut left = AutoCommit::load(&bytes).expect("left replica");
-        let mut right = AutoCommit::load(&bytes).expect("right replica");
-        left.set_actor(automerge::ActorId::from(b"alice-device-a".as_slice()));
-        right.set_actor(automerge::ActorId::from(b"alice-device-b".as_slice()));
-        crate::actions::TubeAction::SetHistoryEntry {
-            owner_id: "user:alice".into(),
+        assert!(app.dispatch_history_action(OwnerHistoryAction::SetEntry {
             video_id: "vid_donut".into(),
             watched_at_ms: 10,
             present: true,
-            mutation_id: "alice:watch:10".into(),
-        }
-        .apply(&mut left)
-        .expect("left record");
-        left.commit();
-        crate::actions::TubeAction::SetHistoryEntry {
-            owner_id: "user:alice".into(),
+            mutation_id: "watch:10".into(),
+        }));
+        assert!(app.dispatch_history_action(OwnerHistoryAction::SetEntry {
             video_id: "vid_donut".into(),
             watched_at_ms: 20,
             present: false,
-            mutation_id: "alice:remove:20".into(),
-        }
-        .apply(&mut right)
-        .expect("right tombstone");
-        right.commit();
-        left.merge(&mut right).expect("replicas merge");
+            mutation_id: "remove:20".into(),
+        }));
         let winner = newest_history_record(
             [
-                crate::actions::HistoryEntryRecord {
+                HistoryEntryRecord {
                     present: true,
                     watched_at_ms: 10,
-                    mutation_id: "alice:watch:10".into(),
+                    mutation_id: "watch:10".into(),
                 },
-                crate::actions::HistoryEntryRecord {
+                HistoryEntryRecord {
                     present: false,
                     watched_at_ms: 20,
-                    mutation_id: "alice:remove:20".into(),
+                    mutation_id: "remove:20".into(),
                 },
             ]
             .into_iter(),
         )
-        .expect("conflict candidates have a deterministic winner");
+        .expect("records have a deterministic winner");
         assert!(!winner.present);
-        assert!(
-            !app.reconcile_collaborative_actions(&left),
-            "Bob's private scope and Alice's newer removal must leave Alice's empty projection unchanged"
-        );
-        assert!(
-            app.model.history.is_empty(),
-            "newer remove wins concurrently"
-        );
-
-        crate::actions::TubeAction::SetHistoryEntry {
-            owner_id: "user:alice".into(),
+        assert!(!app.reconcile_owner_history());
+        assert!(app.model.history.is_empty());
+        assert!(app.dispatch_history_action(OwnerHistoryAction::SetEntry {
             video_id: "vid_donut".into(),
             watched_at_ms: 30,
             present: true,
-            mutation_id: "alice:watch:30".into(),
-        }
-        .apply(&mut left)
-        .expect("newer watch");
-        left.commit();
-        crate::actions::TubeAction::ClearHistory {
-            owner_id: "user:alice".into(),
+            mutation_id: "watch:30".into(),
+        }));
+        assert!(app.dispatch_history_action(OwnerHistoryAction::Clear {
             cleared_at_ms: 25,
-            clear_id: "alice:clear:25".into(),
-        }
-        .apply(&mut left)
-        .expect("clear marker");
-        left.commit();
-        assert!(app.reconcile_collaborative_actions(&left));
+            clear_id: "clear:25".into(),
+        }));
+        assert!(app.reconcile_owner_history());
         assert_eq!(app.model.history, vec!["vid_donut"]);
     }
 

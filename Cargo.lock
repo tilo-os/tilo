@@ -15525,11 +15525,14 @@ name = "tube"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "automerge",
  "base64 0.22.1",
+ "blake3",
  "bounded-command",
  "dirs 6.0.0",
  "flate2",
+ "libc",
  "media",
  "png 0.18.1",
  "reqwest 0.12.28",

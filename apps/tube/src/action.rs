@@ -20,7 +20,7 @@ pub enum Action {
     Navigate(Route),
     OpenVideo(VideoId),
     /// Clear this signed-in profile's synchronised watch-history collection.
-    /// This never affects another collaborator's private history scope.
+    /// This only affects the signed-in owner's local history store.
     ClearHistory,
     OpenChannel(ChannelId),
     OpenPlaylist(PlaylistId),

@@ -1,12 +1,11 @@
 //! Tube's exported **actions** and the **resource tree** it publishes to Ctrl+K.
 //!
 //! These are the collaborative, replicable operations on Tube's shared CRDT
-//! state — likes, the watch queue, comment likes + replies, and per-user watch
-//! history — as distinct from Tube's device-local presentation (fetched
-//! catalogues, playhead and route). History lives in an owner-keyed private
-//! scope and is projected only for the current signed-in profile; sync hosts
-//! replicate that scope between the owner's devices, never as a collaborator
-//! activity feed. An action mutates a structured sub-tree under the
+//! state — likes, the watch queue, comment likes + replies — as distinct from
+//! Tube's device-local presentation (fetched catalogues, playhead and route).
+//! Watch history is intentionally absent: it is held by the separate
+//! owner-local action/store in `history_store`, never in collaboration data.
+//! An action mutates a structured sub-tree under the
 //! document's `"tube"` map so it replicates + replays deterministically:
 //!
 //! ```text
@@ -15,7 +14,7 @@
 //! ├── "queue"           (Map)  video_id -> bool (membership/tombstone)
 //! ├── "comment_likes"   (Map)  comment_id -> bool (membership/tombstone)
 //! ├── "comment_replies" (Map)  comment_id -> (Map reply_id -> reply record)
-//! └── "private_history" (Map)  owner_id -> entries/clears (private scope)
+//! └── "settings"        (Map)  durable shared preferences
 //! ```
 //!
 //! Liking a video / comment is [`ExecutionLocus::ClientLocal`]; adding to the
@@ -31,7 +30,6 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use tilo_actions::{
     Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
@@ -46,18 +44,6 @@ const MAX_RESOURCE_ENTITIES: usize = 100;
 const MAX_RESOURCE_COMMENTS: usize = 50;
 const MAX_RESOURCE_LABEL_CHARS: usize = 160;
 const QUALITY_OPTIONS: [&str; 4] = ["1080p", "720p", "480p", "auto"];
-
-fn history_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
-fn history_mutation_id(owner_id: &str, video_id: &str, at_ms: u64, verb: &str) -> String {
-    format!("{owner_id}:{verb}:{video_id}:{at_ms}")
-}
 
 /// Registry `type_id` for every Tube action.
 pub const TUBE_ACTION_TYPE: &str = "tube.action";
@@ -97,6 +83,13 @@ pub enum TubeOperation {
     RevokeDevice {
         peer_id: String,
     },
+    RecordHistory {
+        video_id: String,
+    },
+    RemoveHistory {
+        video_id: String,
+    },
+    ClearHistory,
 }
 
 pub fn operation_kind(operation: &TubeOperation) -> OperationKind {
@@ -106,7 +99,10 @@ pub fn operation_kind(operation: &TubeOperation) -> OperationKind {
         | TubeOperation::SyncDevices
         | TubeOperation::ApproveDevice { .. }
         | TubeOperation::RevokeDevice { .. }
-        | TubeOperation::Download { .. } => OperationKind::Effect,
+        | TubeOperation::Download { .. }
+        | TubeOperation::RecordHistory { .. }
+        | TubeOperation::RemoveHistory { .. }
+        | TubeOperation::ClearHistory => OperationKind::Effect,
         TubeOperation::TogglePlayback
         | TubeOperation::ToggleSidebar
         | TubeOperation::Navigate { .. }
@@ -321,9 +317,8 @@ pub enum TubeAction {
         video_id: String,
         queued: bool,
     },
-    /// Absolute per-profile history membership. The entry payload includes a
-    /// timestamp + mutation id, so concurrent device writes retain a stable
-    /// last-write winner without ever deleting the durable video key.
+    /// Legacy shared-history envelope. Kept only so a replay can be rejected
+    /// safely; owner history has a distinct local-only action type.
     SetHistoryEntry {
         owner_id: String,
         video_id: String,
@@ -331,9 +326,7 @@ pub enum TubeAction {
         present: bool,
         mutation_id: String,
     },
-    /// Clear is a tombstoned watermark rather than an index-sensitive list
-    /// deletion. A concurrent/newer watch remains visible; any older entry is
-    /// deterministically hidden during projection.
+    /// Legacy shared-history envelope, refused before it can write a document.
     ClearHistory {
         owner_id: String,
         cleared_at_ms: u64,
@@ -400,16 +393,6 @@ pub enum TubeAction {
     },
 }
 
-/// Stored payload for one private-history key. Keeping an entire record at the
-/// stable video id avoids list-index conflicts; consumers select the greatest
-/// `(watched_at_ms, mutation_id)` record if a device sync surfaces conflicts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HistoryEntryRecord {
-    pub present: bool,
-    pub watched_at_ms: u64,
-    pub mutation_id: String,
-}
-
 /// The `root["tube"]` map, created on first write.
 fn tube_map(doc: &mut Doc) -> Result<ObjId, ActionError> {
     match doc.get(&ROOT, "tube")? {
@@ -437,9 +420,15 @@ impl Action for TubeAction {
         match self {
             TubeAction::LikeVideo { .. }
             | TubeAction::ToggleSubscription { .. }
-            | TubeAction::CyclePreferredQuality => {
+            | TubeAction::CyclePreferredQuality
+            // History has a separate owner-local action type/store. Refusing
+            // these legacy envelopes here is deliberate: an encoded public
+            // Tube action must never recreate a history subtree in a shared
+            // collaboration document.
+            | TubeAction::SetHistoryEntry { .. }
+            | TubeAction::ClearHistory { .. } => {
                 return Err(ActionError::Refused(
-                    "legacy Tube toggle/cycle actions cannot replay deterministically".into(),
+                    "this Tube action is not accepted by the shared document".into(),
                 ));
             }
             TubeAction::SetPreferredQuality { quality }
@@ -455,7 +444,9 @@ impl Action for TubeAction {
         match self {
             TubeAction::LikeVideo { .. }
             | TubeAction::ToggleSubscription { .. }
-            | TubeAction::CyclePreferredQuality => {
+            | TubeAction::CyclePreferredQuality
+            | TubeAction::SetHistoryEntry { .. }
+            | TubeAction::ClearHistory { .. } => {
                 return Err(ActionError::Refused(
                     "legacy Tube toggle/cycle actions cannot replay deterministically".into(),
                 ));
@@ -474,51 +465,6 @@ impl Action for TubeAction {
             TubeAction::SetQueueMembership { video_id, queued } => {
                 let queue = child_map(doc, &tube, "queue")?;
                 doc.put(&queue, video_id.as_str(), ScalarValue::Boolean(*queued))?;
-            }
-            TubeAction::SetHistoryEntry {
-                owner_id,
-                video_id,
-                watched_at_ms,
-                present,
-                mutation_id,
-            } => {
-                let private_history = child_map(doc, &tube, "private_history")?;
-                let owner = child_map(doc, &private_history, owner_id)?;
-                let entries = child_map(doc, &owner, "entries")?;
-                let record = HistoryEntryRecord {
-                    present: *present,
-                    watched_at_ms: *watched_at_ms,
-                    mutation_id: mutation_id.clone(),
-                };
-                doc.put(
-                    &entries,
-                    video_id.as_str(),
-                    ScalarValue::Str(
-                        serde_json::to_string(&record)
-                            .map_err(|error| {
-                                ActionError::Refused(format!(
-                                    "could not encode private history entry: {error}"
-                                ))
-                            })?
-                            .into(),
-                    ),
-                )?;
-            }
-            TubeAction::ClearHistory {
-                owner_id,
-                cleared_at_ms,
-                clear_id,
-            } => {
-                let private_history = child_map(doc, &tube, "private_history")?;
-                let owner = child_map(doc, &private_history, owner_id)?;
-                let clears = child_map(doc, &owner, "clears")?;
-                // Retain every clear marker. Concurrent devices converge by
-                // deriving the greatest timestamp, never by deleting a key.
-                doc.put(
-                    &clears,
-                    clear_id.as_str(),
-                    ScalarValue::Str(cleared_at_ms.to_string().into()),
-                )?;
             }
             TubeAction::SetSubscription {
                 channel_id,
@@ -617,7 +563,8 @@ impl Action for TubeAction {
             | TubeAction::SetQueueMembership { .. }
             | TubeAction::ReplyToComment { .. }
             | TubeAction::SetCommentReply { .. } => ExecutionLocus::ServerPreferred,
-            // Personal, replicable state.
+            // Client-local shared-document mutations. History variants above
+            // are rejected by `apply` and cannot enter this document.
             TubeAction::LikeVideo { .. }
             | TubeAction::SetVideoLiked { .. }
             | TubeAction::SetHistoryEntry { .. }
@@ -788,27 +735,18 @@ fn video_resource(model: &TubeModel, video_id: &str, include_comments: bool) -> 
             })
             .reversible(),
         );
-    let watched_at_ms = history_now_ms();
-    resource = resource.with_action(
-        immediate_spec(
-            "mark-watched",
-            "Mark watched",
-            &TubeAction::SetHistoryEntry {
-                owner_id: model.history_owner.clone(),
-                video_id: video_id.to_string(),
-                watched_at_ms,
-                present: true,
-                mutation_id: history_mutation_id(
-                    &model.history_owner,
-                    video_id,
-                    watched_at_ms,
-                    "watch",
-                ),
-            },
-        )
-        .with_description("Add this video to your private, device-synchronised watch history")
-        .reversible(),
-    );
+    if let Some(mark_watched) = view_spec(
+        "mark-watched",
+        "Mark watched",
+        &TubeOperation::RecordHistory {
+            video_id: video_id.to_string(),
+        },
+    ) {
+        resource =
+            resource.with_action(mark_watched.with_description(
+                "Add this video to owner-local, device-synchronised watch history",
+            ));
+    }
     if let Some(download) = view_spec(
         "download",
         "Download video",
@@ -1153,22 +1091,14 @@ fn subscriptions_resource(model: &TubeModel) -> Resource {
 /// stable history address for the owner's devices. This collection is not a
 /// collaborator activity feed.
 fn history_resource(model: &TubeModel) -> Resource {
-    let now = history_now_ms();
-    let mut history = Resource::new("tube.history", "tube.collection", "Watch history")
-        .with_action(
-            immediate_spec(
-                "clear",
-                "Clear watch history",
-                &TubeAction::ClearHistory {
-                    owner_id: model.history_owner.clone(),
-                    cleared_at_ms: now,
-                    clear_id: history_mutation_id(&model.history_owner, "all", now, "clear"),
-                },
-            )
-            .with_description("Clear this profile's private, device-synchronised watch history")
-            .destructive()
-            .reversible(),
+    let mut history = Resource::new("tube.history", "tube.collection", "Watch history");
+    if let Some(clear) = view_spec("clear", "Clear watch history", &TubeOperation::ClearHistory) {
+        history = history.with_action(
+            clear
+                .with_description("Clear owner-local, device-synchronised watch history")
+                .destructive(),
         );
+    }
     for video_id in model.history.iter().take(MAX_RESOURCE_ENTITIES) {
         let label = model.video(video_id).map_or_else(
             || resource_label(&format!("Watched video {video_id}")),
@@ -1188,26 +1118,15 @@ fn history_resource(model: &TubeModel) -> Resource {
         ) {
             entry = entry.with_action(open);
         }
-        let removed_at_ms = history_now_ms();
-        entry = entry.with_action(
-            immediate_spec(
-                "remove",
-                "Remove from history",
-                &TubeAction::SetHistoryEntry {
-                    owner_id: model.history_owner.clone(),
-                    video_id: video_id.clone(),
-                    watched_at_ms: removed_at_ms,
-                    present: false,
-                    mutation_id: history_mutation_id(
-                        &model.history_owner,
-                        video_id,
-                        removed_at_ms,
-                        "remove",
-                    ),
-                },
-            )
-            .reversible(),
-        );
+        if let Some(remove) = view_spec(
+            "remove",
+            "Remove from history",
+            &TubeOperation::RemoveHistory {
+                video_id: video_id.clone(),
+            },
+        ) {
+            entry = entry.with_action(remove);
+        }
         history = history.with_child(entry);
     }
     history
@@ -1567,7 +1486,7 @@ mod tests {
     }
 
     #[test]
-    fn private_history_uses_owner_keyed_absolute_tombstones() {
+    fn legacy_shared_history_actions_are_refused() {
         let mut doc = AutoCommit::new();
         let watch = TubeAction::SetHistoryEntry {
             owner_id: "user:alice".into(),
@@ -1576,61 +1495,8 @@ mod tests {
             present: true,
             mutation_id: "alice:watch:v1:10".into(),
         };
-        let remove = TubeAction::SetHistoryEntry {
-            owner_id: "user:alice".into(),
-            video_id: "v1".into(),
-            watched_at_ms: 20,
-            present: false,
-            mutation_id: "alice:remove:v1:20".into(),
-        };
-        watch.apply(&mut doc).expect("watch action applies");
-        remove.apply(&mut doc).expect("remove tombstone applies");
-        TubeAction::ClearHistory {
-            owner_id: "user:alice".into(),
-            cleared_at_ms: 25,
-            clear_id: "alice:clear:25".into(),
-        }
-        .apply(&mut doc)
-        .expect("clear marker applies");
-        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap() else {
-            panic!("tube map");
-        };
-        let (Value::Object(ObjType::Map), private) =
-            doc.get(&tube, "private_history").unwrap().unwrap()
-        else {
-            panic!("private-history map");
-        };
-        let (Value::Object(ObjType::Map), alice) =
-            doc.get(&private, "user:alice").unwrap().unwrap()
-        else {
-            panic!("alice scope");
-        };
-        let (Value::Object(ObjType::Map), entries) = doc.get(&alice, "entries").unwrap().unwrap()
-        else {
-            panic!("entries map");
-        };
-        let record = doc
-            .get(&entries, "v1")
-            .unwrap()
-            .unwrap()
-            .0
-            .to_str()
-            .and_then(|value| serde_json::from_str::<HistoryEntryRecord>(value).ok())
-            .expect("history record");
-        assert!(!record.present);
-        assert_eq!(record.watched_at_ms, 20);
-        let (Value::Object(ObjType::Map), clears) = doc.get(&alice, "clears").unwrap().unwrap()
-        else {
-            panic!("clear tombstones");
-        };
-        assert_eq!(
-            doc.get(&clears, "alice:clear:25")
-                .unwrap()
-                .unwrap()
-                .0
-                .to_str(),
-            Some("25")
-        );
+        assert!(watch.apply(&mut doc).is_err());
+        assert!(doc.get(&ROOT, "tube").unwrap().is_none());
     }
 
     #[test]
