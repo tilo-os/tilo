@@ -255,6 +255,7 @@ pub(crate) struct RemoteCaptureFabricRuntime {
         BTreeMap<[u8; 16], Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError>>,
     pending_revoke: BTreeSet<[u8; 16]>,
     pending_bridge_peers: BTreeSet<DeviceId>,
+    pending_bridge_apps: BTreeSet<(String, String)>,
     pending_bridge_revoke_all: bool,
     pending_target_revoke: BTreeMap<[u8; 16], TargetSession>,
     outgoing: Vec<(DeviceId, PersonalFabricAction)>,
@@ -291,6 +292,7 @@ impl RemoteCaptureFabricRuntime {
             completed_provisioning: BTreeMap::new(),
             pending_revoke: BTreeSet::new(),
             pending_bridge_peers: BTreeSet::new(),
+            pending_bridge_apps: BTreeSet::new(),
             pending_bridge_revoke_all: false,
             pending_target_revoke: BTreeMap::new(),
             outgoing: Vec::new(),
@@ -532,9 +534,14 @@ impl RemoteCaptureFabricRuntime {
                 self.bridge.revoke_all(adapter.as_mut());
                 self.pending_bridge_revoke_all = false;
                 self.pending_bridge_peers.clear();
+                self.pending_bridge_apps.clear();
             } else {
                 for peer in std::mem::take(&mut self.pending_bridge_peers) {
                     self.bridge.revoke_peer(&peer, adapter.as_mut());
+                }
+                for (app_id, workspace_id) in std::mem::take(&mut self.pending_bridge_apps) {
+                    self.bridge
+                        .revoke_app(&app_id, &workspace_id, adapter.as_mut());
                 }
             }
         }
@@ -1028,6 +1035,59 @@ impl RemoteCaptureFabricRuntime {
         }
     }
 
+    /// Revoke receiver-side authority when its locally verified app loses
+    /// focus. Source sessions belong to a remote requester and are therefore
+    /// intentionally unaffected.
+    pub(crate) fn teardown_target_app(&mut self, app_id: &str, workspace_id: &str) {
+        self.outbound.retain(|_, pending| {
+            pending.app.app_id() != app_id || pending.app.workspace_id() != workspace_id
+        });
+
+        let provisioning = self
+            .provisioning
+            .iter()
+            .filter_map(|(id, session)| {
+                (session.app.app_id() == app_id && session.app.workspace_id() == workspace_id)
+                    .then_some(*id)
+            })
+            .collect::<Vec<_>>();
+        for session_id in provisioning {
+            if let Some(session) = self.provisioning.remove(&session_id) {
+                self.completed_provisioning.remove(&session_id);
+                self.pending_revoke.insert(session_id);
+                self.outgoing
+                    .push((session.source, stop_action(session_id, session.grant)));
+            }
+        }
+
+        let targets = self
+            .target_sessions
+            .iter()
+            .filter_map(|(id, session)| {
+                (session.app.app_id() == app_id && session.app.workspace_id() == workspace_id)
+                    .then_some(*id)
+            })
+            .collect::<Vec<_>>();
+        for session_id in targets {
+            if let Some(session) = self.target_sessions.remove(&session_id) {
+                self.outgoing
+                    .push((session.source, stop_action(session_id, session.grant)));
+            }
+        }
+
+        self.pending_target_revoke.retain(|_, session| {
+            session.app.app_id() != app_id || session.app.workspace_id() != workspace_id
+        });
+        self.registry.revoke_app(app_id, workspace_id);
+        if let Ok(mut adapter) = self.adapter.try_lock() {
+            self.bridge
+                .revoke_app(app_id, workspace_id, adapter.as_mut());
+        } else {
+            self.pending_bridge_apps
+                .insert((app_id.to_string(), workspace_id.to_string()));
+        }
+    }
+
     pub(crate) fn teardown_all(&mut self) {
         self.outbound.clear();
         self.inbound.clear();
@@ -1272,6 +1332,10 @@ mod tests {
         VerifiedAppRegistration::new_verified("dev.tilo.Camera", "workspace-a").unwrap()
     }
 
+    fn other_app() -> VerifiedAppRegistration {
+        VerifiedAppRegistration::new_verified("dev.tilo.Calls", "workspace-a").unwrap()
+    }
+
     fn runtime() -> RemoteCaptureFabricRuntime {
         runtime_with(FakeAdapter::default(), FakeSource::default())
     }
@@ -1411,6 +1475,79 @@ mod tests {
         runtime.teardown_all();
         assert!(runtime.consents().is_empty());
         assert_eq!(RemoteCaptureKind::Camera, profile().kind());
+    }
+
+    #[test]
+    fn focus_teardown_revokes_only_the_previous_target_app() {
+        let phone = DeviceId::new("phone").unwrap();
+        let laptop = DeviceId::new("laptop").unwrap();
+        let now = Instant::now();
+        let mut target = runtime();
+        let request = target
+            .request(
+                app(),
+                phone.clone(),
+                laptop.clone(),
+                "Camera".into(),
+                profile(),
+            )
+            .unwrap();
+        let request_id = match &request {
+            PersonalFabricAction::RemoteCaptureSignal {
+                signal: RemoteCaptureSignal::Request(request),
+            } => request.request_id,
+            _ => unreachable!(),
+        };
+        let mut source = runtime();
+        source.handle_action(&envelope(&laptop, &phone, request), now);
+        let (_, decision) = source.decide(request_id, true, now).unwrap();
+        target.handle_action(&envelope(&phone, &laptop, decision), now);
+
+        for _ in 0..100 {
+            target.pump(now);
+            if !target.target_sessions.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let (&session_id, grant) = target
+            .target_sessions
+            .iter()
+            .next()
+            .map(|(id, session)| (id, session.grant))
+            .expect("target endpoint was provisioned");
+        target
+            .request(
+                other_app(),
+                phone.clone(),
+                laptop,
+                "Calls".into(),
+                profile(),
+            )
+            .unwrap();
+
+        target.teardown_target_app("dev.tilo.Camera", "workspace-a");
+
+        assert!(target.target_sessions.is_empty());
+        assert_eq!(target.registry.phase(session_id), None);
+        assert_eq!(target.outbound.len(), 1);
+        assert_eq!(
+            target.outbound.values().next().unwrap().app.app_id(),
+            "dev.tilo.Calls"
+        );
+        assert!(target.approve_target(session_id, now).is_err());
+        assert!(matches!(
+            target.drain_outgoing().as_slice(),
+            [(
+                peer,
+                PersonalFabricAction::RemoteCaptureSignal {
+                    signal: RemoteCaptureSignal::Stop {
+                        session_id: stopped,
+                        grant: stopped_grant
+                    }
+                }
+            )] if peer == &phone && stopped == &session_id && stopped_grant == &grant
+        ));
     }
 
     #[test]
