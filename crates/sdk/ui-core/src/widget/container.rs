@@ -582,9 +582,9 @@ mod tests {
         );
         let child = container.children()[0].get_rect();
         assert!((rect.width() - 800.0).abs() < 0.5);
-        assert!((rect.height() - 26.0).abs() < 0.5);
         assert!((child.x0 - 8.0).abs() < 0.5);
         assert!((child.y0 - 8.0).abs() < 0.5);
+        assert!((rect.y1 - child.y1 - 8.0).abs() < 0.5);
     }
 
     #[test]
