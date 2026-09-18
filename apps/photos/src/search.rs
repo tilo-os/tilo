@@ -854,7 +854,8 @@ mod tests {
             ));
         }
         let provider = PhotosSearchProvider::from_library(&doc, &library).unwrap();
-        assert_eq!(provider.stats().records, 100_002);
+        let expected_records = library.photos.len() + 2; // library + People roots
+        assert_eq!(provider.stats().records, expected_records);
         let page = provider.search_page("needle-beyond-100k-夏", None, 2, 1);
         assert_eq!(page.results.len(), 1);
         assert!(page.inspected <= 2);
@@ -862,7 +863,7 @@ mod tests {
         assert_eq!(address.action, "open");
         assert!(provider.resolve_action_resource(&address).is_some());
         let (seeds, prebuilt_action_trees) = provider.retained_seed_stats();
-        assert_eq!(seeds, 100_002);
+        assert_eq!(seeds, expected_records);
         assert_eq!(prebuilt_action_trees, 0);
     }
 
