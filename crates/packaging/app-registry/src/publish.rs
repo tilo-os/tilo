@@ -200,6 +200,57 @@ pub async fn publish_to_dir(
     })
 }
 
+/// Serialise a signed entry as the JSON body a registry server's
+/// `/publish` endpoint accepts. The publisher signature in the entry
+/// IS the authentication — no separate password.
+///
+/// # Errors
+///
+/// Returns an error if `entry` fails to serialise.
+pub fn entry_publish_body(entry: &IndexEntry) -> Result<Vec<u8>> {
+    serde_json::to_vec_pretty(entry).map_err(|e| anyhow!("encode entry: {e}"))
+}
+
+/// POST a signed entry to an `https://` registry's `/publish`
+/// endpoint. The registry authenticates by verifying the entry's
+/// publisher signature and ingests the blob out of band from the
+/// entry's ticket. Not exercised in-tree (needs a live server); the
+/// `file://` path is the tested reference.
+///
+/// # Errors
+///
+/// Returns an error if `entry` fails to serialise, the request fails,
+/// or the registry responds with a non-success status.
+pub async fn emit_entry_https(base_url: &str, entry: &IndexEntry) -> Result<()> {
+    let url = format!("{}/publish", base_url.trim_end_matches('/'));
+    let body = entry_publish_body(entry)?;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .header("x-tilo-publisher", &entry.publisher_identity)
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| anyhow!("POST {url}: {e}"))?;
+    if !resp.status().is_success() {
+        bail!("registry rejected publish: HTTP {}", resp.status());
+    }
+    Ok(())
+}
+
+/// Convenience for a signed index built off a fresh (non-directory)
+/// context — used by CI / tooling that assembles an index in memory.
+///
+/// # Errors
+///
+/// Returns an error if signing the index fails.
+pub fn sign_index(index: &mut RegistryIndex, registry_key: &SigningIdentity) -> Result<()> {
+    index
+        .sign(registry_key)
+        .map_err(|e| anyhow!("sign index: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,7 +316,10 @@ mod tests {
                 malicious_store.put(blob).unwrap();
             }
         }
-        let repeated = malicious_store.put(&vec![0x5a; 1024]).unwrap();
+        // 2,049 references expand beyond 5 MiB while remaining under the
+        // independent 4,096-entry ceiling, so this specifically exercises
+        // the materialized-byte boundary.
+        let repeated = malicious_store.put(&vec![0x5a; 3072]).unwrap();
         let mut collection = pkg::Collection::default();
         for index in 0..=2048 {
             collection
@@ -277,7 +331,7 @@ mod tests {
         malicious_store.put(&root.encode()).unwrap();
         let malicious = qpkg::write_bytes(root.package_id(), &malicious_store).unwrap();
         assert!(
-            malicious.len() < pkg::MAX_APP_QPKG_BYTES as usize,
+            u64::try_from(malicious.len()).unwrap_or(u64::MAX) < pkg::MAX_APP_QPKG_BYTES,
             "fixture must exercise materialization rather than wire-size rejection"
         );
 
@@ -287,55 +341,4 @@ mod tests {
             "unexpected rejection: {error:#}"
         );
     }
-}
-
-/// Serialise a signed entry as the JSON body a registry server's
-/// `/publish` endpoint accepts. The publisher signature in the entry
-/// IS the authentication — no separate password.
-///
-/// # Errors
-///
-/// Returns an error if `entry` fails to serialise.
-pub fn entry_publish_body(entry: &IndexEntry) -> Result<Vec<u8>> {
-    serde_json::to_vec_pretty(entry).map_err(|e| anyhow!("encode entry: {e}"))
-}
-
-/// POST a signed entry to an `https://` registry's `/publish`
-/// endpoint. The registry authenticates by verifying the entry's
-/// publisher signature and ingests the blob out of band from the
-/// entry's ticket. Not exercised in-tree (needs a live server); the
-/// `file://` path is the tested reference.
-///
-/// # Errors
-///
-/// Returns an error if `entry` fails to serialise, the request fails,
-/// or the registry responds with a non-success status.
-pub async fn emit_entry_https(base_url: &str, entry: &IndexEntry) -> Result<()> {
-    let url = format!("{}/publish", base_url.trim_end_matches('/'));
-    let body = entry_publish_body(entry)?;
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .header("content-type", "application/json")
-        .header("x-tilo-publisher", &entry.publisher_identity)
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| anyhow!("POST {url}: {e}"))?;
-    if !resp.status().is_success() {
-        bail!("registry rejected publish: HTTP {}", resp.status());
-    }
-    Ok(())
-}
-
-/// Convenience for a signed index built off a fresh (non-directory)
-/// context — used by CI / tooling that assembles an index in memory.
-///
-/// # Errors
-///
-/// Returns an error if signing the index fails.
-pub fn sign_index(index: &mut RegistryIndex, registry_key: &SigningIdentity) -> Result<()> {
-    index
-        .sign(registry_key)
-        .map_err(|e| anyhow!("sign index: {e}"))
 }
