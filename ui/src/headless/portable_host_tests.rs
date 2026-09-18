@@ -3,6 +3,24 @@ use crate::clock::{Duration, Instant};
 use crate::widget::{Button, Column, Container, Widget};
 use std::{cell::Cell, rc::Rc};
 
+fn encoded_color_positions(scene: &Scene, color: vello::peniko::Color) -> Vec<usize> {
+    let expected = vello_encoding::DrawColor::from(color).rgba;
+    let encoding = scene.encoding();
+    let mut data_offset = 0;
+    encoding
+        .draw_tags
+        .iter()
+        .enumerate()
+        .filter_map(|(position, tag)| {
+            let found = (*tag == vello_encoding::DrawTag::COLOR
+                && encoding.draw_data[data_offset] == expected)
+                .then_some(position);
+            data_offset += usize::try_from(tag.info_size()).expect("draw info size fits usize");
+            found
+        })
+        .collect()
+}
+
 fn frame(root: Box<dyn Widget>) -> FrameHarness {
     FrameHarness::new_with_controlled_inputs(
         State::new(),
@@ -12,6 +30,160 @@ fn frame(root: Box<dyn Widget>) -> FrameHarness {
         crate::font_catalog::fixture_renderer(),
         crate::permissions::UserId("portable-review".into()),
     )
+}
+
+#[test]
+fn portable_frame_composites_real_dropdown_overlay_above_later_siblings() {
+    let theme = Theme::dark();
+    let blocker = vello::peniko::Color::from_rgb8(0xf1, 0x0d, 0xa7);
+    let root = Column::new()
+        .push(Box::new(
+            crate::widget::Dropdown::new(vec!["First".into(), "Second".into()], "choice").open(),
+        ))
+        .push(Box::new(
+            Container::new().with_fill(blocker).with_size(240.0, 80.0),
+        ));
+    let frame = frame(Box::new(root));
+    let scene = frame.frame_output().scene;
+
+    let blocker_position = encoded_color_positions(scene, blocker)
+        .into_iter()
+        .next()
+        .expect("the later sibling paints its fixture color");
+    let overlay_position = encoded_color_positions(scene, theme.tokens.colors.surfaces.raised)
+        .into_iter()
+        .rfind(|position| *position > blocker_position)
+        .expect("the real open dropdown paints its raised menu after the later sibling");
+
+    assert!(
+        overlay_position > blocker_position,
+        "overlay paint must occupy the top layer"
+    );
+}
+
+struct OverlayProbe {
+    draws: Rc<Cell<usize>>,
+    rect: Rect,
+}
+
+impl Widget for OverlayProbe {
+    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::length(100.0),
+                    height: Dimension::length(40.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x + layout.size.width),
+            origin.y + f64::from(layout.location.y + layout.size.height),
+        );
+    }
+
+    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
+    }
+
+    fn draw_overlay(
+        &mut self,
+        _: &mut Scene,
+        _: Affine,
+        _: &mut TextRenderer,
+        _: &Theme,
+        _: &PresenceCtx,
+    ) {
+        self.draws.set(self.draws.get() + 1);
+    }
+
+    fn handle_event(
+        &mut self,
+        _: &WindowEvent,
+        _: f64,
+        _: &winit::event::Modifiers,
+        _: &mut automerge::AutoCommit,
+        _: &automerge::ObjId,
+        _: &mut bool,
+        _: &mut Option<NodeId>,
+        _: NodeId,
+        _: &TaffyTree<()>,
+    ) {
+    }
+
+    fn name(&self) -> &'static str {
+        "overlay-probe"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+static PORTABLE_HISTORY: crate::history_mode::HistoryDefinition =
+    crate::history_mode::HistoryDefinition {
+        app_id: "dev.qos.portable-overlay-fixture",
+        scopes: &[crate::history_mode::HistoryScopeDefinition {
+            key: "document",
+            title: "Document",
+            presentation: crate::history_mode::HistoryPresentation::External {
+                reason: "fixture history is unavailable",
+            },
+            content_schema: None,
+        }],
+    };
+
+#[test]
+fn portable_frame_hides_live_overlay_with_compact_history_surface() {
+    let draws = Rc::new(Cell::new(0));
+    let registration = crate::history_mode::HistoryRegistration::new(
+        &PORTABLE_HISTORY,
+        vec![
+            crate::history_mode::HistorySourceRegistration::Unversioned {
+                scope: "document",
+                reason: "fixture history is unavailable",
+            },
+        ],
+    )
+    .unwrap();
+    let mut frame = FrameHarness::from_managed_root(
+        State::new(),
+        crate::history_mode::ManagedRoot::new(
+            Box::new(OverlayProbe {
+                draws: draws.clone(),
+                rect: Rect::ZERO,
+            }),
+            registration,
+        ),
+        (400, 240),
+    )
+    .unwrap();
+    assert!(draws.get() > 0, "the live surface paints its overlay");
+
+    frame.click_named("history-open").unwrap();
+    let draws_after_open = draws.get();
+    frame.relayout();
+
+    assert_eq!(
+        draws.get(),
+        draws_after_open,
+        "compact History replaces the live surface, including its overlay"
+    );
 }
 struct Scheduled {
     animate: Rc<Cell<bool>>,

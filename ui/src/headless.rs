@@ -1388,6 +1388,16 @@ impl FrameHarness {
             &self.presence,
             &self.permissions,
         );
+        // Match native App's top-layer composition: widgets such as open
+        // dropdowns and toolbar menus paint outside their layout boxes only
+        // after every ordinary sibling has drawn.
+        self.root.draw_overlay(
+            &mut self.scene,
+            Affine::IDENTITY,
+            &mut self.text,
+            &self.theme,
+            &self.presence,
+        );
         // Match native App: the scene now contains this damage. Subsequent
         // frame demand comes from new damage, animation, or a wake deadline.
         self.root.mark_drawn();
