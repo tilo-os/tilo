@@ -1973,8 +1973,7 @@ fn group_filter_popup_selection_filters_and_keeps_selection_valid() {
     let Some(Popup::GroupFilter { anchor }) = h.app.popup else {
         panic!("the group chip opens the filter popup");
     };
-    let mut opts = vec!["All".to_string()];
-    opts.extend(h.app.store.all_groups());
+    let opts = h.app.group_filter_options();
     let idx = opts
         .iter()
         .position(|o| o == "Friends")
@@ -3182,6 +3181,53 @@ fn import_conflict_review_is_visible_accessible_and_resolves_both_choices() {
         app.last_dispatched().is_some(),
         "Import as new uses ContactsAction"
     );
+}
+
+#[test]
+fn narrow_duplicate_review_is_scrollable_and_exposes_explicit_value_choices() {
+    let mut app = ContactsApp::sample();
+    let mut doc = AutoCommit::new();
+    app.sync(&mut doc, &ROOT);
+    app.shots_show_duplicate_review();
+    apply_at(&mut app, 390, 844);
+    app.text_scale = 2.0;
+
+    let review = app.duplicate_review.as_ref().expect("review is open");
+    let geometry = app.duplicate_review_geometry(review);
+    assert!(geometry.full_screen);
+    assert_eq!(
+        geometry.rows.len(),
+        7,
+        "the fixture exercises every scalar conflict"
+    );
+    assert!(
+        geometry.max_scroll > 0.0,
+        "every conflict remains reachable by scrolling"
+    );
+    assert!(
+        geometry.cancel.y1 < geometry.merge.y0,
+        "footer actions stack instead of colliding"
+    );
+
+    let tree = app.accessibility().expect("duplicate review has semantics");
+    assert_eq!(tree.role, Role::Dialog);
+    assert!(tree.state.modal);
+    let current = "contacts.duplicate.field:Organization:current";
+    let other = "contacts.duplicate.field:Organization:other";
+    assert!(access_target(&tree, current).is_some());
+    assert!(access_target(&tree, other).is_some());
+    assert!(app.perform_semantic_action(other, &ui::a11y::Action::Activate, &mut doc, &ROOT));
+    assert!(app.duplicate_review.as_ref().is_some_and(|review| {
+        review
+            .take_from_source
+            .contains(&crate::actions::MergeField::Organization)
+    }));
+    assert!(app.perform_semantic_action(current, &ui::a11y::Action::Activate, &mut doc, &ROOT));
+    assert!(app.duplicate_review.as_ref().is_some_and(|review| {
+        !review
+            .take_from_source
+            .contains(&crate::actions::MergeField::Organization)
+    }));
 }
 
 #[test]
