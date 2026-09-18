@@ -82,7 +82,10 @@ def command(arguments):
     result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             env=environment)
     if result.returncode:
-        raise ValueError(f'{Path(arguments[0]).name} failed (exit {result.returncode})')
+        stderr = result.stderr.decode(errors='replace').strip()
+        detail = f': {stderr[-4096:]}' if stderr else ''
+        raise ValueError(
+            f'{Path(arguments[0]).name} failed (exit {result.returncode}){detail}')
     return result.stdout.decode()
 
 
