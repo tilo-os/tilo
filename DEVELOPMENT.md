@@ -3,6 +3,45 @@
 Build dependencies, local development and testing. See `AGENTS.md` for repository
 conventions.
 
+## Fast checks before assembly
+
+Run these from the checkout on Linux (including WSL), using Python 3.11+:
+
+```sh
+python3 tools/dev.py check installer
+python3 tools/dev.py check app-packaging
+```
+
+The installer checks exercise target-mode logic, artifact materialization and the
+installer overlay. The app checks exercise selection, collection membership and
+the actual packaging/upload/assembly layout with fixture build/signing tools.
+Neither command compiles the workspace, builds an OS, creates a VM or changes a
+device. They do not replace native package, VM install or hardware acceptance.
+
+Use `--plan` to see the commands and required tools without running them.
+Use `--step target-modes` to rerun just one installer contract; repeat `--step`
+to select more. Receipts explicitly list omitted checks and identify subset runs.
+`--keep-going` runs the remaining independent checks after a failure. Each run
+writes `target/dev-runs/<id>/run.json` with per-stage timings, results and unrun
+steps; `--out <new-directory>` chooses the receipt location. Existing evidence is
+never overwritten. Output stays live in the terminal; receipts do not collect the
+environment or credentials and are not release attestations.
+
+App packaging checks need Bash, jq, tar, sha256sum and python3. Installer checks
+need Bash; non-root developers also need `unshare` and enabled unprivileged user
+namespaces. The materialization test then sees root-owned fixtures inside a
+private user namespace, without sudo or weakening the production ownership check.
+If the environment prohibits user namespaces, use the existing isolated Linux
+builder where these tests can run as container root. Missing capabilities fail
+the command and are recorded in its receipt.
+
+CI's repository policy tests discover the same app-packaging tests, including
+the build-to-collection handoff regression.
+For an actual installer VM cycle with an already prepared medium, continue using
+`os/dev/test-installer-cycle.sh`; for the disposable Fedora desktop development
+session use `dist/dev/fedora44-vm-iterate.sh`. Baseline discovery and one-command
+artifact-backed VM orchestration remain planned work.
+
 ## What the build needs
 
 Install Rust through rustup and the native dependencies below, either on the host
