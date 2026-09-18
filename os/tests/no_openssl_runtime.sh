@@ -31,6 +31,7 @@ manifest_hits="$(find "$repo/os" "$repo/.forgejo" -type f \
     \( -name 'Containerfile*' -o -name '*.yml' -o -name '*.yaml' \) -print0 \
   | xargs -0 -r rg -n -i '\b(openssl(-devel)?|sbsigntools)\b' \
   | grep -Ev '(^|:)[0-9]+:[[:space:]]*#|rpm -q|microdnf remove|dnf remove|libssl|libcrypto' \
+  | grep -Ev ': *&& (! )?printf '"'"'%s\\n'"'"' "\$installed" \| (awk '"'"'/\^\([[:alnum:]_|-]+\)\$/'"'"'|grep -Eq '"'"'\^\([[:alnum:]_|-]+\)\$'"'"') *\\?$' \
   || true)"
 if [ -n "$manifest_hits" ]; then
   printf '%s\n' "$manifest_hits" >&2
@@ -137,29 +138,36 @@ else
   ok 'runtime image does not install libcrypto-linked efitools'
 fi
 
+# These exact selectors operate on rpm's installed-name inventory, not package
+# install arguments. Require both the removal and a fresh absence check.
+inventory_cleanup() {
+  local block="$1" selection="$2" removal="$3" absent="$4"
+  [ "$(grep -Fc "installed=\"\$(rpm -qa --qf '%{NAME}\\n')\"" <<<"$block")" -ge 2 ] \
+    && grep -Fq "awk '/$selection/'" <<<"$block" \
+    && grep -Fq "$removal" <<<"$block" \
+    && grep -Fq "! printf '%s\\n' \"\$installed\" | grep -Eq '$absent'" <<<"$block"
+}
 runtime_wayland="$(sed -n '/# The frozen snapshot already resolves these development specs/,/FINALIZE_RPMDB/p' \
   "$repo/os/Containerfile")"
-if grep -Fq 'rpm -e --nodeps wayland-devel libxkbcommon-devel libinput-devel' \
-    <<<"$runtime_wayland" \
-  && grep -Fq '! rpm -q wayland-devel libxkbcommon-devel libinput-devel' \
-    <<<"$runtime_wayland" \
-  && grep -Fq '! rpm -q pkgconf-pkg-config pkgconf pkgconf-m4 libpkgconf' \
-    <<<"$runtime_wayland"; then
+if grep -Fq 'rpm -e --nodeps wayland-devel libxkbcommon-devel libinput-devel' <<<"$runtime_wayland" \
+  && inventory_cleanup "$runtime_wayland" \
+    '^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$' \
+    'xargs -r rpm -e --nodeps' \
+    '^(wayland-devel|libxkbcommon-devel|libinput-devel|pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$'; then
   ok 'immutable runtime erases Wayland/input development and pkg-config payloads after resolving libraries'
 else
   bad 'runtime rootfs retains Wayland/input development payloads'
 fi
 
-if grep -Fq "rpm -q --qf '%{NAME}\\n' systemd-ukify openssl sbsigntools efitools mokutil pesign nss-tools gnutls-utils git git-core openvpn NetworkManager-openvpn openssh openssh-clients openssh-server" \
-    "$repo/os/Containerfile"; then
-  ok 'final image purges runtime ukify, avoidable OpenSSL consumers, and legacy EFI CLIs inherited from its base'
+runtime_splash="$(sed -n '/# Splash rendering needs Pillow/,/# The install-config drop-in/p' "$repo/os/Containerfile")"
+crypto_packages='systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server'
+if inventory_cleanup "$runtime_splash" "^($crypto_packages)\$" \
+    "xargs -r dnf --disablerepo='*' remove -y" "^(python3-pillow|$crypto_packages)\$"; then
+  ok 'early rootfs cleanup removes inherited crypto CLI packages before later feature dependencies'
 else
   bad 'final image does not purge inherited OpenSSL consumers/legacy EFI command-line tools'
 fi
-if sed -n '/# Splash rendering needs Pillow/,/# The install-config drop-in/p' \
-    "$repo/os/Containerfile" | grep -Fq 'systemd-ukify' \
-   && sed -n '/# Splash rendering needs Pillow/,/# The install-config drop-in/p' \
-      "$repo/os/Containerfile" | grep -Fq 'dnf remove -y systemd-ukify python3-pillow'; then
+if grep -Fq "dnf --disablerepo='*' remove -y systemd-ukify python3-pillow" <<<"$runtime_splash"; then
   ok 'splash rendering removes its one-shot Pillow dependency and does not install runtime ukify'
 else
   bad 'runtime rootfs retains build-only Pillow or systemd-ukify tooling'
@@ -200,13 +208,16 @@ fi
 if rg -n 'Command::new\("ssh"\)|^[[:space:]]*(exec[[:space:]]+)?ssh[[:space:]]' \
     "$repo/os/usr" "$repo/apps" "$repo/crates" "$repo/shell" \
     -g '*.rs' -g '*.sh' -g '!**/tests/**' >/dev/null; then
-  bad 'OpenSSH purge is unsafe because a shipped runtime still invokes its CLI'
+  bad 'Tilo-owned runtime source invokes OpenSSH outside the reviewed distro dependency exception'
 else
-  ok 'Rust Remote transport permits inherited OpenSSH packages to be purged'
+  ok 'Tilo-owned Remote transport does not invoke the distro OpenSSH CLI'
 fi
 
-if grep -Fq "rpm -q --qf '%{NAME}\\n' systemd-coredump systemd-networkd systemd-resolved" "$repo/os/Containerfile" \
-  && grep -Fq '../run/NetworkManager/resolv.conf' "$repo/os/Containerfile" \
+runtime_network="$(sed -n '/# System utilities\./,/xdg-desktop-portal/p' "$repo/os/Containerfile")"
+if inventory_cleanup "$runtime_network" '^systemd-(coredump|networkd|resolved)$' \
+    "xargs -r dnf --disablerepo='*' remove -y" '^systemd-(coredump|networkd|resolved)$' \
+  && grep -Fq 'test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf' <<<"$runtime_network" \
+  && awk '/ln -sfn .*NetworkManager/ { switched=1 } /xargs -r dnf/ { if (!switched) exit 1; removed=1 } END { if (!removed) exit 1 }' <<<"$runtime_network" \
   && grep -Fq 'rpm -q systemd-networkd' "$repo/os/usr/libexec/tilo-security-audit"; then
   ok 'redundant systemd network daemons are removed and audited'
 else
@@ -332,7 +343,7 @@ grep -Fq -- "-path '*/ossl-modules/legacy.so'" "$repo/os/Containerfile" \
        "$repo/os/usr/libexec/tilo-security-audit" \
   || bad 'sealed rootfs does not remove and audit optional OpenSSL provider/engine/media modules'
 rootfs_end_line="$(grep -n '^FROM rootfs AS split' "$repo/os/Containerfile" | cut -d: -f1)"
-last_package_mutation_line="$(rg -n 'dnf (install|remove)|rpm -[ei]' "$repo/os/Containerfile" \
+last_package_mutation_line="$(rg -n 'dnf .*\b(install|remove)\b|rpm -[ei]' "$repo/os/Containerfile" \
   | awk -F: -v end="$rootfs_end_line" '$1 < end { line=$1 } END { print line+0 }')"
 runtime_gate_line="$(grep -n 'bash /usr/local/bin/verify-runtime-crypto-packages.sh' \
   "$repo/os/Containerfile" | cut -d: -f1)"
@@ -343,39 +354,10 @@ else
   bad 'residual OpenSSL ABI gate does not inspect the finished rootfs'
 fi
 
-cat >"$work/rpm" <<'EOF'
-#!/usr/bin/env bash
-[[ $1 == -qa && $2 == --qf ]] || exit 2
-printf '%b' "${TILO_TEST_RPM_ROWS:-}"
-EOF
-chmod 0755 "$work/rpm"
-if TILO_RPM_BIN="$work/rpm" \
-   TILO_TEST_RPM_ROWS=$'cryptsetup-libs\tlibcrypto.so.3()(64bit)\npython3-libs\tlibssl.so.3()(64bit)\n' \
-   bash "$runtime_package_gate" >/dev/null; then
-  ok 'reviewed residual OpenSSL ABI packages pass the finished-rootfs gate'
+if python3 "$repo/os/tests/test_runtime_crypto_packages.py" --gate "$runtime_package_gate"; then
+  ok 'finished-rootfs RPM policy enforces conditional desktop/VM exceptions and rejects unknown consumers'
 else
-  bad 'finished-rootfs gate rejects its reviewed residual OpenSSL ABI boundary'
-fi
-if TILO_RPM_BIN="$work/rpm" \
-   TILO_TEST_RPM_ROWS=$'attacker-tls\tlibssl.so.3()(64bit)\n' \
-   bash "$runtime_package_gate" >/dev/null 2>&1; then
-  bad 'finished-rootfs gate accepts an unreviewed libssl consumer'
-else
-  ok 'finished-rootfs gate rejects an unreviewed libssl consumer'
-fi
-if TILO_RPM_BIN="$work/rpm" \
-   TILO_TEST_RPM_ROWS=$'attacker-crypto\tlibcrypto.so.3()(64bit)\n' \
-   bash "$runtime_package_gate" >/dev/null 2>&1; then
-  bad 'finished-rootfs gate accepts an unreviewed libcrypto consumer'
-else
-  ok 'finished-rootfs gate rejects an unreviewed libcrypto consumer'
-fi
-if TILO_RPM_BIN="$work/rpm" \
-   TILO_TEST_RPM_ROWS=$'openssl\topenssl-libs = 3.0\n' \
-   bash "$runtime_package_gate" >/dev/null 2>&1; then
-  bad 'finished-rootfs gate accepts a forbidden package without a direct libssl requirement'
-else
-  ok 'finished-rootfs gate rejects forbidden packages reintroduced indirectly'
+  bad 'finished-rootfs RPM policy fixtures failed'
 fi
 
 exit "$fail"

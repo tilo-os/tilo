@@ -1149,6 +1149,9 @@ struct FrameBuilderControlState<'a> {
     /// The live CRDT the search providers read, plus its root object. `None`
     /// for layout/chrome-only test fixtures, so action methods refuse rather than report an empty surface.
     doc: Option<(&'a AutoCommit, &'a ObjId)>,
+    /// The compositor's actual stream/input authority. Layout-only tests have
+    /// no compositor and therefore leave this absent.
+    shares: Option<&'a crate::network::streaming::ShareRegistry>,
 }
 
 impl ControlState for FrameBuilderControlState<'_> {
@@ -1201,6 +1204,59 @@ impl ControlState for FrameBuilderControlState<'_> {
                 })
                 .collect();
         serde_json::json!({ "pointers": rows, "roster": roster })
+    }
+
+    fn sharing_json(&self) -> serde_json::Value {
+        let Some(shares) = self.shares else {
+            return serde_json::Value::Null;
+        };
+        let chrome = self.fb.chrome();
+        let tree = chrome.tree();
+        serde_json::json!({
+            "exposures": shares.disclosure().into_iter().map(|(peer, surface, can_control)| {
+                let participant = tree.workspaces.iter().find_map(|workspace| {
+                    workspace.collaborators.iter()
+                        .find(|person| person.session == Some(peer))
+                        .map(|person| (workspace, person))
+                });
+                let name = participant.map_or_else(
+                    || crate::shell::state::session_handle(peer),
+                    |(_, person)| person.name.clone(),
+                );
+                let kind = participant.map_or("unknown", |(workspace, person)| {
+                    if workspace.agent_members().iter()
+                        .any(|(agent, _)| {
+                            agent.eq_ignore_ascii_case(&person.id)
+                                || agent.eq_ignore_ascii_case(&person.name)
+                        }) {
+                        "agent"
+                    } else {
+                        "person"
+                    }
+                });
+                let target = tree.workspaces.iter().find_map(|workspace| {
+                    workspace.strips.iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .find(|tab| matches!(
+                            &tab.tile,
+                            crate::shell::state::TileContent::Foreign { surface_id, .. }
+                                if *surface_id == surface
+                        ))
+                        .map(|tab| (workspace.name.clone(), tab.title.clone()))
+                });
+                serde_json::json!({
+                    "peer": peer,
+                    "name": name,
+                    "kind": kind,
+                    "surface": surface,
+                    "workspace": target.as_ref().map(|(workspace, _)| workspace),
+                    "target": target.as_ref().map(|(_, title)| title),
+                    "can_see": true,
+                    "can_control": can_control,
+                })
+            }).collect::<Vec<_>>()
+        })
     }
 
     fn workspace_tree_json(&self) -> serde_json::Value {
@@ -1485,6 +1541,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         let chrome = self.fb.chrome();
         let overlays = &chrome.overlays;
         let peer_sync = self.fb.host().peer_sync_snapshot();
+        let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         serde_json::json!({
             "overlays": {
                 "overview": overlays.overview,
@@ -1494,6 +1551,26 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "room_activity": overlays.room_activity,
             },
             "search_scope": format!("{:?}", chrome.search_scope),
+            // Nested resource search is a visible place in the palette, not
+            // merely provider-internal state. Expose the authenticated route
+            // and label so agents and accessibility tooling can tell exactly
+            // where subsequent search and invocation are scoped.
+            "search_resource_scope": chrome.search_resource_scope.as_ref().map(|scope| serde_json::json!({
+                "peer_id": scope.peer_id,
+                "cluster_id": scope.cluster_id,
+                "app_id": scope.app_id,
+                "resource": scope.resource,
+                "label": scope.label,
+            })),
+            "presence": {
+                "status_sharing": match status_sharing {
+                    ui::StatusSharing::Off => "off",
+                    ui::StatusSharing::ManualOnly => "manual",
+                    ui::StatusSharing::Automatic => "automatic",
+                },
+                "own_status": own_status,
+                "following": following,
+            },
             "ws_settings_tab": format!("{:?}", chrome.ws_settings_tab),
             "revision": chrome.revision,
             // What is actually on screen — without it a harness can only see that *a*
@@ -1790,7 +1867,7 @@ fn test_touch_input_event(
 /// Wayland establishes touch focus.
 fn forward_test_control_touch(
     state: &mut Option<&mut State>,
-    fb: &FrameBuilder,
+    fb: &mut FrameBuilder,
     touch: crate::compositor::backend::TouchEvent,
 ) {
     let Some(state) = state.as_deref_mut() else {
@@ -1841,7 +1918,7 @@ fn dispatch_test_control_touch(
     };
     let frame = |ownership: &mut DirectTouchOwnership,
                  state: &mut Option<&mut State>,
-                 fb: &FrameBuilder| {
+                 fb: &mut FrameBuilder| {
         if ownership.take_client_frame() {
             forward_test_control_touch(state, fb, BackendTouchEvent::Frame);
         }
@@ -1933,7 +2010,7 @@ fn execute_invoke_action(
     // it, a revoked capability wouldn't stop a caller who got past it once.
     let catalog = match with_action_gate(&chrome_handle, |chrome, gate| {
         fb.host()
-            .action_catalog("", chrome, &ctx.doc, &ctx.root_obj, gate)
+            .exact_action_catalog(provider, id, chrome, &ctx.doc, &ctx.root_obj, gate)
     }) {
         Ok(catalog) => catalog,
         Err(why) => {
@@ -2398,6 +2475,7 @@ fn pump_test_control_conn(
                                 let state = FrameBuilderControlState {
                                     fb: frame_builder,
                                     doc: Some((&ctx.doc, &ctx.root_obj)),
+                                    shares: Some(&state.share_registry),
                                 };
                                 test_control::dispatch_command(&cmd, &state)
                             }
@@ -3365,7 +3443,7 @@ fn install_device_fabric_bridge(
                 return Ok(view.clone());
             }
             match action {
-                DeviceFabricUiAction::Snapshot => {}
+                DeviceFabricUiAction::Snapshot | DeviceFabricUiAction::SnapshotFresh => {}
                 DeviceFabricUiAction::HandoffMedia { session_id, target } => {
                     let _ = crate::shell::device_fabric_runtime::request_media_handoff(
                         &fabric_net,
@@ -3509,6 +3587,28 @@ fn install_device_fabric_bridge(
                 }
                 DeviceFabricUiAction::StopRemoteCapture { session_id } => {
                     crate::shell::remote_capture_runtime::stop_remote_capture(
+                        &fabric_net,
+                        session_id,
+                    )?;
+                }
+                DeviceFabricUiAction::RequestDisplayMirror { target } => {
+                    let _ = crate::shell::device_fabric_runtime::request_display_mirror(
+                        &fabric_net,
+                        &target,
+                    )?;
+                }
+                DeviceFabricUiAction::ResolveDisplayMirror {
+                    session_id,
+                    approved,
+                } => {
+                    crate::shell::device_fabric_runtime::resolve_display_mirror_consent(
+                        &fabric_net,
+                        session_id,
+                        approved,
+                    )?;
+                }
+                DeviceFabricUiAction::StopDisplayMirror { session_id } => {
+                    crate::shell::device_fabric_runtime::stop_display_mirror(
                         &fabric_net,
                         session_id,
                     )?;
@@ -4882,7 +4982,24 @@ pub fn run() {
     // Compositor chrome has no application window for `accesskit_winit` to
     // attach to. Publish its existing `ui::Widget` semantics directly over
     // AT-SPI, including the trusted OOBE and desktop tour shown before apps.
-    let mut native_accessibility = NativeAccessibility::new(initial_size);
+    // The provider's callbacks run on AccessKit's thread, so pair its mailbox
+    // with a calloop ping. An idle compositor must wake for a reader's first
+    // tree request or action instead of waiting for unrelated Wayland input.
+    let (a11y_ping, a11y_ping_source) = match calloop::ping::make_ping() {
+        Ok(pair) => pair,
+        Err(error) => {
+            eprintln!("tilo compositor: create AT-SPI wake source failed: {error}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = event_loop
+        .handle()
+        .insert_source(a11y_ping_source, |(), (), _| {})
+    {
+        eprintln!("tilo compositor: insert AT-SPI wake source failed: {error}");
+        std::process::exit(1);
+    }
+    let mut native_accessibility = NativeAccessibility::new(initial_size, a11y_ping);
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -5192,6 +5309,13 @@ pub fn run() {
             match request {
                 AccessibilityRequest::InitialTree => accessibility_changed = true,
                 AccessibilityRequest::Action(request) => {
+                    // This endpoint publishes exactly the root AccessKit tree.
+                    // Do not let a malformed or stale request for another
+                    // tree alias a compositor-owned node id.
+                    if request.target_tree != ui::accesskit::TreeId::ROOT {
+                        accessibility_changed = true;
+                        continue;
+                    }
                     if session.is_locked() {
                         // The lock owns a deliberately tiny, non-leaking tree.
                         // Only its password field is actionable; stale ids from
@@ -5508,7 +5632,7 @@ pub fn run() {
                         {
                             client_input::focus_touch_target(
                                 &mut state,
-                                &frame_builder,
+                                &mut frame_builder,
                                 surface_id,
                             );
                         }
@@ -5812,10 +5936,11 @@ pub fn run() {
             }
         }
 
-        // `ext_session_lock_v1`: fold a protocol client's lock/unlock into the one
+        // `ext_session_lock_v1`: fold a protocol client's lock into the one
         // authoritative session lock. Client `lock` drives the same locked state as
-        // chord/idle; `unlock_and_destroy` clears it (client authenticated itself —
-        // the compositor's password path is only for chord/idle). The stashed
+        // chord/idle. `unlock_and_destroy` only releases the protocol object:
+        // because Tilo paints the lock UI itself, it is not evidence that the
+        // user authenticated. The stashed
         // `SessionLocker` confirms after the overlay paints, below, so `locked` fires only once content is hidden.
         if state.session_lock.take_lock_requested() {
             session_changed = true;
@@ -5823,13 +5948,6 @@ pub fn run() {
                 apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
             }
         }
-        if state.session_lock.take_unlock_requested() {
-            session_changed = true;
-            for t in session.request_unlock(Instant::now()) {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
-            }
-        }
-
         // Async unlock: pick up an in-flight credential verify's result from the
         // worker thread (started by lock-screen Enter). The loop never blocks —
         // it keeps ticking and unlocks only on verified success; a wrong/failed
@@ -5879,6 +5997,20 @@ pub fn run() {
         // state into the chrome so it can suppress content while locked; cheap no-ops when unchanged.
         frame_builder.with_chrome(|st| {
             st.set_session_locked(session.is_locked());
+            st.set_active_exposures(
+                state
+                    .share_registry
+                    .disclosure()
+                    .into_iter()
+                    .map(|(peer, surface, can_control)| {
+                        crate::shell::chrome_state::ActiveExposure {
+                            peer,
+                            surface,
+                            can_control,
+                        }
+                    })
+                    .collect(),
+            );
             st.pump_dbus_notifications();
         });
 
@@ -6066,13 +6198,17 @@ pub fn run() {
                 use crate::shell::device_fabric_runtime::PersonalDisplayEvent;
                 match event {
                     PersonalDisplayEvent::Started {
-                        session_id, source, ..
+                        session_id,
+                        source,
+                        mirror_only,
+                        ..
                     } => {
                         let input_net = Arc::clone(net);
                         let input_source = source.clone();
-                        let sink = Arc::new(move |event: crate::network::streaming::InputEvent| {
-                            use crate::network::streaming::InputEvent;
-                            let mapped = match event {
+                        let spatial_sink =
+                            Arc::new(move |event: crate::network::streaming::InputEvent| {
+                                use crate::network::streaming::InputEvent;
+                                let mapped = match event {
                                 InputEvent::PointerMotion { x, y } => Some(
                                     crate::shell::device_fabric::FabricInputEvent::PointerMotion {
                                         x: spatial_coord(x),
@@ -6098,14 +6234,20 @@ pub fn run() {
                                 | InputEvent::PointerLeave { .. }
                                 | InputEvent::KeyboardFocus { .. } => None,
                             };
-                            if let Some(mapped) = mapped {
-                                let _ = crate::shell::device_fabric_runtime::send_spatial_input(
-                                    &input_net,
-                                    &input_source,
-                                    mapped,
-                                );
-                            }
-                        });
+                                if let Some(mapped) = mapped {
+                                    let _ = crate::shell::device_fabric_runtime::send_spatial_input(
+                                        &input_net,
+                                        &input_source,
+                                        mapped,
+                                    );
+                                }
+                            });
+                        let sink: Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync> =
+                            if mirror_only {
+                                Arc::new(|_| {})
+                            } else {
+                                spatial_sink
+                            };
                         frame_builder
                             .host_mut()
                             .mount_personal_display(session_id, sink);
@@ -7041,6 +7183,12 @@ pub fn run() {
     // no-op unless instrumentation was enabled.
     metrics.finish();
 
+    // Tear down the AT-SPI adapter while the compositor event loop and its
+    // session-bus context still exist. This unregisters the native chrome
+    // tree before Wayland clients and the display are severed, so a restarting
+    // shell cannot leave screen readers holding a dead endpoint.
+    drop(native_accessibility);
+
     // Sever clients before service endpoints disappear. The backend and
     // event loop remain in scope until the function returns below, ensuring
     // the libseat notifier, DRM handles and device leases unwind normally.
@@ -7932,7 +8080,11 @@ mod tests {
     #[test]
     fn state_dump_chrome_includes_overlays_field() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb, doc: None };
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+        };
         let chrome = state.chrome_state_json();
         let overlays = chrome
             .get("overlays")
@@ -7950,12 +8102,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn state_dump_identifies_the_exact_nested_search_resource() {
+        let fb = FrameBuilder::new((1600, 900));
+        fb.chrome_handle().borrow_mut().search_resource_scope =
+            Some(crate::shell::chrome_state::SearchResourceScope {
+                peer_id: 0x42,
+                cluster_id: "room:design".into(),
+                app_id: "dev.tilo.reader".into(),
+                resource: "book:architecture/chapter:7".into(),
+                label: "Rendering and state".into(),
+            });
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+        };
+
+        let scope = &state.chrome_state_json()["search_resource_scope"];
+        assert_eq!(scope["peer_id"], 0x42);
+        assert_eq!(scope["cluster_id"], "room:design");
+        assert_eq!(scope["app_id"], "dev.tilo.reader");
+        assert_eq!(scope["resource"], "book:architecture/chapter:7");
+        assert_eq!(scope["label"], "Rendering and state");
+    }
+
+    #[test]
+    fn state_dump_exposes_own_presence_privacy_and_follow_state() {
+        let fb = FrameBuilder::new((1600, 900));
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+        };
+
+        let presence = &state.chrome_state_json()["presence"];
+        assert!(
+            matches!(
+                presence["status_sharing"].as_str(),
+                Some("off" | "manual" | "automatic")
+            ),
+            "presence privacy must be an explicit wire value: {presence}"
+        );
+        assert!(
+            presence["own_status"].is_null() || presence["own_status"].is_string(),
+            "manual status must remain inspectable: {presence}"
+        );
+        assert!(presence["following"].is_null());
+    }
+
     /// `workspace_tree_json` exposes a `workspaces` array on the bootstrap
     /// layout — the CLI's `state-dump` smoke depends on it as the consumer's entrypoint to the workspace list.
     #[test]
     fn state_dump_workspace_tree_includes_workspaces_array() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb, doc: None };
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+        };
         let tree = state.workspace_tree_json();
         let workspaces = tree
             .get("workspaces")
@@ -7988,7 +8193,11 @@ mod tests {
             drop(tree);
             assert!(noted);
         }
-        let state = FrameBuilderControlState { fb: &fb, doc: None };
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+        };
         let tree = state.workspace_tree_json();
         let found = tree
             .get("workspaces")
@@ -8007,12 +8216,93 @@ mod tests {
         );
     }
 
+    /// Agents and automation use the same semantic inspection surface as
+    /// accessibility tooling. Screen exposure therefore has to retain the
+    /// viewer's principal kind, exact target, and control authority rather
+    /// than degrading to an anonymous "sharing" boolean.
+    #[test]
+    fn state_dump_attributes_agent_screen_exposure_to_its_exact_target() {
+        use crate::compositor::tab_binding::{self, Placement};
+        use crate::network::streaming::{ShareRegistry, StreamingShare};
+        use crate::shell::state::{CapOverride, Subject, Verb};
+
+        const AGENT_PEER: u64 = 0xA9;
+        const SURFACE: u64 = 71_900;
+
+        let fb = FrameBuilder::new((1600, 900));
+        {
+            let chrome = fb.chrome();
+            let tree_handle = chrome.tree_handle();
+            drop(chrome);
+            let mut tree = tree_handle.write();
+            let workspace = tree.active_workspace_mut().expect("active workspace");
+            workspace.owner = Some("owner".to_string());
+            let room = workspace.id.raw().to_string();
+            workspace
+                .grant_as(
+                    &"owner".to_string(),
+                    CapOverride::membership(Subject::agent("release-notes"), room, Verb::Write),
+                )
+                .expect("owner admits agent");
+            workspace.collaborators.push(
+                crate::shell::state::Collaborator::new("release-notes", "Release Notes Agent")
+                    .with_session(AGENT_PEER),
+            );
+            tab_binding::adopt_toplevel_at(
+                &mut tree,
+                SURFACE,
+                Some("org.libreoffice.Writer".into()),
+                Placement::NewGroup,
+            );
+            let tab = tree
+                .active_workspace_mut()
+                .into_iter()
+                .flat_map(|workspace| &mut workspace.strips)
+                .flat_map(|strip| &mut strip.window_groups)
+                .flat_map(|group| &mut group.tabs)
+                .find(|tab| {
+                    matches!(
+                        tab.tile,
+                        crate::shell::state::TileContent::Foreign { surface_id, .. }
+                            if surface_id == SURFACE
+                    )
+                })
+                .expect("adopted foreign tab");
+            tab.title = "Quarterly Plan".to_string();
+        }
+
+        let mut shares = ShareRegistry::new();
+        shares.insert(AGENT_PEER, SURFACE, StreamingShare::new());
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: Some(&shares),
+        };
+        let rows = state
+            .sharing_json()
+            .get("exposures")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .expect("state dump exposure rows");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row["name"], "Release Notes Agent");
+        assert_eq!(row["kind"], "agent");
+        assert_eq!(row["target"], "Quarterly Plan");
+        assert_eq!(row["can_see"], true);
+        assert_eq!(row["can_control"], true);
+    }
+
     /// Dispatching `Command::StateDump` returns `Response::State` with no
     /// actions. Integration round-trip lives in `tests/control_socket_test.rs`; this smoke catches regressions needing no spawned compositor.
     #[test]
     fn dispatch_state_dump_against_frame_builder_returns_state() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb, doc: None };
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+        };
         let (resp, actions) =
             test_control::dispatch_command(&test_control::Command::StateDump, &state);
         assert!(actions.is_empty());
@@ -8020,6 +8310,7 @@ mod tests {
             workspace_tree,
             chrome,
             peers: _,
+            sharing: _,
         } = resp
         else {
             panic!("expected Response::State; got something else");

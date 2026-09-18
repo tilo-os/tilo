@@ -83,6 +83,12 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("import-conflict") => {
             Box::new(|a: &mut contacts::ContactsApp| a.shots_show_import_conflict())
         }
+        Some("duplicate-review") => {
+            Box::new(|a: &mut contacts::ContactsApp| a.shots_show_duplicate_review())
+        }
+        Some("duplicates") => {
+            Box::new(|a: &mut contacts::ContactsApp| a.shots_show_duplicate_discovery())
+        }
         Some("empty") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_empty()),
         Some("search") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_search()),
         Some("loading") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_loading()),
@@ -121,6 +127,8 @@ pub fn main() {
                 "context",
                 "confirm",
                 "import-conflict",
+                "duplicate-review",
+                "duplicates",
                 "empty",
                 "search",
                 "loading",

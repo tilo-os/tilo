@@ -71,10 +71,15 @@ def audit(root: Path = ROOT) -> list[str]:
     for needle, purpose in (
         ("accesskit_unix::Adapter", "native shell provider"),
         ("self.rx.try_iter()", "nonblocking compositor handoff"),
+        ("wake.ping()", "idle-compositor wakeup"),
         ("self.adapter.update_if_active", "native shell tree updates"),
     ):
         if needle not in native:
             errors.append(f"shell/src/compositor/accessibility.rs: missing {purpose}")
+
+    native_loop = (root / "shell/src/compositor/native.rs").read_text(encoding="utf-8")
+    if "drop(native_accessibility);" not in native_loop:
+        errors.append("shell/src/compositor/native.rs: missing native AT-SPI provider teardown")
 
     # The source boundary above proves every graphical app reaches the shared
     # provider. These manifests declare the small, safe installed-image sample
@@ -84,6 +89,7 @@ def audit(root: Path = ROOT) -> list[str]:
     # state rather than merely a successful in-process callback.
     for app, expected in {
         "file-explorer": {"root": "Files activity", "action": "View options"},
+        "photos": {"root": "Photos", "action": "Library"},
         "settings": {"root": "Personal Settings", "action": "Accessibility"},
     }.items():
         manifest = root / "apps" / app / "tilo-app.toml"

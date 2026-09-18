@@ -93,6 +93,7 @@ pub fn main() {
                 "--shots-error",
                 "--shots-library",
                 "--library-section",
+                "--library-filter",
                 "--download-state",
                 "--audit-state",
                 "--url",
@@ -270,6 +271,9 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
         let mut widget = BrowserWidget::new_headless();
         let section = args.value("--library-section").unwrap_or("history");
         widget.debug_show_library(section);
+        if let Some(query) = args.value("--library-filter") {
+            widget.debug_set_library_filter(query);
+        }
         if section == "downloads" {
             widget.debug_show_downloads(args.value("--download-state").unwrap_or("progress"));
         }

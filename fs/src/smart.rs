@@ -14,7 +14,6 @@ use iroh_blobs::Hash;
 use tokio::sync::mpsc;
 
 use crate::hydration::Hydrator;
-use crate::namespace::Namespace;
 
 /// Predictive reads are an optimization, not an instruction to fill the disk.
 /// Larger files remain projected until explicitly opened or pinned.
@@ -82,10 +81,6 @@ fn admit_pending(
 }
 
 pub struct Heuristics {
-    /// Retained for future sequence models and to keep construction tied to the
-    /// exact namespace the candidate hashes came from.
-    #[allow(dead_code)]
-    namespace: Arc<Mutex<Namespace>>,
     pending: Arc<Mutex<HashMap<Hash, u64>>>,
     policy: Arc<RwLock<PredictivePolicy>>,
     generation: Arc<AtomicU64>,
@@ -95,7 +90,7 @@ pub struct Heuristics {
 
 impl Heuristics {
     /// Construct the bounded predictive worker on the hydrator's runtime.
-    pub fn new(hydrator: Arc<Hydrator>, namespace: Arc<Mutex<Namespace>>) -> Self {
+    pub fn new(hydrator: Arc<Hydrator>) -> Self {
         let (queue, mut jobs) = mpsc::channel::<PrefetchJob>(PREFETCH_QUEUE_CAPACITY);
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let policy = Arc::new(RwLock::new(PredictivePolicy::default()));
@@ -167,7 +162,6 @@ impl Heuristics {
             }
         });
         Self {
-            namespace,
             pending,
             policy,
             generation,
@@ -328,8 +322,7 @@ mod tests {
         let client_store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(client_endpoint.clone(), client_store.clone()));
         hydrator.add_peer(server_endpoint.addr());
-        let namespace = Arc::new(Mutex::new(Namespace::new("predictive-client").unwrap()));
-        let heuristics = Heuristics::new(hydrator.clone(), namespace);
+        let heuristics = Heuristics::new(hydrator.clone());
 
         assert_eq!(
             hydrator.sync_state(sibling_hash).await,

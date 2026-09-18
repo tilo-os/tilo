@@ -1,7 +1,5 @@
-//! Tilo format-router daemon — library surface. This commit is the skeleton:
-//! the [`registry`] module that parses the on-disk `format-providers.toml`
-//! file. Subsequent commits add the wasmtime component runner, the Cap'n
-//! Proto wire, and the inotify hot-reload + main entry point.
+//! Tilo format-router daemon: provider registry, sandboxed component runner,
+//! Cap'n Proto service, and registry hot reload.
 
 #![cfg_attr(
     test,
@@ -23,10 +21,10 @@
     clippy::nursery,
     clippy::pedantic,
     clippy::restriction,
+    dead_code,
+    unused,
     reason = "generated Cap'n Proto bindings do not follow repository lint policy"
 )]
-#[allow(unused)]
-#[allow(dead_code)]
 pub mod format_router_capnp {
     include!(concat!(env!("OUT_DIR"), "/format_router_capnp.rs"));
 }

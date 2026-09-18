@@ -18,7 +18,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::shell::chrome_state::Chrome;
+use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::room_records::{KnownRecord, RoomRecords};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
@@ -76,6 +76,33 @@ impl SearchProvider for RecordsProvider {
     }
     fn max_score(&self) -> i32 {
         MAX_SCORE
+    }
+
+    fn proximity(
+        &self,
+        result: &SearchResult,
+        chrome: &ChromeState,
+    ) -> crate::shell::search::SearchProximity {
+        let Some(id) = ui::record::RecordId::parse(&result.id) else {
+            return crate::shell::search::SearchProximity::Global;
+        };
+        let here = chrome
+            .tree()
+            .active_workspace()
+            .map(|workspace| workspace.room);
+        let is_here = here.is_some_and(|room| {
+            self.index
+                .borrow()
+                .known()
+                .iter()
+                .find(|record| record.id == id)
+                .is_some_and(|record| record.is_in(room))
+        });
+        if is_here {
+            crate::shell::search::SearchProximity::CurrentWorkspace
+        } else {
+            crate::shell::search::SearchProximity::Global
+        }
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {

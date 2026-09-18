@@ -513,12 +513,16 @@ mod tests {
         url: &[u8],
     ) -> Result<bool, ContinuityError> {
         let metadata = browser_checkpoint(url);
-        reports.report(
+        reports.report_with_contract(
             room,
-            "dev.tilo.browser",
+            "dev.tilo.browser".into(),
             instance,
             metadata.schema_version,
             metadata.bytes,
+            &ContinuityContract {
+                required: vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic],
+                semantic_schema: Some(ContinuitySemanticSchema::WebLocationV1),
+            },
         )
     }
 

@@ -23,5 +23,8 @@ regex = "1"
 uuid = { version = "1.23.1", features = ["v4", "serde", "js"] }
 thiserror = "1"
 
+[dev-dependencies]
+postcard = { workspace = true, features = ["alloc"] }
+
 [lints]
 workspace = true

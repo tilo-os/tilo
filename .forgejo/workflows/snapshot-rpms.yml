@@ -21,6 +21,7 @@ on:
       - keys/cosign.pub
       - os/dev/promote-native-index.py
       - os/dev/install-cached-cosign.sh
+      - os/dev/configure-cosign-kms.sh
       - os/Containerfile.host
       - os/dev/composefs/Containerfile
       - os/containers/tilo-relay/Containerfile
@@ -56,12 +57,14 @@ jobs:
       - name: Require non-exportable snapshot signing authority
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           resolved="$RUNNER_TEMP/rpm-snapshot-signing-authority.pub"
           cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"
           cmp --silent keys/cosign.pub "$resolved" || {
@@ -143,7 +146,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
-      - name: Set up buildx for registry cache export
+      - name: Set up buildx for native snapshot construction
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker-container
@@ -163,8 +166,6 @@ jobs:
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
             PACKAGES=${{ env.PACKAGES }}
-          cache-from: type=registry,ref=code.sandbox.example/qos/tilo-rpms-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-rpms-buildcache:${{ matrix.arch }},mode=max
           provenance: false
 
       - name: Install checksum-pinned Cosign
@@ -173,6 +174,7 @@ jobs:
       - name: Sign and describe the native repository
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
           CHILD_ARCH: ${{ matrix.arch }}
           CHILD_DIGEST: ${{ steps.rpms.outputs.digest }}
         run: |
@@ -181,6 +183,7 @@ jobs:
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           cosign sign --yes --key "$COSIGN_KEY_REF" "code.sandbox.example/qos/rpms@${CHILD_DIGEST}"
           mkdir -p native-child
           python3 - <<'PY'
@@ -233,12 +236,22 @@ jobs:
       - name: Verify and promote the complete native index
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
+          # The containerized runner's root filesystem is overlayfs, so a
+          # nested default Podman overlay store cannot assemble the index.
+          # Manifest promotion needs metadata only; isolate it in a VFS store.
+          storage="$(mktemp -d "$RUNNER_TEMP/tilo-rpm-manifests.XXXXXX")"
+          trap 'rm -rf -- "$storage"; rm -f -- "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' EXIT
+          export CONTAINERS_STORAGE_CONF="$storage/storage.conf"
+          printf '[storage]\ndriver = "vfs"\ngraphroot = "%s/graph"\nrunroot = "%s/run"\n' \
+            "$storage" "$storage" > "$CONTAINERS_STORAGE_CONF"
           python3 os/dev/promote-native-index.py \
             --repository code.sandbox.example/qos/rpms --tag "$GITHUB_SHA" \
             --revision "$GITHUB_SHA" --descriptors native-children \
@@ -253,6 +266,7 @@ jobs:
       - name: Attest and verify the native snapshot index
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
           ref="$(cat rpms-index.txt)"
@@ -267,6 +281,7 @@ jobs:
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           source os/base-snapshot.env
           python3 os/dev/derive-rpm-package-set.py --arch x86_64 | sort -u > package-roots-amd64.txt
           python3 os/dev/derive-rpm-package-set.py --arch aarch64 | sort -u > package-roots-arm64.txt
@@ -328,24 +343,44 @@ jobs:
       - name: Commit the frozen snapshot pin to the dispatched branch
         run: |
           set -euo pipefail
-          # Never rebase a completed snapshot onto changed build inputs. A
-          # concurrent branch update must start a fresh snapshot instead.
-          git fetch origin "${GITHUB_REF_NAME}"
-          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
           ref="$(cat rpms-index.txt)"
-          printf '%s\n' \
-            '# Digest-pinned frozen RPM repository used by os/Containerfile.' \
-            '# Updated by the snapshot-rpms workflow when the package set changes.' \
-            "RPMS_REF=$ref" > os/rpms-snapshot.env
-          if git diff --quiet -- os/rpms-snapshot.env; then
-            echo "Snapshot pin is already current"
-            exit 0
-          fi
-          git config user.name "Tilo CI"
-          git config user.email "ci@tilo.invalid"
-          git add os/rpms-snapshot.env
-          git commit -m "build(os): refresh native RPM snapshot index"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          snapshot_inputs=(
+            os/Containerfile os/Containerfile.rpms
+            os/dev/verify-rpm-snapshot-signatures.sh
+            os/external-assets/github-assets.tsv os/dev/cache-github-assets.sh
+            os/dev/derive-rpm-package-set.py keys/cosign.pub
+            os/dev/promote-native-index.py os/dev/install-cached-cosign.sh
+            os/dev/configure-cosign-kms.sh os/Containerfile.host
+            os/dev/composefs/Containerfile os/containers/tilo-relay/Containerfile
+            os/kernel/Containerfile .forgejo/workflows/snapshot-rpms.yml
+            os/rpms-snapshot.env
+          )
+          for attempt in 1 2 3 4 5; do
+            git fetch origin "${GITHUB_REF_NAME}"
+            if ! git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"; then
+              echo '::error::snapshot build inputs changed during native construction'
+              exit 1
+            fi
+            git checkout --detach FETCH_HEAD
+            printf '%s\n' \
+              '# Digest-pinned frozen RPM repository used by os/Containerfile.' \
+              '# Updated by the snapshot-rpms workflow when the package set changes.' \
+              "RPMS_REF=$ref" > os/rpms-snapshot.env
+            if git diff --quiet -- os/rpms-snapshot.env; then
+              echo "Snapshot pin is already current"
+              exit 0
+            fi
+            git config user.name "Tilo CI"
+            git config user.email "ci@tilo.invalid"
+            git add os/rpms-snapshot.env
+            git commit -m "build(os): refresh native RPM snapshot index"
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            echo "Remote advanced during pin promotion; retrying ($attempt/5)"
+          done
+          echo '::error::snapshot pin promotion lost five consecutive branch races'
+          exit 1
 
       - name: Dispatch the full image build and boot test
         env:

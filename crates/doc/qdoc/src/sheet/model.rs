@@ -312,8 +312,6 @@ fn sheet_order_after(doc: &AutoCommit, c: &SheetContainers, after: Option<&str>)
 /// The owned spreadsheet handle: wraps an automerge document that syncs, versions, and merges like any CRDT.
 pub struct Workbook {
     pub(crate) doc: AutoCommit,
-    #[allow(dead_code)]
-    pub(crate) root: ObjId,
     pub(crate) c: SheetContainers,
     ids: crate::model::IdGen,
 }
@@ -324,12 +322,7 @@ impl Workbook {
         let c = init(&mut doc, &ROOT);
         let ids = crate::model::IdGen::new(doc.get_actor().to_hex_string());
         doc.commit();
-        Self {
-            doc,
-            root: ROOT,
-            c,
-            ids,
-        }
+        Self { doc, c, ids }
     }
 
     /// # Errors
@@ -339,12 +332,7 @@ impl Workbook {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         let c = open(&doc, &ROOT)?;
         let ids = seeded_sheet_id_gen(&doc, &c)?;
-        Ok(Self {
-            doc,
-            root: ROOT,
-            c,
-            ids,
-        })
+        Ok(Self { doc, c, ids })
     }
 
     pub fn save(&mut self) -> Vec<u8> {
@@ -572,12 +560,7 @@ impl Workbook {
         doc.set_actor(automerge::ActorId::random());
         let c = open(&doc, &ROOT).expect("fork open");
         let ids = crate::model::IdGen::new(doc.get_actor().to_hex_string());
-        Workbook {
-            doc,
-            root: ROOT,
-            c,
-            ids,
-        }
+        Workbook { doc, c, ids }
     }
 
     /// Merge another replica's changes into this one (low-level merge to sidestep

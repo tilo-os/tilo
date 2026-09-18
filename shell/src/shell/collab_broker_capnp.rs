@@ -1280,6 +1280,7 @@ fn write_directory_row(
     out.set_resource(&row.resource);
     out.set_resource_kind(&row.resource_kind);
     out.set_resource_label(&row.resource_label);
+    out.set_resource_presentation_json(&row.resource_presentation_json);
     out.set_action(row.action.as_deref().unwrap_or(""));
     out.set_has_children(row.has_children);
     out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));
@@ -1588,6 +1589,64 @@ fn revoke_realtime_capture_authorizations(
     }
 }
 
+fn teardown_imported_realtime_consent(realtime: &mut RealtimeBridge, session: &str) {
+    let Some((id, app, source, peer, leases)) = realtime
+        .sessions
+        .get(session)
+        .filter(|binding| binding.imported)
+        .map(|binding| {
+            (
+                binding.id,
+                binding.app.clone(),
+                binding.source.clone(),
+                binding.owner_peer,
+                binding.capture_leases.clone(),
+            )
+        })
+    else {
+        realtime.consent_capabilities_issued.remove(session);
+        return;
+    };
+    let target = realtime
+        .broker
+        .lock()
+        .ok()
+        .and_then(|broker| broker.session(id))
+        .and_then(|view| view.target);
+    if let Some(target) = target {
+        release_realtime_capture_session(&realtime.capture, &app, session, &target);
+        let now = std::time::Instant::now();
+        let rolled_back = realtime
+            .fabric
+            .fail_imported(id.fabric_id(), &source, &target, now);
+        if rolled_back.is_ok() {
+            // `fail_imported` authenticates the exact imported source/target
+            // binding and authors Cancel, but deliberately rolls the broker
+            // shadow back to SourceLive. This target has no authority to keep
+            // that remote-source shadow alive after local policy revocation,
+            // so end only the same verified app/session/source binding.
+            if let Ok(mut broker) = realtime.broker.lock() {
+                let _ = broker.apply_media_action(
+                    &app,
+                    id,
+                    &source,
+                    crate::shell::realtime_session::RealtimeMediaAction::Leave,
+                    now,
+                );
+            }
+        }
+    }
+    release_realtime_capture_leases(&realtime.capture, &leases);
+    realtime.consent_capabilities_issued.remove(session);
+    let _ = realtime.notify(
+        peer,
+        &ui::realtime_continuity::RealtimeEvent::Ended {
+            session: session.to_string(),
+        },
+    );
+    realtime.sessions.remove(session);
+}
+
 #[cfg(test)]
 struct RealtimeConsentMintHook {
     minted: std::sync::mpsc::SyncSender<()>,
@@ -1834,6 +1893,9 @@ impl RealtimeFabricAppBridge {
         policy_enabled: impl Fn() -> bool,
     ) -> Result<(), String> {
         if !policy_enabled() {
+            if let Ok(mut realtime) = self.state.realtime.lock() {
+                teardown_imported_realtime_consent(&mut realtime, session);
+            }
             return Err("realtime session continuity is disabled".into());
         }
         let (id, app, source, target, peer, required, capture) = {
@@ -1979,11 +2041,16 @@ impl RealtimeFabricAppBridge {
         let current_required = realtime.required_capture_kinds(id);
         let still_reserved = realtime.consent_capabilities_issued.contains(session);
         let policy_enabled = policy_enabled();
+        if !policy_enabled {
+            teardown_imported_realtime_consent(&mut realtime, session);
+            drop(realtime);
+            revoke_realtime_capture_authorizations(&capture, &authorizations);
+            return Err("realtime session continuity was disabled during consent".into());
+        }
         if !live_binding
             || !live_session
             || current_required.as_ref() != Some(&required)
             || !still_reserved
-            || !policy_enabled
         {
             realtime.consent_capabilities_issued.remove(session);
             drop(realtime);
@@ -4949,6 +5016,63 @@ struct CapnpChannelHandle {
 
 const MAX_PRIVATE_PLAYBACK_REPORT_BYTES: usize = 256 * 1024;
 
+fn continuation_route(
+    route: &CrdtRoute,
+    claimed_app_id: &str,
+    operation: &str,
+) -> Result<
+    (
+        crate::shell::state::RoomId,
+        String,
+        crate::shell::personal_continuity::AppInstanceId,
+    ),
+    String,
+> {
+    if route.app_id.is_empty() || claimed_app_id != route.app_id {
+        return Err(format!(
+            "{operation} appId must match the certified connection route"
+        ));
+    }
+    let instance_id = route
+        .record_id
+        .strip_prefix("continuation:")
+        .and_then(|id| id.parse::<u64>().ok())
+        .map(crate::shell::personal_continuity::AppInstanceId)
+        .ok_or_else(|| format!("{operation} requires a durable shell tab id"))?;
+    let room = crate::shell::state::RoomId::parse(&route.cluster_id)
+        .ok_or_else(|| format!("{operation} route has no durable workspace room"))?;
+    Ok((room, claimed_app_id.to_owned(), instance_id))
+}
+
+fn report_continuation_for_route(
+    reports: &mut crate::shell::personal_continuity_registry::ContinuationRegistry,
+    policy: crate::shell::continuity_policy::ContinuityPolicySnapshot,
+    route: &CrdtRoute,
+    claimed_app_id: &str,
+    schema_version: u16,
+    metadata: Vec<u8>,
+) -> Result<(), String> {
+    if !policy.permits(crate::shell::continuity_policy::ContinuityCapability::AppContinuations) {
+        return Err("app continuation is disabled".into());
+    }
+    let (room, app_id, instance_id) =
+        continuation_route(route, claimed_app_id, "reportContinuation")?;
+    reports
+        .report(room, app_id, instance_id, schema_version, metadata)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn clear_continuation_for_route(
+    reports: &mut crate::shell::personal_continuity_registry::ContinuationRegistry,
+    route: &CrdtRoute,
+    claimed_app_id: &str,
+) -> Result<bool, String> {
+    let (room, app_id, instance_id) =
+        continuation_route(route, claimed_app_id, "clearContinuation")?;
+    Ok(reports.clear(room, &app_id, instance_id))
+}
+
 fn playback_report_owner(route: &CrdtRoute, peer_id: u64) -> String {
     format!(
         "{}#{}#{}#{peer_id}",
@@ -7498,26 +7622,6 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
         };
         let route = self.route();
-        if route.app_id.is_empty() || app_id != route.app_id {
-            return Promise::err(capnp::Error::failed(
-                "reportContinuation appId must match the certified connection route".into(),
-            ));
-        }
-        let Some(instance_id) = route
-            .record_id
-            .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-            .map(crate::shell::personal_continuity::AppInstanceId)
-        else {
-            return Promise::err(capnp::Error::failed(
-                "reportContinuation requires a durable shell tab id".into(),
-            ));
-        };
-        let Some(room) = crate::shell::state::RoomId::parse(&route.cluster_id) else {
-            return Promise::err(capnp::Error::failed(
-                "reportContinuation route has no durable workspace room".into(),
-            ));
-        };
         let metadata = match request.get_metadata() {
             Ok(bytes) => bytes.to_vec(),
             Err(error) => return Promise::err(error),
@@ -7526,15 +7630,14 @@ impl channel_handle::Server for CapnpChannelHandle {
             .lock()
             .map_err(|_| "continuation registry unavailable".to_string())
             .and_then(|mut reports| {
-                reports
-                    .report(
-                        room,
-                        app_id,
-                        instance_id,
-                        request.get_schema_version(),
-                        metadata,
-                    )
-                    .map_err(|error| error.to_string())
+                report_continuation_for_route(
+                    &mut reports,
+                    crate::shell::continuity_policy::ContinuityPolicySnapshot::load(),
+                    &route,
+                    &app_id,
+                    request.get_schema_version(),
+                    metadata,
+                )
             }) {
             Ok(_) => Promise::ok(()),
             Err(error) => Promise::err(capnp::Error::failed(error)),
@@ -7565,34 +7668,14 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
         };
         let route = self.route();
-        if route.app_id.is_empty() || app_id != route.app_id {
-            return Promise::err(capnp::Error::failed(
-                "clearContinuation appId must match the certified connection route".into(),
-            ));
-        }
-        let Some(instance_id) = route
-            .record_id
-            .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-            .map(crate::shell::personal_continuity::AppInstanceId)
-        else {
-            return Promise::err(capnp::Error::failed(
-                "clearContinuation requires a durable shell tab id".into(),
-            ));
-        };
-        let Some(room) = crate::shell::state::RoomId::parse(&route.cluster_id) else {
-            return Promise::err(capnp::Error::failed(
-                "clearContinuation route has no durable workspace room".into(),
-            ));
-        };
         match crate::shell::personal_continuity_registry::global_registry()
             .lock()
             .map_err(|_| "continuation registry unavailable".to_string())
         {
-            Ok(mut reports) => {
-                reports.clear(room, &app_id, instance_id);
-                Promise::ok(())
-            }
+            Ok(mut reports) => match clear_continuation_for_route(&mut reports, &route, &app_id) {
+                Ok(_) => Promise::ok(()),
+                Err(error) => Promise::err(capnp::Error::failed(error)),
+            },
             Err(error) => Promise::err(capnp::Error::failed(error)),
         }
     }
@@ -7877,6 +7960,19 @@ fn permits_directory_row(
         DIRECTORY_MAX_LABEL_BYTES,
         true,
     )?;
+    let presentation = if row.resource_presentation_json.is_empty() {
+        None
+    } else {
+        serde_json::from_str::<tilo_actions::ResourcePresentation>(&row.resource_presentation_json)
+            .ok()
+    };
+    if !row.resource_presentation_json.is_empty()
+        && !presentation.as_ref().is_some_and(|value| value.is_valid())
+    {
+        return Err(capnp::Error::failed(
+            "invalid resource presentation metadata".into(),
+        ));
+    }
     match (&row.action, &row.descriptor) {
         (Some(action), Some(descriptor)) => {
             validate_directory_identifier(action, "action", DIRECTORY_MAX_IDENTIFIER_BYTES, true)?;
@@ -7887,6 +7983,7 @@ fn permits_directory_row(
                 || row.has_children
                 || row.visibility_action.as_deref() != Some(action)
                 || row.visibility_contract_json != descriptor.contract_json
+                || presentation.is_some()
             {
                 return Err(capnp::Error::failed(
                     "directory action row does not match its descriptor".into(),
@@ -9961,6 +10058,122 @@ mod tests {
     }
 
     #[test]
+    fn realtime_policy_disable_tears_down_exact_pending_consent() {
+        use crate::shell::realtime_session::{
+            BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
+            RealtimeMediaFacet, RealtimeMediaSet, RealtimeResumeIntent, RealtimeSessionBroker,
+            SemanticRoomLocator, VerifiedAppRegistration,
+        };
+
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+        let target_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+            Arc::clone(&target_broker),
+            |_| true,
+        ));
+        let (subscriber, mut events) = mpsc::unbounded_channel();
+        let app =
+            VerifiedAppRegistration::new_verified("dev.tilo.calls", "work").expect("verified app");
+        {
+            let mut realtime = state.realtime.lock().expect("target bridge");
+            realtime.broker = Arc::clone(&target_broker);
+            realtime.fabric = Arc::clone(&target_fabric);
+            realtime.subscribers.insert(
+                9,
+                RealtimeSubscriber {
+                    app: app.clone(),
+                    tx: subscriber,
+                },
+            );
+        }
+
+        let now = std::time::Instant::now();
+        let source =
+            crate::shell::personal_continuity::DeviceId::new("laptop").expect("source device");
+        let target =
+            crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
+        let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+        let source_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+            Arc::clone(&source_broker),
+            |_| true,
+        ));
+        let intent = RealtimeResumeIntent {
+            room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
+            semantic_position: None,
+            media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
+            controls: Default::default(),
+        };
+        let id = source_broker
+            .lock()
+            .expect("source broker")
+            .register(&app, source.clone(), intent, now)
+            .expect("register source");
+        source_broker
+            .lock()
+            .expect("source broker")
+            .propose_target(&app, id, &source, target.clone(), now)
+            .expect("propose target");
+        source_fabric
+            .offer_to(id, &target, 20_000)
+            .expect("queue offer");
+        let egress = source_fabric.drain_egress().pop().expect("offer egress");
+        let RealtimeFabricSignal::Offer(offer) = egress.signal else {
+            panic!("expected offer");
+        };
+        let fabric_id = offer.session_id;
+        assert!(target_fabric.receive_authenticated(
+            &source,
+            &target,
+            RealtimeFabricSignal::Offer(offer),
+            now,
+            10_000,
+        ));
+        state.pump_realtime_fabric_app_events();
+        let offered: ui::realtime_continuity::RealtimeEvent =
+            serde_json::from_slice(&events.try_recv().expect("target app offer"))
+                .expect("offer event");
+        let ui::realtime_continuity::RealtimeEvent::Offer { session, .. } = offered else {
+            panic!("expected app offer");
+        };
+
+        assert!(
+            RealtimeFabricAppBridge::from_state(Arc::clone(&state))
+                .resolve_consent_with_policy(&session, true, || false)
+                .is_err()
+        );
+        let ended: ui::realtime_continuity::RealtimeEvent =
+            serde_json::from_slice(&events.try_recv().expect("target app teardown"))
+                .expect("ended event");
+        assert_eq!(
+            ended,
+            ui::realtime_continuity::RealtimeEvent::Ended {
+                session: session.clone(),
+            }
+        );
+        let realtime = state.realtime.lock().expect("target bridge");
+        assert!(!realtime.sessions.contains_key(&session));
+        assert!(!realtime.consent_capabilities_issued.contains(&session));
+        drop(realtime);
+        assert!(
+            target_broker
+                .lock()
+                .expect("target broker")
+                .session(fabric_id.into_broker_id())
+                .is_none()
+        );
+        let cancel = target_fabric.drain_egress().pop().expect("cancel egress");
+        assert_eq!(cancel.target, source);
+        assert_eq!(cancel.signal, RealtimeFabricSignal::Cancel(fabric_id));
+    }
+
+    #[test]
     fn launch_content_rejects_bad_or_missing_hash_and_keeps_plain_launch_empty() {
         let mut workspace = crate::shell::state::Workspace::test_default(
             crate::shell::state::WorkspaceId::new(),
@@ -10054,6 +10267,7 @@ mod tests {
                 resource: descriptor.resource.clone(),
                 resource_kind: descriptor.resource_kind.clone(),
                 resource_label: descriptor.resource_label.clone(),
+                resource_presentation_json: String::new(),
                 action: Some(descriptor.action.clone()),
                 descriptor: Some(descriptor),
                 has_children: false,
@@ -10337,7 +10551,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_wire_rows_refuse_control_framing_in_identifiers_before_policy_or_invocation() {
+    fn directory_wire_rows_refuse_untrusted_presentation_and_control_framing() {
         let fixture = local_directory_fixture();
         let mut row = fixture.directory_state.borrow().row();
         row.resource = "workspace:atlas\u{1f}admin".into();
@@ -10364,6 +10578,24 @@ mod tests {
             )
             .is_err(),
             "control characters cannot turn one wire action into several shell fields"
+        );
+        let mut row = fixture.directory_state.borrow().row();
+        row.action = None;
+        row.descriptor = None;
+        row.resource_presentation_json = serde_json::json!({
+            "detail": "x".repeat(tilo_actions::ResourcePresentation::MAX_DETAIL_BYTES + 1)
+        })
+        .to_string();
+        assert!(
+            permits_directory_row(
+                &fixture.state,
+                &fixture.cluster_id,
+                &BrokerActor::person("actor-a"),
+                &fixture.route.app_id,
+                &row,
+            )
+            .is_err(),
+            "oversized app metadata cannot reach shell chrome"
         );
     }
 
@@ -11952,5 +12184,124 @@ mod tests {
         assert!(!nearby_policy_enabled(policy(false, true)));
         assert!(!nearby_policy_enabled(policy(true, false)));
         assert!(nearby_policy_enabled(policy(true, true)));
+    }
+
+    fn continuation_policy(
+        enabled: bool,
+    ) -> crate::shell::continuity_policy::ContinuityPolicySnapshot {
+        let document = serde_json::json!({
+            "continuity": {
+                "enabled": true,
+                "app_continuations": enabled,
+            }
+        });
+        crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
+            document.as_object().expect("policy object"),
+        )
+    }
+
+    fn continuation_metadata(url: &str) -> ui::collaboration::ContinuationMetadata {
+        ui::app::compose_structural_continuation_metadata(
+            ui::view::View::default(),
+            Some(ui::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: format!(r#"{{"url":"{url}"}}"#).into_bytes(),
+            }),
+        )
+        .expect("valid browser continuation")
+    }
+
+    fn continuation_route_for(room: crate::shell::state::RoomId, instance: u64) -> CrdtRoute {
+        CrdtRoute::record(
+            "dev.tilo.browser",
+            room.to_string(),
+            format!("continuation:{instance}"),
+        )
+    }
+
+    #[test]
+    fn disabled_app_continuation_report_never_enters_registry() {
+        let room = crate::shell::state::RoomId::new();
+        let route = continuation_route_for(room, 11);
+        let metadata = continuation_metadata("https://disabled.test");
+        let mut reports =
+            crate::shell::personal_continuity_registry::ContinuationRegistry::default();
+
+        let result = report_continuation_for_route(
+            &mut reports,
+            continuation_policy(false),
+            &route,
+            "dev.tilo.browser",
+            metadata.schema_version,
+            metadata.bytes,
+        );
+
+        assert_eq!(result, Err("app continuation is disabled".into()));
+        assert!(
+            reports
+                .resume_for(
+                    room,
+                    "dev.tilo.browser",
+                    crate::shell::personal_continuity::AppInstanceId(11),
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn clear_continuation_affects_only_the_exact_authenticated_route() {
+        let room = crate::shell::state::RoomId::new();
+        let first = continuation_route_for(room, 11);
+        let second = continuation_route_for(room, 22);
+        let mut reports =
+            crate::shell::personal_continuity_registry::ContinuationRegistry::default();
+        for (route, url) in [
+            (&first, "https://first.test"),
+            (&second, "https://second.test"),
+        ] {
+            let metadata = continuation_metadata(url);
+            report_continuation_for_route(
+                &mut reports,
+                continuation_policy(true),
+                route,
+                "dev.tilo.browser",
+                metadata.schema_version,
+                metadata.bytes,
+            )
+            .expect("enabled exact route report");
+        }
+
+        assert!(
+            clear_continuation_for_route(&mut reports, &first, "dev.tilo.browser")
+                .expect("exact clear")
+        );
+        assert!(
+            reports
+                .resume_for(
+                    room,
+                    "dev.tilo.browser",
+                    crate::shell::personal_continuity::AppInstanceId(11),
+                )
+                .is_none()
+        );
+        assert!(
+            reports
+                .resume_for(
+                    room,
+                    "dev.tilo.browser",
+                    crate::shell::personal_continuity::AppInstanceId(22),
+                )
+                .is_some()
+        );
+        assert!(clear_continuation_for_route(&mut reports, &second, "dev.tilo.editor").is_err());
+        assert!(
+            reports
+                .resume_for(
+                    room,
+                    "dev.tilo.browser",
+                    crate::shell::personal_continuity::AppInstanceId(22),
+                )
+                .is_some()
+        );
     }
 }

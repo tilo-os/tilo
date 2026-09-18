@@ -27,7 +27,9 @@
     )
 )]
 
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
+use ui::launch::LaunchSpec;
+#[cfg(not(feature = "thin"))]
+use ui::launch::{LaunchArgs, LaunchError};
 use ui::widget::Widget;
 
 const APP_ID: &str = "dev.tilo.settings";
@@ -36,6 +38,7 @@ fn root() -> Box<dyn Widget> {
     Box::new(settings::SettingsApp::new())
 }
 
+#[cfg(not(feature = "thin"))]
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
     let result = args.viewport.map_or_else(
@@ -64,9 +67,8 @@ fn configure(app: &mut ui::App) {
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new(APP_ID, root)
-            .shot_handler(render_shot)
-            .configure_app(configure),
-    );
+    let spec = LaunchSpec::new(APP_ID, root).configure_app(configure);
+    #[cfg(not(feature = "thin"))]
+    let spec = spec.shot_handler(render_shot);
+    ui::launch::run_or_exit(&spec);
 }

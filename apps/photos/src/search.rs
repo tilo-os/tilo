@@ -20,8 +20,11 @@ use ui::search::{
 
 use crate::actions::{
     PhotoResourceSeed, album_resource_from_fields, folder_resource, folder_resource_id,
-    library_root_resource, metadata_label_counts, person_resource, person_resource_id,
-    photo_resource_from_seed, tag_resource, tag_resource_id,
+    library_root_resource, metadata_label_counts, object_resource, object_resource_id,
+    person_resource, person_resource_id, pet_resource, pet_resource_id, photo_resource_from_seed,
+    place_counts, place_resource, place_resource_id, places_resource_from_count, tag_resource,
+    tag_resource_id, timeline_boundaries, timeline_day_resource, timeline_day_resource_id,
+    timeline_month_resource, timeline_month_resource_id, timeline_resource_from_search,
 };
 use crate::doc::PhotosDoc;
 
@@ -50,7 +53,22 @@ struct ProviderState {
 #[derive(Clone)]
 enum MaterializationSeed {
     Library,
-    Photo(PhotoResourceSeed),
+    Timeline {
+        total: usize,
+        boundaries: crate::actions::TimelineBoundaries,
+    },
+    TimelineMonth {
+        month: String,
+        count: usize,
+    },
+    TimelineDay {
+        day: String,
+        count: usize,
+    },
+    Places {
+        located_count: usize,
+    },
+    Photo(Box<PhotoResourceSeed>),
     Album {
         id: String,
         name: String,
@@ -68,12 +86,31 @@ enum MaterializationSeed {
         label: String,
         count: usize,
     },
+    Object {
+        label: String,
+        count: usize,
+    },
+    Pet {
+        label: String,
+        count: usize,
+    },
+    Place {
+        key: String,
+        label: String,
+        count: usize,
+    },
 }
 
 impl MaterializationSeed {
     fn materialize(self) -> Resource {
         match self {
             Self::Library => library_root_resource(),
+            Self::Timeline { total, boundaries } => {
+                timeline_resource_from_search(total, &boundaries)
+            }
+            Self::TimelineMonth { month, count } => timeline_month_resource(&month, count),
+            Self::TimelineDay { day, count } => timeline_day_resource(&day, count),
+            Self::Places { located_count } => places_resource_from_count(located_count),
             Self::Photo(photo) => photo_resource_from_seed(&photo),
             Self::Album {
                 id,
@@ -83,6 +120,9 @@ impl MaterializationSeed {
             Self::Folder { label, count } => folder_resource(&label, count),
             Self::Person { label, count } => person_resource(&label, count),
             Self::Tag { label, count } => tag_resource(&label, count),
+            Self::Object { label, count } => object_resource(&label, count),
+            Self::Pet { label, count } => pet_resource(&label, count),
+            Self::Place { key, label, count } => place_resource(&key, &label, count),
         }
     }
 }
@@ -202,6 +242,79 @@ impl PhotosSearchProvider {
             root,
             MaterializationSeed::Library,
         );
+        let timeline = timeline_boundaries(library);
+        let timeline_root = SearchResult::for_action(
+            PHOTO_SEARCH_KIND,
+            crate::strings::tr("photos-timeline"),
+            ActionAddress::new("photos.timeline", "open"),
+        )
+        .with_subtitle(format!(
+            "{} photographs · chronological",
+            library.photos.len()
+        ))
+        .with_icon(Icon::Image);
+        insert(
+            "photos.timeline".to_owned(),
+            format!(
+                "Timeline\0photos.timeline\0chronological\0{} photographs\0open",
+                library.photos.len()
+            ),
+            timeline_root,
+            MaterializationSeed::Timeline {
+                total: library.photos.len(),
+                boundaries: timeline.clone(),
+            },
+        );
+        for (month, count) in &timeline.months {
+            let id = timeline_month_resource_id(month);
+            let result =
+                SearchResult::for_action(PHOTO_SEARCH_KIND, month, ActionAddress::new(&id, "open"))
+                    .with_subtitle(format!("Timeline month · {count} photographs"))
+                    .with_icon(Icon::Image);
+            insert(
+                id.clone(),
+                format!("{month}\0timeline\0month\0{count} photographs\0open"),
+                result,
+                MaterializationSeed::TimelineMonth {
+                    month: month.clone(),
+                    count: *count,
+                },
+            );
+        }
+        for (day, count) in &timeline.days {
+            let id = timeline_day_resource_id(day);
+            let result =
+                SearchResult::for_action(PHOTO_SEARCH_KIND, day, ActionAddress::new(&id, "open"))
+                    .with_subtitle(format!("Timeline day · {count} photographs"))
+                    .with_icon(Icon::Image);
+            insert(
+                id.clone(),
+                format!("{day}\0timeline\0day\0{count} photographs\0open"),
+                result,
+                MaterializationSeed::TimelineDay {
+                    day: day.clone(),
+                    count: *count,
+                },
+            );
+        }
+        let located_count = library
+            .photos
+            .iter()
+            .filter(|photo| photo.location.is_some())
+            .count();
+        let places = SearchResult::for_action(
+            PHOTO_SEARCH_KIND,
+            "Places",
+            ActionAddress::new("photos.places", "open"),
+        )
+        .with_subtitle(format!("Offline map · {located_count} located photographs"))
+        .with_icon(Icon::Image);
+        insert(
+            "photos.places".to_owned(),
+            format!("Places\0photos.places\0map\0location\0{located_count} photographs\0open"),
+            places,
+            MaterializationSeed::Places { located_count },
+        );
         for photo in &library.photos {
             let result = SearchResult::for_action(
                 PHOTO_SEARCH_KIND,
@@ -216,7 +329,7 @@ impl PhotosSearchProvider {
             // Omit repeated kind/action boilerplate: it creates huge shared
             // postings in a large library without helping find a photograph.
             let searchable = format!(
-                "{}\0{} x {} pixels\0clockwise\0{}\0{}\0{}\0{}\0{}",
+                "{}\0{} x {} pixels\0clockwise\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
                 photo.image.name,
                 photo.image.width,
                 photo.image.height,
@@ -229,12 +342,20 @@ impl PhotosSearchProvider {
                 photo.people.join(" "),
                 photo.tags.join(" "),
                 photo.captured_at.as_deref().unwrap_or_default(),
+                photo
+                    .location
+                    .as_ref()
+                    .map_or_else(String::new, crate::model::PhotoLocation::display_name),
+                photo
+                    .analysis
+                    .as_ref()
+                    .map_or_else(String::new, crate::model::ImageAnalysis::searchable_text),
             );
             insert(
                 photo.id.clone(),
                 searchable,
                 result,
-                MaterializationSeed::Photo(PhotoResourceSeed::from(photo)),
+                MaterializationSeed::Photo(Box::new(PhotoResourceSeed::from(photo))),
             );
         }
         for album in &library.albums {
@@ -261,7 +382,23 @@ impl PhotosSearchProvider {
                 },
             );
         }
-        let (folders, people, tags) = metadata_label_counts(library);
+        let (folders, people, tags, objects, pets) = metadata_label_counts(library);
+        for (key, label, count) in place_counts(library) {
+            let id = place_resource_id(&key);
+            let result = SearchResult::for_action(
+                PHOTO_SEARCH_KIND,
+                &label,
+                ActionAddress::new(&id, "open"),
+            )
+            .with_subtitle(format!("Place · {count} photographs · offline map"))
+            .with_icon(Icon::Image);
+            insert(
+                id.clone(),
+                format!("{label}\0photos.place\0place\0{count} photographs\0map\0open"),
+                result,
+                MaterializationSeed::Place { key, label, count },
+            );
+        }
         for (folder, count) in folders {
             let id = folder_resource_id(&folder);
             let result = SearchResult::for_action(
@@ -311,6 +448,38 @@ impl PhotosSearchProvider {
                 format!("{tag}\0photos.tag\0tag\0{count} photographs\0open"),
                 result,
                 MaterializationSeed::Tag { label: tag, count },
+            );
+        }
+        for (object, count) in objects {
+            let id = object_resource_id(&object);
+            let result = SearchResult::for_action(
+                PHOTO_SEARCH_KIND,
+                &object,
+                ActionAddress::new(&id, "open"),
+            )
+            .with_subtitle(format!("Object · {count} photographs"))
+            .with_icon(Icon::Image);
+            insert(
+                id.clone(),
+                format!("{object}\0photos.object\0object\0{count} photographs\0open"),
+                result,
+                MaterializationSeed::Object {
+                    label: object,
+                    count,
+                },
+            );
+        }
+        for (pet, count) in pets {
+            let id = pet_resource_id(&pet);
+            let result =
+                SearchResult::for_action(PHOTO_SEARCH_KIND, &pet, ActionAddress::new(&id, "open"))
+                    .with_subtitle(format!("Pet · {count} photographs"))
+                    .with_icon(Icon::Image);
+            insert(
+                id.clone(),
+                format!("{pet}\0photos.pet\0pet\0{count} photographs\0open"),
+                result,
+                MaterializationSeed::Pet { label: pet, count },
             );
         }
         let seeds = entries
@@ -632,6 +801,88 @@ mod tests {
     }
 
     #[test]
+    fn timeline_month_and_day_search_hits_resolve_to_bounded_canonical_resources() {
+        let mut doc = open_doc("timeline.png");
+        let mut library = PhotosDoc::library(&doc);
+        let photo = library.photos.first_mut().expect("opening imports a photo");
+        photo.captured_at = Some("2026-09-07 08:14".into());
+        PhotosDoc::set_library(&mut doc, &library);
+
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
+        for (query, expected_resource) in [
+            (
+                "2026-09",
+                crate::actions::timeline_month_resource_id("2026-09"),
+            ),
+            (
+                "2026-09-07",
+                crate::actions::timeline_day_resource_id("2026-09-07"),
+            ),
+        ] {
+            let page = provider.search_page(query, None, usize::MAX, usize::MAX);
+            assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
+            assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
+            let address = page
+                .results
+                .iter()
+                .find(|hit| {
+                    hit.action_address()
+                        .is_some_and(|address| address.resource == expected_resource)
+                })
+                .and_then(SearchResult::action_address)
+                .unwrap_or_else(|| panic!("missing timeline search result for {query}"));
+            assert_eq!(address.action, "open");
+            let resource = PhotosResources
+                .resource(&doc, &address.resource)
+                .expect("search must resolve the exact timeline resource");
+            assert!(resource.actions.iter().any(|action| action.id == "open"));
+        }
+    }
+
+    #[test]
+    fn intelligence_text_and_collections_have_canonical_search_hits() {
+        let mut doc = open_doc("receipt.png");
+        let mut library = PhotosDoc::library(&doc);
+        let photo = library.photos.first_mut().unwrap();
+        let content = photo.image.content.clone().unwrap_or_default();
+        photo.analysis = Some(crate::model::ImageAnalysis {
+            ocr_text: "invoice 42 north harbour".into(),
+            description: "A dog beside a bicycle".into(),
+            objects: vec!["bicycle".into()],
+            pets: vec!["dog".into()],
+            people: vec!["Sam".into()],
+            provenance: crate::model::AnalysisProvenance {
+                source: "local-ocr".into(),
+                engine: "tilo-ocr".into(),
+                language: "eng".into(),
+                content,
+                scope: "shared".into(),
+                ..crate::model::AnalysisProvenance::default()
+            },
+        });
+        PhotosDoc::set_library(&mut doc, &library);
+
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
+        for (query, resource) in [
+            ("invoice 42", library.photos[0].id.clone()),
+            ("bicycle", library.photos[0].id.clone()),
+            ("dog", library.photos[0].id.clone()),
+        ] {
+            let address = provider
+                .search(query)
+                .into_iter()
+                .find_map(|hit| {
+                    hit.action_address()
+                        .filter(|address| address.resource == resource)
+                })
+                .unwrap_or_else(|| {
+                    panic!("missing canonical intelligence search result for {query}")
+                });
+            assert!(provider.resolve_action_resource(&address).is_some());
+        }
+    }
+
+    #[test]
     fn caller_limits_are_clamped_and_hits_materialize_the_exact_action_resource() {
         let doc = open_doc("harbour.png");
         let provider = PhotosSearchProvider::new(&doc).unwrap();
@@ -715,7 +966,8 @@ mod tests {
             ));
         }
         let provider = PhotosSearchProvider::from_library(&doc, &library).unwrap();
-        assert_eq!(provider.stats().records, 100_002);
+        let expected_records = library.photos.len() + 2; // library + People roots
+        assert_eq!(provider.stats().records, expected_records);
         let page = provider.search_page("needle-beyond-100k-夏", None, 2, 1);
         assert_eq!(page.results.len(), 1);
         assert!(page.inspected <= 2);
@@ -723,7 +975,7 @@ mod tests {
         assert_eq!(address.action, "open");
         assert!(provider.resolve_action_resource(&address).is_some());
         let (seeds, prebuilt_action_trees) = provider.retained_seed_stats();
-        assert_eq!(seeds, 100_002);
+        assert_eq!(seeds, expected_records);
         assert_eq!(prebuilt_action_trees, 0);
     }
 

@@ -772,7 +772,6 @@ mod ondisk {
         pub display_name: String,
         pub avatar_color: [u8; 3],
         pub threshold_identity: SerializableIdentity,
-        #[allow(dead_code)]
         #[serde(default)]
         pub created_at: String,
         pub schema_version: u32,
@@ -1776,16 +1775,6 @@ fn is_public_member_projection(record: &ondisk::IdentityRecord) -> bool {
         && identity.threshold == 1
         && identity.total_shares == 1
         && identity.share_index == 0
-}
-
-// Compile-time assertion that we haven't accidentally derived Clone/
-// Serialize/Debug-with-secret onto SigningIdentity's signing_key.
-#[allow(dead_code)]
-fn _static_no_serialize() {
-    // If SigningIdentity ever gains `#[derive(serde::Serialize)]`, this stops
-    // compiling — `SigningKey` doesn't want a serde derive at the outer layer.
-    fn takes<T>(_: &T) {}
-    let _ = |x: &SigningIdentity| takes(x);
 }
 
 #[cfg(test)]

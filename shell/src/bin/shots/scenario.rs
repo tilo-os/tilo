@@ -182,6 +182,11 @@ pub enum Action {
     /// Add two present collaborators and representative shares to the active
     /// workspace through the production capability path.
     SeedSharedWorkspace,
+    /// Admit a named agent and expose one real foreign surface to its live
+    /// session through the compositor-authoritative privacy snapshot.
+    SeedAgentScreenExposure {
+        surface_id: u64,
+    },
     SeedInferredStatus(&'static str),
     /// Fill the active room with enough live participants to exercise the
     /// production People pager without weakening each row's action/intent UI.
@@ -625,6 +630,9 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             "scenario: attributed history requires a real change authored by Ada"
         ),
         Action::SeedSharedWorkspace => driver.seed_shared_workspace_for_shots(),
+        Action::SeedAgentScreenExposure { surface_id } => {
+            driver.seed_agent_screen_exposure_for_shots(*surface_id);
+        }
         Action::SeedInferredStatus(text) => driver.seed_inferred_status_for_shots(text),
         Action::SeedCrowdedWorkspace => driver.seed_crowded_workspace_for_shots(),
         Action::SeedForeignAppWork {
@@ -1540,6 +1548,7 @@ pub fn catalogue() -> Vec<Scenario> {
         overview_transition(),
         shortcut_guide(),
         solo_and_shared_shell_states(),
+        agent_screen_exposure_disclosure(),
         collaboration_product_proof(),
         crowded_people_roster(),
         foreign_app_collaboration_fallback(),
@@ -1711,6 +1720,32 @@ fn solo_and_shared_shell_states() -> Scenario {
     }
 }
 
+/// Trusted chrome must say both *who* can see the screen and that the viewer
+/// is an agent, then retain that attribution in the expanded People surface.
+fn agent_screen_exposure_disclosure() -> Scenario {
+    Scenario {
+        name: "agent_screen_exposure_disclosure",
+        description: "Show trusted screen-sharing disclosure for a named agent with remote control.",
+        actions: vec![
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::Wait(18),
+            Action::OpenWindow {
+                app_id: "org.libreoffice.LibreOffice",
+                surface_id: 9_201,
+            },
+            Action::SeedAgentScreenExposure { surface_id: 9_201 },
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Snapshot("01-agent-controls-screen"),
+            Action::ClickNamed("topbar_sharing_indicator"),
+            Action::Wait(3),
+            Action::Snapshot("02-expanded-agent-disclosure"),
+        ],
+    }
+}
+
 fn crowded_people_roster() -> Scenario {
     Scenario {
         name: "crowded_people_roster",
@@ -1791,6 +1826,9 @@ fn collaboration_status_privacy() -> Scenario {
             Action::Key(Key::Named(NamedKey::Enter)),
             Action::Type("Closing the Q3 forecast".into()),
             Action::Snapshot("01-inline-editor"),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
             Action::Key(Key::Named(NamedKey::Enter)),
             Action::Snapshot("02-manual-status"),
             Action::Key(Key::Named(NamedKey::Home)),

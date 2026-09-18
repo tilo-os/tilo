@@ -53,13 +53,14 @@ use ui::widget::{EmptyState, NavPane, NavShell, TextInput, Toggle, ToggleFace, W
 use crate::account::{Account, AccountStore};
 use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
 use crate::doc::MailDoc;
-use crate::draw::{fill_rect, fill_round, stroke_round};
+use crate::draw::{elide, fill_rect, fill_round, stroke_round};
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
 use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
 };
 use crate::pane::{Pane, Role};
-use crate::state::{CtxAction, Intent, MailState, Shared};
+use crate::shortcuts_overlay::MailShortcutsOverlay;
+use crate::state::{BulkAction, CtxAction, Intent, MailState, Shared};
 use crate::util::format_absolute;
 
 /// Width (logical px) at/above which the shell is wide (docked sidebar +
@@ -79,6 +80,12 @@ const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(3500);
 /// into an unbounded filesystem write. Larger attachments can be downloaded
 /// through Files after Mail exposes a proper streamed handoff.
 const MAX_ATTACHMENT_SAVE_BYTES: usize = crate::attachment_store::MAX_ATTACHMENT_BYTES;
+/// Popup actions keep a generous target even in a desktop menu, and their
+/// geometry follows the host text scale so enlarged text cannot clip or spill.
+const CONTEXT_MENU_W: f64 = 248.0;
+const CONTEXT_MENU_HEADER_H: f64 = 42.0;
+const CONTEXT_MENU_ROW_H: f64 = 36.0;
+const CONTEXT_MENU_PAD: f64 = 6.0;
 
 struct PaintContext<'a> {
     scene: &'a mut Scene,
@@ -103,6 +110,8 @@ struct ContextMenu {
     target: MessageId,
     pos: Point,
     items: Vec<CtxAction>,
+    /// Persisted focus target for the native arrow-key menu model.
+    active: usize,
 }
 
 /// A hit region in one of the app-owned overlays (setup sheet / context menu /
@@ -256,10 +265,17 @@ pub struct MailApp {
     first_run: EmptyState,
     first_run_node: Option<NodeId>,
     compose: ComposeWindow,
+    /// A modal, read-only key map. It is local presentation state; every
+    /// shortcut it documents still routes to the normal visible/canonical path.
+    shortcuts: MailShortcutsOverlay,
     /// The Drafts-folder message the open composer is editing, if any. On save
     /// the same message is updated (not duplicated); on send it is removed.
     editing_draft: Option<MessageId>,
     context_menu: Option<ContextMenu>,
+    /// An explicit destructive confirmation for the selection toolbar. This
+    /// is local presentation state; the actual purge remains one canonical
+    /// `MailAction` only after the person confirms.
+    bulk_purge_confirmation: Option<usize>,
 
     // account-setup sheet (Settings owns this in production; offered in-app too)
     setup_open: bool,
@@ -412,8 +428,10 @@ impl MailApp {
                 .with_action_id("mail.add-account"),
             first_run_node: None,
             compose: ComposeWindow::new(compose_format),
+            shortcuts: MailShortcutsOverlay::new(),
             editing_draft: None,
             context_menu: None,
+            bulk_purge_confirmation: None,
             setup_open: false,
             setup_inputs: build_setup_inputs(&cfg),
             setup_imap_tls: cfg.imap_tls,
@@ -477,6 +495,81 @@ impl MailApp {
             .find_map(|message| (!message.read).then_some(message.id));
         if let Some(id) = id {
             self.shared.borrow_mut().preview_message(id);
+            self.process_intents();
+        }
+        self.dirty = true;
+    }
+
+    /// Show the local multi-message triage state with a small, deliberate
+    /// selection. This exercises the extra header row, selected-row treatment,
+    /// and bulk controls without putting synthetic mail on the live path.
+    pub fn prime_bulk_shot(&mut self) {
+        let ids: Vec<MessageId> = self
+            .shared
+            .borrow()
+            .list_rows()
+            .into_iter()
+            .map(|(id, _)| id)
+            .take(2)
+            .collect();
+        let mut state = self.shared.borrow_mut();
+        state.set_bulk_selecting(true);
+        for id in ids {
+            state.toggle_bulk_selection(id);
+        }
+        drop(state);
+        self.dirty = true;
+    }
+
+    /// Render the destructive confirmation after an all-Trash selection. This
+    /// is a visual contract test: the review surface names the affected count
+    /// and the irreversibility before the canonical purge action is authored.
+    pub fn prime_bulk_purge_confirmation_shot(&mut self) {
+        let ids: Vec<MessageId> = self
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .take(2)
+            .map(|message| message.id)
+            .collect();
+        let mut state = self.shared.borrow_mut();
+        state.set_bulk_selecting(true);
+        for id in ids {
+            state.mailbox.move_to(id, Folder::Trash);
+            state.toggle_bulk_selection(id);
+        }
+        state.push_intent(Intent::ConfirmBulkPurge);
+        drop(state);
+        self.process_intents();
+        self.dirty = true;
+    }
+
+    /// Review a real reply draft rather than a generic blank composition.
+    pub fn prime_reply_shot(&mut self) {
+        let id = self
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .first()
+            .map(|message| message.id);
+        if let Some(id) = id {
+            self.shared.borrow_mut().push_intent(Intent::Reply(id));
+            self.process_intents();
+        }
+        self.dirty = true;
+    }
+
+    /// Open the same menu a row right-click produces. It exercises only the
+    /// existing sample mailbox and never implies provider activity or delivery.
+    pub fn prime_context_menu_shot(&mut self) {
+        let selected = self.shared.borrow().selected;
+        if let Some(id) = selected {
+            self.shared
+                .borrow_mut()
+                .push_intent(Intent::ContextMenu(id, Point::new(790.0, 206.0)));
             self.process_intents();
         }
         self.dirty = true;
@@ -988,10 +1081,11 @@ impl MailApp {
                 Intent::EditDraft(id) => self.open_draft(id),
                 Intent::ContextMenu(id, pt) => {
                     let items = self.shared.borrow().context_items_for(id);
-                    self.context_menu = Some(ContextMenu {
+                    self.context_menu = (!items.is_empty()).then_some(ContextMenu {
                         target: id,
                         pos: pt,
                         items,
+                        active: 0,
                     });
                 }
                 Intent::Settings(idx) => self.open_setup_edit(idx),
@@ -1004,6 +1098,24 @@ impl MailApp {
                     self.post_engine(req);
                 }
                 Intent::Toast(msg) => self.shared.borrow_mut().status = Some(msg),
+                Intent::ConfirmBulkPurge => {
+                    let count = self.shared.borrow().selected_bulk_ids().len();
+                    if count == 0 {
+                        self.shared.borrow_mut().status =
+                            Some("Select messages before deleting them permanently".into());
+                    } else if self.shared.borrow().selected_bulk_ids().iter().all(|id| {
+                        self.shared
+                            .borrow()
+                            .mailbox
+                            .get(*id)
+                            .is_some_and(|message| message.folder == Folder::Trash)
+                    }) {
+                        self.bulk_purge_confirmation = Some(count);
+                    } else {
+                        self.shared.borrow_mut().status =
+                            Some("Permanent deletion requires an all-Trash selection".into());
+                    }
+                }
             }
         }
         self.dirty = true;
@@ -1734,12 +1846,20 @@ impl MailApp {
             }
         }
         if let Some(menu) = &self.context_menu {
-            let mr = context_menu_rect(menu, self.rect);
-            let mut y = mr.y0 + 6.0;
+            let scale = f64::from(self.layout_theme.text_scale);
+            let mr = context_menu_rect(menu, self.rect, scale);
+            let mut y = mr.y0 + (CONTEXT_MENU_HEADER_H + CONTEXT_MENU_PAD) * scale;
             for (i, _a) in menu.items.iter().enumerate() {
-                self.overlay_hits
-                    .push((Rect::new(mr.x0, y, mr.x1, y + 28.0), OverlayHit::CtxItem(i)));
-                y += 28.0;
+                self.overlay_hits.push((
+                    Rect::new(
+                        mr.x0 + CONTEXT_MENU_PAD * scale,
+                        y,
+                        mr.x1 - CONTEXT_MENU_PAD * scale,
+                        y + CONTEXT_MENU_ROW_H * scale,
+                    ),
+                    OverlayHit::CtxItem(i),
+                ));
+                y += CONTEXT_MENU_ROW_H * scale;
             }
         }
     }
@@ -2232,6 +2352,10 @@ impl MailApp {
 
     // ---- drawing the app-owned overlays ----------------------------------
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the popup frame, context header, focus treatment and command bounds use one geometry source so pointer, keyboard and AT cannot drift"
+    )]
     fn draw_context_menu(
         &self,
         scene: &mut Scene,
@@ -2243,7 +2367,8 @@ impl MailApp {
             return;
         };
         let c = &theme.tokens.colors;
-        let mr = context_menu_rect(menu, self.rect);
+        let scale = f64::from(theme.text_scale);
+        let mr = context_menu_rect(menu, self.rect, scale);
         scene.fill(
             Fill::NonZero,
             t,
@@ -2269,17 +2394,84 @@ impl MailApp {
             .mailbox
             .get(menu.target)
             .map_or((false, false), |m| (m.read, m.starred));
+        let subject = self.shared.borrow().mailbox.get(menu.target).map_or_else(
+            || "Message actions".to_string(),
+            |message| {
+                elide(
+                    tr,
+                    &message.subject,
+                    11.0,
+                    TextWeight::Medium,
+                    mr.width() - 48.0 * scale,
+                )
+            },
+        );
         let last_mouse = self.shared.borrow().last_mouse;
-        let mut y = mr.y0 + 6.0;
-        for a in &menu.items {
-            let item = Rect::new(mr.x0, y, mr.x1, y + 28.0);
-            if item.contains(last_mouse) {
+        Icon::MoreHorizontal.draw(
+            scene,
+            t,
+            Rect::new(
+                mr.x0 + 14.0 * scale,
+                mr.y0 + 11.0 * scale,
+                mr.x0 + 30.0 * scale,
+                mr.y0 + 27.0 * scale,
+            ),
+            c.text_dim,
+        );
+        tr.draw_text_weighted(
+            scene,
+            "Message actions",
+            12.5,
+            c.text_primary,
+            t * Affine::translate((mr.x0 + 38.0 * scale, mr.y0 + 10.0 * scale)),
+            None,
+            TextWeight::Semibold,
+        );
+        tr.draw_text(
+            scene,
+            &subject,
+            10.5,
+            c.text_dim,
+            t * Affine::translate((mr.x0 + 38.0 * scale, mr.y0 + 25.0 * scale)),
+            None,
+        );
+        fill_rect(
+            scene,
+            t,
+            Rect::new(
+                mr.x0 + 10.0 * scale,
+                mr.y0 + (CONTEXT_MENU_HEADER_H - 1.0) * scale,
+                mr.x1 - 10.0 * scale,
+                mr.y0 + CONTEXT_MENU_HEADER_H * scale,
+            ),
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
+        let menu_row_at = |index: usize| {
+            let y = mr.y0
+                + (CONTEXT_MENU_HEADER_H + CONTEXT_MENU_PAD) * scale
+                + index as f64 * CONTEXT_MENU_ROW_H * scale;
+            Rect::new(
+                mr.x0 + CONTEXT_MENU_PAD * scale,
+                y,
+                mr.x1 - CONTEXT_MENU_PAD * scale,
+                y + CONTEXT_MENU_ROW_H * scale,
+            )
+        };
+        let hovered_index = menu
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(index, _)| menu_row_at(index).contains(last_mouse).then_some(index));
+        for (index, a) in menu.items.iter().enumerate() {
+            let item = menu_row_at(index);
+            let hovered_item = hovered_index == Some(index);
+            if hovered_item || (hovered_index.is_none() && index == menu.active) {
                 fill_round(
                     scene,
                     t,
-                    Rect::new(item.x0 + 4.0, item.y0 + 1.0, item.x1 - 4.0, item.y1 - 1.0),
+                    item,
                     6.0,
-                    c.lift(0.72),
+                    c.accent[5].with_alpha_factor(if hovered_item { 0.22 } else { 0.16 }),
                 );
             }
             let danger = matches!(a, CtxAction::Delete);
@@ -2288,16 +2480,175 @@ impl MailApp {
             } else {
                 c.text_primary
             };
-            tr.draw_text(
+            a.icon().draw(
+                scene,
+                t,
+                Rect::new(
+                    item.x0 + 10.0 * scale,
+                    item.y0 + 9.0 * scale,
+                    item.x0 + 26.0 * scale,
+                    item.y0 + 25.0 * scale,
+                ),
+                col,
+            );
+            tr.draw_text_weighted(
                 scene,
                 &a.label(read, starred),
                 12.5,
                 col,
-                t * Affine::translate((mr.x0 + 14.0, y + 7.0)),
+                t * Affine::translate((item.x0 + 36.0 * scale, item.y0 + 10.0 * scale)),
                 None,
+                TextWeight::Medium,
             );
-            y += 28.0;
+            if let Some(shortcut) = a.shortcut() {
+                let (w, _) = tr.measure(shortcut, 10.5, None);
+                tr.draw_text(
+                    scene,
+                    shortcut,
+                    10.5,
+                    c.text_dim,
+                    t * Affine::translate((
+                        item.x1 - f64::from(w) - 10.0 * scale,
+                        item.y0 + 11.0 * scale,
+                    )),
+                    None,
+                );
+            }
         }
+    }
+
+    fn bulk_purge_confirmation_rect(&self) -> Rect {
+        let r = self.rect;
+        let w = 420.0_f64.min(r.width() - 40.0);
+        let h = 206.0_f64.min(r.height() - 40.0);
+        let x0 = f64::midpoint(r.x0, r.x1) - w / 2.0;
+        let y0 = f64::midpoint(r.y0, r.y1) - h / 2.0;
+        Rect::new(x0, y0, x0 + w, y0 + h)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the compact confirmation is one visual component whose geometry and semantics are easier to audit together"
+    )]
+    fn draw_bulk_purge_confirmation(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(count) = self.bulk_purge_confirmation else {
+            return;
+        };
+        let c = &theme.tokens.colors;
+        let panel = self.bulk_purge_confirmation_rect();
+        fill_rect(scene, t, self.rect, c.surfaces.overlay);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            Color::from_rgba8(0, 0, 0, 100),
+            None,
+            &RoundedRect::from_rect(
+                Rect::new(panel.x0, panel.y0 + 6.0, panel.x1, panel.y1 + 10.0),
+                16.0,
+            ),
+        );
+        fill_round(scene, t, panel, 16.0, c.surfaces.raised);
+        stroke_round(scene, t, panel, 16.0, 1.0, c.border_standard);
+        Icon::Trash2.draw(
+            scene,
+            t,
+            Rect::new(
+                panel.x0 + 24.0,
+                panel.y0 + 24.0,
+                panel.x0 + 52.0,
+                panel.y0 + 52.0,
+            ),
+            c.semantic.danger,
+        );
+        tr.draw_text_weighted(
+            scene,
+            "Delete permanently?",
+            20.0,
+            c.text_primary,
+            t * Affine::translate((panel.x0 + 64.0, panel.y0 + 27.0)),
+            None,
+            TextWeight::Bold,
+        );
+        let noun = if count == 1 { "message" } else { "messages" };
+        tr.draw_text(
+            scene,
+            &format!("{count} trashed {noun} will be removed from this mailbox."),
+            13.0,
+            c.text_primary,
+            t * Affine::translate((panel.x0 + 24.0, panel.y0 + 76.0)),
+            None,
+        );
+        tr.draw_text(
+            scene,
+            "This cannot be undone or recovered from the server.",
+            13.0,
+            c.text_dim,
+            t * Affine::translate((panel.x0 + 24.0, panel.y0 + 100.0)),
+            None,
+        );
+        let (cancel, confirm) = Self::bulk_purge_confirmation_buttons(panel);
+        for (rect, label, danger) in [
+            (cancel, "Cancel", false),
+            (confirm, "Delete permanently", true),
+        ] {
+            fill_round(
+                scene,
+                t,
+                rect,
+                9.0,
+                if danger {
+                    c.semantic.danger
+                } else {
+                    c.lift(0.55)
+                },
+            );
+            stroke_round(
+                scene,
+                t,
+                rect,
+                9.0,
+                1.0,
+                if danger {
+                    c.semantic.danger
+                } else {
+                    c.border_standard
+                },
+            );
+            let (width, _) = tr.measure_weighted(label, 12.5, None, TextWeight::Semibold);
+            tr.draw_text_weighted(
+                scene,
+                label,
+                12.5,
+                if danger {
+                    c.surfaces.base
+                } else {
+                    c.text_primary
+                },
+                t * Affine::translate((
+                    f64::midpoint(rect.x0, rect.x1) - f64::from(width) / 2.0,
+                    rect.y0 + 11.0,
+                )),
+                None,
+                TextWeight::Semibold,
+            );
+        }
+    }
+
+    fn bulk_purge_confirmation_buttons(panel: Rect) -> (Rect, Rect) {
+        let confirm = Rect::new(
+            panel.x1 - 166.0,
+            panel.y1 - 52.0,
+            panel.x1 - 24.0,
+            panel.y1 - 18.0,
+        );
+        let cancel = Rect::new(confirm.x0 - 96.0, confirm.y0, confirm.x0 - 10.0, confirm.y1);
+        (cancel, confirm)
     }
 
     fn draw_setup(
@@ -2923,9 +3274,13 @@ fn build_setup_inputs(cfg: &AccountConfig) -> Vec<TextInput> {
     ]
 }
 
-fn context_menu_rect(menu: &ContextMenu, bounds: Rect) -> Rect {
-    let w = 210.0;
-    let h = 6.0 + menu.items.len() as f64 * 28.0 + 6.0;
+fn context_menu_rect(menu: &ContextMenu, bounds: Rect, text_scale: f64) -> Rect {
+    let scale = text_scale.clamp(0.75, 2.0);
+    let w = CONTEXT_MENU_W * scale;
+    let h = (CONTEXT_MENU_HEADER_H
+        + CONTEXT_MENU_PAD * 2.0
+        + menu.items.len() as f64 * CONTEXT_MENU_ROW_H)
+        * scale;
     let x0 = menu.pos.x.min(bounds.x1 - w - 8.0).max(bounds.x0 + 4.0);
     let y0 = menu.pos.y.min(bounds.y1 - h - 8.0).max(bounds.y0 + 4.0);
     Rect::new(x0, y0, x0 + w, y0 + h)
@@ -3144,6 +3499,174 @@ impl MailApp {
         consumed
     }
 
+    fn confirm_bulk_purge(&mut self, state: &mut AutoCommit) {
+        let affected = self
+            .shared
+            .borrow_mut()
+            .apply_bulk_action(state, BulkAction::Purge);
+        self.bulk_purge_confirmation = None;
+        self.shared.borrow_mut().status = Some(if affected == 0 {
+            "Nothing was deleted; the selected messages changed before confirmation".into()
+        } else {
+            format!(
+                "Permanently deleted {affected} trashed message{}",
+                if affected == 1 { "" } else { "s" }
+            )
+        });
+        self.process_intents();
+        self.dirty = true;
+    }
+
+    fn handle_bulk_purge_confirmation(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut EventContext<'_>,
+    ) -> bool {
+        if self.bulk_purge_confirmation.is_none() {
+            return false;
+        }
+        let confirm_key = matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    logical_key: Key::Named(NamedKey::Enter),
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            }
+        );
+        let cancel_key = matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    logical_key: Key::Named(NamedKey::Escape),
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            }
+        );
+        if confirm_key {
+            self.confirm_bulk_purge(ctx.state);
+        } else if cancel_key {
+            self.bulk_purge_confirmation = None;
+            self.dirty = true;
+        } else if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) {
+            let panel = self.bulk_purge_confirmation_rect();
+            let (cancel, confirm) = Self::bulk_purge_confirmation_buttons(panel);
+            let point = self.shared.borrow().last_mouse;
+            if confirm.contains(point) {
+                self.confirm_bulk_purge(ctx.state);
+            } else if cancel.contains(point) || !panel.contains(point) {
+                self.bulk_purge_confirmation = None;
+                self.dirty = true;
+            }
+        }
+        *ctx.handled = true;
+        true
+    }
+
+    /// The popup owns keyboard focus while open so its actions cannot fall
+    /// through to the selected message behind it.
+    fn handle_context_menu_keyboard(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+    ) -> bool {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return matches!(event, WindowEvent::KeyboardInput { .. });
+        };
+        let Some(menu) = self.context_menu.as_mut() else {
+            return false;
+        };
+        let count = menu.items.len();
+        if count == 0 {
+            self.context_menu = None;
+            return true;
+        }
+        let accelerator = match logical_key {
+            Key::Character(ch) if ch.eq_ignore_ascii_case("r") => Some(CtxAction::Reply),
+            Key::Character(ch) if ch.eq_ignore_ascii_case("u") => Some(CtxAction::ToggleRead),
+            Key::Character(ch) if ch.eq_ignore_ascii_case("s") => Some(CtxAction::ToggleStar),
+            Key::Character(ch) if ch.eq_ignore_ascii_case("e") => Some(CtxAction::Archive),
+            Key::Named(NamedKey::Delete | NamedKey::Backspace) => Some(CtxAction::Delete),
+            _ => None,
+        };
+        if let Some(action) = accelerator
+            && let Some(index) = menu.items.iter().position(|item| *item == action)
+        {
+            return self.activate_context_menu_item(index, state);
+        }
+        match logical_key {
+            Key::Named(NamedKey::Escape) => self.context_menu = None,
+            Key::Named(NamedKey::ArrowDown | NamedKey::Tab) => {
+                menu.active = if menu.active + 1 == count {
+                    0
+                } else {
+                    menu.active + 1
+                };
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                menu.active = if menu.active == 0 {
+                    count - 1
+                } else {
+                    menu.active - 1
+                };
+            }
+            Key::Named(NamedKey::Home) => menu.active = 0,
+            Key::Named(NamedKey::End) => menu.active = count - 1,
+            Key::Named(NamedKey::Enter) => {
+                let active = menu.active;
+                return self.activate_context_menu_item(active, state);
+            }
+            Key::Character(ch) if ch == " " => {
+                let active = menu.active;
+                return self.activate_context_menu_item(active, state);
+            }
+            _ => {}
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// One dispatcher for pointer, keyboard and assistive-technology menu
+    /// activation. The message must still be loaded when the command lands.
+    fn activate_context_menu_item(&mut self, index: usize, state: &mut AutoCommit) -> bool {
+        let Some(menu) = self.context_menu.take() else {
+            return false;
+        };
+        let Some(action) = menu.items.get(index).copied() else {
+            return false;
+        };
+        if self.shared.borrow().mailbox.get(menu.target).is_none() {
+            self.shared.borrow_mut().status = Some("That message is no longer available.".into());
+            self.dirty = true;
+            return false;
+        }
+        self.shared
+            .borrow_mut()
+            .apply_message_action(state, menu.target, action);
+        self.process_intents();
+        true
+    }
+
     /// Activate the clicked context-menu item or dismiss the open menu.
     fn handle_context_menu_click(&mut self, pt: Point, state: &mut AutoCommit) {
         self.rebuild_overlay_hits();
@@ -3154,14 +3677,7 @@ impl MailApp {
             .find(|(rc, h)| matches!(h, OverlayHit::CtxItem(_)) && rc.contains(pt))
             .cloned();
         if let Some((_, OverlayHit::CtxItem(i))) = item {
-            if let Some(menu) = self.context_menu.take()
-                && let Some(action) = menu.items.get(i).copied()
-            {
-                self.shared
-                    .borrow_mut()
-                    .apply_message_action(state, menu.target, action);
-                self.process_intents();
-            }
+            self.activate_context_menu_item(i, state);
         } else {
             self.context_menu = None;
         }
@@ -3192,6 +3708,10 @@ impl MailApp {
         doc: &AutoCommit,
     ) -> Result<bool, String> {
         match operation {
+            crate::actions::MailOperation::ComposeNew => {
+                self.shared.borrow_mut().push_intent(Intent::Compose);
+                self.process_intents();
+            }
             crate::actions::MailOperation::RevealFolder { folder } => {
                 let Some(folder) = Folder::from_key(&folder) else {
                     return Err("folder no longer exists".into());
@@ -3228,6 +3748,30 @@ impl MailApp {
                     Some("Previewing without changing this message’s read state".into());
                 self.process_intents();
             }
+            operation @ (crate::actions::MailOperation::Reply { .. }
+            | crate::actions::MailOperation::ReplyAll { .. }
+            | crate::actions::MailOperation::Forward { .. }) => {
+                let (raw_id, kind) = match operation {
+                    crate::actions::MailOperation::Reply { id } => (id, CtxAction::Reply),
+                    crate::actions::MailOperation::ReplyAll { id } => (id, CtxAction::ReplyAll),
+                    crate::actions::MailOperation::Forward { id } => (id, CtxAction::Forward),
+                    _ => return Ok(false),
+                };
+                let id = raw_id
+                    .parse::<MessageId>()
+                    .map_err(|_| "invalid message id")?;
+                if self.shared.borrow().mailbox.get(id).is_none() {
+                    return Err("message is no longer loaded".into());
+                }
+                let intent = match kind {
+                    CtxAction::Reply => Intent::Reply(id),
+                    CtxAction::ReplyAll => Intent::ReplyAll(id),
+                    CtxAction::Forward => Intent::Forward(id),
+                    _ => return Ok(false),
+                };
+                self.shared.borrow_mut().push_intent(intent);
+                self.process_intents();
+            }
             crate::actions::MailOperation::RevealDraft => {
                 let draft = MailDoc::load_draft(doc);
                 self.compose.open_with_draft(&draft);
@@ -3242,9 +3786,17 @@ impl MailApp {
     /// Route app-owned modal surfaces in front-to-back order. Returning true
     /// stops propagation to the navigation shell and global shortcuts.
     fn handle_app_modal_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
+        if self.handle_bulk_purge_confirmation(event, ctx) {
+            return true;
+        }
         if self.compose.open && self.handle_compose_modal(event, ctx) {
             *ctx.handled = true;
             self.dirty = true;
+            return true;
+        }
+
+        if self.context_menu.is_some() && self.handle_context_menu_keyboard(event, ctx.state) {
+            *ctx.handled = true;
             return true;
         }
 
@@ -3278,28 +3830,26 @@ impl MailApp {
                 },
             ..
         } = event
+            && self.setup_open
         {
-            if self.context_menu.is_some() {
-                self.context_menu = None;
-                *ctx.handled = true;
-                return true;
-            }
-            if self.setup_open {
-                self.close_setup();
-                *ctx.handled = true;
-                return true;
-            }
+            self.close_setup();
+            *ctx.handled = true;
+            return true;
         }
 
         if self.context_menu.is_some()
             && let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
-                button: MouseButton::Left,
+                button,
                 ..
             } = event
         {
-            let point = self.shared.borrow().last_mouse;
-            self.handle_context_menu_click(point, ctx.state);
+            if *button == MouseButton::Left {
+                let point = self.shared.borrow().last_mouse;
+                self.handle_context_menu_click(point, ctx.state);
+            } else {
+                self.context_menu = None;
+            }
             *ctx.handled = true;
             return true;
         }
@@ -3470,6 +4020,10 @@ impl MailApp {
             .with_children(accounts)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the list node mirrors the complete visible list and contextual selection toolbar in one accessibility subtree"
+    )]
     fn overview_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -3491,26 +4045,80 @@ impl MailApp {
                     .with_optional_value((!snippet.is_empty()).then_some(snippet))
                     .with_action_target(format!("mail.message:{id}"))
                     .with_position(index + 1, total)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .selected(state.selected == Some(*id)),
-                    );
+                    .with_state(AccessState::new().focusable(true).selected(
+                        if state.bulk_selecting {
+                            state.bulk_selection.contains(id)
+                        } else {
+                            state.selected == Some(*id)
+                        },
+                    ));
                 if *thread_len > 1 {
                     node = node
                         .with_description(format!("{thread_len} messages in this conversation"));
                 }
                 Some(node)
             })
-            .collect();
+            .collect::<Vec<_>>();
         let name = if state.search.trim().is_empty() {
             format!("{} messages", state.folder.title())
         } else {
             format!("Search results in {}", state.folder.title())
         };
+        let mut children = vec![
+            AccessNode::new(Role::Button)
+                .with_name(if state.bulk_selecting {
+                    "Done selecting messages"
+                } else {
+                    "Select messages for bulk actions"
+                })
+                .with_action_target("mail.bulk:toggle")
+                .with_state(AccessState::new().focusable(true)),
+        ];
+        if state.bulk_selecting {
+            let selected = state.selected_bulk_ids().len();
+            let enabled = selected > 0;
+            let all_trash = enabled
+                && state.selected_bulk_ids().iter().all(|id| {
+                    state
+                        .mailbox
+                        .get(*id)
+                        .is_some_and(|message| message.folder == Folder::Trash)
+                });
+            let mut controls = vec![
+                ("Select all visible messages", "select-all"),
+                ("Archive selected messages", "archive"),
+                ("Mark selected messages read", "read"),
+                ("Mark selected messages unread", "unread"),
+            ];
+            controls.push(if all_trash {
+                ("Delete selected trashed messages permanently", "purge")
+            } else {
+                ("Move selected messages to Trash", "delete")
+            });
+            children.push(
+                AccessNode::new(Role::Toolbar)
+                    .with_name(format!("{selected} selected"))
+                    .with_children(
+                        controls
+                            .into_iter()
+                            .map(|(name, action)| {
+                                AccessNode::new(Role::Button)
+                                    .with_name(name)
+                                    .with_action_target(format!("mail.bulk:{action}"))
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .disabled(!enabled && action != "select-all"),
+                                    )
+                            })
+                            .collect(),
+                    ),
+            );
+        }
+        children.extend(messages);
         let mut list = AccessNode::new(Role::List)
             .with_name(name)
-            .with_children(messages);
+            .with_children(children);
         if total == 0 {
             list = list.with_description(if state.search.trim().is_empty() {
                 format!("No messages in {}", state.folder.title())
@@ -3523,6 +4131,15 @@ impl MailApp {
 
     fn reader_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
+
+        if state.bulk_selecting {
+            let count = state.selected_bulk_ids().len();
+            return AccessNode::new(Role::Group)
+                .with_name(format!("{count} selected"))
+                .with_description(
+                    "Choose a batch action in the message list. Individual message actions are paused while selecting.",
+                );
+        }
 
         let thread = state.selected_thread_messages();
         let Some(current) = state.selected.and_then(|id| state.mailbox.get(id)) else {
@@ -3594,6 +4211,59 @@ impl MailApp {
                 },
             ))
             .with_children(children)
+    }
+    fn context_menu_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let menu = self.context_menu.as_ref()?;
+        let (read, starred) = self
+            .shared
+            .borrow()
+            .mailbox
+            .get(menu.target)
+            .map_or((false, false), |message| (message.read, message.starred));
+        let scale = f64::from(self.layout_theme.text_scale);
+        let rect = context_menu_rect(menu, self.rect, scale);
+        let total = menu.items.len();
+        let children = menu
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let y = rect.y0
+                    + (CONTEXT_MENU_HEADER_H + CONTEXT_MENU_PAD) * scale
+                    + index as f64 * CONTEXT_MENU_ROW_H * scale;
+                let mut node = AccessNode::new(Role::MenuItem)
+                    .with_name(item.label(read, starred))
+                    .with_action_target(format!("mail.context:{}:{index}", menu.target))
+                    .with_position(index + 1, total)
+                    .with_bounds(Rect::new(
+                        rect.x0 + CONTEXT_MENU_PAD * scale,
+                        y,
+                        rect.x1 - CONTEXT_MENU_PAD * scale,
+                        y + CONTEXT_MENU_ROW_H * scale,
+                    ))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(index == menu.active),
+                    );
+                if let Some(key) = item.shortcut() {
+                    node = node.with_description(format!("Shortcut: {key}"));
+                }
+                node
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Menu)
+                .with_name("Message actions")
+                .with_description(
+                    "Use Up and Down Arrow to choose an action, Enter to activate, or Escape to close.",
+                )
+                .with_bounds(rect)
+                .with_state(AccessState::new().modal(true))
+                .with_children(children),
+        )
     }
 }
 
@@ -3915,6 +4585,7 @@ impl Widget for MailApp {
             self.first_run.apply_layout_external(self.rect);
         }
         self.layout_nav();
+        self.shortcuts.set_viewport(self.rect);
     }
 
     fn draw(
@@ -3961,7 +4632,9 @@ impl Widget for MailApp {
         self.compose.draw_inputs(scene, t, tr, theme, presence);
         self.draw_setup(scene, t, tr, theme, presence);
         self.draw_context_menu(scene, t, tr, theme);
+        self.draw_bulk_purge_confirmation(scene, t, tr, theme);
         self.draw_status(scene, t, tr, theme);
+        self.shortcuts.draw(scene, t, tr, theme);
     }
 
     fn handle_event(
@@ -3980,6 +4653,14 @@ impl Widget for MailApp {
             let point = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.shared.borrow_mut().last_mouse = point;
             self.dirty = true;
+        }
+
+        // The shortcut sheet is a genuine modal first-responder.  It must
+        // consume all input before any Mail command can observe it.
+        if self.shortcuts.handle_event(event, scale_factor) {
+            *handled = true;
+            self.dirty = true;
+            return;
         }
 
         let modal_consumed = {
@@ -4059,11 +4740,39 @@ impl Widget for MailApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
+        if self.shortcuts.visible() {
+            return Some(self.shortcuts.accessibility());
+        }
+        if let Some(count) = self.bulk_purge_confirmation {
+            let noun = if count == 1 { "message" } else { "messages" };
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Delete permanently?")
+                    .with_description(format!(
+                        "{count} trashed {noun} will be removed from this mailbox and cannot be recovered from the server."
+                    ))
+                    .with_bounds(self.bulk_purge_confirmation_rect())
+                    .with_state(AccessState::new().modal(true))
+                    .with_children(vec![
+                        AccessNode::new(Role::Button)
+                            .with_name("Cancel")
+                            .with_action_target("mail.bulk-purge:cancel")
+                            .with_state(AccessState::new().focusable(true)),
+                        AccessNode::new(Role::Button)
+                            .with_name("Delete permanently")
+                            .with_action_target("mail.bulk-purge:confirm")
+                            .with_state(AccessState::new().focusable(true)),
+                    ]),
+            );
+        }
         if self.compose.open {
             return Some(self.compose.accessibility_node());
         }
         if self.setup_open {
             return Some(self.setup_accessibility_node());
+        }
+        if self.context_menu.is_some() {
+            return self.context_menu_accessibility();
         }
         if self.is_first_run() {
             // `first_run` remains a real child widget, which supplies the
@@ -4134,6 +4843,47 @@ impl Widget for MailApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        if let Some(raw) = target.strip_prefix("mail.context:") {
+            let Some((message_raw, index_raw)) = raw.rsplit_once(':') else {
+                return false;
+            };
+            let (Ok(message), Ok(index)) =
+                (message_raw.parse::<MessageId>(), index_raw.parse::<usize>())
+            else {
+                return false;
+            };
+            let Some(menu) = self.context_menu.as_mut() else {
+                return false;
+            };
+            if menu.target != message || index >= menu.items.len() {
+                return false;
+            }
+            match action {
+                ui::a11y::Action::Focus => {
+                    menu.active = index;
+                    self.dirty = true;
+                    return true;
+                }
+                ui::a11y::Action::Activate => return self.activate_context_menu_item(index, state),
+                _ => return false,
+            }
+        }
+        if let Some(control) = target.strip_prefix("mail.bulk-purge:") {
+            if !matches!(action, ui::a11y::Action::Activate)
+                || self.bulk_purge_confirmation.is_none()
+            {
+                return false;
+            }
+            match control {
+                "confirm" => self.confirm_bulk_purge(state),
+                "cancel" => {
+                    self.bulk_purge_confirmation = None;
+                    self.dirty = true;
+                }
+                _ => return false,
+            }
+            return true;
+        }
         if let Some(control) = target.strip_prefix("mail.compose:") {
             return self.perform_compose_semantic_action(control, action, state);
         }
@@ -4150,6 +4900,9 @@ impl Widget for MailApp {
         if let Some(raw) = target.strip_prefix("mail.folder:") {
             return self.perform_folder_semantic_action(raw, action, state);
         }
+        if let Some(raw) = target.strip_prefix("mail.bulk:") {
+            return self.perform_bulk_semantic_action(raw, action, state);
+        }
 
         let Some(raw) = target.strip_prefix("mail.message:") else {
             return false;
@@ -4158,7 +4911,11 @@ impl Widget for MailApp {
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        if self.compose.open {
+        if self.shortcuts.visible() {
+            self.shortcuts.card_rect()
+        } else if self.bulk_purge_confirmation.is_some() {
+            Some(self.bulk_purge_confirmation_rect())
+        } else if self.compose.open {
             Some(self.compose.window_rect())
         } else if self.setup_open {
             Some(self.overlay_panel_rect())
@@ -4174,6 +4931,7 @@ impl Widget for MailApp {
             || self.shared.borrow().dirty
             || self.nav.needs_redraw()
             || self.compose.needs_redraw()
+            || self.shortcuts.needs_redraw()
             || self.setup_inputs.iter().any(ui::Widget::needs_redraw)
     }
 
@@ -4198,6 +4956,7 @@ impl Widget for MailApp {
         self.shared.borrow_mut().dirty = false;
         self.nav.mark_drawn();
         self.compose.mark_drawn();
+        self.shortcuts.mark_drawn();
         for i in &mut self.setup_inputs {
             i.mark_drawn();
         }
@@ -4459,6 +5218,12 @@ impl MailApp {
         if !mail.list_rows().iter().any(|(row_id, _)| *row_id == id) {
             return false;
         }
+        if mail.bulk_selecting {
+            let selected = mail.toggle_bulk_selection(id);
+            drop(mail);
+            self.process_intents();
+            return selected;
+        }
         let is_draft = mail
             .mailbox
             .get(id)
@@ -4470,6 +5235,75 @@ impl MailApp {
         }
         drop(mail);
         self.process_intents();
+        true
+    }
+
+    /// Assistive technology reaches the exact same local selection and
+    /// canonical bulk-action boundary as the header controls and shortcuts.
+    fn perform_bulk_semantic_action(
+        &mut self,
+        raw: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let mut mail = self.shared.borrow_mut();
+        match raw {
+            "toggle" => {
+                let selecting = mail.bulk_selecting;
+                mail.set_bulk_selecting(!selecting);
+            }
+            "select-all" if mail.bulk_selecting => mail.select_all_visible(),
+            "archive" if mail.bulk_selecting => {
+                let affected = mail.apply_bulk_action(state, BulkAction::Archive);
+                if affected == 0 {
+                    return false;
+                }
+                mail.status = Some(format!(
+                    "Archived {affected} message{}",
+                    if affected == 1 { "" } else { "s" }
+                ));
+            }
+            "delete" if mail.bulk_selecting => {
+                let affected = mail.apply_bulk_action(state, BulkAction::Delete);
+                if affected == 0 {
+                    return false;
+                }
+                mail.status = Some(format!(
+                    "Moved {affected} message{} to Trash",
+                    if affected == 1 { "" } else { "s" }
+                ));
+            }
+            "purge" if mail.bulk_selecting => {
+                mail.push_intent(Intent::ConfirmBulkPurge);
+            }
+            "read" if mail.bulk_selecting => {
+                let affected = mail.apply_bulk_action(state, BulkAction::MarkRead);
+                if affected == 0 {
+                    return false;
+                }
+                mail.status = Some(format!(
+                    "Marked {affected} message{} read",
+                    if affected == 1 { "" } else { "s" }
+                ));
+            }
+            "unread" if mail.bulk_selecting => {
+                let affected = mail.apply_bulk_action(state, BulkAction::MarkUnread);
+                if affected == 0 {
+                    return false;
+                }
+                mail.status = Some(format!(
+                    "Marked {affected} message{} unread",
+                    if affected == 1 { "" } else { "s" }
+                ));
+            }
+            _ => return false,
+        }
+        drop(mail);
+        self.process_intents();
+        self.dirty = true;
         true
     }
 
@@ -4605,6 +5439,10 @@ impl MailApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "mail's discoverable single-key command map is intentionally centralized to keep chord guards consistent"
+    )]
     fn global_shortcuts(
         &mut self,
         event: &WindowEvent,
@@ -4634,7 +5472,55 @@ impl MailApp {
         // this is the final safety net for commands addressed to the shell.
         let plain = !command && !modifiers.state().alt_key();
         let selected = self.shared.borrow().selected;
+        let bulk_selecting = self.shared.borrow().bulk_selecting;
+        // Ctrl/Cmd+A belongs to a text editor whenever one has focus. Compose
+        // is already a modal first-responder, and this extra list-context guard
+        // prevents the shell shortcut from ever turning a reader/detail page
+        // into a hidden selection operation on narrow layouts.
+        let list_context = !self.shared.borrow().narrow || self.nav.pane() == NavPane::Overview;
         match logical_key {
+            // Selection browsing is intentionally harmless (see
+            // `move_selection`); Enter is the unmistakable read boundary. It
+            // uses the same `open_message` path as a list click and Ctrl+K’s
+            // normal Open action, including the canonical SetRead action.
+            Key::Named(NamedKey::Enter) if plain && list_context && !bulk_selecting => {
+                if let Some(id) = selected
+                    && self.shared.borrow_mut().open_message(state, id)
+                {
+                    self.process_intents();
+                    *handled = true;
+                }
+            }
+            Key::Named(NamedKey::Escape) if bulk_selecting => {
+                self.shared.borrow_mut().set_bulk_selecting(false);
+                *handled = true;
+            }
+            // `P` is deliberately named Preview, not Open: it keeps the read
+            // flag untouched and shows the same persistent reader disclosure
+            // as the explicit resource operation.
+            Key::Character(ch) if plain && ch.eq_ignore_ascii_case("p") && !bulk_selecting => {
+                if let Some(id) = selected
+                    && self.shared.borrow_mut().preview_message(id)
+                {
+                    self.shared.borrow_mut().status =
+                        Some("Previewing without changing this message’s read state".into());
+                    self.process_intents();
+                    *handled = true;
+                }
+            }
+            Key::Character(ch) if plain && ch == "?" => {
+                self.shortcuts.show();
+                *handled = true;
+            }
+            Key::Character(ch) if plain && ch.eq_ignore_ascii_case("x") => {
+                let selecting = self.shared.borrow().bulk_selecting;
+                self.shared.borrow_mut().set_bulk_selecting(!selecting);
+                *handled = true;
+            }
+            Key::Character(ch) if command && ch.eq_ignore_ascii_case("a") && list_context => {
+                self.shared.borrow_mut().select_all_visible();
+                *handled = true;
+            }
             Key::Character(ch) if plain && ch.eq_ignore_ascii_case("c") => {
                 self.compose.open_blank();
                 *handled = true;
@@ -4659,7 +5545,20 @@ impl MailApp {
                 *handled = true;
             }
             Key::Character(ch) if plain && ch.eq_ignore_ascii_case("e") => {
-                if let Some(id) = selected {
+                if bulk_selecting {
+                    let affected = self
+                        .shared
+                        .borrow_mut()
+                        .apply_bulk_action(state, BulkAction::Archive);
+                    if affected > 0 {
+                        self.shared.borrow_mut().status = Some(format!(
+                            "Archived {affected} message{}",
+                            if affected == 1 { "" } else { "s" }
+                        ));
+                    }
+                    self.process_intents();
+                    *handled = true;
+                } else if let Some(id) = selected {
                     self.shared
                         .borrow_mut()
                         .apply_message_action(state, id, CtxAction::Archive);
@@ -4667,8 +5566,30 @@ impl MailApp {
                     *handled = true;
                 }
             }
+            Key::Named(NamedKey::Delete | NamedKey::Backspace)
+                if plain && modifiers.state().shift_key() && bulk_selecting =>
+            {
+                self.shared
+                    .borrow_mut()
+                    .push_intent(Intent::ConfirmBulkPurge);
+                self.process_intents();
+                *handled = true;
+            }
             Key::Named(NamedKey::Delete | NamedKey::Backspace) if plain => {
-                if let Some(id) = selected {
+                if bulk_selecting {
+                    let affected = self
+                        .shared
+                        .borrow_mut()
+                        .apply_bulk_action(state, BulkAction::Delete);
+                    if affected > 0 {
+                        self.shared.borrow_mut().status = Some(format!(
+                            "Moved {affected} message{} to Trash",
+                            if affected == 1 { "" } else { "s" }
+                        ));
+                    }
+                    self.process_intents();
+                    *handled = true;
+                } else if let Some(id) = selected {
                     self.shared
                         .borrow_mut()
                         .apply_message_action(state, id, CtxAction::Delete);
@@ -4692,7 +5613,19 @@ impl MailApp {
                 }
             }
             Key::Character(ch) if plain && ch.eq_ignore_ascii_case("u") => {
-                if let Some(id) = selected {
+                if bulk_selecting {
+                    let affected = self
+                        .shared
+                        .borrow_mut()
+                        .apply_bulk_action(state, BulkAction::MarkUnread);
+                    if affected > 0 {
+                        self.shared.borrow_mut().status = Some(format!(
+                            "Marked {affected} message{} unread",
+                            if affected == 1 { "" } else { "s" }
+                        ));
+                    }
+                    *handled = true;
+                } else if let Some(id) = selected {
                     self.shared.borrow_mut().set_read(state, id, false);
                     *handled = true;
                 }
@@ -4993,7 +5926,11 @@ mod tests {
             .children
             .iter()
             .find(|node| node.role == A11yRole::List)
-            .and_then(|list| list.children.first())
+            .and_then(|list| {
+                list.children
+                    .iter()
+                    .find(|node| node.role == A11yRole::ListItem)
+            })
             .and_then(|row| row.action_target.clone())
             .expect("visible message row has a stable activation target");
 
@@ -5484,6 +6421,111 @@ mod tests {
     }
 
     #[test]
+    fn resource_compose_actions_open_the_same_private_composer_without_mutating_mail() {
+        let (mut app, mut doc) = app();
+        let message = {
+            let mail = app.shared.borrow();
+            mail.mailbox
+                .messages_in(Folder::Inbox)
+                .first()
+                .copied()
+                .cloned()
+                .expect("sample contains an inbox message")
+        };
+        let heads_before = doc.get_heads();
+
+        let compose = serde_json::to_vec(&crate::actions::MailOperation::ComposeNew).unwrap();
+        assert!(
+            app.invoke_resource_operation(
+                tilo_actions::OperationKind::View,
+                crate::actions::MAIL_OPERATION_TYPE,
+                &compose,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert!(
+            app.compose.open,
+            "mailbox Compose opens the normal composer"
+        );
+        app.compose.close();
+
+        let reply = serde_json::to_vec(&crate::actions::MailOperation::Reply {
+            id: message.id.to_string(),
+        })
+        .unwrap();
+        assert!(
+            app.invoke_resource_operation(
+                tilo_actions::OperationKind::View,
+                crate::actions::MAIL_OPERATION_TYPE,
+                &reply,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert!(app.compose.open, "message Reply opens the normal composer");
+        assert_eq!(app.compose.to_draft().to, message.from.rfc5322());
+        assert_eq!(
+            doc.get_heads(),
+            heads_before,
+            "an unsaved compose buffer remains local presentation state"
+        );
+    }
+
+    #[test]
+    fn bulk_purge_requires_an_explicit_modal_confirmation_for_every_input_path() {
+        use ui::a11y::{Action, Role};
+
+        let (mut app, mut doc) = app();
+        let ids: Vec<MessageId> = app
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .take(2)
+            .map(|message| message.id)
+            .collect();
+        {
+            let mut mail = app.shared.borrow_mut();
+            mail.set_bulk_selecting(true);
+            for id in &ids {
+                mail.mailbox.move_to(*id, Folder::Trash);
+                mail.toggle_bulk_selection(*id);
+            }
+            mail.push_intent(Intent::ConfirmBulkPurge);
+        }
+        app.process_intents();
+        assert_eq!(app.bulk_purge_confirmation, Some(2));
+        assert!(
+            ids.iter()
+                .all(|id| app.shared.borrow().mailbox.get(*id).is_some()),
+            "opening confirmation never performs a purge"
+        );
+        let dialog = app.accessibility().expect("modal accessibility");
+        assert_eq!(dialog.role, Role::Dialog);
+        assert!(dialog.state.modal);
+        assert!(
+            dialog
+                .children
+                .iter()
+                .any(|node| node.action_target.as_deref() == Some("mail.bulk-purge:confirm"))
+        );
+        assert!(app.perform_semantic_action(
+            "mail.bulk-purge:confirm",
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(
+            ids.iter()
+                .all(|id| app.shared.borrow().mailbox.get(*id).is_none())
+        );
+    }
+
+    #[test]
     fn offline_preview_send_keeps_the_message_in_the_composer() {
         let (mut app, mut doc) = app();
         let before = app.shared.borrow().mailbox.count(Folder::Sent);
@@ -5514,6 +6556,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the regression test spells out a complete interleaving so ownership mistakes remain diagnosable"
+    )]
     fn interleaved_engine_events_only_settle_their_own_request() {
         let mut fixture = InterleavedEngineFixture::new();
 
@@ -6077,6 +7123,85 @@ mod tests {
     }
 
     #[test]
+    fn context_menu_keyboard_moves_focus_and_activates_the_visible_action() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let id = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
+        app.shared
+            .borrow_mut()
+            .push_intent(Intent::ContextMenu(id, Point::new(400.0, 300.0)));
+        app.process_intents();
+        let archive_index = app
+            .context_menu
+            .as_ref()
+            .and_then(|menu| {
+                menu.items
+                    .iter()
+                    .position(|item| *item == CtxAction::Archive)
+            })
+            .expect("archive is an offered menu command");
+        for _ in 0..archive_index {
+            assert!(dispatch(
+                &mut app,
+                &named_key(NamedKey::ArrowDown),
+                &mut doc
+            ));
+        }
+        assert_eq!(
+            app.context_menu.as_ref().map(|menu| menu.active),
+            Some(archive_index)
+        );
+        let before = app.shared.borrow().mailbox.count(Folder::Archive);
+        assert!(dispatch(&mut app, &named_key(NamedKey::Enter), &mut doc));
+        assert_eq!(
+            app.shared.borrow().mailbox.count(Folder::Archive),
+            before + 1
+        );
+        assert!(app.context_menu.is_none());
+    }
+
+    #[test]
+    fn context_menu_is_a_modal_accessibility_menu_with_routable_items() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let id = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
+        app.shared
+            .borrow_mut()
+            .push_intent(Intent::ContextMenu(id, Point::new(400.0, 300.0)));
+        app.process_intents();
+        let menu = app.accessibility().expect("context menu semantics");
+        assert_eq!(menu.role, ui::a11y::Role::Menu);
+        assert!(menu.state.modal);
+        let archive = menu
+            .children
+            .iter()
+            .find(|item| item.name.as_deref() == Some("Archive"))
+            .expect("Archive is described to assistive technology");
+        let target = archive.action_target.clone().expect("routable menu item");
+        assert!(app.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Focus,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(app.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(app.context_menu.is_none());
+        assert_eq!(
+            app.shared
+                .borrow()
+                .mailbox
+                .get(id)
+                .map(|message| message.folder),
+            Some(Folder::Archive)
+        );
+    }
+
+    #[test]
     fn setup_tls_toggle_flips_the_port() {
         let (mut app, mut doc) = app();
         app.layout_for_test(1100.0, 780.0);
@@ -6115,6 +7240,89 @@ mod tests {
             "c shortcut consumed"
         );
         assert!(app.compose.open, "'c' opened the composer");
+    }
+
+    #[test]
+    fn shortcut_enter_opens_and_records_the_same_read_action_as_a_row() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let unread = app
+            .shared
+            .borrow()
+            .list_rows()
+            .into_iter()
+            .map(|(id, _)| id)
+            .find(|id| {
+                app.shared
+                    .borrow()
+                    .mailbox
+                    .get(*id)
+                    .is_some_and(|mail| !mail.read)
+            })
+            .expect("sample inbox has unread mail");
+        app.shared.borrow_mut().selected = Some(unread);
+
+        assert!(dispatch(&mut app, &named_key(NamedKey::Enter), &mut doc));
+        assert!(
+            app.shared
+                .borrow()
+                .mailbox
+                .get(unread)
+                .is_some_and(|mail| mail.read),
+            "Enter uses the normal Open boundary, rather than silently previewing"
+        );
+        assert!(app.take_committed_action().is_some());
+        assert_ne!(app.shared.borrow().inspection, Some(unread));
+    }
+
+    #[test]
+    fn shortcut_p_is_explicit_read_neutral_preview() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let unread = app
+            .shared
+            .borrow()
+            .list_rows()
+            .into_iter()
+            .map(|(id, _)| id)
+            .find(|id| {
+                app.shared
+                    .borrow()
+                    .mailbox
+                    .get(*id)
+                    .is_some_and(|mail| !mail.read)
+            })
+            .expect("sample inbox has unread mail");
+        app.shared.borrow_mut().selected = Some(unread);
+        let heads_before = doc.get_heads();
+
+        assert!(dispatch(&mut app, &char_key("p"), &mut doc));
+        let state = app.shared.borrow();
+        assert!(state.mailbox.get(unread).is_some_and(|mail| !mail.read));
+        assert_eq!(state.inspection, Some(unread));
+        assert_eq!(
+            doc.get_heads(),
+            heads_before,
+            "preview does not author a mail action"
+        );
+    }
+
+    #[test]
+    fn shortcut_reference_is_modal_and_explains_open_vs_preview() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        assert!(dispatch(&mut app, &char_key("?"), &mut doc));
+        assert!(app.shortcuts.visible());
+        let overlay = app.accessibility().expect("shortcut sheet semantics");
+        assert_eq!(overlay.name.as_deref(), Some("Mail keyboard shortcuts"));
+        assert!(
+            overlay
+                .description
+                .as_deref()
+                .is_some_and(|copy| copy.contains("Open marks") && copy.contains("Preview keeps"))
+        );
+        assert!(dispatch(&mut app, &esc_event(), &mut doc));
+        assert!(!app.shortcuts.visible(), "Escape dismisses the modal sheet");
     }
 
     #[test]

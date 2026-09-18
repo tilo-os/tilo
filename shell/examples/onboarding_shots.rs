@@ -148,7 +148,13 @@ fn main() -> Result<(), String> {
     // laptop sizes that motivated this harness. Include the acknowledgement
     // state separately because it changes both the checkbox and primary
     // action, and must not shift either one.
-    for (width, height) in [(1600, 900), (1366, 768), (1280, 720), (800, 600)] {
+    for (width, height) in [
+        (1600, 900),
+        (1366, 768),
+        (1280, 800),
+        (1280, 720),
+        (800, 600),
+    ] {
         let size = format!("{width}x{height}");
         shoot_host(
             &Theme::dark(),

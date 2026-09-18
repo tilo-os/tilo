@@ -654,6 +654,12 @@ impl WindowGroup {
         self.bar.active_id()
     }
 
+    /// Drain an explicit user selection from the tab bar. Model-driven
+    /// `set_active_tab` calls never create this edge.
+    pub fn take_tab_activation(&mut self) -> Option<u64> {
+        self.bar.take_activation()
+    }
+
     /// The bar's `active_id` is the authoritative copy (the shell's
     /// per-frame harvest mirrors it into the persisted tree), so a
     /// programmatic focus jump must land here, not only in the tree.

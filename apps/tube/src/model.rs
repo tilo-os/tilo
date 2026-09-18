@@ -515,6 +515,9 @@ pub enum Route {
     Home,
     Trending,
     Subscriptions,
+    /// A collaboratively shared set of videos. Membership is synchronised,
+    /// while playback order deliberately stays local to each viewer.
+    Queue,
     Watch(VideoId),
     Channel(ChannelId),
     Playlist(PlaylistId),
@@ -530,6 +533,7 @@ impl Route {
             Route::Home => "home",
             Route::Trending => "trending",
             Route::Subscriptions => "subs",
+            Route::Queue => "queue",
             Route::History => "history",
             Route::Settings => "settings",
             _ => "",

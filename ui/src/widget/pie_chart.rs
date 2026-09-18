@@ -868,7 +868,7 @@ mod tests {
         let slices = vec![PieSlice::new("a", "A", 1.0, Color::WHITE)];
         let mut chart = PieChart::new(slices.clone());
         let started = chart.transition_started;
-        chart.set_slices(slices.clone());
+        chart.set_slices(slices);
         assert_eq!(chart.transition_started, started);
         assert!(!chart.is_animating());
         chart.set_slices_immediate(vec![PieSlice::new("a", "A", 2.0, Color::WHITE)]);

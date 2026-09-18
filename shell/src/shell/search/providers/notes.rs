@@ -43,6 +43,13 @@ impl SearchProvider for NotesProvider {
     fn owns_tab(&self, tab_id: u64, chrome: &ChromeState) -> bool {
         super::text_app::owns_tab_of(chrome, tab_id, APP)
     }
+    fn proximity(
+        &self,
+        result: &SearchResult,
+        chrome: &ChromeState,
+    ) -> crate::shell::search::SearchProximity {
+        super::text_app::proximity_of(chrome, result)
+    }
     /// A title prefix scores 110 - see [`super::text_app::match_score`].
     fn max_score(&self) -> i32 {
         super::text_app::MAX_SCORE

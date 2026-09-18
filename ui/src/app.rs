@@ -2557,6 +2557,12 @@ impl App {
             resource: resource.id.as_str().to_owned(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
+            resource_presentation_json: resource
+                .presentation
+                .as_ref()
+                .filter(|presentation| presentation.is_valid())
+                .and_then(|presentation| serde_json::to_string(presentation).ok())
+                .unwrap_or_default(),
             action: None,
             descriptor: None,
             has_children: may_descend
@@ -2579,6 +2585,7 @@ impl App {
             resource: resource.id.as_str().to_owned(),
             resource_kind: exported.resource_kind.clone(),
             resource_label: exported.resource_label.clone(),
+            resource_presentation_json: String::new(),
             action: Some(action_id.to_owned()),
             descriptor: Some(exported.clone()),
             has_children: false,
@@ -2717,6 +2724,7 @@ impl App {
                 + row.resource.len()
                 + row.resource_kind.len()
                 + row.resource_label.len()
+                + row.resource_presentation_json.len()
                 + row.action.as_ref().map_or(0, String::len)
                 + row.visibility_action.as_ref().map_or(0, String::len)
                 + row.visibility_contract_json.len()
@@ -7074,9 +7082,10 @@ impl App {
     ///
     /// # Panics
     ///
-    /// Panics if the platform windowing system can't give us an event loop,
-    /// or if running it fails — there is no app without one, so there is no
-    /// meaningful fallback.
+    /// Panics if the platform windowing system can't create the event loop.
+    /// Once running, a Wayland compositor disconnect is a normal application
+    /// shutdown boundary (session logout, compositor restart), so an
+    /// `ExitFailure` is logged and returned rather than converted into a panic.
     #[allow(
         clippy::expect_used,
         clippy::unwrap_used,
@@ -7126,7 +7135,13 @@ impl App {
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
             dispatching_touch_pointer: false,
         };
-        event_loop.run_app(&mut handler).unwrap();
+        match event_loop.run_app(&mut handler) {
+            Ok(()) => {}
+            Err(winit::error::EventLoopError::ExitFailure(status)) => {
+                tracing::debug!(status, "window system disconnected; application exiting");
+            }
+            Err(error) => panic!("application event loop failed: {error}"),
+        }
     }
 }
 
