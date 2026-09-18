@@ -169,6 +169,27 @@ test('canonical focus reconciles one owner without duplicate dispatch or stealin
   assert.equal(calls.length,1);
 });
 
+test('accepted focus survives one acknowledgement snapshot but canonical clear still wins',()=>{
+  const calls=[];const mount=new Element('main');const root=new Element('div');mount.append(root);
+  const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{});
+  const view=focused=>snapshot({role:'TextInput',name:'Message composer',action_target:'chat.composer',value:'',state:{focusable:true,focused},text_selection:{anchor:0,focus:0}});
+
+  document.activeElement=document.body;bridge.update(view(false));
+  const editor=root.children[0];editor.focus();
+  bridge.update(view(false));
+  assert.equal(document.activeElement,editor,'one unacknowledged snapshot cannot cancel accepted focus');
+  bridge.update(view(true));
+  bridge.update(view(false));
+  assert.equal(document.activeElement,document.body,'an acknowledged owner still obeys a genuine canonical clear');
+
+  editor.focus();
+  bridge.update(view(false));
+  assert.equal(document.activeElement,editor);
+  bridge.update(view(false));
+  assert.equal(document.activeElement,document.body,'missing acknowledgement cannot retain focus forever');
+  assert.deepEqual(calls.map(call=>call.slice(2)),[['focus','',0,0],['focus','',0,0]]);
+});
+
 test('separate semantic bridges never treat each other as managed focus',()=>{
   const mountA=new Element('main'),canvasA=new Element('canvas'),rootA=new Element('div');mountA.append(canvasA,rootA);
   const mountB=new Element('main'),canvasB=new Element('canvas'),rootB=new Element('div');mountB.append(canvasB,rootB);

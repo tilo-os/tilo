@@ -19,6 +19,7 @@ export function semanticBridge(root,invoke,report) {
   let activeDescendantHost;
   let previousActiveDescendant;
   let previousOwns;
+  let pendingFocus;
   function clearActiveDescendant(){
     if(!activeDescendantHost)return;
     if(previousActiveDescendant===null)activeDescendantHost.removeAttribute('aria-activedescendant');else activeDescendantHost.setAttribute('aria-activedescendant',previousActiveDescendant);
@@ -137,7 +138,9 @@ export function semanticBridge(root,invoke,report) {
     element.dataset.qosSemantic=key;
     element.qosEditable=editable;
     element.qosState={key,active:true,disabled:false,readOnly:false,composing:false,canonicalValue:'',compositionBase:null,suppressInput:null,canonicalSelection:null,lastSelection:null,reconcilingFocus:false};
-    element.addEventListener('focus',()=>{if(!element.qosState.reconcilingFocus)act(element,'focus');});
+    element.addEventListener('focus',()=>{
+      if(!element.qosState.reconcilingFocus&&act(element,'focus'))pendingFocus={key,remainingSnapshots:1};
+    });
     element.addEventListener('click',()=>act(element,'activate'));
     if(editable){
       element.addEventListener('input',event=>{
@@ -232,6 +235,13 @@ export function semanticBridge(root,invoke,report) {
     for(const recovery of recoveries.values())syncRecovery(recovery);
     for(const element of elements.values())element.dataset.qosFocused=String(element===canonicalFocus);
     const active=document.activeElement;
+    let awaitingFocus=false;
+    if(pendingFocus){
+      const target=elements.get(pendingFocus.key);
+      if(canonicalFocus||target!==active||target.qosState.disabled){pendingFocus=undefined;}
+      else if(pendingFocus.remainingSnapshots>0){pendingFocus.remainingSnapshots--;awaitingFocus=true;}
+      else pendingFocus=undefined;
+    }
     const focusWasManaged=ownedBeforeUpdate.has(activeBeforeUpdate);
     const focusInMount=Boolean(root.parentNode?.contains?.(active));
     const focusInRecovery=[...recoverySurfaces].some(surface=>surface.contains?.(active));
@@ -243,9 +253,9 @@ export function semanticBridge(root,invoke,report) {
       try{canonicalFocus.focus();}finally{canonicalFocus.qosState.reconcilingFocus=false;}
     }else{
       clearActiveDescendant();
-      if(!canonicalFocus&&ownedBeforeUpdate.has(active)&&active.qosState.active)active.blur?.();
+      if(!canonicalFocus&&!awaitingFocus&&ownedBeforeUpdate.has(active)&&active.qosState.active)active.blur?.();
     }
     root.dataset.nodeCount=String(elements.size);
   }
-  return {update,close(){clearActiveDescendant();for(const element of elements.values()){element.qosState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();recoveries.clear();root.replaceChildren();elements.clear();}};
+  return {update,close(){pendingFocus=undefined;clearActiveDescendant();for(const element of elements.values()){element.qosState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();recoveries.clear();root.replaceChildren();elements.clear();}};
 }

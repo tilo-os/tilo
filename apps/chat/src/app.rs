@@ -3152,9 +3152,20 @@ impl Widget for ChatApp {
             .into_iter()
             .enumerate()
             .map(|(index, (rect, hit, name, role, selected))| {
+                let input = match &hit {
+                    Hit::FocusMain => Some(&self.composer_main),
+                    Hit::FocusThread => Some(&self.composer_thread),
+                    Hit::FocusRename => Some(&self.rename_input),
+                    Hit::FocusEdit => Some(&self.edit_input),
+                    _ => None,
+                };
+                let focused = self.keyboard_target.map_or_else(
+                    || input.is_some_and(|input| ui::Widget::is_focused(input)),
+                    |target| target == index,
+                );
                 let mut state = AccessState::new()
                     .focusable(true)
-                    .focused(self.keyboard_target == Some(index));
+                    .focused(focused);
                 if matches!(role, Role::Tab | Role::ListItem) {
                     state = state.selected(selected);
                 }
@@ -3167,13 +3178,6 @@ impl Widget for ChatApp {
                     .with_bounds(rect)
                     .with_key(index as u64)
                     .with_action_target(hit.semantic_id());
-                let input = match hit {
-                    Hit::FocusMain => Some(&self.composer_main),
-                    Hit::FocusThread => Some(&self.composer_thread),
-                    Hit::FocusRename => Some(&self.rename_input),
-                    Hit::FocusEdit => Some(&self.edit_input),
-                    _ => None,
-                };
                 if let Some(input) = input {
                     let (anchor, focus) = input
                         .selection_range_public()
@@ -3278,6 +3282,11 @@ impl Widget for ChatApp {
             Hit::FocusMain | Hit::FocusThread | Hit::FocusRename | Hit::FocusEdit
         ) {
             use ui::a11y::Action;
+
+            // `keyboard_target` is the immediate-mode Tab ring. A semantic
+            // editor action moves focus into the actual TextInput instead, so
+            // let that editor be the single focused accessibility child.
+            self.keyboard_target = None;
 
             match action {
                 Action::Focus | Action::Activate => {

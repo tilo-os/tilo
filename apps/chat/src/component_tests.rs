@@ -81,6 +81,51 @@ fn canonical_composer_exports_ime_purpose_through_app_root() {
     assert!(app.ime_purpose().is_some());
 }
 
+#[test]
+fn canonical_composer_semantics_follow_the_actual_editor_focus() {
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-focused-composer");
+    fn find<'a>(
+        node: &'a ui::a11y::AccessNode,
+        target: &str,
+    ) -> Option<&'a ui::a11y::AccessNode> {
+        if node.action_target.as_deref() == Some(target) {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, target))
+    }
+    fn inspect<'a>(
+        node: &'a ui::headless::InspectionNode,
+        target: &str,
+    ) -> Option<&'a ui::a11y::AccessNode> {
+        node.semantics
+            .as_ref()
+            .and_then(|semantic| find(semantic, target))
+            .or_else(|| node.children.iter().find_map(|child| inspect(child, target)))
+    }
+    fn focused_count(node: &ui::headless::InspectionNode) -> usize {
+        fn access(node: &ui::a11y::AccessNode) -> usize {
+            usize::from(node.state.focused) + node.children.iter().map(access).sum::<usize>()
+        }
+        node.semantics.as_ref().map_or(0, access)
+            + node.children.iter().map(focused_count).sum::<usize>()
+    }
+
+    let inspection = frame.inspection();
+    let composer = inspect(&inspection.root, "chat.composer")
+        .expect("the real component exports the composer target");
+    assert!(composer.state.focusable);
+    assert!(
+        composer.state.focused,
+        "the actual focused TextInput owns semantic focus without a keyboard ring"
+    );
+    assert_eq!(
+        focused_count(&inspection.root),
+        1,
+        "Chat exports one semantic focus owner"
+    );
+    frame.close_components();
+}
+
 fn semantic_component_harness(
     profile: &str,
 ) -> (
