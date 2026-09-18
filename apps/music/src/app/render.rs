@@ -8660,13 +8660,6 @@ impl MusicApp {
 }
 
 impl TrackDisp {
-    /// Seed for procedural art — keyed to the album id so an album's tracks
-    /// share a cover with the grid/detail art.
-    #[allow(dead_code)]
-    fn album_seed(&self) -> String {
-        self.album_id.clone()
-    }
-
     /// Cover-cache key for this track: the track id (live results record a
     /// per-track cover) falling back to album art via the placeholder.
     fn cover_id(&self) -> String {

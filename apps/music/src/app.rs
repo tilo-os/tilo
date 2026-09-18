@@ -31,8 +31,10 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+#[cfg(test)]
+use ui::widget::SplitLayout;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::{ModalDialog, PromptBody, SidebarDrawer, SplitLayout, TextInput, Widget};
+use ui::widget::{ModalDialog, PromptBody, SidebarDrawer, TextInput, Widget};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -312,7 +314,6 @@ pub struct MusicApp {
     /// The search pill's full rect, captured during draw so a press inside it
     /// routes to `search_input` (caret placement / drag-select).
     search_pill_rect: Rect,
-    #[allow(dead_code)]
     audio: AudioEngine,
 
     /// The non-blocking streaming worker (real YouTube-Music search + audio
@@ -3702,7 +3703,7 @@ impl MusicApp {
 
     /// The width-driven sidebar layout (docked vs overlay). Computed straight
     /// from the allocated width so it's valid even before the first `resolve`.
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn sidebar_layout(&self) -> SplitLayout {
         self.drawer.layout_for(self.rect.width())
     }
@@ -3710,7 +3711,7 @@ impl MusicApp {
     /// The width the content column is inset by on the left for the docked
     /// sidebar (0 while overlaying — the flap floats over the content). Read
     /// from the drawer's last-resolved geometry.
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn content_inset(&self) -> f64 {
         (self.drawer.content_rect().x0 - self.rect.x0).max(0.0)
     }
