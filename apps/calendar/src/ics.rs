@@ -48,7 +48,7 @@ pub fn export(model: &Model) -> String {
             raw(
                 &mut out,
                 "DTEND;VALUE=DATE",
-                &e.end.format(D_ONLY).to_string(),
+                &e.all_day_end_exclusive().format(D_ONLY).to_string(),
             );
         } else if e.timezone == "UTC" {
             raw(
@@ -126,10 +126,34 @@ pub fn export(model: &Model) -> String {
                 raw(&mut out, "STATUS", "CANCELLED");
             }
             if let Some(start) = edit.start {
-                emit_datetime(&mut out, "DTSTART", start, &e.timezone);
+                if e.all_day {
+                    raw(
+                        &mut out,
+                        "DTSTART;VALUE=DATE",
+                        &start.date().format(D_ONLY).to_string(),
+                    );
+                } else {
+                    emit_datetime(&mut out, "DTSTART", start, &e.timezone);
+                }
             }
             if let Some(end) = edit.end {
-                emit_datetime(&mut out, "DTEND", end, &e.timezone);
+                if e.all_day {
+                    // Match the parent event's exclusive DATE convention.
+                    let exclusive = if end.time() == NaiveTime::MIN
+                        && edit.start.is_some_and(|start| end.date() > start.date())
+                    {
+                        end.date()
+                    } else {
+                        end.date() + chrono::Duration::days(1)
+                    };
+                    raw(
+                        &mut out,
+                        "DTEND;VALUE=DATE",
+                        &exclusive.format(D_ONLY).to_string(),
+                    );
+                } else {
+                    emit_datetime(&mut out, "DTEND", end, &e.timezone);
+                }
             }
             if let Some(title) = &edit.title {
                 line(&mut out, "SUMMARY", title);
@@ -374,6 +398,13 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<ParsedEvent>, usize) 
         return (None, i);
     };
     let mut end = end.unwrap_or(start);
+    // DATE-valued DTSTART/DTEND follows RFC 5545's exclusive-end convention.
+    // A surprising number of hand-authored feeds still send the same date for
+    // both; keep that malformed-but-common input visible as one day rather
+    // than importing an event that occupies no time at all.
+    if all_day && end.date() <= start.date() {
+        end = (start.date() + chrono::Duration::days(1)).and_time(NaiveTime::MIN);
+    }
     if timezone != "floating" {
         let Some((normalized, _)) = crate::timezone::normalize_wall(&timezone, start) else {
             return (None, i);
@@ -811,6 +842,45 @@ mod tests {
             .find(|e| e.title == "Company offsite")
             .unwrap();
         assert!(offsite.all_day);
+    }
+
+    #[test]
+    fn all_day_export_uses_exclusive_end_date_and_round_trips_the_visible_span() {
+        let start = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let model = Model {
+            projects: Vec::new(),
+            tasks: Vec::new(),
+            events: vec![Event {
+                id: Uuid::new_v4(),
+                title: "Conference".into(),
+                start: start.and_time(NaiveTime::MIN),
+                end: (start + chrono::Duration::days(3)).and_time(NaiveTime::MIN),
+                all_day: true,
+                location: String::new(),
+                color: Palette::Indigo,
+                recurrence: Recurrence::None,
+                recurrence_interval: 1,
+                recurrence_until: None,
+                recurrence_count: None,
+                recurrence_exdates: Vec::new(),
+                occurrence_overrides: Vec::new(),
+                timezone: "floating".into(),
+                organizer: None,
+                attendees: Vec::new(),
+                reminder_min: None,
+                calendar_id: None,
+                project: None,
+            }],
+        };
+        let calendar = export(&model);
+        assert!(calendar.contains("DTSTART;VALUE=DATE:20260615"));
+        assert!(calendar.contains("DTEND;VALUE=DATE:20260618"));
+
+        let (events, _) = parse(&calendar);
+        let event = events.first().expect("round-tripped event");
+        assert!(event.all_day);
+        assert!(event.occurs_on(start + chrono::Duration::days(2)));
+        assert!(!event.occurs_on(start + chrono::Duration::days(3)));
     }
 
     #[test]

@@ -103,6 +103,10 @@ pub struct LocalModelPackage {
     /// revision. It is not inferred from a model name.
     #[serde(default)]
     pub vision: bool,
+    /// Signed biometric capability for a distinct local face runtime.  A
+    /// general image-analysis model must not gain this capability implicitly.
+    #[serde(default)]
+    pub face_recognition: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1579,6 +1583,7 @@ mod tests {
             download_bytes: 5_368_709_120,
             installed_bytes: 10_737_418_240,
             vision: false,
+            face_recognition: false,
         }
     }
 
@@ -1778,6 +1783,7 @@ mod tests {
     fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
         let mut package = package();
         package.vision = true;
+        package.face_recognition = true;
         let model_id = package.id.clone();
         let models = vec![InstalledLocalModel {
             package,
@@ -1797,6 +1803,7 @@ mod tests {
             Some("0123456789abcdef")
         );
         assert!(profile.models[0].vision);
+        assert!(profile.models[0].face_recognition);
         assert!(profile.enabled);
     }
 
