@@ -66,6 +66,17 @@ def derive_driver(original, source_path, derived_recipe_path, seed_image_id):
     require(re.fullmatch(r'sha256:[0-9a-f]{64}', seed_image_id), 'immutable seed image required')
     text = replace_once(original, 'source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"',
         'source ' + shlex.quote(str(PurePosixPath(source_path) / 'os/dev/_common.sh')))
+    # The builder target has no kernel dependency. Keep full-image selection
+    # intact, but do not read an unrelated kernel pin for this native target.
+    # scratch is an inert Dockerfile stage input, never a fabricated artifact.
+    start = '_tilo_kernel_ref_override="${KERNEL_RPMS_REF:-}"\n'
+    end = '# Pre-flight: every host-side COPY source exists.'
+    require(text.count(start) == 1 and text.count(end) == 1, 'frozen kernel selection seam changed')
+    kernel = text[text.index(start):text.index(end)]
+    text = replace_once(text, kernel,
+        'if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then\n'
+        '  KERNEL_RPMS_REF=scratch\n'
+        'else\n' + kernel + 'fi\n')
     return replace_once(text, 'build -f "$TILO_OS_DIR/Containerfile"',
         'build -f ' + shlex.quote(str(derived_recipe_path)) + ' --build-context tilo-resume=container-image://' + seed_image_id)
 
