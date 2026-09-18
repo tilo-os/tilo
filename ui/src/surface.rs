@@ -537,11 +537,19 @@ pub fn edge_outline(rect: Rect, radius: f64) -> RoundedRect {
     RoundedRect::from_rect(rect.inset(-0.5), (radius - 0.5).max(0.0))
 }
 
+/// Whole logical pixels for an edged surface: a 1 px edge stroked on a
+/// fractional rect covers two device pixels at half coverage on each and
+/// stops registering. Layout may hand us fractions; the paint does not.
+fn snap(rect: Rect) -> Rect {
+    Rect::new(rect.x0.round(), rect.y0.round(), rect.x1.round(), rect.y1.round())
+}
+
 /// Fill a card / row / tile and give it its derived rest edge in one call —
 /// the one way an app or shell surface paints an edged surface. The edge
 /// derives from `fill` itself: a stroke that sits entirely on the surface
 /// needs no knowledge of what is behind it.
 pub fn card(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, fill: Color) {
+    let rect = snap(rect);
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
@@ -574,6 +582,7 @@ pub fn card_on(
     fill: Color,
     ground: Color,
 ) {
+    let rect = snap(rect);
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
@@ -606,17 +615,24 @@ pub fn separator(
     inset: f64,
     surface: Color,
 ) {
+    let Some(rule) = separator_rect(x0, x1, y, inset) else {
+        return;
+    };
+    scene.fill(Fill::NonZero, transform, edge_on(surface), None, &rule);
+}
+
+/// The one device-pixel row a separator centred on `y` occupies: `y` is
+/// snapped so a caller passing a whole-pixel coordinate gets a crisp rule,
+/// not a two-row smear at half alpha (which would fall under
+/// `HAIRLINE_MIN_DELTA` even though the colour itself registers).
+#[must_use]
+pub fn separator_rect(x0: f64, x1: f64, y: f64, inset: f64) -> Option<Rect> {
     let (a, b) = (x0 + inset, x1 - inset);
     if b <= a {
-        return;
+        return None;
     }
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        edge_on(surface),
-        None,
-        &Rect::new(a, y - 0.5, b, y + 0.5),
-    );
+    let top = (y - 0.5).round();
+    Some(Rect::new(a, top, b, top + 1.0))
 }
 
 #[cfg(test)]
@@ -683,6 +699,17 @@ mod tests {
                 "composited derivation must never register worse than the naive one"
             );
         }
+    }
+
+    #[test]
+    fn a_separator_occupies_one_whole_pixel_row() {
+        // A whole-pixel centre and a half-pixel centre both land on one row.
+        let whole = separator_rect(10.0, 200.0, 100.0, 12.0).expect("rule");
+        assert_eq!((whole.x0, whole.x1), (22.0, 188.0));
+        assert_eq!((whole.y0, whole.y1), (100.0, 101.0));
+        let half = separator_rect(0.0, 50.0, 99.5, 0.0).expect("rule");
+        assert_eq!((half.y0, half.y1), (99.0, 100.0));
+        assert!(separator_rect(0.0, 20.0, 5.0, 12.0).is_none(), "insets that meet paint nothing");
     }
 
     #[test]
