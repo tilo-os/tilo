@@ -395,9 +395,10 @@ impl Invalidation {
 pub struct OnboardingView {
     flow: Onboarding,
     context: OnboardingContext,
-    /// Existing metadata is authoritative when its Secret Service item is
-    /// unavailable. Recovery mode starts on restore and never exposes the
-    /// create-new branch, while still allowing a keyring unlock retry.
+    /// Existing metadata is authoritative when its keyring item is
+    /// unavailable or its collaboration chain cannot be verified. Recovery
+    /// mode starts on restore and never exposes the create-new branch, while
+    /// still allowing a keyring unlock retry.
     recovery_only: bool,
     minter: Minter,
     importer: Importer,
@@ -696,10 +697,10 @@ impl OnboardingView {
     }
 
     fn restore_pending_progress_from_disk(&mut self) {
-        // Recovery mode was selected because the private Secret Service key
-        // could not be loaded. A stale post-mint journal must not turn that
-        // state into a Done screen that assumes signing works; the user must
-        // unlock or restore first.
+        // Recovery mode was selected because the existing identity could not
+        // be used safely. A stale post-mint journal must not turn that state
+        // into a Done screen that assumes signing works; the user must unlock
+        // the keyring or restore first.
         if self.recovery_only {
             return;
         }
@@ -952,7 +953,7 @@ impl OnboardingView {
         let fill_panel = theme.text_scale > 1.0
             || theme.name.eq_ignore_ascii_case("high contrast")
             || matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
-            || (self.flow.screen() == Screen::Done && !self.identity_ready_page);
+            || self.flow.screen() == Screen::Done;
         let mut scroll = Scrollable::new_vertical();
         if backup_in_scroll {
             // Backup is a form: Tab should enter its first field/control, and
@@ -1431,7 +1432,7 @@ impl OnboardingView {
             body = body.push(spaced_banner(
                 Banner::warning("Your existing identity needs recovery")
                     .with_message(
-                        "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry, or restore an encrypted backup. Tilo will not replace this identity automatically.",
+                        "Tilo could not verify your existing identity chain. Unlock the desktop keyring and retry, or restore an encrypted backup. Tilo will not replace this identity automatically.",
                     )
                     .with_icon(ui::icons::Icon::Shield),
                 theme,
@@ -4366,15 +4367,16 @@ mod tests {
                     }
                 }
 
-                if width == 800.0
-                    && height == 600.0
+                if ((width == 800.0 && height == 600.0) || (width == 1280.0 && height == 800.0))
                     && view.flow().screen() == Screen::Done
                     && view.identity_ready_page
+                    && theme.text_scale <= 1.0
+                    && !theme.name.eq_ignore_ascii_case("high contrast")
                 {
                     assert_eq!(
                         scroll.max_offset_y(),
                         0.0,
-                        "the fully visible Ready page must not show a spurious scrollbar"
+                        "the normal-text Ready page must present every decision before the person discovers scrolling at {width}x{height}"
                     );
                 }
 

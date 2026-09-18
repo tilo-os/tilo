@@ -7,15 +7,45 @@ ulimit -c 0
 
 readonly SYSTEMCTL=/usr/bin/systemctl
 readonly SHELL_BIN=/usr/bin/shell
+readonly MKDTEMP=/usr/bin/mktemp
+readonly RM=/usr/bin/rm
+readonly RMDIR=/usr/bin/rmdir
 readonly SESSION_TARGET=tilo-graphical-session.target
 
 target_started=0
 shell_pid=""
+logout_request_dir=""
+logout_request_path=""
+
+# The compositor cannot safely ask the display-manager wrapper to log out by
+# shelling out to logind: the wrapper owns the user target and must stop it
+# before returning control to the greeter. Give the compositor a private,
+# absolute, one-shot request file for that hand-off. A graphical login must
+# provide the user-owned runtime directory; falling back to shared /tmp would
+# turn a security-sensitive control channel into a best-effort convention.
+runtime_dir="${XDG_RUNTIME_DIR:-}"
+case "$runtime_dir" in
+  /*) ;;
+  *) printf '%s\n' 'tilo-session: XDG_RUNTIME_DIR must be an absolute path' >&2; exit 1 ;;
+esac
+[ -d "$runtime_dir" ] || { printf 'tilo-session: runtime directory does not exist: %s\n' "$runtime_dir" >&2; exit 1; }
+logout_request_dir="$($MKDTEMP -d "$runtime_dir/tilo-session.XXXXXX")"
+logout_request_path="$logout_request_dir/logout-request"
+export TILO_SESSION_LOGOUT_REQUEST="$logout_request_path"
 
 stop_target() {
   if [ "$target_started" = 1 ]; then
     "$SYSTEMCTL" --user stop "$SESSION_TARGET" >/dev/null 2>&1 || true
     target_started=0
+  fi
+}
+
+cleanup_logout_channel() {
+  if [ -n "$logout_request_path" ]; then
+    "$RM" -f -- "$logout_request_path" 2>/dev/null || true
+  fi
+  if [ -n "$logout_request_dir" ]; then
+    "$RMDIR" -- "$logout_request_dir" 2>/dev/null || true
   fi
 }
 
@@ -29,7 +59,7 @@ terminate_session() {
   exit "$status"
 }
 
-trap stop_target EXIT
+trap 'stop_target; cleanup_logout_channel' EXIT
 trap 'terminate_session HUP 129' HUP
 trap 'terminate_session INT 130' INT
 trap 'terminate_session TERM 143' TERM

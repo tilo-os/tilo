@@ -674,7 +674,12 @@ impl FrameBuilder {
         order
     }
 
-    fn set_native_focus(&mut self, focus: &mut Option<NodeId>, target: Option<NodeId>) {
+    fn set_native_focus_with_reveal(
+        &mut self,
+        focus: &mut Option<NodeId>,
+        target: Option<NodeId>,
+        reveal: bool,
+    ) {
         if *focus == target {
             return;
         }
@@ -687,8 +692,10 @@ impl FrameBuilder {
             && let Some(&widget) = self.node_map.get(&new)
         {
             unsafe { (*widget).set_focus(true) };
-            self.host
-                .reveal_descendant(std::ptr::from_ref(unsafe { &*widget }));
+            if reveal {
+                self.host
+                    .reveal_descendant(std::ptr::from_ref(unsafe { &*widget }));
+            }
         }
         *focus = target;
         self.native_focus_ordinal = target.and_then(|id| {
@@ -696,6 +703,10 @@ impl FrameBuilder {
                 .iter()
                 .position(|candidate| *candidate == id)
         });
+    }
+
+    fn set_native_focus(&mut self, focus: &mut Option<NodeId>, target: Option<NodeId>) {
+        self.set_native_focus_with_reveal(focus, target, true);
     }
 
     fn initial_focus_target(&self, order: &[NodeId]) -> Option<NodeId> {
@@ -723,7 +734,13 @@ impl FrameBuilder {
             *focus = None;
         }
         let first = self.initial_focus_target(&self.focusable_order());
-        self.set_native_focus(focus, first);
+        // A freshly presented page belongs at its top. Programmatic initial
+        // focus still paints a visible keyboard target and gives assistive
+        // technology a deterministic cursor, but it must not scroll a wizard
+        // past its heading before the person has navigated. Tab/Shift+Tab and
+        // explicit accessibility focus continue to use set_native_focus and
+        // therefore reveal their destination.
+        self.set_native_focus_with_reveal(focus, first, false);
         self.focus_tree_changed = false;
     }
 
@@ -2968,6 +2985,37 @@ mod tests {
         assert!(
             focused_name(&fb, focus).is_some_and(|name| name.contains("I understand")),
             "focus must move into the replacement OOBE step"
+        );
+    }
+
+    #[test]
+    fn native_oobe_step_transition_keeps_the_new_page_at_its_top() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        fb.reconcile_native_focus(&mut focus);
+
+        doc.put(&automerge::ROOT, crate::onboarding_view::KEY_CONNECT, true)
+            .expect("open identity restore");
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.reconcile_native_focus(&mut focus);
+
+        let scroll_offset = fb
+            .node_map
+            .values()
+            .copied()
+            .find_map(|pointer| unsafe {
+                ((*pointer).name() == "Scrollable")
+                    .then(|| (*pointer).as_any_mut())
+                    .flatten()
+                    .and_then(|widget| widget.downcast_mut::<ui::widget::Scrollable>())
+                    .map(|scroll| scroll.offset_y())
+            })
+            .expect("restore page scroll viewport");
+        assert_eq!(
+            scroll_offset, 0.0,
+            "programmatic first focus must not hide a newly presented page's heading"
         );
     }
 

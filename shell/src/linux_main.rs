@@ -115,6 +115,39 @@ fn log_gpu_pin(gpu_pin: Option<&compositor::render_node::ProcessPin>) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExistingIdentityFailureAction {
+    /// The native compositor can present the owner-only restore/unlock flow.
+    EnterTrustedRecovery,
+    /// There is no trusted recovery surface in this process shape.
+    FailClosed,
+}
+
+/// Decide how startup handles a failure while checking an *existing* identity.
+///
+/// An unavailable keyring and malformed or mismatched persisted identity
+/// artifacts both require an explicit owner recovery ceremony in native mode.
+/// They must never be interpreted as permission to create a replacement
+/// identity. Errors which do not prove an invalid stored identity (such as
+/// permission or storage failures) remain fail-closed.
+fn existing_identity_failure_action(
+    provision_requested: bool,
+    mode: Mode,
+    error: &std::io::Error,
+) -> ExistingIdentityFailureAction {
+    if provision_requested || mode == Mode::Hosted {
+        return ExistingIdentityFailureAction::FailClosed;
+    }
+
+    if identity_provisioning::is_secret_service_unavailable(error)
+        || error.kind() == std::io::ErrorKind::InvalidData
+    {
+        ExistingIdentityFailureAction::EnterTrustedRecovery
+    } else {
+        ExistingIdentityFailureAction::FailClosed
+    }
+}
+
 fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode> {
     match identity_provisioning::DiskIdentityStore::from_env() {
         Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
@@ -151,21 +184,21 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
             };
             let paths = firstboot::collaboration_identity_paths();
             if let Err(error) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
-                if identity_provisioning::is_secret_service_unavailable(&error) {
-                    // A schema-2 record is still the person's identity. A
-                    // locked/unavailable Secret Service is not permission to
-                    // replace it or mint a second one; let native trusted
-                    // chrome offer keyring recovery or encrypted restore.
-                    tracing::warn!(
-                        "existing Tilo identity is present but its Secret Service key is unavailable; opening trusted recovery"
-                    );
-                    if !provision_requested {
-                        if compositor::parse_mode_from_args() == Mode::Hosted {
-                            tracing::error!(
-                                "hosted mode cannot recover an identity; start a native Tilo session to unlock or restore it"
-                            );
-                            return Some(std::process::ExitCode::FAILURE);
-                        }
+                match existing_identity_failure_action(
+                    provision_requested,
+                    compositor::parse_mode_from_args(),
+                    &error,
+                ) {
+                    ExistingIdentityFailureAction::EnterTrustedRecovery => {
+                        // An existing schema-2 record remains the person's
+                        // identity even when its key is unavailable or its
+                        // collaboration chain cannot verify. Never replace it
+                        // or mint a second identity; native trusted chrome
+                        // offers keyring recovery or encrypted restore.
+                        tracing::warn!(
+                            %error,
+                            "existing Tilo identity needs recovery; opening trusted recovery"
+                        );
                         // SAFETY: startup is single-threaded until native
                         // compositor initialization, and this marker only
                         // selects a stricter recovery surface.
@@ -173,18 +206,20 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
                             std::env::set_var(identity_provisioning::IDENTITY_RECOVERY_ENV, "1");
                         }
                     }
-                } else if provision_requested {
-                    tracing::error!("could not provision collaboration identity: {error}");
-                    return Some(std::process::ExitCode::FAILURE);
-                } else {
-                    tracing::error!("Tilo identity chain is incomplete or invalid: {error}");
-                    return Some(std::process::ExitCode::FAILURE);
-                }
-                if provision_requested {
-                    // The pre-graphical migration unit cannot show the
-                    // recovery surface. Treat this one recoverable state as
-                    // a successful no-op so the real compositor can do it.
-                    return Some(std::process::ExitCode::SUCCESS);
+                    ExistingIdentityFailureAction::FailClosed => {
+                        if provision_requested {
+                            tracing::error!("could not provision collaboration identity: {error}");
+                        } else if compositor::parse_mode_from_args() == Mode::Hosted {
+                            tracing::error!(
+                                "hosted mode cannot recover an existing identity; start a native Tilo session to unlock or restore it: {error}"
+                            );
+                        } else {
+                            tracing::error!(
+                                "Tilo identity chain is incomplete or invalid: {error}"
+                            );
+                        }
+                        return Some(std::process::ExitCode::FAILURE);
+                    }
                 }
             }
             if provision_requested {
@@ -199,6 +234,52 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExistingIdentityFailureAction, existing_identity_failure_action};
+    use shell::compositor::Mode;
+    use std::io;
+
+    #[test]
+    fn only_native_desktop_startup_can_defer_an_invalid_existing_chain_to_recovery() {
+        let invalid_cert = io::Error::new(
+            io::ErrorKind::InvalidData,
+            "device certificate signature is invalid",
+        );
+        let unavailable_keyring = io::Error::from_raw_os_error(libc::ENOKEY);
+
+        assert_eq!(
+            existing_identity_failure_action(false, Mode::Native, &invalid_cert),
+            ExistingIdentityFailureAction::EnterTrustedRecovery,
+        );
+        assert_eq!(
+            existing_identity_failure_action(false, Mode::Native, &unavailable_keyring),
+            ExistingIdentityFailureAction::EnterTrustedRecovery,
+            "keyring unavailability keeps its existing native recovery behavior",
+        );
+        assert_eq!(
+            existing_identity_failure_action(false, Mode::Hosted, &invalid_cert),
+            ExistingIdentityFailureAction::FailClosed,
+        );
+        assert_eq!(
+            existing_identity_failure_action(true, Mode::Native, &invalid_cert),
+            ExistingIdentityFailureAction::FailClosed,
+        );
+    }
+
+    #[test]
+    fn native_recovery_does_not_mask_unrelated_startup_failures() {
+        let permission_denied = io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "identity directory is not private",
+        );
+        assert_eq!(
+            existing_identity_failure_action(false, Mode::Native, &permission_denied),
+            ExistingIdentityFailureAction::FailClosed,
+        );
+    }
 }
 
 fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::process::ExitCode {
