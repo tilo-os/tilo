@@ -114,15 +114,13 @@ members = [
     "crates/dev/ui-graph",
 
     # Doc
+    "crates/doc/format-host",
+    "crates/doc/format-provider-wit",
     "crates/doc/qdoc",
     "crates/doc/qdoc-epub",
     "crates/doc/qdoc-html",
     "crates/doc/qdoc-pdf",
     "crates/doc/qdoc-rtf",
-
-    # Format
-    "crates/format/format-host",
-    "crates/format/format-provider-wit",
 
     # Hosting
     "crates/hosting/tilo-relay",

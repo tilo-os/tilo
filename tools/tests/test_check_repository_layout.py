@@ -57,6 +57,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         self.assertEqual(
             checker.retired_source_root_violations(
                 [
+                    "crates/format/format-host/src/main.rs",
                     "crates/system/windows-vm/src/lib.rs",
                     "docs/architecture/overview.md",
                     "fs/src/lib.rs",
@@ -64,6 +65,7 @@ class RepositoryLayoutTests(unittest.TestCase):
                 ]
             ),
             [
+                "tracked file uses retired source root `crates/format/`; move it under `crates/doc/`: crates/format/format-host/src/main.rs",
                 "tracked file uses retired source root `crates/system/windows-vm/`; move it under `crates/windows/windows-vm/`: crates/system/windows-vm/src/lib.rs",
                 "tracked file uses retired source root `fs/`; move it under `crates/system/fs/`: fs/src/lib.rs",
                 "tracked file uses retired source root `plan/`; move it under `docs/architecture/`: plan/security.md",
