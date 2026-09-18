@@ -2359,7 +2359,7 @@ def peer_sync_card_up(s: Session) -> bool:
     screen.
 
     All three fields, because the compositor paints the card whenever any
-    one of them is set (`overlay_host.rs`: the draw returns early only
+    one of them is set (`overlay_host/mod.rs`: the draw returns early only
     when `input`, `token` *and* `invite_name` are all `None`). Checking
     two of them made an open invite composer read as no card at all, so
     `dismiss_peer_sync_card` returned without dismissing it and the
