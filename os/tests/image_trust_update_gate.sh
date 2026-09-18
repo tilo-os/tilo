@@ -5,6 +5,8 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 gate="$repo/os/usr/libexec/tilo-image-trust-staged"
 deployment="$repo/os/usr/libexec/tilo-deployment"
 update_policy_unit="$repo/os/usr/lib/systemd/system/tilo-update-policy@.service"
+deployment_update_unit="$repo/os/usr/lib/systemd/system/tilo-deployment-update.service"
+deployment_rollback_unit="$repo/os/usr/lib/systemd/system/tilo-deployment-rollback.service"
 for required in \
   'NoNewPrivileges=yes' \
   'PrivateDevices=yes' \
@@ -17,6 +19,36 @@ for required in \
   'SystemCallFilter=@system-service'; do
   grep -Fqx "$required" "$update_policy_unit" || {
     echo "update-policy sandbox is missing: $required" >&2
+    exit 1
+  }
+done
+for unit in "$deployment_update_unit" "$deployment_rollback_unit"; do
+  for required in \
+    'NoNewPrivileges=yes' \
+    'PrivateIPC=yes' \
+    'ProtectHome=yes' \
+    'ProtectKernelModules=yes' \
+    'ProtectKernelLogs=yes' \
+    'MemoryDenyWriteExecute=yes' \
+    'SystemCallArchitectures=native'; do
+    grep -Fqx "$required" "$unit" || {
+      echo "deployment executor sandbox is missing from $(basename "$unit"): $required" >&2
+      exit 1
+    }
+  done
+done
+grep -Fqx 'PrivateNetwork=yes' "$deployment_rollback_unit" || {
+  echo 'local rollback executor retains unnecessary external network access' >&2
+  exit 1
+}
+for resource_policy in \
+  'Nice=10' \
+  'CPUWeight=20' \
+  'IOWeight=20' \
+  'IOSchedulingClass=best-effort' \
+  'IOSchedulingPriority=7'; do
+  grep -Fqx "$resource_policy" "$deployment_update_unit" || {
+    echo "manual update can contend with an interactive workload: $resource_policy" >&2
     exit 1
   }
 done
