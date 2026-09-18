@@ -2,7 +2,7 @@
 //! must convert the block to Heading(2). Drives the `BlockEditor`'s
 //! event chain end-to-end via the test hooks.
 //!
-//! See `ui/src/widget/slash_menu.rs` and `block_editor.rs` for the
+//! See `crates/sdk/ui-core/src/widget/slash_menu.rs` and `block_editor.rs` for the
 //! unit-level pins on each part of the flow.
 
 #![allow(

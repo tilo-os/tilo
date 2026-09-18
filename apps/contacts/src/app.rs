@@ -6343,7 +6343,7 @@ impl Widget for ContactsApp {
     /// unchanged from one flat function.
     #[allow(
         clippy::too_many_arguments,
-        reason = "Widget::handle_event's arity is fixed by the trait (ui::widget::Widget); every parameter is independently meaningful, as the trait's own allow in ui/src/widget/mod.rs explains"
+        reason = "Widget::handle_event's arity is fixed by the trait (ui::widget::Widget); every parameter is independently meaningful, as the trait's own allow in crates/sdk/ui-core/src/widget/mod.rs explains"
     )]
     fn handle_event(
         &mut self,

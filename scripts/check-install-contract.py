@@ -58,7 +58,7 @@ assert "python3 apps/imager/packaging/generate-winget.py release-assets" in imag
 
 # Imager's native Windows release includes `ui`. The Wayland clipboard backend
 # consumes Unix file descriptors, so it must never enter non-Linux builds.
-ui_manifest = tomllib.loads((ROOT / "ui/Cargo.toml").read_text())
+ui_manifest = tomllib.loads((ROOT / "crates/sdk/ui-core/Cargo.toml").read_text())
 assert "smithay-clipboard" not in ui_manifest["dependencies"]
 linux_ui_dependencies = ui_manifest["target"]['cfg(target_os = "linux")']["dependencies"]
 assert "smithay-clipboard" in linux_ui_dependencies

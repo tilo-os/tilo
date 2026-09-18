@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 atomic-file = { path = "../../system/atomic-file" }
-ui = { path = "../../../ui" }
+ui = { path = "../../sdk/ui-core" }
 
 [lints]
 workspace = true
