@@ -183,6 +183,21 @@ pub enum MediaSourceLocator {
     },
 }
 
+/// Bounded destination-side outcome for a requested media handoff. The source
+/// remains active until it receives [`PersonalFabricAction::MediaAccepted`],
+/// so these failures are safe to surface and retry without reconstructing
+/// backend error strings from another device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaHandoffFailure {
+    DestinationUnavailable,
+    UnsupportedOutput,
+    InvalidWorkspace,
+    OpenFailed,
+    TimedOut,
+    Cancelled,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PersonalFabricAction {
@@ -197,6 +212,19 @@ pub enum PersonalFabricAction {
         has_video: bool,
     },
     MediaAccepted {
+        request_id: [u8; 16],
+        session_id: String,
+    },
+    /// The exact destination could not open the requested session. Reasons
+    /// are typed so remote process details never cross the personal fabric.
+    MediaRejected {
+        request_id: [u8; 16],
+        session_id: String,
+        failure: MediaHandoffFailure,
+    },
+    /// Stop waiting for one exact request without affecting playback on the
+    /// destination or granting broader control of it.
+    MediaCancelled {
         request_id: [u8; 16],
         session_id: String,
     },
@@ -672,6 +700,15 @@ impl PersonalFabricActionEnvelope {
                 }
             }
             PersonalFabricAction::MediaAccepted {
+                request_id,
+                session_id,
+            }
+            | PersonalFabricAction::MediaRejected {
+                request_id,
+                session_id,
+                ..
+            }
+            | PersonalFabricAction::MediaCancelled {
                 request_id,
                 session_id,
             } => {
@@ -3067,5 +3104,47 @@ mod tests {
                 Err(FabricError::InvalidAction)
             );
         }
+    }
+
+    #[test]
+    fn media_terminal_actions_require_exact_nonzero_request_and_session() {
+        let source = id("source");
+        let target = id("target");
+        for action in [
+            PersonalFabricAction::MediaRejected {
+                request_id: [9; 16],
+                session_id: "player:one".into(),
+                failure: MediaHandoffFailure::OpenFailed,
+            },
+            PersonalFabricAction::MediaCancelled {
+                request_id: [9; 16],
+                session_id: "player:one".into(),
+            },
+        ] {
+            let envelope = PersonalFabricActionEnvelope {
+                request_id: [4; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action,
+            };
+            assert_eq!(envelope.validate_at(&source, &target, 10_000), Ok(()));
+        }
+
+        let invalid = PersonalFabricActionEnvelope {
+            request_id: [4; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action: PersonalFabricAction::MediaRejected {
+                request_id: [0; 16],
+                session_id: "player:one".into(),
+                failure: MediaHandoffFailure::OpenFailed,
+            },
+        };
+        assert_eq!(
+            invalid.validate_at(&source, &target, 10_000),
+            Err(FabricError::InvalidAction)
+        );
     }
 }

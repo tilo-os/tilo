@@ -1,8 +1,7 @@
 # tilo-swipe
 
-Rust bindings to the **FUTO swipe-library** (real ML swipe-typing on
-ExecuTorch) via a small C-ABI shim. Used by the Tilo on-screen keyboard
-(`apps/osk`) for best-in-class gesture typing.
+Rust bindings to the **FUTO swipe-library** on ExecuTorch through a C-ABI shim.
+Used by the Tilo on-screen keyboard (`apps/osk`).
 
 The FUTO swipe-library is GPL-3.0-or-later; Tilo is AGPL-3.0-or-later, which
 incorporates it cleanly.
@@ -21,14 +20,14 @@ incorporates it cleanly.
 - `src/lib.rs` — a safe `FutoSwipe` wrapper. The encoder is universal; pair it
   with the en_qwerty decoder + context-LM for best accuracy.
 
-## Graceful degradation
+## Fallback decoder
 
-The crate **always compiles.** When `TILO_SWIPE_LIB` is unset at build time (no
-FUTO libs), it builds a stub: `available()` is `false` and `FutoSwipe::new`
+When `TILO_SWIPE_LIB` is unset at build time, the crate builds a stub:
+`available()` is `false` and `FutoSwipe::new`
 returns `None`, so the OSK falls back to its geometric SHARK²-style decoder.
-Set `TILO_SWIPE_LIB` to enable the real engine — a pure upgrade.
+Set `TILO_SWIPE_LIB` at build time to enable FUTO.
 
-## Building with the real engine
+## Building with FUTO
 
 ```bash
 distrobox enter my-distrobox -- ./tilo-swipe/setup-futo.sh   # clone + build + fetch models

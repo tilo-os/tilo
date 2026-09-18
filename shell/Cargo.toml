@@ -134,28 +134,14 @@ xattr = "1.6.1"
 tilo-power-mgmt = { path = "../crates/system/power" }
 
 winit.workspace = true
-# The native winit backend uses vello-on-wgpu directly rather than smithay's
-# glow renderer.
-# Vello's `RenderContext::create_surface` is async, so we need a blocking
-# executor inside the synchronous `WinitBackend::new`. `pollster` is already
-# pulled in as a dev-dep at the same version, so Cargo collapses to a single
-# copy in the lock.
 pollster.workspace = true
 sysinfo.workspace = true
-# Direct deps needed by in-shell widgets that implement
-# `ui::widget::Widget`. Versions are pinned to match ui's Cargo.toml.
 automerge.workspace = true
 taffy.workspace = true
 vello.workspace = true
-# The compositor, portal, and peer sync share one locked `WorkspaceTree`.
-# Already a transitive via wgpu — pinning here is one-line and keeps Cargo
-# collapsed to a single copy in the workspace lock.
 tilo-startup-metrics = { path = "../crates/system/tilo-startup-metrics" }
 parking_lot.workspace = true
 
-# Direct libc dep so we can name the SYS_* and AF_PACKET constants required by
-# the deny-list filter without going through seccompiler's re-export. ui
-# already pulls libc transitively, so Cargo collapses to one copy in the lock.
 libc.workspace = true
 
 # Peer invitations are base64-url wrapped signed JSON tickets containing the
@@ -182,19 +168,9 @@ tilo-projector = { path = "../crates/system/projector" }
 # the `log` crate. `ffmpeg-next` has no `log` dependency, so it side-
 # steps the conflict entirely.
 ffmpeg-next = { version = "8", optional = true, default-features = false, features = ["codec", "format", "software-scaling"] }
-# `portal::serve` registers the `org.freedesktop.impl.portal.{FileChooser,
-# ScreenCast,Access}` backend interfaces over D-Bus so xdg-desktop-portal can
-# route sandboxed-app requests into our per-workspace grant model. We pin to
-# `4` because `dark-light` (a transitive of `iced`) already locks zbus to
-# 4.4.x — staying on the same major avoids a duplicate compile + runtime
-# copy of the entire async-task stack zbus drags in.
 zbus = { workspace = true, features = ["tokio", "p2p"] }
 
-# BlueZ over D-Bus. The compositor owns the pairing agent because answering
-# "do these six digits match?" decides whether a nearby device may inject
-# keystrokes — not a dialog an application may draw.
 tilo-bluez = { path = "../crates/system/tilo-bluez" }
-# `test_control::Command::Snapshot` encodes the offscreen RGBA result as PNG.
 png.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # The broker validates inbound `SignedOp` envelopes against the
@@ -269,42 +245,13 @@ tar.workspace = true
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
-# Canonical-bytes encoder for Phase 3 wire-format round-trip tests in
-# `src/network/protocol.rs`. `tilo-collab-types` already uses this for
-# signing; the test verifies `NeighbourMsg::AppCrdtIncrementalSigned`
-# survives the same codec.
 postcard = { workspace = true, features = ["alloc"] }
-# `ed25519-dalek` is now pulled in as a top-level dep (see above),
-# for the `network::identity` module. Broker integration tests use
-# the same lockfile copy for their `SigningKey` fixtures.
-# The headline "everything composes" integration test
-# (`tests/everything_composes.rs`) exercises Phases 3 + 6 + 7 + 8 in a
-# single end-to-end flow — threshold-signed, MLS-encrypted op crossing
-# the broker, validated, decrypted, then compacted.
-# Signed `RoleAttestation` / `SignedOp` fixtures shared by every wire-format
-# integration test here. Was six drifting copies of the same signing ceremony
-# pasted across tests/; now one crate that only test targets can see.
 collab-fixtures = { path = "../crates/collab/collab-fixtures" }
-# Deterministic RNG used by the FROST signing fixture in
-# `tests/everything_composes.rs`. The alias is historical: it was added
-# when shell also carried a `rand = "0.10.1"` runtime dep. That dep was
-# never used and has been dropped, so this now resolves to the same
-# `rand` 0.8 the rest of the workspace signs with.
 rand_08 = { package = "rand", version = "0.8" }
 rand_chacha.workspace = true
-# Offscreen headless renderer used by `tests/e2e_shell_flows.rs`. Versions
-# mirror ui so Cargo collapses to a single copy in the workspace lock.
 pollster.workspace = true
 wgpu.workspace = true
-# Scene-encoding inspection used by `tests/concept_parity_spec.rs` to walk
-# `Scene::encoding().draw_data` for solid-colour brushes and image-paint
-# tags without round-tripping pixels through wgpu. Same minor version as
-# the `vello = "0.2.1"` runtime dep; Cargo collapses to a single copy.
 vello_encoding.workspace = true
-# `tests/portal_test.rs` joins the server- and client-side handshake of an
-# in-process p2p zbus pair via `futures_util::try_join!`. Already pulled in
-# transitively (Iroh, zbus, tokio) — pinning it here is just for the
-# `try_join!` macro at the test-fixture call site.
 futures-util.workspace = true
 # Serializes the 8 `apply_grants`-calling tests in `sandbox::profile`
 # that share a process-wide `SCAN_MEMO` static. Without this, parallel

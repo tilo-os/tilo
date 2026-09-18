@@ -28,7 +28,7 @@ containerfile="$repo/os/Containerfile"
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=45adad218db55aaa9ba24db7063888976420472b55579d83f2da5e8a96064e92
+expected_contract=de30ab529a501ab525c6bb80cf4c15caa9222546a27d61f7da664cc654e62533
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -68,7 +68,7 @@ if containerfile_instructions "$containerfile" |
   exit 1
 fi
 
-for overlay in desktop-binaries rollback-files recovery-files; do
+for overlay in desktop-binaries remote-capture-files rollback-files recovery-files; do
   [ "$(containerfile_copy_contract "$containerfile" rootfs |
        awk -F '\t' -v s="$overlay" '$1==s && $2=="/" && $3=="/"{n++} END{print n+0}')" -eq 1 ] \
     || { echo "$overlay is not applied to rootfs exactly once" >&2; exit 1; }
