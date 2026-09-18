@@ -81,6 +81,40 @@ fn file_id(file: &File) -> [u8; 32] {
     h.update(m.ino().to_le_bytes());
     h.finalize().into()
 }
+
+#[cfg(unix)]
+#[test]
+fn fresh_creation_has_durable_zero_before_cancelled_preparation() {
+    let selected = selected();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut provider, mut file) = FreshDisk::create(dir.path(), &selected, 0);
+    let ownership = provider.disk.ownership();
+    let cancel = AtomicBool::new(true); // cancellation after exclusive creation
+    initialize_fresh(&selected, 0, &mut &mut provider, &mut file).unwrap();
+    let mut session = Session::new(&selected, 0, 1, &mut provider).unwrap();
+    assert!(session.prepare(&selected, &mut file, &cancel).is_err());
+    drop(session);
+    drop(file);
+    drop(provider);
+    assert!(cancel.load(std::sync::atomic::Ordering::Acquire));
+    let records: Vec<_> = fs::read_dir(dir.path().join("journal")).unwrap().collect();
+    assert_eq!(
+        records.len(),
+        1,
+        "known fresh ownership must survive cancellation"
+    );
+    let (provider, mut file) = DiskProvider::reopen(dir.path(), ownership.clone());
+    assert_eq!(file_id(&file), ownership.file);
+    assert_eq!(file.metadata().unwrap().len(), 0);
+    let mut session = Session::new(&selected, 0, 2, provider).unwrap();
+    assert_eq!(
+        session
+            .prepare(&selected, &mut file, &AtomicBool::new(false))
+            .unwrap()
+            .committed(),
+        0
+    );
+}
 /// Host fixture only: real separate journal parent, held identity, exclusive
 /// ordinary record files, record/file/parent syncs. Not a native security provider.
 #[cfg(unix)]
@@ -1213,4 +1247,290 @@ fn failed_receipt_callback_and_cancelled_reprepare_do_not_leave_success() {
         );
     }
     assert!(!provider.complete);
+}
+
+/// Real-file common-protocol fixture. Freshness is minted only by create_new;
+/// this models provider policy, not Linux security, locking or publication.
+#[cfg(unix)]
+struct FreshDisk<'a> {
+    disk: DiskProvider,
+    selected: &'a SelectedManifest,
+    index: usize,
+    fresh: Option<Ownership>,
+    poisoned: bool,
+    scanned: bool,
+    prepared: bool,
+    cancel_during_publish: Option<std::sync::Arc<AtomicBool>>,
+}
+#[cfg(unix)]
+impl<'a> FreshDisk<'a> {
+    fn create(root: &Path, selected: &'a SelectedManifest, index: usize) -> (Self, File) {
+        let (disk, file) = DiskProvider::new(root);
+        let fresh = Some(disk.ownership());
+        (
+            Self {
+                disk,
+                selected,
+                index,
+                fresh,
+                poisoned: false,
+                scanned: false,
+                prepared: false,
+                cancel_during_publish: None,
+            },
+            file,
+        )
+    }
+}
+#[cfg(unix)]
+impl Provider for &mut FreshDisk<'_> {
+    fn revoke_preparation(&mut self) {
+        self.scanned = false;
+        self.prepared = false;
+    }
+    fn prepared(&mut self, proof: PreparationComplete<'_>) -> Result<(), String> {
+        if self.poisoned
+            || !self.scanned
+            || !proof.authorizes(self.selected, self.index, &self.disk.own)?
+        {
+            return Err("no preparation authority".into());
+        }
+        self.prepared = true;
+        Ok(())
+    }
+    fn ownership(&self) -> Ownership {
+        self.disk.ownership()
+    }
+    fn verify(&mut self, file: &File, own: &Ownership) -> Result<(), String> {
+        if self.poisoned {
+            return Err("poisoned initialization".into());
+        }
+        self.disk.verify(file, own)
+    }
+    fn scan(&mut self, visit: &mut dyn FnMut(&[u8]) -> Result<(), String>) -> Result<(), String> {
+        self.revoke_preparation();
+        if self.poisoned {
+            return Err("poisoned initialization".into());
+        }
+        self.disk.scan(visit)?;
+        self.scanned = true;
+        Ok(())
+    }
+    fn retain(&mut self, keep: &[u64]) -> Result<(), String> {
+        if !self.scanned || self.poisoned {
+            return Err("no retirement authority".into());
+        }
+        self.disk.retain(keep)
+    }
+    fn publish(&mut self, generation: u64, bytes: &[u8], keep: &[u64]) -> Result<(), String> {
+        if !self.scanned || self.poisoned {
+            return Err("no publication authority".into());
+        }
+        if let Some(cancel) = &self.cancel_during_publish {
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+        }
+        self.disk.publish(generation, bytes, keep)
+    }
+}
+#[cfg(unix)]
+impl FreshProvider for &mut FreshDisk<'_> {
+    fn take_fresh(
+        &mut self,
+        selected: &SelectedManifest,
+        index: usize,
+    ) -> Result<Ownership, String> {
+        let own = self.fresh.take().ok_or("no fresh owner")?;
+        if self.poisoned
+            || selected.manifest_sha256() != self.selected.manifest_sha256()
+            || index != self.index
+        {
+            return Err("fresh selection mismatch".into());
+        }
+        Ok(own)
+    }
+    fn initialization_failed(&mut self) {
+        self.fresh = None;
+        self.poisoned = true;
+        self.revoke_preparation();
+    }
+}
+#[cfg(unix)]
+#[test]
+fn independent_fresh_settlements_preserve_cancellation_and_require_normal_preparation() {
+    let selected = selected();
+    let dirs = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+    let mut owners = Vec::new();
+    for (index, dir) in dirs.iter().enumerate() {
+        // Independent admitted creations; neither is created under a cancelled flag.
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let (mut p, mut f) = FreshDisk::create(dir.path(), &selected, index);
+        p.cancel_during_publish = Some(cancel.clone());
+        let own = p.disk.ownership();
+        initialize_fresh(&selected, index, &mut &mut p, &mut f).unwrap();
+        assert!(cancel.load(std::sync::atomic::Ordering::Acquire));
+        let before = record_snapshot(&p.disk.dir);
+        assert!((&mut p).retain(&[]).is_err());
+        assert!(!p.prepared && !p.scanned && !p.poisoned);
+        assert_eq!(record_snapshot(&p.disk.dir), before);
+        let record = checkpoint::Record::decode(&before[0].1).unwrap();
+        assert_eq!(record.hint_for(&selected, index).unwrap().generation, 1);
+        assert_eq!(
+            record.hint_for(&selected, index).unwrap().file_digest,
+            &own.file
+        );
+        assert_eq!(&before[0].1[147..155], &1u64.to_le_bytes());
+        assert_eq!(&before[0].1[155..171], &[0; 16]); // epoch and committed length
+        let mut session = Session::new(&selected, index, index as u64 + 1, &mut p).unwrap();
+        assert!(session.prepare(&selected, &mut f, &cancel).is_err());
+        drop(session);
+        assert!(!p.prepared && !p.scanned);
+        let mut session = Session::new(&selected, index, index as u64 + 3, &mut p).unwrap();
+        drop(
+            session
+                .prepare(&selected, &mut f, &AtomicBool::new(false))
+                .unwrap(),
+        );
+        drop(session);
+        assert!(p.prepared);
+        assert_eq!(record_snapshot(&p.disk.dir), before);
+        owners.push(own);
+    }
+    let again = self::selected();
+    for (index, dir) in dirs.iter().enumerate() {
+        let before = record_snapshot(&dir.path().join("journal"));
+        let (p, mut f) = DiskProvider::reopen(dir.path(), owners[index].clone());
+        assert_eq!(file_id(&f), owners[index].file);
+        assert_eq!(fs::read(dir.path().join(&owners[index].leaf)).unwrap(), b"");
+        let mut session = Session::new(&again, index, index as u64 + 10, p).unwrap();
+        let mut ready = session
+            .prepare(&again, &mut f, &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(ready.committed(), 0);
+        assert_eq!(record_snapshot(&dir.path().join("journal")), before);
+        start_prefix(&mut ready, b"EE");
+        assert_eq!(ready.committed(), 2);
+    }
+}
+#[cfg(unix)]
+#[test]
+fn fresh_settlement_refuses_wrong_selection_ownership_nonempty_history_and_reopened_empty() {
+    let selected = selected();
+    let mut changed_bytes = selected.bytes().to_vec();
+    changed_bytes.push(b' ');
+    let release = InternalRelease::transport_fixture(
+        &changed_bytes,
+        "https://code.podesta.ai/releases/manifest.json",
+    );
+    let changed = SelectedManifest::from_bytes(&release, changed_bytes).unwrap();
+    for case in 0..10 {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut p, mut f) = FreshDisk::create(dir.path(), &selected, 0);
+        let mut index = 0;
+        match case {
+            0 => index = 1,
+            1 => p.fresh.as_mut().unwrap().file[0] ^= 1,
+            2 => {
+                f.write_all(b"unknown").unwrap();
+                f.sync_all().unwrap();
+            }
+            3 => fs::write(p.disk.dir.join("unknown"), b"unknown").unwrap(),
+            4 => {
+                let own = p.disk.ownership();
+                drop(f);
+                let (disk, reopened) = DiskProvider::reopen(dir.path(), own);
+                p.disk = disk;
+                p.fresh = None;
+                f = reopened;
+            }
+            5 => {
+                initialize_fresh(&selected, 0, &mut &mut p, &mut f).unwrap();
+            }
+            6 => {
+                p.fresh.as_mut().unwrap().parent[0] ^= 1;
+            }
+            7 => {}
+            8 => {
+                f = tempfile::tempfile().unwrap();
+            }
+            9 => {
+                let donor = tempfile::tempdir().unwrap();
+                let (mut other, mut other_file) = FreshDisk::create(donor.path(), &selected, 0);
+                initialize_fresh(&selected, 0, &mut &mut other, &mut other_file).unwrap();
+                fs::copy(other.disk.dir.join("record-1"), p.disk.dir.join("record-1")).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let before = record_snapshot(&p.disk.dir);
+        let payload = fs::read(dir.path().join(&p.disk.own.leaf)).unwrap();
+        assert!(
+            initialize_fresh(
+                if case == 7 { &changed } else { &selected },
+                index,
+                &mut &mut p,
+                &mut f
+            )
+            .is_err()
+        );
+        assert!(p.poisoned && p.fresh.is_none() && !p.scanned && !p.prepared);
+        assert!(initialize_fresh(&selected, 0, &mut &mut p, &mut f).is_err());
+        assert_eq!(record_snapshot(&p.disk.dir), before);
+        assert_eq!(
+            fs::read(dir.path().join(&p.disk.own.leaf)).unwrap(),
+            payload
+        );
+        let mut session = Session::new(&selected, 0, 99, &mut p).unwrap();
+        assert!(
+            session
+                .prepare(&selected, &mut f, &AtomicBool::new(false))
+                .is_err()
+        );
+    }
+}
+#[cfg(unix)]
+#[test]
+fn fresh_settlement_uncertain_flush_and_journal_failures_preserve_evidence_and_poison() {
+    let selected = selected();
+    for stage in [
+        "initialize-flush",
+        "record-create",
+        "record-write",
+        "record-flush",
+        "record-publish",
+        "lost-ack",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut p, mut f) = FreshDisk::create(dir.path(), &selected, 0);
+        fail(Some(stage));
+        let result = initialize_fresh(&selected, 0, &mut &mut p, &mut f);
+        fail(None);
+        assert!(result.is_err(), "{stage}");
+        assert!(p.poisoned && p.fresh.is_none() && !p.scanned && !p.prepared);
+        let before = record_snapshot(&p.disk.dir);
+        assert_eq!(
+            before.is_empty(),
+            matches!(stage, "initialize-flush" | "record-create")
+        );
+        assert!(initialize_fresh(&selected, 0, &mut &mut p, &mut f).is_err());
+        assert!((&mut p).retain(&[]).is_err());
+        assert_eq!(record_snapshot(&p.disk.dir), before);
+        assert_eq!(fs::read(dir.path().join(&p.disk.own.leaf)).unwrap(), b"");
+        if stage == "record-write" {
+            assert!(checkpoint::Record::decode(&before[0].1).is_err());
+        } else if stage == "lost-ack" {
+            // Disk state may be complete despite an error; only independent
+            // reopen/recovery may accept it, never this poisoned owner.
+            let own = p.disk.ownership();
+            drop(p);
+            drop(f);
+            let (p, mut f) = DiskProvider::reopen(dir.path(), own);
+            let mut session = Session::new(&selected, 0, 42, p).unwrap();
+            assert_eq!(
+                session
+                    .prepare(&selected, &mut f, &AtomicBool::new(false))
+                    .unwrap()
+                    .committed(),
+                0
+            );
+        }
+    }
 }

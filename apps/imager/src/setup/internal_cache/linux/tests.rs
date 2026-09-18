@@ -80,6 +80,116 @@ mod native {
                 _ => panic!("expected partial"),
             })
     }
+    #[test]
+    fn fresh_bootstrap_settles_before_cancellation_or_second_acquisition_failure() {
+        for stage in ["partial-durable", "record-created", "component-acquire-1"] {
+            let dir = directory();
+            let s = selected();
+            let cancel = std::sync::Arc::new(AtomicBool::new(false));
+            if stage == "component-acquire-1" {
+                super::FAIL_AT.with(|v| *v.borrow_mut() = Some(stage));
+            } else {
+                super::CANCEL_AT.with(|v| *v.borrow_mut() = Some((stage, cancel.clone())));
+            }
+            let result = fixture_acquire(dir.path(), &s)
+                .unwrap()
+                .bootstrap(&s, &cancel);
+            super::FAIL_AT.with(|v| *v.borrow_mut() = None);
+            super::CANCEL_AT.with(|v| *v.borrow_mut() = None);
+            assert!(result.is_err());
+            assert_eq!(
+                cancel.load(std::sync::atomic::Ordering::Acquire),
+                stage != "component-acquire-1"
+            );
+            let namespace = root(dir.path(), &s);
+            let payload = namespace.join("payload");
+            let names: Vec<_> = fs::read_dir(&payload)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(names.len(), 1);
+            assert_eq!(fs::read(payload.join(&names[0])).unwrap(), b"");
+            let zero = fs::read(namespace.join("journal-0/record-0000000001")).unwrap();
+            let record = crate::setup::internal_cache::checkpoint::Record::decode(&zero).unwrap();
+            assert_eq!(
+                record.hint_for(&s, 0).unwrap().leaf.as_bytes(),
+                names[0].as_encoded_bytes()
+            );
+            let again = selected(); // exact reauthentication after all owners were dropped
+            let [mut a, mut b] = parts(dir.path(), &again);
+            assert_eq!(
+                a.provider.ownership().leaf.as_bytes(),
+                names[0].as_encoded_bytes()
+            );
+            assert!(a.provider.retain(&[]).is_err());
+            prepare(&mut a, &again, 0);
+            prepare(&mut b, &again, 1);
+            assert_eq!(
+                fs::read(namespace.join("journal-0/record-0000000001")).unwrap(),
+                zero
+            );
+        }
+    }
+    #[test]
+    fn cancelled_bootstrap_creates_no_payload_and_settlement_is_not_preparation() {
+        let dir = directory();
+        let s = selected();
+        let cancel = AtomicBool::new(true);
+        assert!(
+            fixture_acquire(dir.path(), &s)
+                .unwrap()
+                .bootstrap(&s, &cancel)
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_dir(root(dir.path(), &s).join("payload"))
+                .unwrap()
+                .count(),
+            0
+        );
+        let [mut a, b] = parts(dir.path(), &s);
+        assert!(a.provider.retain(&[]).is_err());
+        // Full authenticated bytes isolate the preparation gate: failure must
+        // not be attributable to an empty/short/corrupt component.
+        let namespace = root(dir.path(), &s);
+        let partial_path = namespace.join("payload").join(a.provider.ownership().leaf);
+        let final_path = namespace
+            .join("payload")
+            .join(s.bundle().component(0).unwrap().filename);
+        let zero_path = namespace.join("journal-0/record-0000000001");
+        let zero = fs::read(&zero_path).unwrap();
+        let bytes = vec![b'E'; s.bundle().component(0).unwrap().byte_size as usize];
+        a.file.write_all(&bytes).unwrap();
+        a.file.sync_all().unwrap();
+        assert!(a.publish(&AtomicBool::new(false)).is_err());
+        assert_eq!(fs::read(&partial_path).unwrap(), bytes);
+        assert_eq!(fs::read(&zero_path).unwrap(), zero);
+        assert!(!final_path.exists());
+        drop(b);
+        let [mut a, b] = parts(dir.path(), &s);
+        finish(&mut a, &s, 0);
+        drop(a.publish(&AtomicBool::new(false)).unwrap());
+        drop(b);
+        // Remove only this test's known component-1 fixture to exercise final/fresh.
+        let namespace = root(dir.path(), &s);
+        let record_path = namespace.join("journal-1/record-0000000001");
+        let bytes = fs::read(&record_path).unwrap();
+        let record = crate::setup::internal_cache::checkpoint::Record::decode(&bytes).unwrap();
+        fs::remove_file(
+            namespace
+                .join("payload")
+                .join(record.hint_for(&s, 1).unwrap().leaf),
+        )
+        .unwrap();
+        fs::remove_file(record_path).unwrap();
+        let [first, second] = fixture_acquire(dir.path(), &s)
+            .unwrap()
+            .bootstrap(&s, &AtomicBool::new(false))
+            .unwrap();
+        assert!(matches!(first, Component::Final(_)));
+        assert!(matches!(second, Component::Partial(_)));
+        assert!(namespace.join("journal-1/record-0000000001").exists());
+    }
     fn prepare(part: &mut Partial<'_>, s: &SelectedManifest, index: usize) {
         let mut session = Session::new(s, index, 1, &mut part.provider).unwrap();
         drop(
@@ -263,19 +373,14 @@ mod native {
         for stage in ["record-created", "record-written", "record-durable"] {
             let dir = directory();
             let s = selected();
-            let [mut a, mut b] = parts(dir.path(), &s);
-            prepare(&mut b, &s, 1);
             super::FAIL_AT.with(|v| *v.borrow_mut() = Some(stage));
-            let mut session = Session::new(&s, 0, 1, &mut a.provider).unwrap();
             assert!(
-                session
-                    .prepare(&s, &mut a.file, &AtomicBool::new(false))
+                fixture_acquire(dir.path(), &s)
+                    .unwrap()
+                    .bootstrap(&s, &AtomicBool::new(false))
                     .is_err()
             );
-            drop(session);
             super::FAIL_AT.with(|v| *v.borrow_mut() = None);
-            drop(a);
-            drop(b);
             let result = fixture_acquire(dir.path(), &s)
                 .unwrap()
                 .bootstrap(&s, &AtomicBool::new(false));
@@ -697,7 +802,16 @@ fn effective_acl_mask_permits_safe_named_grants_and_refuses_effective_access() {
 #[cfg(target_os = "linux")]
 thread_local! { static FAIL_AT: std::cell::RefCell<Option<&'static str>> = const { std::cell::RefCell::new(None) }; }
 #[cfg(target_os = "linux")]
+thread_local! { static CANCEL_AT: std::cell::RefCell<Option<(&'static str, std::sync::Arc<std::sync::atomic::AtomicBool>)>> = const { std::cell::RefCell::new(None) }; }
+#[cfg(target_os = "linux")]
 pub(super) fn boundary(stage: &'static str) -> Result<(), String> {
+    CANCEL_AT.with(|slot| {
+        if let Some((at, cancel)) = slot.borrow().as_ref() {
+            if *at == stage {
+                cancel.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+    });
     FAIL_AT.with(|slot| {
         if *slot.borrow() == Some(stage) {
             Err(format!(

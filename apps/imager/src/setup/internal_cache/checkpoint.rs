@@ -93,6 +93,57 @@ pub(in crate::setup) trait Provider {
     fn retain(&mut self, keep: &[u64]) -> Result<(), String>;
     fn publish(&mut self, generation: u64, bytes: &[u8], keep: &[u64]) -> Result<(), String>;
 }
+/// Opt-in authority from a fully validated exclusive creation in this process.
+/// Implementations consume private freshness BEFORE checking the requested
+/// selection. Reopening, decoded records and caller assertions cannot mint it.
+pub(in crate::setup) trait FreshProvider: Provider {
+    fn take_fresh(
+        &mut self,
+        selected: &SelectedManifest,
+        index: usize,
+    ) -> Result<Ownership, String>;
+    /// Infallible, state-only, irreversible for this provider. Never clear an
+    /// existing uncertainty poison, and never perform filesystem I/O here.
+    fn initialization_failed(&mut self);
+}
+
+/// Settle an admitted fresh creation before cancellation can abandon its owner.
+/// No operation ID, cancellation reset, payload read, or preparation receipt.
+/// This is bounded metadata work, not a bounded-latency fsync guarantee.
+pub(in crate::setup) fn initialize_fresh<P: FreshProvider>(
+    selected: &SelectedManifest,
+    index: usize,
+    provider: &mut P,
+    file: &mut File,
+) -> Result<(), String> {
+    provider.revoke_preparation();
+    let result = (|| {
+        let ownership = provider.take_fresh(selected, index)?;
+        if ownership != provider.ownership() {
+            return Err("Fresh ownership mismatch".into());
+        }
+        let mut record = Record::initial(selected, index, ownership)?;
+        provider.verify(file, &record.ownership)?;
+        provider.scan(&mut |_| Err("Fresh ownership has journal history".into()))?;
+        let metadata = file.metadata().map_err(io)?;
+        if !metadata.is_file() || metadata.len() != 0 {
+            return Err("Fresh ownership requires an empty ordinary file".into());
+        }
+        file.flush().map_err(io)?;
+        #[cfg(test)]
+        super::tests::fault("initialize-flush")?;
+        file.sync_all().map_err(io)?;
+        provider.verify(file, &record.ownership)?;
+        record.generation = 1;
+        provider.publish(1, &record.encode(), &[1])
+    })();
+    if result.is_err() {
+        provider.initialization_failed();
+    }
+    // The internal empty scan/publication grants no retirement or final rights.
+    provider.revoke_preparation();
+    result
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::setup) enum Kind {
     Prefix = 1,
@@ -140,6 +191,24 @@ pub(super) struct UntrustedRecordHint<'a> {
     pub(super) generation: u64,
 }
 impl Record {
+    fn initial(
+        selected: &SelectedManifest,
+        index: usize,
+        ownership: Ownership,
+    ) -> Result<Self, String> {
+        validate_leaf(selected, &ownership.leaf)?;
+        let (binding, full_size) = binding(selected, index)?;
+        Ok(Self {
+            binding,
+            ownership,
+            generation: 0,
+            epoch: 0,
+            length: 0,
+            full_size,
+            digest: empty_digest(),
+            kind: Kind::Prefix,
+        })
+    }
     pub(super) fn hint_for(
         &self,
         selected: &SelectedManifest,
@@ -298,20 +367,10 @@ impl<P: Provider> Session<P> {
             return Err("Zero operation ID".into());
         }
         let ownership = provider.ownership();
-        validate_leaf(selected, &ownership.leaf)?;
-        let (binding, full_size) = binding(selected, index)?;
+        let base = Record::initial(selected, index, ownership)?;
         Ok(Self {
             provider,
-            base: Record {
-                binding,
-                ownership,
-                generation: 0,
-                epoch: 0,
-                length: 0,
-                full_size,
-                digest: empty_digest(),
-                kind: Kind::Prefix,
-            },
+            base,
             operation,
             index,
             attempt: None,
