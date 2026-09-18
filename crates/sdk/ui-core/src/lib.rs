@@ -89,7 +89,6 @@ pub mod gpu_video;
 pub mod graph_editor;
 pub mod headless;
 pub mod history_source;
-pub mod standalone_history_pane;
 #[cfg(all(windows, feature = "notifications"))]
 pub mod host_notifications;
 pub mod i18n;
@@ -115,6 +114,7 @@ pub mod presence;
 pub mod profiling;
 pub mod query_text;
 pub mod realtime_continuity;
+pub mod standalone_history_pane;
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange};
 pub mod text_assistance;
