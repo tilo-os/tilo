@@ -148,3 +148,18 @@ Cache hits remain an observation for the next run. The SSH cleanup correction
 changes an early rootfs RUN, so following layers from8921 cannot all hit. Independent
 provider stages and unchanged rootfs prefix may still reuse layers; subsequent
 same-source generic/Lenovo builds can share more after the volatile trust relocation.
+
+The next exact reviewed successor is
+`317eb82f7178b14623350f933088093cd3cdfd23`, directly aftera89fe4843.
+It adds only an inert `${BASE_REF}` alias named `public-trust-tools` and a
+read-only executable bind for the late public-trust RUN. For native-prefix
+comparison the verifier removes exactly that reviewed alias/comment block;
+it still rejects any other non-rootfs instruction change. Actual recipe hashes
+and the WPE consumer bridge include the complete unmodified recipe. Hydration
+includes the a89 intermediate revision as well as the final source.
+
+The first changed instruction within rootfs is the late trust RUN. Earlier
+rootfs instructions and source build arguments remain unchanged, and the raw
+layer anchor remains344257. Earlier cache entries are therefore candidates for
+reuse; actual cache hits still require observed build evidence. The added base
+alias contains no compilation or image mutation instructions.
