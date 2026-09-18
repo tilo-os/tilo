@@ -217,6 +217,21 @@ impl InternalTransport {
         if !same_origin(response.url(), &self.origin) {
             return Err("Untrusted response origin".into());
         }
+        // Hyper can decode unknown transfer codings as close-delimited and
+        // prefer chunked over Content-Length. Enforce our narrower policy while
+        // the original response fields remain visible, before any redirect/reset.
+        let mut framing = response.headers().get_all(header::TRANSFER_ENCODING).iter();
+        if let Some(value) = framing.next() {
+            if framing.next().is_some()
+                || response.version() != reqwest::Version::HTTP_11
+                || response.headers().contains_key(header::CONTENT_LENGTH)
+                || !value
+                    .to_str()
+                    .is_ok_and(|value| value.trim().eq_ignore_ascii_case("chunked"))
+            {
+                return Err("Unsupported or ambiguous Transfer-Encoding framing".into());
+            }
+        }
         let values: Vec<_> = response
             .headers()
             .get_all(header::CONTENT_ENCODING)
@@ -340,12 +355,7 @@ impl InternalTransport {
             cancelled(cancel)?;
             events.emit(Phase::Receiving, 0, true);
             let end = read_body(&mut response, expected, cancel, |chunk| {
-                cancelled(cancel)?;
-                file.write_all(chunk).map_err(io_error)?;
-                cancelled(cancel)?;
-                events.received += chunk.len() as u64;
-                events.emit(Phase::Receiving, 0, false);
-                Ok(())
+                write_chunk(file, chunk, cancel, events)
             })?;
             let length = regular_length(file, component.byte_size, cancel)?;
             match end {
@@ -633,6 +643,32 @@ impl<F: FnMut(Progress)> Events<F> {
         }
     }
 }
+fn write_chunk(
+    file: &mut File,
+    chunk: &[u8],
+    cancel: &AtomicBool,
+    events: &mut Events<impl FnMut(Progress)>,
+) -> Result<(), String> {
+    #[cfg(test)]
+    let mut file = tests::FaultWriter(file);
+    // Each successful write advances a finite (at most 64-KiB) slice. A zero
+    // write or error terminates immediately, preserving all successful counts.
+    let mut remaining = chunk;
+    while !remaining.is_empty() {
+        cancelled(cancel)?;
+        let count = file.write(remaining).map_err(io_error)?;
+        if count == 0 {
+            return Err(io_error(std::io::ErrorKind::WriteZero.into()));
+        }
+        events.received += count as u64;
+        remaining = &remaining[count..];
+        #[cfg(test)]
+        tests::event("write", count as u64);
+        cancelled(cancel)?;
+        events.emit(Phase::Receiving, 0, false);
+    }
+    cancelled(cancel)
+}
 fn reset(
     file: &mut File,
     cancel: &AtomicBool,
@@ -640,10 +676,12 @@ fn reset(
 ) -> Result<(), String> {
     cancelled(cancel)?;
     file.set_len(0).map_err(io_error)?;
+    events.received = 0;
+    #[cfg(test)]
+    tests::event("reset", 0);
     cancelled(cancel)?;
     file.rewind().map_err(io_error)?;
     cancelled(cancel)?;
-    events.received = 0;
     events.emit(Phase::Resetting, 0, true);
     cancelled(cancel)
 }
