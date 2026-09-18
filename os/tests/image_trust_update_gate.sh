@@ -4,6 +4,22 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 gate="$repo/os/usr/libexec/tilo-image-trust-staged"
 deployment="$repo/os/usr/libexec/tilo-deployment"
+update_policy_unit="$repo/os/usr/lib/systemd/system/tilo-update-policy@.service"
+for required in \
+  'NoNewPrivileges=yes' \
+  'PrivateDevices=yes' \
+  'PrivateNetwork=yes' \
+  'ProtectSystem=strict' \
+  'ProtectProc=invisible' \
+  'CapabilityBoundingSet=' \
+  'AmbientCapabilities=' \
+  'InaccessiblePaths=/var/lib/tilo/device-private /var/lib/tilo/secureboot /var/lib/tilo/image-trust /var/lib/tilo/rollback' \
+  'SystemCallFilter=@system-service'; do
+  grep -Fqx "$required" "$update_policy_unit" || {
+    echo "update-policy sandbox is missing: $required" >&2
+    exit 1
+  }
+done
 grep -Fq 'tilo-image-trust parse-bootc-status' "$gate"
 if grep -Eq 'python(3)?' "$gate"; then
   echo 'staged image trust still delegates authority parsing to Python' >&2
