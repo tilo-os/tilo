@@ -398,12 +398,16 @@ impl ApiTesterApp {
             .expect("active request resource publishes a nullary send action")
     }
 
-    fn menu_binding(resource: tilo_actions::Resource) -> tilo_actions::ActionBinding<String> {
+    #[allow(
+        clippy::expect_used,
+        reason = "the private menu resource constructors always export one typed open action"
+    )]
+    fn menu_binding(resource: &tilo_actions::Resource) -> tilo_actions::ActionBinding<String> {
         let spec = resource
             .actions
             .first()
             .expect("menu resources always publish their typed open action");
-        tilo_actions::ActionBinding::new(&resource, spec, |action| {
+        tilo_actions::ActionBinding::new(resource, spec, |action| {
             serde_json::Map::from_iter([("action".to_string(), serde_json::Value::String(action))])
         })
         .expect("menu choices match their exported action schema")
@@ -645,7 +649,7 @@ impl ApiTesterApp {
         )
         .with_id("api.environment-actions")
         .with_accessible_name("Environment actions")
-        .on_action(Self::menu_binding(actions::environment_menu_resource()));
+        .on_action(Self::menu_binding(&actions::environment_menu_resource()));
 
         // Send — the accent primary action.
         let send_button = Button::new("api.send", "Send", None)
@@ -674,7 +678,7 @@ impl ApiTesterApp {
         )
         .with_id("api.request-actions")
         .with_accessible_name("Request actions")
-        .on_action(Self::menu_binding(actions::request_menu_resource()));
+        .on_action(Self::menu_binding(&actions::request_menu_resource()));
 
         // Request-builder tabs.
         let tab_sink = sink.clone();
