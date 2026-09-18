@@ -247,7 +247,7 @@ impl UndoLog {
         } else {
             // Native no-op commits historically refresh their baseline. Restore
             // no-ops never enter this finalizer and preserve all bookkeeping.
-            self.last_heads = after.clone();
+            self.last_heads.clone_from(&after);
         }
         OwnedActionReceipt {
             before,

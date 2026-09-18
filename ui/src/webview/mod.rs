@@ -146,7 +146,7 @@ pub struct SiteStatus {
     pub content_status: u32,
     pub subject: String,
     pub issuer: String,
-    /// Chromium base::Time microseconds since 1601-01-01.
+    /// Chromium `base::Time` microseconds since 1601-01-01.
     pub expires: f64,
     pub permissions: Vec<(String, String)>,
 }
@@ -444,6 +444,11 @@ pub struct DmabufFrame {
 /// handle.
 pub trait WebViewEngine: Send + Sync {
     /// Create an independent document in the same runtime/profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tabs are unsupported, capacity is exhausted, or the
+    /// engine cannot create another document.
     fn create_tab(&self) -> Result<SharedEngine, String> {
         Err("This engine does not support tabs".into())
     }
@@ -456,7 +461,7 @@ pub trait WebViewEngine: Send + Sync {
         Vec::new()
     }
 
-    /// Whether this backend accepts source rules instead of WebKit JSON.
+    /// Whether this backend accepts source rules instead of `WebKit` JSON.
     fn supports_native_filtering(&self) -> bool {
         false
     }
@@ -470,7 +475,7 @@ pub trait WebViewEngine: Send + Sync {
     fn drain_events(&self) -> Vec<WebViewEvent>;
 
     /// Request native close admission. True allows immediate local close; false
-    /// completes asynchronously through TabClosed, TabDetached or TabCloseBlocked.
+    /// completes asynchronously through `TabClosed`, `TabDetached` or `TabCloseBlocked`.
     fn request_close(&self) -> bool {
         true
     }

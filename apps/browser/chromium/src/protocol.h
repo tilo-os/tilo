@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cmath>
 #include <istream>
 #include <stdexcept>
 #include <string>
@@ -8,6 +9,9 @@ constexpr uint32_t kMaxPacket = 64 * 1024 * 1024;
 constexpr uint32_t kMaxDimension = 8192;
 struct Packet { uint8_t kind = 0; std::string data; };
 enum class ReadResult { Ok, Eof, Error };
+inline bool ValidDocumentGeneration(double value) {
+  return std::isfinite(value) && value>=1 && value<=9007199254740991.0 && std::trunc(value)==value;
+}
 inline void AppendU32(std::string& s, uint32_t v) { for (int i=0;i<4;++i) s.push_back(static_cast<char>(v >> (8*i))); }
 inline uint32_t U32(const char* p) { uint32_t v=0; for (int i=0;i<4;++i) v |= uint32_t(static_cast<unsigned char>(p[i])) << (8*i); return v; }
 inline size_t FrameSize(uint32_t w, uint32_t h) {

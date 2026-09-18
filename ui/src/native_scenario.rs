@@ -62,6 +62,9 @@ pub struct Packet {
 }
 
 impl Scenario {
+    /// # Errors
+    /// Rejects invalid names, intervals, step counts, warmup bounds, non-finite inputs,
+    /// or timelines whose final deadline exceeds the clock range.
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("native scenario name must not be empty".into());
@@ -87,7 +90,7 @@ impl Scenario {
                 ));
             }
         }
-        deadline(Instant::now(), self.interval_us, self.steps.len() - 1)?;
+        deadline(Instant::now(), self.interval_us, self.steps.len().saturating_sub(1))?;
         Ok(())
     }
 }
@@ -99,6 +102,11 @@ fn parse(contents: &str) -> Result<Scenario, String> {
     Ok(scenario)
 }
 
+/// Loads a scenario and verifies any opted-in collector's exact source hash.
+///
+/// # Errors
+/// Returns an error for invalid gate configuration, unreadable scenario bytes,
+/// a mismatched gated source hash, or an invalid scenario.
 pub fn load_from_env() -> Result<Option<Scenario>, String> {
     let gate = GateConfig::from_env()?;
     let Some(path) = std::env::var_os("QOS_NATIVE_SCENARIO") else {
@@ -218,7 +226,8 @@ impl InputGate {
             // SAFETY: duplicate is a freshly returned owned descriptor.
             let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(duplicate) };
             let mut kind: libc::c_int = 0;
-            let mut size = std::mem::size_of_val(&kind) as libc::socklen_t;
+            let mut size = libc::socklen_t::try_from(std::mem::size_of_val(&kind))
+                .map_err(|_| "native gate socket option size overflow")?;
             // SAFETY: kind/size are live writable outputs with the exact stated
             // size. This rejects files and datagram sockets before any traffic.
             let status = unsafe {
@@ -253,7 +262,9 @@ impl InputGate {
         #[cfg(unix)]
         {
             use std::io::{Read, Write};
-            let expires = Instant::now() + Duration::from_secs(3);
+            let expires = Instant::now()
+                .checked_add(Duration::from_secs(3))
+                .ok_or("native gate deadline overflow")?;
             let request = GateRequest {
                 pid: std::process::id(),
                 run_nonce: self.config.run_nonce.clone(),
@@ -286,12 +297,12 @@ impl InputGate {
                 if count == 0 {
                     return Err("native gate collector closed".into());
                 }
-                reply.extend_from_slice(&chunk[..count]);
+                reply.extend(chunk.into_iter().take(count));
                 if reply.len() > 4096 {
                     return Err("native gate reply too large".into());
                 }
                 if let Some(end) = reply.iter().position(|byte| *byte == b'\n') {
-                    if end + 1 != reply.len() {
+                    if end != reply.len().saturating_sub(1) {
                         return Err("native gate has extra queued replies".into());
                     }
                     break;
@@ -308,6 +319,9 @@ impl InputGate {
 }
 
 /// Compute an absolute deadline without wrapping either duration or clock range.
+///
+/// # Errors
+/// Rejects a zero interval or an index, duration, or deadline that overflows.
 pub fn deadline(origin: Instant, interval_us: u64, index: usize) -> Result<Instant, String> {
     if interval_us == 0 {
         return Err("native scenario interval_us must be positive".into());
@@ -325,6 +339,10 @@ pub fn deadline(origin: Instant, interval_us: u64, index: usize) -> Result<Insta
 ///
 /// Joining this thread proves only delivery has ended, not that inputs were
 /// handled, changed application state, rendered, or appeared on a display.
+///
+/// # Errors
+/// Returns an error for an invalid timeline, opted-in gate configuration/source/
+/// descriptor, unsupported opted-in gate platform, or thread creation failure.
 pub fn spawn(
     scenario: Scenario,
     mut deliver: impl FnMut(Packet) -> bool + Send + 'static,
@@ -589,8 +607,13 @@ mod tests {
         ] {
             let mut child = GateChild::start(1_000, |_| {});
             let mut request = child.request();
-            if field != "approved" {
-                request[field] = serde_json::Value::Null;
+            match field {
+                "run_nonce" => request[field] = "b".repeat(32).into(),
+                "scenario_sha256" => request[field] = "0".repeat(64).into(),
+                "pid" => request[field] = serde_json::json!(0),
+                "step_id" => request[field] = serde_json::json!(2),
+                "challenge" => request[field] = "f".repeat(32).into(),
+                _ => {}
             }
             child.reply(request, field != "approved");
             assert_eq!(delivered_ids(&child.finish()), [0], "{field}");
@@ -624,6 +647,7 @@ mod tests {
     fn closed_malformed_oversized_or_expired_gate_never_delivers_non_hover() {
         use std::io::Write;
         for bytes in [
+            Vec::new(),
             b"not json\n".to_vec(),
             vec![b'x'; 4097],
             b"{\"approved\":".to_vec(),
@@ -645,6 +669,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn gate_rejects_non_socket_and_changed_scheduling_input() {
+        let mut malformed = GateChild::start(1_000, |config| {
+            *config = serde_json::json!("not a gate config")
+        });
+        let output = malformed.finish();
+        assert!(output.contains("gate-test-refused"), "{output}");
+        assert!(delivered_ids(&output).is_empty());
         for mode in ["non-socket", "changed-scheduling-input"] {
             let mut child = GateChild::start_mode(1_000, |_| {}, mode);
             let output = child.finish();

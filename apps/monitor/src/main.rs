@@ -72,28 +72,34 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         return run_interaction_bench(viewport);
     }
-    ui::launch::run(
-        &LaunchSpec::new("dev.qos.monitor", monitor::app_root)
-            .shot_handler(render_shot)
-            .scenarios(&[
-                "detail",
-                "interval-popover",
-                "resources",
-                "resources-many",
-                "empty",
-                "process-loading",
-                "process-permission-error",
-                "no-results",
-                "tree-collapsed",
-                "tree-expanded",
-                "per-process",
-                "per-process-collapsed",
-                "context-menu",
-                "kill-confirm",
-            ])
-            .configure_app(configure_app),
-    )?;
+    ui::launch::run(&launch_spec(monitor::app_root))?;
     Ok(())
+}
+
+fn launch_spec(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
+    launch_spec_base(root).history(&monitor::framework_history::HISTORY)
+}
+
+fn launch_spec_base(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
+    LaunchSpec::new("dev.qos.monitor", root)
+        .shot_handler(render_shot)
+        .scenarios(&[
+            "detail",
+            "interval-popover",
+            "resources",
+            "resources-many",
+            "empty",
+            "process-loading",
+            "process-permission-error",
+            "no-results",
+            "tree-collapsed",
+            "tree-expanded",
+            "per-process",
+            "per-process-collapsed",
+            "context-menu",
+            "kill-confirm",
+        ])
+        .configure_app(configure_app)
 }
 
 fn configure_app(app: &mut ui::App) {
@@ -467,4 +473,81 @@ fn run_interaction_bench(viewport: (u32, u32)) -> Result<(), Box<dyn std::error:
 
     report_bench_totals(&totals);
     Ok(())
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+    use ui::history_mode::{HistoryDefinition, HistoryPresentation, HistoryScopeDefinition};
+
+    static FOREIGN_HISTORY: HistoryDefinition = HistoryDefinition {
+        app_id: "dev.qos.foreign",
+        scopes: &[HistoryScopeDefinition {
+            key: "foreign",
+            title: "Foreign",
+            presentation: HistoryPresentation::External { reason: "foreign" },
+            content_schema: None,
+        }],
+    };
+
+    fn inert_root() -> Box<dyn Widget> {
+        Box::new(monitor::MonitorApp::new())
+    }
+
+    fn memory_state(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+        (
+            ui::State::new(),
+            ui::persist::Autosave::disabled("controlled Monitor launch"),
+        )
+    }
+
+    #[test]
+    fn production_launch_spec_installs_the_root_history_definition() {
+        let spec = launch_spec(inert_root).open_app_global_state(memory_state);
+        spec.validate_history_declaration().unwrap();
+        let app = spec.build_controlled_app_for_test().unwrap();
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(std::ptr::eq(
+            installed.unwrap(),
+            &monitor::framework_history::HISTORY
+        ));
+        assert!(std::ptr::eq(
+            root.unwrap(),
+            &monitor::framework_history::HISTORY
+        ));
+        assert!(
+            app.build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("History"))
+        );
+    }
+
+    #[test]
+    fn missing_and_foreign_launch_declarations_are_not_admitted() {
+        let missing = launch_spec_base(inert_root).open_app_global_state(memory_state);
+        assert_eq!(
+            missing.validate_history_declaration(),
+            Err(ui::history_mode::HistoryRegistrationError::Missing)
+        );
+        let app = missing.build_controlled_app_for_test().unwrap();
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(installed.is_none());
+        assert!(std::ptr::eq(
+            root.unwrap(),
+            &monitor::framework_history::HISTORY
+        ));
+
+        let foreign = launch_spec_base(inert_root)
+            .history(&FOREIGN_HISTORY)
+            .open_app_global_state(memory_state);
+        assert_eq!(
+            foreign.validate_history_declaration(),
+            Err(ui::history_mode::HistoryRegistrationError::ForeignSource)
+        );
+        assert!(matches!(
+            foreign.build_controlled_app_for_test(),
+            Err(LaunchError::Operation(message)) if message.contains("different installed application")
+        ));
+    }
 }

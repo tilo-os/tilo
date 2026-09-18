@@ -923,6 +923,34 @@ fn site_protocol_roundtrips_bounded_status_and_rejects_malformed_fields() {
 }
 
 #[test]
+fn scoped_site_reload_roundtrips_with_document_bounds() {
+    let command = WebViewCommand::SiteAction {
+        request_id: 7,
+        origin: "https://a.test".into(),
+        generation: 2,
+        action: "reload".into(),
+    };
+    assert!(command_within_limits(&command));
+    assert_eq!(
+        encode_command(command).unwrap(),
+        json!({"op":"site_action","request_id":7,"origin":"https://a.test","generation":2,"action":"reload"})
+    );
+    let reply = json!({"event":"site_result","request_id":7,"origin":"https://a.test","generation":2,"action":"reload","success":false,"message":"Page changed"});
+    assert!(validate_event(&reply).is_ok());
+    assert!(
+        matches!(decode_event(&reply), Some(WebViewEvent::SiteResult { generation: 2, success: false, action, .. }) if action == "reload")
+    );
+    for generation in [0, 9_007_199_254_740_992] {
+        assert!(!command_within_limits(&WebViewCommand::SiteAction {
+            request_id: 7,
+            origin: "https://a.test".into(),
+            generation,
+            action: "reload".into(),
+        }));
+    }
+}
+
+#[test]
 fn credential_protocol_encodes_actions_without_secret_fields() {
     use crate::webview::{CredentialAction, CredentialRequest};
     let request = CredentialRequest {

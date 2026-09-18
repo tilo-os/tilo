@@ -1334,26 +1334,23 @@ impl VideoPlayer {
             let (pw, _) = text_renderer.measure(&position, time.size, None);
             (f64::from(pw) <= room).then_some((position, pw))
         };
-        let track_x1 = match shown {
-            Some((text, width)) => {
-                let time_x0 = time_x1 - f64::from(width);
-                let top = mid_y - f64::from(time.height) * 0.5;
-                self.time_label_rect =
-                    Rect::new(time_x0, top, time_x1, top + f64::from(time.height));
-                text_renderer.draw_text(
-                    scene,
-                    &text,
-                    time.size,
-                    ink_dim,
-                    translated(transform, time_x0, top),
-                    None,
-                );
-                time_x0 - pad
-            }
-            None => {
-                self.time_label_rect = Rect::ZERO;
-                time_x1
-            }
+        let track_x1 = if let Some((text, width)) = shown {
+            let time_x0 = time_x1 - f64::from(width);
+            let top = mid_y - f64::from(time.height) * 0.5;
+            self.time_label_rect =
+                Rect::new(time_x0, top, time_x1, top + f64::from(time.height));
+            text_renderer.draw_text(
+                scene,
+                &text,
+                time.size,
+                ink_dim,
+                translated(transform, time_x0, top),
+                None,
+            );
+            time_x0 - pad
+        } else {
+            self.time_label_rect = Rect::ZERO;
+            time_x1
         };
         self.paint_scrub_track(scene, transform, theme, layout, track_x0, track_x1);
     }

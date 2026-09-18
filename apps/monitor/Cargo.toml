@@ -32,5 +32,8 @@ winit.workspace = true
 taffy.workspace = true
 sysinfo.workspace = true
 
+[dev-dependencies]
+ui-test-support = { package = "ui", path = "../../ui", features = ["test-support"] }
+
 [lints]
 workspace = true

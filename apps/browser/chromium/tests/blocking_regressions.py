@@ -97,6 +97,15 @@ class BlockingRegressions(unittest.TestCase):
         status=self.site_status(request+100)
         self.host.send(op='site_action',request_id=request,origin=origin or self.site_origin,generation=generation or status['generation'],action=kind)
         return self.host.until(lambda e:e['event']=='site_result' and e['request_id']==request)
+    def toggle_and_reload(self, kind):
+        changed = self.site_action(kind)
+        self.assertTrue(changed['success'], changed)
+        self.host.send(op='site_action', request_id=20, origin=changed['origin'],
+                       generation=changed['generation'], action='reload')
+        reloaded = self.host.until(lambda event: event['event']=='site_result' and event['request_id']==20)
+        self.assertTrue(reloaded['success'], reloaded)
+        self.assertEqual(reloaded['generation'], changed['generation'])
+        self.host.until(lambda event: event['event']=='loaded' and event['url']==self.site_origin+'/site-parent')
     def site_state(self):
         self.host.settle(.3)
         return json.loads(self.host.until(lambda e:e['event']=='title' and e['title'].startswith('{"main":') and json.loads(e['title'])['child'] is not None)['title'])
@@ -111,19 +120,50 @@ class BlockingRegressions(unittest.TestCase):
                 self.assertEqual(state[frame],{'cosmetic':'none' if protected else 'block','scriptlet':protected,'supplement':protected,'network':not protected},state)
             self.assertEqual(self.site_status()['blocked'],4 if protected else 0)
         self.host.navigate(self.site_origin+'/site-parent');verify(True)
-        self.assertTrue(self.site_action('disable')['success'])
-        self.host.navigate(self.site_origin+'/site-parent');verify(False)
+        self.toggle_and_reload('disable');verify(False)
         self.site_origin=self.site_origin.replace('127.0.0.1','localhost')
         self.host.navigate(self.site_origin+'/site-parent');verify(True)
         self.site_origin=self.site_origin.replace('localhost','127.0.0.1')
         self.host.navigate(self.site_origin+'/site-parent');verify(False)
-        self.assertTrue(self.site_action('enable')['success'])
-        self.host.navigate(self.site_origin+'/site-parent');verify(True)
+        self.toggle_and_reload('enable');verify(True)
         old=self.site_status();self.host.navigate(self.site_origin+'/site-parent')
         self.assertFalse(self.site_action('disable',generation=old['generation'])['success'])
         self.assertFalse(self.site_action('clear',origin='http://wrong.test')['success'])
         self.config(False,rules='');status=self.site_status();self.assertFalse(status['effective']);self.assertFalse(status['global_enabled'])
         self.host.navigate(self.site_origin+'/site-parent');verify(False)
+
+    def test_scoped_reload_rejects_same_and_cross_origin_replacement(self):
+        self.site_origin = self.url.rstrip('/')
+        self.host.navigate(self.site_origin+'/site-parent')
+        for other in [self.site_origin, self.site_origin.replace('127.0.0.1','localhost')]:
+            before = self.site_status()
+            original = self.site_origin
+            # Replace the document, then reject the original reload scope.
+            self.host.send(op='scripts', scripts=['window.reloadGuardFixture=true'])
+            self.site_origin = other
+            self.host.navigate(other+'/site-parent')
+            current = self.site_status()
+            self.assertNotEqual(current['generation'], before['generation'])
+            rejected = self.site_action('reload', request=40, origin=original,
+                                        generation=before['generation'])
+            self.assertFalse(rejected['success'], rejected)
+            self.assertEqual(rejected['generation'], before['generation'])
+            self.assertEqual(self.site_status()['generation'], current['generation'])
+
+    def test_scoped_reload_uses_updated_document_start_scripts(self):
+        self.site_origin = self.url.rstrip('/')
+        self.host.navigate(self.url)
+        before = self.site_status()
+        self.host.send(op='scripts', scripts=['window.docStartReady=true'])
+        self.host.send(op='site_action', request_id=50, origin=self.site_origin,
+                       generation=before['generation'], action='reload')
+        result = self.host.until(lambda event: event['event']=='site_result' and event['request_id']==50)
+        self.assertTrue(result['success'], result)
+        self.host.until(lambda event: event['event']=='loaded' and event['url']==self.url)
+        # The first inline script reads this value, so setting it in the old
+        # page or after the replacement document starts cannot satisfy this.
+        title = self.host.until(lambda event: event['event']=='title' and event['title'].startswith('early-'))
+        self.assertEqual(title['title'], 'early-true')
 
     def test_burst_counts_are_aggregated_and_reset_on_document_navigation(self):
         self.config(rules='/counted-burst$xmlhttprequest')

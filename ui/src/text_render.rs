@@ -1247,6 +1247,41 @@ struct InkBoundsPen {
     invalid: bool,
 }
 
+fn outline_ink_bounds(font: &Font, glyph_id: u16, size: f32, coords: &[vello::NormalizedCoord]) -> Option<Rect> {
+    use skrifa::instance::{NormalizedCoord, Size};
+    use skrifa::outline::DrawSettings;
+    use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
+    let face = FontRef::from_index(font.data.as_ref(), font.index).ok()?;
+    // Outline ink cannot bound layered color or bitmap glyphs.
+    if [
+        b"COLR", b"CPAL", b"CBDT", b"CBLC", b"sbix", b"SVG ", b"EBDT", b"EBLC",
+    ]
+    .iter()
+    .any(|tag| face.table_data(Tag::new(tag)).is_some())
+    {
+        return None;
+    }
+    let location: Vec<_> = coords
+        .iter()
+        .map(|v| NormalizedCoord::from_bits(*v))
+        .collect();
+    let outline = face
+        .outline_glyphs()
+        .get(GlyphId::new(u32::from(glyph_id)))?;
+    let mut pen = InkBoundsPen::default();
+    outline
+        .draw(
+            DrawSettings::unhinted(Size::new(size), location.as_slice()),
+            &mut pen,
+        )
+        .ok()?;
+    if pen.invalid {
+        None
+    } else {
+        Some(pen.bounds.unwrap_or(Rect::ZERO))
+    }
+}
+
 impl InkBoundsPen {
     fn point(&mut self, x: f32, y: f32) {
         if !x.is_finite() || !y.is_finite() {
@@ -1256,7 +1291,7 @@ impl InkBoundsPen {
         let point = Point::new(f64::from(x), -f64::from(y));
         self.bounds = Some(
             self.bounds
-                .map_or(Rect::from_points(point, point), |b| b.union_pt(point)),
+                .map_or_else(|| Rect::from_points(point, point), |b| b.union_pt(point)),
         );
     }
 }
@@ -2243,14 +2278,16 @@ impl TextRenderer {
             return false;
         };
         let shift = layout.baseline_at(layout.glyph_global_byte(run.line_i, first.start));
-        if !run.glyphs.iter().all(|glyph| {
+        #[allow(clippy::float_cmp, reason = "batching requires exactly equal glyph sizes, not approximately equal sizes")]
+        let uniform = run.glyphs.iter().all(|glyph| {
             glyph.font_id == first.font_id
                 && glyph.font_weight == first.font_weight
                 && glyph.color_opt == first.color_opt
                 && glyph.font_size == first.font_size
                 && layout.baseline_at(layout.glyph_global_byte(run.line_i, glyph.start)) == shift
                 && run.text.get(glyph.start..glyph.end) != Some("\u{ad}")
-        }) {
+        });
+        if !uniform {
             return false;
         }
         self.flush_glyphs(
@@ -2437,16 +2474,12 @@ impl TextRenderer {
         transform: Affine,
         clip: Rect,
     ) -> bool {
-        use skrifa::instance::{NormalizedCoord, Size};
-        use skrifa::outline::DrawSettings;
-        use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
+        #[allow(clippy::cast_possible_truncation, reason = "the narrowing is intentional to reject transforms that overflow f32")]
+        let transform_finite = transform.as_coeffs().iter().all(|v| v.is_finite() && (*v as f32).is_finite());
         if ![clip.x0, clip.y0, clip.x1, clip.y1]
             .iter()
             .all(|v| v.is_finite())
-            || !transform
-                .as_coeffs()
-                .iter()
-                .all(|v| v.is_finite() && (*v as f32).is_finite())
+            || !transform_finite
             || !size.is_finite()
             || size <= 0.0
             || !line_y.is_finite()
@@ -2482,40 +2515,10 @@ impl TextRenderer {
             let bounds = if let Some(bounds) = cached.get(&glyph.glyph_id) {
                 *bounds
             } else {
-                let bounds = (|| {
-                    let face = FontRef::from_index(font.data.as_ref(), font.index).ok()?;
-                    // Outline ink cannot bound layered color or bitmap glyphs.
-                    if [
-                        b"COLR", b"CPAL", b"CBDT", b"CBLC", b"sbix", b"SVG ", b"EBDT", b"EBLC",
-                    ]
-                    .iter()
-                    .any(|tag| face.table_data(Tag::new(tag)).is_some())
-                    {
-                        return None;
-                    }
-                    let location: Vec<_> = coords
-                        .iter()
-                        .map(|v| NormalizedCoord::from_bits(*v))
-                        .collect();
-                    let outline = face
-                        .outline_glyphs()
-                        .get(GlyphId::new(u32::from(glyph.glyph_id)))?;
-                    let mut pen = InkBoundsPen::default();
-                    outline
-                        .draw(
-                            DrawSettings::unhinted(Size::new(size), location.as_slice()),
-                            &mut pen,
-                        )
-                        .ok()?;
-                    if pen.invalid {
-                        None
-                    } else {
-                        Some(pen.bounds.unwrap_or(Rect::ZERO))
-                    }
-                })();
+                let bounds = outline_ink_bounds(font, glyph.glyph_id, size, coords);
                 if *entry_count < SHAPE_CACHE_LIMIT {
                     cached.insert(glyph.glyph_id, bounds);
-                    *entry_count += 1;
+                    *entry_count = entry_count.saturating_add(1);
                 }
                 bounds
             };
@@ -2528,6 +2531,7 @@ impl TextRenderer {
             if !x.is_finite() || !y.is_finite() {
                 return false;
             }
+            #[allow(clippy::arithmetic_side_effects, reason = "rectangle translation is floating-point arithmetic; nonfinite bounds are rejected below")]
             let local = bounds + vello::kurbo::Vec2::new(x, y);
             let projected = transform.transform_rect_bbox(local);
             let magnitude = [

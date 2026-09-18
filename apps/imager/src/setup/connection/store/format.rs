@@ -260,9 +260,31 @@ impl Connection {
         })
     }
 }
+pub(super) const READ_QUANTUM: u64 = 4 * 1024 * 1024;
+pub(super) const READ_LIMIT: u64 = 1024 * 1024 * 1024;
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct NativeBudget {
+    pub version: u8,
+    pub reserved: u64,
+    pub sequence: u64,
+}
+impl NativeBudget {
+    pub fn initial() -> Self { Self { version: 1, reserved: 0, sequence: 0 } }
+    pub fn validate(&self) -> Result<(), StoreError> {
+        if self.version != 1 || self.reserved > READ_LIMIT
+            || self.reserved % READ_QUANTUM != 0 || self.sequence > 256
+            || (self.sequence == 0) != (self.reserved == 0)
+            || self.sequence.checked_mul(READ_QUANTUM).is_none_or(|n| n > self.reserved)
+        { return Err(StoreError::Corrupt); }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Operation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_budget: Option<NativeBudget>,
     pub connection: [u8; 16],
     pub serial: u64,
     pub revision: u64,
@@ -297,6 +319,7 @@ impl Operation {
             _ => return Err(StoreError::RecoveryRequired),
         };
         Ok(Self {
+            native_budget: None,
             connection: intent.connection.0,
             serial,
             revision: next(intent.expected_revision)?,
@@ -313,6 +336,7 @@ impl Operation {
         })
     }
     pub fn decode(&self) -> Result<OperationReceipt, StoreError> {
+        if let Some(budget) = &self.native_budget { budget.validate()?; }
         let decision = match self.decision {
             0 => Decision::VerifyEqual,
             1 => Decision::Propagate { from: Side::Source },
@@ -562,6 +586,14 @@ pub(super) fn key(table: u8, connection: [u8; 16], serial: u64) -> Vec<u8> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
 pub(super) enum Change {
+    ReadReserve {
+        connection: [u8; 16],
+        serial: u64,
+        expected: u64,
+        fence: u64,
+        previous: NativeBudget,
+        next: NativeBudget,
+    },
     NativeBound {
         fact: NativeRecoveryFact,
         expected: u64,

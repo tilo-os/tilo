@@ -187,7 +187,7 @@ impl SidebarDrawer {
         self.docked_width = AuthoredExtent::text(px);
         self
     }
-    /// Docked width of an **icon rail** (firewall / backups / api_tester
+    /// Docked width of an **icon rail** (firewall / backups / `api_tester`
     /// dock a glyph column): follows `ui_scale`, never the text.
     #[must_use]
     pub fn icon_docked_width(mut self, px: f64) -> Self {

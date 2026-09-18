@@ -256,6 +256,10 @@ impl RenderThreadHandle {
 ///
 /// Returns an error if the OS refuses to spawn the `ui-render` thread (e.g.
 /// the process is out of resources for new threads).
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the single GPU owner's resize/render/trace/recycle/shutdown sequence and resource drop order visible together"
+)]
 pub fn spawn_render_thread(
     render_cx: RenderContext,
     mut surface: RenderSurface<'static>,
@@ -1020,7 +1024,7 @@ fn render_one_frame(
         observer.arm(&surface.surface, frame_ix, cpu_frame_id);
     }
     let ((), present_bounds) = timing::around(presentation.is_some() && timing::enabled(), || {
-        surface_texture.present()
+        surface_texture.present();
     });
     if present_dbg {
         let present_us = t_present.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e6);

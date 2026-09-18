@@ -159,7 +159,7 @@ impl DailyControls {
         Button::new(id, label, None)
             .with_size(
                 crate::browser_widget::labelled_width(72.0, text_scale),
-                crate::browser_widget::TOOLBAR_CONTROL_HEIGHT,
+                crate::browser_widget::toolbar_control_height(text_scale),
             )
             .on_effect(move || pending.set(Some(action)))
     }

@@ -106,7 +106,7 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
                 let mut exposed = actions.clone();
                 exposed.extend(children.clone());
                 for row in &mut exposed {
-                    row.parent_resource = parent.to_owned();
+                    parent.clone_into(&mut row.parent_resource);
                 }
                 exposed
             };

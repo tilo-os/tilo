@@ -63,8 +63,10 @@
 pub mod actions;
 pub mod app;
 pub mod doc;
+pub mod framework_history;
 pub mod model;
 pub mod pixels;
+mod presentation;
 pub mod reference;
 pub mod search;
 pub mod strings;
@@ -295,3 +297,6 @@ pub fn seed_scenario(
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod framework_history_tests;

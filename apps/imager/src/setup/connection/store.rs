@@ -290,6 +290,7 @@ pub(super) struct ConnectionStore {
     session: Arc<()>,
     native_lifetime: Arc<()>,
     native_correlation: [u8; 16],
+    native_reads: BTreeMap<Vec<u8>, Arc<super::transaction::native::OperationReads>>,
     // One sticky admission gate per loaded connection, bounded by the store's
     // 65,536-connection limit. External handle loss cannot undo a requested stop.
     native_gates: BTreeMap<[u8; 16], Arc<super::transaction::AdmissionGate>>,
@@ -372,6 +373,7 @@ impl ConnectionStore {
             session: Arc::new(()),
             native_lifetime: Arc::new(()),
             native_correlation: native_correlation()?,
+            native_reads: BTreeMap::new(),
             native_gates: BTreeMap::new(),
             poisoned: false,
             connections: 0,
@@ -648,11 +650,17 @@ impl ConnectionStore {
         session: &super::transaction::TransactionSession,
     ) -> Result<LiveOperation, StoreError> {
         session.validate(intent.connection, &self.native_lifetime)?;
-        let before = self.load_connection(intent.connection)?;
-        let ack = self.begin_intent(intent.clone())?;
+        self.guard()?;
+        let connection = self.connection(intent.connection)?;
+        let before = connection.decode()?;
+        let serial = format::next(connection.serial)?;
+        let mut operation = format::Operation::new(intent.clone(), serial, &connection)?;
+        operation.native_budget = Some(format::NativeBudget::initial());
+        let id = OperationId { connection: intent.connection, serial };
+        self.append(Change::Intent { operation })?;
         let revision = format::next(before.revision)?;
         Ok(LiveOperation {
-            id: ack.value,
+            id,
             lifetime: Arc::downgrade(&self.native_lifetime),
             revision,
             admission: revision,
@@ -661,8 +669,97 @@ impl ConnectionStore {
             intent,
             endpoints: [before.source.identity, before.destination.identity],
             correlation: self.native_correlation,
-            reads: Arc::new(super::transaction::native::OperationReads::new()),
+            reads: self.native_read_state(id, 0)?,
         })
+    }
+    fn native_read_state(&mut self, id: OperationId, sequence: u64) -> Result<Arc<super::transaction::native::OperationReads>, StoreError> {
+        let key = format::key(1, id.connection.0, id.serial);
+        if let Some(reads) = self.native_reads.get(&key) { return Ok(Arc::clone(reads)); }
+        // Bounded by the existing non-connection row limit, including retained work.
+        if self.native_reads.len() >= 1_048_576 { return Err(StoreError::LimitExceeded); }
+        let reads = Arc::new(super::transaction::native::OperationReads::reopened(sequence));
+        self.native_reads.insert(key, Arc::clone(&reads));
+        Ok(reads)
+    }
+    pub(super) fn reserve_native_reads(
+        &mut self,
+        live: &mut LiveOperation,
+        session: &super::transaction::TransactionSession,
+        bytes: u64,
+        deadline: std::time::Instant,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), StoreError> {
+        self.guard()?;
+        self.check_native(live)?;
+        session.validate(live.id.connection, &self.native_lifetime)?;
+        session.require_idle()?;
+        if cancel.load(std::sync::atomic::Ordering::Acquire) || std::time::Instant::now() >= deadline {
+            return Err(StoreError::Cancelled);
+        }
+        if bytes == 0 { return Err(StoreError::LimitExceeded); }
+        let previous = self.operation(live.id)?.native_budget.ok_or(StoreError::RecoveryRequired)?;
+        let charge = bytes.checked_add(format::READ_QUANTUM - 1)
+            .and_then(|n| (n / format::READ_QUANTUM).checked_mul(format::READ_QUANTUM))
+            .ok_or(StoreError::LimitExceeded)?;
+        let next = format::NativeBudget {
+            version: 1,
+            reserved: previous.reserved.checked_add(charge).filter(|n| *n <= format::READ_LIMIT).ok_or(StoreError::LimitExceeded)?,
+            sequence: format::next(previous.sequence)?,
+        };
+        next.validate()?;
+        self.append(Change::ReadReserve { connection: live.id.connection.0, serial: live.id.serial,
+            expected: live.revision, fence: live.fence, previous, next: next.clone() })?;
+        live.revision = format::next(live.revision)?;
+        let stopped = session.require_idle().is_err()
+            || cancel.load(std::sync::atomic::Ordering::Acquire)
+            || std::time::Instant::now() >= deadline;
+        if live.reads.grant(next.sequence, if stopped { 0 } else { charge }).is_err() {
+            self.poison_native();
+            return Err(StoreError::RecoveryRequired);
+        }
+        if stopped { return Err(StoreError::Cancelled); }
+        Ok(())
+    }
+    fn resume_native(
+        &mut self,
+        id: OperationId,
+        session: &super::transaction::TransactionSession,
+    ) -> Result<LiveOperation, StoreError> {
+        self.guard()?;
+        session.validate(id.connection, &self.native_lifetime)?;
+        session.require_idle()?;
+        let connection = self.connection(id.connection)?;
+        let operation = self.operation(id)?;
+        let budget = operation.native_budget.as_ref().ok_or(StoreError::RecoveryRequired)?;
+        let receipt = operation.decode()?;
+        let before = connection.decode()?;
+        let live = LiveOperation {
+            id, lifetime: Arc::downgrade(&self.native_lifetime), revision: operation.revision,
+            admission: format::next(operation.expected)?, baseline: operation.baseline,
+            fence: connection.fence, intent: receipt.intent,
+            endpoints: [before.source.identity, before.destination.identity],
+            correlation: self.native_correlation, reads: self.native_read_state(id, budget.sequence)?,
+        };
+        self.check_native(&live)?;
+        Ok(live)
+    }
+    fn reduce_read_reserve(&self, id: OperationId, expected: u64, fence: u64,
+        previous: &format::NativeBudget, next: &format::NativeBudget) -> Result<Vec<Row>, StoreError> {
+        let mut connection = self.connection(id.connection)?;
+        let mut operation = self.operation(id)?;
+        if connection.lifecycle != 0 || connection.fence != fence { return Err(StoreError::Disconnected); }
+        if connection.revision != expected || operation.revision != expected || connection.pending != Some(id.serial)
+            || operation.native_budget.as_ref() != Some(previous) { return Err(StoreError::StaleRevision); }
+        previous.validate()?;
+        next.validate()?;
+        if next.sequence != format::next(previous.sequence)? || next.reserved <= previous.reserved {
+            return Err(StoreError::Corrupt);
+        }
+        let revision = format::next(expected)?;
+        connection.revision = revision;
+        operation.revision = revision;
+        operation.native_budget = Some(next.clone());
+        Ok(vec![Row::Connection(connection), Row::Operation(operation)])
     }
     pub(super) fn check_native(&self, live: &LiveOperation) -> Result<(), StoreError> {
         if !live.lifetime.ptr_eq(&Arc::downgrade(&self.native_lifetime))
@@ -948,6 +1045,9 @@ impl ConnectionStore {
             return Err(StoreError::Corrupt);
         }
         match &event.change {
+            Change::ReadReserve { connection, serial, expected, fence, previous, next } =>
+                self.reduce_read_reserve(OperationId { connection: ConnectionId(*connection), serial: *serial },
+                    *expected, *fence, previous, next),
             Change::NativeBound {
                 fact,
                 expected,
@@ -1096,7 +1196,9 @@ impl ConnectionStore {
         if connection.pending.is_some() || self.active_intents >= 1024 {
             return Err(StoreError::RecoveryRequired);
         }
-        if operation.stage != 0 || !operation.recovery.is_empty() {
+        if operation.stage != 0 || !operation.recovery.is_empty()
+            || operation.native_budget.as_ref().is_some_and(|budget| budget != &format::NativeBudget::initial())
+        {
             return Err(StoreError::Corrupt);
         }
         match receipt.intent.decision {

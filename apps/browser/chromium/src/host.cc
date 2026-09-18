@@ -386,10 +386,20 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     const auto origin=command->GetString("origin").ToString(),op=command->GetString("op").ToString();const int request=command->GetInt("request_id");
     auto document=request_filter->Document(browser_->GetIdentifier());const auto actual=qos::Origin(browser_->GetMainFrame()->GetURL());
     const auto action=op=="site_status"?"status":command->GetString("action").ToString();
+    // Action replies echo their requested document, including stale failures,
+    // so chrome can finish the matching request instead of waiting for timeout.
+    const auto reply_generation=op=="site_action"?static_cast<uint64_t>(Number(command,"generation")):(document?document->generation:0);
     if(origin.empty() || origin!=actual || !document || document->origin!=actual || (op=="site_action" && Number(command,"generation")!=document->generation)) {
-      SiteResult(request,origin,document?document->generation:0,action,false,"Page changed; reopen site information");return;
+      SiteResult(request,origin,reply_generation,action,false,"Page changed; reopen site information");return;
     }
     if(op=="site_action") {
+      if(action=="reload") {
+        // Command has already waited for document-start registration, then this
+        // method rechecked the original scope. The UI thread cannot navigate
+        // between that check and the ordinary reload command below.
+        SiteResult(request,origin,document->generation,action,true,"Reloading this page");
+        auto reload=CefDictionaryValue::Create();reload->SetString("op","reload");Command(reload);return;
+      }
       if(action=="clear") {
         if(site_clear_->Busy())SiteResult(request,origin,document->generation,action,false,"A storage clear is already running");
         else site_clear_->Clear(request,origin,document->generation);
@@ -401,7 +411,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       } else if(action=="enable" || action=="disable") {
         auto origins=request_filter->Snapshot()->exceptions;if(action=="disable")origins.insert(origin);else origins.erase(origin);
         if(origins.size()>1024) {SiteResult(request,origin,document->generation,action,false,"Site exception limit reached");return;}
-        request_filter->Exceptions(origins);PublishFilters();SiteResult(request,origin,document->generation,action,true,"Protection preference changed; reload to apply all layers");
+        request_filter->Exceptions(origins);PublishFilters();SiteResult(request,origin,document->generation,action,true,"Protection preference changed");
       }
       return;
     }
@@ -429,19 +439,26 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     auto pending=std::move(pending_navigation_);pending_navigation_.clear();
     for(auto& command:pending) Command(command);
   }
+  bool DeferNavigation(CefRefPtr<CefDictionaryValue> command) {
+    if(!document_scripts_->Busy())return false;
+    if(pending_navigation_.size()>=256) {StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();return true;}
+    TraceGeometry("navigation-queued",id_);pending_navigation_.push_back(command->Copy(false));return true;
+  }
   void Command(CefRefPtr<CefDictionaryValue> d) {
     CEF_REQUIRE_UI_THREAD();
     std::string op=d->GetString("op");
     if(op=="shutdown") { CloseHost();return; }
     if(!browser_ || closing) return;
     if(transfer_owner_) {if(d->GetString("op")=="close_tab" && !downloads->Detach(id_)) CloseNative();return;}
-    if(op=="site_status" || op=="site_action") {SiteCommand(d);return;}
+    if(op=="site_status" || op=="site_action") {
+      // Preserve the full scoped command across registration, rather than
+      // queueing a generic reload that could act on a later document.
+      if(op=="site_action" && d->GetString("action")=="reload" && DeferNavigation(d))return;
+      SiteCommand(d);return;
+    }
     if(op=="site_exceptions") {std::set<std::string> origins;auto list=d->GetList("origins");for(size_t i=0;i<list->GetSize();++i)origins.insert(list->GetString(i));request_filter->Exceptions(origins);PublishFilters();return;}
     if(op=="audio_muted") { browser_->GetHost()->SetAudioMuted(d->GetBool("muted"));auto state=CefDictionaryValue::Create();state->SetBool("muted",browser_->GetHost()->IsAudioMuted());Event("audio_muted",state);return; }
-    if((op=="navigate" || op=="back" || op=="forward" || op=="reload" || op=="history_entry") && document_scripts_->Busy()) {
-      if(pending_navigation_.size()>=256) { StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();return; }
-      TraceGeometry("navigation-queued",id_);pending_navigation_.push_back(d->Copy(false));return;
-    }
+    if((op=="navigate" || op=="back" || op=="forward" || op=="reload" || op=="history_entry") && DeferNavigation(d))return;
     auto host=browser_->GetHost();auto frame=browser_->GetMainFrame();
     if(op=="visibility") {
       const bool was_visible=visible_;
@@ -998,7 +1015,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="site_status" || op=="site_action") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("origin",VTYPE_STRING) || d->GetString("origin").length()>8192)return false;
     if(op=="site_status")return true;
-    const auto action=d->GetString("action");return number("generation") && Number(d,"generation")>0 && (action=="clear" || action=="revoke" || action=="enable" || action=="disable");
+    const auto action=d->GetString("action");return number("generation") && qos::ValidDocumentGeneration(Number(d,"generation")) && (action=="clear" || action=="revoke" || action=="enable" || action=="disable" || action=="reload");
   }
   if(op=="filter_rules") return type("rules",VTYPE_STRING) && (type("enabled",VTYPE_BOOL) || type("enabled",VTYPE_NULL));
   return op=="back" || op=="forward" || op=="reload" || op=="stop" || op=="clear_data" || op=="devtools" || op=="download_cancel_all" || op=="shutdown";

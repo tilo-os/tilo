@@ -61,7 +61,7 @@ const CHIP_H: f64 = 62.0; // authored 1× saved-place chip height (see `ChipMetr
 /// Base text size of a saved-place chip's city name (15pt sits between the
 /// type scale's `base` and `lg`); its condition line reads `sm`, the trailing
 /// temperature `x2l`, and the gap between chips is the theme's `s2`.
-const CHIP_NAME_TEXT: f32 = 15.0;
+pub(crate) const CHIP_NAME_TEXT: f32 = 15.0;
 /// Authored 1× condition glyph size inside a chip.
 const CHIP_ICON: f64 = 40.0;
 /// Authored 1× height of the detail header (city, region, date/time, refresh)
@@ -100,13 +100,13 @@ fn at_least_whole(minimum: f64, measured: f64) -> f64 {
 fn text_xs() -> f32 {
     TypeScale::default().xs
 }
-fn text_sm() -> f32 {
+pub(crate) fn text_sm() -> f32 {
     TypeScale::default().sm
 }
 fn text_base() -> f32 {
     TypeScale::default().base
 }
-fn text_x2l() -> f32 {
+pub(crate) fn text_x2l() -> f32 {
     TypeScale::default().x2l
 }
 
@@ -136,19 +136,19 @@ fn authored_h(authored: f64, sizes: &[f32], text_scale: f32) -> f64 {
 /// Saved-place row geometry for the current text scale: the authored 62px
 /// chip at 1×, growing once the measured name + condition lines need more.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct ChipMetrics {
-    chip_h: f64,
+pub(crate) struct ChipMetrics {
+    pub(crate) chip_h: f64,
     /// Gap between consecutive chips — the theme's `s2`.
-    gap: f64,
-    name_h: f64,
-    sub_h: f64,
-    temp_h: f64,
+    pub(crate) gap: f64,
+    pub(crate) name_h: f64,
+    pub(crate) sub_h: f64,
+    pub(crate) temp_h: f64,
     /// Condition glyph size, never taller than the text block beside it.
-    icon: f64,
+    pub(crate) icon: f64,
 }
 
 impl ChipMetrics {
-    fn new(spacing: &Spacing, text_scale: f32) -> Self {
+    pub(crate) fn new(spacing: &Spacing, text_scale: f32) -> Self {
         let name_h = line_h(CHIP_NAME_TEXT, text_scale);
         let sub_h = line_h(text_sm(), text_scale);
         let temp_h = line_h(text_x2l(), text_scale);
@@ -166,7 +166,7 @@ impl ChipMetrics {
         }
     }
 
-    fn pitch(self) -> f64 {
+    pub(crate) fn pitch(self) -> f64 {
         self.chip_h + self.gap
     }
 }
@@ -293,6 +293,9 @@ pub struct Core {
     // --- network coordination (drained by the app's net pump) ---
     outbox: Vec<Request>,
     inflight: usize,
+    content_generation: u64,
+    next_ticket: u64,
+    dispatched: HashMap<u64, (u64, RequestKind)>,
     pub status: String,
 
     // --- overview: collapse-to-rail (wide layout only) ---
@@ -352,6 +355,9 @@ impl Core {
             hourly_bar: Scrollbar::horizontal(),
             outbox: Vec::new(),
             inflight: 0,
+            content_generation: 0,
+            next_ticket: 0,
+            dispatched: HashMap::new(),
             status: String::new(),
             overview_collapsible: false,
             collapse_toggle: false,
@@ -362,9 +368,121 @@ impl Core {
 
     // ---- app-facing coordination ------------------------------------
 
-    /// Take the queued network requests (the app pumps them to the worker).
+    /// Take raw requests for offline consumers. Live dispatch uses the ticketed
+    /// path below, preserving the identity assigned at enqueue time.
     pub fn take_outbox(&mut self) -> Vec<Request> {
         std::mem::take(&mut self.outbox)
+            .into_iter()
+            .map(|request| match request {
+                Request::Tracked { request, .. } => *request,
+                request => request,
+            })
+            .collect()
+    }
+
+    fn enqueue_request(&mut self, request: Request) {
+        self.next_ticket += 1;
+        self.outbox.push(Request::Tracked {
+            ticket: self.next_ticket,
+            generation: self.content_generation,
+            request: Box::new(request),
+        });
+    }
+
+    pub(crate) fn request_marker(&self) -> u64 {
+        self.next_ticket
+    }
+
+    /// Capture only the synchronous enqueue operation following this marker.
+    /// Later dispatch batches cannot change an invocation's request ownership.
+    pub(crate) fn queued_weather_tickets_after(
+        &self,
+        marker: u64,
+    ) -> std::collections::HashSet<u64> {
+        self.outbox
+            .iter()
+            .filter_map(|r| match r {
+                Request::Tracked {
+                    ticket, request, ..
+                } if *ticket > marker && request.kind() != RequestKind::Geocode => Some(*ticket),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Dispatch retains each request's original ticket and content incarnation.
+    pub(crate) fn take_tracked_outbox(&mut self) -> Vec<Request> {
+        let requests = std::mem::take(&mut self.outbox);
+        for request in &requests {
+            if let Request::Tracked {
+                ticket,
+                generation,
+                request,
+            } = request
+            {
+                self.dispatched
+                    .insert(*ticket, (*generation, request.kind()));
+            }
+        }
+        requests
+    }
+
+    /// Fail only requests still awaiting a response after the worker channel
+    /// closes. These flow through the normal ticket reducer, exactly once.
+    pub(crate) fn disconnected_responses(&self) -> Vec<Response> {
+        self.dispatched
+            .iter()
+            .map(|(&ticket, &(generation, kind))| Response::Tracked {
+                ticket,
+                generation,
+                response: Box::new(Response::Error {
+                    kind,
+                    message: "Weather worker disconnected".into(),
+                }),
+            })
+            .collect()
+    }
+
+    /// Adopt restored/remote authored places, invalidating stale gestures and
+    /// unsent effects. Dispatched effects retain their real settlement count.
+    pub(crate) fn adopt_saved_places(&mut self, persisted: &mut WeatherModel) {
+        let changed = self.model.locations != persisted.locations;
+        for l in &persisted.locations {
+            if self.model.locations.iter().any(|old| old == l) {
+                if let Some(s) = self.model.snapshots.get(&l.id) {
+                    persisted.snapshots.insert(l.id, s.clone());
+                }
+                if let Some(a) = self.model.air_quality.get(&l.id) {
+                    persisted.air_quality.insert(l.id, a.clone());
+                }
+            }
+        }
+        if changed {
+            self.content_generation += 1;
+            self.press = None;
+            self.menu = None;
+            self.reorder.cancel();
+            self.over_hotspots.clear();
+            self.durable_actions.clear();
+            self.nav_request = None;
+            let unsent = self
+                .outbox
+                .iter()
+                .filter(|r| r.kind() != RequestKind::Geocode)
+                .count();
+            self.inflight = self.inflight.saturating_sub(unsent);
+            self.outbox.clear();
+            self.search_seq += 1;
+            self.pending_query_at = None;
+            self.geocode_inflight = false;
+            self.search_results.clear();
+            self.search.set_suggestions(Vec::new());
+            self.search.set_status(None);
+            self.search.close();
+            self.status.clear();
+        }
+        persisted.units = self.units;
+        self.model = persisted.clone();
     }
 
     /// Take a pending shell navigation intent, if any.
@@ -428,7 +546,9 @@ impl Core {
             });
         }
         self.inflight += reqs.len();
-        self.outbox.extend(reqs);
+        for request in reqs {
+            self.enqueue_request(request);
+        }
         if !self.model.locations.is_empty() {
             self.status = "Updating…".to_string();
         }
@@ -474,13 +594,13 @@ impl Core {
     fn refresh_selected(&mut self) {
         if let Some(loc) = self.model.selected_location() {
             let (id, lat, lon) = (loc.id, loc.latitude, loc.longitude);
-            self.outbox.push(Request::Forecast {
+            self.enqueue_request(Request::Forecast {
                 location_id: id,
                 lat,
                 lon,
                 units: self.units,
             });
-            self.outbox.push(Request::AirQuality {
+            self.enqueue_request(Request::AirQuality {
                 location_id: id,
                 lat,
                 lon,
@@ -516,13 +636,13 @@ impl Core {
     fn refresh_location(&mut self, idx: usize) {
         if let Some(loc) = self.model.locations.get(idx) {
             let (id, lat, lon) = (loc.id, loc.latitude, loc.longitude);
-            self.outbox.push(Request::Forecast {
+            self.enqueue_request(Request::Forecast {
                 location_id: id,
                 lat,
                 lon,
                 units: self.units,
             });
-            self.outbox.push(Request::AirQuality {
+            self.enqueue_request(Request::AirQuality {
                 location_id: id,
                 lat,
                 lon,
@@ -535,13 +655,40 @@ impl Core {
     /// Apply a completed network response to the model / search results.
     pub fn apply_response(&mut self, resp: Response) {
         match resp {
+            Response::Tracked {
+                ticket,
+                generation,
+                response,
+            } => {
+                if self.dispatched.remove(&ticket).is_none() {
+                    return;
+                }
+                if generation != self.content_generation {
+                    if response.is_weather() {
+                        self.inflight = self.inflight.saturating_sub(1);
+                    }
+                    return;
+                }
+                self.apply_response(*response);
+            }
             Response::Forecast(snap) => {
                 self.inflight = self.inflight.saturating_sub(1);
+                if !self
+                    .model
+                    .locations
+                    .iter()
+                    .any(|l| l.id == snap.location_id)
+                {
+                    return;
+                }
                 self.model.snapshots.insert(snap.location_id, snap);
                 self.status = "Updated just now".to_string();
             }
             Response::AirQuality(aq) => {
                 self.inflight = self.inflight.saturating_sub(1);
+                if !self.model.locations.iter().any(|l| l.id == aq.location_id) {
+                    return;
+                }
                 self.model.air_quality.insert(aq.location_id, aq);
             }
             Response::Geocode { seq, results } => {
@@ -660,7 +807,7 @@ impl Core {
         }
         self.search_seq += 1;
         self.geocode_inflight = true;
-        self.outbox.push(Request::Geocode {
+        self.enqueue_request(Request::Geocode {
             seq: self.search_seq,
             query: q,
         });
@@ -703,7 +850,11 @@ impl Core {
             .iter()
             .find(|r| result_value(r) == value)
             .cloned()
-            .or_else(|| self.search_results.first().cloned());
+            .or_else(|| {
+                (value.trim() == self.search_query.trim())
+                    .then(|| self.search_results.first().cloned())
+                    .flatten()
+            });
         if let Some(loc) = picked {
             self.model.add_location(loc.clone());
             self.queue_durable_action(WeatherAction::AddLocation { location: loc });
@@ -1411,13 +1562,6 @@ impl Core {
 
     /// The rounded current temperature a saved-place chip shows, or `None`
     /// before the city's first snapshot has arrived.
-    fn chip_temperature(&self, loc: &SavedLocation, units: Units) -> Option<String> {
-        self.model.snapshot_for(loc.id).map(|snap| {
-            let temp = snap.temp_in(snap.current.temperature, units).round() as i64;
-            format!("{temp}°")
-        })
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn draw_chip(
         &self,
@@ -1430,110 +1574,18 @@ impl Core {
         index: usize,
         units: Units,
     ) {
-        let c = &theme.tokens.colors;
-        let selected = index == self.model.selected;
-        let hovered = chip.contains(self.last_mouse);
-        let bg = if selected {
-            lerp_color(c.surfaces.base, self.accent(theme), 0.18)
-        } else if hovered {
-            c.neutral[2]
-        } else {
-            c.surfaces.raised
-        };
-        let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
-        scene.fill(Fill::NonZero, t, bg, None, &shape);
-        if selected {
-            scene.stroke(&Stroke::new(1.5), t, self.accent(theme), None, &shape);
-        } else {
-            scene.stroke(
-                &Stroke::new(1.0),
-                t,
-                c.border_standard.with_alpha_factor(0.6),
-                None,
-                &shape,
-            );
-        }
-        // Glyph, identity block and temperature all centre on the chip from
-        // their measured heights, so a scaled row keeps them on one axis
-        // instead of colliding at fixed 1× offsets.
-        let m = self.chip_metrics();
-        let sp = &theme.tokens.spacing;
-        let icon_x = chip.x0 + 10.0;
-        if let Some(snap) = self.model.snapshot_for(loc.id) {
-            let sky = Sky::from_code(snap.current.weather_code);
-            let icon_y = chip.y0 + (chip.height() - m.icon) / 2.0;
-            icon::draw_icon(
-                scene,
-                t,
-                sky,
-                snap.current.is_day,
-                Rect::new(icon_x, icon_y, icon_x + m.icon, icon_y + m.icon),
-                theme,
-            );
-        }
-        let text_x = icon_x + m.icon + f64::from(sp.s2);
-        let block_h = m.name_h + m.sub_h;
-        let name_y = chip.y0 + (chip.height() - block_h) / 2.0;
-        // Second line: country + condition word (the "quick per-city info").
-        let sub = if let Some(snap) = self.model.snapshot_for(loc.id) {
-            format!(
-                "{} · {}",
-                loc.country,
-                Sky::label(snap.current.weather_code)
-            )
-        } else {
-            loc.country.clone()
-        };
-        // The temperature owns the trailing column; identity text elides
-        // before it rather than running underneath it.
-        let temp_label = self.chip_temperature(loc, units);
-        let (temp_text, temp_size, temp_weight) = match &temp_label {
-            Some(label) => (label.as_str(), text_x2l(), TextWeight::Bold),
-            None => ("—", 18.0, TextWeight::Regular),
-        };
-        let (temp_w, temp_h) = tr.measure_weighted(temp_text, temp_size, None, temp_weight);
-        let temp_right = chip.x1 - 14.0;
-        let text_max = ((temp_right - f64::from(temp_w) - f64::from(sp.s3)) - text_x).max(24.0);
-        let name = tr.elide_to_width_weighted(
-            &loc.name,
-            CHIP_NAME_TEXT,
-            text_max as f32,
-            TextWeight::Semibold,
-        );
-        text_left(
+        crate::presentation::draw_saved_place(
             scene,
+            t,
             tr,
-            &name,
-            text_x,
-            name_y,
-            CHIP_NAME_TEXT,
-            TextWeight::Semibold,
-            c.text_primary,
-        );
-        let sub = tr.elide_to_width(&sub, text_sm(), text_max as f32);
-        text_left(
-            scene,
-            tr,
-            &sub,
-            text_x,
-            name_y + m.name_h,
-            text_sm(),
-            TextWeight::Regular,
-            c.text_dim,
-        );
-        text_right(
-            scene,
-            tr,
-            temp_text,
-            temp_right,
-            chip.y0 + (chip.height() - f64::from(temp_h)) / 2.0,
-            temp_size,
-            temp_weight,
-            if temp_label.is_some() {
-                c.text_primary
-            } else {
-                c.text_dim
-            },
+            theme,
+            chip,
+            loc,
+            self.model.snapshot_for(loc.id),
+            units,
+            index == self.model.selected,
+            chip.contains(self.last_mouse),
+            self.accent(theme),
         );
     }
 
@@ -2298,10 +2350,6 @@ impl Core {
         // under it, and the header's height (returned as the body top) grows
         // with the lines rather than staying the authored 74px.
         let rb = 34.0;
-        let name_h = f64::from(
-            tr.measure_weighted("Ag", DETAIL_TITLE_TEXT, None, TextWeight::Bold)
-                .1,
-        );
         let sub_h = f64::from(tr.measure("Ag", DETAIL_SUBTITLE_TEXT, None).1);
         let date_h = f64::from(tr.measure_weighted("Ag", 14.0, None, TextWeight::Medium).1);
         let (date_str, time_str) = snap.map_or((String::new(), String::new()), |snap| {
@@ -2317,28 +2365,7 @@ impl Core {
         );
         let right_col_x = right - rb - f64::from(sp.s3);
         let title_max = (right_col_x - right_col_w - f64::from(sp.s4) - mx).max(40.0);
-        let name = tr.elide_to_width_weighted(&loc.name, 26.0, title_max as f32, TextWeight::Bold);
-        text_left(
-            scene,
-            tr,
-            &name,
-            mx,
-            hy,
-            26.0,
-            TextWeight::Bold,
-            c.text_primary,
-        );
-        let sub_y = hy + name_h + f64::from(sp.s1);
-        text_left(
-            scene,
-            tr,
-            &loc.subtitle(),
-            mx,
-            sub_y,
-            13.0,
-            TextWeight::Regular,
-            c.text_dim,
-        );
+        let sub_y = crate::presentation::draw_identity(scene, tr, theme, loc, mx, hy, title_max);
         // The authored 74px at 1× (not the 76.75 that stacking the measured
         // lines plus token gaps gives), grown by the two lines' extra height.
         let header_h = detail_header_h(sp, tr.text_scale());
@@ -4142,7 +4169,7 @@ fn card(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn text_left(
+pub(crate) fn text_left(
     scene: &mut Scene,
     tr: &mut TextRenderer,
     s: &str,
@@ -4164,7 +4191,7 @@ fn text_left(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn text_right(
+pub(crate) fn text_right(
     scene: &mut Scene,
     tr: &mut TextRenderer,
     s: &str,
@@ -4209,7 +4236,7 @@ fn text_center(
     );
 }
 
-fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+pub(crate) fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let a = a.to_rgba8();
     let b = b.to_rgba8();
@@ -4533,5 +4560,108 @@ mod helper_tests {
         let detail = core.detail_accessibility(vello::kurbo::Rect::new(300.0, 0.0, 1200.0, 700.0));
         assert_eq!(detail.name.as_deref(), Some("San Francisco forecast"));
         assert!(detail.description.unwrap().contains("hourly readings"));
+    }
+}
+
+#[cfg(test)]
+mod history_regressions {
+    use super::*;
+
+    #[test]
+    fn history_restore_fences_gestures_queue_search_and_changed_coordinate_responses() {
+        let mut core = Core::new(crate::sample::sample_model(), Units::IMPERIAL);
+        let loc = core.model.locations[0].clone();
+        let old_snapshot = core.model.snapshots.get(&loc.id).unwrap().clone();
+        core.refresh_all();
+        let requests = core.take_tracked_outbox();
+        let (ticket, generation) = match &requests[0] {
+            Request::Tracked {
+                ticket, generation, ..
+            } => (*ticket, *generation),
+            _ => panic!("tracked"),
+        };
+        core.refresh_all();
+        core.seed_drag();
+        core.seed_search_highlighted("unsaved query", crate::sample::sample_geocode_results());
+        let seq = core.search_seq;
+        core.queue_durable_action(WeatherAction::SetLocationOrder {
+            ids: vec![loc.id.to_string()],
+        });
+        let dispatched_count = core.inflight - core.outbox.len();
+        let mut restored = core.model.clone();
+        restored.locations[0].latitude += 1.;
+        restored.snapshots.clear();
+        restored.air_quality.clear();
+        core.adopt_saved_places(&mut restored);
+        assert_eq!(core.search_query(), "unsaved query");
+        assert!(core.search_results.is_empty());
+        assert!(core.search_seq > seq);
+        assert!(core.press.is_none() && core.menu.is_none());
+        assert!(!core.reorder.is_active());
+        assert!(core.take_durable_actions().is_empty());
+        assert!(core.take_outbox().is_empty());
+        assert_eq!(core.inflight, dispatched_count);
+        assert_eq!(core.units, Units::IMPERIAL);
+        assert!(!core.model.snapshots.contains_key(&loc.id));
+        core.apply_response(Response::Tracked {
+            ticket,
+            generation,
+            response: Box::new(Response::Forecast(old_snapshot.clone())),
+        });
+        assert!(!core.model.snapshots.contains_key(&loc.id));
+        assert_eq!(core.inflight, dispatched_count - 1);
+        core.apply_response(Response::Tracked {
+            ticket,
+            generation,
+            response: Box::new(Response::Forecast(old_snapshot.clone())),
+        });
+        assert_eq!(
+            core.inflight,
+            dispatched_count - 1,
+            "duplicate settlement ignored"
+        );
+        let mut empty = WeatherModel::default();
+        core.adopt_saved_places(&mut empty);
+        let mut recreated = WeatherModel::default();
+        recreated.locations.push(loc.clone());
+        core.adopt_saved_places(&mut recreated);
+        let (ticket, generation) = match &requests[2] {
+            Request::Tracked {
+                ticket, generation, ..
+            } => (*ticket, *generation),
+            _ => panic!("tracked"),
+        };
+        core.apply_response(Response::Tracked {
+            ticket,
+            generation,
+            response: Box::new(Response::Forecast(old_snapshot)),
+        });
+        assert!(core.model.snapshots.is_empty());
+        let next = SavedLocation::new("Next", "", "Country", "CC", 1., 2., "auto");
+        core.seed_search_highlighted("Next", vec![next.clone()]);
+        assert!(core.commit_search_pick(&result_value(&next)));
+        assert!(core.open_location(loc.id));
+        assert!(!core.take_durable_actions().is_empty());
+        assert!(!core.take_outbox().is_empty());
+    }
+
+    #[test]
+    fn history_stale_autocomplete_acceptance_cannot_select_new_unrelated_results() {
+        let mut core = Core::new(WeatherModel::default(), Units::METRIC);
+        let old = SavedLocation::new("Old", "", "", "", 1., 2., "auto");
+        let new = SavedLocation::new("New", "", "", "", 3., 4., "auto");
+        core.seed_search_highlighted("New", vec![new]);
+        assert!(!core.commit_search_pick(&result_value(&old)));
+        assert!(core.take_durable_actions().is_empty());
+    }
+    #[test]
+    fn history_deleted_location_rejects_delayed_provider_snapshot() {
+        let mut model = crate::sample::sample_model();
+        let snapshot = model.snapshots.values().next().unwrap().clone();
+        model.locations.clear();
+        model.snapshots.clear();
+        let mut core = Core::new(model, Units::METRIC);
+        core.apply_response(Response::Forecast(snapshot));
+        assert!(core.model.snapshots.is_empty());
     }
 }
