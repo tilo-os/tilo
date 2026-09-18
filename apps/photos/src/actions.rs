@@ -51,6 +51,11 @@ pub const PHOTOS_ACTION_TYPE: &str = "photos.action";
 
 /// The resource `kind` an open photograph publishes under.
 pub const IMAGE_KIND: &str = "photos.image";
+/// The derived, durable browse collection for photographs marked favourite.
+///
+/// Membership itself is shared document state; opening this resource is a
+/// device-local view, just like opening an album or a metadata label.
+pub const FAVORITES_KIND: &str = "photos.favorites";
 pub const PHOTOS_OPERATION_TYPE: &str = "photos.operation";
 /// Contextual enumeration is intentionally small; callers resolve any stable
 /// id outside this window through `ResourceProvider::resource`.
@@ -76,6 +81,11 @@ pub enum PhotosOperation {
     /// Reveal the Photos-owned browsing and management surface without
     /// opening a chooser or mutating the shared library.
     ViewLibrary,
+    /// Show the durable favourites collection without changing any shared
+    /// favourite marker. This is intentionally its own addressable resource,
+    /// rather than a hidden in-app filter, so search, agents, history and a
+    /// collaborator can all name the same collection.
+    ViewFavorites,
     /// Bring a durable album's filtered grid into view. This is presentation
     /// state only: unlike membership actions, activating it never edits the
     /// shared library.
@@ -134,6 +144,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         op,
         PhotosOperation::View
             | PhotosOperation::ViewLibrary
+            | PhotosOperation::ViewFavorites
             | PhotosOperation::ViewAlbum { .. }
             | PhotosOperation::ViewFolder { .. }
             | PhotosOperation::ViewPerson { .. }
@@ -146,6 +157,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     let tags = match op {
         PhotosOperation::View
         | PhotosOperation::ViewLibrary
+        | PhotosOperation::ViewFavorites
         | PhotosOperation::ViewAlbum { .. }
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
@@ -179,6 +191,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     Some(match op {
         PhotosOperation::View
         | PhotosOperation::ViewLibrary
+        | PhotosOperation::ViewFavorites
         | PhotosOperation::ViewAlbum { .. }
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
@@ -683,6 +696,15 @@ impl ResourceProvider for PhotosResources {
         if id == "photos.library" {
             return Some(library_root_resource());
         }
+        if id == "photos.favorites" {
+            return Some(favorites_resource(
+                PhotosDoc::library(doc)
+                    .photos
+                    .iter()
+                    .filter(|photo| photo.favorite)
+                    .count(),
+            ));
+        }
         if let Some(photo) = PhotosDoc::photo(doc, id) {
             return Some(photo_resource(&photo));
         }
@@ -781,6 +803,9 @@ fn open_image_resource(doc: &AutoCommit, image: &OpenImage) -> Resource {
 fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     let library = PhotosDoc::library(doc);
     let mut root = library_root_resource();
+    root = root.with_child(favorites_resource(
+        library.photos.iter().filter(|photo| photo.favorite).count(),
+    ));
     for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
         root = root.with_child(photo_resource(photo));
     }
@@ -809,6 +834,26 @@ pub(crate) fn library_root_resource() -> Resource {
         .with_action(file_operation("import", "Import photograph", true))
         .with_action(create_album_spec());
     root
+}
+
+/// The stable virtual collection a person expects the star controls to feed.
+///
+/// This deliberately exists even when it is empty: an empty favourite view is
+/// useful as a predictable destination, and it does not falsely imply there
+/// are hidden entries waiting to load.
+pub(crate) fn favorites_resource(count: usize) -> Resource {
+    let mut resource =
+        Resource::new("photos.favorites", FAVORITES_KIND, "Favorites").with_child(Resource::new(
+            "photos.favorites#count",
+            "photos.count",
+            format!("{count} photographs"),
+        ));
+    if let Some(spec) = operation("open", "View favorites", &PhotosOperation::ViewFavorites) {
+        resource = resource.with_action(
+            spec.with_description("Show photographs marked as favorites in the shared library"),
+        );
+    }
+    resource
 }
 
 /// Deterministically collect the small virtual browse namespace.  It is
@@ -2039,7 +2084,14 @@ mod tests {
         let late = library.photos.last().unwrap().id.clone();
         PhotosDoc::set_library(&mut doc, &library);
         let root = PhotosResources.resources(&doc).pop().unwrap();
-        assert!(root.children.len() <= LIBRARY_CONTEXT_LIMIT);
+        assert!(
+            root.children
+                .iter()
+                .filter(|child| child.kind == "photos.photo")
+                .count()
+                <= LIBRARY_CONTEXT_LIMIT,
+            "contextual photos stay bounded even as fixed virtual collections are added"
+        );
         let resolved = PhotosResources
             .resource(&doc, &late)
             .expect("late stable id resolves");
@@ -2049,6 +2101,40 @@ mod tests {
             PhotosResources
                 .resource(&doc, "photos.photo:stale")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn favorites_are_a_stable_browse_resource_with_an_honest_count() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut favorite = portable_photo("/photos/favorite.png", 20, 10);
+        favorite.favorite = true;
+        let ordinary = portable_photo("/photos/ordinary.png", 20, 10);
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![favorite, ordinary],
+                albums: Vec::new(),
+            },
+        );
+
+        let favorites = PhotosResources
+            .resource(&doc, "photos.favorites")
+            .expect("favorites is addressable even outside a materialized shelf");
+        assert_eq!(favorites.kind, FAVORITES_KIND);
+        assert!(favorites.actions.iter().any(|action| action.id == "open"));
+        assert!(
+            favorites
+                .children
+                .iter()
+                .any(|child| child.label == "1 photographs")
+        );
+        let root = PhotosResources.resources(&doc).pop().expect("library root");
+        assert!(
+            root.children
+                .iter()
+                .any(|child| child.id.0 == "photos.favorites")
         );
     }
 
