@@ -1534,8 +1534,13 @@ mod tests {
         let node = panel
             .accessibility()
             .expect("open pages expose their title");
-        assert_eq!(node.role, ui::a11y::Role::TextInput);
-        assert_eq!(node.action_target.as_deref(), Some("notes.page-title"));
+        assert_eq!(node.role, ui::a11y::Role::Group);
+        let title = node
+            .children
+            .first()
+            .expect("header exposes the page title");
+        assert_eq!(title.role, ui::a11y::Role::TextInput);
+        assert_eq!(title.action_target.as_deref(), Some("notes.page-title"));
 
         let mut doc = AutoCommit::new();
         assert!(panel.perform_action(
