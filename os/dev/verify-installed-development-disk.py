@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Read-only installed boot/root verification in a private mount namespace.
 
-This verifies an installed normal target, not an installer/live medium. Its
-selected UKI must equal the independently verified /boot/tilo-target UKI.
+Select installed-target or installer-media explicitly. Normal targets bind the
+predicted target UKI; media bind one named, authenticated source live UKI and
+retain separate target PCR proof. Neither mode proves actual boot behavior.
 This is one acceptance stage, not a complete source-layer audit or VM boot test.
 Only reopen the exact regular file recorded by the disk creator. Never select
 an existing device. Run with: unshare --mount --propagation private -- PROGRAM.
@@ -225,6 +226,44 @@ def verify_loaders(source_root, esp, public_bundle, manifest_sha256, architectur
     return evidence
 
 
+def profile_cmdline(data, profile, generation, digest):
+    prediction.boot.validate_cmdline(data, generation, digest)
+    tokens = data.rstrip(b'\0').decode('ascii').split()
+    install = [word for word in tokens if word.split('=', 1)[0] == 'tilo.install']
+    expected = ['tilo.install'] if profile == 'installer-media' else []
+    if profile not in ('installer-media', 'installed-target') or install != expected:
+        raise ValueError('UKI installer activation differs from explicit boot profile')
+
+
+def source_boot_selection(root, boot, profile, live_path, architecture, generation, digest):
+    """Use fresh prediction/EFI evidence, never accept a caller's arbitrary EFI."""
+    target_data = read(root, prediction.TARGET, prediction.boot.UKI_LIMIT)
+    if hashlib.sha256(target_data).hexdigest() != boot['target_uki_sha256']:
+        raise ValueError('source target changed after prediction verification')
+    target_sections = prediction.boot.uki_sections(target_data, architecture)
+    profile_cmdline(target_sections['.cmdline'], 'installed-target', generation, digest)
+    if profile == 'installed-target':
+        if live_path is not None:
+            raise ValueError('normal target verification cannot select a live UKI')
+        return {'profile': profile, 'source_path': prediction.TARGET.as_posix(),
+                'sha256': boot['target_uki_sha256'], 'pcr_prediction_applies': True}
+    if profile != 'installer-media' or not isinstance(live_path, str):
+        raise ValueError('installer media requires an explicit authenticated live UKI path')
+    relative = Path(live_path)
+    if (relative.is_absolute() or '..' in relative.parts or relative.as_posix() != live_path
+            or relative.parts[:3] != ('boot', 'EFI', 'Linux') or relative.suffix != '.efi'):
+        raise ValueError('live UKI must be a canonical source boot/EFI/Linux path')
+    rows = [row for row in boot['signed_ukis'] if row['path'] == live_path]
+    if len(rows) != 1:
+        raise ValueError('selected live UKI lacks fresh authenticated source evidence')
+    data = read(root, relative, prediction.boot.UKI_LIMIT)
+    if hashlib.sha256(data).hexdigest() != rows[0]['sha256']:
+        raise ValueError('source live UKI changed after signature verification')
+    profile_cmdline(prediction.boot.uki_sections(data, architecture)['.cmdline'], profile, generation, digest)
+    return {'profile': profile, 'source_path': live_path, 'sha256': rows[0]['sha256'],
+            'pcr_prediction_applies': False}
+
+
 def verify(args):
     if os.getuid() != 0 or os.geteuid() != 0 or args.architecture != 'aarch64':
         raise ValueError('requires root on the native ARM verification guest')
@@ -240,6 +279,8 @@ def verify(args):
             raise ValueError('creation source differs from fresh source verification')
         boot = prediction.verify_prediction(verified.root, verified.public_bundle, args.manifest_sha256,
             args.architecture, args.generation, args.composefs_digest, args.systemd_version)
+        selected_boot = source_boot_selection(verified.root, boot, args.boot_profile, args.source_live_uki,
+            args.architecture, args.generation, args.composefs_digest)
         with tempfile.TemporaryDirectory(prefix='tilo-installed-check-') as directory, ExitStack() as cleanup:
             scratch = Path(directory)
             loop = command(['/usr/sbin/losetup', '--find', '--show', '--read-only', '--partscan',
@@ -259,10 +300,10 @@ def verify(args):
                 readonly_mount(destination, kind)
             uki = selected_uki(esp, args.composefs_digest)
             data = read(esp, uki, prediction.boot.UKI_LIMIT)
-            if hashlib.sha256(data).hexdigest() != boot['target_uki_sha256']:
+            if hashlib.sha256(data).hexdigest() != selected_boot['sha256']:
                 raise ValueError('installed selected UKI differs from verified source')
             sections = prediction.boot.uki_sections(data, args.architecture)
-            prediction.boot.validate_cmdline(sections['.cmdline'], args.generation, args.composefs_digest)
+            profile_cmdline(sections['.cmdline'], args.boot_profile, args.generation, args.composefs_digest)
             command(['/usr/bin/sbverify', '--cert', str(verified.public_bundle / 'efi-signing.crt'), str(esp / uki)])
             loader_receipt = verify_loaders(verified.root, esp, verified.public_bundle,
                                            args.manifest_sha256, args.architecture)
@@ -292,6 +333,7 @@ def verify(args):
             material_receipt = audit_material(root, esp, uki, args.composefs_digest, args.architecture)
     return {'schema': 1, 'purpose': 'tilo-installed-boot-and-root-verification',
         'source': verified.receipt, 'boot': boot, 'file_identity': receipt['file_identity'],
+        'selected_boot': selected_boot,
         'checks': {'read_only_disk': True, 'selected_uki_matches_source': True,
                    'installed_origin': True, 'verity_mounted_root': True, 'effective_policy': True,
                    'introduced_private_material_policy': True},
@@ -309,6 +351,8 @@ def main():
     for name in ('public-bundle', 'disk', 'creation-receipt'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--generation', type=int, required=True)
+    parser.add_argument('--boot-profile', choices=('installed-target', 'installer-media'), default='installed-target')
+    parser.add_argument('--source-live-uki', help='installer-media only: exact source boot/EFI/Linux/*.efi path')
     parser.add_argument('--offline-key-signature', action='store_true')
     print(json.dumps(verify(parser.parse_args()), sort_keys=True))
 
