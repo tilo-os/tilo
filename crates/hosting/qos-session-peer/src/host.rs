@@ -388,11 +388,13 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     let run_result: Result<()> = async {
     loop {
         if session.is_none() && reconnect.is_none() && owner.permits_publication() {
+            let _timing = crate::action_timing::Timing::new("subscription_connecting");
             reconnect = Some(host.begin_connection(&owner, delay)?);
         }
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
             _ = pump.tick() => {
+                let _timing = crate::action_timing::Timing::slow("owner_pump");
                 #[cfg(feature = "test-support")]
                 if qualification.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
                     qualification.expired = true; qualification.release();
@@ -415,6 +417,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             // Replacement keeps bounded durable work pending until its exact
             // retained session can publish before any completion is exposed.
             pending = commits.recv(), if session.as_ref().is_some_and(|current| current.is_ready()) => if let Some(pending) = pending {
+                let _timing = crate::action_timing::Timing::slow("owner_commit");
                 let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
                 let result = if pending.is_desktop() { pending.apply_desktop(&mut owner) } else { pending.apply(&mut owner).map(|_| ()) };
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
@@ -425,13 +428,20 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
             },
             pending = signatures.recv(), if session.as_ref().is_some_and(|current| current.is_ready()) => if let Some(pending) = pending {
+                let timing = pending.diagnostic_timing();
                 #[cfg(feature = "test-support")]
                 let hold = qualification.route.as_ref().is_some_and(|(app, record)| pending.matches_route(app, record));
                 let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
+                timing.mark("apply_start");
                 let (complete, result) = pending.apply(&mut owner);
+                timing.mark("apply_end");
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+                timing.mark("publication_start");
                 let published = session.as_ref().filter(|s| s.is_ready()).ok_or_else(|| anyhow::anyhow!("signed commit publication pending; native peer unavailable")).and_then(|s| publish(&owner, s));
+                timing.mark("publication_end");
+                timing.mark("runtime_committed_start");
                 if let Some(runtime) = actions.as_ref() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(signing.fail(problem)); } }
+                timing.mark("runtime_committed_end");
                 if let Err(problem) = result { action_error = Some(problem); }
                 if let Err(problem) = published { action_error = Some(signing.fail(problem.to_string())); }
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
@@ -453,6 +463,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 reconnect.take();
                 match connection {
                     Ok(next) => {
+                        let _timing = crate::action_timing::Timing::new("subscription_replaying");
                         session=Some(next); error=Some("Native subscription is applying retained state".into()); delay=Duration::from_secs(1);
                     }
                     Err(problem) => { error = Some(problem.to_string()); delay = if delay.is_zero() { Duration::from_secs(1) } else { (delay * 2).min(Duration::from_secs(4)) }; }
@@ -461,6 +472,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             inbound = async { match session.as_mut() { Some(current) => current.recv().await, None => std::future::pending().await } } => {
                 match inbound {
                     Some(Inbound::Ready {..}) => {
+                        let _timing = crate::action_timing::Timing::new("subscription_ready_work");
                         subscription_generation = subscription_generation.checked_add(1).context("native subscription generation exhausted")?;
                         owner.refresh_checkpoint()?;
                         if action_error.is_none() {
@@ -480,6 +492,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         }
                     },
                     Some(message) => {
+                        let _timing = crate::action_timing::Timing::slow("owner_inbound");
                         let (origin, bytes) = match message {
                             Inbound::Delta {author,data} => (qos_peer_state::TransportOrigin::RelayDelta(author),data),
                             Inbound::Presence {author,payload} => (qos_peer_state::TransportOrigin::UntrustedPresence(author),payload),
@@ -500,7 +513,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             Err(problem) => { error = Some(problem.to_string()); if !owner.permits_publication() { if let Some(old)=session.take(){old.close().await;} } }
                         }
                     }
-                    None => { error=Some("native subscription disconnected; reconnecting with durable state".into()); if let Some(old)=session.take(){old.close().await;} }
+                    None => { let _timing = crate::action_timing::Timing::new("subscription_disconnected"); error=Some("native subscription disconnected; reconnecting with durable state".into()); if let Some(old)=session.take(){old.close().await;} }
                 }
             }
             command = enrollments.recv() => {

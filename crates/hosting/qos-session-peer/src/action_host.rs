@@ -130,6 +130,7 @@ impl ActionHost {
         signing: HostSigning,
         sender: tokio::sync::mpsc::Sender<NeighbourMsg>,
     ) -> Result<Self> {
+        let _timing = crate::action_timing::Timing::new("action_startup");
         let state = owner.root().join("actions");
         ensure_private(&state)?;
         if state.join("recovery.json").try_exists()? {
@@ -226,6 +227,7 @@ impl ActionHost {
         }
     }
     fn reconcile(&mut self, owner: &SessionOwner) -> Result<()> {
+        let _timing = crate::action_timing::Timing::slow("action_reconcile");
         let cert = &owner.identity.native_cert;
         let room: uuid::Uuid = owner.peer().room().parse()?;
         let tree = project(owner.peer()).map_err(anyhow::Error::msg)?;
@@ -387,6 +389,7 @@ impl ActionHost {
     }
 
     pub fn pump(&mut self, owner: &SessionOwner) -> Result<(), String> {
+        let _timing = crate::action_timing::Timing::slow("action_pump");
         self.signing.health()?;
         self.reconcile(owner)
             .map_err(|e| self.signing.fail(e.to_string()))?;
@@ -398,6 +401,7 @@ impl ActionHost {
                     workspace.actor_for_person(&self.principal),
                     workspace.capabilities.clone(),
                 );
+            let _timing = crate::action_timing::Timing::slow("worker_pump");
             worker.app.pump_collab_presence();
             if !worker.app.collaboration_is_connected() {
                 return Err(self

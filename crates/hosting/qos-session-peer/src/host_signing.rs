@@ -1,6 +1,6 @@
 //! Exact bounded precommit handoffs for owner-bound application signers.
 //! No sequence reservation escapes the serialized durable owner turn.
-use crate::{SessionOwner, owner_commit::OwnerCommitHandle};
+use crate::{SessionOwner, action_timing::Timing, owner_commit::OwnerCommitHandle};
 use collab_types::{DocumentMutation, SignedOp};
 use qos_peer_state::{
     NeighbourMsg,
@@ -38,6 +38,7 @@ pub(crate) struct PendingSignature {
     reply: response::Sender<Result<SignedOp, String>>,
     service: HostSigning,
     permit: OwnedSemaphorePermit,
+    timing: Timing,
 }
 struct BoundSigner {
     service: HostSigning,
@@ -107,6 +108,7 @@ impl HostDocumentCommitter for BoundSigner {
                     .fail("host signing handoff capacity exhausted; outcome unknown")
             })?;
         let (reply, receiver) = response::channel();
+        let timing = Timing::new("signing_wait");
         self.service
             .sender
             .try_send(PendingSignature {
@@ -116,15 +118,26 @@ impl HostDocumentCommitter for BoundSigner {
                 reply,
                 service: self.service.clone(),
                 permit,
+                timing: timing.child("signing_queue_to_reply"),
             })
             .map_err(|_| {
                 self.service
                     .fail("host signer unavailable; outcome unknown")
             })?;
-        receiver.recv_timeout(DEADLINE).map_err(|_| {
+        timing.mark("enqueued");
+        let response = receiver.recv_timeout(DEADLINE);
+        let event = match &response {
+            Ok(Ok(_)) => "reply_ok",
+            Ok(Err(_)) => "reply_error",
+            Err(response::RecvTimeoutError::Timeout) => "timeout",
+            Err(response::RecvTimeoutError::Disconnected) => "disconnected",
+        };
+        let response = response.map_err(|_| {
             self.service
                 .fail("host signing reply lost; outcome unknown")
-        })?
+        });
+        timing.mark(event);
+        response?
     }
 }
 impl OwnerCommitService for HostSigning {
@@ -172,6 +185,9 @@ impl OwnerCommitService for HostSigning {
     }
 }
 impl PendingSignature {
+    pub(crate) fn diagnostic_timing(&self) -> Timing {
+        self.timing.child("owner_signature")
+    }
     #[cfg(feature = "test-support")]
     pub fn matches_route(&self, app: &str, record: &str) -> bool {
         self.route.app_id == app && self.route.record.as_deref().unwrap_or("") == record
@@ -186,7 +202,9 @@ impl PendingSignature {
             reply,
             service,
             permit,
+            timing,
         } = self;
+        timing.mark("owner_dequeued");
         let result: Result<SignedOp, String> = (|| {
             service.health()?;
             let record = route.record.as_deref().unwrap_or("");
@@ -220,9 +238,11 @@ impl PendingSignature {
                     envelope: envelope.clone(),
                 },
             };
+            timing.mark("admission_start");
             let committed = owner
                 .commit_admission(candidate, owner.directory().to_vec())
                 .map_err(|e| e.to_string())?;
+            timing.mark("admission_end");
             let receipt = OwnerCommitReceipt {
                 binding: request.binding()?,
                 generation: committed.generation,
@@ -249,9 +269,14 @@ impl PendingSignature {
             service.fail(reason.clone());
         }
         let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
+        timing.mark(if result.is_ok() { "apply_ok" } else { "apply_error" });
         let complete = move || {
+            timing.mark("reply_start");
             if reply.send(result).is_err() {
                 service.fail("host signer response dropped after admission; outcome unknown");
+                timing.mark("reply_dropped");
+            } else {
+                timing.mark("reply_sent");
             }
         };
         (complete, outcome)
@@ -394,6 +419,7 @@ mod tests {
             reply,
             service: service.clone(),
             permit: service.permits.clone().try_acquire_owned().unwrap(),
+            timing: Timing::new("signing_queue_to_reply"),
         };
         let before = owner.status().generation;
         let (complete, result) = pending.apply(&mut owner);
