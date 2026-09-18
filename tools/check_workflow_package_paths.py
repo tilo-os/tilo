@@ -128,21 +128,53 @@ def load_metadata(root: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("package")
-    parser.add_argument("workflow", type=Path)
+    parser.add_argument("package", nargs="?")
+    parser.add_argument("workflow", nargs="?", type=Path)
+    parser.add_argument(
+        "--check",
+        action="append",
+        nargs=2,
+        metavar=("PACKAGE", "WORKFLOW"),
+        default=[],
+        help="audit one package/workflow pair; repeat to share one metadata snapshot",
+    )
     args = parser.parse_args()
+    checks = [(package, Path(workflow)) for package, workflow in args.check]
+    if args.package is not None or args.workflow is not None:
+        if args.package is None or args.workflow is None:
+            parser.error("the positional package and workflow must be supplied together")
+        checks.insert(0, (args.package, args.workflow))
+    if not checks:
+        parser.error("supply a package/workflow pair or at least one --check")
     try:
         metadata = load_metadata(ROOT)
-        workflow = (ROOT / args.workflow).read_text(encoding="utf-8")
-        violations = audit(metadata, ROOT, args.package, workflow)
+        results = [
+            (
+                package,
+                workflow,
+                audit(
+                    metadata,
+                    ROOT,
+                    package,
+                    (ROOT / workflow).read_text(encoding="utf-8"),
+                ),
+            )
+            for package, workflow in checks
+        ]
     except (OSError, subprocess.CalledProcessError, ValueError) as error:
         print(error, file=sys.stderr)
         return 2
-    if violations:
-        print("workflow misses package dependency paths:", file=sys.stderr)
-        print("\n".join(str(item) for item in violations), file=sys.stderr)
+    failed = [(package, workflow, violations) for package, workflow, violations in results if violations]
+    if failed:
+        for package, workflow, violations in failed:
+            print(
+                f"{workflow}: workflow misses {package} dependency paths:",
+                file=sys.stderr,
+            )
+            print("\n".join(str(item) for item in violations), file=sys.stderr)
         return 1
-    print(f"{args.workflow}: every paths block tracks {args.package}'s dependency closure")
+    for package, workflow, _ in results:
+        print(f"{workflow}: every paths block tracks {package}'s dependency closure")
     return 0
 
 
