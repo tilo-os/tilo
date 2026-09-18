@@ -2,9 +2,11 @@ import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dev'))
 import signing_spool as spool
@@ -138,6 +140,26 @@ class TransportTests(unittest.TestCase):
             transfer.endpoint.execute(self.config, 'put-output', self.nonce, spool.canonical(response).decode(), io.BytesIO(b'bad'), io.BytesIO())
         self.assertFalse((self.remote / 'output').exists())
         self.assertFalse((self.remote / 'response.json').exists())
+
+    def test_timeout_kills_descendant_after_leader_exits(self):
+        output = io.BytesIO()
+        script = ('import subprocess,sys; '
+                  'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"]); '
+                  'print(p.pid,flush=True)')
+        with self.assertRaisesRegex(ValueError, 'deadline'):
+            transfer.bounded_process([sys.executable, '-c', script], output, 1024, timeout=0.3)
+        child = int(output.getvalue())
+        status = Path(f'/proc/{child}/stat')
+        try:
+            deadline = time.monotonic() + 1
+            while status.exists() and status.read_text().split()[2] != 'Z' and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(not status.exists() or status.read_text().split()[2] == 'Z')
+        finally:
+            try:
+                os.kill(child, 9)
+            except ProcessLookupError:
+                pass
 
     def enable_nested(self):
         self.binding['docker'] = {'id': 'c' * 64, 'image_id': 'sha256:' + 'd' * 64,
