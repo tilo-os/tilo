@@ -7082,9 +7082,10 @@ impl App {
     ///
     /// # Panics
     ///
-    /// Panics if the platform windowing system can't give us an event loop,
-    /// or if running it fails — there is no app without one, so there is no
-    /// meaningful fallback.
+    /// Panics if the platform windowing system can't create the event loop.
+    /// Once running, a Wayland compositor disconnect is a normal application
+    /// shutdown boundary (session logout, compositor restart), so an
+    /// `ExitFailure` is logged and returned rather than converted into a panic.
     #[allow(
         clippy::expect_used,
         clippy::unwrap_used,
@@ -7134,7 +7135,13 @@ impl App {
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
             dispatching_touch_pointer: false,
         };
-        event_loop.run_app(&mut handler).unwrap();
+        match event_loop.run_app(&mut handler) {
+            Ok(()) => {}
+            Err(winit::error::EventLoopError::ExitFailure(status)) => {
+                tracing::debug!(status, "window system disconnected; application exiting");
+            }
+            Err(error) => panic!("application event loop failed: {error}"),
+        }
     }
 }
 
