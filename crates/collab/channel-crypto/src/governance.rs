@@ -4,7 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use collab_types::{
     Ed25519PublicKey, EncryptionMetadata, MlsGovernanceAction, MlsGovernanceContext,
@@ -315,6 +315,3 @@ impl std::fmt::Debug for GovernanceJournal {
             .finish()
     }
 }
-
-#[allow(dead_code)]
-fn _assert_path(_: &Path) {}
