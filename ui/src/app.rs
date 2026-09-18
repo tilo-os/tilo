@@ -5694,7 +5694,10 @@ impl App {
     #[doc(hidden)]
     // This test adapter deliberately mirrors the complete collaboration event
     // match so lifecycle tests exercise the same routing as the runtime loop.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "test adapter mirrors complete collaboration event routing for lifecycle coverage"
+    )]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
         let _entry = self.enter_wake_scope();
         self.root_widget.handle_collab_event(&event);
@@ -10470,7 +10473,10 @@ mod window_title_tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)] // These tests assert exact values assigned without computation.
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact assigned values without floating-point computation"
+)]
 mod pointer_broadcast_tests {
     use super::*;
 
@@ -11688,7 +11694,10 @@ mod focus_trap_tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)] // Exact preference values are part of the test contract.
+#[allow(
+    clippy::float_cmp,
+    reason = "exact preference values are part of the test contract"
+)]
 mod low_vision_tests {
     use super::*;
     use crate::a11y::contrast_ratio;
@@ -11865,7 +11874,10 @@ mod low_vision_tests {
             _p: &crate::presence::PresenceCtx,
         ) {
         }
-        #[allow(clippy::too_many_arguments)]
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "implementation must match the shared Widget event signature"
+        )]
         fn handle_event(
             &mut self,
             _e: &WindowEvent,
@@ -12693,7 +12705,10 @@ impl crate::view::FreezeThaw for App {
 // `broadcast_view_presence` through the presence sink, and
 // `apply_collab_event_for_test` through `apply_remote_presence`.
 #[cfg(test)]
-#[allow(clippy::float_cmp)] // Serialized presence fields are expected to round-trip exactly.
+#[allow(
+    clippy::float_cmp,
+    reason = "serialized presence fields must round-trip exactly"
+)]
 mod view_presence_tests {
     use super::*;
     use crate::PresenceCtx;
@@ -12752,7 +12767,10 @@ mod view_presence_tests {
             _p: &PresenceCtx,
         ) {
         }
-        #[allow(clippy::too_many_arguments)]
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "implementation must match the shared Widget event signature"
+        )]
         fn handle_event(
             &mut self,
             _e: &WindowEvent,
