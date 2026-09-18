@@ -1906,6 +1906,7 @@ enum ShortcutGuideFocus {
 /// semantic path onto the wrong target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AccessibleOverlay {
+    PowerMenu,
     CommandPalette,
     MemberSheet,
     WorkspaceSettings,
@@ -3137,8 +3138,11 @@ impl ShellOverlayHost {
     }
 
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
-        let mut order = Vec::with_capacity(6);
+        let mut order = Vec::with_capacity(8);
         let flags = self.overlay_flags();
+        if self.power_menu.is_open() {
+            order.push(AccessibleOverlay::PowerMenu);
+        }
         // The palette has a complete semantic tree (query, result list, and
         // focused result).  It is drawn as a top overlay, so publish it from
         // the same ordered synthetic tree as every other overlay rather than
@@ -15004,11 +15008,13 @@ impl Widget for ShellOverlayHost {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Group).with_name("Tilo workspace");
-        if let Some(power_menu) = self.power_menu.accessibility_snapshot() {
-            root.children.push(power_menu);
-        }
         for overlay in self.accessible_overlay_order() {
             match overlay {
+                AccessibleOverlay::PowerMenu => {
+                    if let Some(power_menu) = self.power_menu.accessibility_snapshot() {
+                        root.children.push(power_menu);
+                    }
+                }
                 AccessibleOverlay::CommandPalette => {
                     if let Some(palette) = self.palette.accessibility() {
                         root.children.push(palette);
@@ -15692,6 +15698,9 @@ impl Widget for ShellOverlayHost {
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let (&overlay_index, child_path) = path.split_first()?;
         match self.accessible_overlay_order().get(overlay_index)? {
+            AccessibleOverlay::PowerMenu => self
+                .power_menu
+                .accessibility_rect_for_path(self.rect, child_path),
             AccessibleOverlay::CommandPalette => {
                 self.palette.synthetic_accessibility_rect(child_path)
             }
@@ -15751,6 +15760,7 @@ impl Widget for ShellOverlayHost {
             return false;
         };
         match overlay {
+            AccessibleOverlay::PowerMenu => self.power_menu.focus_accessibility_path(child_path),
             AccessibleOverlay::CommandPalette => {
                 self.palette.focus_synthetic_accessibility(child_path)
             }
@@ -26340,6 +26350,48 @@ mod tests {
         assert!(
             h.host.synthetic_accessibility_rect(&[2, 0]).is_some(),
             "Quick Settings moves to child two when both earlier overlays are visible"
+        );
+    }
+
+    #[test]
+    fn power_menu_accessibility_paths_focus_and_activate_exact_rows() {
+        let mut h = build_harness();
+        h.host.power_menu.open();
+        h.host.power_menu.force_settled_for_visual_test();
+
+        let semantics = h.host.accessibility().expect("shell semantics");
+        assert_eq!(
+            semantics
+                .children
+                .first()
+                .and_then(|node| node.name.as_deref()),
+            Some("Session")
+        );
+        assert_eq!(
+            h.host.synthetic_accessibility_rect(&[0, 0]),
+            h.host
+                .power_menu_semantic_rects()
+                .into_iter()
+                .find(|(name, _)| *name == "power_lock")
+                .map(|(_, rect)| rect)
+        );
+        assert!(h.host.focus_synthetic_accessibility(&[0, 0]));
+        assert_eq!(
+            h.host.power_menu.key(
+                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                false
+            ),
+            PowerMenuClick::Lock
+        );
+
+        h.host.power_menu.open();
+        assert!(h.host.focus_synthetic_accessibility(&[0, 5]));
+        assert_eq!(
+            h.host.power_menu.key(
+                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                false
+            ),
+            PowerMenuClick::Execute(os_actions::SessionAction::ShutDown)
         );
     }
 
