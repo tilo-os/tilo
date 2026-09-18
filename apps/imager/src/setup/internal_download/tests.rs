@@ -36,17 +36,20 @@ use std::{
     sync::{Arc, Mutex},
     thread,
 };
-struct Server {
+pub(in crate::setup) struct Server {
     url: String,
     requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
 impl Server {
-    fn new(responses: Vec<Vec<u8>>) -> Self {
+    pub(in crate::setup) fn new(responses: Vec<Vec<u8>>) -> Self {
         Self::on_request(responses, || {})
     }
-    fn on_request(responses: Vec<Vec<u8>>, mut on_request: impl FnMut() + Send + 'static) -> Self {
+    pub(in crate::setup) fn on_request(
+        responses: Vec<Vec<u8>>,
+        mut on_request: impl FnMut() + Send + 'static,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!(
@@ -97,10 +100,13 @@ impl Server {
             thread: Some(thread),
         }
     }
-    fn transport(&self) -> InternalTransport {
+    pub(in crate::setup) fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+    pub(in crate::setup) fn transport(&self) -> InternalTransport {
         InternalTransport::client(Url::parse(&self.url).unwrap(), Duration::from_secs(2)).unwrap()
     }
-    fn release(&self, bytes: &[u8]) -> InternalRelease {
+    pub(in crate::setup) fn release(&self, bytes: &[u8]) -> InternalRelease {
         InternalRelease::transport_fixture(bytes, &self.url)
     }
 }
@@ -110,7 +116,7 @@ impl Drop for Server {
         self.thread.take().unwrap().join().unwrap();
     }
 }
-fn response(status: u16, headers: &str, bytes: &[u8]) -> Vec<u8> {
+pub(in crate::setup) fn response(status: u16, headers: &str, bytes: &[u8]) -> Vec<u8> {
     let mut result =
         format!("HTTP/1.1 {status} Test\r\nConnection: close\r\n{headers}\r\n").into_bytes();
     result.extend_from_slice(bytes);
@@ -274,7 +280,7 @@ pub(super) fn event(stage: &str, count: u64) {
         }
     });
 }
-fn with_hook(hook: Hook, test: impl FnOnce()) {
+pub(in crate::setup) fn with_hook(hook: Hook, test: impl FnOnce()) {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
@@ -2564,4 +2570,17 @@ fn pause_at_last_retry_boundary_precedes_terminal_failure() {
         2
     );
     assert_eq!(server.requests.lock().unwrap().len(), 3);
+}
+
+/// Scoped worker-thread interval override. The cell itself remains private.
+pub(in crate::setup) fn with_checkpoint_interval<T>(value: u64, run: impl FnOnce() -> T) -> T {
+    assert!(value > 0);
+    struct Reset(Option<u64>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CHECKPOINT_INTERVAL.set(self.0);
+        }
+    }
+    let _reset = Reset(CHECKPOINT_INTERVAL.replace(Some(value)));
+    run()
 }

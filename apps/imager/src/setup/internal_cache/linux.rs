@@ -1158,6 +1158,37 @@ mod native {
             self.residue
         }
 
+        /// Verify once at actual consumption, then retain native guards through
+        /// the callback, including its error path. Restore the original cursor.
+        pub(in crate::setup) fn with_verified_reader<T>(
+            &mut self,
+            cancel: &AtomicBool,
+            consume: impl FnOnce(&mut dyn super::super::HeldReadSeek) -> Result<T>,
+        ) -> Result<T> {
+            let position = self.held.file.stream_position().map_err(io)?;
+            let result = (|| {
+                self.verify(cancel)?;
+                stop(cancel)?;
+                self.held.file.rewind().map_err(io)?;
+                consume(&mut self.held.file)
+            })();
+            // Run every postcheck even on callback/verification failure. Do not
+            // short circuit away restoration or the final cancellation check.
+            let restored = self
+                .held
+                .file
+                .seek(std::io::SeekFrom::Start(position))
+                .map_err(io);
+            let held = self.held.check(Some(&self.lease.payload.file));
+            let root = self.lease.check();
+            let stopped = stop(cancel);
+            stopped?;
+            restored?;
+            held?;
+            root?;
+            result
+        }
+
         pub(in crate::setup) fn verify(&mut self, cancel: &AtomicBool) -> Result<()> {
             self.lease.check()?;
             self.held.check(Some(&self.lease.payload.file))?;

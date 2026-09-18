@@ -947,7 +947,7 @@ fn finish(
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 /// Last synchronously acknowledged prefix, never an inferred complete byte count.
 #[derive(Debug)]
