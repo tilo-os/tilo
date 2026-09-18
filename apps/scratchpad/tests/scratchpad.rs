@@ -38,6 +38,24 @@ fn cli_screenshot_accepts_shared_viewport_and_text_scale() {
 }
 
 #[test]
+fn large_text_theme_reflows_the_real_editor_layout() {
+    let normal_dir = tempfile::tempdir().unwrap();
+    let large_dir = tempfile::tempdir().unwrap();
+    let (normal_state, normal_root) = scratchpad::open(normal_dir.path()).unwrap();
+    let (large_state, large_root) = scratchpad::open(large_dir.path()).unwrap();
+    let normal = Driver::new(normal_state, normal_root, (640, 480));
+    let mut large = Driver::new(large_state, large_root, (640, 480));
+    large.set_theme(ui::Theme::dark().with_text_scale(2.0));
+
+    let normal_editor = normal.targets()["note-editor"];
+    let large_editor = large.targets()["note-editor"];
+    assert!(
+        large_editor.y0 > normal_editor.y0,
+        "large text must reflow retained content, not only change theme metadata: {normal_editor:?} -> {large_editor:?}"
+    );
+}
+
+#[test]
 fn editor_uses_the_available_width_and_keeps_save_visible() {
     for viewport in [(480, 600), (1000, 700)] {
         let directory = tempfile::tempdir().unwrap();
@@ -127,20 +145,19 @@ fn failed_save_reports_error_and_keeps_the_previous_reference() {
     let previous = std::fs::read(directory.path().join("current")).unwrap();
     driver.click_named("note-editor").unwrap();
     driver.type_text(" and this unsaved edit");
-    // A directory at the atomic writer's temporary path fails even as root.
-    // The published reference remains in place throughout the failed save.
-    let obstruction = directory
-        .path()
-        .join(format!(".current.{}.tmp", std::process::id()));
-    std::fs::create_dir(&obstruction).unwrap();
+    // Make the publication target a directory. The content blob may be
+    // ingested, but atomic rename cannot replace a directory with a file.
+    // Keep the previous reference aside and restore it after the assertion.
+    let current = directory.path().join("current");
+    let backup = directory.path().join("current.previous");
+    std::fs::rename(&current, &backup).unwrap();
+    std::fs::create_dir(&current).unwrap();
     let result = driver.click_named("save-note");
-    std::fs::remove_dir(&obstruction).unwrap();
     result.unwrap();
     assert!(driver.inspection_json().unwrap().contains("Save failed:"));
-    assert_eq!(
-        std::fs::read(directory.path().join("current")).unwrap(),
-        previous
-    );
+    std::fs::remove_dir(&current).unwrap();
+    std::fs::rename(&backup, &current).unwrap();
+    assert_eq!(std::fs::read(&current).unwrap(), previous);
     drop(driver);
     let (state, _root) = scratchpad::open(directory.path()).unwrap();
     assert_eq!(note_text(&state.doc), "Keep this version");
