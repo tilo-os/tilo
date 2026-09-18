@@ -8,6 +8,13 @@ and the Unix descriptor adapter uses that same implementation. Protocol tests
 exercise a real Windows named pipe as well as bounded in-memory connections.
 This does not add service discovery, launch authentication or a standalone host.
 
+History observation now preserves pending app edits: shared timeline, lookup and
+comparison readers inspect committed changes without closing the live action.
+Word Processor uses the same path for its history cache and version previews;
+the workspace index reads record snapshots instead of borrowing records for
+mutation. This fixes existing history surfaces, but does not yet add a universal
+standalone History entry point or a focused-record services controller.
+
 ## Product requirement
 
 A person opens Calculator, Notes or another Tilo app from their normal desktop
