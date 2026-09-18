@@ -18,11 +18,13 @@ fn main() {
             .scenarios(&[
                 "empty",
                 "running",
+                "ringing",
                 "world",
                 "alarms",
                 "stopwatch",
                 "timers",
                 "running-narrow",
+                "ringing-narrow",
                 "world-narrow",
                 "alarms-narrow",
                 "stopwatch-narrow",
