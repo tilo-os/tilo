@@ -81,6 +81,7 @@ def main():
     p.add_argument('--inputs', type=Path, required=True)
     p.add_argument('--environment', type=Path, required=True)
     p.add_argument('--checkpoint', nargs=2, action='append', required=True, metavar=('RECEIPT', 'SHA256'))
+    p.add_argument('--reconstructed-partial-admission', nargs=2, metavar=('JSON','SHA256'))
     p.add_argument('--evidence', type=Path, required=True)
     p.add_argument('--run-id', required=True)
     p.add_argument('--attempt', required=True)
@@ -122,12 +123,30 @@ def main():
         partial = work / 'partial'
         partial.mkdir()
         union, checkpoints = {}, []
+        approval = None
+        approval_sha = None
+        if args.reconstructed_partial_admission:
+            path, approval_sha = args.reconstructed_partial_admission
+            raw = t.read_bounded(Path(path), 1024 * 1024)
+            resume.require(re.fullmatch('[0-9a-f]{64}', approval_sha) and t.sha(raw) == approval_sha,
+                           'independent reconstructed partial admission hash required')
+            approval = t.strict_json(raw)
         for path, sha in args.checkpoint:
             raw = t.read_bounded(Path(path), 1024 * 1024)
             resume.require(re.fullmatch('[0-9a-f]{64}', sha) and t.sha(raw) == sha, 'independent checkpoint hash required')
-            receipt = t.strict_json(raw)
-            resume.validate_partial(native, receipt, inputs, builder, partial, union)
-            checkpoints.append({'receipt_sha256': sha, 'receipt': receipt})
+            checkpoints.append({'receipt_sha256': sha, 'receipt': t.strict_json(raw)})
+        legacy = [c for c in checkpoints if c['receipt']['purpose'] == resume.PARTIAL]
+        newer = [c for c in checkpoints if c['receipt']['purpose'] != resume.PARTIAL]
+        for checkpoint in legacy:
+            resume.validate_partial(native, checkpoint['receipt'], inputs, builder, partial, union)
+        legacy_union = dict(union)
+        resume.require(not newer or approval is not None, 'reconstructed partial requires explicit admission')
+        if approval is not None:
+            resume.require({c['receipt_sha256'] for c in newer} == set(approval['receipts']),
+                           'admission must match exactly the supplied reconstructed partials')
+        for checkpoint in newer:
+            resume.validate_reconstructed_partial(native, checkpoint['receipt'], checkpoint['receipt_sha256'],
+                approval, source, legacy, legacy_union, partial, union)
         original = (source / 'os/Containerfile').read_text()
         derived, missing = resume.derive_recipe(original, union, native.REQUIRED)
         recipe = work / 'Containerfile.resumed'
@@ -152,6 +171,9 @@ def main():
             'missing_targets': missing, 'run_id': args.run_id, 'attempt': args.attempt,
             'remaining_phases': ['thin-app-shared-graph', 'elf-hardening', 'runtime-bundle', 'app-store'],
             'original_recipe_executed_verbatim': False}
+        if approval_sha is not None:
+            reconstruction['reconstructed_partial_admission_sha256'] = approval_sha
+            reconstruction['reconstructed_partial_admission'] = approval
         reconstruction_sha = t.sha(t.canonical(reconstruction))
         (args.evidence / 'reconstruction.json').write_bytes(t.canonical(reconstruction))
         (args.evidence / 'Containerfile.resumed').write_text(derived)
