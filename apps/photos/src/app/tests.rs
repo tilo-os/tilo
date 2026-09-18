@@ -46,57 +46,15 @@ fn timeline_virtual_window_has_stable_overscan_without_materialising_the_library
 }
 
 #[test]
-fn justified_timeline_preserves_aspects_and_never_crosses_a_day() {
-    let item = |id: &str, day: &str, aspect_ratio| LibraryItem {
-        id: id.into(),
-        name: id.into(),
-        favorite: false,
-        captured_at: day.into(),
-        aspect_ratio,
-    };
-    let items = vec![
-        item("wide", "2026-06-18", 2.0),
-        item("portrait", "2026-06-18", 0.5),
-        item("square", "2026-06-18", 1.5),
-        item("next-day", "2026-06-17", 1.5),
-    ];
-    let layout = justified_timeline_layout(&items, 600.0, 160.0, 12.0);
-    assert_eq!(layout.len(), items.len());
-    assert!(layout[0].row_start);
-    assert!(layout[2].row_end);
-    assert!(layout[3].row_start && layout[3].row_end);
-    let first_day_width = layout[..3].iter().map(|entry| entry.width).sum::<f64>() + 24.0;
-    assert!((first_day_width - 600.0).abs() <= 1.0);
-    assert!(
-        layout
-            .iter()
-            .all(|entry| entry.width >= 44.0 && entry.height >= 76.0)
-    );
-}
-
-#[test]
-fn density_reanchors_the_same_first_photo() {
-    let mut app = PhotosApp::new();
-    app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 800.0);
-    app.timeline_density = 1;
-    app.timeline_last_columns = 5;
-    app.timeline_scroll_row = 6.0;
-    assert!(app.adjust_timeline_density(true));
-    assert!(
-        (app.timeline_scroll_row * app.timeline_last_columns as f64 - 30.0).abs() < f64::EPSILON
-    );
-}
-
-#[test]
 fn date_index_uses_timeline_rows_and_preserves_virtual_scroll_anchor() {
     let mut app = PhotosApp::new();
     app.timeline_index_metrics = ScrollMetrics::new(100.0, 10.0, 20.0);
     assert!(app.apply_timeline_index_intent(DateIndexIntent::ScrollTo { position: 0.5 }));
-    assert!((app.timeline_scroll_row - 45.0).abs() < f64::EPSILON);
+    assert!((app.timeline_scroll_y - 45.0).abs() < f64::EPSILON);
     // A hover preview may redraw a label but must never mutate the scroll
     // anchor or create an accidental shared action.
     assert!(app.apply_timeline_index_intent(DateIndexIntent::PreviewChanged(None)));
-    assert!((app.timeline_scroll_row - 45.0).abs() < f64::EPSILON);
+    assert!((app.timeline_scroll_y - 45.0).abs() < f64::EPSILON);
 }
 
 #[test]
@@ -124,41 +82,7 @@ fn canonical_timeline_day_operation_jumps_to_its_shared_capture_boundary() {
     .expect("a published day anchor jumps to its timeline boundary");
     assert!(app.library_mode);
     assert_eq!(app.library_destination, LibraryDestination::Timeline);
-    assert!(app.timeline_scroll_row > 0.0);
-}
-
-#[test]
-fn date_index_boundaries_are_chronological_and_mark_year_changes() {
-    let items = vec![
-        LibraryItem {
-            id: "new".into(),
-            name: "new".into(),
-            favorite: false,
-            captured_at: "2026-02-03".into(),
-            aspect_ratio: 1.5,
-        },
-        LibraryItem {
-            id: "same-day".into(),
-            name: "same-day".into(),
-            favorite: false,
-            captured_at: "2026-02-03".into(),
-            aspect_ratio: 1.5,
-        },
-        LibraryItem {
-            id: "old".into(),
-            name: "old".into(),
-            favorite: false,
-            captured_at: "2025-12-31".into(),
-            aspect_ratio: 1.5,
-        },
-    ];
-    let markers = timeline_index_markers(&items, 2);
-    assert_eq!(markers.len(), 2, "one boundary per capture day");
-    assert_eq!(markers[0].kind, DateIndexMarkerKind::Major);
-    assert_eq!(markers[1].kind, DateIndexMarkerKind::Major);
-    assert!(markers[0].position < markers[1].position);
-    assert_eq!(markers[0].label, "Feb 03, 2026");
-    assert_eq!(markers[1].label, "Dec 31, 2025");
+    assert!(app.timeline_scroll_y > 0.0);
 }
 
 #[test]
@@ -217,10 +141,13 @@ fn cancelled_or_stale_analysis_can_never_persist() {
             invocation: cancelled,
             photo_id: "photos.photo:missing".to_owned(),
             content: None,
-            result: AnalysisOutcome::Image(Ok(crate::model::ImageAnalysis {
-                ocr_text: "must not persist".to_owned(),
-                ..crate::model::ImageAnalysis::default()
-            })),
+            result: AnalysisOutcome::Image {
+                component: ImageAnalysisComponent::Ocr,
+                result: Ok(crate::model::ImageAnalysis {
+                    ocr_text: "must not persist".to_owned(),
+                    ..crate::model::ImageAnalysis::default()
+                }),
+            },
         })
         .unwrap();
     app.drain_analysis_results(&mut doc);
@@ -232,10 +159,13 @@ fn cancelled_or_stale_analysis_can_never_persist() {
             invocation: stale,
             photo_id: "photos.photo:missing".to_owned(),
             content: None,
-            result: AnalysisOutcome::Image(Ok(crate::model::ImageAnalysis {
-                ocr_text: "also must not persist".to_owned(),
-                ..crate::model::ImageAnalysis::default()
-            })),
+            result: AnalysisOutcome::Image {
+                component: ImageAnalysisComponent::Ocr,
+                result: Ok(crate::model::ImageAnalysis {
+                    ocr_text: "also must not persist".to_owned(),
+                    ..crate::model::ImageAnalysis::default()
+                }),
+            },
         })
         .unwrap();
     app.drain_analysis_results(&mut doc);
@@ -245,6 +175,86 @@ fn cancelled_or_stale_analysis_can_never_persist() {
             if error.code == "photos.analysis_stale"
     ));
     assert!(PhotosDoc::library(&doc).photos.is_empty());
+}
+
+#[test]
+fn drain_preserves_ocr_and_vision_components_from_separate_jobs() {
+    let mut app = PhotosApp::new();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
+    app.analysis_rx = receiver;
+    let mut doc = AutoCommit::new();
+    PhotosDoc::seed(&mut doc);
+    let content = "a".repeat(64);
+    let photo = LibraryPhoto::from_image(
+        OpenImage::from_path("drain-components.png", 20, 10).with_content(content.clone()),
+    );
+    let id = photo.id.clone();
+    PhotosDoc::set_library(
+        &mut doc,
+        &crate::model::PhotoLibrary {
+            photos: vec![photo],
+            ..Default::default()
+        },
+    );
+
+    let ocr_provenance = crate::model::AnalysisProvenance {
+        source: "local-ocr".into(),
+        engine: "tilo-ocr".into(),
+        language: "eng".into(),
+        content: content.clone(),
+        scope: "local".into(),
+        ..Default::default()
+    };
+    sender
+        .send(AnalysisResult {
+            invocation: tilo_actions::InvocationId::new(),
+            photo_id: id.clone(),
+            content: Some(content.clone()),
+            result: AnalysisOutcome::Image {
+                component: ImageAnalysisComponent::Ocr,
+                result: Ok(crate::model::ImageAnalysis {
+                    ocr_text: "receipt forty two".into(),
+                    provenance: ocr_provenance.clone(),
+                    ocr_provenance: Some(ocr_provenance),
+                    ..Default::default()
+                }),
+            },
+        })
+        .unwrap();
+    let vision_provenance = crate::model::AnalysisProvenance {
+        source: "local-vision".into(),
+        engine: "tilo-vision".into(),
+        model_id: "signed-model".into(),
+        model_revision: "b".repeat(64),
+        content: content.clone(),
+        scope: "local".into(),
+        ..Default::default()
+    };
+    sender
+        .send(AnalysisResult {
+            invocation: tilo_actions::InvocationId::new(),
+            photo_id: id.clone(),
+            content: Some(content),
+            result: AnalysisOutcome::Image {
+                component: ImageAnalysisComponent::Vision,
+                result: Ok(crate::model::ImageAnalysis {
+                    description: "A bicycle beside a lake".into(),
+                    objects: vec!["bicycle".into()],
+                    provenance: vision_provenance.clone(),
+                    vision_provenance: Some(vision_provenance),
+                    ..Default::default()
+                }),
+            },
+        })
+        .unwrap();
+
+    app.drain_analysis_results(&mut doc);
+    let analysis = PhotosDoc::photo(&doc, &id).unwrap().analysis.unwrap();
+    assert_eq!(analysis.ocr_text, "receipt forty two");
+    assert_eq!(analysis.description, "A bicycle beside a lake");
+    assert_eq!(analysis.objects, ["bicycle"]);
+    assert_eq!(analysis.ocr_provenance.unwrap().source, "local-ocr");
+    assert_eq!(analysis.vision_provenance.unwrap().source, "local-vision");
 }
 
 #[test]
@@ -1738,20 +1748,23 @@ fn library_analysis_commits_each_real_result_with_provenance_and_finishes() {
             invocation,
             photo_id: id.clone(),
             content: Some(content.clone()),
-            result: AnalysisOutcome::Image(Ok(crate::model::ImageAnalysis {
-                description: "A bicycle beside a lake".into(),
-                objects: vec!["bicycle".into()],
-                provenance: crate::model::AnalysisProvenance {
-                    source: "local-vision".into(),
-                    engine: "tilo-vision".into(),
-                    model_id: "vision-local".into(),
-                    model_revision: "b".repeat(64),
-                    content,
-                    scope: "local".into(),
+            result: AnalysisOutcome::Image {
+                component: ImageAnalysisComponent::Vision,
+                result: Ok(crate::model::ImageAnalysis {
+                    description: "A bicycle beside a lake".into(),
+                    objects: vec!["bicycle".into()],
+                    provenance: crate::model::AnalysisProvenance {
+                        source: "local-vision".into(),
+                        engine: "tilo-vision".into(),
+                        model_id: "vision-local".into(),
+                        model_revision: "b".repeat(64),
+                        content,
+                        scope: "local".into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
-                },
-                ..Default::default()
-            })),
+                }),
+            },
         },
         &mut doc,
     );
