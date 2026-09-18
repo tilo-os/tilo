@@ -52,6 +52,7 @@ use crate::strings::tr;
 /// which takes everything left over.
 const BAR_H: f32 = 48.0;
 const PAD: f32 = 12.0;
+const RETAINED_CONTROL_OPERATION_TYPE: &str = "tilo.ui.control.invoke";
 
 /// Button height. Deliberately shorter than the bar so the controls sit in
 /// the strip rather than filling it edge to edge.
@@ -12242,7 +12243,7 @@ impl Widget for PhotosApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             crate::actions::PHOTOS_OPERATION_TYPE,
-            "tilo.ui.control.invoke",
+            RETAINED_CONTROL_OPERATION_TYPE,
         ]
     }
 
@@ -12360,11 +12361,13 @@ impl Widget for PhotosApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        for button in self.retained_buttons_mut() {
-            if let Some(output) =
-                button.invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
-            {
-                return Ok(Some(output));
+        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
+            for button in self.retained_buttons_mut() {
+                if let Some(output) =
+                    button.invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
+                {
+                    return Ok(Some(output));
+                }
             }
         }
         self.invoke_resource_operation(kind, type_id, payload, doc, path)
@@ -12380,11 +12383,13 @@ impl Widget for PhotosApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        for button in self.retained_buttons_mut() {
-            if let Some(started) =
-                button.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-            {
-                return Ok(Some(started));
+        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
+            for button in self.retained_buttons_mut() {
+                if let Some(started) = button
+                    .start_resource_operation(invocation, kind, type_id, payload, doc, path)?
+                {
+                    return Ok(Some(started));
+                }
             }
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -12422,11 +12427,13 @@ impl Widget for PhotosApp {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        for button in self.retained_buttons_mut() {
-            if let Some(started) = button.start_resource_operation_with_document(
-                invocation, kind, type_id, payload, doc, path,
-            )? {
-                return Ok(Some(started));
+        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
+            for button in self.retained_buttons_mut() {
+                if let Some(started) = button.start_resource_operation_with_document(
+                    invocation, kind, type_id, payload, doc, path,
+                )? {
+                    return Ok(Some(started));
+                }
             }
         }
         if kind == tilo_actions::OperationKind::Document {
