@@ -44,6 +44,12 @@ pub struct QpkgMeta {
 
 /// Enforce the application materialization and entry-count budgets without
 /// writing the payload to disk.
+///
+/// # Errors
+///
+/// Returns an error when the package root or payload collection is missing or
+/// malformed, the blob store cannot be read, or the decoded application
+/// exceeds the materialization limits enforced by [`pkg`].
 pub fn validate_payload_shape(meta: &QpkgMeta) -> Result<()> {
     let signed_bytes = meta
         .store
