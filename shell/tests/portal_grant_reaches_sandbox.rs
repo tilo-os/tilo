@@ -162,7 +162,7 @@ fn the_launcher_refuses_to_bind_the_filesystem_root() {
 /// Why a `"/"` grant is dangerous even though the launcher refuses to bind
 /// it: `Scope::FsPath("/")` is a prefix match over every path, so every
 /// compositor-side "already granted?" check answers yes for anything —
-/// including `fs/src/acl.rs`'s open/read/write checks and `flow::resolve`.
+/// including `crates/system/fs/src/acl.rs`'s open/read/write checks and `flow::resolve`.
 #[test]
 fn a_root_grant_makes_every_path_read_as_already_granted() {
     let (store, ws) = store();

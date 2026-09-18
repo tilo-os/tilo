@@ -67,8 +67,8 @@ path = "tests/performance_gate.rs"
 required-features = ["filesystem"]
 
 [dependencies]
-bounded-command = { path = "../crates/system/bounded-command" }
-atomic-file = { path = "../crates/system/atomic-file" }
+bounded-command = { path = "../bounded-command" }
+atomic-file = { path = "../atomic-file" }
 anyhow.workspace = true
 bytes.workspace = true
 clap = { workspace = true, optional = true }
@@ -77,8 +77,8 @@ iroh-base = { workspace = true, optional = true }
 iroh-blobs.workspace = true
 iroh-gossip = { workspace = true, optional = true }
 automerge = { workspace = true, optional = true }
-qdoc = { path = "../crates/doc/qdoc", optional = true }
-collab-types = { path = "../crates/collab/collab-types", optional = true }
+qdoc = { path = "../../doc/qdoc", optional = true }
+collab-types = { path = "../../collab/collab-types", optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 # The shared thumbnail generator + content-addressed cache. Default features
@@ -86,13 +86,13 @@ getrandom = { workspace = true, optional = true }
 # filesystem daemon host-generates the light preview types and never pulls
 # pdfium or the gstreamer stack into the image. PDF/video previews are the
 # client's job (the file manager builds this crate with those features on).
-thumbnail = { path = "../crates/media/thumbnail", optional = true }
+thumbnail = { path = "../../media/thumbnail", optional = true }
 # The machine's one device key. The mount derives its iroh node key from
 # it rather than minting its own, so the node id names the device.
-tilo-user-identity = { path = "../crates/identity/tilo-user-identity", optional = true }
+tilo-user-identity = { path = "../../identity/tilo-user-identity", optional = true }
 # Bus-free, production battery/AC sampling for speculative-hydration policy.
-tilo-power-mgmt = { path = "../crates/system/power", default-features = false, optional = true }
-runtime-fs = { path = "../crates/runtime/runtime-fs", optional = true }
+tilo-power-mgmt = { path = "../power", default-features = false, optional = true }
+runtime-fs = { path = "../../runtime/runtime-fs", optional = true }
 libc = { workspace = true, optional = true }
 moka = { version = "0.12.15", features = ["sync"] }
 serde.workspace = true

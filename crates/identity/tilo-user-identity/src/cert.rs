@@ -19,7 +19,7 @@ pub const DEVCERT_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v1\0";
 /// What a device may do on behalf of its user.
 ///
 /// The four booleans map directly to enforceable policy checks in
-/// `shell/` and `fs/`. Currently a user's *primary* device (the one
+/// `shell/` and `crates/system/fs/`. Currently a user's *primary* device (the one
 /// that holds the root private key) gets `can_own_workspaces:
 /// true, can_admit_devices: true`, phones/tablets get
 /// `can_own_workspaces: true` but `can_admit_devices: false`, and
