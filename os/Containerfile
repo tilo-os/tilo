@@ -1360,41 +1360,6 @@ COPY \
 # and therefore ships the rule rather than the package.
 COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules /usr/lib/udev/rules.d/
 
-# --- Signing trust roots (security plan §9 image signing, §4 measured boot) ---
-# Public keys only (the private keys are git-excluded; see keys/README.md).
-#  - cosign.pub verifies the OS image signature before `bootc upgrade` applies
-#    it (policy.json below). CI signs each pushed image (see .forgejo/workflows).
-#  - tpm2-pcr-signing.public.pem is the trust root for SIGNED PCR policies, and
-#    nothing reads it yet. LUKS binds to PCR 7 (the Secure Boot policy) because
-#    that value is stable across OS updates; binding to PCR 4 — the boot
-#    artefacts themselves — needs a signed prediction, or every update would
-#    break the seal. This key is what such a prediction would verify against.
-#    See docs/security/boot-chain.md.
-# The named context can override only this public bundle. The separate tracked
-# reference below binds production mode to the unchanged official keys.
-ARG TILO_PUBLIC_TRUST_MODE=production
-ARG TILO_PUBLIC_TRUST_MANIFEST_SHA256
-ARG TILO_TARGET_IMGREF
-ARG TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY
-COPY --from=public-trust / /run/tilo-public-trust/
-COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /run/tilo-official-trust/
-COPY os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py /run/tilo-trust-tools/
-COPY os/etc/containers/policy.json /etc/containers/policy.json
-COPY os/etc/containers/registries.d/code.sandbox.example.yaml /etc/containers/registries.d/code.sandbox.example.yaml
-RUN python3 /run/tilo-trust-tools/install-public-trust.py \
-      --source /run/tilo-public-trust --official /run/tilo-official-trust \
-      --destination /usr/share/tilo --mode "$TILO_PUBLIC_TRUST_MODE" \
-      --manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256" \
-      --registry-owner "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
-      --target-ref "$TILO_TARGET_IMGREF" --image-root / \
- && rm -rf /run/tilo-public-trust /run/tilo-official-trust /run/tilo-trust-tools
-
-# Container signature policy: REQUIRE a valid cosign signature for
-# code.sandbox.example/qos/tilo (everything else stays permissive), so a tampered or
-# unsigned OS image is refused at `bootc upgrade`. registries.d points the
-# verifier at cosign's sigstore attachment in the same repo.
-
-
 # Grow the block-backed filesystem at /sysroot. The stock systemd-growfs-root.service
 # targets `/`, which is a composefs overlay here and cannot be grown; the
 # drop-in stands it down on this layout so the two never both apply.
@@ -2003,6 +1968,44 @@ RUN for u in \
 # the FedoraWorkstation zone already permits the outbound side. Adding either
 # service is a decision to be argued for, not a default.
 RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation
+
+# Keep per-run public trust late: new development public keys must not
+# invalidate the invariant desktop/Windows/SELinux assembly prefix. It must
+# still precede board-origin validation and dracut's embedded PCR public key.
+# --- Signing trust roots (security plan §9 image signing, §4 measured boot) ---
+# Public keys only (the private keys are git-excluded; see keys/README.md).
+#  - cosign.pub verifies the OS image signature before `bootc upgrade` applies
+#    it (policy.json below). CI signs each pushed image (see .forgejo/workflows).
+#  - tpm2-pcr-signing.public.pem is the trust root for SIGNED PCR policies, and
+#    nothing reads it yet. LUKS binds to PCR 7 (the Secure Boot policy) because
+#    that value is stable across OS updates; binding to PCR 4 — the boot
+#    artefacts themselves — needs a signed prediction, or every update would
+#    break the seal. This key is what such a prediction would verify against.
+#    See docs/security/boot-chain.md.
+# The named context can override only this public bundle. The separate tracked
+# reference below binds production mode to the unchanged official keys.
+ARG TILO_PUBLIC_TRUST_MODE=production
+ARG TILO_PUBLIC_TRUST_MANIFEST_SHA256
+ARG TILO_TARGET_IMGREF
+ARG TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY
+COPY --from=public-trust / /run/tilo-public-trust/
+COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /run/tilo-official-trust/
+COPY os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py /run/tilo-trust-tools/
+COPY os/etc/containers/policy.json /etc/containers/policy.json
+COPY os/etc/containers/registries.d/code.sandbox.example.yaml /etc/containers/registries.d/code.sandbox.example.yaml
+RUN python3 /run/tilo-trust-tools/install-public-trust.py \
+      --source /run/tilo-public-trust --official /run/tilo-official-trust \
+      --destination /usr/share/tilo --mode "$TILO_PUBLIC_TRUST_MODE" \
+      --manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256" \
+      --registry-owner "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
+      --target-ref "$TILO_TARGET_IMGREF" --image-root / \
+ && rm -rf /run/tilo-public-trust /run/tilo-official-trust /run/tilo-trust-tools
+
+# Container signature policy: REQUIRE a valid cosign signature for
+# code.sandbox.example/qos/tilo (everything else stays permissive), so a tampered or
+# unsigned OS image is refused at `bootc upgrade`. registries.d points the
+# verifier at cosign's sigstore attachment in the same repo.
+
 
 # ---------------------------------------------------------------------------
 # Custom Tilo kernel: swap Fedora's kernel-core for our tuned tilo-kernel-core.
