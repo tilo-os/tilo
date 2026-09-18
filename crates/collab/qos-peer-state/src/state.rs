@@ -674,6 +674,41 @@ impl StatePeer {
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<ReceiveOutcome, String> {
+        self.admit_document(source, message, now, false)
+    }
+    /// Host-local SDK publication after its certified connection was admitted.
+    /// No wire message can select this door. Unlike a retained checkpoint, an
+    /// SDK snapshot is an authored mutation of an already-owned exact record.
+    /// Certificate, current policy, signature, replay and route checks are shared.
+    pub fn admit_local_app_document(
+        &mut self,
+        app: &str,
+        record: &str,
+        envelope: collab_types::SignedOp,
+        now: SystemTime,
+    ) -> Result<ReceiveOutcome, String> {
+        if self.document(app, record).is_none() {
+            return Err("local app publication cannot create a record owner".into());
+        }
+        let source = *envelope.author.as_bytes();
+        self.admit_document(
+            source,
+            NeighbourMsg::AppDocument {
+                peer: peer_handle(&source),
+                app_id: app.into(),
+                cluster_id: self.room.clone(),
+                record_id: record.into(),
+                envelope: Box::new(envelope),
+            },
+            now,
+            true,
+        )
+    }
+
+    fn admit_document(
+        &mut self, source: [u8; 32], message: NeighbourMsg,
+        now: SystemTime, local_app: bool,
+    ) -> Result<ReceiveOutcome, String> {
         let NeighbourMsg::AppDocument {
             peer,
             app_id,
@@ -773,7 +808,7 @@ impl StatePeer {
             _=>return Err("incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden".into()),
         };
         candidate.channel = validated_channel;
-        if let DocumentMutation::Snapshot(bytes) = &mutation {
+        if let DocumentMutation::Snapshot(bytes) = &mutation && !local_app {
             let entries = crate::coverage::entries(self.room_doc.as_ref().ok_or("missing room")?)?;
             let coverage = entries.get(&crate::coverage::route_key(&route.app, &route.record));
             let Some(coverage) = coverage else {
@@ -848,7 +883,10 @@ impl StatePeer {
         }
         let changed = document::merge_committed(&mut candidate.doc, &mutation)
             .map_err(|e| format!("{e:?}"))?;
-        if matches!(mutation, DocumentMutation::Snapshot(_)) {
+        if local_app && !candidate.doc.get_missing_deps(&[]).is_empty() {
+            return Err("local publication has unresolved document dependencies".into());
+        }
+        if !local_app && matches!(mutation, DocumentMutation::Snapshot(_)) {
             self.checkpoint_times.insert(route.clone(), now);
         }
         self.documents.insert(route, candidate);

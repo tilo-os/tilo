@@ -63,6 +63,7 @@ impl PeerPublishSink for ShellNetwork {
 /// has one answer per session.
 pub struct PeerPublisher {
     sink: Option<Arc<dyn PeerPublishSink>>,
+    owner_commit: Option<Arc<dyn qos_peer_state::owner_commit::OwnerCommitService>>,
     /// Set the first time a publish is dropped for no network — keeps
     /// the "collaboration is off" line to one per session.
     warned_no_network: AtomicBool,
@@ -73,8 +74,41 @@ impl PeerPublisher {
     pub fn new(sink: Arc<dyn PeerPublishSink>) -> Arc<Self> {
         Arc::new(Self {
             sink: Some(sink),
+            owner_commit: None,
             warned_no_network: AtomicBool::new(false),
         })
+    }
+
+    /// Attach the host-local fsync barrier independently from network publication.
+    /// A legacy sink's wired status never supplies this authority.
+    pub fn with_owner_commit(
+        sink: Arc<dyn PeerPublishSink>,
+        owner: Arc<dyn qos_peer_state::owner_commit::OwnerCommitService>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            sink: Some(sink),
+            owner_commit: Some(owner),
+            warned_no_network: AtomicBool::new(false),
+        })
+    }
+    pub fn owner_commit_health(&self) -> Result<(), String> {
+        self.owner_commit
+            .as_ref()
+            .ok_or("durable owner commit unsupported")?
+            .health()
+    }
+    pub async fn commit_owner(
+        &self,
+        request: qos_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> Result<qos_peer_state::owner_commit::OwnerCommitReceipt, String> {
+        let owner = self
+            .owner_commit
+            .as_ref()
+            .ok_or("durable owner commit unsupported")?;
+        owner.health()?;
+        let receipt = owner.commit(request.clone()).await?;
+        receipt.validate_for(&request)?;
+        Ok(receipt)
     }
 
     /// A publisher with nowhere to publish. Every call is a no-op,
@@ -82,6 +116,7 @@ impl PeerPublisher {
     pub fn disabled() -> Arc<Self> {
         Arc::new(Self {
             sink: None,
+            owner_commit: None,
             warned_no_network: AtomicBool::new(false),
         })
     }
@@ -107,13 +142,13 @@ impl PeerPublisher {
         }
     }
 
-    /// Whether this publisher can reach the network at all.
+    /// Whether a network callback is wired. This is not delivery or durability.
     pub fn is_wired(&self) -> bool {
         self.sink.is_some()
     }
 
-    /// The remote broker validates against its own channel state before
-    /// showing it to anyone — publishing is not vouching.
+    /// Invoke the legacy network callback; true means only that it was wired.
+    /// The standalone owner path uses `commit_owner` for durable acknowledgment.
     pub fn signed_document(&self, route: &CrdtRoute, envelope: SignedOp) -> bool {
         let Some(sink) = self.ready(route, "signed document") else {
             return false;

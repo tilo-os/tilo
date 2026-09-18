@@ -13695,6 +13695,7 @@ dependencies = [
  "qos-power-mgmt",
  "qos-projector",
  "qos-relay",
+ "qos-session-peer",
  "qos-startup-metrics",
  "qos-user-identity",
  "rand 0.8.8",

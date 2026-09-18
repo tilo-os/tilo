@@ -445,6 +445,7 @@ pub struct InvocationJob {
     pub completion: std::sync::mpsc::Receiver<InvocationCompletion>,
 }
 
+#[derive(Clone)]
 struct PendingInvocation {
     network_evidence: Option<qos_relay::client::CertifiedAction>,
     journal_key: Option<InvocationKey>,
@@ -540,6 +541,7 @@ mod peer_action_broker;
 
 impl CapnpBrokerState {
     pub(crate) fn invocation_host(&self) -> Result<uuid::Uuid, String> {
+        if self.durable_owner_required { self.owner_health()?; }
         self.journal
             .lock()
             .map_err(|_| "invocation journal unavailable")?
@@ -1362,6 +1364,9 @@ pub struct CapnpBrokerState {
     /// A publisher with no network behind it ([`PeerPublisher::disabled`]) is legitimate
     /// (unit tests, a shell started without peer sync).
     publisher: Arc<PeerPublisher>,
+    durable_owner_required: bool,
+    owner_commit_failure: Mutex<Option<String>>,
+    owner_commit_order: AsyncMutex<()>,
     /// The shell's one replicated workspace owner/capability authority.
     /// `None` exists only for transitional test/diagnostic brokers; a
     /// certified join fails closed when they have no authority to consult.
@@ -1521,11 +1526,88 @@ impl CapnpBrokerState {
         }
     }
 
+    fn owner_health(&self) -> Result<(), String> {
+        if let Some(reason) = self
+            .owner_commit_failure
+            .lock()
+            .map_err(|_| "owner health unavailable")?
+            .as_ref()
+        {
+            return Err(reason.clone());
+        }
+        self.publisher.owner_commit_health()
+    }
+
+    async fn commit_owner_request(
+        &self,
+        request: qos_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> Result<(), capnp::Error> {
+        self.owner_health().map_err(capnp::Error::failed)?;
+        // Dropping the waiting RPC cannot convert an admitted effect into a
+        // refusal or leave the standalone capability apparently healthy.
+        struct Waiting<'a> {
+            failure: &'a Mutex<Option<String>>,
+            complete: bool,
+        }
+        impl Drop for Waiting<'_> {
+            fn drop(&mut self) {
+                if !self.complete
+                    && let Ok(mut failure) = self.failure.lock()
+                {
+                    failure
+                        .get_or_insert_with(|| "owner commit interrupted; outcome unknown".into());
+                }
+            }
+        }
+        let mut waiting = Waiting {
+            failure: &self.owner_commit_failure,
+            complete: false,
+        };
+        self.publisher
+            .commit_owner(request)
+            .await
+            .map_err(capnp::Error::failed)?;
+        waiting.complete = true;
+        Ok(())
+    }
+
+    async fn commit_effect_before_terminal(
+        &self,
+        pending: &PendingInvocation,
+        update: &qos_actions::InvocationUpdate,
+    ) -> Result<(), capnp::Error> {
+        if !self.durable_owner_required || !update.is_terminal() {
+            return Ok(());
+        }
+        self.owner_health().map_err(capnp::Error::failed)?;
+        if pending.operation_kind != qos_actions::OperationKind::Effect {
+            return Ok(());
+        }
+        let status = qos_actions::EffectReceiptStatus::from_terminal(update)
+            .ok_or_else(|| capnp::Error::failed("nonterminal effect receipt".into()))?;
+        let receipt = crate::shell::state::redacted_effect_receipt(
+            update.invocation(),
+            &pending.actor,
+            pending.context.clone(),
+            status,
+        );
+        self.commit_owner_request(qos_peer_state::owner_commit::OwnerCommitRequest {
+            room: pending.cluster_id.clone(),
+            operation: qos_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                invocation: update.invocation().0,
+                redacted: serde_json::to_vec(&receipt)
+                    .map_err(|e| capnp::Error::failed(e.to_string()))?,
+            },
+        })
+        .await
+    }
+
     fn record_effect_receipt(
         &self,
         pending: &PendingInvocation,
         update: &qos_actions::InvocationUpdate,
     ) {
+        if self.durable_owner_required { return; }
         if pending.operation_kind != qos_actions::OperationKind::Effect {
             return;
         }
@@ -1620,6 +1702,9 @@ impl CapnpBrokerState {
                 fanout: Arc::downgrade(fanout),
                 broker_channels,
                 publisher,
+                durable_owner_required: config.is_some(),
+                owner_commit_failure: Mutex::new(None),
+                owner_commit_order: AsyncMutex::new(()),
                 membership,
                 trusted_devices,
                 certificate_authority: config.map_or_else(std::sync::OnceLock::new, |config| {
@@ -3955,6 +4040,24 @@ impl channel_handle::Server for CapnpChannelHandle {
         )
         .with_app(&surface.app_id, &surface.app_id);
         let actor = current.broker_actor().id;
+        if self.state.durable_owner_required {
+            context.purpose = None;
+            let receipt = crate::shell::state::redacted_effect_receipt(update.invocation(), &actor, context, status);
+            let state = self.state.clone();
+            let route = self.route();
+            let identity = self.verified_identity.clone();
+            return Promise::from_future(async move {
+                let _order = state.owner_commit_order.lock().await;
+                state.revalidate_admission(&route, &identity)?;
+                state.commit_owner_request(qos_peer_state::owner_commit::OwnerCommitRequest {
+                    room: surface.route.cluster_id,
+                    operation: qos_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                        invocation: update.invocation().0,
+                        redacted: serde_json::to_vec(&receipt).map_err(|e| capnp::Error::failed(e.to_string()))?,
+                    },
+                }).await
+            });
+        }
         let Some(membership) = &self.state.membership else {
             return Promise::err(capnp::Error::failed(
                 "the action broker has no workspace authority".into(),
@@ -4080,6 +4183,16 @@ impl channel_handle::Server for CapnpChannelHandle {
             verify_session_author(&current_identity, envelope.author)
                 .map_err(|error| capnp::Error::failed(format!("capnp send: {error}")))?;
             state.authorize_certified_document(&route, &current_identity, &envelope)?;
+            let _owner_order = if state.durable_owner_required { Some(state.owner_commit_order.lock().await) } else { None };
+            if state.durable_owner_required {
+                state.revalidate_admission(&route, &verified_identity)?;
+                state.commit_owner_request(qos_peer_state::owner_commit::OwnerCommitRequest {
+                    room: route.cluster_id.clone(),
+                    operation: qos_peer_state::owner_commit::CommitOperation::Document {
+                        app: route.app_id.clone(), record: route.record_id.clone(), envelope: Box::new(envelope.clone()),
+                    },
+                }).await?;
+            }
             handle_signed_op_send(&state, peer_id, &route, &current_identity, envelope);
             Ok(())
         })
@@ -4867,6 +4980,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         Promise::from_future(async move {
+            let _owner_order = if state.durable_owner_required { Some(state.owner_commit_order.lock().await) } else { None };
             let request = params.get()?;
             let id = request.get_id();
             let completion = InvocationCompletion {
@@ -4878,7 +4992,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "failed invocation completion requires a message".into(),
                 ));
             }
-            let mut registry = state
+            let registry = state
                 .pending_invocations
                 .lock()
                 .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
@@ -4919,6 +5033,14 @@ impl channel_handle::Server for CapnpChannelHandle {
                     },
                 }
             };
+            let staged = pending.clone();
+            drop(registry);
+            state.commit_effect_before_terminal(&staged, &update).await?;
+            let mut registry = state.pending_invocations.lock()
+                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
+            let pending = registry.get(&id)
+                .filter(|pending| pending.peer_id == peer_id && pending.update == staged.update)
+                .ok_or_else(|| capnp::Error::failed("invocation changed while committing; outcome unknown".into()))?;
             state
                 .persist_invocation(pending, update.clone(), false)
                 .map_err(capnp::Error::failed)?;
@@ -4948,6 +5070,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         Promise::from_future(async move {
+            let _owner_order = if state.durable_owner_required { Some(state.owner_commit_order.lock().await) } else { None };
             let request = params.get()?;
             let id = request.get_id();
             let json = request.get_update_json()?.to_str()?;
@@ -5055,6 +5178,14 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "non-cancellable action reported cancellation".into(),
                 ));
             }
+            let staged = pending.clone();
+            drop(registry);
+            state.commit_effect_before_terminal(&staged, &update).await?;
+            let mut registry = state.pending_invocations.lock()
+                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
+            let pending = registry.get_mut(&id)
+                .filter(|pending| pending.peer_id == peer_id && pending.update == staged.update)
+                .ok_or_else(|| capnp::Error::failed("invocation changed while committing; outcome unknown".into()))?;
             state
                 .persist_invocation(pending, update.clone(), false)
                 .map_err(capnp::Error::failed)?;
@@ -6143,7 +6274,7 @@ fn handle_signed_op_send(
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
             }
             // Republishing is not vouching.
-            state.publisher().signed_document(route, envelope.clone());
+            if !state.durable_owner_required { state.publisher().signed_document(route, envelope.clone()); }
             let from_user_id = CapnpBrokerState::participant_id(verified_identity);
             let event = CollabEvent::Document {
                 envelope: Box::new(envelope),
@@ -7363,6 +7494,8 @@ pub(crate) mod tests {
             Promise::ok(())
         }
     }
+
+    include!("owner_commit_tests.rs");
 
     pub(crate) struct LocalDirectoryFixture {
         _fanout: Arc<FanoutState>,

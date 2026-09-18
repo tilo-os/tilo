@@ -29,7 +29,7 @@ qos-desktop = { path = "../../session/qos-desktop" }
 notes = { path = "../../../apps/notes" }
 word-processor = { path = "../../../apps/word-processor" }
 chat = { path = "../../../apps/chat", default-features = false }
-[dev-dependencies]
 collab-types = { path = "../../collab/collab-types" }
+[dev-dependencies]
 tempfile.workspace = true
 qos-browser-runtime = { path = "../../browser/qos-browser-runtime" }

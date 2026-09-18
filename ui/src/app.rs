@@ -836,15 +836,27 @@ impl App {
     /// # Errors
     /// Returns the original component recovery owners when mounting is refused.
     pub fn from_component(
+        component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_with_collaboration(component, inputs, CollaborationManager::disabled())
+    }
+
+    /// Mount a checked component on an explicitly admitted collaboration manager.
+    /// The manager retains the certified SDK route; no ambient identity or service
+    /// lookup is added. Component authority and record custody remain unchanged.
+    pub fn from_component_with_collaboration(
         mut component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
+        collaboration: CollaborationManager,
     ) -> Result<Self, crate::launch::LaunchError> {
         let scope = crate::wake::WakeScope::new();
         let handle = scope.handle();
         if let Err(error) = component.mount(move |_| handle.wake()) {
             return Err(component.setup_error(error));
         }
-        let inputs = AppConstructionInputs::component(inputs, &component.callback_binding());
+        let mut inputs = AppConstructionInputs::component(inputs, &component.callback_binding());
+        inputs.collab_manager = collaboration;
         let binding = component.callback_binding();
         let history = component.history.take();
         let mut root = Box::new(crate::widget::BoundAppWidget { component });
@@ -3255,6 +3267,12 @@ impl App {
                 },
             },
         };
+        if update.is_terminal() {
+            // The SDK shovel awaits each signed document RPC in queue order.
+            // Its fail-closed barrier prevents a failed publication from being
+            // followed by this successful application lifecycle message.
+            self.publish_owned_documents();
+        }
         self.collab_manager
             .send(CollabRequest::UpdateInvocation { id, update });
     }
@@ -4002,6 +4020,9 @@ impl App {
             if update.is_terminal() {
                 self.bound_invocations.remove(&invocation);
                 self.directed_invocations.remove(&invocation);
+            }
+            if update.is_terminal() {
+                self.publish_owned_documents();
             }
             self.collab_manager.send(CollabRequest::UpdateInvocation {
                 id: pending.wire_id,

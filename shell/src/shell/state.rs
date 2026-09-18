@@ -739,6 +739,39 @@ fn redact_receipt_context(context: &mut qos_actions::ActionContext) {
     }
 }
 
+/// Construct the same bounded public receipt for native and standalone owners.
+/// No invocation arguments, output, streamed items or private failure text enter it.
+pub fn redacted_effect_receipt(
+    invocation: qos_actions::InvocationId,
+    actor: &str,
+    mut context: qos_actions::ActionContext,
+    status: qos_actions::EffectReceiptStatus,
+) -> WorkspaceEffectReceipt {
+    let completed_at = unix_now();
+    let original_action = bounded_receipt_text(&context.action_label, 160);
+    context.action_label = if original_action.is_empty() {
+        status.label().to_string()
+    } else {
+        format!("{} · {original_action}", status.label())
+    };
+    context
+        .facets
+        .push(qos_actions::ActionFacet::new("qos.receipt", "effect"));
+    context.facets.push(qos_actions::ActionFacet::new(
+        "qos.invocation",
+        invocation.0.to_string(),
+    ));
+    redact_receipt_context(&mut context);
+    let receipt = WorkspaceEffectReceipt {
+        invocation,
+        actor: bounded_receipt_text(actor, 160),
+        context,
+        status,
+        completed_at,
+    };
+    receipt
+}
+
 /// What a role is called on screen. One mapping shared by every surface
 /// that shows a role, so it can't be spelled two different ways.
 pub fn role_label(role: CapRole) -> &'static str {
@@ -4142,7 +4175,7 @@ impl WorkspaceTree {
         workspace_id: WorkspaceId,
         invocation: qos_actions::InvocationId,
         actor: &str,
-        mut context: qos_actions::ActionContext,
+        context: qos_actions::ActionContext,
         status: qos_actions::EffectReceiptStatus,
     ) -> bool {
         let Some(workspace) = self
@@ -4159,28 +4192,7 @@ impl WorkspaceTree {
         {
             return false;
         }
-        let completed_at = unix_now();
-        let original_action = bounded_receipt_text(&context.action_label, 160);
-        context.action_label = if original_action.is_empty() {
-            status.label().to_string()
-        } else {
-            format!("{} · {original_action}", status.label())
-        };
-        context
-            .facets
-            .push(qos_actions::ActionFacet::new("qos.receipt", "effect"));
-        context.facets.push(qos_actions::ActionFacet::new(
-            "qos.invocation",
-            invocation.0.to_string(),
-        ));
-        redact_receipt_context(&mut context);
-        let receipt = WorkspaceEffectReceipt {
-            invocation,
-            actor: bounded_receipt_text(actor, 160),
-            context,
-            status,
-            completed_at,
-        };
+        let receipt = redacted_effect_receipt(invocation, actor, context, status);
         workspace.effect_receipts.push(receipt.clone());
         self.doc_upsert_workspace_effect_receipt(workspace_id, &receipt);
         self.flush_to_disk();

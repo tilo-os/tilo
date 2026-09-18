@@ -276,6 +276,7 @@ walkdir.workspace = true
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
+qos-session-peer = { path = "../crates/hosting/qos-session-peer" }
 runtime-portal = { path = "../crates/runtime/runtime-portal" }
 # Canonical-bytes encoder for Phase 3 wire-format round-trip tests in
 # `src/network/protocol.rs`. `qos-collab-types` already uses this for

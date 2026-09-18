@@ -2615,6 +2615,8 @@ async fn drive_shovel(
                     && let Some(route) = routes.get_mut(&key)
                 {
                     dispatch_sdk_request(route, request, &signer, &inbound_tx).await;
+                } else {
+                    inbound_tx.state.fail_closed("document route join");
                 }
             }
             SdkCommand::PrimaryReady(reply) => {
@@ -3081,6 +3083,7 @@ async fn send_document_mutation(
     route: &SdkRoute,
     signer: &SdkDocumentSigner,
     mutation: collab_types::DocumentMutation,
+    inbound: &InboundBridge,
 ) {
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
@@ -3088,12 +3091,14 @@ async fn send_document_mutation(
         Ok(payload) => payload,
         Err(error) => {
             tracing::warn!(%error, "collab: typed document mutation would not encode; dropping");
+            inbound.state.fail_closed("document signing or encoding");
             return;
         }
     };
     let Some((payload, encryption_metadata)) =
         prepare_document_payload(&route.encryption, cleartext)
     else {
+        inbound.state.fail_closed("document encryption");
         return;
     };
     let now = crate::clock::SystemTime::now();
@@ -3132,6 +3137,7 @@ async fn send_document_mutation(
         Ok(bytes) => bytes,
         Err(error) => {
             tracing::warn!(%error, "collab: unsigned document envelope would not encode; dropping");
+            inbound.state.fail_closed("document signing or encoding");
             return;
         }
     };
@@ -3149,6 +3155,7 @@ async fn send_document_mutation(
                     ?error,
                     "collab: identity service denied document operation; dropping"
                 );
+                inbound.state.fail_closed("document signing or encoding");
                 return;
             }
         },
@@ -3158,6 +3165,7 @@ async fn send_document_mutation(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     tracing::warn!(%error, "collab: document op would not canonicalize; dropping");
+                    inbound.state.fail_closed("document signing or encoding");
                     return;
                 }
             };
@@ -3167,10 +3175,14 @@ async fn send_document_mutation(
     op.signature = collab_types::Signature::from_bytes(signature);
     match postcard::to_stdvec(&op) {
         Ok(bytes) => {
-            let _ = route.channel.send(&bytes).await;
+            if let Err(error) = route.channel.send(&bytes).await {
+                tracing::warn!(%error, "collab: document commit failed; outcome unknown");
+                inbound.state.fail_closed("document commit RPC");
+            }
         }
         Err(error) => {
             tracing::warn!(%error, "collab: signed document envelope would not encode; dropping");
+            inbound.state.fail_closed("document encoding");
         }
     }
 }
@@ -3430,8 +3442,11 @@ async fn dispatch_sdk_request(
     match request {
         CollabRequest::Hello { .. } => {}
         CollabRequest::SignedOperation { envelope } => {
-            if let Ok(bytes) = postcard::to_stdvec(&*envelope) {
-                let _ = route.channel.send(&bytes).await;
+            match postcard::to_stdvec(&*envelope) {
+                Ok(bytes) => if route.channel.send(&bytes).await.is_err() {
+                    inbound_tx.state.fail_closed("signed document commit RPC");
+                },
+                Err(_) => inbound_tx.state.fail_closed("signed document encoding"),
             }
         }
         CollabRequest::DocumentSnapshot { data } => {
@@ -3439,6 +3454,7 @@ async fn dispatch_sdk_request(
                 route,
                 signer,
                 collab_types::DocumentMutation::Snapshot(data),
+                inbound_tx,
             )
             .await;
         }
@@ -3447,6 +3463,7 @@ async fn dispatch_sdk_request(
                 route,
                 signer,
                 collab_types::DocumentMutation::Incremental(data),
+                inbound_tx,
             )
             .await;
         }
@@ -3625,15 +3642,25 @@ async fn dispatch_sdk_request(
         CollabRequest::CompleteInvocation { id, code, message } => {
             if let Err(error) = route.channel.complete_invocation(id, &code, &message).await {
                 tracing::warn!(%error, id, "collab: completing resource/action invocation failed");
+                inbound_tx.state.fail_closed("invocation completion outcome unknown");
             }
         }
         CollabRequest::UpdateInvocation { id, update } => match serde_json::to_string(&update) {
             Ok(json) => {
                 if let Err(error) = route.channel.update_invocation(id, &json).await {
                     tracing::warn!(%error, id, "collab: updating action invocation failed");
+                    // Broker-owned acceptance and rejected progress are not
+                    // owner durability acknowledgments. A failed terminal may
+                    // follow an effect and must stop subsequent outbound work.
+                    if update.is_terminal() {
+                        inbound_tx.state.fail_closed("invocation update outcome unknown");
+                    }
                 }
             }
-            Err(error) => tracing::warn!(%error, id, "collab: encoding action update failed"),
+            Err(error) => {
+                tracing::warn!(%error, id, "collab: encoding action update failed");
+                inbound_tx.state.fail_closed("invocation update encoding");
+            },
         },
         CollabRequest::RecordLocalEffect { address, update } => {
             match serde_json::to_string(&update) {
@@ -3644,10 +3671,12 @@ async fn dispatch_sdk_request(
                         .await
                     {
                         tracing::warn!(%error, "collab: recording local effect receipt failed");
+                        inbound_tx.state.fail_closed("effect receipt outcome unknown");
                     }
                 }
                 Err(error) => {
                     tracing::warn!(%error, "collab: encoding local effect receipt failed");
+                    inbound_tx.state.fail_closed("effect receipt encoding");
                 }
             }
         }
@@ -3974,6 +4003,9 @@ mod tests {
 
     #[derive(Default)]
     struct Captures {
+        fail_document: bool,
+        fail_terminal: bool,
+        terminal_updates: usize,
         joined: Vec<(String, Vec<u8>)>,
         signed_ops: Vec<Vec<u8>>,
         cursor_publishes: Vec<(f32, f32)>,
@@ -4307,6 +4339,19 @@ mod tests {
     }
 
     impl channel_handle::Server for FakeChannel {
+        fn update_invocation(
+            self: Rc<Self>,
+            _params: channel_handle::UpdateInvocationParams,
+            _results: channel_handle::UpdateInvocationResults,
+        ) -> Promise<(), capnp::Error> {
+            let mut captures = self.captures.lock().unwrap();
+            captures.terminal_updates += 1;
+            if captures.fail_terminal {
+                return Promise::err(capnp::Error::failed("effect receipt barrier failed; outcome unknown".into()));
+            }
+            Promise::ok(())
+        }
+
         fn send(
             self: Rc<Self>,
             params: channel_handle::SendParams,
@@ -4319,7 +4364,11 @@ mod tests {
                 Ok(o) => o.to_vec(),
                 Err(e) => return Promise::err(e),
             };
-            self.captures.lock().unwrap().signed_ops.push(op);
+            let mut captures = self.captures.lock().unwrap();
+            if captures.fail_document {
+                return Promise::err(capnp::Error::failed("owner durable barrier failed".into()));
+            }
+            captures.signed_ops.push(op);
             Promise::ok(())
         }
 
@@ -4514,6 +4563,59 @@ mod tests {
             .unwrap();
 
         (client_fd, captures, handle)
+    }
+
+    #[test]
+    fn session_owner_commit_sdk_failure_stops_queued_terminal() {
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![], presence_backlog: vec![], context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, thread) = stand_up_fake_broker(broker);
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
+        captures.lock().unwrap().fail_document = true;
+        manager.send(CollabRequest::DocumentSnapshot { data: b"committed worker mutation".to_vec() });
+        manager.send(CollabRequest::UpdateInvocation {
+            id: 42,
+            update: qos_actions::InvocationUpdate::Succeeded {
+                invocation: qos_actions::InvocationId::new(),
+                output: qos_actions::ActionOutput::default(),
+            },
+        });
+        assert!(wait_until(|| !manager.is_connected(), Duration::from_secs(2)),
+            "SDK stayed healthy after owner document RPC failed");
+        assert_eq!(captures.lock().unwrap().terminal_updates, 0,
+            "failed document publication must not be followed by successful completion");
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn session_owner_commit_sdk_terminal_failure_disconnects_before_next_request() {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![], presence_backlog: vec![], context_backlog: vec![], scrollback_response: None,
+        };
+        let (fd, captures, thread) = stand_up_fake_broker(broker);
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
+        captures.lock().unwrap().fail_terminal = true;
+        let invocation = qos_actions::InvocationId::new();
+        manager.send(CollabRequest::UpdateInvocation {
+            id: 42, update: qos_actions::InvocationUpdate::Accepted { invocation },
+        });
+        for id in [42, 43] {
+            manager.send(CollabRequest::UpdateInvocation { id,
+                update: qos_actions::InvocationUpdate::Succeeded {
+                    invocation, output: qos_actions::ActionOutput::default(),
+                },
+            });
+        }
+        assert!(wait_until(|| !manager.is_connected(), Duration::from_secs(2)));
+        assert_eq!(captures.lock().unwrap().terminal_updates, 2,
+            "a broker-owned acceptance rejection must not kill a background worker; the subsequent failed terminal must");
+        drop(manager);
+        thread.join().unwrap();
     }
 
     pub(super) fn connected_manager() -> CollaborationManager {

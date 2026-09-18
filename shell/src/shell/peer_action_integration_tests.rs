@@ -364,7 +364,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
 }
 
 #[test]
-fn native_peer_facade_production_startup_uses_explicit_private_roots() {
+fn native_peer_facade_recording_only_startup_cannot_advertise_durable_attachment() {
     let root = tempfile::tempdir().unwrap();
     let mut tree = WorkspaceTree::default();
     let mut room = crate::shell::state::Workspace::test_default(
@@ -392,12 +392,8 @@ fn native_peer_facade_production_startup_uses_explicit_private_roots() {
         config,
     )
     .unwrap();
-    let (_, host) = broker
-        .app_action_broker()
-        .unwrap()
-        .peer_action_attachment()
-        .unwrap();
-    assert!(!host.is_nil());
+    assert!(broker.app_action_broker().unwrap().peer_action_attachment().is_err(),
+        "a void recording sink is not the serialized session owner barrier");
     assert!(journal_root.join("records.json").is_file());
     assert!(!root.path().join("must-not-be-used").exists());
     drop(broker);
