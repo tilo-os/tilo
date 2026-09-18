@@ -31,6 +31,13 @@ def section(text, key, indent=0):
 
 
 class QueueReliefTests(unittest.TestCase):
+    def test_every_main_commit_keeps_checks_without_serializing_revisions(self):
+        for name in ("check", "lint"):
+            with self.subTest(workflow=name):
+                concurrency = section(workflow(name), "concurrency")
+                self.assertIn("github.ref == 'refs/heads/main' && github.sha", concurrency)
+                self.assertIn("cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}", concurrency)
+
     def test_component_release_tags_and_manual_runs_remain(self):
         for name, tags in (("build-image", '["v*"]'),
                            ("package-desktop", '["desktop-v*"]'),
