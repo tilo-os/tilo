@@ -20,16 +20,19 @@ health guarantee.
 | `qos/qos` `e0c6484e6` | Deployed follow-up integration checkpoint: task-branch instructions, runtime artifact layout repair, confined audio dependency helper, narrow design-only Rust applicability, fail-closed aggregate with the Forgejo sentinel-matrix workaround, and rename-owner coverage. Includes unrelated upstream work; do not revert the whole merge. |
 | `qos/qos` `e279fbf35` | Later deployed checkpoint includes focused development helpers (`8f768b116`) and per-main-SHA check/lint concurrency groups. Deployment is not evidence that its actual CI passed. |
 | `qos/qos` `0975d89a8` | Deployed checkpoint containing `f660a53a4`: lean pinned fast-quality image, native toolchain smoke, and the exclusive `runner-quality` lane. Its actual production lint run 22696 passed; the separate check run 22695 is not claimed green here. |
+| `qos/qos` `f2f4664a4` | Deployed follow-up checkpoint includes isolated Clippy target/cache corrections and explicit lean images for status/report jobs. It contains unrelated upstream changes; do not revert the whole merge. |
+| `qos/qos` `ec3facc4b` | Deployed checkpoint includes lightweight quality-lane builder resolution/control and affected-package selection. Native compilation and security jobs still use the full builder. |
 | Infrastructure `93be3f6` | Enables `forgejo/qos-ci-queue-coalescer`, using the heavy-only policy. |
 | Infrastructure `8c1de67` + `4c20a8e` | Pins the attempted broker fix image and permits bounded startup reconciliation before liveness enforcement. Operator reports Argo applications synced/healthy at `4c20a8e`, but subsequent runtime inspection found the performance guard was not loaded; see below. |
 | Infrastructure `506195f` | Deploys the corrected image that patches the imported runtime module, retaining the startup probe. Superseded by the current broker below. |
 | Infrastructure `a30e1c8` | Adds one exclusive on-prem `runner-quality` slot, with a 2 CPU / 4 GiB Docker-in-Docker workload envelope; general/heavy jobs cannot use its reserved capacity. |
-| Infrastructure `ffbd0a1` | Deploys the current broker image with completed-cleanup tolerance and live-runner deletion guards. These guards do not prove the cause of historical runner loss. |
+| Infrastructure `ffbd0a1` | Adds completed-cleanup tolerance and live-runner deletion guards, retained in later images. These guards do not prove the cause of historical runner loss. |
+| Infrastructure `3e2e8ba` | Deploys repository-scoped full-builder seed clones with broker image `48a5bf...`. Actual repository 23 snapshot cloning is proven; its first observed job used a public image, so this is not private-builder cache-hit evidence. |
 
 Broker image:
 
 ```text
-code.sandbox.example/podestaai/sandbox-broker@sha256:2a4ad90ca83c9860e54c619fb9569d3a7e854252935d911ad4b4b1e03653dcdd
+code.sandbox.example/podestaai/sandbox-broker@sha256:48a5bfac79b32e398fc11a36d6b16956d13e7a3103ca80547efa619d83ad7b95
 ```
 
 The broker runs as Deployment `sandbox-broker` in namespace `sandbox-broker`.
@@ -39,8 +42,8 @@ five-second intervals. Startup-probe recovery is healthy independently of the
 performance patch. The `c568...` image patched a source-tree copy, while the running
 broker imported its implementation from `site-packages`; the intended performance
 guard therefore did **not** take effect. Infrastructure `506195f` replaces that
-image with the imported-module correction. The current `ffbd0a1` deployment
-retains that correction and the exclusive quality lane, and adds cleanup guards
+image with the imported-module correction. The later `3e2e8ba` deployment
+retains that correction, the exclusive quality lane, and `ffbd0a1` cleanup guards
 that tolerate completed resources and protect live runners. Green probes and
 source changes alone do not prove end-to-end improvement; the production
 measurement below is the evidence for the fast-quality path. No Forgejo server
@@ -109,7 +112,23 @@ dependency-usage analysis. Another image pilot measured a 36s pull interval.
 These observations show material worker/network variation; the 9.905s
 production observation must not be generalized into a universal cold-start bound.
 Lint, the final check aggregate, and receipt jobs now use `runner-quality`.
-Selection and native compilation retain their existing builder/architecture lanes.
+Builder resolution now uses the pinned `ci-control` image and selection uses
+`ci-fast`, both on the quality lane. Native compilation and security checks retain
+their full-builder/architecture lanes. Native control qualification run **22746**
+passed, including a roughly **172-second cold pull**. This proves the control path
+works; it does not demonstrate consistently fast cold provisioning.
+
+The actual main check run **22755**, for `ec3facc4b`, subsequently completed builder
+job **83538** and selector job **83539** successfully (API observation 22:53 UTC).
+Selection requested three contract packages on both native architectures. At that
+observation, security/native jobs were still waiting and the aggregate was blocked.
+This qualifies lightweight planning in the real pipeline, not the whole check run.
+
+Later production lint run **22728** also passed, taking **342 seconds**, including
+about **185 seconds** between image pull and container creation. The earlier
+134-second result remains valid for that run, but is not a universal latency
+claim. Keep queue time, image acquisition and actual checks separate when comparing
+workers; a lean image alone does not eliminate cold-pull variance.
 
 The reservation is one total on-prem quality slot: busy, idle and pending quality
 guests all count, and general/heavy work cannot consume its reserved capacity.
@@ -126,11 +145,27 @@ as a diagnosis of that earlier failure.
 
 An isolated full-builder disk-clone experiment reported a reduction from about
 222 seconds to 1 second. This is **prototype evidence**, separate from production
-lint's lean-image result. Production seed rollout and actual new-worker
-qualification remain pending. A trusted read-only seed must produce an isolated
+lint's lean-image result. Full-builder seed cloning is now deployed at `3e2e8ba`,
+and an actual repository 23 request received its isolated snapshot clone. That
+job used a public image, so private-builder warm reuse remains unproven by it.
+A trusted read-only seed must produce an isolated
 writable disk per job; never share a mutable Docker root or copy candidate output,
 job credentials or signing material into a seed. ARM64/EBS restore needs its own
 measurement; the on-prem result does not establish equivalent cloud timings.
+
+The second AX41 node's three-image seed experiment reported an **18-second clone**
+and all three image pulls below **one second**. Infrastructure `d600500` configures
+that verified seed, but production v2 runtime and normal-job acceptance are pending
+in this record. Complete that acceptance with the effective running broker/seed
+identity, an ordinary request receiving its own writable clone, and that job's
+actual image preparation timings. Do not replace this pending state with prototype
+timings or configuration presence alone.
+
+The separate storage recovery task reports expansion/cleanup without a Forgejo
+restart. This is an operator report, not a retained-space or sustained-write
+measurement in this runbook. Verify backing-volume free space (including snapshot
+usage) and service writes after cleanup; deleting image references alone does not
+prove physical space reclamation.
 
 Continuous dependency-aware packaging, last-green coverage selection, broader
 scheduler qualification and reliable automatic integration remain unfinished.
