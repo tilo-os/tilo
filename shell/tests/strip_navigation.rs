@@ -616,6 +616,10 @@ fn the_rail_maps_the_strip_and_marks_what_is_on_screen() {
 #[test]
 fn clicking_a_rail_segment_travels_to_that_window() {
     let mut h = Harness::new();
+    // App's bounded composition settlement admits the final output-width
+    // basis before accepting input. This manual harness needs its next
+    // layout pass too, before advancing the resulting focus animation.
+    h.tick();
     let home = h.scroll_x();
     let seg = h
         .host

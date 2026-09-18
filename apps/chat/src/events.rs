@@ -50,17 +50,17 @@ fn now_secs() -> i64 {
 /// Feed one raw winit event into an embedded [`TextInput`]. The composers live
 /// outside the taffy tree (the app lays them out by hand), so a throwaway leaf
 /// node satisfies the `Widget::handle_event` signature; the input only uses it
-/// to report a focus target, which the composer host ignores.
+/// to report a focus target, which the composer host maps to its retained owner.
 fn drive_text_input(
     ti: &mut TextInput,
     event: &WindowEvent,
     scale: f64,
     modifiers: Modifiers,
     doc: &mut AutoCommit,
-) {
+) -> bool {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let Ok(node) = taffy.new_leaf(Style::default()) else {
-        return;
+        return false;
     };
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
@@ -75,6 +75,7 @@ fn drive_text_input(
         node,
         &taffy,
     );
+    focus_target.is_some()
 }
 
 impl ChatApp {
@@ -85,7 +86,7 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
         handled: &mut bool,
-    ) {
+    ) -> bool {
         if matches!(
             event,
             WindowEvent::MouseWheel { .. }
@@ -121,7 +122,7 @@ impl ChatApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press(event, scale, modifiers, doc, handled);
+                return self.handle_left_press(event, scale, modifiers, doc, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -156,6 +157,7 @@ impl ChatApp {
             }
             _ => {}
         }
+        false
     }
 
     /// A pointer move: live-drags the floating call overlay or an in-progress
@@ -252,7 +254,8 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
         handled: &mut bool,
-    ) {
+    ) -> bool {
+        let mut focus_requested = false;
         self.keyboard_target = None;
         match self.hit_at(self.last_mouse) {
             Some(Hit::CallDragHandle) => {
@@ -288,12 +291,13 @@ impl ChatApp {
                 // then places the caret at the click point — forward the
                 // real press so the widget resolves the position.
                 if text_input_hit {
-                    self.forward_press_to_focused_text_input(event, scale, modifiers, doc);
+                    focus_requested = self.forward_press_to_focused_text_input(event, scale, modifiers, doc);
                 }
                 *handled = true;
             }
             None => {}
         }
+        focus_requested
     }
 
     /// A left-button release: ends any overlay drag or composer
@@ -529,13 +533,13 @@ impl ChatApp {
         scale: f64,
         modifiers: Modifiers,
         doc: &mut AutoCommit,
-    ) {
+    ) -> bool {
         if self.rename.is_some() {
-            drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
+            drive_text_input(&mut self.rename_input, event, scale, modifiers, doc)
         } else if self.editing.is_some() {
-            drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
+            drive_text_input(&mut self.edit_input, event, scale, modifiers, doc)
         } else {
-            drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
+            drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc)
         }
     }
 

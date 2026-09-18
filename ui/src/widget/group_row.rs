@@ -563,6 +563,18 @@ impl GroupRow {
         self.groups.get(idx)
     }
 
+    /// Carry peer-local viewport presentation through a retained hierarchy
+    /// rebuild. The next layout still validates/clamps against its new geometry.
+    pub fn inherit_viewport(&mut self, previous: &Self) {
+        self.rect = previous.rect;
+        self.scroll_x = previous.scroll_x;
+        self.content_w = previous.content_w;
+        self.laid_spans.clone_from(&previous.laid_spans);
+        self.output_spans.clone_from(&previous.output_spans);
+        self.snap_anim = previous.snap_anim;
+        self.last_wheel_at = previous.last_wheel_at;
+    }
+
     /// `0.0` before the first layout pass.
     pub fn content_width(&self) -> f64 {
         self.content_w
@@ -580,6 +592,35 @@ impl GroupRow {
             .iter()
             .find(|g| g.id == group_id)
             .is_some_and(|g| g.get_rect().width() > 0.0)
+    }
+
+    /// Resolve an admitted keyboard owner through its actual layout ancestry.
+    /// Stored layout identities prevent stale child indices after a splice.
+    pub fn group_for_focus_target(&self, mut target: NodeId, tree: &TaffyTree<()>) -> Option<u64> {
+        loop {
+            if let Some(index) = self.node_ids.iter().position(|node| *node == target) {
+                let id = self.laid_spans.get(index)?.0;
+                return self.groups.iter().any(|group| group.id == id && !group.is_closing()).then_some(id);
+            }
+            target = tree.parent(target)?;
+        }
+    }
+
+    /// Whether the stored geometry still belongs to the current group order.
+    /// A splice/reorder must complete layout before a host frames its selection.
+    pub fn group_layout_is_current(&self) -> bool {
+        self.laid_spans
+            .iter()
+            .map(|(id, _, _)| *id)
+            .eq(self.groups.iter().map(|group| group.id))
+            && self.width_basis_is_current()
+    }
+
+    fn width_basis_is_current(&self) -> bool {
+        self.groups
+            .iter()
+            .zip(self.usable_per_group())
+            .all(|(group, usable)| (group.strip_usable_px() - usable).abs() <= 0.5)
     }
 
     /// Pan `scroll_x` so `group_id` is fully inside the viewport (Niri's
@@ -626,13 +667,14 @@ impl GroupRow {
         let left_bound = self.rect.x0 + self.leading_inset;
         let right_bound = self.rect.x1;
         let mut sx = self.scroll_x;
-        // Reveal the right edge first, then the left — so for a group wider
-        // than the clear viewport the left (start) edge wins and the user
-        // sees the group's beginning.
-        if gr.x1 > right_bound {
+        // An oversized group cannot fit; reveal its start consistently.
+        // Otherwise use the nearest edge. Checking the original left rect
+        // after a right-edge correction would right-align an oversized card.
+        if gr.width() > right_bound - left_bound {
+            sx += gr.x0 - left_bound;
+        } else if gr.x1 > right_bound {
             sx += gr.x1 - right_bound;
-        }
-        if gr.x0 < left_bound {
+        } else if gr.x0 < left_bound {
             sx -= left_bound - gr.x0;
         }
         let viewport = self.rect.width().max(1.0);
@@ -1333,6 +1375,9 @@ impl Widget for GroupRow {
     }
 
     fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+        // Animation needs one layout refresh per host frame, not an endless
+        // structural invalidation inside bounded composition settlement.
+        self.structure_dirty |= self.snap_in_flight();
         let mut any = false;
         for g in &mut self.groups {
             if g.update(state, root) {
@@ -1479,6 +1524,9 @@ impl Widget for GroupRow {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
+        // Portable hosts learn their width here. Rebuild provisional widths
+        // in the same bounded settlement, including a same-viewport root swap.
+        self.structure_dirty |= !self.width_basis_is_current();
         // `group_left_edges` (the snap targets) is CANVAS-x, not
         // taffy-local-x: canvas-x = leading_inset + taffy.x, and
         // `scroll_x` is how far that's panned past the viewport's left
@@ -1873,10 +1921,7 @@ impl Widget for GroupRow {
             .iter_mut()
             .map(super::Widget::take_structure_dirty)
             .fold(false, |acc, d| acc || d);
-        // Forces a rebuild next frame while snapping, since `apply_layout`
-        // (where `tick_snap_at` lives) otherwise only runs on events.
-        let snap = self.snap_in_flight();
-        own || children || snap
+        own || children
     }
 }
 

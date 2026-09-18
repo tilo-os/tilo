@@ -1370,8 +1370,14 @@ impl FrameHarness {
             crate::history_mode::embedded::allows_focus(self.root.as_ref(), node, &self.taffy)
                 && self.history.as_ref().is_none_or(|history| !history.has_saved_focus() || history.owns_node(node, &self.taffy))
         }).collect();
-        // SAFETY: these maps describe this exclusive runner's current tree.
-        self.focused = unsafe { CompositionFocus::current(&self.node_map, &self.bindings, Some(&allowed)) };
+        // An exact owner restored above outranks unrelated retained focus
+        // flags (several mounted editors may initially report focus).
+        self.focused = self.focused.filter(|node| allowed.contains(node)
+            && self.inspect_node(*node, |widget| widget.is_focusable() && widget.is_enabled() && widget.is_focused()).unwrap_or(false));
+        if self.focused.is_none() {
+            // SAFETY: these maps describe this exclusive runner's current tree.
+            self.focused = unsafe { CompositionFocus::current(&self.node_map, &self.bindings, Some(&allowed)) };
+        }
         }
 
         self.update_focus_trap();
@@ -1558,6 +1564,7 @@ impl FrameHarness {
                 let _ = self.mutate_node(outgoing, |widget| widget.set_focus(false));
             }
         }
+        self.root.focus_requested(node, &self.taffy);
         if self.focused == node {
             return;
         }

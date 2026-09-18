@@ -15,6 +15,7 @@
 
 pub mod identity;
 mod local_view;
+mod navigation;
 mod model;
 mod persistence;
 mod shared_surfaces;

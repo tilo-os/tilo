@@ -5650,6 +5650,7 @@ impl App {
 
     fn set_focused_node(&mut self, new_id: Option<NodeId>) {
         self.suspend_history_focus(new_id);
+        self.root_widget.focus_requested(new_id, &self.taffy);
         if self.focused_node != new_id {
             if let Some(old) = self.focused_node {
                 let _ = self.mutate_node(old, |widget| widget.set_focus(false));

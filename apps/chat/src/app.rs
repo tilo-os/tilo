@@ -3123,12 +3123,18 @@ impl Widget for ChatApp {
         state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // Embedded inputs request focus with a temporary layout node. Map
+        // that actual request to Chat's retained keyboard/IME owner.
+        let was_handled = *handled;
         self.canonical_dirty = true;
-        self.dispatch_event(event, scale_factor, *modifiers, state, handled);
+        let requested = self.dispatch_event(event, scale_factor, *modifiers, state, handled);
+        if !was_handled && requested && focus_target.is_none() {
+            *focus_target = Some(node_id);
+        }
     }
 
     /// The resource tree Chat currently has open — the active workspace, its

@@ -933,11 +933,6 @@ pub struct ShellOverlayHost {
     /// A workspace-root swap happened during `update`; the following relayout must rebuild its
     /// Taffy nodes before reading geometry from the replacement widgets.
     workspace_content_layout_dirty: bool,
-    /// Per-strip last active-group id that
-    /// [`Self::scroll_active_group_into_view`] scrolled into view, so the
-    /// focus-follow scroll is edge-triggered and doesn't fight a user who
-    /// wheels away.
-    last_scrolled_active_group: HashMap<StripId, GroupId>,
     /// Hit rect for the "+ Add workspace" affordance at the tail of the
     /// overview's list. `Rect::ZERO` when not painted.
     add_workspace_rect: Rect,
@@ -2089,7 +2084,6 @@ impl ShellOverlayHost {
             content_built_for_ws: None,
             content_built_empty: None,
             workspace_content_layout_dirty: false,
-            last_scrolled_active_group: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
@@ -3300,8 +3294,6 @@ impl ShellOverlayHost {
                 .all(|strip| strip.window_groups.is_empty())
         });
         self.workspace_content_layout_dirty = true;
-        // Per-strip memos of the old workspace die with its rows.
-        self.last_scrolled_active_group.clear();
         true
     }
 
@@ -4228,102 +4220,47 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Pans the focused group into view, edge-triggered on the persisted
-    /// `active_group` pointer so free wheel-scrolling isn't fought by a
-    /// per-frame snap-back.
+    /// Both hosts use the same retained focus/visibility policy. Native input
+    /// and persistence remain here; framing and decoration belong to the surface.
     fn scroll_active_group_into_view(&mut self) {
-        if self.group_row_ids.is_empty() {
-            return;
-        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let active: Vec<(StripId, GroupId)> = {
-            let st = chrome.borrow();
-            let tree = st.tree();
-            self.group_row_ids
-                .keys()
-                .filter_map(|&sid| tree.active_group_for(sid).map(|gid| (sid, gid)))
-                .collect()
-        };
-        for (strip_id, group_id) in active {
-            let changed = self.last_scrolled_active_group.get(&strip_id).copied() != Some(group_id);
-            if !changed {
-                continue;
-            }
-            if let Some(&ptr) = self.group_row_ids.get(&strip_id) {
-                let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
-                // A group focused the same frame it appeared has no rect yet
-                // (no layout pass); leave the memo and retry once it does.
-                if !row.group_is_laid_out(group_id) {
-                    continue;
-                }
-                // Eased, not teleported — matches Niri's focus-column slide.
-                row.scroll_group_into_view_animated(group_id, Instant::now());
-            }
-            self.last_scrolled_active_group.insert(strip_id, group_id);
+        let st = chrome.borrow();
+        if let Some(surface) = self
+            .content
+            .as_any_mut()
+            .and_then(|widget| widget.downcast_mut::<qos_desktop::composition::DesktopSurface>())
+        {
+            surface.sync_navigation(&st.tree().desktop);
         }
     }
 
-    /// Lights exactly one on-screen window group as keyboard-focused, since
-    /// non-overlapping windows have no z-order to infer it from. Runs every
-    /// frame as a pure function of the tree (not edge-triggered) so focus
-    /// can't stay latched on a group a resync moved or removed.
-    fn mark_focused_group(&mut self) {
-        if self.group_row_ids.is_empty() {
+    fn harvest_group_focus(&mut self) {
+        let intent = self
+            .content
+            .as_any_mut()
+            .and_then(|widget| widget.downcast_mut::<qos_desktop::composition::DesktopSurface>())
+            .and_then(|surface| surface.take_group_focus_intent());
+        let Some(qos_desktop::intents::LocalViewIntent::Group { strip, group }) = intent else {
             return;
-        }
+        };
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Closing groups aren't focus candidates — lighting one mid-fade
-        // would tell the user their keystrokes go somewhere gone.
-        let closing: std::collections::HashSet<GroupId> = self
-            .group_row_ids
-            .values()
-            .flat_map(|&ptr| {
-                let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
-                row.groups
-                    .iter()
-                    .filter(|g| g.is_closing())
-                    .map(|g| g.id)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        // Mirrors `publish_strip_viewport`'s resolution, including the
-        // fallback to the first strip/leftmost group for an unseeded pointer.
-        let focused: Option<(StripId, GroupId)> = {
-            let st = chrome.borrow();
-            let tree = st.tree();
-            tree.active_workspace()
-                .and_then(|ws| {
-                    tree.active_strip
-                        .get(&ws.id)
-                        .copied()
-                        .filter(|id| ws.strips.iter().any(|s| s.id == *id))
-                        .or_else(|| ws.strips.first().map(|s| s.id))
-                })
-                .and_then(|sid| {
-                    tree.resolve_active_group(sid, |gid| closing.contains(&gid))
-                        .map(|gid| (sid, gid))
-                })
-        };
-        // A lone window needs no marker; it's a workspace-wide count so
-        // three strips holding one window each still disambiguate.
-        let disambiguating = self
-            .group_row_ids
-            .values()
-            .map(|&ptr| {
-                let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
-                row.groups.len()
-            })
-            .sum::<usize>()
-            > 1;
-        for (&strip_id, &ptr) in &self.group_row_ids {
-            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
-            for g in &mut row.groups {
-                g.set_focused(disambiguating && focused == Some((strip_id, g.id)));
-            }
+        let st = chrome.borrow();
+        let mut tree = st.tree_mut();
+        let workspace = tree.active;
+        if tree.active_workspace().is_some_and(|ws| {
+            ws.strips
+                .iter()
+                .any(|s| s.id == strip && s.window_groups.iter().any(|g| g.id == group))
+        }) && (tree.active_strip.get(&workspace) != Some(&strip)
+            || tree.active_group.get(&strip) != Some(&group))
+        {
+            tree.active_strip.insert(workspace, strip);
+            tree.active_group.insert(strip, group);
+            tree.flush_to_disk();
         }
     }
 
@@ -5955,7 +5892,11 @@ impl ShellOverlayHost {
         // target was visible to be clicked, and panning would drag it
         // out from under the cursor. Keyboard/wheel keep the pan, since
         // they can target off-screen windows.
-        self.last_scrolled_active_group.insert(strip_id, group_id);
+        if let Some(surface) = self.content.as_any_mut()
+            .and_then(|widget| widget.downcast_mut::<qos_desktop::composition::DesktopSurface>())
+        {
+            surface.keep_clicked_group_in_place(strip_id, group_id);
+        }
     }
 
     /// Where the filter band sits among the palette's semantic children:
@@ -11818,11 +11759,12 @@ impl Widget for ShellOverlayHost {
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
         self.harvest_active_tab_writeback();
+        self.harvest_group_focus();
         let follow_dirty = self.reconcile_followed_peer();
-        // Both edge-triggered on `active_group`, so they run after the
-        // writeback above reflects this frame's focus change.
+        // Shared framing observes edges after writeback reflects this
+        // frame's focus change.
         self.scroll_active_group_into_view();
-        self.mark_focused_group();
+
         let capture_targets = self.capture_targets();
         self.capture_studio.set_candidates(capture_targets);
         self.dispatch_cross_strip_detaches();

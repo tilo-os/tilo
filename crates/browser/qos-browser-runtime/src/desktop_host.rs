@@ -348,6 +348,7 @@ impl DesktopRoot {
                     .flat_map(|w| &w.strips)
                     .any(|s| s.id == strip && s.window_groups.iter().any(|g| g.id == group))
                 {
+                    tree.active_strip.insert(tree.active, strip);
                     tree.active_group.insert(strip, group);
                 }
             }
@@ -450,6 +451,7 @@ impl DesktopRoot {
                 }
             }
         }
+        self.surface.sync_navigation(&tree);
         drop(tree);
         self.collect_failures();
         for report in &mut self.reports {
@@ -658,6 +660,317 @@ mod tests {
         find(&frame.inspection().root, label).expect("exported browser semantic route")
     }
     #[test]
+    fn desktop_cold_keyboard_focus_reveals_chat_without_prior_writer_focus() {
+        let (mut root, handle, _storage) = fixture();
+        let mut topology = handle.tree.borrow().clone();
+        let groups = &mut topology.workspaces[0].strips[0].window_groups;
+        let chat = groups[0].tabs.remove(1);
+        groups[0].tabs.pop();
+        groups.push(WindowGroup {
+            id: 4,
+            active_tab: chat.id,
+            tabs: vec![chat],
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        topology.active_strip.insert(topology.active, StripId(2));
+        topology.active_group.insert(StripId(2), 3);
+        *handle.inbox.borrow_mut() = Some((
+            Admission {
+                tree: topology,
+                routes: root.resolver.host.routes.clone(),
+                required: vec![],
+                missing: vec![],
+                unsupported: vec![],
+                pending: 0,
+            },
+            handle.permissions.borrow().clone(),
+        ));
+        root.reconcile();
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::state::State::new(),
+            root,
+            (740, 720),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        assert_eq!(handle.tree.borrow().active_group[&StripId(2)], 3);
+        let (owner, target) = browser_semantic_route(&frame, "Message composer");
+        frame.perform_semantic_named(&owner, Some(&target), &ui::a11y::Action::Focus).unwrap();
+        assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some(owner.as_str()));
+        assert_eq!(handle.tree.borrow().active_group[&StripId(2)], 4,
+            "authoritative cold Chat focus must outrank retained Writer focus flags");
+        unsafe {
+            (&mut *root_ptr).surface.row_mut(StripId(2)).unwrap()
+                .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+        }
+        frame.relayout();
+        let row = unsafe { (&*root_ptr).surface.row(StripId(2)).unwrap() };
+        assert!(row.groups[1].focused());
+        assert!(row.groups[1].get_rect().x1 <= row.get_rect().x1 + 0.5);
+    }
+
+    #[test]
+    fn desktop_navigation_reveals_real_chat_and_preserves_local_records_and_return_focus() {
+        let (mut root, handle, storage) = fixture();
+        let mut topology = handle.tree.borrow().clone();
+        let groups = &mut topology.workspaces[0].strips[0].window_groups;
+        let chat = groups[0].tabs.remove(1);
+        groups[0].tabs.pop();
+        groups.push(WindowGroup {
+            id: 4,
+            active_tab: chat.id,
+            tabs: vec![chat],
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        topology.active_strip.insert(topology.active, StripId(2));
+        topology.active_group.insert(StripId(2), 4);
+        *handle.inbox.borrow_mut() = Some((
+            Admission {
+                tree: topology,
+                routes: root.resolver.host.routes.clone(),
+                required: vec![],
+                missing: vec![],
+                unsupported: vec![],
+                pending: 0,
+            },
+            handle.permissions.borrow().clone(),
+        ));
+        root.reconcile();
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::state::State::new(),
+            root,
+            (740, 720),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        assert_eq!(
+            handle.tree.borrow().active_group[&StripId(2)],
+            4,
+            "mounting retained apps is not a new local focus gesture"
+        );
+        fn rect(node: &ui::headless::InspectionNode, label: &str) -> Option<Rect> {
+            fn semantic(node: &ui::a11y::AccessNode, label: &str) -> Option<Rect> {
+                if node.name.as_deref() == Some(label) {
+                    return node.bounds.map(|bounds| bounds.to_rect());
+                }
+                node.children
+                    .iter()
+                    .find_map(|child| semantic(child, label))
+            }
+            node.semantics
+                .as_ref()
+                .and_then(|node| semantic(node, label))
+                .or_else(|| node.children.iter().find_map(|child| rect(child, label)))
+        }
+        // SAFETY: frame retains the boxed root; each exclusive access ends
+        // before invoking a harness method or using another root reference.
+        let settle = |frame: &mut ui::headless::FrameHarness| {
+            unsafe {
+                (&mut *root_ptr)
+                    .surface
+                    .row_mut(StripId(2))
+                    .unwrap()
+                    .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+            }
+            frame.relayout();
+        };
+        frame.click_named("word_processor").unwrap();
+        frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
+            "Retained draft".into(),
+        )));
+        settle(&mut frame);
+        let before: Vec<_> = handle
+            .records
+            .borrow()
+            .values()
+            .map(|r| {
+                (
+                    r.clone(),
+                    r.store
+                        .read(&r.checkout.id, |doc| doc.clone().save())
+                        .unwrap(),
+                )
+            })
+            .collect();
+        let writer_owner = frame.inspection().keyboard_focus_owner.unwrap();
+        let (composer, _) = browser_semantic_route(&frame, "Message composer");
+        let composer_rect = rect(&frame.inspection().root, "Message composer").unwrap();
+        assert!(
+            composer_rect.x0 < 740.0 && composer_rect.x1 > 740.0,
+            "real narrow-panel precondition: {composer_rect:?}"
+        );
+        // Physical pointer at the visible part of the existing composer.
+        frame.click_at((composer_rect.x0 + 740.0) / 2.0, composer_rect.center().y);
+        frame.poll_frame().unwrap();
+        settle(&mut frame);
+        assert_eq!(handle.tree.borrow().active_group[&StripId(2)], 4);
+        assert_eq!(
+            frame.inspection().keyboard_focus_owner.as_deref(),
+            Some(composer.as_str())
+        );
+        let send_rect = rect(&frame.inspection().root, "Send message").unwrap();
+        assert!(
+            send_rect.x1 <= 740.0 && send_rect.x0 >= 0.0,
+            "Send must be usable: {send_rect:?}"
+        );
+        unsafe {
+            let row = (&*root_ptr).surface.row(StripId(2)).unwrap();
+            assert!(row.groups[1].focused());
+            assert!(!row.groups[0].focused());
+            let saved: LocalView =
+                serde_json::from_slice(&storage.get(&(&*root_ptr).view_key).unwrap().bytes)
+                    .unwrap();
+            assert_eq!(saved.groups[&StripId(2)], 4);
+        }
+        for (record, bytes) in &before {
+            assert_eq!(
+                record
+                    .store
+                    .read(&record.checkout.id, |doc| doc.clone().save())
+                    .unwrap(),
+                *bytes,
+                "pointer navigation alone must not alter shared records"
+            );
+        }
+        frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
+            "Chat pointer draft".into(),
+        )));
+        let chat = handle
+            .records
+            .borrow()
+            .values()
+            .find(|record| record.app == "dev.qos.chat")
+            .unwrap()
+            .clone();
+        assert!(
+            chat.store
+                .read(&chat.checkout.id, |doc| serde_json::to_string(
+                    &automerge::AutoSerde::from(doc)
+                )
+                .unwrap())
+                .unwrap()
+                .contains("Chat pointer draft")
+        );
+        for (record, bytes) in &before {
+            if record.app != "dev.qos.chat" {
+                assert_eq!(
+                    record
+                        .store
+                        .read(&record.checkout.id, |doc| doc.clone().save())
+                        .unwrap(),
+                    *bytes,
+                    "Chat typing must not reach the previously focused Writer"
+                );
+            }
+        }
+        let before: Vec<_> = handle
+            .records
+            .borrow()
+            .values()
+            .map(|r| {
+                (
+                    r.clone(),
+                    r.store
+                        .read(&r.checkout.id, |doc| doc.clone().save())
+                        .unwrap(),
+                )
+            })
+            .collect();
+        // Keyboard/semantic focus returns to the same retained editor and caret.
+        frame
+            .perform_semantic_named(&writer_owner, None, &ui::a11y::Action::Focus)
+            .unwrap();
+        frame.poll_frame().unwrap();
+        settle(&mut frame);
+        assert_eq!(handle.tree.borrow().active_group[&StripId(2)], 3);
+        assert_eq!(
+            frame.inspection().keyboard_focus_owner.as_deref(),
+            Some(writer_owner.as_str())
+        );
+        assert!(frame.inspection_json().unwrap().contains("Retained draft"));
+        for (record, bytes) in before {
+            assert_eq!(
+                record
+                    .store
+                    .read(&record.checkout.id, |doc| doc.clone().save())
+                    .unwrap(),
+                bytes,
+                "navigation must not alter {} shared bytes",
+                record.app
+            );
+        }
+        assert!(handle.session_requests.borrow().is_empty());
+        assert!(handle.errors.borrow().is_empty());
+        // A local group shortcut may leave Writer's retained caret suspended.
+        // A subsequent remote strip insertion must not turn it into new input.
+        handle.tree.borrow_mut().active_group.insert(StripId(2), 4);
+        frame.relayout();
+        settle(&mut frame);
+        let mut refreshed = handle.tree.borrow().clone();
+        refreshed.workspaces[0].strips.push(Strip {
+            id: StripId(99),
+            name: "Remote strip".into(),
+            window_groups: vec![],
+        });
+        *handle.inbox.borrow_mut() = Some((
+            Admission {
+                tree: refreshed,
+                routes: unsafe { (&*root_ptr).resolver.host.routes.clone() },
+                required: vec![],
+                missing: vec![],
+                unsupported: vec![],
+                pending: 0,
+            },
+            handle.permissions.borrow().clone(),
+        ));
+        frame.relayout();
+        frame.relayout();
+        settle(&mut frame);
+        assert_eq!(
+            handle.tree.borrow().active_group[&StripId(2)],
+            4,
+            "retained Writer caret is not a new focus gesture after remote rebuild"
+        );
+    }
+
+    #[test]
+    fn desktop_group_focus_selects_its_strip_and_rejects_stale_identity() {
+        let (root, handle, _) = fixture();
+        let mut tree = handle.tree.borrow().clone();
+        let mut second = tree.workspaces[0].strips[0].clone();
+        second.id = StripId(9);
+        second.window_groups[0].id = 90;
+        tree.workspaces[0].strips.push(second);
+        DesktopRoot::local(
+            &mut tree,
+            LocalViewIntent::Group {
+                strip: StripId(9),
+                group: 90,
+            },
+        );
+        assert_eq!(tree.active_strip[&tree.active], StripId(9));
+        assert_eq!(tree.active_group[&StripId(9)], 90);
+        let before = serde_json::to_vec(&tree).unwrap();
+        DesktopRoot::local(
+            &mut tree,
+            LocalViewIntent::Group {
+                strip: StripId(2),
+                group: 90,
+            },
+        );
+        assert_eq!(serde_json::to_vec(&tree).unwrap(), before);
+        assert!(root.handle.session_requests.borrow().is_empty());
+    }
+
+    #[test]
     fn browser_semantic_tab_activation_updates_canonical_selection() {
         let (root, handle, _) = fixture();
         let mut topology = handle.tree.borrow().clone();
@@ -682,8 +995,8 @@ mod tests {
             },
             handle.permissions.borrow().clone(),
         ));
-        let root = Box::new(root);
-        let root_ptr = std::ptr::from_ref(root.as_ref());
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
         let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
             ui::state::State::new(),
             root,
@@ -719,7 +1032,7 @@ mod tests {
         assert!(frame.inspection_json().unwrap().contains("notes"));
         // SAFETY: frame retains this boxed root throughout the test; this read
         // ends before sending input, and no borrowed reference survives a frame mutation.
-        let tab_center = |name: &str| unsafe {
+        let tab_center = move |name: &str| unsafe {
             (&*root_ptr).surface.row(StripId(2)).unwrap().groups[0].children()[0]
                 .test_rects()
                 .into_iter()
@@ -812,7 +1125,17 @@ mod tests {
             writer_before,
             "Chat input must not mutate Writer"
         );
+        // Return to the Writer/Notes group's actual tabbar using keyboard
+        // focus, then physically activate Notes once its tab is visible.
+        frame.perform_semantic_named(&owner, Some(&target), &ui::a11y::Action::Focus).unwrap();
+        // The input harness advances frames between press and release.
+        unsafe {
+            (&mut *root_ptr).surface.row_mut(StripId(2)).unwrap()
+                .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+        }
+        frame.relayout();
         let point = tab_center("tab:Notes");
+        assert!(point.x >= 0.0 && point.x < 1280.0, "visible Notes tab: {point:?}");
         frame.click_at(point.x, point.y);
         frame.poll_frame().unwrap();
         assert_eq!(

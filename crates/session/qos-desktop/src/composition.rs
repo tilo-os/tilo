@@ -45,6 +45,7 @@ pub enum ReconcileOutcome {
 }
 
 pub struct DesktopSurface {
+    pub(crate) navigation: crate::navigation::Navigation,
     root: Box<dyn Widget>,
     component_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
     retained_wakes: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -205,7 +206,8 @@ impl DesktopSurface {
                 .with_child(Box::new(stack))
                 .filling(),
         );
-        Self {
+        let mut surface = Self {
+            navigation: Default::default(),
             root,
             context: tree.active_workspace().map(|w| (w.id, w.room)),
             empty_workspace_visible,
@@ -238,7 +240,9 @@ impl DesktopSurface {
                 .flat_map(|g| &g.tabs)
                 .map(|t| (t.id, t.tile.clone()))
                 .collect(),
-        }
+        };
+        surface.sync_navigation(tree);
+        surface
     }
     pub fn take_component_wake(&self) -> bool {
         let mut pending = self
@@ -305,6 +309,9 @@ impl DesktopSurface {
             .into_iter()
             .map(DesktopIntent::Local)
             .collect();
+        if let Some(intent) = self.take_group_focus_intent() {
+            out.push(DesktopIntent::Local(intent));
+        }
         for strip in self.strip_ids() {
             if let Some(row) = self.row_mut(strip) {
                 if let Some(intent) = intents::take_group_reorder(strip, row) {
@@ -590,6 +597,7 @@ impl DesktopSurface {
             .collect();
         self.failures.extend(failures);
         self.close_reports.extend(reports);
+        self.sync_navigation(tree);
         if changed {
             ReconcileOutcome::Updated
         } else {
@@ -662,6 +670,7 @@ impl DesktopSurface {
             inner: resolver,
         };
         let mut next = Self::build(tree, records, &mut retained, chrome);
+        next.inherit_navigation(self);
         for (_, mut host) in retained.hosts {
             next.close_reports.extend(host.close_components());
         }
@@ -724,6 +733,7 @@ impl Widget for DesktopSurface {
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.root.apply_layout(tree, node, origin);
+        self.apply_navigation();
     }
     fn draw(
         &mut self,
@@ -747,9 +757,16 @@ impl Widget for DesktopSurface {
         node: NodeId,
         tree: &TaffyTree<()>,
     ) {
+        if !*handled {
+            self.observe_navigation_event(event, scale);
+        }
         self.root.handle_event(
             event, scale, modifiers, doc, path, handled, focus, node, tree,
         );
+    }
+    fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
+        self.observe_focus_request(target, tree);
+        self.root.focus_requested(target, tree);
     }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.root.as_ref()]

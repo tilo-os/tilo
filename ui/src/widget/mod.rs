@@ -894,6 +894,16 @@ pub trait Widget {
         false
     }
     fn set_focus(&mut self, _focused: bool) {}
+
+    /// An explicit runner focus request, after resolving the actual keyboard
+    /// owner. Retained flags and layout restoration are not user gestures.
+    /// Containers can observe this to reveal the owning viewport.
+    fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
+        for child in self.children_mut() {
+            child.focus_requested(target, tree);
+        }
+    }
+
     fn is_focused(&self) -> bool {
         false
     }
