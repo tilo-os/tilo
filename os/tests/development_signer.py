@@ -51,7 +51,7 @@ def bootloader_selection(root, original, signed, certificate, metadata, machine)
     verify(source / 'missing.efi.signed', success=False)
     verify(unsigned, success=False)
     # A bounded certificate table is not necessarily an actual signature.
-    # Exercise real sbverify on empty and unrecognized WIN_CERTIFICATE records.
+    # Exercise the Rust verifier on empty and unrecognized WIN_CERTIFICATE records.
     for revision, kind in ((0, 0), (0x0200, 2)):
         fake_bytes = bytearray(unsigned.read_bytes())
         pe = struct.unpack_from('<I', fake_bytes, 0x3C)[0]
@@ -168,9 +168,7 @@ def main():
         original = Path('/usr/lib/systemd/boot/efi') / f'systemd-boot{machine}.efi'
         signed = root / 'signed.efi'
         run(signer, 'sign-efi', str(original), str(signed))
-        listing = run('sbverify', '--list', str(signed)).decode()
-        assert 'signature 1' in listing
-        run('sbverify', '--cert', str(certificate), str(signed))
+        run('/usr/local/bin/tilo-crypto', 'verify-efi', str(certificate), str(signed))
         run('python3', str(DEV / 'verify-authenticode-envelope.py'), str(original), str(signed))
         bootloader_selection(root, original, signed, certificate, metadata, machine)
         (home / 'purpose').write_text('not a development signer\n')
