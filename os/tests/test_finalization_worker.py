@@ -18,12 +18,27 @@ spec.loader.exec_module(worker)
 
 class WorkerContract(unittest.TestCase):
     def request(self):
-        return {'source_revision': worker.SOURCE, 'helpers_revision': 'a' * 40,
+        return {'schema': 1, 'source_revision': worker.SOURCE, 'helpers_revision': 'a' * 40,
                 'source_dir': '/work/source', 'architecture': 'aarch64',
                 'receipt': '/work/inputs/retained-rootfs.json',
                 'public_bundle': '/work/inputs/original-public',
                 'new_public_bundle': '/work/inputs/new-public',
-                'signer': '/var/lib/tilo-signing-bridge/remote-development-signer.py'}
+                'signer': '/var/lib/tilo-signing-bridge/remote-development-signer.py',
+                'receipt_sha256': 'b' * 64, 'manifest_sha256': 'c' * 64,
+                'new_manifest_sha256': 'd' * 64, 'new_owner': 'e' * 64,
+                'target': 'code.podesta.ai/qos/tilo-development:old-aarch64',
+                'new_target': 'code.podesta.ai/qos/tilo-development:new-aarch64',
+                'publish_repository': 'code.podesta.ai/qos/tilo-development',
+                'generation': 1, 'source_date_epoch': 1234, 'systemd_version': '259.1',
+                'minimum_free_bytes': 8 * 1024**3, 'stage_timeout_seconds': 1800,
+                **{key: 'registry.invalid/input@sha256:' + 'f' * 64
+                   for key in ('base_ref', 'rpms_ref', 'kernel_ref', 'wpe_ref')}}
+
+    def test_incomplete_driver_request_fails_before_worker_creation(self):
+        request = self.request()
+        del request['kernel_ref']
+        with self.assertRaisesRegex(ValueError, 'fields differ'):
+            self.check(request)
 
     def check(self, request, helpers='a' * 40):
         raw = json.dumps(request)

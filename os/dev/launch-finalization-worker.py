@@ -2,6 +2,7 @@
 """Launch one disposable native-overlay finalizer; never compile or create disks."""
 import argparse
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import signal
 import selectors
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -129,6 +131,15 @@ def request_bytes(raw, digest, helpers):
     value = json.loads(data, object_pairs_hook=unique)
     if not isinstance(value, dict):
         raise ValueError('request object required')
+    # Validate the actual driver's complete contract before pulling tools or
+    # allocating a worker. The narrower launcher pins below are additional.
+    dev = Path(__file__).resolve().parent
+    if str(dev) not in sys.path:
+        sys.path.insert(0, str(dev))
+    spec = importlib.util.spec_from_file_location('worker_finalizer_contract', dev / 'finalize-development-rootfs.py')
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+    driver.validate_request(value)
     if not re.fullmatch(r'[0-9a-f]{40}', helpers):
         raise ValueError('exact helper commit required')
     required = {'source_revision': SOURCE, 'helpers_revision': helpers,
