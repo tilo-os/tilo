@@ -994,6 +994,7 @@ impl NotesApp {
             });
     }
 
+    #[cfg(test)]
     fn backlinks_for(
         &self,
         doc: &AutoCommit,
@@ -3144,12 +3145,6 @@ impl Widget for NotesApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.drain_markdown_transfer(state);
         self.drain_external_link_opens();
-        if let Some((page, block_id)) = self.main.take_backlink_navigation()
-            && let Err(error) = self
-                .open_notes_operation(actions::NotesOperation::OpenPage { page, block_id }, state)
-        {
-            tracing::warn!(%error, page = %page, "notes: backlink target went stale");
-        }
         if self.legacy_fixture_storage.is_none() {
             self.drain_canonical_editor(state);
             self.drain_title_rename(state);
@@ -4132,11 +4127,7 @@ impl NotesApp {
         else {
             return false;
         };
-        let backlink = self.main.backlink_at_point(self.last_mouse);
-        let target = backlink.as_ref().map_or_else(
-            || self.link_under_last_mouse(),
-            |(page, _)| Some(ui::widget::block_editor::LinkTarget::Page(*page)),
-        );
+        let target = self.link_under_last_mouse();
         let Some(target) = target else { return false };
         let id = match target {
             ui::widget::block_editor::LinkTarget::Page(id) => id,
@@ -4154,7 +4145,7 @@ impl NotesApp {
         if let Err(error) = self.open_notes_operation(
             actions::NotesOperation::OpenPage {
                 page: id,
-                block_id: backlink.and_then(|(_, block)| block),
+                block_id: None,
             },
             state,
         ) {
