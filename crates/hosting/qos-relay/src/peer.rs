@@ -216,10 +216,7 @@ where
                         match private {
                             PrivateOutbound::Reply(reply) => write.write_all(&crate::transport_v2::encode(&reply)?).await?,
                             PrivateOutbound::Delivery(delivery) => {
-                                match authorize_delivery(&delivery, &peer, &session).await {
-                                    Ok(()) => write.write_all(&crate::transport_v2::encode(&EnvelopeV2::Delivered { action: delivery.action, source_user: delivery.source.user_public_key })?).await?,
-                                    Err(reason) => { let _ = delivery.reply.try_send(PrivateOutbound::Reply(EnvelopeV2::unavailable(&delivery.action,reason))); }
-                                }
+                                write_private_delivery(&delivery, &peer, &session, &mut write).await?;
                             }
                         }
                     }
@@ -817,6 +814,9 @@ pub(crate) struct PrivateDelivery {
     source: AuthenticatedPeer,
     source_tx: mpsc::Sender<Envelope>,
     reply: mpsc::Sender<PrivateOutbound>,
+    // Capture the originating session, never re-resolve by device key: that
+    // key may already identify a newer replacement connection at delivery.
+    source_disconnect: mpsc::Sender<()>,
 }
 
 fn current_cert(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bool {
@@ -957,6 +957,7 @@ async fn route_private(
         source: peer.clone(),
         source_tx: session.outbound.clone(),
         reply: session.private_tx.clone(),
+        source_disconnect: session.disconnect.clone(),
     };
     Ok(target
         .tx
@@ -966,6 +967,39 @@ async fn route_private(
             mpsc::error::TrySendError::Full(_) => U::Backpressure,
             mpsc::error::TrySendError::Closed(_) => U::Offline,
         }))
+}
+
+async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
+    delivery: &PrivateDelivery,
+    recipient: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    write: &mut W,
+) -> Result<(), PeerError> {
+    match authorize_delivery(delivery, recipient, session).await {
+        Ok(()) => {
+            write
+                .write_all(&crate::transport_v2::encode(&EnvelopeV2::Delivered {
+                    action: delivery.action.clone(),
+                    source_user: delivery.source.user_public_key,
+                })?)
+                .await?
+        }
+        Err(reason) => {
+            if delivery
+                .reply
+                .try_send(PrivateOutbound::Reply(EnvelopeV2::unavailable(
+                    &delivery.action,
+                    reason,
+                )))
+                .is_err()
+            {
+                // A bounded failure queue cannot silently erase the outcome.
+                // Its originating session must observe transport loss instead.
+                let _ = delivery.source_disconnect.try_send(());
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn authorize_delivery(
@@ -1076,15 +1110,19 @@ mod private_transport_tests {
         wr.admit_device(b.device_public_key).unwrap();
         let (atx, _arx) = mpsc::channel(2);
         let (btx, _brx) = mpsc::channel(2);
-        let (ap, _apr) = mpsc::channel(2);
+        let (ap, mut apr) = mpsc::channel(2);
         let (bp, mut bpr) = mpsc::channel(1);
-        let (disconnect, _disconnect_rx) = mpsc::channel(1);
-        for (peer, tx, private) in [(&a, &atx, &ap), (&b, &btx, &bp)] {
+        let (disconnect, mut disconnect_rx) = mpsc::channel(1);
+        let (recipient_disconnect, mut recipient_disconnect_rx) = mpsc::channel(1);
+        for (peer, tx, private, session_disconnect) in [
+            (&a, &atx, &ap, &disconnect),
+            (&b, &btx, &bp, &recipient_disconnect),
+        ] {
             wr.add_subscriber(Subscriber {
                 device_public_key: peer.device_public_key,
                 role: peer.role,
                 tx: tx.clone(),
-                disconnect: disconnect.clone(),
+                disconnect: session_disconnect.clone(),
             });
             wr.action_targets.insert(
                 peer.device_public_key,
@@ -1118,6 +1156,7 @@ mod private_transport_tests {
         let receiver = SessionCtx {
             outbound: &btx,
             private_tx: &bp,
+            disconnect: &recipient_disconnect,
             ..session
         };
         let action = DirectedAction {
@@ -1133,7 +1172,7 @@ mod private_transport_tests {
             device_public_key: b.device_public_key,
             role: b.role,
             tx: btx.clone(),
-            disconnect: disconnect.clone(),
+            disconnect: recipient_disconnect.clone(),
         });
         assert_eq!(route_private(&action, &a, &session).await.unwrap(), None);
         assert_eq!(
@@ -1181,7 +1220,7 @@ mod private_transport_tests {
             device_public_key: b.device_public_key,
             role: b.role,
             tx: replacement.clone(),
-            disconnect: disconnect.clone(),
+            disconnect: recipient_disconnect.clone(),
         });
         assert_eq!(
             authorize_delivery(&delivery, &b, &receiver).await,
@@ -1199,7 +1238,62 @@ mod private_transport_tests {
                 .tx
                 .same_channel(&replacement)
         );
+        // A recipient-side rejection must reach the original source, or close
+        // that exact session when its reply lane has no remaining capacity.
+        let mut wire = Vec::new();
+        write_private_delivery(&delivery, &b, &receiver, &mut wire)
+            .await
+            .unwrap();
+        assert!(wire.is_empty());
+        let Some(PrivateOutbound::Reply(reply)) = apr.recv().await else {
+            panic!("missing rejection")
+        };
+        assert_eq!(
+            reply,
+            EnvelopeV2::unavailable(&action, UnavailableReason::NotAuthorised)
+        );
+        for _ in 0..2 {
+            ap.try_send(PrivateOutbound::Reply(reply.clone()))
+                .ok()
+                .unwrap();
+        }
+        let (new_source, new_source_rx) = mpsc::channel(2);
+        let (new_disconnect, mut new_disconnect_rx) = mpsc::channel(1);
+        wr.lock().await.add_subscriber(Subscriber {
+            device_public_key: a.device_public_key,
+            role: a.role,
+            tx: new_source.clone(),
+            disconnect: new_disconnect,
+        });
+        write_private_delivery(&delivery, &b, &receiver, &mut wire)
+            .await
+            .unwrap();
+        assert!(
+            wire.is_empty(),
+            "rejected private body must not reach recipient wire"
+        );
+        assert_eq!(
+            disconnect_rx.try_recv(),
+            Ok(()),
+            "a saturated rejection queue must terminate its original source session"
+        );
+        assert!(
+            matches!(
+                new_disconnect_rx.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ),
+            "replacement source session must not be terminated"
+        );
+        assert!(!new_source_rx.is_closed());
+        assert!(
+            matches!(
+                recipient_disconnect_rx.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ),
+            "recipient session must not be terminated for source backpressure"
+        );
         let wr = wr.lock().await;
+        assert_eq!(wr.store.count_pending(&a.device_public_key).unwrap(), 0);
         assert_eq!(wr.store.count_pending(&b.device_public_key).unwrap(), 0);
         assert!(wr.store.load_retained().unwrap().is_empty());
         assert!(wr.store.load_snapshot().unwrap().is_none());

@@ -456,3 +456,125 @@ async fn addressed_actions_coedit_uses_the_same_demultiplexer() {
     );
     assert!(a_session.enable_actions(Uuid::from_u128(11)).is_err());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn addressed_actions_sustained_state_flood_keeps_private_roundtrips_and_reader_live() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let user = TestUser::fresh("Alice");
+    let a = user.enrol("a", DeviceCapabilities::primary());
+    let b = user.enrol("b", DeviceCapabilities::primary());
+    let room = Uuid::from_u128(15);
+    let workspace_id = qos_relay::room_workspace_id(&room.to_string()).unwrap();
+    let relay = spawn_relay(
+        &user,
+        user.enrol("relay", DeviceCapabilities::host()),
+        &[workspace_id],
+        &[a.device_pubkey(), b.device_pubkey()],
+    )
+    .await;
+    let ca = join_v2(&relay, &a, room).await;
+    let cb = join_v2(&relay, &b, room).await;
+    // Bound offered network backlog independently of the local scheduling
+    // queues: 1024 is four times the 256-entry state queue, allowing repeated
+    // refills. An ordered stream cannot move a private frame ahead of hundreds
+    // of thousands of previously written Pings; that is not scheduler fairness.
+    let in_flight = tokio::sync::Semaphore::new(1024);
+    let produced = AtomicUsize::new(0);
+    let received = AtomicUsize::new(0);
+    let (done, mut producer_done) = tokio::sync::watch::channel(false);
+    let mut consumer_done = producer_done.clone();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let producer = async {
+            loop {
+                let permit = tokio::select! {
+                    biased;
+                    _=producer_done.changed()=>break,
+                    permit=in_flight.acquire()=>permit.unwrap(),
+                };
+                tokio::select! {
+                    biased;
+                    _=producer_done.changed()=>break,
+                    sent=ca.outbound.send(Envelope::Ping)=>{
+                        sent.expect("state transport closed under mixed traffic");
+                        permit.forget();
+                        produced.fetch_add(1,Ordering::SeqCst);
+                    }
+                }
+            }
+        };
+        let consumer = async {
+            loop {
+                tokio::select! {
+                    biased;
+                    _=consumer_done.changed()=>break,
+                    state=ca.recv()=>{
+                        assert_eq!(state,Some(Envelope::Pong));
+                        received.fetch_add(1,Ordering::SeqCst);
+                        in_flight.add_permits(1);
+                    }
+                }
+            }
+        };
+        let private = async {
+            // Begin private work only after the state queue has been filled
+            // and refilled. The producer keeps running until every reply lands.
+            while produced.load(Ordering::SeqCst) < 512 {
+                tokio::task::yield_now().await;
+            }
+            for id in 1..=32 {
+                let mut request = refresh(room, &a, &b);
+                request.request_id = Uuid::from_u128(id);
+                ca.send_action(EnvelopeV2::Directed(request.clone()))
+                    .unwrap();
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(5), cb.recv_action())
+                        .await
+                        .unwrap_or_else(|_| panic!(
+                            "target stalled at request {id}; state sent {} received {}",
+                            produced.load(Ordering::SeqCst),
+                            received.load(Ordering::SeqCst)
+                        ))
+                        .expect("target closed"),
+                    EnvelopeV2::Delivered {
+                        action: request.clone(),
+                        source_user: user.user_pk
+                    }
+                );
+                let reply = DirectedAction {
+                    source: b.device_pubkey(),
+                    target: a.device_pubkey(),
+                    message: ActionMessage::Catalogue {
+                        catalogue: serde_json::json!({"version":1,"surfaces":[]}),
+                    },
+                    ..request
+                };
+                cb.send_action(EnvelopeV2::Directed(reply.clone())).unwrap();
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(5), ca.recv_action())
+                        .await
+                        .unwrap_or_else(|_| panic!(
+                            "reply stalled at request {id}; state sent {} received {}",
+                            produced.load(Ordering::SeqCst),
+                            received.load(Ordering::SeqCst)
+                        ))
+                        .expect("source closed"),
+                    EnvelopeV2::Delivered {
+                        action: reply,
+                        source_user: user.user_pk
+                    }
+                );
+            }
+            done.send(true).unwrap();
+        };
+        tokio::join!(producer, consumer, private);
+    })
+    .await
+    .expect("sustained state traffic starved a private lane or the sole reader");
+    assert!(produced.load(Ordering::SeqCst) >= 512);
+    assert!(received.load(Ordering::SeqCst) > 0);
+    let store =
+        qos_relay::store::WorkspaceStore::open(&relay.state_root, workspace_id, true).unwrap();
+    assert!(store.load_retained().unwrap().is_empty());
+    assert_eq!(store.count_pending(&a.device_pubkey()).unwrap(), 0);
+    assert_eq!(store.count_pending(&b.device_pubkey()).unwrap(), 0);
+}

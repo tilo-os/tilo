@@ -589,48 +589,63 @@ impl RelayClient {
             // Keep the socket alive through the final queued Unsubscribe and
             // FIN even if the caller handed this client its only Endpoint.
             let _endpoint_keepalive = endpoint_keepalive;
+            let mut schedule = V2Schedule::default();
             loop {
-                tokio::select! {
-                    biased;
-                    ob = outbound_rx.recv() => {
-                        if let Some(env) = ob {
-                            let Ok(bytes) = crate::transport_v2::encode_state(&env,v2) else { break };
-                            if send.write_all(&bytes).await.is_err() { break; }
-                        } else {
-                            let _ = send.finish();
-                            // Keep the endpoint alive long enough to flush the final
-                            // Unsubscribe/FIN. Bound the wait so a dead network cannot
-                            // strand this detached cleanup task indefinitely.
-                            let _ = n0_future::time::timeout(
-                                std::time::Duration::from_secs(2),
-                                send.stopped(),
-                            )
-                            .await;
+                let event = if v2 {
+                    next_v2_event(&mut outbound_rx, &mut action_rx, &mut reader, &mut schedule)
+                        .await
+                } else {
+                    // Retain v1 scheduling and state-only behavior verbatim.
+                    tokio::select! {
+                        biased;
+                        state=outbound_rx.recv()=>ClientEvent::State(state),
+                        inbound=reader.read_next()=>ClientEvent::Inbound(inbound),
+                    }
+                };
+                match event {
+                    ClientEvent::State(Some(env)) => {
+                        let Ok(bytes) = crate::transport_v2::encode_state(&env, v2) else {
+                            break;
+                        };
+                        if send.write_all(&bytes).await.is_err() {
                             break;
                         }
                     }
-                    action = action_rx.recv(), if v2 => {
-                        if let Some(action)=action {
-                            let Ok(bytes)=crate::transport_v2::encode(&action) else {break};
-                            if send.write_all(&bytes).await.is_err() {break;}
-                        } else {break;}
+                    ClientEvent::State(None) => {
+                        let _ = send.finish();
+                        let _ = n0_future::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            send.stopped(),
+                        )
+                        .await;
+                        break;
                     }
-                    ib = reader.read_next() => {
-                        match ib {
-                            Ok(Some(EnvelopeV2::State(env))) => {
-                                if v2 {
-                                    if inbound_tx.try_send(env).is_err() {break;}
-                                } else if inbound_tx.send(env).await.is_err() { break; }
-                            }
-                            Ok(Some(action)) => {
-                                // A stalled private consumer cannot silently lose a
-                                // result or block state indefinitely. Close and let
-                                // the owner query its durable invocation later.
-                                if action_inbound_tx.try_send(action).is_err() { break; }
-                            }
-                            Ok(None) | Err(_) => break,
+                    ClientEvent::Action(Some(action)) => {
+                        let Ok(bytes) = crate::transport_v2::encode(&action) else {
+                            break;
+                        };
+                        if send.write_all(&bytes).await.is_err() {
+                            break;
                         }
                     }
+                    ClientEvent::Action(None) => break,
+                    ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(env)))) => {
+                        if v2 {
+                            if inbound_tx.try_send(env).is_err() {
+                                break;
+                            }
+                        } else if inbound_tx.send(env).await.is_err() {
+                            break;
+                        }
+                    }
+                    ClientEvent::Inbound(Ok(Some(action))) => {
+                        // Closing on bounded receiver overflow makes loss explicit;
+                        // the future journal owner can recover status on reconnect.
+                        if action_inbound_tx.try_send(action).is_err() {
+                            break;
+                        }
+                    }
+                    ClientEvent::Inbound(Ok(None) | Err(_)) => break,
                 }
             }
             pump_connection.close(0u32.into(), b"relay pump ended");
@@ -725,5 +740,198 @@ impl RelayClient {
         self.connection.close(0u32.into(), b"client closed");
         self.connection.closed().await;
         self.endpoint.close().await;
+    }
+}
+
+/// Rotate the first ready lane after every event. Only capability activation
+/// waits for a finite prefix of already-queued state frames, keeping Subscribe
+/// before EnableActions without giving later state refills priority forever.
+#[derive(Default)]
+struct V2Schedule {
+    next_lane: usize,
+    pending_action: Option<EnvelopeV2>,
+    state_prefix: usize,
+    actions_closed: bool,
+}
+
+enum ClientEvent {
+    State(Option<Envelope>),
+    Action(Option<EnvelopeV2>),
+    Inbound(Result<Option<EnvelopeV2>, crate::transport::FrameError>),
+}
+
+// Poll buffered data before the receiver's cooperative-budget check. A Tokio
+// receiver may report Pending after exhausting its task budget even while it
+// holds items; letting an immediately-ready wire reader win every such poll
+// would defeat the rotation. Empty queues still register their normal waker.
+fn poll_queued<T>(
+    queue: &mut mpsc::Receiver<T>,
+    cx: &mut std::task::Context<'_>,
+) -> std::task::Poll<Option<T>> {
+    match queue.try_recv() {
+        Ok(value) => std::task::Poll::Ready(Some(value)),
+        Err(mpsc::error::TryRecvError::Disconnected) => std::task::Poll::Ready(None),
+        Err(mpsc::error::TryRecvError::Empty) => queue.poll_recv(cx),
+    }
+}
+
+async fn next_v2_event<R: tokio::io::AsyncRead + Unpin>(
+    states: &mut mpsc::Receiver<Envelope>,
+    actions: &mut mpsc::Receiver<EnvelopeV2>,
+    reader: &mut SessionReader<R>,
+    schedule: &mut V2Schedule,
+) -> ClientEvent {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+    let inbound = reader.read_next();
+    tokio::pin!(inbound);
+    poll_fn(|cx| {
+        for offset in 0..3 {
+            let lane = (schedule.next_lane + offset) % 3;
+            match lane {
+                0 => {
+                    if let Poll::Ready(state) = poll_queued(states, cx) {
+                        schedule.state_prefix = schedule.state_prefix.saturating_sub(1);
+                        schedule.next_lane = 1;
+                        return Poll::Ready(ClientEvent::State(state));
+                    }
+                }
+                1 => {
+                    if schedule.pending_action.is_none() && !schedule.actions_closed {
+                        match poll_queued(actions, cx) {
+                            Poll::Ready(Some(action)) => {
+                                // This snapshots at most the bounded state queue
+                                // capacity. Later producer refills cannot extend it.
+                                schedule.state_prefix =
+                                    if matches!(action, EnvelopeV2::EnableActions { .. }) {
+                                        states.len()
+                                    } else {
+                                        0
+                                    };
+                                schedule.pending_action = Some(action);
+                            }
+                            Poll::Ready(None) => schedule.actions_closed = true,
+                            Poll::Pending => {}
+                        }
+                    }
+                    if schedule.state_prefix == 0 {
+                        if let Some(action) = schedule.pending_action.take() {
+                            schedule.next_lane = 2;
+                            return Poll::Ready(ClientEvent::Action(Some(action)));
+                        }
+                    }
+                }
+                _ => {
+                    if let Poll::Ready(frame) = inbound.as_mut().poll(cx) {
+                        schedule.next_lane = 0;
+                        return Poll::Ready(ClientEvent::Inbound(frame));
+                    }
+                }
+            }
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+#[cfg(test)]
+mod scheduling_tests {
+    use super::*;
+    use crate::peer_actions::{ActionMessage, DirectedAction};
+    use uuid::Uuid;
+
+    fn action() -> EnvelopeV2 {
+        EnvelopeV2::Directed(DirectedAction {
+            room: Uuid::from_u128(1),
+            request_id: Uuid::from_u128(2),
+            source: [1; 32],
+            target: [2; 32],
+            message: ActionMessage::CatalogueRefresh,
+        })
+    }
+
+    #[tokio::test]
+    async fn sustained_ready_state_and_private_traffic_cannot_starve_the_reader() {
+        let (state_tx, mut states) = mpsc::channel(256);
+        let (action_tx, mut actions) = mpsc::channel(32);
+        for _ in 0..256 {
+            state_tx.try_send(Envelope::Ping).unwrap();
+        }
+        for _ in 0..32 {
+            action_tx.try_send(action()).unwrap();
+        }
+        let frame = crate::transport_v2::encode(&EnvelopeV2::State(Envelope::Pong)).unwrap();
+        let wire = frame.repeat(1024);
+        let mut reader = SessionReader::new(std::io::Cursor::new(wire), true);
+        let mut schedule = V2Schedule::default();
+        // Every lane remains ready for 1024 selections. Assert observable
+        // progress per short window, not a probabilistic wall-clock timeout.
+        for window in 0..128 {
+            let mut counts = [0; 3];
+            for _ in 0..8 {
+                match next_v2_event(&mut states, &mut actions, &mut reader, &mut schedule).await {
+                    ClientEvent::State(Some(Envelope::Ping)) => {
+                        counts[0] += 1;
+                        state_tx.try_send(Envelope::Ping).unwrap();
+                    }
+                    ClientEvent::Action(Some(value)) => {
+                        assert_eq!(value, action());
+                        counts[1] += 1;
+                        action_tx.try_send(action()).unwrap();
+                    }
+                    ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(Envelope::Pong)))) => {
+                        counts[2] += 1
+                    }
+                    _ => panic!("live lane ended"),
+                }
+            }
+            assert!(
+                counts.iter().all(|count| *count > 0),
+                "ready lanes must each progress under sustained traffic, window {window}: {counts:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn action_enable_waits_for_queued_subscribe_but_not_an_unbounded_flood() {
+        let (state_tx, mut states) = mpsc::channel(256);
+        let (action_tx, mut actions) = mpsc::channel(32);
+        let room = Uuid::from_u128(1);
+        let workspace_id = crate::room_workspace_id(&room.to_string()).unwrap();
+        for _ in 0..255 {
+            state_tx.try_send(Envelope::Ping).unwrap();
+        }
+        state_tx
+            .try_send(Envelope::Subscribe { workspace_id })
+            .unwrap();
+        action_tx
+            .try_send(EnvelopeV2::EnableActions { room })
+            .unwrap();
+        let frame = crate::transport_v2::encode(&EnvelopeV2::State(Envelope::Pong)).unwrap();
+        let mut reader = SessionReader::new(std::io::Cursor::new(frame.repeat(1024)), true);
+        let mut schedule = V2Schedule::default();
+        let mut subscribed = false;
+        let mut enabled = false;
+        let mut received = 0;
+        for _ in 0..1024 {
+            match next_v2_event(&mut states, &mut actions, &mut reader, &mut schedule).await {
+                ClientEvent::State(Some(env)) => {
+                    if matches!(env, Envelope::Subscribe { .. }) {
+                        subscribed = true;
+                    }
+                    state_tx.try_send(Envelope::Ping).unwrap();
+                }
+                ClientEvent::Action(Some(EnvelopeV2::EnableActions { room: got })) => {
+                    assert!(subscribed, "private enable overtook its state subscription");
+                    assert_eq!(got, room);
+                    enabled = true;
+                    break;
+                }
+                ClientEvent::Inbound(Ok(Some(_))) => received += 1,
+                _ => panic!("live lane ended"),
+            }
+        }
+        assert!(enabled, "continuous state refills starved private enable");
+        assert!(received > 0, "subscription barrier starved the sole reader");
     }
 }
