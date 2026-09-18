@@ -8,6 +8,23 @@ use ui::widget::Widget as _;
 use vello::kurbo::Rect;
 use vte::Perform;
 
+fn shell_command(unix_script: &str, windows_script: &str) -> portable_pty::CommandBuilder {
+    #[cfg(unix)]
+    {
+        let _ = windows_script;
+        let mut command = portable_pty::CommandBuilder::new("/bin/sh");
+        command.args(["-c", unix_script]);
+        command
+    }
+    #[cfg(windows)]
+    {
+        let _ = unix_script;
+        let mut command = portable_pty::CommandBuilder::new("cmd.exe");
+        command.args(["/d", "/c", windows_script]);
+        command
+    }
+}
+
 /// Shared mock PTY master used by the selection / clipboard tests.
 struct MockMasterShared;
 impl MasterPty for MockMasterShared {
@@ -23,12 +40,15 @@ impl MasterPty for MockMasterShared {
     fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
         Ok(Box::new(std::io::empty()))
     }
+    #[cfg(unix)]
     fn process_group_leader(&self) -> Option<i32> {
         None
     }
+    #[cfg(unix)]
     fn as_raw_fd(&self) -> Option<i32> {
         None
     }
+    #[cfg(unix)]
     fn tty_name(&self) -> Option<std::path::PathBuf> {
         None
     }
@@ -352,14 +372,17 @@ fn test_terminal_grid_init() {
         fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
             Ok(Box::new(std::io::empty()))
         }
+        #[cfg(unix)]
         fn process_group_leader(&self) -> Option<i32> {
             None
         }
+        #[cfg(unix)]
         fn as_raw_fd(&self) -> Option<i32> {
             None
         }
         // portable-pty 0.9 added a `tty_name` accessor. Test mock has no
         // real TTY behind it, so return None.
+        #[cfg(unix)]
         fn tty_name(&self) -> Option<std::path::PathBuf> {
             None
         }
@@ -543,13 +566,12 @@ fn terminal_widget_implements_app_widget() {
 
 #[test]
 fn exited_pty_publishes_a_persistent_disconnected_accessibility_state() {
-    use portable_pty::CommandBuilder;
     use ui::widget::Widget;
 
-    let mut widget = TerminalWidget::spawn_command(CommandBuilder::new("/bin/true"))
+    let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
         .expect("spawn short-lived pty command");
     let mut doc = AutoCommit::new();
-    for _ in 0..20 {
+    for _ in 0..200 {
         widget.sync(&mut doc, &ROOT);
         if widget.is_disconnected() {
             break;
@@ -694,14 +716,17 @@ fn terminal_widget_remembers_palette_after_inspection_hooks() {
         fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
             Ok(Box::new(std::io::empty()))
         }
+        #[cfg(unix)]
         fn process_group_leader(&self) -> Option<i32> {
             None
         }
+        #[cfg(unix)]
         fn as_raw_fd(&self) -> Option<i32> {
             None
         }
         // portable-pty 0.9 added a `tty_name` accessor. Test mock has no
         // real TTY behind it, so return None.
+        #[cfg(unix)]
         fn tty_name(&self) -> Option<std::path::PathBuf> {
             None
         }
@@ -1981,14 +2006,11 @@ fn pump_until_contains(
 
 #[test]
 fn spawn_command_runs_real_pty_and_grid_shows_output() {
-    use portable_pty::CommandBuilder;
     // Run a real subprocess in a real PTY and prove its stdout reaches the
     // emulator grid through the production reader → sync → vte → CRDT path
     // (no `feed`, no mock). This is the load-bearing "the terminal actually
     // runs programs" proof.
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.arg("-c");
-    cmd.arg("printf 'TILO_PTY_OK\\n'");
+    let cmd = shell_command("printf 'TILO_PTY_OK\\n'", "echo TILO_PTY_OK");
     let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
     let mut doc = AutoCommit::new();
     assert!(
@@ -2007,7 +2029,10 @@ fn spawn_default_runs_real_shell_and_executes_typed_command() {
     let mut doc = AutoCommit::new();
     // Let the shell reach a prompt before typing.
     w.sync(&mut doc, &ROOT);
-    w.write_input(b"printf 'TILO_SHELL_OK\\n'\n");
+    #[cfg(unix)]
+    w.write_input(b"printf 'TILO_%s_OK\\n' SHELL; exit\n");
+    #[cfg(windows)]
+    w.write_input(b"set TILO_PART=SHELL\r\necho TILO_%TILO_PART%_OK\r\nexit\r\n");
     assert!(
         pump_until_contains(&mut w, &mut doc, "TILO_SHELL_OK", 300),
         "the real shell must run the typed command and show output; grid was:\n{}",
@@ -2017,10 +2042,9 @@ fn spawn_default_runs_real_shell_and_executes_typed_command() {
 
 #[test]
 fn spawn_command_reports_grid_size() {
-    use portable_pty::CommandBuilder;
     // The default PTY is opened at 80x24; the host-facing accessor must
     // report that until a `place_at` reflow changes it.
-    let w = TerminalWidget::spawn_command(CommandBuilder::new("/bin/sh")).expect("spawn");
+    let w = TerminalWidget::spawn_command(shell_command("true", "exit /b 0")).expect("spawn");
     assert_eq!(w.grid_size(), (80, 24));
 }
 
@@ -3130,6 +3154,7 @@ fn unknown_query_is_consumed_without_a_spurious_reply() {
 }
 
 #[test]
+#[cfg(unix)]
 fn da1_reply_round_trips_through_the_real_pty_pump_path() {
     use portable_pty::CommandBuilder;
     // End-to-end proof on the production path (no `feed`, no mock writer):
@@ -3162,6 +3187,7 @@ fn da1_reply_round_trips_through_the_real_pty_pump_path() {
 // ---------------------------------------------------------------
 
 #[test]
+#[cfg(unix)]
 fn resolve_login_shell_prefers_shell_env() {
     assert_eq!(
         crate::inner::resolve_login_shell_with(
@@ -3174,6 +3200,7 @@ fn resolve_login_shell_prefers_shell_env() {
 }
 
 #[test]
+#[cfg(unix)]
 fn resolve_login_shell_falls_back_to_passwd_when_shell_unset() {
     assert_eq!(
         crate::inner::resolve_login_shell_with(None, Some("/usr/bin/zsh".into())),
@@ -3188,6 +3215,7 @@ fn resolve_login_shell_falls_back_to_passwd_when_shell_unset() {
 }
 
 #[test]
+#[cfg(unix)]
 fn resolve_login_shell_last_resort_is_sh() {
     assert_eq!(
         crate::inner::resolve_login_shell_with(None, None),
@@ -3197,6 +3225,7 @@ fn resolve_login_shell_last_resort_is_sh() {
 }
 
 #[test]
+#[cfg(unix)]
 fn passwd_lookup_resolves_a_real_login_shell() {
     // Proves the getpwuid fallback actually reads a plausible shell for the
     // account running the tests (an absolute path). This is the source the
@@ -3210,6 +3239,7 @@ fn passwd_lookup_resolves_a_real_login_shell() {
 }
 
 #[test]
+#[cfg(unix)]
 fn spawn_default_command_uses_the_resolved_login_shell() {
     // The real resolver: when $SHELL is set (as it is in an interactive
     // session), spawn_default launches exactly that shell. We assert on the
@@ -3278,12 +3308,9 @@ fn newly_spawned_local_pty_does_not_append_to_a_previous_session_grid() {
 
 #[test]
 fn with_command_forces_xterm_256color_term() {
-    use portable_pty::CommandBuilder;
     // fish (and terminfo) need $TERM to name a terminal they support. Run a
     // child that prints $TERM and prove the emulator exported it.
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.arg("-c");
-    cmd.arg("printf 'TERM=%s\\n' \"$TERM\"");
+    let cmd = shell_command("printf 'TERM=%s\\n' \"$TERM\"", "echo TERM=%TERM%");
     let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
     let mut doc = AutoCommit::new();
     assert!(
@@ -3295,6 +3322,7 @@ fn with_command_forces_xterm_256color_term() {
 
 /// Locate a `fish` binary for the live-fish test. Returns `None` if fish is
 /// not installed (the test then skips — it exercises an external program).
+#[cfg(unix)]
 fn locate_fish() -> Option<std::path::PathBuf> {
     for p in ["/usr/bin/fish", "/bin/fish", "/usr/local/bin/fish"] {
         let path = std::path::PathBuf::from(p);
@@ -3309,6 +3337,7 @@ fn locate_fish() -> Option<std::path::PathBuf> {
 }
 
 #[test]
+#[cfg(unix)]
 fn fish_starts_without_the_device_attribute_warning() {
     // Drive the exact program the user runs, through the production
     // reader→sync→pump→vte→write_input→PTY path (no `feed`, no mock).
@@ -3416,6 +3445,7 @@ fn confine_route_best_effort_off_tilo_and_never_a_doomed_spawn() {
 
 #[test]
 #[serial_test::serial]
+#[cfg(unix)]
 fn service_fd_is_detected_only_when_the_descriptor_is_actually_open() {
     // The service path is selected on a *live* descriptor, not on the mere
     // presence of the env var — so a stale or spoofed number can neither
@@ -3622,7 +3652,7 @@ fn terminal_palette_tracks_the_theme_not_a_hardcoded_green_on_black() {
 
 #[test]
 fn hosted_terminal_requires_ush_before_construction() {
-    let result = crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices { ush: None });
+    let result = crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices::default());
     assert!(matches!(
         result,
         Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
@@ -3701,6 +3731,7 @@ fn hosted_services_leave_ush_missing_when_the_socket_refuses_connections() {
 }
 
 #[test]
+#[cfg(unix)]
 fn hosted_terminal_service_failure_never_falls_back_to_a_login_shell() {
     use std::os::unix::net::UnixStream;
     let (client, server) = UnixStream::pair().unwrap();
@@ -3711,4 +3742,57 @@ fn hosted_terminal_service_failure_never_falls_back_to_a_login_shell() {
         result,
         Err(crate::HostedTerminalError::ServiceFailed(_))
     ));
+}
+
+#[cfg(windows)]
+#[test]
+fn native_terminal_action_runs_a_command_and_child_observes_resize() {
+    let mut widget = TerminalWidget::spawn_default().expect("spawn native shell");
+    let mut document = AutoCommit::new();
+    widget.sync(&mut document, &ROOT);
+    widget.place_at(Rect::new(0.0, 0.0, 960.0, 540.0));
+    let (columns, rows) = widget.grid_size();
+    let command = r#"powershell.exe -NoProfile -Command "$s=$Host.UI.RawUI.WindowSize; 'NATIVE_SIZE={0}x{1}' -f $s.Width,$s.Height""#;
+    let arguments = serde_json::to_vec(command).unwrap();
+    assert!(
+        ui::Widget::invoke_resource_operation(
+            &mut widget,
+            ui::tilo_actions::OperationKind::Effect,
+            "terminal.run",
+            &arguments,
+            &document,
+            &ROOT,
+        )
+        .expect("invoke native command through action API")
+    );
+    let expected = format!("NATIVE_SIZE={columns}x{rows}");
+    assert!(
+        pump_until_contains(&mut widget, &mut document, &expected, 500),
+        "the actual child must observe the resized ConPTY: {}",
+        widget.grid_text()
+    );
+    widget
+        .try_write_input(b"exit\r\n")
+        .expect("close native shell");
+}
+
+#[cfg(windows)]
+#[test]
+#[serial_test::serial]
+fn windows_claimed_hosted_service_never_starts_an_unconfined_shell() {
+    let previous = std::env::var_os(crate::inner::USH_SERVICE_FD_ENV);
+    // SAFETY: run environment-mutating terminal tests serially.
+    unsafe { std::env::set_var(crate::inner::USH_SERVICE_FD_ENV, "3") };
+    let result = TerminalWidget::spawn_default();
+    // Restore before asserting, including when the result is unexpected.
+    unsafe {
+        match previous {
+            Some(value) => std::env::set_var(crate::inner::USH_SERVICE_FD_ENV, value),
+            None => std::env::remove_var(crate::inner::USH_SERVICE_FD_ENV),
+        }
+    }
+    assert!(
+        result.is_err(),
+        "a hosted grant must never fall back to COMSPEC"
+    );
 }

@@ -164,6 +164,10 @@ mod tests {
     fn windows_drive_unc_and_verbatim_paths_become_file_urls() {
         for (path, expected) in [
             (
+                r"C:\Media\日本語.webm",
+                "file:///C:/Media/%E6%97%A5%E6%9C%AC%E8%AA%9E.webm",
+            ),
+            (
                 r"C:\Media\My Clip #1%.mp4",
                 "file:///C:/Media/My%20Clip%20%231%25.mp4",
             ),
@@ -235,10 +239,9 @@ mod tests {
 
     #[test]
     fn workspace_absolute_path_is_left_as_is() {
-        let abs = Source::Workspace(PathBuf::from("/var/workspace/media/x.mov"));
-        assert_eq!(
-            abs.abs_path().unwrap(),
-            PathBuf::from("/var/workspace/media/x.mov")
-        );
+        let path = std::env::temp_dir().join("workspace/media/x.mov");
+        assert!(path.is_absolute());
+        let abs = Source::Workspace(path.clone());
+        assert_eq!(abs.abs_path().unwrap(), path);
     }
 }

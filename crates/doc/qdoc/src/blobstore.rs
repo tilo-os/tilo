@@ -276,20 +276,38 @@ impl FsBlobStore {
     /// The store this machine uses unless told otherwise. `TILO_BLOB_STORE` overrides it, letting two
     /// sessions on one host be genuinely separate peers rather than one store they both hit.
     pub fn default_root() -> PathBuf {
-        if let Ok(v) = std::env::var("TILO_BLOB_STORE")
+        Self::default_root_with(|key| std::env::var_os(key))
+    }
+
+    fn default_root_with(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
+        if let Some(v) = env("TILO_BLOB_STORE")
             && !v.is_empty()
         {
             return PathBuf::from(v);
         }
-        let base = std::env::var("XDG_CACHE_HOME")
-            .ok()
+        let native_base = || {
+            #[cfg(windows)]
+            {
+                env("LOCALAPPDATA")
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_absolute())
+                    .or_else(|| {
+                        env("USERPROFILE")
+                            .map(PathBuf::from)
+                            .filter(|path| path.is_absolute())
+                            .map(|path| path.join("AppData/Local"))
+                    })
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        };
+        let base = env("XDG_CACHE_HOME")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".cache"))
-            })
+            .or_else(native_base)
+            .or_else(|| env("HOME").map(|h| PathBuf::from(h).join(".cache")))
             .unwrap_or_else(std::env::temp_dir);
         base.join("tilo").join("blobs")
     }
@@ -946,6 +964,43 @@ mod tests {
         assert_eq!(m.mime, "image/png");
         assert_eq!((m.w, m.h), (1, 1));
         assert_eq!(m.len, TINY_PNG.len() as u64);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_blob_root_uses_the_windows_profile_instead_of_temp() {
+        let root = FsBlobStore::default_root_with(|key| match key {
+            "LOCALAPPDATA" => Some("C:/Users/Photo User/AppData/Local".into()),
+            "HOME" => Some("C:/old-unix-home".into()),
+            _ => None,
+        });
+        assert_eq!(
+            root,
+            PathBuf::from("C:/Users/Photo User/AppData/Local/tilo/blobs")
+        );
+        let fallback = FsBlobStore::default_root_with(|key| match key {
+            "USERPROFILE" => Some("C:/Users/Photo User".into()),
+            _ => None,
+        });
+        assert_eq!(
+            fallback,
+            PathBuf::from("C:/Users/Photo User/AppData/Local/tilo/blobs")
+        );
+    }
+
+    #[test]
+    fn default_blob_root_preserves_explicit_peer_and_cache_locations() {
+        let peer = FsBlobStore::default_root_with(|key| match key {
+            "TILO_BLOB_STORE" => Some("peer-blobs".into()),
+            "XDG_CACHE_HOME" => Some("cache".into()),
+            _ => None,
+        });
+        assert_eq!(peer, PathBuf::from("peer-blobs"));
+        let cache = FsBlobStore::default_root_with(|key| match key {
+            "XDG_CACHE_HOME" => Some("cache".into()),
+            _ => None,
+        });
+        assert_eq!(cache, PathBuf::from("cache/tilo/blobs"));
     }
 
     #[test]

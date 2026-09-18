@@ -15,6 +15,7 @@
 // unwrap_used, expect_used, panic — because a panicking app is a bad app
 // whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
 // full set: a fault there takes the session, or every app with it.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -71,6 +72,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    // Live and headless launches restore the same persistent image content.
+    configure_blob_store();
     photos::strings::install();
     let mut app = photos::PhotosApp::new();
     if args.value("--import-directory").is_some() || args.has("--library") {
@@ -84,7 +87,17 @@ fn requested_path(args: &LaunchArgs) -> Option<&str> {
         .or_else(|| args.positionals().first().map(String::as_str))
 }
 
+fn configure_blob_store() {
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(|| {
+        qdoc::blobstore::set_store(std::sync::Arc::new(qdoc::blobstore::FsBlobStore::new(
+            qdoc::blobstore::FsBlobStore::default_root(),
+        )));
+    });
+}
+
 fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+    configure_blob_store();
     let (mut state, autosave) = ui::persist::open(app_id);
     if let Some(path) = requested_path(args) {
         let mut opener = photos::PhotosApp::new();

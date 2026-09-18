@@ -35,6 +35,7 @@ pub mod external_drag;
 pub mod favorites;
 pub mod fileops;
 pub mod files_app;
+pub mod filesystem_metadata;
 pub mod history_control;
 mod history_panel;
 pub mod i18n;

@@ -138,6 +138,11 @@ impl SecretStore {
         self.vault.custody()
     }
 
+    /// Initial storage failure, if the vault needs recovery before editing.
+    pub fn recovery_error(&self) -> Option<&str> {
+        self.vault.recovery_error()
+    }
+
     pub fn list(&self) -> Vec<SecretItem> {
         let mut items: Vec<SecretItem> = self
             .vault

@@ -155,13 +155,38 @@ impl ProbeTransport for LiveProbe {
         // async-imap: TCP+TLS to cfg.imap_host:cfg.imap_port, read the greeting,
         // LOGIN (or AUTHENTICATE XOAUTH2 when cfg.auth == OAuth), LOGOUT.
         // A connect/auth error maps to Err(reason).
-        live_probe::imap_login(cfg)
+        live_probe::imap_login(cfg, None)
     }
     fn smtp_handshake(&self, cfg: &AccountConfig) -> Result<(), String> {
         // lettre: connect to cfg.smtp_host:cfg.smtp_port, EHLO, STARTTLS /
         // implicit TLS per cfg.smtp_tls, AUTH, then RSET/QUIT without sending.
-        live_probe::smtp_handshake(cfg)
+        live_probe::smtp_handshake(cfg, None)
     }
+}
+
+/// Validate on a setup worker, stopping network waits when its sheet closes.
+pub fn validate_account_cancellable(
+    cfg: &AccountConfig,
+    cancellation: &std::sync::atomic::AtomicBool,
+) -> ValidationState {
+    if cancellation.load(std::sync::atomic::Ordering::Relaxed) {
+        return ValidationState::Failed("Account verification cancelled".into());
+    }
+    #[cfg(feature = "live")]
+    {
+        struct SetupProbe<'a>(&'a std::sync::atomic::AtomicBool);
+        impl ProbeTransport for SetupProbe<'_> {
+            fn imap_login(&self, cfg: &AccountConfig) -> Result<(), String> {
+                live_probe::imap_login(cfg, Some(self.0))
+            }
+            fn smtp_handshake(&self, cfg: &AccountConfig) -> Result<(), String> {
+                live_probe::smtp_handshake(cfg, Some(self.0))
+            }
+        }
+        validate_account(cfg, &SetupProbe(cancellation))
+    }
+    #[cfg(not(feature = "live"))]
+    validate_account(cfg, &OfflineProbe)
 }
 
 #[cfg(feature = "live")]
@@ -171,9 +196,9 @@ mod live_probe {
     use super::{AccountConfig, classify_conn_failure};
     use crate::model::AuthMethod;
 
-    /// Run `fut` to completion on a short-lived current-thread runtime. The
-    /// probe is called from the synchronous UI-save path, so it owns its
-    /// runtime rather than assuming one exists.
+    /// Run a bounded network probe on its worker's own runtime. Cancelling
+    /// drops the network future and closes its sockets instead of leaving a
+    /// detached worker waiting indefinitely for a remote TLS greeting.
     ///
     /// # Panics
     /// Panics if the OS refuses a single current-thread tokio runtime. The
@@ -183,12 +208,30 @@ mod live_probe {
         clippy::expect_used,
         reason = "without a runtime the probe cannot perform the round-trips it exists to perform; reporting a validation result anyway would be a lie about the account"
     )]
-    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    fn block_on<F: std::future::Future<Output = Result<(), String>>>(
+        fut: F,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<(), String> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("probe runtime")
-            .block_on(fut)
+            .block_on(async {
+                tokio::select! {
+                    biased;
+                    () = async {
+                        loop {
+                            if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+                                return;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        }
+                    } => Err("Account verification cancelled".into()),
+                    result = tokio::time::timeout(std::time::Duration::from_secs(30), fut) => {
+                        result.unwrap_or_else(|_| Err("Account verification timed out".into()))
+                    }
+                }
+            })
     }
 
     /// # Panics
@@ -248,55 +291,61 @@ mod live_probe {
         Ok(tokens.access_token)
     }
 
-    pub fn imap_login(cfg: &AccountConfig) -> Result<(), String> {
+    pub fn imap_login(
+        cfg: &AccountConfig,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<(), String> {
         if cfg.imap_host.trim().is_empty() {
             return Err("no IMAP host".into());
         }
         let (user, token) = creds(cfg)?;
         let tls = tls_config();
-        block_on(async move {
-            let host = cfg.imap_host.trim();
-            let port = if cfg.imap_port == 0 {
-                993
-            } else {
-                cfg.imap_port
-            };
-            let tcp = tokio::net::TcpStream::connect((host, port))
-                .await
-                .map_err(|e| classify_conn_failure(&e.to_string()))?;
-            let connector = tokio_rustls::TlsConnector::from(tls);
-            let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
-                .map_err(|e| format!("invalid IMAP host name: {e}"))?;
-            let stream = connector
-                .connect(server_name, tcp)
-                .await
-                .map_err(|e| classify_conn_failure(&e.to_string()))?;
-            let client = async_imap::Client::new(stream);
-            let mut session = match token {
-                Some(access) => {
-                    let auth = XOAuth2 {
-                        user: user.clone(),
-                        token: access,
-                    };
-                    client
-                        .authenticate("XOAUTH2", auth)
-                        .await
-                        .map_err(|(e, _)| classify_conn_failure(&e.to_string()))?
-                }
-                None => client
-                    .login(&user, &cfg.password)
+        block_on(
+            async move {
+                let host = cfg.imap_host.trim();
+                let port = if cfg.imap_port == 0 {
+                    993
+                } else {
+                    cfg.imap_port
+                };
+                let tcp = tokio::net::TcpStream::connect((host, port))
                     .await
-                    .map_err(|(e, _)| classify_conn_failure(&e.to_string()))?,
-            };
-            // A successful SELECT proves the session is usable, not just that
-            // the greeting arrived.
-            session
-                .select("INBOX")
-                .await
-                .map_err(|e| classify_conn_failure(&e.to_string()))?;
-            let _ = session.logout().await;
-            Ok::<(), String>(())
-        })
+                    .map_err(|e| classify_conn_failure(&e.to_string()))?;
+                let connector = tokio_rustls::TlsConnector::from(tls);
+                let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+                    .map_err(|e| format!("invalid IMAP host name: {e}"))?;
+                let stream = connector
+                    .connect(server_name, tcp)
+                    .await
+                    .map_err(|e| classify_conn_failure(&e.to_string()))?;
+                let client = async_imap::Client::new(stream);
+                let mut session = match token {
+                    Some(access) => {
+                        let auth = XOAuth2 {
+                            user: user.clone(),
+                            token: access,
+                        };
+                        client
+                            .authenticate("XOAUTH2", auth)
+                            .await
+                            .map_err(|(e, _)| classify_conn_failure(&e.to_string()))?
+                    }
+                    None => client
+                        .login(&user, &cfg.password)
+                        .await
+                        .map_err(|(e, _)| classify_conn_failure(&e.to_string()))?,
+                };
+                // A successful SELECT proves the session is usable, not just that
+                // the greeting arrived.
+                session
+                    .select("INBOX")
+                    .await
+                    .map_err(|e| classify_conn_failure(&e.to_string()))?;
+                let _ = session.logout().await;
+                Ok::<(), String>(())
+            },
+            cancellation,
+        )
     }
 
     /// async-imap `XOAUTH2` authenticator (raw SASL string; async-imap base64s).
@@ -311,7 +360,10 @@ mod live_probe {
         }
     }
 
-    pub fn smtp_handshake(cfg: &AccountConfig) -> Result<(), String> {
+    pub fn smtp_handshake(
+        cfg: &AccountConfig,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<(), String> {
         use lettre::transport::smtp::authentication::Credentials;
         use lettre::{AsyncSmtpTransport, Tokio1Executor};
 
@@ -325,28 +377,31 @@ mod live_probe {
             cfg.smtp_port
         };
         let (user, token) = creds(cfg)?;
-        block_on(async move {
-            let builder = if port == 465 {
-                AsyncSmtpTransport::<Tokio1Executor>::relay(host)
-            } else {
-                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
-            }
-            .map_err(|e| classify_conn_failure(&e.to_string()))?;
-            let secret = token.unwrap_or_else(|| cfg.password.clone());
-            let mailer: AsyncSmtpTransport<Tokio1Executor> = builder
-                .port(port)
-                .credentials(Credentials::new(user, secret))
-                .build();
-            // test_connection performs connect + EHLO (+ TLS upgrade), proving
-            // the outgoing server is reachable and speaks the negotiated
-            // security. Credential validity is proven authoritatively by the
-            // IMAP login above (SMTP has no no-op AUTH probe).
-            match mailer.test_connection().await {
-                Ok(true) => Ok(()),
-                Ok(false) => Err("SMTP server did not accept the connection".into()),
-                Err(e) => Err(classify_conn_failure(&e.to_string())),
-            }
-        })
+        block_on(
+            async move {
+                let builder = if port == 465 {
+                    AsyncSmtpTransport::<Tokio1Executor>::relay(host)
+                } else {
+                    AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
+                }
+                .map_err(|e| classify_conn_failure(&e.to_string()))?;
+                let secret = token.unwrap_or_else(|| cfg.password.clone());
+                let mailer: AsyncSmtpTransport<Tokio1Executor> = builder
+                    .port(port)
+                    .credentials(Credentials::new(user, secret))
+                    .build();
+                // test_connection performs connect + EHLO (+ TLS upgrade), proving
+                // the outgoing server is reachable and speaks the negotiated
+                // security. Credential validity is proven authoritatively by the
+                // IMAP login above (SMTP has no no-op AUTH probe).
+                match mailer.test_connection().await {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err("SMTP server did not accept the connection".into()),
+                    Err(e) => Err(classify_conn_failure(&e.to_string())),
+                }
+            },
+            cancellation,
+        )
     }
 }
 
@@ -362,6 +417,63 @@ mod tests {
             smtp_host: "smtp.host.example".into(),
             ..Default::default()
         }
+    }
+
+    #[cfg(feature = "live")]
+    #[test]
+    fn cancelling_setup_closes_a_stalled_tls_connection() {
+        use std::io::Read;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use std::time::{Duration, Instant};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut cfg = good_cfg();
+        cfg.imap_host = "127.0.0.1".into();
+        cfg.imap_port = listener.local_addr().unwrap().port();
+        cfg.password = "local fixture secret".into();
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let worker_cancellation = Arc::clone(&cancellation);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sender
+                .send(validate_account_cancellable(&cfg, &worker_cancellation))
+                .unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "verification never connected");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("local listener: {error}"),
+            }
+        };
+        // Windows accepted sockets inherit the listener's nonblocking mode.
+        // This fixture uses bounded blocking reads to observe TLS and EOF.
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut hello = [0; 4096];
+        assert!(
+            stream.read(&mut hello).unwrap() > 0,
+            "real TLS handshake began"
+        );
+        cancellation.store(true, Ordering::Relaxed);
+        let outcome = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(!outcome.persisted());
+        assert!(outcome.message().contains("cancelled"), "{outcome:?}");
+        let mut remaining = Vec::new();
+        stream
+            .read_to_end(&mut remaining)
+            .expect("cancellation must close the TLS socket");
+        worker.join().unwrap();
     }
 
     /// A programmable probe for the state-machine tests.

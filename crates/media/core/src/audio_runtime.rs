@@ -5,13 +5,20 @@
 //! unloads the Pulse compatibility module. Microphone testing only reads
 //! samples into a level meter; it never creates a playback/monitor link.
 
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
+#[cfg(unix)]
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+#[cfg(unix)]
 use std::sync::mpsc::{self, Receiver};
+#[cfg(unix)]
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(
@@ -255,11 +262,13 @@ impl PersistentAudioPolicy {
 
 pub struct RealAudioRuntime;
 
+#[cfg(unix)]
 fn command_works(bin: &str, args: &[&str]) -> bool {
     bounded_command::run(bin, args, None, 64 * 1024, Duration::from_secs(3))
         .is_ok_and(|output| output.status.success())
 }
 
+#[cfg(unix)]
 fn run(bin: &str, args: &[String]) -> Result<String, String> {
     let mut command = Command::new(bin);
     command.args(args);
@@ -272,6 +281,7 @@ fn run(bin: &str, args: &[String]) -> Result<String, String> {
     }
 }
 
+#[cfg(unix)]
 fn sanitize_diagnostic(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .chars()
@@ -282,6 +292,7 @@ fn sanitize_diagnostic(bytes: &[u8]) -> String {
         .to_string()
 }
 
+#[cfg(unix)]
 fn terminate_process_group(child: &mut Child) {
     if let Ok(pid) = i32::try_from(child.id())
         && let Some(group) = pid.checked_neg()
@@ -294,6 +305,7 @@ fn terminate_process_group(child: &mut Child) {
     let _ = child.wait();
 }
 
+#[cfg(unix)]
 impl AudioRuntimeControl for RealAudioRuntime {
     fn capabilities(&self) -> RuntimeCapabilities {
         let pulse = command_works("pactl", &["info"]);
@@ -439,6 +451,45 @@ impl AudioRuntimeControl for RealAudioRuntime {
     }
 }
 
+// PipeWire process control and session teardown require Unix process groups.
+// Keep this public runtime available for portable callers without advertising
+// or attempting unsupported operations on other hosts.
+#[cfg(not(unix))]
+impl AudioRuntimeControl for RealAudioRuntime {
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities::default()
+    }
+
+    fn set_balance(
+        &self,
+        _sink_name: &str,
+        _base_volume: f32,
+        _balance: f32,
+    ) -> Result<(), String> {
+        Err("PipeWire audio runtime is unsupported on this platform".into())
+    }
+
+    fn start_mono(&self, _sink_name: &str) -> Result<Box<dyn BoundedSession>, String> {
+        Err("PipeWire audio runtime is unsupported on this platform".into())
+    }
+
+    fn start_channel_test(
+        &self,
+        _sink_name: &str,
+        _left: bool,
+    ) -> Result<Box<dyn BoundedSession>, String> {
+        Err("PipeWire audio runtime is unsupported on this platform".into())
+    }
+
+    fn start_microphone_meter(
+        &self,
+        _source_name: &str,
+        _duration: Duration,
+    ) -> Result<Box<dyn MicrophoneMeterSession>, String> {
+        Err("PipeWire audio runtime is unsupported on this platform".into())
+    }
+}
+
 /// Stable node name used to distinguish our virtual accessibility sink from
 /// real hardware during subsequent graph enumerations.
 pub const ACCESSIBILITY_MONO_SINK_NAME: &str = "tilo_accessibility_mono";
@@ -449,6 +500,7 @@ pub fn balance_channel_percent(base_volume: f32, balance: f32) -> (f32, f32) {
     (base * (1.0 - b.max(0.0)), base * (1.0 + b.min(0.0)))
 }
 
+#[cfg(any(unix, test))]
 fn mono_load_args(master: &str) -> Vec<String> {
     vec![
         "load-module".into(),
@@ -473,6 +525,7 @@ fn mono_load_args(master: &str) -> Vec<String> {
               sample amplitudes stay well within usize/i16 range for any \
               realistic call"
 )]
+#[cfg(any(unix, test))]
 fn channel_test_pcm(left: bool, rate: u32, duration: Duration) -> Vec<u8> {
     let frames = (duration.as_secs_f32() * rate as f32) as usize;
     let mut out = Vec::with_capacity(frames * 4);
@@ -490,6 +543,7 @@ fn channel_test_pcm(left: bool, rate: u32, duration: Duration) -> Vec<u8> {
     out
 }
 
+#[cfg(any(unix, test))]
 fn pcm_peak(bytes: &[u8]) -> f32 {
     bytes
         .chunks_exact(2)
@@ -501,10 +555,12 @@ fn pcm_peak(bytes: &[u8]) -> f32 {
         .clamp(0.0, 1.0)
 }
 
+#[cfg(unix)]
 struct ChildSession {
     child: Option<Child>,
     deadline: Instant,
 }
+#[cfg(unix)]
 impl BoundedSession for ChildSession {
     fn running(&mut self) -> bool {
         if Instant::now() >= self.deadline {
@@ -521,16 +577,19 @@ impl BoundedSession for ChildSession {
         }
     }
 }
+#[cfg(unix)]
 impl Drop for ChildSession {
     fn drop(&mut self) {
         self.stop();
     }
 }
 
+#[cfg(unix)]
 struct MonoSession {
     module: Option<u32>,
     restore_sink: String,
 }
+#[cfg(unix)]
 impl BoundedSession for MonoSession {
     fn running(&mut self) -> bool {
         self.module.is_some()
@@ -545,12 +604,14 @@ impl BoundedSession for MonoSession {
         }
     }
 }
+#[cfg(unix)]
 impl Drop for MonoSession {
     fn drop(&mut self) {
         self.stop();
     }
 }
 
+#[cfg(unix)]
 struct MicSession {
     child: Option<Child>,
     reader: Option<JoinHandle<()>>,
@@ -558,6 +619,7 @@ struct MicSession {
     latest: f32,
     deadline: Instant,
 }
+#[cfg(unix)]
 impl BoundedSession for MicSession {
     fn running(&mut self) -> bool {
         if Instant::now() >= self.deadline {
@@ -577,6 +639,7 @@ impl BoundedSession for MicSession {
         }
     }
 }
+#[cfg(unix)]
 impl MicrophoneMeterSession for MicSession {
     fn level(&mut self) -> f32 {
         for value in self.levels.try_iter() {
@@ -588,6 +651,7 @@ impl MicrophoneMeterSession for MicSession {
         self.deadline.saturating_duration_since(Instant::now())
     }
 }
+#[cfg(unix)]
 impl Drop for MicSession {
     fn drop(&mut self) {
         self.stop();
@@ -599,6 +663,23 @@ mod tests {
     use super::*;
     use crate::audio::{AudioDevice, AudioGraph};
     use std::sync::Mutex;
+
+    #[cfg(not(unix))]
+    #[test]
+    fn real_runtime_reports_unsupported_without_starting_sessions() {
+        let runtime = RealAudioRuntime;
+        assert_eq!(runtime.capabilities(), RuntimeCapabilities::default());
+        let expected = Some("PipeWire audio runtime is unsupported on this platform".to_string());
+        assert_eq!(runtime.set_balance("speakers", 1.0, 0.0).err(), expected);
+        assert_eq!(runtime.start_mono("speakers").err(), expected);
+        assert_eq!(runtime.start_channel_test("speakers", true).err(), expected);
+        assert_eq!(
+            runtime
+                .start_microphone_meter("microphone", Duration::from_secs(1))
+                .err(),
+            expected
+        );
+    }
 
     struct TestSession(Arc<Mutex<Vec<String>>>);
     impl BoundedSession for TestSession {

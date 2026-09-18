@@ -720,17 +720,8 @@ impl PairingHandshake {
         root: impl Into<PathBuf>,
         expires_at: SystemTime,
     ) -> Result<Self, IdentityFlowError> {
-        use std::os::unix::fs::PermissionsExt;
         let root = root.into();
-        std::fs::create_dir_all(&root)?;
-        let metadata = std::fs::symlink_metadata(&root)?;
-        if !metadata.file_type().is_dir() {
-            return Err(IdentityFlowError::Io(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "pairing broker spool must be a real directory",
-            )));
-        }
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        private_fs::directory(&root)?;
         let requested_expiry = expires_at
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs());
@@ -744,12 +735,7 @@ impl PairingHandshake {
             })?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 use std::io::Write;
-                use std::os::unix::fs::OpenOptionsExt;
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(&expiry_path)?;
+                let mut file = private_fs::create_new(&expiry_path)?;
                 writeln!(file, "{requested_expiry}")?;
                 file.sync_all()?;
                 requested_expiry
@@ -796,7 +782,6 @@ impl PairingHandshake {
         update: impl FnOnce(&mut PairingChannelState),
     ) -> bool {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(u64::MAX, |duration| duration.as_secs());
@@ -808,12 +793,7 @@ impl PairingHandshake {
         let lock = backend.root.join(format!("{}.lock", hex::encode(nonce)));
         let mut lock_file = None;
         for _ in 0..64 {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&lock)
-            {
+            match private_fs::create_new(&lock) {
                 Ok(file) => {
                     lock_file = Some(file);
                     break;
@@ -839,23 +819,13 @@ impl PairingHandshake {
             hex::encode(nonce),
             std::process::id()
         ));
-        let written = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
+        let written = private_fs::rewrite(&tmp)
             .and_then(|mut file| {
                 file.write_all(&bytes)?;
                 file.sync_all()
             })
             .and_then(|()| std::fs::rename(&tmp, &path))
-            .and_then(|()| {
-                std::fs::OpenOptions::new()
-                    .read(true)
-                    .open(&backend.root)?
-                    .sync_all()
-            })
+            .and_then(|()| private_fs::sync_directory(&backend.root))
             .is_ok();
         let _ = std::fs::remove_file(&tmp);
         let _ = std::fs::remove_file(&lock);
@@ -872,19 +842,9 @@ impl PairingHandshake {
                 .clear(),
             #[cfg(unix)]
             PairingBackend::Durable(backend) => {
-                use std::os::unix::fs::OpenOptionsExt;
-                if let Ok(file) = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(backend.root.join("cancelled"))
-                {
+                if let Ok(file) = private_fs::rewrite(&(backend.root.join("cancelled"))) {
                     let _ = file.sync_all();
-                    let _ = std::fs::OpenOptions::new()
-                        .read(true)
-                        .open(&backend.root)
-                        .and_then(|directory| directory.sync_all());
+                    let _ = private_fs::sync_directory(&backend.root);
                 }
             }
             PairingBackend::Remote { .. } => {}
@@ -1499,17 +1459,8 @@ impl InviteRedemptionAuthority {
     /// Returns an error if the root cannot be created as a private,
     /// user-owned real directory.
     pub fn at(root: impl Into<PathBuf>) -> Result<Self, IdentityFlowError> {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let root = root.into();
-        std::fs::create_dir_all(&root)?;
-        let metadata = std::fs::symlink_metadata(&root)?;
-        if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
-            return Err(IdentityFlowError::Io(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "invite authority must be a user-owned real directory",
-            )));
-        }
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        private_fs::directory(&root)?;
         Ok(Self { root })
     }
 
@@ -1518,14 +1469,7 @@ impl InviteRedemptionAuthority {
     }
 
     fn issue_lock(&self) -> Result<std::fs::File, IdentityFlowError> {
-        use std::os::unix::fs::OpenOptionsExt;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(self.root.join("issue.lock"))?;
+        let file = private_fs::lock_file(&(self.root.join("issue.lock")))?;
         for _ in 0..250 {
             match file.try_lock() {
                 Ok(()) => return Ok(file),
@@ -1543,24 +1487,15 @@ impl InviteRedemptionAuthority {
 
     fn master_key(&self) -> Result<zeroize::Zeroizing<[u8; 32]>, IdentityFlowError> {
         use std::io::{Read, Write};
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
         let path = self.root.join("authority-key");
         let read_existing = || -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, IdentityFlowError> {
-            let file = match std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(&path)
-            {
+            let file = match private_fs::read(&path) {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                 Err(error) => return Err(error.into()),
             };
             let metadata = file.metadata()?;
-            if !metadata.file_type().is_file()
-                || metadata.uid() != unsafe { libc::geteuid() }
-                || metadata.permissions().mode() & 0o077 != 0
-                || metadata.len() != 32
-            {
+            if !metadata.file_type().is_file() || metadata.len() != 32 {
                 return Err(IdentityFlowError::Io(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     "invite authority key must be a private 32-byte user-owned regular file",
@@ -1580,21 +1515,14 @@ impl InviteRedemptionAuthority {
             let temporary = self
                 .root
                 .join(format!(".authority-key-{}.tmp", hex::encode(random)));
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&temporary)?;
+            let mut file = private_fs::create_new(&temporary)?;
             file.write_all(&*key)?;
             file.sync_all()?;
             let published = std::fs::hard_link(&temporary, &path);
             let _ = std::fs::remove_file(&temporary);
             match published {
                 Ok(()) => {
-                    std::fs::OpenOptions::new()
-                        .read(true)
-                        .open(&self.root)?
-                        .sync_all()?;
+                    private_fs::sync_directory(&self.root)?;
                     zeroize::Zeroizing::new(key.to_vec())
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_existing()?
@@ -1626,7 +1554,6 @@ impl InviteRedemptionAuthority {
     ) -> Result<(), IdentityFlowError> {
         use chacha20poly1305::aead::{Aead, KeyInit, Payload};
         use std::io::{Read, Write};
-        use std::os::unix::fs::OpenOptionsExt;
         // Serialize cleanup, quota accounting, and create-new publication
         // across processes. `File`'s OS lock is released automatically after
         // a crash, unlike a sentinel lockfile.
@@ -1643,10 +1570,7 @@ impl InviteRedemptionAuthority {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.len() == 128)
-                && let Ok(mut file) = std::fs::OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                    .open(&path)
+                && let Ok(mut file) = private_fs::read(&path)
                 && let Ok(metadata) = file.metadata()
                 && metadata.file_type().is_file()
                 && metadata.len() == 80
@@ -1700,17 +1624,10 @@ impl InviteRedemptionAuthority {
         bytes.extend_from_slice(&expires_unix.to_be_bytes());
         bytes.extend_from_slice(&nonce);
         bytes.extend_from_slice(&ciphertext);
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(self.path(&capability))?;
+        let mut file = private_fs::create_new(&(self.path(&capability)))?;
         file.write_all(&bytes)?;
         file.sync_all()?;
-        std::fs::OpenOptions::new()
-            .read(true)
-            .open(&self.root)?
-            .sync_all()?;
+        private_fs::sync_directory(&self.root)?;
         Ok(())
     }
 
@@ -1727,7 +1644,6 @@ impl InviteRedemptionAuthority {
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, IdentityFlowError> {
         use chacha20poly1305::aead::{Aead, KeyInit, Payload};
         use std::io::Read;
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
         let capability: [u8; 32] = capability.try_into().map_err(|_| {
             IdentityFlowError::DecodeFailed("redemption capability must be 32 bytes".into())
         })?;
@@ -1745,20 +1661,10 @@ impl InviteRedemptionAuthority {
         // Durably consume the capability before decrypting or returning the
         // secret. After power loss, replay must remain impossible even if the
         // process died between release and cleanup.
-        std::fs::OpenOptions::new()
-            .read(true)
-            .open(&self.root)?
-            .sync_all()?;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&claimed)?;
+        private_fs::sync_directory(&self.root)?;
+        let file = private_fs::read(&claimed)?;
         let metadata = file.metadata()?;
-        if !metadata.file_type().is_file()
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.permissions().mode() & 0o077 != 0
-            || metadata.len() != 80
-        {
+        if !metadata.file_type().is_file() || metadata.len() != 80 {
             let _ = std::fs::remove_file(&claimed);
             return Err(IdentityFlowError::DecodeFailed(
                 "redemption record is unsafe or corrupt".into(),

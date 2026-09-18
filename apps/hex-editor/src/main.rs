@@ -3,6 +3,8 @@
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
 // because a fault there can affect the session or every app.
+
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -41,6 +43,7 @@ extern crate runtime_dylib;
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.tilo.hex-editor", hex_editor::app_root)
+            .max_positionals(1)
             .shot_root(shot_root)
             .configure_app(|app| hex_editor::actions::register(app.action_registry_mut())),
     );

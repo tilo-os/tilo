@@ -21,6 +21,7 @@
 // unwrap_used, expect_used, panic — because a panicking app is a bad app
 // whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
 // full set: a fault there takes the session, or every app with it.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

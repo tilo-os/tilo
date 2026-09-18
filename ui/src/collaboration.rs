@@ -4181,12 +4181,14 @@ mod tests {
     use super::*;
 
     use std::cell::RefCell;
+    #[cfg(unix)]
     use std::os::fd::IntoRawFd;
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
     use capnp::capability::Promise;
     use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+    #[cfg(unix)]
     use tokio::net::UnixStream as TokioUnixStream;
     use tokio::task::LocalSet as TokioLocalSet;
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -4707,6 +4709,7 @@ mod tests {
 
     /// Stand up a fake `CollabService` on one end of a Unix socket pair;
     /// returns the client-side raw fd + captures state for assertions.
+    #[cfg(unix)]
     fn stand_up_fake_broker(broker: FakeBroker) -> (RawFd, SharedCaptures, thread::JoinHandle<()>) {
         let captures = broker.captures.clone();
         let (server_side, client_side) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -4937,6 +4940,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial(tilo_svc_collab_fd)]
+    #[cfg(unix)]
     fn a_broker_that_is_not_there_does_not_hold_the_app_up() {
         // A connected socket whose far end is gone — a broker that died
         // between the launcher's connect and the app's first call. `new()`
@@ -4984,6 +4988,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn explicit_test_join_forwards_its_identity_presentation() {
         let broker = FakeBroker {
             captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
@@ -5015,6 +5020,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn hello_joins_channel_and_send_forwards_signed_op() {
         let broker = FakeBroker {
             captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
@@ -5072,6 +5078,7 @@ mod tests {
     /// a pointer publishes keyed, like a caret, rather than through
     /// `publish_cursor(x, y)`, which has nowhere to put one.
     #[test]
+    #[cfg(unix)]
     fn presence_variants_map_to_correct_sdk_publishes() {
         let broker = FakeBroker {
             captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
@@ -5203,6 +5210,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn signed_op_stream_translates_to_signed_crdt_incremental() {
         let mut op = SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(b"remote-payload".to_vec())
@@ -5332,6 +5340,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn context_stream_translates_to_context_event() {
         let broker = FakeBroker {
             captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
@@ -5372,6 +5381,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn presence_stream_translates_cursor_and_all_other_variants() {
         let key = PresenceKey::Tab {
             id: "note-1".to_owned(),
@@ -5472,6 +5482,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn fetch_scrollback_returns_batch_event() {
         let payload = collab_types::DocumentMutation::Incremental(b"old-payload".to_vec())
             .encode()
