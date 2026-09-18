@@ -650,6 +650,7 @@ fn package(model: &LocalModelRelease) -> LocalModelPackage {
         download_bytes: model.artifact.size_bytes,
         installed_bytes: model.installed_size_bytes,
         vision: model.vision,
+        face_recognition: model.face_recognition,
     }
 }
 fn runtime_kind_for(
