@@ -100,3 +100,18 @@ The staging helper deliberately does not infer these artifact authorizations.
 Checkpoint extraction/authentication and real nested-worker transport remain
 separate acceptance steps. Tests cover the filesystem/identity/gate protocol;
 they do not prove a real finalization, signing operation or boot.
+
+## Reviewed assembly source selection
+
+The request selects one explicitly admitted source/epoch pair:
+4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc /1789690573 or
+8fff1d6001b64a80bc730e87d3ffc529d2d9e70a /1789733507.
+The workflow checks out the source emitted by request validation; the launcher
+checks that Git identity and emits matching source markers. Staging validates
+the retained receipt against this exact request, and the finalizer authenticates
+the retained image before signing. A different commit or mixed epoch is rejected.
+The native payload receipt retains its original4583 source/epoch independently.
+
+Use a helper archive containing this change and its exact reviewed SHA in local
+request preparation. The old2d135 launcher archive rejects8fff and must not be
+patched in memory. Tools image/crypto CLI/signing policy remain unchanged.
