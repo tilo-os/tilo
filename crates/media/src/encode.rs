@@ -125,7 +125,7 @@ impl EncoderSpec {
     /// automatic-quality request.
     ///
     /// The units table is checked against the registry because an incorrect
-    /// conversion can be accepted by GStreamer while producing the wrong rate.
+    /// conversion can be accepted by `GStreamer` while producing the wrong rate.
     pub fn bitrate_value(&self, bits_per_second: u64) -> u64 {
         match self.bitrate_units {
             BitrateUnits::BitsPerSecond => bits_per_second,

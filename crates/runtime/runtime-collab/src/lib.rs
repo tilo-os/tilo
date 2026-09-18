@@ -429,7 +429,7 @@ pub enum WifiContinuityCommand {
         password: String,
     },
     ShareSavedProfile {
-        /// Local NetworkManager capability; never serialized into fabric state.
+        /// Local `NetworkManager` capability; never serialized into fabric state.
         profile_uuid: String,
     },
 }
@@ -851,7 +851,12 @@ impl ChannelHandle {
 
     /// Use the shell-owned sealed Wi-Fi secret bridge from the authenticated
     /// Settings route. Plaintext is confined to this connected local
-    /// descriptor and the immediate NetworkManager call.
+    /// descriptor and the immediate `NetworkManager` call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the command or reply violates its wire
+    /// contract, serialization fails, or the local broker request fails.
     pub async fn wifi_continuity_command(
         &self,
         app_id: &str,

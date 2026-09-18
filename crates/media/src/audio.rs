@@ -10,7 +10,7 @@
 //! volume/mute + the default device go through `wpctl`. Every one of those is
 //! the native `PipeWire` path, reached through the daemon's command-line tools
 //! rather than by linking `libpipewire-0.3`. This keeps the crate buildable
-//! without PipeWire development headers; the tools are needed at runtime. On a
+//! without `PipeWire` development headers; the tools are needed at runtime. On a
 //! machine with no `PipeWire`, the enumerator returns an empty graph.
 //!
 //! ## The routing mechanism
