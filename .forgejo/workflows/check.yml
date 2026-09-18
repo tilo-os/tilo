@@ -190,6 +190,7 @@ jobs:
 
       - name: Prepare headless runtime and compiler cache
         run: |
+          command -v openssl >/dev/null || dnf install -y openssl
           test -r "$VK_DRIVER_FILES"
           mkdir -p /tmp/tilo-xdg-runtime
           chmod 700 /tmp/tilo-xdg-runtime
