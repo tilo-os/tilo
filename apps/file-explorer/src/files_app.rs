@@ -1244,6 +1244,35 @@ impl FileExplorerWidget {
         self.collab_panel_focused = false;
     }
 
+    /// Surface the complete built-in keyboard vocabulary in the same modal
+    /// shell used for Properties, sharing and recovery.  The rows describe
+    /// semantic primary-modifier bindings (Ctrl on most desktops, Command on
+    /// macOS), rather than hard-coding a physical keyboard layout.
+    fn show_keyboard_shortcuts_panel(&mut self) {
+        self.show_collab_panel(CollabPanel {
+            title: t("files-shortcuts-title"),
+            summary: t("files-shortcuts-summary"),
+            lines: [
+                "files-shortcuts-primary",
+                "files-shortcuts-navigate",
+                "files-shortcuts-grid",
+                "files-shortcuts-open",
+                "files-shortcuts-location",
+                "files-shortcuts-new-folder",
+                "files-shortcuts-edit",
+                "files-shortcuts-hidden",
+                "files-shortcuts-size",
+                "files-shortcuts-context",
+                "files-shortcuts-close",
+            ]
+            .into_iter()
+            .map(t)
+            .collect(),
+            action: None,
+            history: None,
+        });
+    }
+
     fn collab_panel_action_command(&self) -> Option<FileCommand> {
         match self.collab_panel.as_ref()?.action.as_ref()? {
             CollabPanelAction::DestructiveEviction(paths) => {
@@ -1840,6 +1869,14 @@ impl FileExplorerWidget {
             FileCommand::Click { index, ctrl, shift } => self.apply_click(index, ctrl, shift),
             FileCommand::ContextSelect(target) => self.apply_context_select(target),
             FileCommand::Activate(index) => self.apply_activate(index),
+            FileCommand::MoveSelection { index, extend } => {
+                if index < self.displayed_entries().len() {
+                    self.selection.move_to(index, extend);
+                    true
+                } else {
+                    false
+                }
+            }
             FileCommand::SortColumn(col) => self.apply_sort_column(col),
             policy @ (FileCommand::KeepOffline | FileCommand::RemoveOfflinePin) => {
                 let keep_offline = matches!(policy, FileCommand::KeepOffline);
@@ -2799,6 +2836,10 @@ impl FileExplorerWidget {
             }
             FileCommand::ToggleSortOrder => {
                 self.toggle_sort_order();
+                true
+            }
+            FileCommand::ShowKeyboardShortcuts => {
+                self.show_keyboard_shortcuts_panel();
                 true
             }
             FileCommand::SelectAll => {
@@ -5835,6 +5876,12 @@ impl FileExplorerWidget {
             Some(FileCommand::OpenTerminal),
             None,
         ));
+        spec.push((String::new(), None, None));
+        spec.push((
+            t("files-shortcuts-title"),
+            Some(FileCommand::ShowKeyboardShortcuts),
+            None,
+        ));
         self.open_menu_right_aligned(spec, anchor, flip_y);
     }
 
@@ -6457,6 +6504,21 @@ impl FileExplorerWidget {
                 self.toolbar.begin_path_edit();
                 true
             }
+            // Help is intentionally a regular view command, not an invisible
+            // one-off keypath: the same reference is reachable from View
+            // options and the current-folder action resource.
+            Key::Named(NamedKey::F1) => {
+                self.apply_command(FileCommand::ShowKeyboardShortcuts);
+                true
+            }
+            Key::Character(s) if s == "?" => {
+                self.apply_command(FileCommand::ShowKeyboardShortcuts);
+                true
+            }
+            Key::Named(NamedKey::F5) => {
+                self.apply_command(FileCommand::Refresh);
+                true
+            }
             Key::Named(NamedKey::ContextMenu) if !self.selection.is_empty() => {
                 self.open_context_menu(self.keyboard_context_anchor());
                 true
@@ -6519,6 +6581,18 @@ impl FileExplorerWidget {
             }
             Key::Character(s) if (s == "v" || s == "V") && ctrl => {
                 self.apply_command(FileCommand::Paste);
+                true
+            }
+            Key::Character(s) if (s == "n" || s == "N") && ctrl && shift => {
+                self.apply_command(FileCommand::NewFolder);
+                true
+            }
+            Key::Character(s) if (s == "h" || s == "H") && ctrl => {
+                self.apply_command(FileCommand::ToggleHidden);
+                true
+            }
+            Key::Character(s) if s == "0" && ctrl => {
+                self.set_zoom(0);
                 true
             }
             // Ctrl + / Ctrl - zoom the icon/row size (both "+" and "=" cover
@@ -7099,6 +7173,12 @@ impl FileExplorerWidget {
                 "zoom-out",
                 "Decrease item size",
                 "zoom-out",
+                OperationKind::View,
+            ),
+            (
+                "keyboard-shortcuts",
+                "Keyboard shortcuts",
+                "shortcuts",
                 OperationKind::View,
             ),
         ] {
@@ -8277,7 +8357,7 @@ impl Widget for FileExplorerWidget {
                 let expected_kind = match verb.as_str() {
                     "up" | "back" | "forward" | "list" | "grid" | "sort-name" | "sort-size"
                     | "sort-type" | "sort-modified" | "sort-ascending" | "sort-descending"
-                    | "zoom-in" | "zoom-out" | "hidden" => OperationKind::View,
+                    | "zoom-in" | "zoom-out" | "hidden" | "shortcuts" => OperationKind::View,
                     "add-favorite" | "remove-favorite" | "empty-trash" | "terminal" => {
                         OperationKind::Effect
                     }
@@ -8304,6 +8384,7 @@ impl Widget for FileExplorerWidget {
                     }
                     "zoom-in" => self.set_zoom(self.zoom_level.saturating_add(1)),
                     "zoom-out" => self.set_zoom(self.zoom_level.saturating_sub(1)),
+                    "shortcuts" => self.show_keyboard_shortcuts_panel(),
                     "hidden" => {
                         self.apply_command(FileCommand::ToggleHidden);
                     }
@@ -9830,6 +9911,37 @@ mod command_path_tests {
     }
 
     #[test]
+    fn shortcut_reference_is_a_keyboard_and_command_reachable_view() {
+        let mut widget = FileExplorerWidget::new();
+        use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+
+        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Named(NamedKey::F1);
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = winit::event::ElementState::Pressed;
+        event.repeat = false;
+        assert!(widget.handle_app_key(&event, winit::event::Modifiers::default()));
+        let panel = widget
+            .collab_panel
+            .as_ref()
+            .expect("shortcut reference opens");
+        assert_eq!(panel.title, "Keyboard shortcuts");
+        assert!(
+            panel
+                .lines
+                .iter()
+                .any(|line| line.contains("Grid navigation"))
+        );
+        assert!(
+            panel
+                .lines
+                .iter()
+                .any(|line| line.contains("Primary modifier"))
+        );
+    }
+
+    #[test]
     fn trash_view_menu_offers_restore_and_empty_not_move_to_trash() {
         let Some(trash) = crate::fileops::trash_dir() else {
             return;
@@ -9895,6 +10007,7 @@ mod command_path_tests {
             "sort-descending",
             "zoom-in",
             "zoom-out",
+            "keyboard-shortcuts",
             "add-favorite",
         ] {
             assert!(
@@ -9904,11 +10017,15 @@ mod command_path_tests {
         }
         assert!(Widget::local_resource_operation_handlers(&w).contains(&"files.remote-dav"));
 
-        for command in ["grid", "sort-size", "zoom-in", "add-favorite"] {
+        for command in ["grid", "sort-size", "zoom-in", "shortcuts", "add-favorite"] {
             assert!(
                 Widget::invoke_resource_operation(
                     &mut w,
-                    if command == "grid" || command == "sort-size" || command == "zoom-in" {
+                    if command == "grid"
+                        || command == "sort-size"
+                        || command == "zoom-in"
+                        || command == "shortcuts"
+                    {
                         OperationKind::View
                     } else {
                         OperationKind::Effect
@@ -9925,6 +10042,11 @@ mod command_path_tests {
         assert_eq!(w.view_mode(), ViewMode::Grid);
         assert_eq!(w.sort_by(), SortBy::Size);
         assert!(w.zoom_level() > initial_zoom);
+        assert_eq!(
+            w.collab_panel.as_ref().map(|panel| panel.title.as_str()),
+            Some("Keyboard shortcuts"),
+            "the resource action opens the same reference as the menu and keyboard"
+        );
         assert!(w.favorites().iter().any(|favorite| favorite.path == folder));
     }
 
