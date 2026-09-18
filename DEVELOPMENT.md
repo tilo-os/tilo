@@ -328,8 +328,12 @@ Remote integration tests require Git, Python 3 (`python` on Windows, `python3`
 elsewhere), and the OpenSSL CLI on PATH. They use disposable loopback servers and
 fake credentials to verify authenticated HTTP fetch/push/pull, rejection handling,
 and refusal of an untrusted HTTPS certificate. SSH transfer and trusted HTTPS
-transfer are not covered by these fixtures. Remote operations still run
-synchronously in the app; background progress and cancellation remain to be added.
+transfer are not covered by these fixtures. Remote operations run on a worker,
+leaving navigation and text editing responsive. Repository mutations and switching
+repositories wait until the transfer finishes. Resource actions report acceptance,
+progress, and the actual completion result. The visible status is also native
+live text for accessibility. Cancellation requests do not claim to
+undo a remote change. Cooperative cancellation is not yet implemented.
 
 ```powershell
 cargo test --locked -p git-client --all-targets
