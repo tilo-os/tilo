@@ -58,6 +58,14 @@ class WorkerContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'source/epoch'):
             self.check(request)
 
+    def test_reviewed_dns_source_preserves_distinct_epoch(self):
+        request = self.request()
+        request.update(source_revision='36c58be61ef1b25f24ae130c5ab4dde5d2350d45', source_date_epoch=1789748444)
+        self.assertEqual(json.loads(self.check(request)), request)
+        request['source_date_epoch'] = 1789733507
+        with self.assertRaisesRegex(ValueError, 'source/epoch'):
+            self.check(request)
+
     def test_driver_evidence_is_owner_only_and_varlib_traversable(self):
         self.assertEqual(worker.DIRECTORY_MODES['/evidence'], 0o700)
         self.assertEqual(worker.DIRECTORY_MODES['/var/lib'], 0o755)
