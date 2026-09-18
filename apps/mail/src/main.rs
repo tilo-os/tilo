@@ -71,6 +71,7 @@ pub fn main() {
                 "bulk",
                 "bulk_purge_confirmation",
                 "reply",
+                "context_menu",
                 "loading",
                 "empty",
                 "offline",

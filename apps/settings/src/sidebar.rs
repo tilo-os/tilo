@@ -58,6 +58,14 @@ const SECTION_GAP_BELOW: f32 = 2.0;
 /// padding) fits without clipping, with margin to spare.
 pub const SIDEBAR_WIDTH: f64 = 264.0;
 
+/// The docked sidebar needs to grow with system text. Its labels are rendered
+/// by the shared text renderer at this scale, while the shell itself is a
+/// geometry-only primitive; exposing the matching width here keeps Settings
+/// from painting 200%-text labels into a normal-width navigation rail.
+pub fn width_for_text_scale(text_scale: f32) -> f64 {
+    SIDEBAR_WIDTH * f64::from(text_scale.clamp(0.5, 4.0))
+}
+
 /// Height (logical px) of a single category row. Generous enough to read as a
 /// touch target and to seat the icon + label comfortably.
 const ROW_HEIGHT: f32 = 40.0;
@@ -125,21 +133,29 @@ impl RowGeometry {
     /// Resolve the row geometry for a row of `rect` whose icon glyph measured
     /// `glyph_w` wide at [`ROW_TEXT_SIZE`].
     pub fn compute(rect: Rect, glyph_w: f64) -> Self {
+        Self::compute_scaled(rect, glyph_w, 1.0)
+    }
+
+    /// Resolve the custom-painted row geometry at the active text scale.
+    /// Unlike ordinary toolkit controls, this row owns its icon, paddings and
+    /// baseline directly, so each dimension must follow the glyph scale.
+    pub fn compute_scaled(rect: Rect, glyph_w: f64, text_scale: f64) -> Self {
+        let scale = text_scale.clamp(0.5, 4.0);
         let pill = Rect::new(
-            rect.x0 + ROW_INSET_X,
-            rect.y0 + ROW_INSET_Y,
-            rect.x1 - ROW_INSET_X,
-            rect.y1 - ROW_INSET_Y,
+            rect.x0 + ROW_INSET_X * scale,
+            rect.y0 + ROW_INSET_Y * scale,
+            rect.x1 - ROW_INSET_X * scale,
+            rect.y1 - ROW_INSET_Y * scale,
         );
-        let content_left = pill.x0 + ROW_CONTENT_GUTTER;
+        let content_left = pill.x0 + ROW_CONTENT_GUTTER * scale;
         // Centre the glyph within a fixed-width column so every label starts at
         // the same x regardless of the glyph's advance width.
-        let icon_x = content_left + (ROW_ICON_COL - glyph_w).max(0.0) / 2.0;
-        let label_x = content_left + ROW_ICON_COL + ROW_ICON_LABEL_GAP;
+        let icon_x = content_left + (ROW_ICON_COL * scale - glyph_w).max(0.0) / 2.0;
+        let label_x = content_left + ROW_ICON_COL * scale + ROW_ICON_LABEL_GAP * scale;
         // `draw_text` treats the translate as the top-left of a line box of
         // height `size * LINE_HEIGHT_RATIO`; centre that box in the row so the
         // glyphs sit on the pill's optical centre.
-        let line_box = f64::from(ROW_TEXT_SIZE) * LINE_HEIGHT_RATIO;
+        let line_box = f64::from(ROW_TEXT_SIZE) * scale * LINE_HEIGHT_RATIO;
         let text_y = rect.y0 + (rect.height() - line_box) / 2.0;
         Self {
             pill,
@@ -169,6 +185,9 @@ pub struct SidebarRow {
     /// One-shot local navigation request. Category selection is deliberately
     /// not document state: it is only this window's current presentation.
     selection_request: ui::LocalState<Option<Category>>,
+    /// The live system text scale. Sidebar chrome is custom-painted, so its
+    /// geometry must scale alongside the shared renderer's glyphs.
+    text_scale: f64,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
@@ -185,10 +204,20 @@ impl SidebarRow {
         active: bool,
         selection_request: ui::LocalState<Option<Category>>,
     ) -> Self {
+        Self::with_selection_request_and_scale(category, active, selection_request, 1.0)
+    }
+
+    fn with_selection_request_and_scale(
+        category: Category,
+        active: bool,
+        selection_request: ui::LocalState<Option<Category>>,
+        text_scale: f32,
+    ) -> Self {
         Self {
             category,
             active,
             selection_request,
+            text_scale: f64::from(text_scale.clamp(0.5, 4.0)),
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -223,7 +252,7 @@ impl Widget for SidebarRow {
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(ROW_HEIGHT),
+                    height: Dimension::length(ROW_HEIGHT * self.text_scale as f32),
                 },
                 ..Default::default()
             })
@@ -255,11 +284,12 @@ impl Widget for SidebarRow {
         // surface. The pill is inset from the panel edges and given a little
         // vertical breathing room so the highlight reads as a deliberate
         // selection chip rather than a full-bleed band.
-        let radius = f64::from(theme.tokens.radii.md);
-        let icon_size = 18.0;
+        let scale = self.text_scale;
+        let radius = f64::from(theme.tokens.radii.md) * scale;
+        let icon_size = 18.0 * scale;
         // All positions come from one geometry pass so the drawn layout and the
         // alignment test read the exact same math.
-        let geo = RowGeometry::compute(self.rect, icon_size);
+        let geo = RowGeometry::compute_scaled(self.rect, icon_size, scale);
 
         let highlight = if self.active {
             Some(theme.accent_primary)
@@ -306,7 +336,7 @@ impl Widget for SidebarRow {
         text_renderer.draw_text(
             scene,
             label,
-            ROW_TEXT_SIZE,
+            ROW_TEXT_SIZE * scale as f32,
             fg,
             transform * Affine::translate((geo.label_x, geo.text_y)),
             None,
@@ -461,6 +491,19 @@ pub fn build(
     query: &str,
     selection_request: &ui::LocalState<Option<Category>>,
 ) -> Box<dyn Widget> {
+    build_with_text_scale(selected, query, selection_request, 1.0)
+}
+
+/// Build the sidebar with a geometry scale matching the system text scale.
+/// This is intentionally Settings-local: these custom-painted navigation rows
+/// carry their own fixed dimensions, unlike normal shared text controls.
+pub fn build_with_text_scale(
+    selected: Category,
+    query: &str,
+    selection_request: &ui::LocalState<Option<Category>>,
+    text_scale: f32,
+) -> Box<dyn Widget> {
+    let scale = text_scale.clamp(0.5, 4.0);
     // An intrinsic-height column lays out as a block stack and ignores the
     // toolkit's inter-child gap, so we place explicit fixed-height spacers
     // to control the vertical rhythm.
@@ -470,7 +513,9 @@ pub fn build(
     // duplicate it), and the search field lives in the app's top strip so it
     // is reachable by keyboard focus (see [`crate::settings_app`]). The
     // sidebar starts directly with its first section, inset from the top.
-    let mut col = Column::new().with_intrinsic_height().push(vgap(TITLE_GAP));
+    let mut col = Column::new()
+        .with_intrinsic_height()
+        .push(vgap(TITLE_GAP * scale));
 
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -478,15 +523,16 @@ pub fn build(
         // header than below it groups the rows beneath the header.
         for (i, section) in Section::ALL.iter().enumerate() {
             if i != 0 {
-                col = col.push(vgap(SECTION_GAP_ABOVE));
+                col = col.push(vgap(SECTION_GAP_ABOVE * scale));
             }
             col = col.push(section_header(section.label()));
-            col = col.push(vgap(SECTION_GAP_BELOW));
+            col = col.push(vgap(SECTION_GAP_BELOW * scale));
             for category in Category::in_section(*section) {
-                col = col.push(Box::new(SidebarRow::with_selection_request(
+                col = col.push(Box::new(SidebarRow::with_selection_request_and_scale(
                     category,
                     category == selected,
                     selection_request.clone(),
+                    scale,
                 )));
             }
         }
@@ -494,7 +540,7 @@ pub fn build(
         // Filtered results — a flat list of matching categories under a
         // "RESULTS" header, or an honest empty state.
         col = col.push(section_header("Results"));
-        col = col.push(vgap(SECTION_GAP_BELOW));
+        col = col.push(vgap(SECTION_GAP_BELOW * scale));
         let matches: Vec<Category> = Category::ALL
             .iter()
             .copied()
@@ -506,10 +552,11 @@ pub fn build(
             )));
         } else {
             for category in matches {
-                col = col.push(Box::new(SidebarRow::with_selection_request(
+                col = col.push(Box::new(SidebarRow::with_selection_request_and_scale(
                     category,
                     category == selected,
                     selection_request.clone(),
+                    scale,
                 )));
             }
         }
@@ -646,6 +693,30 @@ mod tests {
         assert!(
             (narrow.label_x - wide.label_x).abs() < f64::EPSILON,
             "labels must start at the same x regardless of glyph advance width"
+        );
+    }
+
+    #[test]
+    fn large_text_sidebar_scales_the_rail_row_and_label_geometry_together() {
+        let scale = 2.0;
+        let width = width_for_text_scale(scale);
+        assert_eq!(width, SIDEBAR_WIDTH * f64::from(scale));
+        let rect = Rect::new(0.0, 0.0, width, f64::from(ROW_HEIGHT) * f64::from(scale));
+        let icon_width = 18.0 * f64::from(scale);
+        let g = RowGeometry::compute_scaled(rect, icon_width, f64::from(scale));
+
+        assert!(
+            g.pill.width() > SIDEBAR_WIDTH,
+            "the active target grows with text"
+        );
+        assert!(
+            g.label_x > f64::from(ROW_TEXT_SIZE),
+            "the scaled icon gutter clears the label"
+        );
+        let line_box = f64::from(ROW_TEXT_SIZE) * f64::from(scale) * LINE_HEIGHT_RATIO;
+        assert!(
+            g.text_y >= rect.y0 && g.text_y + line_box <= rect.y1,
+            "scaled text remains fully inside its 80px touch row: {g:?}"
         );
     }
 

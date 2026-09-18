@@ -58,6 +58,30 @@ class WorkerContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'source/epoch'):
             self.check(request)
 
+    def test_reviewed_dns_source_preserves_distinct_epoch(self):
+        request = self.request()
+        request.update(source_revision='36c58be61ef1b25f24ae130c5ab4dde5d2350d45', source_date_epoch=1789748444)
+        self.assertEqual(json.loads(self.check(request)), request)
+        request['source_date_epoch'] = 1789733507
+        with self.assertRaisesRegex(ValueError, 'source/epoch'):
+            self.check(request)
+
+    def test_reviewed_runtime_policy_source_requires_its_epoch(self):
+        request = self.request()
+        request.update(source_revision='b4f01a7d5437d015950c9b79be37e673b09b829c', source_date_epoch=1789749860)
+        self.assertEqual(json.loads(self.check(request)), request)
+        request['source_date_epoch'] = 1789748444
+        with self.assertRaisesRegex(ValueError, 'source/epoch'):
+            self.check(request)
+
+    def test_reviewed_optional_airplay_source_requires_its_epoch(self):
+        request = self.request()
+        request.update(source_revision='344257f56275919abc63181d8954e838f9b5303e', source_date_epoch=1789753377)
+        self.assertEqual(json.loads(self.check(request)), request)
+        request['source_date_epoch'] = 1789749860
+        with self.assertRaisesRegex(ValueError, 'source/epoch'):
+            self.check(request)
+
     def test_driver_evidence_is_owner_only_and_varlib_traversable(self):
         self.assertEqual(worker.DIRECTORY_MODES['/evidence'], 0o700)
         self.assertEqual(worker.DIRECTORY_MODES['/var/lib'], 0o755)

@@ -109,15 +109,19 @@ impl EditState {
             return None;
         }
         Some((
-            self.text[..range.start].chars().count(),
-            self.text[..range.end].chars().count(),
+            self.text
+                .get(..range.start)
+                .map_or(0, |prefix| prefix.chars().count()),
+            self.text
+                .get(..range.end)
+                .map_or(0, |prefix| prefix.chars().count()),
         ))
     }
 
     fn caret(&self) -> usize {
-        self.text[..self.core.caret().min(self.text.len())]
-            .chars()
-            .count()
+        self.text
+            .get(..self.core.caret().min(self.text.len()))
+            .map_or(0, |prefix| prefix.chars().count())
     }
 
     fn set_caret(&mut self, char_idx: usize, extend: bool) {
@@ -129,7 +133,7 @@ impl EditState {
         self.core.place(byte, extend);
     }
 
-    fn apply_edit(&mut self, edit: ui::text_edit::Edit) {
+    fn apply_edit(&mut self, edit: &ui::text_edit::Edit) {
         if edit.is_noop() {
             return;
         }
@@ -1189,7 +1193,7 @@ impl Grid {
         let s = addr_to_a1(addr.0, addr.1);
         if let Some(e) = &mut self.edit {
             let edit = e.core.insert(&s);
-            e.apply_edit(edit);
+            e.apply_edit(&edit);
         }
         self.point_anchor = Some(insert_at);
         self.point_drag_start = addr;
@@ -1220,7 +1224,7 @@ impl Grid {
             e.text.truncate(byte);
             e.core.set_caret(byte);
             let edit = e.core.insert(&text);
-            e.apply_edit(edit);
+            e.apply_edit(&edit);
         }
         self.dirty = true;
     }
@@ -1727,7 +1731,7 @@ impl Grid {
                 if let Some(e) = &mut self.edit {
                     let text = e.text.clone();
                     let edit = e.core.delete_backward(&text, false);
-                    e.apply_edit(edit);
+                    e.apply_edit(&edit);
                 }
                 self.point_anchor = None;
                 self.dirty = true;
@@ -1737,7 +1741,7 @@ impl Grid {
                 if let Some(e) = &mut self.edit {
                     let text = e.text.clone();
                     let edit = e.core.delete_forward(&text, false);
-                    e.apply_edit(edit);
+                    e.apply_edit(&edit);
                 }
                 self.point_anchor = None;
                 self.dirty = true;
@@ -1782,7 +1786,7 @@ impl Grid {
     fn insert_text(&mut self, s: &str) {
         if let Some(e) = &mut self.edit {
             let edit = e.core.insert(s);
-            e.apply_edit(edit);
+            e.apply_edit(&edit);
             // Typing commits any click-inserted reference into ordinary text,
             // so the next click appends a fresh reference instead of replacing.
             self.point_anchor = None;
@@ -1801,7 +1805,7 @@ impl Grid {
         if edit.is_noop() {
             return false;
         }
-        e.apply_edit(edit);
+        e.apply_edit(&edit);
         self.point_anchor = None;
         self.dirty = true;
         true

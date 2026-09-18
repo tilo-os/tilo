@@ -4,6 +4,8 @@
 //! from platform events, and controls adapt their hit targets and hover-only
 //! affordances without app code branching on raw `winit` events.
 
+use vello::kurbo::Rect;
+
 /// The kind of interaction most recently used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InputModality {
@@ -202,6 +204,19 @@ impl InteractionEnvironment {
             PointerPrecision::Fine => 32.0,
             PointerPrecision::Coarse => 48.0,
         }
+    }
+
+    pub fn minimum_target_rect(self, visual: Rect) -> Rect {
+        let side = f64::from(self.minimum_target());
+        Rect::from_center_size(
+            visual.center(),
+            (visual.width().max(side), visual.height().max(side)),
+        )
+    }
+
+    pub fn horizontal_target_rect(self, visual: Rect) -> Rect {
+        let height = visual.height().max(f64::from(self.minimum_target()));
+        Rect::from_center_size(visual.center(), (visual.width(), height))
     }
 
     /// Hover affordances have no meaning for a coarse direct pointer.

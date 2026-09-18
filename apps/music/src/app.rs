@@ -1267,6 +1267,20 @@ impl MusicApp {
                 })
                 .collect(),
             membership: None,
+            queue: self
+                .pb
+                .queue
+                .iter()
+                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
+                .enumerate()
+                .map(|(index, track)| crate::actions::QueueItemResource {
+                    index,
+                    track: track.clone(),
+                    label: self.track_label(track),
+                    current: self.pb.queue_index == index
+                        && self.pb.current.as_deref() == Some(track),
+                })
+                .collect(),
             playback: self.pb.clone(),
         }
     }
@@ -1337,6 +1351,36 @@ impl MusicApp {
                     liked: self.lib.is_liked(&track.id),
                 })
                 .collect();
+            return Some(ctx);
+        }
+        if id == crate::actions::QUEUE_RESOURCE_ID {
+            ctx.queue = self
+                .pb
+                .queue
+                .iter()
+                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
+                .enumerate()
+                .map(|(index, track)| crate::actions::QueueItemResource {
+                    index,
+                    track: track.clone(),
+                    label: self.track_label(track),
+                    current: self.pb.queue_index == index
+                        && self.pb.current.as_deref() == Some(track),
+                })
+                .collect();
+            return Some(ctx);
+        }
+        if let Some((index, track_id)) = crate::actions::parse_queue_item_resource_id(id) {
+            if self.pb.queue.get(index).map(String::as_str) != Some(track_id.as_str()) {
+                return None;
+            }
+            ctx.queue.push(crate::actions::QueueItemResource {
+                index,
+                label: self.track_label(&track_id),
+                track: track_id,
+                current: self.pb.queue_index == index
+                    && self.pb.current.as_deref() == self.pb.queue.get(index).map(String::as_str),
+            });
             return Some(ctx);
         }
         if let Some(track_id) = id.strip_prefix("music.track:").filter(|id| !id.is_empty()) {
@@ -2238,7 +2282,12 @@ impl MusicApp {
     }
 
     fn on_remove_from_queue(&mut self, index: usize, state: &mut AutoCommit) {
-        self.queue_remove(index);
+        let Some(track) = self.pb.queue.get(index).cloned() else {
+            return;
+        };
+        if let Err(error) = self.apply_resource_remove_queue_item(index, &track) {
+            self.toast = Some((format!("Couldn’t update queue: {error}"), Instant::now()));
+        }
         self.persist_playback(state);
     }
 
@@ -2969,6 +3018,83 @@ impl MusicApp {
         self.start_stream(id)
             .map(Some)
             .ok_or_else(|| "stream resolver could not start".to_string())
+    }
+
+    /// Start one exact queue occurrence selected through the resource/action
+    /// surface. A queue may contain duplicate tracks, so validating only a
+    /// track id would let a stale result play the wrong occurrence after a
+    /// reorder. This remains device-local by design: only the listener who
+    /// invoked it changes playback.
+    pub(crate) fn apply_resource_play_queue_item(
+        &mut self,
+        index: usize,
+        track: &str,
+    ) -> Result<Option<u64>, String> {
+        if self.pb.queue.get(index).map(String::as_str) != Some(track) {
+            return Err("queue item is no longer at that position".into());
+        }
+        self.pb.queue_index = index;
+        self.pb.current = Some(track.to_string());
+        self.pb.position_ms = 0;
+        self.playhead_ms = 0.0;
+        self.pb.playing = true;
+        self.bound_track = Some(track.to_string());
+        self.shuffle_order.clear();
+        if self.play_cached_track_if_available(track) {
+            self.persist_device_profile()?;
+            return Ok(None);
+        }
+        let request = self
+            .start_stream(track)
+            .ok_or_else(|| "stream resolver could not start".to_string())?;
+        self.persist_device_profile()?;
+        Ok(Some(request))
+    }
+
+    /// Apply a stale-safe queue removal routed through a canonical queue-item
+    /// resource. If deleting the current item promotes another row, the audio
+    /// backend follows it immediately rather than continuing to play a row
+    /// that is no longer in the queue.
+    pub(crate) fn apply_resource_remove_queue_item(
+        &mut self,
+        index: usize,
+        track: &str,
+    ) -> Result<(), String> {
+        if self.pb.queue.get(index).map(String::as_str) != Some(track) {
+            return Err("queue item is no longer at that position".into());
+        }
+        let previous = self.pb.current.clone();
+        let keep_playing = self.pb.playing;
+        self.queue_remove(index);
+        if previous != self.pb.current {
+            if keep_playing {
+                if let Some(current) = self.pb.current.clone() {
+                    let _ = self.start_stream(&current);
+                } else {
+                    self.audio.stop();
+                }
+            }
+        }
+        self.persist_device_profile()
+    }
+
+    /// Apply a stale-safe queue reorder routed through a canonical queue-item
+    /// resource. Absolute indices make a queued operation unambiguous even
+    /// when the same track appears several times.
+    pub(crate) fn apply_resource_move_queue_item(
+        &mut self,
+        index: usize,
+        track: &str,
+        to: usize,
+    ) -> Result<(), String> {
+        if self.pb.queue.get(index).map(String::as_str) != Some(track) {
+            return Err("queue item is no longer at that position".into());
+        }
+        if to >= self.pb.queue.len() {
+            return Err("queue destination is no longer valid".into());
+        }
+        self.queue_move(index, to);
+        self.persist_device_profile()
     }
 
     fn next_worker_request_id(&mut self) -> Option<u64> {
@@ -6198,6 +6324,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn canonical_queue_item_operation_rejects_a_stale_duplicate_row() {
+        let (mut app, doc) = app_with_doc();
+        app.pb.queue = vec!["tk_g1".into(), "tk_g1".into(), "tk_g2".into()];
+        app.pb.queue_index = 0;
+        app.pb.current = Some("tk_g1".into());
+        let resources = Widget::resources(&app, &doc);
+        let queue = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == crate::actions::QUEUE_RESOURCE_ID)
+            .expect("the local queue is published canonically");
+        assert_eq!(queue.children.len(), 3);
+        let duplicate = &queue.children[1];
+        let remove = duplicate
+            .actions
+            .iter()
+            .find(|action| action.id == "remove")
+            .expect("second duplicate has its own remove operation");
+        let tilo_actions::ActionInput::Immediate(encoded) = &remove.input else {
+            panic!("queue removal is immediately executable");
+        };
+        let payload = encoded.payload.clone();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                tilo_actions::OperationKind::Effect,
+                &encoded.type_id,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("the observed queue row is removable")
+        );
+        assert_eq!(app.pb.queue, vec!["tk_g1", "tk_g2"]);
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                tilo_actions::OperationKind::Effect,
+                &encoded.type_id,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err(),
+            "the old second-occurrence operation cannot remove a recycled row"
+        );
+    }
+
     // ---- 6. playlist management -------------------------------------------
 
     #[test]
@@ -7221,30 +7396,11 @@ mod tests {
         have_base && have_aac
     }
 
-    /// Whether the `yt-dlp` full-stream resolver is available (mirrors
-    /// [`crate::backend::ytdlp`]'s binary selection). The full-track proof skips
-    /// honestly when it isn't — without yt-dlp the resolver can only fall back to
-    /// the SABR-truncated direct URL, which genuinely cannot play past ~1 minute.
-    #[cfg(all(feature = "live", feature = "audio"))]
-    fn ytdlp_present() -> bool {
-        let bin = std::env::var("TILO_MUSIC_YTDLP")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "yt-dlp".to_string());
-        std::process::Command::new(bin)
-            .arg("--version")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    }
-
-    /// **Full-track proof** (`--features live,audio`; needs `yt-dlp` on the host):
+    /// **Full-track proof** (`--features live,audio`; requires network access):
     /// resolve a real `YouTube` track, stage it, and prove what the staged bytes
     /// actually support.
     ///
-    /// The resolver asks `yt-dlp` for an `android_vr` URL because that client is
+    /// The Rust-native resolver asks InnerTube for an `ANDROID_VR` URL because that client is
     /// meant to serve arbitrary byte ranges over the whole file, where
     /// rustypipe's iOS/TV URL is SABR-gated to its first ~1 minute. Whether the
     /// source honours that on the day is the source's decision, and the two
@@ -7267,12 +7423,12 @@ mod tests {
     /// duration comes from the MP4 header, so a ~1-minute stub satisfied both and
     /// the proof passed on exactly the stream it existed to rule out. It then
     /// failed 15 s later at the seek, blaming the seek. Skips honestly only when
-    /// `yt-dlp` / an audio server / decode plugins are absent (never a fakesink,
-    /// never a weakened assertion).
+    /// an audio server or decode plugins are absent (never a fakesink, never a
+    /// weakened assertion).
     #[cfg(all(feature = "live", feature = "audio"))]
     #[test]
     // Both branches above still need the track to arrive: this streams a real
-    // one end to end through yt-dlp and a live audio server, so it depends on a
+    // one end to end through InnerTube and a live audio server, so it depends on a
     // third party being reachable and on that video still existing. It
     // self-skips when the tools are missing, which made it pass on CI and fail
     // on a developer machine that has them but cannot reach the network — the
@@ -7285,10 +7441,6 @@ mod tests {
     #[allow(clippy::too_many_lines)] // One end-to-end proof with two source outcomes.
     fn full_track_streams_whole_file_or_reports_the_source_truncation() {
         use std::time::Duration;
-        if !ytdlp_present() {
-            eprintln!("[full-track] skipped — yt-dlp not installed (no full-stream resolver)");
-            return;
-        }
         if !audio_server_present() || !decode_plugins_present() {
             eprintln!("[full-track] skipped — no audio server / decode plugins");
             return;

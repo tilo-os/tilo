@@ -10,6 +10,7 @@ fs_unit="$repo/os/usr/lib/systemd/system/fs.service"
 fs_path="$repo/os/usr/lib/systemd/system/fs-identity.path"
 fs_timer="$repo/os/usr/lib/systemd/system/tilo-fs-start.timer"
 device_key_unit="$repo/os/usr/lib/systemd/system/tilo-device-key-init.service"
+growfs_unit="$repo/os/usr/lib/systemd/system/tilo-growfs-sysroot.service"
 tmpfiles="$repo/os/usr/lib/tmpfiles.d/tilo.conf"
 containerfile="$repo/os/Containerfile"
 # shellcheck source=lib/containerfile.sh
@@ -39,6 +40,16 @@ else
   bad 'TPM first-boot hardening remains on the greeter critical path'
 fi
 
+if exactly_once "$growfs_unit" 'ReadWritePaths=/sysroot' \
+   && exactly_once "$growfs_unit" 'PrivateNetwork=yes' \
+   && exactly_once "$growfs_unit" 'RestrictNamespaces=yes' \
+   && exactly_once "$growfs_unit" 'CapabilityBoundingSet=CAP_SYS_ADMIN' \
+   && exactly_once "$growfs_unit" 'AmbientCapabilities='; then
+  ok 'background root growth retains only its sysroot write and resize capability'
+else
+  bad 'background root growth has a broader privileged service boundary than required'
+fi
+
 # The session must be able to use the machine identity without being able to
 # unlink or replace its private key. Root provisions it before login in a
 # non-writable group-readable directory; public certificates remain separate.
@@ -47,6 +58,11 @@ if grep -Eq '^d[[:space:]]+/var/lib/tilo/device-private[[:space:]]+2750[[:space:
    && exactly_once "$device_key_unit" 'ConditionPathExists=|!/var/lib/tilo/device-private/keypair.bin' \
    && exactly_once "$device_key_unit" 'ConditionPathExists=|/var/lib/tilo/device/keypair.bin' \
    && exactly_once "$device_key_unit" 'ReadWritePaths=/var/lib/tilo/device-private' \
+   && exactly_once "$device_key_unit" 'PrivateNetwork=yes' \
+   && exactly_once "$device_key_unit" 'ProtectProc=invisible' \
+   && exactly_once "$device_key_unit" 'RestrictNamespaces=yes' \
+   && exactly_once "$device_key_unit" 'MemoryDenyWriteExecute=yes' \
+   && exactly_once "$device_key_unit" 'CapabilityBoundingSet=' \
    && containerfile_expanded_rootfs_copy_contract "$containerfile" | \
         awk -F '\t' '$2 == "/out/tilo-device-key-init" && $3 == "/usr/bin/tilo-device-key-init" { found=1 } END { exit !found }' \
    && grep -Fq 'systemctl enable tilo-device-key-init.service' "$containerfile"; then

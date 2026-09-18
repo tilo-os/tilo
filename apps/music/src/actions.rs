@@ -121,6 +121,37 @@ pub fn playlist_resource_id(id: &str) -> String {
     format!("music.playlist:{id}")
 }
 
+/// The local-device queue. Unlike a playlist, this is intentionally not part
+/// of the shared library document: queuing or playing a track on one device
+/// must never commandeer a collaborator's speakers.
+pub const QUEUE_RESOURCE_ID: &str = "music.queue:queue";
+
+/// A queue occurrence has an identity of its own. A track may legitimately
+/// appear more than once, so `music.track:<id>` cannot name a queue row.
+/// Encoding both the observed index and the track id lets the operation host
+/// fail closed if the local queue changed before an old palette result lands.
+pub fn queue_item_resource_id(index: usize, track: &str) -> String {
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    format!(
+        "music.queue-item:v1:{index}:{}",
+        engine.encode(track.as_bytes())
+    )
+}
+
+/// Decode a queue occurrence resource identity. Invalid base64, UTF-8, and
+/// empty ids never become addressable queue authority.
+pub fn parse_queue_item_resource_id(id: &str) -> Option<(usize, String)> {
+    let value = id.strip_prefix("music.queue-item:v1:")?;
+    let (index, track) = value.split_once(':')?;
+    let index = index.parse().ok()?;
+    if track.is_empty() {
+        return None;
+    }
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let track = String::from_utf8(engine.decode(track).ok()?).ok()?;
+    (!track.is_empty()).then_some((index, track))
+}
+
 /// A playlist membership is distinct from the track itself: it owns the
 /// playlist-specific remove and reorder actions without duplicating a track's
 /// library-level identity in the resource tree.
@@ -175,9 +206,9 @@ pub fn open_playlist_membership_address(playlist: &str, track: &str) -> ActionAd
 }
 
 /// Non-document operations exported by Music. Navigation changes only the
-/// local presentation. Playback is intentionally absent: its durable controls
-/// are collaborative [`MusicAction`] values, while stream resolution and audio
-/// output remain device effects.
+/// local presentation. Playback and queue operations are explicit local-device
+/// effects: stream resolution and audio output must never be replicated into a
+/// collaborator's session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MusicOperation {
     /// Open one of the stable app-owned destinations in [`NAVIGATION_VIEWS`].
@@ -207,6 +238,26 @@ pub enum MusicOperation {
     /// peer start playing audio or inherit this device's volume/queue.
     SetPlayback {
         playback: crate::model::Playback,
+    },
+    /// Start this exact observed queue occurrence. The `(index, track)` pair
+    /// is checked at the local-device authority boundary before it can alter
+    /// playback, preventing a stale queue result from selecting a recycled
+    /// row.
+    PlayQueueItem {
+        index: usize,
+        track: String,
+    },
+    /// Remove this exact observed queue occurrence. Queue effects are local
+    /// device effects, not document mutations.
+    RemoveQueueItem {
+        index: usize,
+        track: String,
+    },
+    /// Move this exact observed queue occurrence to an absolute queue index.
+    MoveQueueItem {
+        index: usize,
+        track: String,
+        to: usize,
     },
     /// Download durable, device-local media bytes or remove them from the
     /// device-local cache. Neither the bytes nor their paths enter Automerge.
@@ -760,6 +811,17 @@ pub struct PlaylistMembershipResource {
     pub down_rank: i64,
 }
 
+/// One addressable occurrence in the local playback queue. The queue permits
+/// duplicates, therefore `index` is part of the identity rather than merely
+/// presentational numbering.
+#[derive(Debug, Clone)]
+pub struct QueueItemResource {
+    pub index: usize,
+    pub track: String,
+    pub label: String,
+    pub current: bool,
+}
+
 /// The presentation context Music hands [`provide_resources`]: the user's
 /// playlists and their tracks currently in the model cache. Everything here is
 /// derived from state the document already holds; nothing is fabricated.
@@ -770,6 +832,10 @@ pub struct MusicResourceCtx {
     pub albums: Vec<CatalogAlbumResource>,
     pub artists: Vec<CatalogArtistResource>,
     pub membership: Option<PlaylistMembershipResource>,
+    /// Bounded contextual queue rows. Direct resource resolution rebuilds only
+    /// the exact requested row, so a long queue never gets cloned merely to
+    /// open Ctrl+K.
+    pub queue: Vec<QueueItemResource>,
     pub playback: crate::model::Playback,
 }
 
@@ -1116,6 +1182,119 @@ fn with_queue_actions(
     root
 }
 
+fn queue_item_effect_spec(
+    id: &str,
+    label: &str,
+    operation: MusicOperation,
+    destructive: bool,
+) -> ActionSpec {
+    let spec = operation_spec(id, label, OperationKind::Effect, &operation)
+        .requiring(PermissionRequirement::Write);
+    if destructive {
+        spec.destructive()
+    } else {
+        spec
+    }
+}
+
+fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
+    let index = item.index;
+    let track = item.track.clone();
+    let mut resource = Resource::new(
+        queue_item_resource_id(index, &track),
+        "music.queue-item",
+        item.label.clone(),
+    )
+    .with_action(operation_spec(
+        "open",
+        "Open queue",
+        OperationKind::View,
+        &MusicOperation::OpenView { id: "queue".into() },
+    ))
+    .with_action(
+        queue_item_effect_spec(
+            "play",
+            if item.current {
+                "Restart track"
+            } else {
+                "Play queue item"
+            },
+            MusicOperation::PlayQueueItem {
+                index,
+                track: track.clone(),
+            },
+            false,
+        )
+        .execution(ExecutionMode::Background { cancellable: false })
+        .returns(ResultSpec::Json {
+            schema: serde_json::json!({
+                "type": "object",
+                "required": ["state"],
+                "properties": { "state": { "enum": ["resolved", "playing"] } }
+            }),
+        }),
+    )
+    .with_action(queue_item_effect_spec(
+        "remove",
+        "Remove from queue",
+        MusicOperation::RemoveQueueItem {
+            index,
+            track: track.clone(),
+        },
+        true,
+    ));
+
+    let move_up = queue_item_effect_spec(
+        "move-up",
+        "Move queue item up",
+        MusicOperation::MoveQueueItem {
+            index,
+            track: track.clone(),
+            to: index.saturating_sub(1),
+        },
+        false,
+    );
+    resource = resource.with_action(if index > 0 {
+        move_up
+    } else {
+        move_up.unavailable(
+            "first_queue_item",
+            "This item is already first in the queue",
+        )
+    });
+
+    let move_down = queue_item_effect_spec(
+        "move-down",
+        "Move queue item down",
+        MusicOperation::MoveQueueItem {
+            index,
+            track,
+            to: index.saturating_add(1),
+        },
+        false,
+    );
+    resource.with_action(if index + 1 < total {
+        move_down
+    } else {
+        move_down.unavailable("last_queue_item", "This item is already last in the queue")
+    })
+}
+
+fn queue_resource(ctx: &MusicResourceCtx) -> Resource {
+    let total = ctx.playback.queue.len();
+    let mut resource =
+        Resource::new(QUEUE_RESOURCE_ID, "music.queue", "Queue").with_action(operation_spec(
+            "open",
+            "Open queue",
+            OperationKind::View,
+            &MusicOperation::OpenView { id: "queue".into() },
+        ));
+    for item in &ctx.queue {
+        resource = resource.with_child(queue_item_resource(item, total));
+    }
+    resource
+}
+
 fn playlist_resource(
     playlist: &PlaylistResource,
     known_tracks: &BTreeSet<String>,
@@ -1422,6 +1601,7 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         &ctx.playback,
         &known_tracks,
     ));
+    root = root.with_child(queue_resource(ctx));
 
     // Library-level: create a playlist. The id is minted once when the name
     // argument is committed, then baked into the envelope, so replay stays
@@ -1521,6 +1701,16 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
             &ctx.playback,
             &known_tracks,
         ));
+    }
+    if id == QUEUE_RESOURCE_ID {
+        return Some(queue_resource(ctx));
+    }
+    if let Some((index, track)) = parse_queue_item_resource_id(id) {
+        let item = ctx
+            .queue
+            .iter()
+            .find(|item| item.index == index && item.track == track)?;
+        return Some(queue_item_resource(item, ctx.playback.queue.len()));
     }
     if let Some(track_id) = id.strip_prefix("music.track:").filter(|id| !id.is_empty()) {
         return ctx
@@ -2060,6 +2250,69 @@ mod tests {
             offline.contract.execution,
             ExecutionMode::Background { cancellable: true },
             "offline transfer is a bounded cancellable device effect"
+        );
+    }
+
+    #[test]
+    fn queue_occurrences_are_canonical_and_duplicate_safe() {
+        let mut ctx = MusicResourceCtx::default();
+        ctx.playback.queue = vec!["track-1".into(), "track-1".into(), "track-2".into()];
+        ctx.playback.current = Some("track-1".into());
+        ctx.queue = vec![
+            QueueItemResource {
+                index: 0,
+                track: "track-1".into(),
+                label: "First track".into(),
+                current: true,
+            },
+            QueueItemResource {
+                index: 1,
+                track: "track-1".into(),
+                label: "Second occurrence".into(),
+                current: false,
+            },
+            QueueItemResource {
+                index: 2,
+                track: "track-2".into(),
+                label: "Third track".into(),
+                current: false,
+            },
+        ];
+        let root = provide_resources(&ctx, &AutoCommit::new()).pop().unwrap();
+        let queue = root
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == QUEUE_RESOURCE_ID)
+            .expect("local queue has a canonical resource");
+        assert_eq!(queue.kind, "music.queue");
+        assert_eq!(queue.children.len(), 3);
+        assert_ne!(queue.children[0].id, queue.children[1].id);
+        assert_eq!(
+            parse_queue_item_resource_id(queue.children[1].id.as_str()),
+            Some((1, "track-1".into())),
+            "a duplicate track retains an occurrence-specific address"
+        );
+        let remove = queue.children[1]
+            .actions
+            .iter()
+            .find(|action| action.id == "remove")
+            .expect("queue rows are actionable without pixels");
+        let operation = decode_operation(
+            &immediate_encode(remove).type_id,
+            &immediate_encode(remove).payload,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            operation,
+            MusicOperation::RemoveQueueItem {
+                index: 1,
+                track: "track-1".into(),
+            }
+        );
+        assert!(
+            parse_queue_item_resource_id("music.queue-item:v1:not-an-index:dHJhY2stMQ").is_none(),
+            "malformed occurrence ids cannot acquire queue authority"
         );
     }
 

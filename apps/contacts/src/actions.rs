@@ -1076,6 +1076,18 @@ pub fn open_duplicate_review_address(
     ActionAddress::new(duplicate_resource_id(survivor_id, source_id), "open-review")
 }
 
+/// The single canonical view operation for a locally-derived duplicate
+/// candidate.  The candidate remains a review suggestion, never a mutation:
+/// the destructive merge still requires the field-by-field confirmation in
+/// the review surface.
+#[must_use]
+pub fn open_duplicate_review_operation(candidate: &DuplicateCandidate) -> ContactsOperation {
+    ContactsOperation::OpenDuplicateReview {
+        survivor_id: candidate.survivor_id.to_string(),
+        source_id: candidate.source_id.to_string(),
+    }
+}
+
 /// Unicode/case-insensitive email key.  The mail local part can technically
 /// be case-sensitive; Contacts follows the ordinary address-book expectation
 /// here only to *suggest* review — it never merges without a confirmation.

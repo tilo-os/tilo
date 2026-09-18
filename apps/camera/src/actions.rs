@@ -371,7 +371,7 @@ pub(crate) const fn capture_destination(is_video: bool) -> (&'static str, &'stat
 ///
 /// Camera is deliberately allowed to *route* to Photos, but never to project
 /// Photos' collection into a second, stale gallery of its own.  Keeping the
-/// action here lets the painted navigation affordance, global search, agents,
+/// action here lets the painted handoff, global search, agents,
 /// and history all address the exact same external operation.
 pub fn open_photos_action() -> ActionSpec {
     ActionSpec::typed_operation(
@@ -457,7 +457,10 @@ pub(crate) fn capture_resource(it: &CaptureItem) -> Resource {
     reason = "capture, scanner, document, and settings are Camera's bounded resource roots; keeping their complete typed inventory together makes the contract auditable"
 )]
 pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut navigation = Resource::new("camera", "camera", "Camera");
+    // This app root is semantic discovery, not a visual destination rail.
+    // Ctrl+K, a screen reader, and an agent use these local reveal operations
+    // while the on-screen app stays entirely on the edge-to-edge capture stage.
+    let mut camera = Resource::new("camera", "camera", "Camera");
     for screen in Screen::ALL {
         if let Ok(spec) = ActionSpec::operation(
             format!("open-{}", screen.as_str()),
@@ -466,7 +469,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             CAMERA_OPERATION_TYPE,
             &CameraOperation::Reveal { screen },
         ) {
-            navigation = navigation.with_action(spec);
+            camera = camera.with_action(spec);
         }
     }
     let mut root = Resource::new("camera.capture", "camera.capture", "Capture");
@@ -808,7 +811,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             });
         }
     }
-    vec![root, scanner, document, settings, navigation]
+    vec![root, scanner, document, settings, camera]
 }
 
 /// Resolve a stable root or the single recent-capture handoff independently
@@ -871,7 +874,7 @@ mod tests {
         let resources = Widget::resources(&app, &doc);
         assert!(
             resources.len() >= 3,
-            "capture, scanner, document scanner, settings, and navigation"
+            "capture, scanner, document scanner, settings, and Camera discovery"
         );
         let captures = resources
             .iter()
@@ -1052,19 +1055,14 @@ mod tests {
     }
 
     #[test]
-    fn navigation_is_a_local_reveal_operation_and_discoverable_resource() {
+    fn camera_root_is_a_local_reveal_operation_and_discoverable_resource() {
         let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
-        let navigation = resources
+        let camera = resources
             .iter()
             .find(|resource| resource.id.as_str() == "camera")
-            .expect("camera navigation resource");
-        assert!(
-            navigation
-                .actions
-                .iter()
-                .any(|spec| spec.id == "open-scanner")
-        );
-        let scanner = navigation
+            .expect("camera discovery resource");
+        assert!(camera.actions.iter().any(|spec| spec.id == "open-scanner"));
+        let scanner = camera
             .actions
             .iter()
             .find(|spec| spec.id == "open-scanner")

@@ -5,8 +5,8 @@
 //! history, not the live Wayland selection, until explicitly activated.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
-use std::io::{Read as _, Write as _};
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::io::Read as _;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant, SystemTime};
@@ -1363,7 +1363,7 @@ pub struct DeviceFabricRuntime {
     notification_bridge: NotificationBridge,
     realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
     realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
-    remote_capture: Option<crate::shell::remote_capture_runtime::SharedRemoteCaptureRuntime>,
+    remote_capture: Option<crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime>,
     remote_capture_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
     remote_capture_pending_actions: VecDeque<crate::shell::network::ReceivedPersonalFabricAction>,
     tethering: crate::shell::personal_tethering_runtime::PersonalTetheringRuntime,
@@ -1414,7 +1414,7 @@ impl DeviceFabricRuntime {
 
     pub(crate) fn set_remote_capture_runtime(
         &mut self,
-        runtime: crate::shell::remote_capture_runtime::SharedRemoteCaptureRuntime,
+        runtime: crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime,
     ) {
         self.remote_capture = Some(runtime);
     }
@@ -1725,7 +1725,7 @@ impl DeviceFabricRuntime {
                 {
                     runtime.handle_action(&envelope, Instant::now());
                 } else if self.remote_capture_pending_actions.len()
-                    < crate::shell::remote_capture_device::MAX_REMOTE_CAPTURE_SESSIONS * 4
+                    < crate::shell::remote_capture::device::MAX_REMOTE_CAPTURE_SESSIONS * 4
                 {
                     self.remote_capture_pending_actions.push_back(
                         crate::shell::network::ReceivedPersonalFabricAction { envelope, route },
@@ -5139,71 +5139,6 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
     statuses
 }
 
-fn install_nearby_drop(
-    file_name: &str,
-    bytes: &[u8],
-    expected: [u8; 32],
-) -> Result<PathBuf, String> {
-    if !super::device_fabric::valid_nearby_file_name(file_name)
-        || bytes.is_empty()
-        || bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES
-        || blake3::hash(bytes).as_bytes() != &expected
-    {
-        return Err("invalid nearby drop".into());
-    }
-    let root = dirs::download_dir()
-        .ok_or_else(|| "Downloads is unavailable".to_string())?
-        .join("Tilo Nearby");
-    install_nearby_drop_at(&root, file_name, bytes)
-}
-
-fn install_nearby_drop_at(root: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-    if root.exists() {
-        if !std::fs::symlink_metadata(root).is_ok_and(|metadata| metadata.file_type().is_dir()) {
-            return Err("nearby drop folder is unsafe".into());
-        }
-    } else {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(root)
-            .map_err(|error| error.to_string())?;
-    }
-    std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
-        .map_err(|error| error.to_string())?;
-    for suffix in 0..1000 {
-        let name = if suffix == 0 {
-            file_name.to_string()
-        } else {
-            let path = Path::new(file_name);
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-            path.extension().and_then(|e| e.to_str()).map_or_else(
-                || format!("{stem} ({suffix})"),
-                |ext| format!("{stem} ({suffix}).{ext}"),
-            )
-        };
-        let path = root.join(name);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                if file.write_all(bytes).and_then(|()| file.sync_all()).is_ok() {
-                    return Ok(path);
-                }
-                let _ = std::fs::remove_file(&path);
-                return Err("nearby drop could not be saved".into());
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.to_string()),
-        }
-    }
-    Err("nearby drop folder has too many name collisions".into())
-}
-
 fn fabric_transfer_views(
     network: &ShellNetwork,
 ) -> Vec<crate::shell::overlay_host::FabricTransferView> {
@@ -5627,7 +5562,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         calibration_proposals,
         revertible_calibrations,
         tethering: crate::shell::personal_tethering_runtime::tethering_statuses(),
-        remote_capture: crate::shell::remote_capture_runtime::active_view(),
+        remote_capture: crate::shell::remote_capture::runtime::active_view(),
         display_mirror_consents,
         display_mirrors,
         display_mirror_available,
@@ -8282,22 +8217,6 @@ mod tests {
             reenabled_snapshot.clipboard[0].id, imported.id,
             "an imported entry must not be re-authored after policy re-enable"
         );
-    }
-
-    #[test]
-    fn nearby_drop_never_overwrites_and_rejects_a_symlinked_destination() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("nearby");
-        let first = install_nearby_drop_at(&root, "note.txt", b"one").unwrap();
-        let second = install_nearby_drop_at(&root, "note.txt", b"two").unwrap();
-        assert_eq!(std::fs::read(first).unwrap(), b"one");
-        assert_eq!(
-            second.file_name().and_then(|name| name.to_str()),
-            Some("note (1).txt")
-        );
-        let unsafe_root = temp.path().join("unsafe");
-        std::os::unix::fs::symlink(&root, &unsafe_root).unwrap();
-        assert!(install_nearby_drop_at(&unsafe_root, "other.txt", b"no").is_err());
     }
 
     #[test]

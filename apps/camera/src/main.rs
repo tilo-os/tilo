@@ -62,9 +62,6 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         if args.has("--scan-first") {
             std::env::set_var("CAMERA_SCAN_FIRST", "1");
         }
-        if args.has("--drawer") {
-            std::env::set_var("CAMERA_SHOT_DRAWER", "1");
-        }
         if args.has("--timer-running") {
             std::env::set_var("CAMERA_SHOT_TIMER_RUNNING", "1");
         }
@@ -126,13 +123,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.tilo.camera", camera::app_root)
             .shot_handler(render_shot)
-            .allowed_flags(&[
-                "--scan-first",
-                "--disk",
-                "--crop",
-                "--drawer",
-                "--timer-running",
-            ])
+            .allowed_flags(&["--scan-first", "--disk", "--crop", "--timer-running"])
             .allowed_options(&[
                 "--screen",
                 "--dir",

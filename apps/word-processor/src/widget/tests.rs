@@ -2433,6 +2433,52 @@ fn toolbar_zoom_stepper_drives_zoom_from_its_new_home() {
     );
 }
 
+/// Zoom's custom-painted controls remain first-class semantic buttons. Their
+/// targets are the controls' live paint targets, and activation enters the
+/// same component method as a pointer press.
+#[test]
+fn accessibility_exposes_and_activates_the_zoom_stepper() {
+    crate::i18n::set_locale("en-US");
+    let (mut state, mut wp) = populated();
+    pipeline_draw(&mut wp, &mut state, 1100, 760);
+
+    let tree = wp.accessibility_tree();
+    let toolbar = tree
+        .children
+        .iter()
+        .find(|child| child.node.role == ui::a11y::Role::Toolbar)
+        .expect("drawn document has a toolbar");
+    let zoom_in = toolbar
+        .children
+        .iter()
+        .find(|child| child.node.action_target.as_deref() == Some(ZoomControl::TARGET_IN))
+        .expect("zoom in is exposed to assistive technology");
+    assert_eq!(zoom_in.node.name.as_deref(), Some("Zoom in"));
+    assert_eq!(zoom_in.node.value.as_deref(), Some("100%"));
+    assert!(zoom_in.node.bounds.is_some());
+
+    assert!(Widget::perform_action_at(
+        &mut wp,
+        &ui::a11y::Action::Activate,
+        &[ui::a11y::hash_key(&ZoomControl::TARGET_IN)],
+        &mut state.doc,
+        &state.root,
+    ));
+    assert!(
+        (wp.zoom.factor() - (1.0 + ZOOM_STEP)).abs() < 1e-6,
+        "semantic activation uses the same +10% step as the toolbar"
+    );
+
+    assert!(Widget::perform_action_at(
+        &mut wp,
+        &ui::a11y::Action::Activate,
+        &[ui::a11y::hash_key(&ZoomControl::TARGET_RESET)],
+        &mut state.doc,
+        &state.root,
+    ));
+    assert_eq!(wp.zoom.factor(), 1.0, "semantic reset returns to 100%");
+}
+
 #[test]
 fn zoom_in_grows_the_scrollable_range() {
     let mut state = ui::State::new();

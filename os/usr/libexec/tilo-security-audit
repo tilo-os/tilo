@@ -56,7 +56,7 @@ else
 fi
 
 avoidable_crypto_consumers=""
-for package in pesign nss-tools gnutls-utils git git-core openvpn NetworkManager-openvpn openssh openssh-clients openssh-server; do
+for package in pesign nss-tools git git-core openvpn NetworkManager-openvpn openssh-server; do
   if rpm -q "$package" >/dev/null 2>&1; then
     avoidable_crypto_consumers="$avoidable_crypto_consumers $package"
   fi
@@ -64,10 +64,12 @@ done
 if [ -n "$avoidable_crypto_consumers" ]; then
   warn "avoidable OpenSSL consumers remain installed:$avoidable_crypto_consumers"
 else
-  ok "general signing tools and Git/OpenVPN/OpenSSH consumers absent from the immutable host"
+  ok "unused signing tools, Git/OpenVPN and OpenSSH server absent from the immutable host"
 fi
 optional_crypto_module="$(find /usr/lib /usr/lib64 \
   \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
+     -o -name 'libshout.so*' \
+     -o -name 'libevent_openssl.so*' \
      -o -path '*/gstreamer-1.0/libgstdtls.so' \
      -o -path '*/gstreamer-1.0/libgstcurl.so' \
      -o -path '*/gstreamer-1.0/libgstshout2.so' \
@@ -81,6 +83,20 @@ if [ -n "$optional_crypto_module" ]; then
 else
   ok "optional OpenSSL modules and unused network media plugins absent"
 fi
+# Fedora swtpm_localca needs certtool for fresh VM TPM provisioning; Fedora
+# virt-viewer requires the SSH client package even for Tilo's local-only path.
+# Report these distribution exceptions explicitly, never as absent tooling.
+for pair in gnutls-utils:swtpm-tools openssh:virt-viewer openssh-clients:virt-viewer; do
+  package="${pair%%:*}"
+  parent="${pair#*:}"
+  if rpm -q "$package" >/dev/null 2>&1; then
+    if rpm -q "$parent" >/dev/null 2>&1; then
+      note "reviewed Fedora VM dependency retained: $package ($parent)"
+    else
+      warn "unexpected VM dependency without its consumer: $package ($parent absent)"
+    fi
+  fi
+done
 case "$(readlink /etc/resolv.conf 2>/dev/null || true)" in
   ../run/NetworkManager/resolv.conf|/run/NetworkManager/resolv.conf)
     ok "/etc/resolv.conf follows NetworkManager"
@@ -137,7 +153,8 @@ fi
 # that line is the only place the live setting is observable — there is no
 # sysfs knob for either. A karg that was ignored (typo, unsupported build)
 # shows up here and nowhere else.
-meminit="$(dmesg 2>/dev/null | grep -m1 'mem auto-init:' || true)"
+meminit="$(journalctl --quiet --boot --dmesg --no-pager --output=cat 2>/dev/null \
+  | grep -m1 'mem auto-init:' || true)"
 case "$meminit" in
   *'alloc:on'*'free:on'*) ok "${meminit#*mem auto-init: }(live, from the kernel's own report)" ;;
   '')                     note "mem auto-init: kernel report not in the ring buffer (rotated out?)" ;;
@@ -202,8 +219,30 @@ else
   warn "procfs still exposes pagemap, smaps, or clear_refs interfaces"
 fi
 for interface in \
-  DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER \
-  FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API; do
+  DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER FANOTIFY DNOTIFY \
+  CUSE FUSE_PASSTHROUGH VIRTIO_FS FUSE_DAX FUSE_IO_URING \
+  PM_TEST_SUSPEND PM_TRACE PM_TRACE_RTC PCIEAER_INJECT NET_DROP_MONITOR \
+  DEBUG_SHIRQ MMIOTRACE X86_DECODER_SELFTEST \
+  ATOMIC64_SELFTEST MEMTEST \
+  PM_DEBUG PM_SLEEP_DEBUG ACPI_DEBUG FW_LOADER_DEBUG OVMF_DEBUG_LOG \
+  SCSI_IPR_TRACE SCSI_IPR_DUMP DM_DEBUG MLX4_DEBUG ATH5K_DEBUG ATH6KL_DEBUG \
+  IWLEGACY_DEBUG IWLWIFI_DEBUG USB_SERIAL_DEBUG DLM_DEBUG DYNAMIC_DEBUG \
+  DYNAMIC_DEBUG_CORE SLUB_DEBUG DEBUG_MEMORY_INIT RCU_TRACE \
+  TRACEFS_AUTOMOUNT_DEPRECATED IMA EVM \
+  SECURITY_SELINUX_BOOTPARAM SECURITY_SELINUX_DEVELOP SECURITY_TOMOYO \
+  SECURITY_IPE BPF_LSM \
+  PERSISTENT_KEYRINGS BIG_KEYS TRUSTED_KEYS ENCRYPTED_KEYS KEY_DH_OPERATIONS \
+  KEY_NOTIFICATIONS SIGNED_PE_FILE_VERIFICATION SYSTEM_BLACKLIST_AUTH_UPDATE \
+  SECURITY_SELINUX_AVC_STATS \
+  CHECKPOINT_RESTORE MEM_SOFT_DIRTY \
+  FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API INET_PSP IP_VS \
+  NET_PKTGEN GTP PFCP AMT BLK_DEV_NBD ISCSI_TCP \
+  ISCSI_BOOT_SYSFS ISCSI_IBFT SCSI_QLA_ISCSI SCSI_BNX2_ISCSI \
+  SCSI_CXGB3_ISCSI SCSI_CXGB4_ISCSI INFINIBAND_ISER BE2ISCSI QEDI FCOE \
+  SCSI_ISCSI_ATTRS FCOE_FNIC QEDF SCSI_BNX2X_FCOE SCSI_CHELSIO_FCOE \
+  LIBFCOE SCSI_FC_ATTRS NET_FC NVME_RDMA NVME_FC NVME_TCP NVME_TARGET NVME_HOST_AUTH NVME_AUTH \
+  NVME_KEYRING BLK_DEV_RNBD_CLIENT BLK_DEV_RNBD_SERVER TARGET_CORE \
+  INFINIBAND; do
   if grep -Fqx "# CONFIG_${interface} is not set" "$running_kernel_config" 2>/dev/null; then
     ok "unused privileged kernel interface $interface is not compiled"
   else
@@ -220,10 +259,17 @@ for protocol in \
   fi
 done
 check_sysctl kernel.perf_event_paranoid 3
-check_sysctl kernel.io_uring_disabled 2
-check_sysctl kernel.sysrq 16
+if grep -Fqx '# CONFIG_IO_URING is not set' "$running_kernel_config" 2>/dev/null; then
+  ok "io_uring syscall and worker surface is not compiled"
+else
+  check_sysctl kernel.io_uring_disabled 2
+fi
 check_sysctl kernel.randomize_va_space 2
-check_sysctl vm.unprivileged_userfaultfd 0
+if grep -Fqx '# CONFIG_USERFAULTFD is not set' "$running_kernel_config" 2>/dev/null; then
+  ok "userfaultfd page-fault control surface is not compiled"
+else
+  check_sysctl vm.unprivileged_userfaultfd 0
+fi
 check_sysctl vm.mmap_min_addr 65536
 check_sysctl fs.suid_dumpable 0
 check_sysctl fs.protected_symlinks 1
@@ -269,22 +315,32 @@ if grep -qw user_shstk /proc/cpuinfo 2>/dev/null; then
 else
   note "CPU/kernel report no user shadow-stack support (pre-Tiger Lake / pre-Zen 5); the ELF marking is inert here"
 fi
-# Secure Boot. Read the EFI variable directly; Tilo removes shim and mokutil, and
+# Secure Boot. Read firmware state directly; Tilo removes shim and mokutil, and
 # its health result must not depend on a legacy command-line parser reappearing.
-sb_var() {
-  local f
-  f="$(ls /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | head -1)"
-  [ -n "$f" ] || return 1
-  od -An -tu1 -j4 -N1 "$f" 2>/dev/null | tr -d ' \n'
+# Both indicators are five-byte efivarfs records: 0x6 boot-service/runtime
+# attributes followed by one boolean byte. Rejecting lookalike files keeps a
+# malformed mount or test fixture from impersonating firmware state.
+security_efivars="${TILO_SECURITY_EFIVARS:-/sys/firmware/efi/efivars}"
+efi_boolean() {
+  local f="$security_efivars/$1-8be4df61-93ca-11d2-aa0d-00e098032b8c" attrs value
+  if [ ! -e "$f" ]; then printf 'missing\n'; return; fi
+  if [ ! -f "$f" ] || [ -L "$f" ] || [ "$(stat -c %s "$f" 2>/dev/null)" != 5 ]; then
+    printf 'invalid\n'; return
+  fi
+  attrs="$(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' \n')"
+  value="$(od -An -tu1 -j4 -N1 "$f" 2>/dev/null | tr -d ' \n')"
+  if [ "$attrs" != 06000000 ]; then printf 'invalid\n'; return; fi
+  case "$value" in 0|1) printf '%s\n' "$value" ;; *) printf 'invalid\n' ;; esac
 }
-if v="$(sb_var)"; then
-  [ "$v" = "1" ] && sb="SecureBoot enabled" || sb="SecureBoot disabled"
-else
-  sb="no Secure Boot variables (not UEFI, or no SB support)"
-fi
-case "$sb" in
-  *enabled*) ok "Secure Boot: $sb" ;;
-  *) note "Secure Boot: $sb — native Tilo will not create a TPM short-PIN slot until verified boot and kernel lockdown are active (see /usr/share/doc/tilo/boot-chain.md)" ;;
+sb="$(efi_boolean SecureBoot)"
+setup="$(efi_boolean SetupMode)"
+case "$sb:$setup" in
+  1:0) ok "Secure Boot enabled with firmware outside Setup Mode" ;;
+  missing:missing)
+    note "Secure Boot: no firmware variables (not UEFI, or no SB support) — native Tilo will not create a TPM short-PIN slot until verified boot and kernel lockdown are active (see /usr/share/doc/tilo/boot-chain.md)" ;;
+  0:0) note "Secure Boot disabled; enrolled platform keys are not enforcing this boot" ;;
+  0:1) note "Secure Boot disabled while firmware remains in Setup Mode" ;;
+  *) warn "Secure Boot firmware state is malformed or contradictory: SecureBoot=$sb SetupMode=$setup" ;;
 esac
 
 # Owner-enrolled Secure Boot: are the keys there, and will the next deployment's
@@ -314,6 +370,13 @@ secureboot_public_file_safe() {
 }
 secureboot_artifact_present() {
   [ -e "$1" ] || [ -L "$1" ]
+}
+secureboot_enrollment_boot_marker_safe() {
+  local path="$1" metadata
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  metadata="$(stat -c '%u:%a:%h:%s' "$path" 2>/dev/null)" || return 1
+  [ "$metadata" = 0:600:1:37 ] \
+    && grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "$path"
 }
 secureboot_esl_matches_certificate() {
   secureboot_public_file_safe "$1" \
@@ -398,6 +461,18 @@ if [ "$pk_present" -eq 1 ] || [ "$kek_present" -eq 1 ]; then
   else
     warn "Secure Boot PK/KEK retirement state is incomplete, unsafe, or ambiguous"
   fi
+  enrollment_boot_marker=/var/lib/tilo/secureboot/enrollment-boot-id
+  if secureboot_artifact_present "$enrollment_boot_marker"; then
+    if ! secureboot_enrollment_boot_marker_safe "$enrollment_boot_marker"; then
+      warn "Secure Boot enrollment boot identity is unsafe or malformed"
+    elif [ "$(cat "$enrollment_boot_marker")" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ]; then
+      note "Secure Boot enrollment occurred this boot; reboot before retiring PK/KEK"
+    elif [ "$sb:$setup" = 1:0 ]; then
+      ok "Secure Boot enrollment crossed a verified reboot boundary"
+    else
+      note "Secure Boot enrollment crossed a reboot, but firmware enforcement is not active"
+    fi
+  fi
 elif [ "$retired_present" -eq 1 ]; then
   if secureboot_private_file_safe /var/lib/tilo/secureboot/enrollment-keys-retired \
      && secureboot_esl_matches_certificate /var/lib/tilo/secureboot/PK.crt \
@@ -437,12 +512,18 @@ else
   warn "hidepid on /proc NOT set"
 fi
 
-# Hardened userspace allocator (scudo) on the base daemons
-fspid="$(systemctl show -p MainPID --value fs.service 2>/dev/null)"
-if [ -n "${fspid:-}" ] && [ "$fspid" != 0 ] && grep -q 'scudo' "/proc/$fspid/maps" 2>/dev/null; then
-  ok "scudo hardened allocator active in fs.service"
+# Hardened userspace allocator (scudo) on the base daemons. Query systemd's
+# effective unit environment rather than acquiring ptrace authority merely to
+# inspect a differently-owned process map.
+fsenv="$(systemctl show -p Environment --value fs.service 2>/dev/null || true)"
+if case " $fsenv " in
+     *' LD_PRELOAD=/usr/lib/tilo/libclang_rt.scudo_standalone.so '*) true ;;
+     *) false ;;
+   esac \
+   && [ -r /usr/lib/tilo/libclang_rt.scudo_standalone.so ]; then
+  ok "scudo hardened allocator configured for fs.service"
 else
-  warn "scudo allocator NOT detected in fs.service"
+  warn "scudo allocator NOT configured for fs.service"
 fi
 
 # fs daemon SELinux confinement (its own domain, not unconfined_service_t)
@@ -460,14 +541,24 @@ esac
 policy=/etc/containers/policy.json
 
 legacy_crypto_tools=""
-for tool in openssl sbsign sbverify efi-updatevar cert-to-efi-sig-list mokutil pesign efikeygen certutil pk12util p11tool gnutls-cli; do
+for tool in openssl sbsign sbverify efi-updatevar cert-to-efi-sig-list mokutil pesign efikeygen certutil pk12util; do
   command -v "$tool" >/dev/null 2>&1 && legacy_crypto_tools="$legacy_crypto_tools $tool"
 done
 if [ -z "$legacy_crypto_tools" ]; then
-  ok "general-purpose crypto and legacy EFI signing CLIs are absent"
+  ok "OpenSSL and legacy EFI/NSS signing CLIs are absent"
 else
-  warn "legacy cryptographic command-line attack surface remains:$legacy_crypto_tools"
+  warn "unapproved cryptographic command-line tools remain:$legacy_crypto_tools"
 fi
+
+for tool in p11tool gnutls-cli; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    if rpm -q gnutls-utils swtpm-tools >/dev/null 2>&1; then
+      note "Fedora gnutls-utils companion retained with required TPM certtool: $tool"
+    else
+      warn "unapproved cryptographic command-line tool remains: $tool"
+    fi
+  fi
+done
 
 if [ -r "$policy" ] \
    && grep -Fq '"code.podesta.ai/qos/tilo"' "$policy" \

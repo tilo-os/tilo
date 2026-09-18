@@ -237,7 +237,7 @@ mod tests {
     const NOW: u64 = 10_000;
 
     struct Fixture {
-        dir: tempfile::TempDir,
+        _dir: tempfile::TempDir,
         authority_path: std::path::PathBuf,
         authority: Arc<ShareAuthority>,
         service: ShareManagement,
@@ -256,7 +256,7 @@ mod tests {
             let issuer_public = Ed25519PublicKey::from_bytes(issuer.verifying_key().to_bytes());
             let service = ShareManagement::new(authority.clone());
             Self {
-                dir,
+                _dir: dir,
                 authority_path,
                 authority,
                 service,
@@ -360,11 +360,8 @@ mod tests {
     #[test]
     fn persistence_failure_returns_no_grant_and_does_not_mutate_authority() {
         let fixture = Fixture::new();
-        let temp_path = fixture
-            .dir
-            .path()
-            .join(format!(".shares.json.{}.tmp", std::process::id()));
-        std::fs::create_dir(&temp_path).unwrap();
+        assert!(!fixture.authority_path.exists());
+        std::fs::create_dir(&fixture.authority_path).unwrap();
         let (_, recipient) = collab_types::generate_keypair();
         assert!(matches!(
             fixture.service.create_named(
@@ -391,7 +388,7 @@ mod tests {
                 .grants
                 .is_empty()
         );
-        std::fs::remove_dir(temp_path).unwrap();
+        std::fs::remove_dir(&fixture.authority_path).unwrap();
     }
 
     #[test]

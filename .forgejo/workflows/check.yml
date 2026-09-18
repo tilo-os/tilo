@@ -129,6 +129,8 @@ jobs:
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
+      - name: Repository layout guard
+        run: python3 tools/check_repository_layout.py
       - name: Select and balance affected packages
         id: plan
         shell: bash

@@ -180,6 +180,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Some("loading") => widget.debug_show_loading_state(),
             Some("error") => widget.debug_show_error_state(),
+            // Review the visible Undo affordance without writing to Trash.
+            Some("undo-trash") => widget.debug_arm_trash_undo(),
             _ => {}
         }
         render_shot_to_png(widget, viewport, text_scale, scenario.as_deref(), &out)?;
@@ -806,6 +808,9 @@ fn apply_post_layout_scenario(
             widget.debug_open_history_demo();
         }
         Some("archive-menu") => {
+            widget.debug_open_view_menu();
+        }
+        Some("undo-trash") => {
             widget.debug_open_view_menu();
         }
         _ => {}

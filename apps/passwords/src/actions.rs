@@ -13,6 +13,7 @@ pub enum PasswordOperation {
     GeneratePassword,
     Edit { id: String },
     Copy { id: String },
+    Reveal { id: String },
     RequestDelete { id: String },
     ImportCsv,
     ExportCsv,
@@ -78,34 +79,96 @@ pub fn vault_resource(form_open: bool) -> Resource {
 
 pub fn item_resource(item: &SecretItem) -> Resource {
     let id = item.id.0.clone();
-    let (resource_type, copy_label) = match item.kind {
-        accounts::SecretItemKind::Login => ("passwords.login", "Copy password"),
-        accounts::SecretItemKind::ApiKey => ("passwords.api-key", "Copy API key"),
-        accounts::SecretItemKind::SecureNote => ("passwords.note", "Copy note"),
-        accounts::SecretItemKind::Wifi => ("passwords.wifi", "Copy Wi-Fi password"),
-        accounts::SecretItemKind::Other => ("passwords.secret", "Copy secret"),
+    let (resource_type, resource_name, copy_label, reveal_label) = match item.kind {
+        accounts::SecretItemKind::Login => (
+            "passwords.login",
+            "Saved login",
+            "Copy password",
+            "Reveal password for 10 seconds",
+        ),
+        accounts::SecretItemKind::ApiKey => (
+            "passwords.api-key",
+            "Saved API key",
+            "Copy API key",
+            "Reveal API key for 10 seconds",
+        ),
+        accounts::SecretItemKind::SecureNote => (
+            "passwords.note",
+            "Saved secure note",
+            "Copy note",
+            "Reveal note for 10 seconds",
+        ),
+        accounts::SecretItemKind::Wifi => (
+            "passwords.wifi",
+            "Saved Wi-Fi password",
+            "Copy Wi-Fi password",
+            "Reveal password for 10 seconds",
+        ),
+        accounts::SecretItemKind::Other => (
+            "passwords.secret",
+            "Saved secret",
+            "Copy secret",
+            "Reveal secret for 10 seconds",
+        ),
     };
-    Resource::new(
-        format!("passwords:item:{id}"),
-        resource_type,
-        item.title.clone(),
-    )
-    .with_action(operation(
-        "edit",
-        "Edit",
-        OperationKind::View,
-        &PasswordOperation::Edit { id: id.clone() },
-    ))
-    .with_action(operation(
-        "copy",
-        copy_label,
-        OperationKind::Effect,
-        &PasswordOperation::Copy { id: id.clone() },
-    ))
-    .with_action(operation(
-        "delete",
-        "Delete…",
-        OperationKind::Effect,
-        &PasswordOperation::RequestDelete { id },
-    ))
+    // Resources feed system-wide search and collaboration. The encrypted
+    // vault metadata (including a title, account and origin) is intentionally
+    // not copied into this public descriptor; only an opaque item id is used
+    // in the client-local action payload, and no action carries a secret.
+    Resource::new(format!("passwords:item:{id}"), resource_type, resource_name)
+        .with_action(operation(
+            "edit",
+            "Edit",
+            OperationKind::View,
+            &PasswordOperation::Edit { id: id.clone() },
+        ))
+        .with_action(operation(
+            "copy",
+            copy_label,
+            OperationKind::Effect,
+            &PasswordOperation::Copy { id: id.clone() },
+        ))
+        .with_action(operation(
+            "reveal",
+            reveal_label,
+            OperationKind::View,
+            &PasswordOperation::Reveal { id: id.clone() },
+        ))
+        .with_action(operation(
+            "delete",
+            "Delete…",
+            OperationKind::Effect,
+            &PasswordOperation::RequestDelete { id },
+        ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn item_resources_keep_encrypted_metadata_out_of_public_descriptors() {
+        let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public");
+        item.add_origin("https://private.example").unwrap();
+        let resource = item_resource(&item);
+        let mut public = format!("{} {} {}", resource.id.0, resource.kind, resource.label);
+        for action in &resource.actions {
+            public.push_str(&action.label);
+            let encoded = action
+                .build_args(Vec::<(String, ui::tilo_actions::ArgValue)>::new())
+                .unwrap();
+            public.push_str(&String::from_utf8_lossy(&encoded.payload));
+        }
+
+        assert_eq!(resource.label, "Saved login");
+        for private in [
+            "Private bank",
+            "ada@private.example",
+            "private.example",
+            "not-public",
+        ] {
+            assert!(!public.contains(private), "resource leaked {private:?}");
+        }
+        assert!(public.contains("Reveal"));
+    }
 }

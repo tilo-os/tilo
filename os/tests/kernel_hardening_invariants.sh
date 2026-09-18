@@ -50,6 +50,51 @@ for required in \
   CONFIG_MODULE_FORCE_UNLOAD=n \
   CONFIG_LIVEPATCH=n \
   CONFIG_DEBUG_FS=n \
+  CONFIG_BSD_PROCESS_ACCT=n \
+  CONFIG_TASKSTATS=n \
+  CONFIG_PROC_EVENTS=n \
+  CONFIG_IO_URING=n \
+  CONFIG_USERFAULTFD=n \
+  CONFIG_FANOTIFY=n \
+  CONFIG_DNOTIFY=n \
+  CONFIG_CUSE=n \
+  CONFIG_FUSE_PASSTHROUGH=n \
+  CONFIG_VIRTIO_FS=n \
+  CONFIG_FUSE_DAX=n \
+  CONFIG_FUSE_IO_URING=n \
+  CONFIG_PM_TEST_SUSPEND=n \
+  CONFIG_PM_TRACE=n \
+  CONFIG_PM_TRACE_RTC=n \
+  CONFIG_PCIEAER_INJECT=n \
+  CONFIG_NET_DROP_MONITOR=n \
+  CONFIG_DEBUG_SHIRQ=n \
+  CONFIG_MMIOTRACE=n \
+  CONFIG_X86_DECODER_SELFTEST=n \
+  CONFIG_ATOMIC64_SELFTEST=n \
+  CONFIG_MEMTEST=n \
+  CONFIG_PM_DEBUG=n \
+  CONFIG_PM_SLEEP_DEBUG=n \
+  CONFIG_ACPI_DEBUG=n \
+  CONFIG_FW_LOADER_DEBUG=n \
+  CONFIG_OVMF_DEBUG_LOG=n \
+  CONFIG_SCSI_IPR_TRACE=n \
+  CONFIG_SCSI_IPR_DUMP=n \
+  CONFIG_DM_DEBUG=n \
+  CONFIG_MLX4_DEBUG=n \
+  CONFIG_ATH5K_DEBUG=n \
+  CONFIG_ATH6KL_DEBUG=n \
+  CONFIG_IWLEGACY_DEBUG=n \
+  CONFIG_IWLWIFI_DEBUG=n \
+  CONFIG_USB_SERIAL_DEBUG=n \
+  CONFIG_DLM_DEBUG=n \
+  CONFIG_DYNAMIC_DEBUG=n \
+  CONFIG_DYNAMIC_DEBUG_CORE=n \
+  CONFIG_SLUB_DEBUG=n \
+  CONFIG_DEBUG_MEMORY_INIT=n \
+  CONFIG_RCU_TRACE=n \
+  CONFIG_TRACEFS_AUTOMOUNT_DEPRECATED=n \
+  CONFIG_CHECKPOINT_RESTORE=n \
+  CONFIG_MEM_SOFT_DIRTY=n \
   CONFIG_PROC_PAGE_MONITOR=n \
   CONFIG_LEGACY_PTYS=n \
   CONFIG_LEGACY_TIOCSTI=n \
@@ -66,6 +111,12 @@ for required in \
   CONFIG_SECCOMP_FILTER=y \
   CONFIG_SECURITY_YAMA=y \
   CONFIG_SECURITY_LOCKDOWN_LSM_EARLY=y \
+  CONFIG_SECURITY_SELINUX_BOOTPARAM=n \
+  CONFIG_SECURITY_SELINUX_DEVELOP=n \
+  CONFIG_SECURITY_TOMOYO=n \
+  CONFIG_SECURITY_IPE=n \
+  CONFIG_BPF_LSM=n \
+  'CONFIG_LSM="lockdown,yama,integrity,selinux,landlock"' \
   CONFIG_SECURITY_DMESG_RESTRICT=y \
   CONFIG_BPF_UNPRIV_DEFAULT_OFF=y \
   CONFIG_PROC_KCORE=n \
@@ -73,10 +124,16 @@ for required in \
   CONFIG_DEVPORT=n \
   CONFIG_X86_MSR=n \
   CONFIG_X86_CPUID=n \
+  CONFIG_X86_IOPL_IOPERM=n \
+  CONFIG_X86_MCELOG_LEGACY=n \
+  CONFIG_X86_MCE_INJECT=n \
   CONFIG_IA32_EMULATION=y \
   CONFIG_X86_X32_ABI=n \
   CONFIG_USELIB=n \
   CONFIG_COREDUMP=n \
+  CONFIG_ALLOW_DEV_COREDUMP=n \
+  CONFIG_USB_MON=n \
+  CONFIG_MAGIC_SYSRQ=n \
   CONFIG_FW_LOADER_USER_HELPER=n \
   CONFIG_FW_LOADER_USER_HELPER_FALLBACK=n \
   CONFIG_ACPI_CUSTOM_METHOD=n \
@@ -110,6 +167,43 @@ for required in \
   CONFIG_RDS=n \
   CONFIG_SMC=n \
   CONFIG_TLS=n \
+  CONFIG_INET_PSP=n \
+  CONFIG_IP_VS=n \
+  CONFIG_NET_PKTGEN=n \
+  CONFIG_GTP=n \
+  CONFIG_PFCP=n \
+  CONFIG_AMT=n \
+  CONFIG_BLK_DEV_NBD=n \
+  CONFIG_ISCSI_TCP=n \
+  CONFIG_ISCSI_BOOT_SYSFS=n \
+  CONFIG_ISCSI_IBFT=n \
+  CONFIG_SCSI_QLA_ISCSI=n \
+  CONFIG_SCSI_BNX2_ISCSI=n \
+  CONFIG_SCSI_CXGB3_ISCSI=n \
+  CONFIG_SCSI_CXGB4_ISCSI=n \
+  CONFIG_INFINIBAND_ISER=n \
+  CONFIG_BE2ISCSI=n \
+  CONFIG_QEDI=n \
+  CONFIG_SCSI_ISCSI_ATTRS=n \
+  CONFIG_FCOE=n \
+  CONFIG_FCOE_FNIC=n \
+  CONFIG_QEDF=n \
+  CONFIG_SCSI_BNX2X_FCOE=n \
+  CONFIG_SCSI_CHELSIO_FCOE=n \
+  CONFIG_LIBFCOE=n \
+  CONFIG_SCSI_FC_ATTRS=n \
+  CONFIG_NET_FC=n \
+  CONFIG_NVME_RDMA=n \
+  CONFIG_NVME_FC=n \
+  CONFIG_NVME_TCP=n \
+  CONFIG_NVME_TARGET=n \
+  CONFIG_NVME_HOST_AUTH=n \
+  CONFIG_NVME_AUTH=n \
+  CONFIG_NVME_KEYRING=n \
+  CONFIG_BLK_DEV_RNBD_CLIENT=n \
+  CONFIG_BLK_DEV_RNBD_SERVER=n \
+  CONFIG_TARGET_CORE=n \
+  CONFIG_INFINIBAND=n \
   CONFIG_TIPC=n \
   CONFIG_X25=n \
   CONFIG_CRYPTO_USER_API=n \
@@ -118,6 +212,17 @@ for required in \
   CONFIG_CRYPTO_USER_API_RNG=n \
   CONFIG_CRYPTO_USER_API_AEAD=n \
   CONFIG_CRYPTO_USER_API_ENABLE_OBSOLETE=n \
+  CONFIG_IMA=n \
+  CONFIG_EVM=n \
+  CONFIG_PERSISTENT_KEYRINGS=n \
+  CONFIG_BIG_KEYS=n \
+  CONFIG_TRUSTED_KEYS=n \
+  CONFIG_ENCRYPTED_KEYS=n \
+  CONFIG_KEY_DH_OPERATIONS=n \
+  CONFIG_KEY_NOTIFICATIONS=n \
+  CONFIG_SIGNED_PE_FILE_VERIFICATION=n \
+  CONFIG_SYSTEM_BLACKLIST_AUTH_UPDATE=n \
+  CONFIG_SECURITY_SELINUX_AVC_STATS=n \
   CONFIG_AFFS_FS=n \
   CONFIG_ADFS_FS=n \
   CONFIG_BEFS_FS=n \
@@ -297,6 +402,10 @@ for required in \
   CONFIG_CPU_FREQ=y \
   CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y \
   CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y \
+  CONFIG_CPU_FREQ_STAT=n \
+  CONFIG_CPU_FREQ_GOV_USERSPACE=n \
+  CONFIG_CPU_FREQ_GOV_ONDEMAND=n \
+  CONFIG_CPU_FREQ_GOV_CONSERVATIVE=n \
   CONFIG_IRQ_TIME_ACCOUNTING=y \
   CONFIG_HIGH_RES_TIMERS=y \
   CONFIG_NO_HZ_IDLE=y \
@@ -328,6 +437,8 @@ done
 # facility. It remains mandatory in the x86 fragment only.
 grep -Fqx 'CONFIG_SCHED_MC_PRIO=y' "$x86_kernel_config" \
   || bad 'x86 preferred-core scheduler support is not pinned'
+grep -Fqx 'CONFIG_INTEL_HFI_THERMAL=n' "$x86_kernel_config" \
+  || bad 'unused Intel HFI userspace telemetry remains enabled'
 for removed in CONFIG_PARPORT=n CONFIG_BLK_DEV_FD=n CONFIG_PCCARD=n; do
   grep -Fqx "$removed" "$x86_kernel_config" \
     || bad "obsolete x86 hardware surface is not disabled: $removed"
@@ -499,6 +610,20 @@ grep -Fq 'failures=$((failures + 1))' "$audit" \
   || bad 'boot audit warnings do not contribute to a failing health result'
 grep -Fq 'exit 1' "$audit" \
   || bad 'boot audit cannot return failure when a required invariant is inactive'
+if grep -Fq 'attrs" != 06000000' "$audit" \
+   && grep -Fq '1:0) ok "Secure Boot enabled with firmware outside Setup Mode"' "$audit" \
+   && grep -Fq 'SecureBoot=$sb SetupMode=$setup' "$audit"; then
+  ok 'runtime Secure Boot evidence requires authentic attributes and exited Setup Mode'
+else
+  bad 'runtime Secure Boot audit accepts malformed or setup-mode firmware state'
+fi
+if grep -Fq "secureboot_enrollment_boot_marker_safe" "$audit" \
+   && grep -Fq "Secure Boot enrollment occurred this boot; reboot before retiring PK/KEK" "$audit" \
+   && grep -Fq "Secure Boot enrollment crossed a verified reboot boundary" "$audit"; then
+  ok 'runtime audit exposes Secure Boot enrollment reboot proof'
+else
+  bad 'runtime audit ignores malformed or same-boot enrollment evidence'
+fi
 if grep -Fq 'SuccessExitStatus=0 1' "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"; then
   bad 'systemd still converts the security audit failure into success'
 else
@@ -522,13 +647,18 @@ for required in \
   'DevicePolicy=closed' \
   'DeviceAllow=/dev/tpmrm0 rw' \
   'DeviceAllow=/dev/tpm0 rw' \
-  'CapabilityBoundingSet=CAP_SYS_PTRACE CAP_SYSLOG' \
-  'AmbientCapabilities=CAP_SYS_PTRACE CAP_SYSLOG' \
+  'CapabilityBoundingSet=' \
+  'AmbientCapabilities=' \
   'SystemCallFilter=@system-service' \
   'SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @raw-io @reboot @resources @swap'; do
   grep -Fqx "$required" "$audit_unit" \
     || bad "security audit sandbox is missing: $required"
 done
+if grep -Eq 'CAP_SYS_PTRACE|CAP_SYSLOG|/proc/\$fspid/maps' "$audit_unit" "$audit"; then
+  bad 'read-only security audit retains process-inspection or kernel-log capabilities'
+fi
+grep -Fq 'journalctl --quiet --boot --dmesg' "$audit" \
+  || bad 'security audit does not read kernel diagnostics through the journal'
 [ "$fail" -ne 0 ] || ok 'read-only security audit has a bounded runtime sandbox'
 
 hidepid_unit="$repo/os/usr/lib/systemd/system/tilo-hidepid.service"
@@ -582,6 +712,29 @@ for required in \
     || bad "TPM rollback-hardening sandbox is missing: $required"
 done
 [ "$fail" -ne 0 ] || ok 'TPM rollback hardening has device-scoped privileges'
+
+rollback_confirm_unit="$repo/os/usr/lib/systemd/system/tilo-rollback-confirm.service"
+for required in \
+  'NoNewPrivileges=yes' \
+  'ProtectSystem=strict' \
+  'PrivateNetwork=yes' \
+  'ProtectProc=invisible' \
+  'CapabilityBoundingSet=' \
+  'AmbientCapabilities=' \
+  'DevicePolicy=closed' \
+  'DeviceAllow=block-* rw' \
+  'DeviceAllow=/dev/mapper/control rw' \
+  'DeviceAllow=/dev/tpmrm0 rw' \
+  'DeviceAllow=/dev/tpm0 rw' \
+  'ReadWritePaths=/var/lib/tilo/rollback /run/tilo-rollback' \
+  'SystemCallFilter=@system-service'; do
+  grep -Fqx "$required" "$rollback_confirm_unit" \
+    || bad "rollback-confirmation sandbox is missing: $required"
+done
+if grep -Fqx 'ProcSubset=pid' "$rollback_confirm_unit"; then
+  bad 'rollback confirmation cannot read the measured generation from /proc/cmdline'
+fi
+[ "$fail" -ne 0 ] || ok 'rollback confirmation is confined to TPM and LUKS state'
 
 if grep -Fq 'bounded_command::run_prepared(' "$rollback_exec" \
    && ! grep -Eq '\.output\(\)|wait_with_output\(' "$rollback_exec"; then

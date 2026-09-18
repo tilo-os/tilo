@@ -16,8 +16,8 @@ use crate::shell::overlay_host::{
     RealtimeContinuityUiAction,
 };
 use crate::shell::personal_tethering_runtime::TetheringPhase;
-use crate::shell::remote_capture_device::RemoteCaptureKind;
-use crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase;
+use crate::shell::remote_capture::device::RemoteCaptureKind;
+use crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase;
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
@@ -1185,8 +1185,8 @@ mod tests {
                 has_video: false,
                 targets: vec![peer],
             }],
-            remote_capture: crate::shell::remote_capture_runtime::RemoteCaptureView {
-                local_receivers: crate::shell::remote_capture_adapter::RemoteCaptureAvailability {
+            remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView {
+                local_receivers: crate::shell::remote_capture::adapter::RemoteCaptureAvailability {
                     camera: true,
                     ..Default::default()
                 },

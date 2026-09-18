@@ -61,6 +61,7 @@ pub mod clipboard;
 pub mod collaboration;
 pub mod collection_transition;
 pub mod color_compat;
+pub mod content_layout;
 mod damage;
 pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
@@ -158,6 +159,7 @@ pub use collection_transition::{
     KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, TransitionVisual,
 };
 pub use color_compat::ColorCompat;
+pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
 pub use i18n::{ArgValue, I18nError, I18nManager, PseudoLocale};
 pub use image_store::{Fetcher, ImageStore};

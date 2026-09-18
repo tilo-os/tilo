@@ -663,6 +663,12 @@ impl Widget for MusicApp {
             }
             (
                 tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::PlayQueueItem { .. },
+            ) => {
+                return Err("queue playback requires the lifecycle-capable operation host".into());
+            }
+            (
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MusicOperation::SetPlayback { playback },
             ) => {
                 if playback.playing && self.pb.current != playback.current {
@@ -702,6 +708,18 @@ impl Widget for MusicApp {
                     self.update_device_cache(&id, CacheState::Streamed);
                     self.settle_offline_track(&id, Some("offline download cancelled".into()));
                 }
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::RemoveQueueItem { index, track },
+            ) => {
+                self.apply_resource_remove_queue_item(index, &track)?;
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::MoveQueueItem { index, track, to },
+            ) => {
+                self.apply_resource_move_queue_item(index, &track, to)?;
             }
             (
                 tilo_actions::OperationKind::View,
@@ -796,6 +814,26 @@ impl Widget for MusicApp {
                     return Err("another Music stream-start operation is still resolving".into());
                 }
                 match self.apply_resource_play_track(&id)? {
+                    Some(request_id) => {
+                        self.begin_resource_stream_invocation(invocation, request_id);
+                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+                    }
+                    None => Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput {
+                            value: Some(serde_json::json!({ "state": "playing" })),
+                            resources: Vec::new(),
+                        },
+                    ))),
+                }
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::PlayQueueItem { index, track },
+            ) => {
+                if self.resource_stream_invocation.is_some() {
+                    return Err("another Music stream-start operation is still resolving".into());
+                }
+                match self.apply_resource_play_queue_item(index, &track)? {
                     Some(request_id) => {
                         self.begin_resource_stream_invocation(invocation, request_id);
                         Ok(Some(ui::widget::ResourceOperationStart::Accepted))

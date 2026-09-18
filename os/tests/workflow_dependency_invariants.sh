@@ -18,6 +18,7 @@ manifest="$repo/os/external-assets/github-assets.tsv"
 package_workflow="$workflows/package-desktop.yml"
 check_workflow="$workflows/check.yml"
 kernel_workflow="$workflows/build-kernel.yml"
+rpm_snapshot_workflow="$workflows/snapshot-rpms.yml"
 containerfile="$repo/os/Containerfile"
 nightly_workflow="$workflows/nightly.yml"
 visual_refresh_workflow="$workflows/refresh-visual-baselines.yml"
@@ -56,6 +57,16 @@ if ! grep -Fq 'dnf install -y openssl' "$check_workflow"; then
   printf 'ok    affected-package CI does not install OpenSSL for security invariants\n'
 else
   printf 'affected-package CI still installs OpenSSL for security invariants\n' >&2
+  fail=1
+fi
+
+if grep -Fq 'group: snapshot-rpms-${{ github.ref }}' "$rpm_snapshot_workflow" \
+   && grep -Fq 'cancel-in-progress: false' "$rpm_snapshot_workflow" \
+   && grep -Fq 'test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"' \
+     "$rpm_snapshot_workflow"; then
+  printf 'ok    RPM snapshot refreshes cannot starve and stale runs cannot publish\n'
+else
+  printf 'RPM snapshot refreshes may be cancelled indefinitely or publish stale pins\n' >&2
   fail=1
 fi
 

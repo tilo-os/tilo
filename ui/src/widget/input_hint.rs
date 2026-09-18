@@ -814,7 +814,7 @@ mod tests {
             Size::MAX_CONTENT,
             &mut text,
         );
-        assert!(measured.height > HEIGHT as f32);
+        assert!(measured.height > crate::num::f32_of_f64(HEIGHT));
         assert_eq!(hint.layout_theme.text_scale, 2.0);
     }
 

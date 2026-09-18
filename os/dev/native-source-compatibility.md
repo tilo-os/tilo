@@ -61,3 +61,63 @@ The adoption receipt records the original native expected inputs separately.
 
 This compatibility proof says nothing about correctness of the reviewed Python
 fix itself; review that change independently before approving its exact blobs.
+
+## Rootfs-only follow-up
+
+Purpose `tilo-rootfs-native-source-compatibility` additionally requires
+`provider_revision` and `wpe_bridge`. The explicit chain is frozen source,
+provider-only correction, then a Containerfile-only correction. Full tree diff
+contains exactly the two provider files and Containerfile. Prefix through the
+rootfs FROM, suffix from the split FROM, and every FROM directive must remain
+byte-identical. Exact changed blobs still require independent review.
+
+`wpe_bridge` contains `original_receipt_json`, `original_receipt_sha256`,
+`assembly_receipt_json`, and `assembly_receipt_sha256`. These are exact UTF-8
+receipt bytes, not reserialized historical documents. The new receipt must
+differ only in audit.compatible_recipes["os/Containerfile"] and audit_sha256.
+Encode the new audit as sorted compact JSON followed by LF to calculate its
+SHA256. Preserve original unknown build provenance and all image/config/payload
+identities. Save both receipts independently. This is a new consumer compatibility
+review; it does not claim the historical WPE build used the new recipe.
+
+The workflow uses the new receipt normally. Before reproducing native inputs,
+the controller verifies the selected receipt's exact bytes against this bridge.
+Only then does it restore the original native source epoch, source revision,
+Containerfile hash, and WPE receipt hash for the unchanged strict native importer.
+Actual assembly input evidence continues to identify the new source and receipt.
+Three-deep authenticated source checkout is required. No compilation fallback
+is introduced, and WPE payload/config inspection still runs in its importer.
+
+### Reviewed runtime policy follow-up
+
+An optional `rootfs_revision` adds one final policy commit to the explicit
+frozen-source → provider → rootfs-recipe → runtime-policy chain. The final
+commit must change exactly `os/scripts/verify-runtime-crypto-packages.sh`,
+`os/usr/libexec/tilo-security-audit`, and `docs/security/boot-chain.md`, each
+with independently reviewed old/new blob identities in the admission. The
+recipe commit must still change only Containerfile. No other tracked changes
+are accepted. The unchanged recipe must reference all three policy inputs
+inside rootfs, with none of those references before rootfs or after split.
+
+The builder's broad `COPY . /build` includes these files as context; the
+frozen Cargo/build scripts do not consume them to produce native outputs.
+This is reviewed source compatibility, not identical build-context provenance.
+Native receipt identities remain original and the real assembly source remains
+recorded. The recipe and WPE consumer receipt are unchanged by the policy
+commit. Authenticated source checkout needs depth four.
+
+### Reviewed optional runtime-test follow-up
+
+An optional `policy_revision`, valid only with `rootfs_revision`, adds one
+Containerfile-only commit after the reviewed runtime-policy commit. Every
+parent in the five-commit chain is checked, and both the follow-up diff and the
+complete frozen-source diff remain explicit. Recipe changes must remain inside
+the existing rootfs stage; native stages, split/UKI stages and stage directives
+cannot change. The approval pins the final recipe blob and SHA256.
+
+The deferred AirPlay execution leaves the installed test scripts, executable
+modes, plugin probes and protocol tests intact. This is not a successful AirPlay
+validation claim. Its new recipe requires a correspondingly updated WPE
+consumer receipt: only the reviewed recipe hash and canonical audit hash may
+change. Original native inputs continue to use the original recipe and WPE
+receipt. Authenticated source checkout needs depth five.

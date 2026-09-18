@@ -101,9 +101,11 @@ impl Keyframe {
 /// Which knob a curve drives.
 ///
 /// `EffectAmount(i)` addresses the effect at index `i` in the clip's
-/// stack; if the stack is shorter than that the curve simply has nothing
-/// to drive and is ignored — reordering effects can orphan a curve, and
-/// silently dropping it beats animating the wrong effect.
+/// stack. Stack mutations must call [`ClipAnimation::swap_effect_slots`],
+/// [`ClipAnimation::remove_effect_slot`], or
+/// [`ClipAnimation::clear_effect_slots`] in the same edit so the curve follows
+/// the durable effect instance rather than whichever effect inherits its old
+/// position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Param {
     Opacity,
@@ -446,6 +448,36 @@ impl ClipAnimation {
         self.tracks.retain(|t| t.param != param);
     }
 
+    /// Move the two indexed effect curves with the two effect instances.
+    pub fn swap_effect_slots(&mut self, a: u32, b: u32) {
+        for track in &mut self.tracks {
+            track.param = match track.param {
+                Param::EffectAmount(i) if i == a => Param::EffectAmount(b),
+                Param::EffectAmount(i) if i == b => Param::EffectAmount(a),
+                other => other,
+            };
+        }
+    }
+
+    /// Remove one effect's curve and close the indexed gap after it.
+    pub fn remove_effect_slot(&mut self, removed: u32) {
+        self.tracks
+            .retain(|track| !matches!(track.param, Param::EffectAmount(i) if i == removed));
+        for track in &mut self.tracks {
+            if let Param::EffectAmount(i) = track.param
+                && i > removed
+            {
+                track.param = Param::EffectAmount(i - 1);
+            }
+        }
+    }
+
+    /// Drop all animation belonging to a stack that is being cleared.
+    pub fn clear_effect_slots(&mut self) {
+        self.tracks
+            .retain(|track| !matches!(track.param, Param::EffectAmount(_)));
+    }
+
     /// Restrict every curve to `[from, to)` and rebase (see
     /// [`ParamTrack::sliced`]). Used by split and trim.
     pub fn sliced(&self, from: f64, to: f64) -> Self {
@@ -588,6 +620,38 @@ mod tests {
         assert_eq!(a.animated_params(), vec![Param::Opacity]);
         a.clear(Param::Opacity);
         assert!(!a.is_animated(Param::Opacity));
+    }
+
+    #[test]
+    fn effect_stack_edits_carry_their_animation_tracks() {
+        let mut animation = ClipAnimation::default();
+        animation
+            .ensure(Param::EffectAmount(0))
+            .set_key(0.0, 0.2, Interp::Linear);
+        animation
+            .ensure(Param::EffectAmount(1))
+            .set_key(0.0, 0.8, Interp::Linear);
+        animation
+            .ensure(Param::EffectAmount(2))
+            .set_key(0.0, 0.4, Interp::Linear);
+        animation
+            .ensure(Param::Opacity)
+            .set_key(0.0, 0.6, Interp::Linear);
+
+        animation.swap_effect_slots(0, 1);
+        assert_eq!(animation.sample(Param::EffectAmount(0), 0.0), Some(0.8));
+        assert_eq!(animation.sample(Param::EffectAmount(1), 0.0), Some(0.2));
+
+        animation.remove_effect_slot(1);
+        assert_eq!(animation.sample(Param::EffectAmount(0), 0.0), Some(0.8));
+        assert_eq!(animation.sample(Param::EffectAmount(1), 0.0), Some(0.4));
+        assert_eq!(animation.sample(Param::EffectAmount(2), 0.0), None);
+        assert_eq!(animation.sample(Param::Opacity, 0.0), Some(0.6));
+
+        animation.clear_effect_slots();
+        assert_eq!(animation.sample(Param::EffectAmount(0), 0.0), None);
+        assert_eq!(animation.sample(Param::EffectAmount(1), 0.0), None);
+        assert_eq!(animation.sample(Param::Opacity, 0.0), Some(0.6));
     }
 
     #[test]

@@ -834,6 +834,19 @@ pub trait Widget {
         None
     }
 
+    fn tooltip_target_at(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> Option<(vello::kurbo::Rect, String)> {
+        let rect = self.get_rect();
+        if !rect.contains(point) {
+            return None;
+        }
+        self.tooltip()
+            .filter(|tooltip| !tooltip.is_empty())
+            .map(|tooltip| (rect, tooltip.to_owned()))
+    }
+
     fn is_focusable(&self) -> bool {
         false
     }
@@ -1901,10 +1914,20 @@ pub mod command_palette;
 pub mod input_hint;
 pub mod shortcut_recorder;
 pub use input_hint::{InputDeviceGlyph, InputHint};
+pub mod canvas_navigation_hint;
+pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
+mod floating_surface;
 pub use context_menu::{ContextMenu, MenuItem};
 pub mod data_table;
+mod virtual_table_semantics;
+pub use virtual_table_semantics::{
+    TableSemanticCell, TableSemanticColumn, TableSemanticControl, TableSemanticRow,
+    VirtualTableSemantics,
+};
+mod virtual_list_semantics;
+pub use virtual_list_semantics::{ListSemanticRow, VirtualListSemantics};
 pub mod table;
 pub use table::Table;
 pub mod icon_grid;
@@ -1947,7 +1970,9 @@ pub use date_picker::{DatePicker, ExternalDatePickerHit};
 pub mod time_picker;
 pub use time_picker::{TimePicker, TimeValue};
 pub mod color_picker;
+pub mod color_swatch;
 pub use color_picker::ColorPicker;
+pub use color_swatch::ColorSwatchFace;
 pub mod popover_widget;
 pub use popover_widget::PopoverWidget;
 pub mod popover;
@@ -2040,6 +2065,19 @@ pub use tree_view::{
 };
 pub mod virtual_list;
 pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, VirtualList};
+pub mod action_row;
+pub use action_row::ActionRowFace;
+pub mod choice_card;
+pub use choice_card::ChoiceCardFace;
+pub mod keyframe;
+pub use keyframe::{KeyframeFace, KeyframeState};
+pub mod disclosure_header;
+pub use disclosure_header::DisclosureHeaderFace;
+pub mod synthetic_focus;
+pub use synthetic_focus::{
+    adjacent_semantic_target, mark_semantic_focus, paint_semantic_focus, recover_semantic_focus,
+    semantic_focus_order, semantic_target_at_path, semantic_target_bounds,
+};
 pub mod toggle_group;
 pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_colors};
 

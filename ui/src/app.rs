@@ -4971,15 +4971,11 @@ impl App {
         }
         let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
         for &node in self.node_map.keys() {
-            let Ok((rect, tip)) = self.inspect_node(node, |widget| {
-                (widget.get_rect(), widget.tooltip().map(str::to_owned))
-            }) else {
+            let Ok(target) = self.inspect_node(node, |widget| widget.tooltip_target_at(point))
+            else {
                 continue;
             };
-            if rect.contains(point)
-                && let Some(tip) = tip
-                && !tip.is_empty()
-            {
+            if let Some((rect, tip)) = target {
                 let area = (rect.width() * rect.height()).max(0.0);
                 if best.as_ref().is_none_or(|(a, _, _)| area < *a) {
                     best = Some((area, rect, tip));
@@ -7082,9 +7078,10 @@ impl App {
     ///
     /// # Panics
     ///
-    /// Panics if the platform windowing system can't give us an event loop,
-    /// or if running it fails — there is no app without one, so there is no
-    /// meaningful fallback.
+    /// Panics if the platform windowing system can't create the event loop.
+    /// Once running, a Wayland compositor disconnect is a normal application
+    /// shutdown boundary (session logout, compositor restart), so an
+    /// `ExitFailure` is logged and returned rather than converted into a panic.
     #[allow(
         clippy::expect_used,
         clippy::unwrap_used,
@@ -7134,7 +7131,15 @@ impl App {
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
             dispatching_touch_pointer: false,
         };
-        event_loop.run_app(&mut handler).unwrap();
+        match event_loop.run_app(&mut handler) {
+            Ok(()) => {}
+            Err(winit::error::EventLoopError::ExitFailure(status)) => {
+                tracing::debug!(status, "window system disconnected; application exiting");
+            }
+            Err(error) => {
+                tracing::error!(%error, "application event loop failed; application exiting");
+            }
+        }
     }
 }
 

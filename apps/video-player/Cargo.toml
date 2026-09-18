@@ -29,7 +29,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 settings-store = { path = "../../crates/system/settings-store" }
-media = { path = "../../crates/media" }
+media = { path = "../../crates/media/core" }
 collab-types = { path = "../../crates/collab/collab-types" }
 automerge.workspace = true
 serde.workspace = true

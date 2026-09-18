@@ -21,7 +21,7 @@ use crate::portal::{
 };
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::realtime_session::VerifiedAppRegistration;
-use crate::shell::remote_capture_device::{
+use crate::shell::remote_capture::device::{
     MAX_REMOTE_CAPTURE_SESSIONS, RemoteCaptureChunk, RemoteCaptureGrant, RemoteCaptureKind,
     RemoteCaptureProfile, RemoteCaptureRequest,
 };
@@ -103,35 +103,6 @@ impl RemoteCaptureTargetBridge {
             broker,
             sessions: BTreeMap::new(),
         }
-    }
-
-    /// Provision a target-local endpoint without granting any app access.
-    pub(crate) fn prepare(
-        &mut self,
-        app: &VerifiedAppRegistration,
-        request: &RemoteCaptureRequest,
-        source: DeviceId,
-        target: DeviceId,
-        session_id: [u8; 16],
-        grant: RemoteCaptureGrant,
-        adapter: &mut dyn RemoteCaptureAdapter,
-    ) -> Result<(), RemoteCaptureAdapterError> {
-        if !request.valid()
-            || request.app_id != app.app_id()
-            || request.workspace_id != app.workspace_id()
-            || session_id == [0; 16]
-            || !grant.valid()
-            || source == target
-            || self.sessions.contains_key(&session_id)
-            || self.sessions.len() >= MAX_REMOTE_CAPTURE_SESSIONS
-        {
-            return Err(RemoteCaptureAdapterError::BindingMismatch);
-        }
-
-        let endpoint = adapter.provision(session_id, &request.profile)?;
-        self.prepare_endpoint(
-            app, request, source, target, session_id, grant, endpoint, adapter,
-        )
     }
 
     /// Install an endpoint produced by the bounded provisioning worker. This
@@ -625,16 +596,12 @@ impl ProductionRemoteCaptureAdapter {
         }
     }
 
-    pub(crate) fn availability(&self) -> RemoteCaptureAvailability {
-        self.availability
-    }
-
     fn provision_camera(
         &mut self,
         session_id: [u8; 16],
         profile: &RemoteCaptureProfile,
     ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError> {
-        use crate::shell::remote_capture_device::RemoteVideoFormat;
+        use crate::shell::remote_capture::device::RemoteVideoFormat;
         let RemoteCaptureProfile::Camera {
             format,
             width,
@@ -692,7 +659,7 @@ impl ProductionRemoteCaptureAdapter {
         session_id: [u8; 16],
         profile: &RemoteCaptureProfile,
     ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError> {
-        use crate::shell::remote_capture_device::RemoteAudioFormat;
+        use crate::shell::remote_capture::device::RemoteAudioFormat;
         let RemoteCaptureProfile::Microphone {
             format,
             sample_rate,
@@ -919,7 +886,7 @@ pub(crate) enum RemoteCaptureAdapterError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::remote_capture_device::{
+    use crate::shell::remote_capture::device::{
         REMOTE_CAPTURE_PROTOCOL_VERSION, RemoteDocumentFormat, RemoteVideoFormat,
     };
 
@@ -971,7 +938,7 @@ mod tests {
     }
 
     fn grant_for(request: &RemoteCaptureRequest) -> ([u8; 16], RemoteCaptureGrant) {
-        let mut registry = crate::shell::remote_capture_device::RemoteCaptureRegistry::default();
+        let mut registry = crate::shell::remote_capture::device::RemoteCaptureRegistry::default();
         registry
             .grant(
                 request,
@@ -980,6 +947,22 @@ mod tests {
                 Instant::now(),
             )
             .unwrap()
+    }
+
+    fn prepare(
+        bridge: &mut RemoteCaptureTargetBridge,
+        adapter: &mut FakeAdapter,
+        owner: &VerifiedAppRegistration,
+        request: &RemoteCaptureRequest,
+        source: DeviceId,
+        target: DeviceId,
+        session: [u8; 16],
+        grant: RemoteCaptureGrant,
+    ) -> Result<(), RemoteCaptureAdapterError> {
+        let endpoint = adapter.provision(session, &request.profile)?;
+        bridge.prepare_endpoint(
+            owner, request, source, target, session, grant, endpoint, adapter,
+        )
     }
 
     #[test]
@@ -998,17 +981,17 @@ mod tests {
         let owner = app("dev.tilo.Camera", "workspace-a");
         let source = DeviceId::new("phone").unwrap();
         let target = DeviceId::new("laptop").unwrap();
-        bridge
-            .prepare(
-                &owner,
-                &request,
-                source.clone(),
-                target.clone(),
-                session,
-                grant,
-                &mut adapter,
-            )
-            .unwrap();
+        prepare(
+            &mut bridge,
+            &mut adapter,
+            &owner,
+            &request,
+            source.clone(),
+            target.clone(),
+            session,
+            grant,
+        )
+        .unwrap();
         assert_eq!(
             broker.lock().unwrap().enumerate(CaptureKind::Camera).len(),
             1
@@ -1093,17 +1076,17 @@ mod tests {
         let owner = app("dev.tilo.Camera", "workspace-a");
         let source = DeviceId::new("phone").unwrap();
         let target = DeviceId::new("laptop").unwrap();
-        bridge
-            .prepare(
-                &owner,
-                &request,
-                source.clone(),
-                target.clone(),
-                session,
-                grant,
-                &mut adapter,
-            )
-            .unwrap();
+        prepare(
+            &mut bridge,
+            &mut adapter,
+            &owner,
+            &request,
+            source.clone(),
+            target.clone(),
+            session,
+            grant,
+        )
+        .unwrap();
         let approval = bridge
             .approve(&owner, &source, &target, session, grant, Instant::now())
             .unwrap();
@@ -1178,28 +1161,29 @@ mod tests {
         let owner = app("dev.tilo.Camera", "workspace-a");
         for index in 1..=MAX_REMOTE_CAPTURE_SESSIONS {
             let (session, grant) = grant_for(&request);
-            bridge
-                .prepare(
-                    &owner,
-                    &request,
-                    DeviceId::new(format!("phone-{index}")).unwrap(),
-                    DeviceId::new("laptop").unwrap(),
-                    session,
-                    grant,
-                    &mut adapter,
-                )
-                .unwrap();
+            prepare(
+                &mut bridge,
+                &mut adapter,
+                &owner,
+                &request,
+                DeviceId::new(format!("phone-{index}")).unwrap(),
+                DeviceId::new("laptop").unwrap(),
+                session,
+                grant,
+            )
+            .unwrap();
         }
         let (extra, extra_grant) = grant_for(&request);
         assert!(matches!(
-            bridge.prepare(
+            prepare(
+                &mut bridge,
+                &mut adapter,
                 &owner,
                 &request,
                 DeviceId::new("extra").unwrap(),
                 DeviceId::new("laptop").unwrap(),
                 extra,
                 extra_grant,
-                &mut adapter
             ),
             Err(RemoteCaptureAdapterError::BindingMismatch)
         ));

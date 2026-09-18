@@ -53,7 +53,7 @@ use ui::widget::{EmptyState, NavPane, NavShell, TextInput, Toggle, ToggleFace, W
 use crate::account::{Account, AccountStore};
 use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
 use crate::doc::MailDoc;
-use crate::draw::{fill_rect, fill_round, stroke_round};
+use crate::draw::{elide, fill_rect, fill_round, stroke_round};
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
 use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
@@ -80,6 +80,12 @@ const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(3500);
 /// into an unbounded filesystem write. Larger attachments can be downloaded
 /// through Files after Mail exposes a proper streamed handoff.
 const MAX_ATTACHMENT_SAVE_BYTES: usize = crate::attachment_store::MAX_ATTACHMENT_BYTES;
+/// Popup actions keep a generous target even in a desktop menu, and their
+/// geometry follows the host text scale so enlarged text cannot clip or spill.
+const CONTEXT_MENU_W: f64 = 248.0;
+const CONTEXT_MENU_HEADER_H: f64 = 42.0;
+const CONTEXT_MENU_ROW_H: f64 = 36.0;
+const CONTEXT_MENU_PAD: f64 = 6.0;
 
 struct PaintContext<'a> {
     scene: &'a mut Scene,
@@ -104,6 +110,8 @@ struct ContextMenu {
     target: MessageId,
     pos: Point,
     items: Vec<CtxAction>,
+    /// Persisted focus target for the native arrow-key menu model.
+    active: usize,
 }
 
 /// A hit region in one of the app-owned overlays (setup sheet / context menu /
@@ -549,6 +557,19 @@ impl MailApp {
             .map(|message| message.id);
         if let Some(id) = id {
             self.shared.borrow_mut().push_intent(Intent::Reply(id));
+            self.process_intents();
+        }
+        self.dirty = true;
+    }
+
+    /// Open the same menu a row right-click produces. It exercises only the
+    /// existing sample mailbox and never implies provider activity or delivery.
+    pub fn prime_context_menu_shot(&mut self) {
+        let selected = self.shared.borrow().selected;
+        if let Some(id) = selected {
+            self.shared
+                .borrow_mut()
+                .push_intent(Intent::ContextMenu(id, Point::new(790.0, 206.0)));
             self.process_intents();
         }
         self.dirty = true;
@@ -1060,10 +1081,11 @@ impl MailApp {
                 Intent::EditDraft(id) => self.open_draft(id),
                 Intent::ContextMenu(id, pt) => {
                     let items = self.shared.borrow().context_items_for(id);
-                    self.context_menu = Some(ContextMenu {
+                    self.context_menu = (!items.is_empty()).then_some(ContextMenu {
                         target: id,
                         pos: pt,
                         items,
+                        active: 0,
                     });
                 }
                 Intent::Settings(idx) => self.open_setup_edit(idx),
@@ -1824,12 +1846,20 @@ impl MailApp {
             }
         }
         if let Some(menu) = &self.context_menu {
-            let mr = context_menu_rect(menu, self.rect);
-            let mut y = mr.y0 + 6.0;
+            let scale = f64::from(self.layout_theme.text_scale);
+            let mr = context_menu_rect(menu, self.rect, scale);
+            let mut y = mr.y0 + (CONTEXT_MENU_HEADER_H + CONTEXT_MENU_PAD) * scale;
             for (i, _a) in menu.items.iter().enumerate() {
-                self.overlay_hits
-                    .push((Rect::new(mr.x0, y, mr.x1, y + 28.0), OverlayHit::CtxItem(i)));
-                y += 28.0;
+                self.overlay_hits.push((
+                    Rect::new(
+                        mr.x0 + CONTEXT_MENU_PAD * scale,
+                        y,
+                        mr.x1 - CONTEXT_MENU_PAD * scale,
+                        y + CONTEXT_MENU_ROW_H * scale,
+                    ),
+                    OverlayHit::CtxItem(i),
+                ));
+                y += CONTEXT_MENU_ROW_H * scale;
             }
         }
     }
@@ -2322,6 +2352,10 @@ impl MailApp {
 
     // ---- drawing the app-owned overlays ----------------------------------
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the popup frame, context header, focus treatment and command bounds use one geometry source so pointer, keyboard and AT cannot drift"
+    )]
     fn draw_context_menu(
         &self,
         scene: &mut Scene,
@@ -2333,7 +2367,8 @@ impl MailApp {
             return;
         };
         let c = &theme.tokens.colors;
-        let mr = context_menu_rect(menu, self.rect);
+        let scale = f64::from(theme.text_scale);
+        let mr = context_menu_rect(menu, self.rect, scale);
         scene.fill(
             Fill::NonZero,
             t,
@@ -2359,17 +2394,84 @@ impl MailApp {
             .mailbox
             .get(menu.target)
             .map_or((false, false), |m| (m.read, m.starred));
+        let subject = self.shared.borrow().mailbox.get(menu.target).map_or_else(
+            || "Message actions".to_string(),
+            |message| {
+                elide(
+                    tr,
+                    &message.subject,
+                    11.0,
+                    TextWeight::Medium,
+                    mr.width() - 48.0 * scale,
+                )
+            },
+        );
         let last_mouse = self.shared.borrow().last_mouse;
-        let mut y = mr.y0 + 6.0;
-        for a in &menu.items {
-            let item = Rect::new(mr.x0, y, mr.x1, y + 28.0);
-            if item.contains(last_mouse) {
+        Icon::MoreHorizontal.draw(
+            scene,
+            t,
+            Rect::new(
+                mr.x0 + 14.0 * scale,
+                mr.y0 + 11.0 * scale,
+                mr.x0 + 30.0 * scale,
+                mr.y0 + 27.0 * scale,
+            ),
+            c.text_dim,
+        );
+        tr.draw_text_weighted(
+            scene,
+            "Message actions",
+            12.5,
+            c.text_primary,
+            t * Affine::translate((mr.x0 + 38.0 * scale, mr.y0 + 10.0 * scale)),
+            None,
+            TextWeight::Semibold,
+        );
+        tr.draw_text(
+            scene,
+            &subject,
+            10.5,
+            c.text_dim,
+            t * Affine::translate((mr.x0 + 38.0 * scale, mr.y0 + 25.0 * scale)),
+            None,
+        );
+        fill_rect(
+            scene,
+            t,
+            Rect::new(
+                mr.x0 + 10.0 * scale,
+                mr.y0 + (CONTEXT_MENU_HEADER_H - 1.0) * scale,
+                mr.x1 - 10.0 * scale,
+                mr.y0 + CONTEXT_MENU_HEADER_H * scale,
+            ),
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
+        let menu_row_at = |index: usize| {
+            let y = mr.y0
+                + (CONTEXT_MENU_HEADER_H + CONTEXT_MENU_PAD) * scale
+                + index as f64 * CONTEXT_MENU_ROW_H * scale;
+            Rect::new(
+                mr.x0 + CONTEXT_MENU_PAD * scale,
+                y,
+                mr.x1 - CONTEXT_MENU_PAD * scale,
+                y + CONTEXT_MENU_ROW_H * scale,
+            )
+        };
+        let hovered_index = menu
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(index, _)| menu_row_at(index).contains(last_mouse).then_some(index));
+        for (index, a) in menu.items.iter().enumerate() {
+            let item = menu_row_at(index);
+            let hovered_item = hovered_index == Some(index);
+            if hovered_item || (hovered_index.is_none() && index == menu.active) {
                 fill_round(
                     scene,
                     t,
-                    Rect::new(item.x0 + 4.0, item.y0 + 1.0, item.x1 - 4.0, item.y1 - 1.0),
+                    item,
                     6.0,
-                    c.lift(0.72),
+                    c.accent[5].with_alpha_factor(if hovered_item { 0.22 } else { 0.16 }),
                 );
             }
             let danger = matches!(a, CtxAction::Delete);
@@ -2378,15 +2480,40 @@ impl MailApp {
             } else {
                 c.text_primary
             };
-            tr.draw_text(
+            a.icon().draw(
+                scene,
+                t,
+                Rect::new(
+                    item.x0 + 10.0 * scale,
+                    item.y0 + 9.0 * scale,
+                    item.x0 + 26.0 * scale,
+                    item.y0 + 25.0 * scale,
+                ),
+                col,
+            );
+            tr.draw_text_weighted(
                 scene,
                 &a.label(read, starred),
                 12.5,
                 col,
-                t * Affine::translate((mr.x0 + 14.0, y + 7.0)),
+                t * Affine::translate((item.x0 + 36.0 * scale, item.y0 + 10.0 * scale)),
                 None,
+                TextWeight::Medium,
             );
-            y += 28.0;
+            if let Some(shortcut) = a.shortcut() {
+                let (w, _) = tr.measure(shortcut, 10.5, None);
+                tr.draw_text(
+                    scene,
+                    shortcut,
+                    10.5,
+                    c.text_dim,
+                    t * Affine::translate((
+                        item.x1 - f64::from(w) - 10.0 * scale,
+                        item.y0 + 11.0 * scale,
+                    )),
+                    None,
+                );
+            }
         }
     }
 
@@ -3147,9 +3274,13 @@ fn build_setup_inputs(cfg: &AccountConfig) -> Vec<TextInput> {
     ]
 }
 
-fn context_menu_rect(menu: &ContextMenu, bounds: Rect) -> Rect {
-    let w = 210.0;
-    let h = 6.0 + menu.items.len() as f64 * 28.0 + 6.0;
+fn context_menu_rect(menu: &ContextMenu, bounds: Rect, text_scale: f64) -> Rect {
+    let scale = text_scale.clamp(0.75, 2.0);
+    let w = CONTEXT_MENU_W * scale;
+    let h = (CONTEXT_MENU_HEADER_H
+        + CONTEXT_MENU_PAD * 2.0
+        + menu.items.len() as f64 * CONTEXT_MENU_ROW_H)
+        * scale;
     let x0 = menu.pos.x.min(bounds.x1 - w - 8.0).max(bounds.x0 + 4.0);
     let y0 = menu.pos.y.min(bounds.y1 - h - 8.0).max(bounds.y0 + 4.0);
     Rect::new(x0, y0, x0 + w, y0 + h)
@@ -3443,6 +3574,99 @@ impl MailApp {
         true
     }
 
+    /// The popup owns keyboard focus while open so its actions cannot fall
+    /// through to the selected message behind it.
+    fn handle_context_menu_keyboard(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+    ) -> bool {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return matches!(event, WindowEvent::KeyboardInput { .. });
+        };
+        let Some(menu) = self.context_menu.as_mut() else {
+            return false;
+        };
+        let count = menu.items.len();
+        if count == 0 {
+            self.context_menu = None;
+            return true;
+        }
+        let accelerator = match logical_key {
+            Key::Character(ch) if ch.eq_ignore_ascii_case("r") => Some(CtxAction::Reply),
+            Key::Character(ch) if ch.eq_ignore_ascii_case("u") => Some(CtxAction::ToggleRead),
+            Key::Character(ch) if ch.eq_ignore_ascii_case("s") => Some(CtxAction::ToggleStar),
+            Key::Character(ch) if ch.eq_ignore_ascii_case("e") => Some(CtxAction::Archive),
+            Key::Named(NamedKey::Delete | NamedKey::Backspace) => Some(CtxAction::Delete),
+            _ => None,
+        };
+        if let Some(action) = accelerator
+            && let Some(index) = menu.items.iter().position(|item| *item == action)
+        {
+            return self.activate_context_menu_item(index, state);
+        }
+        match logical_key {
+            Key::Named(NamedKey::Escape) => self.context_menu = None,
+            Key::Named(NamedKey::ArrowDown | NamedKey::Tab) => {
+                menu.active = if menu.active + 1 == count {
+                    0
+                } else {
+                    menu.active + 1
+                };
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                menu.active = if menu.active == 0 {
+                    count - 1
+                } else {
+                    menu.active - 1
+                };
+            }
+            Key::Named(NamedKey::Home) => menu.active = 0,
+            Key::Named(NamedKey::End) => menu.active = count - 1,
+            Key::Named(NamedKey::Enter) => {
+                let active = menu.active;
+                return self.activate_context_menu_item(active, state);
+            }
+            Key::Character(ch) if ch == " " => {
+                let active = menu.active;
+                return self.activate_context_menu_item(active, state);
+            }
+            _ => {}
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// One dispatcher for pointer, keyboard and assistive-technology menu
+    /// activation. The message must still be loaded when the command lands.
+    fn activate_context_menu_item(&mut self, index: usize, state: &mut AutoCommit) -> bool {
+        let Some(menu) = self.context_menu.take() else {
+            return false;
+        };
+        let Some(action) = menu.items.get(index).copied() else {
+            return false;
+        };
+        if self.shared.borrow().mailbox.get(menu.target).is_none() {
+            self.shared.borrow_mut().status = Some("That message is no longer available.".into());
+            self.dirty = true;
+            return false;
+        }
+        self.shared
+            .borrow_mut()
+            .apply_message_action(state, menu.target, action);
+        self.process_intents();
+        true
+    }
+
     /// Activate the clicked context-menu item or dismiss the open menu.
     fn handle_context_menu_click(&mut self, pt: Point, state: &mut AutoCommit) {
         self.rebuild_overlay_hits();
@@ -3453,14 +3677,7 @@ impl MailApp {
             .find(|(rc, h)| matches!(h, OverlayHit::CtxItem(_)) && rc.contains(pt))
             .cloned();
         if let Some((_, OverlayHit::CtxItem(i))) = item {
-            if let Some(menu) = self.context_menu.take()
-                && let Some(action) = menu.items.get(i).copied()
-            {
-                self.shared
-                    .borrow_mut()
-                    .apply_message_action(state, menu.target, action);
-                self.process_intents();
-            }
+            self.activate_context_menu_item(i, state);
         } else {
             self.context_menu = None;
         }
@@ -3578,6 +3795,11 @@ impl MailApp {
             return true;
         }
 
+        if self.context_menu.is_some() && self.handle_context_menu_keyboard(event, ctx.state) {
+            *ctx.handled = true;
+            return true;
+        }
+
         if self.is_first_run() {
             if let Some(first_run_node) = self.first_run_node {
                 self.first_run.handle_event(
@@ -3608,28 +3830,26 @@ impl MailApp {
                 },
             ..
         } = event
+            && self.setup_open
         {
-            if self.context_menu.is_some() {
-                self.context_menu = None;
-                *ctx.handled = true;
-                return true;
-            }
-            if self.setup_open {
-                self.close_setup();
-                *ctx.handled = true;
-                return true;
-            }
+            self.close_setup();
+            *ctx.handled = true;
+            return true;
         }
 
         if self.context_menu.is_some()
             && let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
-                button: MouseButton::Left,
+                button,
                 ..
             } = event
         {
-            let point = self.shared.borrow().last_mouse;
-            self.handle_context_menu_click(point, ctx.state);
+            if *button == MouseButton::Left {
+                let point = self.shared.borrow().last_mouse;
+                self.handle_context_menu_click(point, ctx.state);
+            } else {
+                self.context_menu = None;
+            }
             *ctx.handled = true;
             return true;
         }
@@ -3991,6 +4211,59 @@ impl MailApp {
                 },
             ))
             .with_children(children)
+    }
+    fn context_menu_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let menu = self.context_menu.as_ref()?;
+        let (read, starred) = self
+            .shared
+            .borrow()
+            .mailbox
+            .get(menu.target)
+            .map_or((false, false), |message| (message.read, message.starred));
+        let scale = f64::from(self.layout_theme.text_scale);
+        let rect = context_menu_rect(menu, self.rect, scale);
+        let total = menu.items.len();
+        let children = menu
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let y = rect.y0
+                    + (CONTEXT_MENU_HEADER_H + CONTEXT_MENU_PAD) * scale
+                    + index as f64 * CONTEXT_MENU_ROW_H * scale;
+                let mut node = AccessNode::new(Role::MenuItem)
+                    .with_name(item.label(read, starred))
+                    .with_action_target(format!("mail.context:{}:{index}", menu.target))
+                    .with_position(index + 1, total)
+                    .with_bounds(Rect::new(
+                        rect.x0 + CONTEXT_MENU_PAD * scale,
+                        y,
+                        rect.x1 - CONTEXT_MENU_PAD * scale,
+                        y + CONTEXT_MENU_ROW_H * scale,
+                    ))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(index == menu.active),
+                    );
+                if let Some(key) = item.shortcut() {
+                    node = node.with_description(format!("Shortcut: {key}"));
+                }
+                node
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Menu)
+                .with_name("Message actions")
+                .with_description(
+                    "Use Up and Down Arrow to choose an action, Enter to activate, or Escape to close.",
+                )
+                .with_bounds(rect)
+                .with_state(AccessState::new().modal(true))
+                .with_children(children),
+        )
     }
 }
 
@@ -4498,6 +4771,9 @@ impl Widget for MailApp {
         if self.setup_open {
             return Some(self.setup_accessibility_node());
         }
+        if self.context_menu.is_some() {
+            return self.context_menu_accessibility();
+        }
         if self.is_first_run() {
             // `first_run` remains a real child widget, which supplies the
             // onboarding action and its existing activation path.
@@ -4567,6 +4843,31 @@ impl Widget for MailApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        if let Some(raw) = target.strip_prefix("mail.context:") {
+            let Some((message_raw, index_raw)) = raw.rsplit_once(':') else {
+                return false;
+            };
+            let (Ok(message), Ok(index)) =
+                (message_raw.parse::<MessageId>(), index_raw.parse::<usize>())
+            else {
+                return false;
+            };
+            let Some(menu) = self.context_menu.as_mut() else {
+                return false;
+            };
+            if menu.target != message || index >= menu.items.len() {
+                return false;
+            }
+            match action {
+                ui::a11y::Action::Focus => {
+                    menu.active = index;
+                    self.dirty = true;
+                    return true;
+                }
+                ui::a11y::Action::Activate => return self.activate_context_menu_item(index, state),
+                _ => return false,
+            }
+        }
         if let Some(control) = target.strip_prefix("mail.bulk-purge:") {
             if !matches!(action, ui::a11y::Action::Activate)
                 || self.bulk_purge_confirmation.is_none()
@@ -6818,6 +7119,85 @@ mod tests {
         assert!(
             app.context_menu.is_none(),
             "menu dismissed after the action"
+        );
+    }
+
+    #[test]
+    fn context_menu_keyboard_moves_focus_and_activates_the_visible_action() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let id = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
+        app.shared
+            .borrow_mut()
+            .push_intent(Intent::ContextMenu(id, Point::new(400.0, 300.0)));
+        app.process_intents();
+        let archive_index = app
+            .context_menu
+            .as_ref()
+            .and_then(|menu| {
+                menu.items
+                    .iter()
+                    .position(|item| *item == CtxAction::Archive)
+            })
+            .expect("archive is an offered menu command");
+        for _ in 0..archive_index {
+            assert!(dispatch(
+                &mut app,
+                &named_key(NamedKey::ArrowDown),
+                &mut doc
+            ));
+        }
+        assert_eq!(
+            app.context_menu.as_ref().map(|menu| menu.active),
+            Some(archive_index)
+        );
+        let before = app.shared.borrow().mailbox.count(Folder::Archive);
+        assert!(dispatch(&mut app, &named_key(NamedKey::Enter), &mut doc));
+        assert_eq!(
+            app.shared.borrow().mailbox.count(Folder::Archive),
+            before + 1
+        );
+        assert!(app.context_menu.is_none());
+    }
+
+    #[test]
+    fn context_menu_is_a_modal_accessibility_menu_with_routable_items() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let id = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
+        app.shared
+            .borrow_mut()
+            .push_intent(Intent::ContextMenu(id, Point::new(400.0, 300.0)));
+        app.process_intents();
+        let menu = app.accessibility().expect("context menu semantics");
+        assert_eq!(menu.role, ui::a11y::Role::Menu);
+        assert!(menu.state.modal);
+        let archive = menu
+            .children
+            .iter()
+            .find(|item| item.name.as_deref() == Some("Archive"))
+            .expect("Archive is described to assistive technology");
+        let target = archive.action_target.clone().expect("routable menu item");
+        assert!(app.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Focus,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(app.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(app.context_menu.is_none());
+        assert_eq!(
+            app.shared
+                .borrow()
+                .mailbox
+                .get(id)
+                .map(|message| message.folder),
+            Some(Folder::Archive)
         );
     }
 

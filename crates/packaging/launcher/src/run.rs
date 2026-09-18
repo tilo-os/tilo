@@ -681,7 +681,11 @@ pub fn resolve_runtime(
     let (_, version) = raw
         .split_once('/')
         .ok_or_else(|| RunError::RuntimeReferenceMalformed(raw.to_string()))?;
-    // Look up: per-user first, then system.
+    // Look up: the configured/user root first, then the immutable system
+    // fallback. `default_bundle_path` intentionally honours
+    // TILO_RUNTIME_BUNDLE_DIR; developer sessions use it to keep the runtime
+    // matched to an overlaid registry/payload set instead of silently binding
+    // the installed `/usr` runtime.
     let per_user = runtime_bundle::default_bundle_path(version).ok();
     let system = runtime_bundle::system_bundle_path(version);
     let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();

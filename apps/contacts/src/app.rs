@@ -836,6 +836,10 @@ fn remove_type_target(id: ContactId, target: TypeTarget) -> String {
 struct Hit {
     import: Rect,
     export: Rect,
+    /// A review-only route for the first deterministic potential duplicate.
+    /// It is zero when there is nothing to review, so it can never become a
+    /// stale invisible target after a collaborator resolves the pair.
+    duplicates: Rect,
     new: Rect,
     search: Rect,
     sort: Rect,
@@ -902,6 +906,13 @@ pub struct ContactsApp {
     /// time after each explicit decision.
     import_conflict_dialog: Option<ImportConflictDialog>,
     duplicate_review: Option<DuplicateReview>,
+    /// The first bounded duplicate candidate, recomputed only when the
+    /// authoritative document generation changes. This keeps a very large
+    /// address book from being rescanned on every layout, paint, tooltip, or
+    /// accessibility query merely to decide whether the review affordance is
+    /// visible.
+    duplicate_candidate: Option<crate::actions::DuplicateCandidate>,
+    duplicate_candidate_heads: Vec<ChangeHash>,
 
     /// Self-contained export selection modal: state, drawing and input routing.
     export_dialog: ExportDialog,
@@ -1070,6 +1081,8 @@ impl ContactsApp {
             delete_dialog: None,
             import_conflict_dialog: None,
             duplicate_review: None,
+            duplicate_candidate: None,
+            duplicate_candidate_heads: Vec::new(),
             export_dialog: ExportDialog::new(),
             pending_switch: None,
             unsaved_focus: UnsavedFocus::Cancel,
@@ -1259,6 +1272,26 @@ impl ContactsApp {
             self.dirty = true;
             self.relayout = true;
         }
+    }
+
+    /// Stage one local duplicate suggestion for the screenshot matrix. The
+    /// live app obtains this candidate only from synced address-book data;
+    /// this hook does not write a contact or a merge decision into the shot
+    /// document.
+    pub fn shots_show_duplicate_discovery(&mut self) {
+        let Some(survivor) = self.selected.and_then(|id| self.store.get(id)).cloned() else {
+            return;
+        };
+        let mut source = survivor;
+        source.id = uuid::Uuid::new_v4();
+        source.notes = "A second import with the same identity; review before merging.".into();
+        self.store.upsert(source);
+        self.duplicate_candidate = crate::actions::duplicate_candidates(&self.store.contacts, 1)
+            .into_iter()
+            .next();
+        self.duplicate_candidate_heads.clone_from(&self.model_heads);
+        self.dirty = true;
+        self.relayout = true;
     }
 
     /// Empty the book for `--shots` so a headless frame captures the genuine
@@ -1722,6 +1755,25 @@ impl ContactsApp {
             Ok(()) => self.search_heads.clone_from(&self.model_heads),
             Err(error) => self.show_toast(format!("Contacts search update failed: {error}")),
         }
+    }
+
+    /// Retain one deterministic, reviewable collision per document
+    /// generation. This uses the same bounded detector that publishes
+    /// canonical duplicate resources, but moves its O(book) work out of the
+    /// hot layout/paint/a11y paths. The result is derived presentation state:
+    /// no duplicate index or merge intent is written into the shared book.
+    fn refresh_duplicate_candidate(&mut self) {
+        if self.duplicate_candidate_heads == self.model_heads {
+            return;
+        }
+        self.duplicate_candidate = crate::actions::duplicate_candidates(&self.store.contacts, 1)
+            .into_iter()
+            .next();
+        self.duplicate_candidate_heads.clone_from(&self.model_heads);
+    }
+
+    fn has_duplicate_candidate(&self) -> bool {
+        self.duplicate_candidate.is_some()
     }
 
     /// The contextual Ctrl+K resource page is a bounded snapshot. It never
@@ -2527,6 +2579,28 @@ impl ContactsApp {
         )
     }
 
+    /// Open the locally surfaced candidate through the exact typed operation
+    /// owned by its canonical duplicate resource. The toolbar is therefore a
+    /// discoverability affordance, not a second private merge path: global
+    /// search, an agent, keyboard semantics, and pointer activation all land
+    /// in the same field-by-field review surface.
+    fn invoke_duplicate_review_operation(&mut self, state: &AutoCommit) -> Result<bool, String> {
+        let candidate = self
+            .duplicate_candidate
+            .as_ref()
+            .ok_or_else(|| "there are no duplicate contacts to review".to_string())?;
+        let operation = crate::actions::open_duplicate_review_operation(candidate);
+        let payload = serde_json::to_vec(&operation)
+            .map_err(|error| format!("couldn't encode duplicate review: {error}"))?;
+        self.invoke_resource_operation(
+            tilo_actions::OperationKind::View,
+            crate::actions::CONTACTS_OPERATION_TYPE,
+            &payload,
+            state,
+            &automerge::ROOT,
+        )
+    }
+
     /// Write the chosen `ids` out as a `.vcf` of `version` to `path`, reporting
     /// the real destination. Hermetic core shared by the live portal drain and
     /// the tests — it takes an explicit path and never consults the picker or
@@ -2595,6 +2669,15 @@ impl ContactsApp {
         let export_w = if compact { 40.0 } else { 86.0 };
         self.hit.export = Rect::new(x - export_w, btn_y, x, btn_y + button_h);
         x -= export_w + gap;
+        self.hit.duplicates = Rect::ZERO;
+        if self.has_duplicate_candidate() {
+            // At large text and phone widths this retains the same 40 px
+            // touch target as the other compact toolbar controls. The short
+            // painted label has a complete accessible name and tooltip.
+            let duplicate_w = if compact { 40.0 } else { 112.0 };
+            self.hit.duplicates = Rect::new(x - duplicate_w, btn_y, x, btn_y + button_h);
+            x -= duplicate_w + gap;
+        }
         let import_w = if compact { 40.0 } else { 86.0 };
         self.hit.import = Rect::new(x - import_w, btn_y, x, btn_y + button_h);
     }
@@ -3591,6 +3674,10 @@ impl ContactsApp {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the toolbar keeps its responsive labels, busy states, and the review-only duplicate affordance in one paint route"
+    )]
     fn draw_toolbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         let compact = self.toolbar_is_compact();
@@ -3679,6 +3766,19 @@ impl ContactsApp {
                 hov(self.hit.export),
                 false,
             );
+            if self.has_duplicate_candidate() {
+                toolbar_button(
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    self.hit.duplicates,
+                    if compact { "2×" } else { "Review duplicate" },
+                    false,
+                    hov(self.hit.duplicates),
+                    false,
+                );
+            }
             toolbar_button(
                 scene,
                 t,
@@ -6173,6 +6273,7 @@ impl Widget for ContactsApp {
         if self.search_heads != self.model_heads {
             self.refresh_search_provider();
         }
+        self.refresh_duplicate_candidate();
 
         self.search.sync(state, path);
         if let Some(form) = &mut self.form {
@@ -6842,27 +6943,39 @@ impl Widget for ContactsApp {
                 ),
         ];
         if !self.store.is_empty() {
-            toolbar_actions.extend([
-                AccessNode::new(Role::Button)
-                    .with_name(if exporting {
-                        "Exporting contacts"
-                    } else {
-                        "Export contacts"
-                    })
-                    .with_action_target("contacts.export")
-                    .with_bounds(self.hit.export)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(!exporting)
-                            .disabled(exporting)
-                            .busy(exporting),
-                    ),
+            toolbar_actions.extend([AccessNode::new(Role::Button)
+                .with_name(if exporting {
+                    "Exporting contacts"
+                } else {
+                    "Export contacts"
+                })
+                .with_action_target("contacts.export")
+                .with_bounds(self.hit.export)
+                .with_state(
+                    AccessState::new()
+                        .focusable(!exporting)
+                        .disabled(exporting)
+                        .busy(exporting),
+                )]);
+            if self.has_duplicate_candidate() {
+                toolbar_actions.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Review possible duplicate")
+                        .with_description(
+                            "Compare the matching contacts before any merge. Nothing is merged automatically.",
+                        )
+                        .with_action_target("contacts.duplicates")
+                        .with_bounds(self.hit.duplicates)
+                        .with_state(AccessState::new().focusable(true)),
+                );
+            }
+            toolbar_actions.push(
                 AccessNode::new(Role::Button)
                     .with_name("Create contact")
                     .with_action_target("contacts.new")
                     .with_bounds(self.hit.new)
                     .with_state(AccessState::new().focusable(true)),
-            ]);
+            );
         }
         let toolbar = AccessNode::new(Role::Toolbar)
             .with_name("Contact actions")
@@ -7470,6 +7583,19 @@ impl Widget for ContactsApp {
                 self.dirty = true;
                 true
             }
+            ("contacts.duplicates", Action::Activate) => {
+                match self.invoke_duplicate_review_operation(state) {
+                    Ok(true) => {
+                        self.dirty = true;
+                        self.relayout = true;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.show_toast(format!("Couldn't open duplicate review: {error}"));
+                    }
+                }
+                true
+            }
             ("contacts.sort", Action::Activate | Action::Expand) => {
                 self.open_popup(Popup::Sort {
                     anchor: self.hit.sort,
@@ -7608,6 +7734,8 @@ impl Widget for ContactsApp {
             Some("Import contacts")
         } else if !self.store.is_empty() && self.hit.export.contains(point) {
             Some("Export contacts")
+        } else if self.has_duplicate_candidate() && self.hit.duplicates.contains(point) {
+            Some("Review possible duplicate — nothing merges automatically")
         } else if !self.store.is_empty() && self.hit.new.contains(point) {
             Some("Create contact")
         } else if self.hit.search.contains(point) {
@@ -8100,7 +8228,7 @@ impl ContactsApp {
             return;
         }
 
-        if self.handle_click_toolbar_and_header(p) {
+        if self.handle_click_toolbar_and_header(state, p) {
             *handled = true;
             return;
         }
@@ -8151,7 +8279,7 @@ impl ContactsApp {
     /// The narrow-mode Back affordance, the toolbar buttons (Import/Export/
     /// New), and the list header chips (Sort/Group). Returns `true` if `p`
     /// landed on one of these.
-    fn handle_click_toolbar_and_header(&mut self, p: Point) -> bool {
+    fn handle_click_toolbar_and_header(&mut self, state: &AutoCommit, p: Point) -> bool {
         // Narrow single-pane push: the Back affordance returns to the list.
         // Only hittable while the detail pane is the visible (pushed) slab.
         if self.narrow
@@ -8173,6 +8301,17 @@ impl ContactsApp {
         if !self.store.is_empty() && self.hit.export.contains(p) {
             self.open_export_dialog();
             self.dirty = true;
+            return true;
+        }
+        if self.has_duplicate_candidate() && self.hit.duplicates.contains(p) {
+            match self.invoke_duplicate_review_operation(state) {
+                Ok(true) => {
+                    self.dirty = true;
+                    self.relayout = true;
+                }
+                Ok(false) => {}
+                Err(error) => self.show_toast(format!("Couldn't open duplicate review: {error}")),
+            }
             return true;
         }
         if !self.store.is_empty() && self.hit.new.contains(p) {

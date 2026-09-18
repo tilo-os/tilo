@@ -29,7 +29,9 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    SegmentedFace, SidebarDrawer, TextInput, Toggle, ToggleFace, ToggleGroup, Widget,
+    ListSemanticRow, SegmentedFace, SidebarDrawer, TableSemanticCell, TableSemanticColumn,
+    TableSemanticControl, TableSemanticRow, TextInput, Toggle, ToggleFace, ToggleGroup,
+    VirtualListSemantics, VirtualTableSemantics, Widget,
 };
 
 use crate::actions::FirewallAction;
@@ -1325,72 +1327,22 @@ impl Widget for FirewallApp {
                 .with_bounds(self.layout.apply_btn)
                 .with_state(AccessState::new().focusable(true)),
         );
-        let mut zones = AccessNode::new(Role::List).with_name("Firewall zones");
+        let mut zones =
+            VirtualListSemantics::new("Firewall zones", self.layout.rail, ZoneKind::ALL.len());
         for (index, (zone, bounds)) in self.layout.zone_rows.iter().enumerate() {
-            zones.children.push(
-                AccessNode::new(Role::ListItem)
-                    .with_name(zone.name())
-                    .with_bounds(*bounds)
-                    .with_position(index + 1, ZoneKind::ALL.len())
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .selected(*zone == self.selected_zone),
-                    ),
+            zones.push(
+                ListSemanticRow::new(
+                    format!("firewall.zone:{}", zone.name()),
+                    zone.name(),
+                    *bounds,
+                    index + 1,
+                )
+                .description(zone.description())
+                .selected(*zone == self.selected_zone),
             );
         }
-        root.children.push(zones);
-        if !self.layout.content_seg.is_empty() {
-            let mut route = AccessNode::new(Role::Group)
-                .with_name("Compact firewall content")
-                .with_description(
-                    "Rules and Services. Press S to switch when no text field is focused.",
-                );
-            for (index, bounds) in self.layout.content_seg.iter().enumerate() {
-                let services = index == 1;
-                route.children.push(
-                    AccessNode::new(Role::ToggleButton)
-                        .with_name(if services { "Services" } else { "Rules" })
-                        .with_bounds(*bounds)
-                        .with_state(AccessState::new().focusable(true).checked(
-                            self.compact_view
-                                == if services {
-                                    CompactView::Services
-                                } else {
-                                    CompactView::Rules
-                                },
-                        )),
-                );
-            }
-            root.children.push(route);
-        }
-        if self.layout.compact_services {
-            let mut services = AccessNode::new(Role::List)
-                .with_name(format!("Services in {}", self.selected_zone.name()))
-                .with_bounds(self.layout.table);
-            let zone = self.config.zone(self.selected_zone);
-            for (index, row, _) in &self.layout.service_rows {
-                if let Some(service) = ServiceCatalog::ALL.get(*index) {
-                    services.children.push(
-                        AccessNode::new(Role::Switch)
-                            .with_name(service.name)
-                            .with_description(format!("{}/{}", service.ports, service.proto))
-                            .with_bounds(*row)
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .checked(zone.is_some_and(|zone| zone.has_service(service.id))),
-                            ),
-                    );
-                }
-            }
-            root.children.push(services);
-        }
-        root.children.push(
-            AccessNode::new(Role::Table)
-                .with_name(format!("Rules in {}", self.selected_zone.name()))
-                .with_bounds(self.layout.table),
-        );
+        root.children.push(zones.accessibility());
+        root.children.push(self.rules_table_accessibility());
         Some(root)
     }
 
@@ -1550,6 +1502,52 @@ impl Widget for FirewallApp {
             self.retry_connect(state);
             return true;
         }
+        if let Some(name) = target.strip_prefix("firewall.zone:")
+            && matches!(action, A11yAction::Activate | A11yAction::Focus)
+            && let Some(zone) = ZoneKind::from_name(name)
+        {
+            self.select_zone(zone);
+            self.relayout();
+            return true;
+        }
+        if let Some(id) = target.strip_prefix("firewall.rule.select:")
+            && matches!(action, A11yAction::Activate | A11yAction::Focus)
+            && let Ok(id) = RuleId::parse_str(id)
+            && self
+                .selected_zone_ref()
+                .is_some_and(|zone| zone.rules.iter().any(|rule| rule.id == id))
+        {
+            self.selected_rule = Some(id);
+            self.relayout();
+            return true;
+        }
+        if let Some(id) = target.strip_prefix("firewall.rule.toggle:")
+            && matches!(action, A11yAction::Activate | A11yAction::ToggleCheck)
+            && let Ok(id) = RuleId::parse_str(id)
+            && self
+                .selected_zone_ref()
+                .is_some_and(|zone| zone.rules.iter().any(|rule| rule.id == id))
+        {
+            self.toggle_rule(id, state);
+            return true;
+        }
+        if let Some(id) = target.strip_prefix("firewall.rule.delete:")
+            && matches!(action, A11yAction::Activate)
+            && let Ok(id) = RuleId::parse_str(id)
+            && self
+                .selected_zone_ref()
+                .is_some_and(|zone| zone.rules.iter().any(|rule| rule.id == id))
+        {
+            if self.pending_delete == Some(id) {
+                self.delete_rule(id, state);
+            } else {
+                self.pending_delete = Some(id);
+                self.status =
+                    "Delete rule? Activate its delete button again to confirm (Esc cancels)".into();
+                self.relayout();
+            }
+            return true;
+        }
         false
     }
 
@@ -1562,10 +1560,96 @@ impl Widget for FirewallApp {
 }
 
 impl FirewallApp {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "keyboard routing stays together so focus precedence is auditable"
-    )]
+    fn rules_table_accessibility(&self) -> AccessNode {
+        let table_name = format!("Rules in {}", self.selected_zone.name());
+        let (target, proto, action, source, controls) = rule_columns(self.layout.table);
+        let right = self.layout.table.x1 - 12.0;
+        let header = self.layout.table.y0..self.layout.table.y0 + 30.0;
+        let columns = [
+            ("Target", target, proto),
+            ("Protocol", proto, action),
+            ("Action", action, source),
+            ("Source", source, controls),
+            ("Status", controls, right),
+        ]
+        .into_iter()
+        .map(|(name, x0, x1)| {
+            TableSemanticColumn::new(name, Some(Rect::new(x0, header.start, x1, header.end)))
+        })
+        .collect::<Vec<_>>();
+        let filtered = self.filtered_indices();
+        let total = filtered.len();
+        let rows = self
+            .layout
+            .rule_rows
+            .iter()
+            .filter_map(|row| {
+                let zone = self.selected_zone_ref()?;
+                let rule = zone.rules.iter().find(|rule| rule.id == row.id)?;
+                let index = filtered.iter().position(|&source_index| {
+                    zone.rules.get(source_index).is_some_and(|r| r.id == row.id)
+                })?;
+                let values = [
+                    rule.matcher.label(),
+                    rule.matcher.proto_label(),
+                    rule.action.label().to_owned(),
+                    rule.source_label().to_owned(),
+                    if rule.enabled { "On" } else { "Off" }.to_owned(),
+                ];
+                let bounds = [
+                    (target, proto),
+                    (proto, action),
+                    (action, source),
+                    (source, controls),
+                    (controls, right),
+                ];
+                let cells = values
+                    .into_iter()
+                    .zip(bounds)
+                    .map(|(value, (x0, x1))| {
+                        TableSemanticCell::new(
+                            Some(value),
+                            Some(Rect::new(x0, row.rect.y0, x1, row.rect.y1)),
+                        )
+                    })
+                    .collect();
+                Some(
+                    TableSemanticRow::new(index, total, Some(row.rect), cells)
+                        .selected(self.selected_rule == Some(row.id))
+                        .action_target(format!("firewall.rule.select:{}", row.id))
+                        .controls(vec![
+                            TableSemanticControl::toggle(
+                                format!(
+                                    "{} {} rule",
+                                    if rule.enabled { "Disable" } else { "Enable" },
+                                    rule.matcher.label()
+                                ),
+                                format!("firewall.rule.toggle:{}", row.id),
+                                row.toggle,
+                                rule.enabled,
+                            ),
+                            TableSemanticControl::button(
+                                if self.pending_delete == Some(row.id) {
+                                    format!("Confirm deletion of {} rule", rule.matcher.label())
+                                } else {
+                                    format!("Delete {} rule", rule.matcher.label())
+                                },
+                                format!("firewall.rule.delete:{}", row.id),
+                                row.delete,
+                            ),
+                        ]),
+                )
+            })
+            .collect();
+        VirtualTableSemantics::new(&table_name, self.layout.table)
+            .description(format!("{total} filtered firewall rules"))
+            .read_only(false)
+            .hashed_key(("firewall-rules", self.selected_zone.name()))
+            .columns(columns)
+            .rows(rows)
+            .build()
+    }
+
     fn handle_key(
         &mut self,
         event: &WindowEvent,
@@ -3517,6 +3601,107 @@ mod tests {
             node.children
                 .iter()
                 .any(|child| child.name.as_deref() == Some("Rules applied"))
+        );
+    }
+
+    #[test]
+    fn zone_list_uses_shared_semantics_and_is_reader_operable() {
+        let mut app = app_with_rect();
+        let node = app.accessibility().expect("firewall semantics");
+        let zones = node
+            .children
+            .iter()
+            .find(|child| child.name.as_deref() == Some("Firewall zones"))
+            .expect("zone list");
+        assert_eq!(zones.role, Role::List);
+        assert_eq!(zones.children.len(), ZoneKind::ALL.len());
+        assert!(zones.children.iter().all(|zone| {
+            zone.role == Role::ListItem
+                && zone.bounds.is_some()
+                && zone.pos_in_set.is_some()
+                && zone.set_size == Some(ZoneKind::ALL.len())
+                && zone.action_target.is_some()
+        }));
+
+        let mut doc = AutoCommit::new();
+        assert!(app.perform_semantic_action(
+            "firewall.zone:home",
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.selected_zone, ZoneKind::Home);
+    }
+
+    #[test]
+    fn rules_table_uses_shared_semantics_and_rows_select_through_a11y() {
+        let mut app = app_with_rect();
+        let node = app.accessibility().expect("firewall semantics");
+        let table = node
+            .children
+            .iter()
+            .find(|child| child.role == Role::Table)
+            .expect("rules table");
+        assert_eq!(table.children[0].name.as_deref(), Some("Column headers"));
+        assert_eq!(table.children[0].children.len(), 5);
+        let row = &table.children[1];
+        assert_eq!(row.children[0].name.as_deref(), Some("Target"));
+        assert!(row.children[0].value.is_some());
+        let toggle = row
+            .children
+            .iter()
+            .find(|child| child.role == Role::ToggleButton)
+            .expect("rule toggle semantics");
+        assert_eq!(toggle.state.checked, Some(true));
+        let toggle_target = toggle.action_target.clone().expect("toggle action target");
+        let delete_target = row
+            .children
+            .iter()
+            .find(|child| child.role == Role::Button)
+            .and_then(|child| child.action_target.clone())
+            .expect("delete action target");
+        let target = row.action_target.clone().expect("selectable rule row");
+        let id = target
+            .strip_prefix("firewall.rule.select:")
+            .and_then(|id| RuleId::parse_str(id).ok())
+            .expect("rule id target");
+
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.perform_semantic_action(
+            &target,
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.selected_rule, Some(id));
+        let was_enabled = app
+            .selected_zone_ref()
+            .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
+            .is_some_and(|rule| rule.enabled);
+        assert!(app.perform_semantic_action(
+            &toggle_target,
+            &A11yAction::ToggleCheck,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_ne!(
+            app.selected_zone_ref()
+                .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
+                .is_some_and(|rule| rule.enabled),
+            was_enabled
+        );
+        let before = app.selected_zone_ref().map_or(0, |zone| zone.rules.len());
+        assert!(app.perform_semantic_action(
+            &delete_target,
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.pending_delete, Some(id));
+        assert_eq!(
+            app.selected_zone_ref().map_or(0, |zone| zone.rules.len()),
+            before
         );
     }
 

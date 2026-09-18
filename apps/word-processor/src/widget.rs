@@ -4938,7 +4938,7 @@ impl WordProcessorWidget {
         if self.toolbar.is_empty() {
             return None;
         }
-        let buttons: Vec<A11yTreeNode> = self
+        let mut buttons: Vec<A11yTreeNode> = self
             .toolbar
             .iter()
             .map(|(action, rect)| {
@@ -4986,6 +4986,41 @@ impl WordProcessorWidget {
                 A11yTreeNode::leaf(node)
             })
             .collect();
+        // The stepper is painted by a small custom component, but it is part
+        // of this toolbar—not a pointer-only ornament. Source both the bounds
+        // and targets from that component's live hit list so keyboard/AT and
+        // pointer activation always address exactly the same controls.
+        buttons.extend(
+            self.zoom
+                .accessibility_targets()
+                .into_iter()
+                .map(|(target, rect)| {
+                    let (name, description) = match target {
+                        ZoomControl::TARGET_OUT => {
+                            (t("a11y-zoom-out"), t("a11y-zoom-out-description"))
+                        }
+                        ZoomControl::TARGET_RESET => {
+                            (t("a11y-zoom-reset"), t("a11y-zoom-reset-description"))
+                        }
+                        ZoomControl::TARGET_IN => {
+                            (t("a11y-zoom-in"), t("a11y-zoom-in-description"))
+                        }
+                        _ => (String::new(), String::new()),
+                    };
+                    A11yTreeNode::leaf(
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_description(description)
+                            .with_value(format!("{:.0}%", self.zoom.factor() * 100.0))
+                            .with_bounds(rect)
+                            .with_action_target(target)
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            }),
+                    )
+                }),
+        );
         Some(A11yTreeNode {
             node: AccessNode::new(Role::Toolbar).with_name(t("a11y-group-formatting")),
             children: buttons,
@@ -7206,7 +7241,11 @@ impl WordProcessorWidget {
                 16.5,
                 PAPER_MUTED,
                 ctf * Affine::translate((l.text_x, l.y_top)),
-                None,
+                // The empty-state hint shares the authored paragraph's live
+                // column width. At 200% text a one-line hint used to extend
+                // beyond the responsive sheet, unlike real paragraph text.
+                // Let the shared text renderer wrap it at that exact bound.
+                Some(num::f32_of_f64(l.width.max(1.0))),
             );
         }
     }
@@ -8600,6 +8639,9 @@ impl Widget for WordProcessorWidget {
             WordProcessorOperation::ZoomOut => {
                 self.zoom_by(-0.1);
             }
+            WordProcessorOperation::ZoomReset => {
+                self.set_zoom(1.0);
+            }
             WordProcessorOperation::ToggleSpellcheck => self.toggle_spellcheck(),
             WordProcessorOperation::ToggleMarkup => self.toggle_markup(),
             WordProcessorOperation::ToggleStyles => {
@@ -9219,6 +9261,19 @@ impl Widget for WordProcessorWidget {
         }) {
             self.apply_panel_hit(state, panel_hit);
             return true;
+        }
+        // This reaches the ZoomControl's own action method rather than
+        // duplicating its step/reset rules in the semantic event path.
+        for id in [
+            ZoomControl::TARGET_OUT,
+            ZoomControl::TARGET_RESET,
+            ZoomControl::TARGET_IN,
+        ] {
+            if ui::a11y::hash_key(&id) == target && self.zoom.activate_target(id) {
+                self.view.auto_fit_page = false;
+                self.lifecycle.dirty = true;
+                return true;
+            }
         }
         let Some(tool) = self.toolbar.iter().find_map(|(tool, _)| {
             let id = format!("word-processor.toolbar:{}", tool_action_id(*tool));

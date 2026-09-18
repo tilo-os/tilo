@@ -217,6 +217,7 @@ impl WorkspaceSettingsOverlay {
         Self::body_rect_for(self.rect())
     }
 
+    #[cfg(test)]
     pub fn general_summary_rect(&self) -> Rect {
         let body = self.general_body_rect();
         Rect::new(

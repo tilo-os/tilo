@@ -109,6 +109,13 @@ pub fn app_root_page_bubble() -> Box<dyn Widget> {
     Box::new(app)
 }
 
+/// Screenshot-only: sample document with the annotation context menu open.
+pub fn app_root_context_menu() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_context_menu();
+    Box::new(app)
+}
+
 /// Screenshot-only: the sample document with the find bar open (query + live
 /// matches) so a still frame shows the non-overlapping find bar.
 pub fn app_root_search() -> Box<dyn Widget> {

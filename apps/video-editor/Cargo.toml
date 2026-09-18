@@ -37,7 +37,7 @@ taffy.workspace = true
 # `gst` feature so the default fleet build (and `--shots`) compiles without
 # the gstreamer-1.0 dev headers present. ffmpeg is intentionally not a dep.
 gstreamer = { workspace = true, optional = true }
-media = { path = "../../crates/media" }
+media = { path = "../../crates/media/core" }
 gstreamer-app = { version = "0.24", optional = true }
 
 # GStreamer encode/decode tests share a `serial` group because the native

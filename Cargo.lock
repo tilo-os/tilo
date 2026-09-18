@@ -8036,6 +8036,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "zeroize",
  "zstd",
 ]
 
@@ -11076,6 +11077,7 @@ dependencies = [
  "os-actions",
  "qdoc-pdf",
  "runtime-dylib",
+ "serde_json",
  "taffy",
  "tempfile",
  "thumbnail",

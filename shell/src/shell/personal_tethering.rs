@@ -10,7 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::shell::device_fabric::{FabricStamp, WifiCredential};
+#[cfg(test)]
+use crate::shell::device_fabric::FabricStamp;
+use crate::shell::device_fabric::WifiCredential;
 use crate::shell::device_fabric_secrets::wifi_envelope_recipients;
 use crate::shell::personal_continuity::DeviceId;
 

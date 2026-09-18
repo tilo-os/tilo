@@ -196,7 +196,7 @@ fn remote_home_peer(
 ) -> anyhow::Result<tilo_relay::transport::HomePeerManagementResponse> {
     let paths = tilo_user_identity::IdentityPaths::under(identity_root);
     let user = tilo_user_identity::persist::read_public_key(&paths.user_pubkey)?;
-    let signing_key = tilo_user_identity::persist::read_signing_key(&paths.device_privkey)?;
+    let signing_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)?;
     let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&user))
         .or_else(|_| tilo_user_identity::persist::read_device_cert(&paths.device_cert))?;
     let expected_device = device_key(device)?;
@@ -308,7 +308,7 @@ fn cmd_home_peer_remove(identity_root: PathBuf, device: &str, service: &str) -> 
     {
         existing
     } else {
-        let root = tilo_user_identity::persist::read_signing_key(&paths.user_privkey)?;
+        let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
         let mut revocation = tilo_user_identity::RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
             revoked_device_public_key: target,
@@ -693,7 +693,7 @@ fn cmd_revoke_device(
         "compromised" => tilo_user_identity::RevocationReason::Compromised,
         _ => anyhow::bail!("reason must be lost, stolen, retired, or compromised"),
     };
-    let root = tilo_user_identity::persist::read_signing_key(&paths.user_privkey)?;
+    let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
     let mut entry = tilo_user_identity::RevocationEntry {
         user_public_key: root.verifying_key().to_bytes(),
         revoked_device_public_key: pk,

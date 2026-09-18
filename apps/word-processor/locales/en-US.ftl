@@ -22,6 +22,12 @@ toolbar-col-del = −Col
 
 ## Toolbar accessibility names / tooltips (spelled-out for screen readers)
 a11y-group-formatting = Formatting
+a11y-zoom-out = Zoom out
+a11y-zoom-out-description = Reduce the page scale by 10 percent
+a11y-zoom-reset = Reset zoom
+a11y-zoom-reset-description = Return the page scale to 100 percent
+a11y-zoom-in = Zoom in
+a11y-zoom-in-description = Increase the page scale by 10 percent
 a11y-bold = Bold
 a11y-italic = Italic
 a11y-underline = Underline

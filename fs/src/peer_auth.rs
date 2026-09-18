@@ -121,9 +121,6 @@ pub enum PeerAuthError {
     /// The peer's root-signed device certificate is invalid or expired.
     #[error("peer device certificate is invalid: {0}")]
     Certificate(#[from] DeviceCertError),
-    /// The certificate claims it was issued in the future.
-    #[error("peer device certificate is not valid yet")]
-    CertificateNotYetValid,
     /// A verified, same-user revocation is effective for this device.
     #[error("peer device has been revoked")]
     Revoked,
@@ -271,9 +268,6 @@ impl PendingPeerChallenges {
         }
         if now_ns >= issued.expires_at_ns {
             return Err(PeerAuthError::ChallengeExpired);
-        }
-        if proof.cert.issued_at_ns > now_ns {
-            return Err(PeerAuthError::CertificateNotYetValid);
         }
         verify_device_cert_at(&proof.cert, now_ns)?;
 

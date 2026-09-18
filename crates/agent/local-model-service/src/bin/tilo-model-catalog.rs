@@ -22,10 +22,20 @@
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(target_os = "linux")]
+use std::ffi::CString;
+#[cfg(not(target_os = "linux"))]
+use std::fs::OpenOptions;
 use std::fs::{self, File};
 use std::io::Read as _;
+#[cfg(target_os = "linux")]
+use std::os::fd::FromRawFd as _;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStrExt as _;
+#[cfg(all(unix, not(target_os = "linux")))]
+use std::os::unix::fs::OpenOptionsExt as _;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 use agent_provider_config::local::{
@@ -41,8 +51,64 @@ use system_extension::{
     AcceptedExtension, ArtifactReceipt, ExtensionKind, ExtensionManifest, ImageConstraint,
     PinnedArtifact as ExtensionArtifact, SignedExtensionManifest,
 };
+use zeroize::Zeroizing;
 
 const CATALOG_SCHEMA: u16 = 1;
+
+#[cfg(target_os = "linux")]
+fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<File> {
+    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path contains an embedded NUL byte",
+        )
+    })?;
+    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .map_err(|_| std::io::Error::other("open flags are outside the Linux u64 ABI"))?;
+    let how = OpenHow {
+        flags,
+        mode: 0,
+        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: path is a live NUL-terminated string and `how` is the exact
+    // three-u64 ABI accepted by openat2. The returned descriptor is uniquely
+    // transferred into File on success.
+    let descriptor = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let descriptor = i32::try_from(descriptor)
+        .map_err(|_| std::io::Error::other("openat2 returned an invalid descriptor"))?;
+    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
+    Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    options.open(path)
+}
 const CATALOG_SIGNATURE_DOMAIN: &str = "tilo.local-model.catalog.v1";
 
 #[derive(Parser)]
@@ -384,16 +450,17 @@ fn resolve_artifact(
     } else {
         source_dir.join(&source.file)
     };
-    let metadata = fs::symlink_metadata(&path)
+    let mut file = open_readonly_without_symlinks(&path)
+        .map_err(|error| format!("could not securely open {}: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
         .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if !metadata.is_file() {
         return Err(format!(
             "artifact {} must be a regular file",
             path.display()
         ));
     }
-    let mut file =
-        File::open(&path).map_err(|error| format!("could not open {}: {error}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 64 * 1024];
     let mut size_bytes = 0_u64;
@@ -506,22 +573,68 @@ fn validate_identifier(name: &str, value: &str) -> Result<(), String> {
 }
 
 fn read_signing_key(path: &Path) -> Result<SigningKey, String> {
-    let metadata = fs::metadata(path)
-        .map_err(|error| format!("could not inspect signing key {}: {error}", path.display()))?;
-    #[cfg(unix)]
-    if metadata.permissions().mode() & 0o077 != 0 {
-        return Err("signing key must not be readable or writable by group/others".into());
+    #[cfg(target_os = "linux")]
+    // A release-signing process should never make its key available through a
+    // core dump, even if a later operation or dependency crashes.
+    // SAFETY: prctl with PR_SET_DUMPABLE takes an integer flag and returns -1
+    // with errno on failure.
+    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) } != 0 {
+        return Err(format!(
+            "could not disable signing-process dumps: {}",
+            std::io::Error::last_os_error()
+        ));
     }
-    let text = fs::read_to_string(path)
+
+    let file = open_readonly_without_symlinks(path).map_err(|error| {
+        format!(
+            "could not securely open signing key {}: {error}",
+            path.display()
+        )
+    })?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("could not inspect signing key {}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err("signing key must be a regular file".into());
+    }
+    #[cfg(unix)]
+    {
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("signing key must not be readable or writable by group/others".into());
+        }
+        // SAFETY: geteuid takes no arguments and has no failure mode.
+        let reader = unsafe { libc::geteuid() };
+        if metadata.uid() != reader {
+            return Err(format!(
+                "signing key is owned by uid {}; expected uid {reader}",
+                metadata.uid()
+            ));
+        }
+        if metadata.nlink() != 1 {
+            return Err(format!(
+                "signing key must have exactly one directory entry; found {}",
+                metadata.nlink()
+            ));
+        }
+    }
+    let mut text = Zeroizing::new(String::new());
+    file.take(130)
+        .read_to_string(&mut text)
         .map_err(|error| format!("could not read signing key {}: {error}", path.display()))?;
+    if text.len() > 129 {
+        return Err("signing key file is too large".into());
+    }
     let encoded = text.trim();
     if encoded.bytes().any(|byte| byte.is_ascii_uppercase()) {
         return Err("signing key must use canonical lowercase hexadecimal".into());
     }
-    let decoded = hex::decode(encoded).map_err(|_| "signing key is not hexadecimal")?;
-    let bytes: [u8; 32] = decoded
-        .try_into()
-        .map_err(|_| "signing key must contain exactly 32 bytes")?;
+    let decoded =
+        Zeroizing::new(hex::decode(encoded).map_err(|_| "signing key is not hexadecimal")?);
+    if decoded.len() != 32 {
+        return Err("signing key must contain exactly 32 bytes".into());
+    }
+    let mut bytes = Zeroizing::new([0_u8; 32]);
+    bytes.copy_from_slice(&decoded);
     Ok(SigningKey::from_bytes(&bytes))
 }
 
@@ -632,6 +745,31 @@ mod tests {
         assert!(error.contains("SHA-256 does not match"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn artifact_digest_never_follows_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = source(temp.path());
+        let runtime = temp.path().join("runtime.bin");
+        let replacement = temp.path().join("replacement.bin");
+        fs::write(&replacement, b"substituted release payload").unwrap();
+        fs::remove_file(&runtime).unwrap();
+        symlink(&replacement, &runtime).unwrap();
+
+        let error = compile(catalog, temp.path(), &SigningKey::from_bytes(&[3; 32])).unwrap_err();
+        assert!(error.contains("could not securely open"));
+
+        fs::remove_file(&runtime).unwrap();
+        fs::write(&runtime, b"restored runtime payload").unwrap();
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(temp.path(), &linked_parent).unwrap();
+        let source = source(temp.path());
+        let error = compile(source, &linked_parent, &SigningKey::from_bytes(&[3; 32])).unwrap_err();
+        assert!(error.contains("could not securely open"));
+    }
+
     #[test]
     fn mutable_revision_and_url_are_rejected() {
         let temp = tempfile::tempdir().unwrap();
@@ -679,5 +817,51 @@ mod tests {
         );
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(read_signing_key(&path).unwrap().to_bytes(), [9; 32]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signing_key_rejects_symlinks_and_aliased_inodes() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("key");
+        let alias = temp.path().join("alias");
+        let link = temp.path().join("link");
+        fs::write(&path, hex::encode([7_u8; 32])).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        symlink(&path, &link).unwrap();
+        assert!(
+            read_signing_key(&link)
+                .unwrap_err()
+                .contains("securely open")
+        );
+
+        fs::hard_link(&path, &alias).unwrap();
+        assert!(
+            read_signing_key(&path)
+                .unwrap_err()
+                .contains("exactly one directory entry")
+        );
+
+        fs::remove_file(&alias).unwrap();
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(temp.path(), &linked_parent).unwrap();
+        assert!(
+            read_signing_key(&linked_parent.join("key"))
+                .unwrap_err()
+                .contains("securely open")
+        );
+    }
+
+    #[test]
+    fn signing_key_input_is_bounded() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("key");
+        fs::write(&path, "a".repeat(130)).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(read_signing_key(&path).unwrap_err().contains("too large"));
     }
 }

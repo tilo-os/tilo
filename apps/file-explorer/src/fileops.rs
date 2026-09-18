@@ -69,6 +69,23 @@ pub fn ensure_trash_dir() -> Option<PathBuf> {
     Some(d)
 }
 
+/// Snapshot the names currently visible in the home Trash.
+///
+/// Files uses this only to verify that a just-completed deletion produced an
+/// exact, local restore target. Some filesystems use a different Trash or do
+/// not expose one at all; in those cases the caller must simply not offer an
+/// optimistic Undo control.
+pub fn trash_entries_snapshot() -> Option<Vec<PathBuf>> {
+    let dir = trash_dir()?;
+    let entries = std::fs::read_dir(dir).ok()?;
+    Some(
+        entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect(),
+    )
+}
+
 /// Permanently remove everything in the trash. Returns how many items were purged.
 ///
 /// # Errors

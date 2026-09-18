@@ -200,11 +200,9 @@ impl ChatApp {
         let resume_screen = offered.media.screen_share && !offered.controls.screen_share_paused;
         if resume_screen && !self.acquire_screen() {
             self.call.leave();
-            let request =
-                self.realtime
-                    .request(ui::realtime_continuity::RealtimeCommand::TargetFailed {
-                        session: session.clone(),
-                    });
+            let request = self
+                .realtime
+                .request(ui::realtime_continuity::RealtimeCommand::TargetFailed { session });
             self.realtime.requests.push(request);
             self.realtime.offer = None;
             return;

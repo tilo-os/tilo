@@ -2,7 +2,7 @@ use ui::ColorCompat;
 use ui::{
     Theme,
     text_render::{FontChoice, TextRenderer, TextWeight},
-    widget::{PressOutcome, ScrollMetrics, Scrollbar, Widget},
+    widget::{PressOutcome, ScrollMetrics, Scrollbar, TextInput, Widget},
 };
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
 // reuses these rather than re-implementing word/line boundary walking, multi-
@@ -67,6 +67,20 @@ const MAX_VISIBLE_RESOURCE_LINKS: usize = 32;
 /// Resource labels are navigation chrome, not a second copy of an arbitrarily
 /// long OSC URL. The full validated target stays in the operation payload.
 const MAX_LINK_RESOURCE_LABEL_CHARS: usize = 120;
+/// Find is deliberately bounded separately from retained scrollback. A noisy
+/// log may contain thousands of identical hits; keeping a focused review
+/// surface responsive matters more than counting every occurrence forever.
+const MAX_FIND_MATCHES: usize = 2_048;
+/// A find string is local presentation state, but cap it before repeatedly
+/// scanning history on each keystroke or pasting an accidental large blob.
+const MAX_FIND_QUERY_CHARS: usize = 256;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FindMatch {
+    row: usize,
+    start_col: usize,
+    end_col: usize,
+}
 
 fn link_resource_label(url: &str) -> String {
     let mut label: String = url.chars().take(MAX_LINK_RESOURCE_LABEL_CHARS).collect();
@@ -528,6 +542,20 @@ pub struct TerminalWidget {
     /// Shared toolkit interaction model for the terminal history bar.
     scrollbar: Scrollbar,
 
+    /// Local find-in-scrollback state. It is intentionally not mirrored into
+    /// the CRDT or resource tree: a find term and its matching output can be
+    /// sensitive, while the shared terminal transcript already has its own
+    /// carefully bounded collaboration contract.
+    find_open: bool,
+    find_input: TextInput,
+    find_matches: Vec<FindMatch>,
+    find_current: usize,
+    find_query: String,
+    find_rect: Rect,
+    find_previous_rect: Rect,
+    find_next_rect: Rect,
+    find_close_rect: Rect,
+
     /// Last palette-derived cursor color, captured on every `draw`. Exposed
     /// for behavioural tests that want to verify palette swaps actually
     /// propagate into rendered state without spinning up a GPU scene.
@@ -745,6 +773,15 @@ impl TerminalWidget {
             scroll_offset: 0,
             wheel_remainder_px: 0.0,
             scrollbar: Scrollbar::vertical(),
+            find_open: false,
+            find_input: TextInput::local().with_id("terminal_find"),
+            find_matches: Vec::new(),
+            find_current: 0,
+            find_query: String::new(),
+            find_rect: Rect::ZERO,
+            find_previous_rect: Rect::ZERO,
+            find_next_rect: Rect::ZERO,
+            find_close_rect: Rect::ZERO,
             last_cursor_color: Color::from_rgba8(0, 0, 0, 0),
             last_fg_default: Color::from_rgba8(0, 0, 0, 0),
             last_bg_default: Color::from_rgba8(0, 0, 0, 0),
@@ -1300,6 +1337,99 @@ impl TerminalWidget {
     pub fn find_row_last(&self, needle: &str) -> Option<usize> {
         self.grid.iter().rposition(|l| l.contains(needle))
     }
+
+    /// Open the local find surface. This does not publish the query, the
+    /// result positions, or a command to collaborators/agents: scrollback may
+    /// contain credentials and the feature is only a viewport aid.
+    pub fn open_find(&mut self) {
+        self.find_open = true;
+        self.find_input.set_focus(true);
+        self.refresh_find_matches();
+    }
+
+    /// Set the local find text for a host or screenshot. Production typing
+    /// routes through the same [`TextInput`] then calls
+    /// [`refresh_find_matches`](Self::refresh_find_matches).
+    pub fn set_find_query(&mut self, query: &str) {
+        let bounded: String = query.chars().take(MAX_FIND_QUERY_CHARS).collect();
+        self.find_input.set_text(&bounded);
+        self.refresh_find_matches();
+    }
+
+    fn close_find(&mut self) {
+        self.find_open = false;
+        self.find_input.set_focus(false);
+        self.find_matches.clear();
+        self.find_current = 0;
+        self.find_query.clear();
+        self.find_rect = Rect::ZERO;
+        self.find_previous_rect = Rect::ZERO;
+        self.find_next_rect = Rect::ZERO;
+        self.find_close_rect = Rect::ZERO;
+    }
+
+    /// Re-scan the bounded local mirror only when the query changes or fresh
+    /// terminal output has reached a sync. Matches are literal and
+    /// case-sensitive: terminal identifiers, paths and hashes are commonly
+    /// case-significant, so silently folding case would be misleading.
+    fn refresh_find_matches(&mut self) {
+        let bounded: String = self
+            .find_input
+            .value()
+            .chars()
+            .take(MAX_FIND_QUERY_CHARS)
+            .collect();
+        if bounded != self.find_input.value() {
+            self.find_input.set_text(&bounded);
+        }
+        self.find_query = bounded;
+        self.find_matches.clear();
+        self.find_current = 0;
+        if self.find_query.is_empty() {
+            return;
+        }
+        'rows: for (row, line) in self.grid.iter().enumerate() {
+            for (start_byte, _) in line.match_indices(&self.find_query) {
+                let start_col = line.get(..start_byte).map_or(0, UnicodeWidthStr::width);
+                let end_col = start_col + UnicodeWidthStr::width(self.find_query.as_str());
+                self.find_matches.push(FindMatch {
+                    row,
+                    start_col,
+                    end_col,
+                });
+                if self.find_matches.len() == MAX_FIND_MATCHES {
+                    break 'rows;
+                }
+            }
+        }
+        self.reveal_current_find_match();
+    }
+
+    fn reveal_current_find_match(&mut self) {
+        let Some(found) = self.find_matches.get(self.find_current).copied() else {
+            return;
+        };
+        if self.alt_active {
+            return;
+        }
+        let visible = self.current_visible_rows().max(1);
+        let max_top = self.grid.len().saturating_sub(visible);
+        let top = found.row.saturating_sub(visible / 2).min(max_top);
+        self.scroll_offset = max_top.saturating_sub(top);
+    }
+
+    fn step_find_match(&mut self, backwards: bool) {
+        let len = self.find_matches.len();
+        if len == 0 {
+            return;
+        }
+        self.find_current = if backwards {
+            self.find_current.checked_sub(1).unwrap_or(len - 1)
+        } else {
+            (self.find_current + 1) % len
+        };
+        self.reveal_current_find_match();
+    }
     /// Resolve the OSC 8 hyperlink URL for the cell at absolute buffer
     /// `(row, col)`, if any. Host/test accessor: powers click-to-open and
     /// lets a test assert a parsed hyperlink landed on the right cells.
@@ -1388,6 +1518,31 @@ impl TerminalWidget {
         };
         let start = max_top.saturating_sub(scroll);
         self.grid.iter().skip(start).take(vis).cloned().collect()
+    }
+    /// Find overlay state for geometry and privacy regressions. Kept
+    /// test-only: production hosts use the explicit open/set APIs and do not
+    /// inspect another person's local query/matches.
+    #[cfg(test)]
+    pub fn find_test_state(&self) -> (bool, Vec<usize>) {
+        (
+            self.find_open,
+            self.find_matches.iter().map(|found| found.row).collect(),
+        )
+    }
+    /// The overlay and its three controls after the real draw pass.
+    #[cfg(test)]
+    pub fn find_test_geometry(&self) -> (Rect, Rect, Rect, Rect, Rect) {
+        (
+            self.find_rect,
+            self.find_input.get_rect(),
+            self.find_previous_rect,
+            self.find_next_rect,
+            self.find_close_rect,
+        )
+    }
+    #[cfg(test)]
+    pub fn find_test_target(&self, control: &str) -> String {
+        format!("terminal.find:{}:{control}", self.pane_id)
     }
     /// The parsed attribute for the mirrored grid cell at `(row, col)`.
     /// Test accessor for SGR-parsing assertions.
@@ -2148,6 +2303,7 @@ impl Widget for TerminalWidget {
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.reset_stale_local_session(state, root);
+        self.find_input.sync(state, root);
         // Drain any bytes the PTY reader thread has queued and replay them
         // through the vte parser *here*, before reading the grid back out.
         // The plain `ui::App` event loop only ever calls `sync` (never
@@ -2195,6 +2351,9 @@ impl Widget for TerminalWidget {
         self.refresh_title_and_links(state, root);
         self.refresh_image_placements(state);
         self.refresh_cursor_from_crdt(state, line_ids.len());
+        if self.find_open {
+            self.refresh_find_matches();
+        }
     }
 
     fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
@@ -2267,6 +2426,10 @@ impl Widget for TerminalWidget {
         self.set_geometry(rect);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Terminal painting intentionally keeps grid, selection, cursor, and local find overlays in one ordered compositing pass"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -2379,6 +2542,7 @@ impl Widget for TerminalWidget {
                     presence,
                 );
             }
+            self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
             return;
         }
 
@@ -2392,6 +2556,15 @@ impl Widget for TerminalWidget {
         // Paint the selection BEFORE the cell text so glyphs read on top of
         // the highlight.
         self.draw_selection_highlight(
+            scene,
+            transform,
+            theme,
+            grid_rect,
+            padding_x,
+            start_y,
+            visible_rows,
+        );
+        self.draw_find_match_highlight(
             scene,
             transform,
             theme,
@@ -2445,6 +2618,7 @@ impl Widget for TerminalWidget {
             );
         }
         self.draw_disconnected_status(scene, transform, text_renderer, theme);
+        self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(
@@ -2483,6 +2657,38 @@ impl Widget for TerminalWidget {
                 self.activate_context_menu_item(index);
             }
             *handled |= menu_handled;
+            return;
+        }
+
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+            && modifiers.state().control_key()
+            && matches!(logical_key, Key::Character(key) if key.eq_ignore_ascii_case("f"))
+        {
+            self.open_find();
+            *handled = true;
+            return;
+        }
+
+        if self.find_open {
+            self.handle_find_event(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                root,
+                focus_target,
+                node_id,
+                taffy,
+                handled,
+            );
             return;
         }
 
@@ -2604,6 +2810,57 @@ impl Widget for TerminalWidget {
         transcript
             .children
             .extend(self.visible_link_accessibility());
+        if self.find_open {
+            let prefix = format!("terminal.find:{}", self.pane_id);
+            let result = if self.find_query.is_empty() {
+                "Type to find in retained local scrollback".to_string()
+            } else if self.find_matches.is_empty() {
+                "No matches in retained local scrollback".to_string()
+            } else if self.find_matches.len() == MAX_FIND_MATCHES {
+                format!(
+                    "Match {} of {} or more",
+                    self.find_current + 1,
+                    MAX_FIND_MATCHES
+                )
+            } else {
+                format!(
+                    "Match {} of {}",
+                    self.find_current + 1,
+                    self.find_matches.len()
+                )
+            };
+            transcript.children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Find in scrollback")
+                    .with_description("Local only. Find text and matches are not shared with collaborators or exposed as terminal resources.")
+                    .with_bounds(self.find_rect)
+                    .with_children(vec![
+                        AccessNode::new(Role::TextInput)
+                            .with_name("Find in scrollback")
+                            .with_value(self.find_input.value())
+                            .with_action_target(format!("{prefix}:query"))
+                            .with_bounds(self.find_input.get_rect())
+                            .with_state(AccessState::new().focusable(true).focused(self.find_input.is_focused())),
+                        AccessNode::new(Role::Button)
+                            .with_name("Previous match")
+                            .with_value(result.clone())
+                            .with_action_target(format!("{prefix}:previous"))
+                            .with_bounds(self.find_previous_rect)
+                            .with_state(AccessState::new().focusable(true)),
+                        AccessNode::new(Role::Button)
+                            .with_name("Next match")
+                            .with_value(result)
+                            .with_action_target(format!("{prefix}:next"))
+                            .with_bounds(self.find_next_rect)
+                            .with_state(AccessState::new().focusable(true)),
+                        AccessNode::new(Role::Button)
+                            .with_name("Close find")
+                            .with_action_target(format!("{prefix}:close"))
+                            .with_bounds(self.find_close_rect)
+                            .with_state(AccessState::new().focusable(true)),
+                    ]),
+            );
+        }
         if let Some(menu) = self.context_menu_accessibility() {
             transcript.children.push(menu);
         }
@@ -2646,6 +2903,33 @@ impl Widget for TerminalWidget {
         _state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        let find_prefix = format!("terminal.find:{}:", self.pane_id);
+        if let Some(control) = target.strip_prefix(&find_prefix) {
+            match (control, action) {
+                ("query", ui::a11y::Action::Focus | ui::a11y::Action::Activate) => {
+                    self.open_find();
+                    return true;
+                }
+                ("query", ui::a11y::Action::SetValue(value)) => {
+                    self.open_find();
+                    self.set_find_query(value);
+                    return true;
+                }
+                ("previous", ui::a11y::Action::Activate) => {
+                    self.step_find_match(true);
+                    return true;
+                }
+                ("next", ui::a11y::Action::Activate) => {
+                    self.step_find_match(false);
+                    return true;
+                }
+                ("close", ui::a11y::Action::Activate) => {
+                    self.close_find();
+                    return true;
+                }
+                _ => return false,
+            }
+        }
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -2747,6 +3031,97 @@ impl Widget for TerminalWidget {
 }
 
 impl TerminalWidget {
+    /// Route the local find overlay before terminal input. Once Find is open,
+    /// keystrokes must not leak into the foreground process: the query is a
+    /// private viewport aid, not shell input. Enter cycles matches, Shift
+    /// Enter reverses, and Escape restores direct terminal typing.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Widget event forwarding requires the framework context for the embedded shared TextInput"
+    )]
+    fn handle_find_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+        handled: &mut bool,
+    ) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            match logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.close_find();
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    self.step_find_match(modifiers.state().shift_key());
+                    *handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            if self.find_previous_rect.contains(self.last_cursor_pos) {
+                self.step_find_match(true);
+                *handled = true;
+                return;
+            }
+            if self.find_next_rect.contains(self.last_cursor_pos) {
+                self.step_find_match(false);
+                *handled = true;
+                return;
+            }
+            if self.find_close_rect.contains(self.last_cursor_pos) {
+                self.close_find();
+                *handled = true;
+                return;
+            }
+        }
+        let before = self.find_input.value().to_string();
+        let mut input_handled = false;
+        Widget::handle_event(
+            &mut self.find_input,
+            event,
+            scale_factor,
+            &modifiers,
+            state,
+            root,
+            &mut input_handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+        if self.find_input.value() != before {
+            self.refresh_find_matches();
+        }
+        // A find overlay is a focus boundary. Even navigation keys and clicks
+        // outside its panel must not reach a running shell behind it.
+        *handled = true;
+    }
+
     /// Helper for [`Widget::handle_event`]'s `WindowEvent::MouseWheel` arm.
     fn handle_wheel_event(
         &mut self,
@@ -3323,6 +3698,234 @@ impl TerminalWidget {
             let band = Rect::new(x0, py, x1, py + self.char_h);
             scene.fill(Fill::NonZero, transform, sel_color, None, &band);
         }
+    }
+
+    /// Paint only the active find match. The index remains local and the
+    /// overlay never serializes query/match information into the shared
+    /// transcript; this is a visual locator over already-rendered cells.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The terminal grid's shared paint metrics keep selection and find-match overlays pixel-aligned"
+    )]
+    fn draw_find_match_highlight(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        grid_rect: Rect,
+        padding_x: f64,
+        start_y: usize,
+        visible_rows: usize,
+    ) {
+        let Some(found) = self.find_matches.get(self.find_current).copied() else {
+            return;
+        };
+        if found.row < start_y || found.row >= start_y.saturating_add(visible_rows) {
+            return;
+        }
+        let row = found.row - start_y;
+        let x0 = grid_rect.x0 + padding_x + found.start_col as f64 * self.char_w;
+        let x1 = grid_rect.x0 + padding_x + found.end_col as f64 * self.char_w;
+        let y0 = grid_rect.y0 + row as f64 * self.char_h;
+        let marker = Rect::new(x0, y0, x1.max(x0 + self.char_w), y0 + self.char_h);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.semantic.warning.with_alpha_factor(0.38),
+            None,
+            &marker,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.semantic.warning,
+            None,
+            &marker,
+        );
+    }
+
+    /// Shared-text-input find overlay. On narrow or large-text layouts the
+    /// field occupies its own row and the three explicit controls stack below
+    /// it, avoiding tiny/overlapping targets at 200% text.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The overlay owns a single responsive geometry and paint path so its focus targets cannot diverge from its visible controls"
+    )]
+    fn draw_find_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if !self.find_open {
+            return;
+        }
+        let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
+        let compact = self.rect.width() < 620.0 || scale >= 1.5;
+        let margin = 8.0 * scale.min(1.25);
+        let panel_w = (340.0 * scale)
+            .min(self.rect.width() - margin * 2.0)
+            .max(0.0);
+        let panel_h = if compact {
+            104.0 * scale.min(1.35)
+        } else {
+            42.0 * scale
+        };
+        let x1 = self.rect.x1 - margin;
+        self.find_rect = Rect::new(
+            x1 - panel_w,
+            self.rect.y0 + margin,
+            x1,
+            self.rect.y0 + margin + panel_h,
+        );
+        let panel = RoundedRect::from_rect(self.find_rect, f64::from(theme.tokens.radii.md));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &panel,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_focus,
+            None,
+            &panel,
+        );
+
+        let gap = 6.0 * scale.min(1.25);
+        let button = 28.0 * scale.min(1.25);
+        if compact {
+            self.find_input.apply_layout_external(Rect::new(
+                self.find_rect.x0 + gap,
+                self.find_rect.y0 + gap,
+                self.find_rect.x1 - gap,
+                self.find_rect.y0 + gap + 34.0 * scale.min(1.25),
+            ));
+            let y = self.find_input.get_rect().y1 + gap;
+            self.find_previous_rect = Rect::new(
+                self.find_rect.x0 + gap,
+                y,
+                self.find_rect.x0 + gap + button,
+                y + button,
+            );
+            self.find_next_rect = Rect::new(
+                self.find_previous_rect.x1 + gap,
+                y,
+                self.find_previous_rect.x1 + gap + button,
+                y + button,
+            );
+            self.find_close_rect = Rect::new(
+                self.find_rect.x1 - gap - button,
+                y,
+                self.find_rect.x1 - gap,
+                y + button,
+            );
+        } else {
+            self.find_close_rect = Rect::new(
+                self.find_rect.x1 - gap - button,
+                self.find_rect.y0 + (panel_h - button) / 2.0,
+                self.find_rect.x1 - gap,
+                self.find_rect.y0 + f64::midpoint(panel_h, button),
+            );
+            self.find_next_rect = Rect::new(
+                self.find_close_rect.x0 - gap - button,
+                self.find_close_rect.y0,
+                self.find_close_rect.x0 - gap,
+                self.find_close_rect.y1,
+            );
+            self.find_previous_rect = Rect::new(
+                self.find_next_rect.x0 - gap - button,
+                self.find_close_rect.y0,
+                self.find_next_rect.x0 - gap,
+                self.find_close_rect.y1,
+            );
+            self.find_input.apply_layout_external(Rect::new(
+                self.find_rect.x0 + gap,
+                self.find_rect.y0 + gap,
+                self.find_previous_rect.x0 - gap,
+                self.find_rect.y1 - gap,
+            ));
+        }
+        self.find_input.draw(scene, transform, tr, theme, presence);
+        if self.find_input.value().is_empty() && !self.find_input.is_focused() {
+            tr.draw_text(
+                scene,
+                "Find in scrollback",
+                12.0,
+                theme.tokens.colors.text_dim,
+                transform
+                    * Affine::translate((
+                        self.find_input.get_rect().x0 + 10.0,
+                        self.find_input.get_rect().center().y - 7.0,
+                    )),
+                None,
+            );
+        }
+        for (rect, icon) in [
+            (self.find_previous_rect, Icon::ChevronUp),
+            (self.find_next_rect, Icon::ChevronDown),
+            (self.find_close_rect, Icon::X),
+        ] {
+            let active = rect.contains(self.last_cursor_pos);
+            let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if active {
+                    theme.tokens.colors.overlay_medium
+                } else {
+                    theme.tokens.colors.overlay_subtle
+                },
+                None,
+                &shape,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &shape,
+            );
+            draw_icon(
+                scene,
+                transform,
+                rect.inset(5.0),
+                icon,
+                theme.tokens.colors.text_primary,
+                1.5,
+            );
+        }
+        let count = if self.find_query.is_empty() {
+            "Type to find".to_string()
+        } else if self.find_matches.is_empty() {
+            "No matches".to_string()
+        } else if self.find_matches.len() == MAX_FIND_MATCHES {
+            format!("{} / {}+", self.find_current + 1, MAX_FIND_MATCHES)
+        } else {
+            format!("{} / {}", self.find_current + 1, self.find_matches.len())
+        };
+        let count_x = if compact {
+            self.find_next_rect.x1 + gap + 2.0
+        } else {
+            self.find_input.get_rect().x1 - 58.0 * scale
+        };
+        let count_y = if compact {
+            self.find_next_rect.center().y - 7.0
+        } else {
+            self.find_input.get_rect().center().y - 7.0
+        };
+        tr.draw_text(
+            scene,
+            &count,
+            10.0,
+            theme.tokens.colors.text_dim,
+            transform * Affine::translate((count_x, count_y)),
+            None,
+        );
     }
 
     /// Decode and paint graphics only when their buffer rows are visible.  The

@@ -1417,9 +1417,9 @@ impl Action for VideoEditorAction {
                 let effect_id = effect
                     .parse::<Uuid>()
                     .map_err(|_| ActionError::Refused("invalid effect id".into()))?;
-                let project = VideoDoc::load_project(doc);
-                {
-                    let clip = project.clip(clip_id).ok_or_else(|| {
+                let mut project = VideoDoc::load_project(doc);
+                let (effects, animation) = {
+                    let clip = project.clip_mut(clip_id).ok_or_else(|| {
                         ActionError::Refused("effect clip is no longer available".into())
                     })?;
                     let index = clip.effect_index(effect_id).ok_or_else(|| {
@@ -1433,8 +1433,10 @@ impl Action for VideoEditorAction {
                             "effect changed before it could be removed".into(),
                         ));
                     }
-                }
-                if !VideoDoc::remove_clip_effect(doc, clip_id, effect_id) {
+                    clip.remove_effect(index);
+                    (clip.effects.clone(), clip.anim.clone())
+                };
+                if !VideoDoc::set_clip_effects_and_animation(doc, clip_id, &effects, &animation) {
                     return Err(ActionError::Refused(
                         "effect clip is no longer available".into(),
                     ));
@@ -1456,9 +1458,9 @@ impl Action for VideoEditorAction {
                 let neighbour_id = neighbour
                     .parse::<Uuid>()
                     .map_err(|_| ActionError::Refused("invalid effect neighbour id".into()))?;
-                let project = VideoDoc::load_project(doc);
-                let (effect_ordinal, neighbour_ordinal) = {
-                    let clip = project.clip(clip_id).ok_or_else(|| {
+                let mut project = VideoDoc::load_project(doc);
+                let (effects, animation) = {
+                    let clip = project.clip_mut(clip_id).ok_or_else(|| {
                         ActionError::Refused("effect clip is no longer available".into())
                     })?;
                     let index = clip.effect_index(effect_id).ok_or_else(|| {
@@ -1478,16 +1480,14 @@ impl Action for VideoEditorAction {
                             "effect order changed before this move could apply".into(),
                         ));
                     }
-                    (target, index)
+                    if *up {
+                        clip.move_effect_up(index);
+                    } else {
+                        clip.move_effect_down(index);
+                    }
+                    (clip.effects.clone(), clip.anim.clone())
                 };
-                if !VideoDoc::set_clip_effect_ordinal(doc, clip_id, effect_id, effect_ordinal)
-                    || !VideoDoc::set_clip_effect_ordinal(
-                        doc,
-                        clip_id,
-                        neighbour_id,
-                        neighbour_ordinal,
-                    )
-                {
+                if !VideoDoc::set_clip_effects_and_animation(doc, clip_id, &effects, &animation) {
                     return Err(ActionError::Refused(
                         "effect clip is no longer available".into(),
                     ));
@@ -1497,9 +1497,9 @@ impl Action for VideoEditorAction {
                 let clip_id = clip
                     .parse::<Uuid>()
                     .map_err(|_| ActionError::Refused("invalid effect clip id".into()))?;
-                let project = VideoDoc::load_project(doc);
-                {
-                    let current = project.clip(clip_id).ok_or_else(|| {
+                let mut project = VideoDoc::load_project(doc);
+                let (effects, animation) = {
+                    let current = project.clip_mut(clip_id).ok_or_else(|| {
                         ActionError::Refused("effect clip is no longer available".into())
                     })?;
                     if !same_effect_stack(&current.effects, expected) {
@@ -1507,11 +1507,10 @@ impl Action for VideoEditorAction {
                             "effect stack changed before it could be cleared".into(),
                         ));
                     }
-                }
-                if expected
-                    .iter()
-                    .any(|effect| !VideoDoc::remove_clip_effect(doc, clip_id, effect.id))
-                {
+                    current.clear_effects();
+                    (current.effects.clone(), current.anim.clone())
+                };
+                if !VideoDoc::set_clip_effects_and_animation(doc, clip_id, &effects, &animation) {
                     return Err(ActionError::Refused(
                         "effect clip is no longer available".into(),
                     ));
@@ -5530,6 +5529,8 @@ mod tests {
         let clip = ctx.project.clip_mut(clip_id).expect("fixture clip");
         clip.add_effect(EffectKind::Sepia);
         clip.add_effect(EffectKind::Sepia);
+        clip.set_key_at(Param::EffectAmount(0), 0.0, 0.2, Interp::Linear);
+        clip.set_key_at(Param::EffectAmount(1), 0.0, 0.8, Interp::Linear);
         let first = clip.effects[0].id;
         let second = clip.effects[1].id;
         let resource = effect_resource_id(clip_id, second);
@@ -5565,6 +5566,17 @@ mod tests {
             moved.clip(clip_id).expect("moved clip").effects[0].id,
             second
         );
+        let moved_clip = moved.clip(clip_id).expect("moved clip");
+        assert_eq!(
+            moved_clip.anim.sample(Param::EffectAmount(0), 0.0),
+            Some(0.8),
+            "the moved effect carried its keyed amount"
+        );
+        assert_eq!(
+            moved_clip.anim.sample(Param::EffectAmount(1), 0.0),
+            Some(0.2),
+            "its neighbour carried its own curve in the other direction"
+        );
 
         ctx.project = moved;
         let removed = run(&ctx.project, &spec_on(&ctx, &resource, "remove"), None);
@@ -5575,6 +5587,41 @@ mod tests {
                 .effect_index(second)
                 .is_none(),
             "the exact addressed instance was removed",
+        );
+        assert_eq!(
+            removed
+                .clip(clip_id)
+                .expect("removed clip")
+                .anim
+                .sample(Param::EffectAmount(0), 0.0),
+            Some(0.2),
+            "removing the head closes the animation slot with the remaining effect"
+        );
+
+        let mut before_clear = removed;
+        before_clear.clip_mut(clip_id).unwrap().set_key_at(
+            Param::Opacity,
+            0.0,
+            0.6,
+            Interp::Linear,
+        );
+        ctx.project = before_clear;
+        let cleared = run(
+            &ctx.project,
+            &spec_on(&ctx, &clip_resource_id(clip_id), "clear-effects"),
+            None,
+        );
+        let cleared_clip = cleared.clip(clip_id).expect("cleared clip");
+        assert!(cleared_clip.effects.is_empty());
+        assert_eq!(
+            cleared_clip.anim.sample(Param::EffectAmount(0), 0.0),
+            None,
+            "clearing effects clears their now-orphaned curves"
+        );
+        assert_eq!(
+            cleared_clip.anim.sample(Param::Opacity, 0.0),
+            Some(0.6),
+            "clearing effects preserves unrelated animation"
         );
     }
 
@@ -5627,8 +5674,7 @@ mod tests {
         reordered
             .clip_mut(clip_id)
             .expect("clip")
-            .effects
-            .swap(0, 1);
+            .move_effect_down(0);
         VideoDoc::upsert_clip(&mut doc, reordered.clip(clip_id).expect("reordered clip"));
         assert!(
             move_up.apply(&mut doc).is_err(),

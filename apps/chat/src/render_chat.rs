@@ -1596,85 +1596,6 @@ impl ChatApp {
         }
     }
 
-    /// A right-click context menu over a channel / category / workspace.
-    /// Lays its items below the anchor and records a per-item action hit
-    /// plus a full-window scrim hit to dismiss.
-    pub(crate) fn draw_context_menu(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        menu: &crate::app::ContextMenu,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let c = &theme.tokens.colors;
-        // Dismiss scrim (lowest priority).
-        ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
-
-        let w = 188.0;
-        let item_h = 32.0;
-        let menu_h = 10.0 + menu.items.len() as f64 * item_h + 6.0;
-        let x0 = menu
-            .anchor
-            .x
-            .clamp(self.rect.x0 + 6.0, self.rect.x1 - w - 6.0);
-        let y0 = menu.anchor.y.clamp(
-            self.rect.y0 + 6.0,
-            (self.rect.y1 - menu_h - 6.0).max(self.rect.y0 + 6.0),
-        );
-        let panel = Rect::new(x0, y0, x0 + w, y0 + menu_h);
-        fill_round(
-            scene,
-            tf,
-            panel.inflate(5.0, 5.0),
-            16.0,
-            Color::from_rgba8(0, 0, 0, 80),
-        );
-        fill_round(scene, tf, panel, 12.0, c.neutral[1]);
-        stroke_round(
-            scene,
-            tf,
-            panel,
-            12.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
-        );
-
-        let mut y = panel.y0 + 6.0;
-        for item in &menu.items {
-            let r = Rect::new(panel.x0 + 5.0, y, panel.x1 - 5.0, y + item_h - 3.0);
-            let hot = r.contains(self.last_mouse);
-            if hot {
-                fill_round(scene, tf, r, 8.0, c.lift(0.72));
-            }
-            let col = if item.is_destructive() {
-                c.semantic.danger
-            } else {
-                c.text_primary
-            };
-            label(
-                scene,
-                tr,
-                tf,
-                item.label(),
-                13.0,
-                col,
-                r.x0 + 12.0,
-                r.center().y - 8.0,
-            );
-            ChatApp::push_hit(
-                hits,
-                r,
-                Hit::MenuAction {
-                    target: menu.target.clone(),
-                    action: *item,
-                },
-            );
-            y += item_h;
-        }
-    }
-
     // ------------------------------------------------------------ messages
     pub(crate) fn draw_messages(
         &mut self,
@@ -1708,6 +1629,15 @@ impl ChatApp {
         let divider_h = 36.0;
         let (rows, total) = self.measure_message_rows(tr, theme, &groups, text_w, divider_h);
 
+        // The origin is pinned to the newest edge. If a message arrives while
+        // the reader is looking back through history, compensate for the new
+        // height so the message they were reading stays in the same place.
+        // A fresh search reveal deliberately owns its initial position instead.
+        if !self.timeline_at_end && !self.reveal_scroll_pending && self.timeline_total_height > 0.0
+        {
+            self.scroll += total - self.timeline_total_height;
+        }
+
         let start_y = if total > area.height() {
             area.y1 - total
         } else {
@@ -1715,20 +1645,35 @@ impl ChatApp {
         };
         let max_start = area.y0;
         let min_start = (area.y1 - total).min(area.y0);
-        if let Some(target) = self.revealed_message.as_deref()
-            && let Some(target_index) = rows.iter().position(|row| row.idx_id == target)
-        {
-            let before = rows
-                .iter()
-                .take(target_index)
-                .map(RowM::height)
-                .sum::<f64>();
-            if let Some(row) = rows.get(target_index) {
-                let target_mid = divider_h + before + row.height() / 2.0;
-                self.scroll = area.center().y - start_y - target_mid;
+        if self.reveal_scroll_pending {
+            if let Some(target) = self.revealed_message.as_deref()
+                && let Some(target_index) = rows.iter().position(|row| row.idx_id == target)
+            {
+                let before = rows
+                    .iter()
+                    .take(target_index)
+                    .map(RowM::height)
+                    .sum::<f64>();
+                if let Some(row) = rows.get(target_index) {
+                    let target_mid = divider_h + before + row.height() / 2.0;
+                    self.scroll = area.center().y - start_y - target_mid;
+                }
             }
+            // A result can disappear between search and paint. Either way,
+            // make this a one-shot request so a stale selection never fights
+            // normal reader-driven scrolling on later frames.
+            self.reveal_scroll_pending = false;
         }
         let y = (start_y + self.scroll).clamp(min_start, max_start);
+        // Store the normalised (bounded) offset, not the raw wheel accumulator.
+        // This prevents an unbounded value from leaking across a resize or a
+        // channel switch, and gives sync an accurate read-edge answer.
+        self.scroll = y - start_y;
+        // `scroll == 0` is the newest edge: `start_y` starts the timeline at
+        // its bottom-aligned position, while increasing offsets travel back
+        // through history toward `max_start`.
+        self.timeline_at_end = self.scroll <= 0.5;
+        self.timeline_total_height = total;
 
         let mut y = self.draw_messages_date_divider(
             PaintContext::new(scene, tf, tr, theme),
@@ -1747,6 +1692,67 @@ impl ChatApp {
                 hits,
             );
         }
+        if !self.timeline_at_end {
+            Self::draw_jump_to_latest(scene, tf, tr, theme, area, hits);
+        }
+    }
+
+    /// A visible, keyboard-reachable escape hatch from history. It only
+    /// changes local viewport state; the durable read watermark advances on a
+    /// later sync once the live edge is actually visible.
+    fn draw_jump_to_latest(
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale).min(1.35);
+        let label_text = "↓ Jump to latest";
+        let (lw, _) = tr.measure(label_text, 12.5, None);
+        let w = (f64::from(lw) + 28.0 * scale).max(152.0);
+        let h = 36.0 * scale;
+        let visual = Rect::new(
+            area.x1 - w - 16.0,
+            area.y1 - h - 14.0,
+            area.x1 - 16.0,
+            area.y1 - 14.0,
+        );
+        fill_round(
+            scene,
+            tf,
+            visual.inflate(3.0, 3.0),
+            12.0,
+            Color::from_rgba8(0, 0, 0, 74),
+        );
+        fill_round(scene, tf, visual, 10.0, c.accent[5]);
+        let (tw, th) = tr.measure(label_text, 12.5, None);
+        text(
+            scene,
+            tr,
+            tf,
+            label_text,
+            12.5,
+            Color::WHITE,
+            visual.center().x - f64::from(tw) / 2.0,
+            visual.center().y - f64::from(th) / 2.0,
+            TextWeight::Semibold,
+            None,
+        );
+        // The visual remains compact; the 44px target meets touch and switch
+        // access guidance without crowding the message column.
+        ChatApp::push_hit(
+            hits,
+            Rect::new(
+                visual.x0,
+                visual.center().y - 22.0,
+                visual.x1,
+                visual.center().y + 22.0,
+            ),
+            Hit::JumpToLatest,
+        );
     }
 
     /// The quiet "start of #channel" marker shown in place of the timeline

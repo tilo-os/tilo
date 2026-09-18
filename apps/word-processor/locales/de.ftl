@@ -21,6 +21,12 @@ toolbar-col-del = −Spalte
 
 ## Toolbar accessibility names / tooltips
 a11y-group-formatting = Formatierung
+a11y-zoom-out = Verkleinern
+a11y-zoom-out-description = Seitenmaßstab um 10 Prozent verringern
+a11y-zoom-reset = Zoom zurücksetzen
+a11y-zoom-reset-description = Seitenmaßstab auf 100 Prozent zurücksetzen
+a11y-zoom-in = Vergrößern
+a11y-zoom-in-description = Seitenmaßstab um 10 Prozent vergrößern
 a11y-bold = Fett
 a11y-italic = Kursiv
 a11y-underline = Unterstrichen

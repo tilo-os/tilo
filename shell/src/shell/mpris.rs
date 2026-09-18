@@ -139,6 +139,7 @@ impl ResumeState {
         pending.is_some() || accepted
     }
 
+    #[cfg(test)]
     fn finish(&mut self, authority: &ResumeAuthority, accepted: bool) {
         self.finish_with_player(authority, accepted.then_some(None));
     }

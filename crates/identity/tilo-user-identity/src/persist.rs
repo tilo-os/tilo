@@ -23,13 +23,16 @@
 //! returns [`PersistError::InsecurePermissions`] rather than being read.
 //! `privkey.bin` is user-scoped and must be 0600. `keypair.bin` is the
 //! device key, read by two components running as two uids, so it may
-//! additionally be group-readable ([`DEVICE_KEY_MODE`]) but never
-//! reachable by anyone outside that group.
+//! additionally be group-readable ([`DEVICE_KEY_MODE`]) but must be owned by
+//! root (or the reader for an injected/test store) and never reachable by
+//! anyone outside that group.
 
 #[cfg(unix)]
 use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Write};
+#[cfg(target_os = "linux")]
+use std::os::fd::FromRawFd as _;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -57,6 +60,63 @@ fn protect_secret_process() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
+    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secret-key path contains an embedded NUL byte",
+        )
+    })?;
+    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .map_err(|_| io::Error::other("open flags are outside the Linux u64 ABI"))?;
+    let how = OpenHow {
+        flags,
+        mode: 0,
+        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: path and open_how remain live for this syscall. A successful
+    // descriptor is uniquely transferred into File below.
+    let descriptor = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let descriptor = i32::try_from(descriptor)
+        .map_err(|_| io::Error::other("openat2 returned an invalid descriptor"))?;
+    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
+    Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    options.open(path)
 }
 
 /// Sequence for same-directory temporary device-key claim files. Final
@@ -160,6 +220,16 @@ pub enum PersistError {
         /// Number of directory entries referencing the inode.
         links: u64,
     },
+    /// A secret key inode is not owned by the authority expected for that key.
+    #[error("secret key {path} is owned by uid {owner}; expected {expected}")]
+    InsecureOwner {
+        /// Key path whose opened inode has an unexpected owner.
+        path: String,
+        /// Owner reported by the opened inode.
+        owner: u32,
+        /// Human-readable ownership rule for this key class.
+        expected: String,
+    },
     /// An Ed25519 key file was not 32 bytes.
     #[error("expected 32-byte Ed25519 key, got {0} bytes")]
     WrongKeyLength(usize),
@@ -189,14 +259,7 @@ pub fn read_public_key(path: &Path) -> Result<[u8; 32], PersistError> {
 /// accepting a blocking device/FIFO. The byte after `limit` is consumed only
 /// to distinguish an exact-size artifact from an oversized one.
 fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistError> {
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let file = options.open(path)?;
+    let file = open_regular_without_symlinks(path)?;
     if !file.metadata()?.is_file() {
         return Err(PersistError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -248,25 +311,36 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
 /// cannot be read, or [`PersistError::WrongKeyLength`] if it is not
 /// exactly 32 bytes.
 pub fn read_signing_key(path: &Path) -> Result<SigningKey, PersistError> {
-    signing_key_from_file(path, 0o077)
+    signing_key_from_file(path, 0o077, SecretOwner::Any)
+}
+
+/// Read a user/root signing key owned by the invoking account.
+///
+/// This is the correct boundary for offline signing commands: they require no
+/// privilege, and accepting another account's mode-0600 inode would let a
+/// writable parent directory silently substitute the signing authority.
+///
+/// # Errors
+///
+/// Applies [`read_signing_key`]'s checks and additionally returns
+/// [`PersistError::InsecureOwner`] when the opened inode is not caller-owned.
+pub fn read_owned_signing_key(path: &Path) -> Result<SigningKey, PersistError> {
+    signing_key_from_file(path, 0o077, SecretOwner::Reader)
 }
 
 /// The length check and expansion shared by every secret-key reader.
 /// The mode policy is the caller's — see [`read_signing_key`] and
 /// [`read_device_key`].
-fn signing_key_from_file(path: &Path, forbidden_mode: u32) -> Result<SigningKey, PersistError> {
+fn signing_key_from_file(
+    path: &Path,
+    forbidden_mode: u32,
+    owner_policy: SecretOwner,
+) -> Result<SigningKey, PersistError> {
     protect_secret_process()?;
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // Inspect and read the same opened inode. A separate metadata(path)
-        // followed by read(path) lets an attacker exchange a checked private
-        // file for a symlink between the two operations.
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let file = options.open(path)?;
+    // Inspect and read the same opened inode while rejecting symlinks in every
+    // component. A leaf-only O_NOFOLLOW check still permits an exchanged
+    // parent directory to redirect an otherwise trusted key path.
+    let file = open_regular_without_symlinks(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(PersistError::Io(io::Error::new(
@@ -278,6 +352,25 @@ fn signing_key_from_file(path: &Path, forbidden_mode: u32) -> Result<SigningKey,
     {
         use std::os::unix::fs::MetadataExt;
         reject_metadata_mode(path, &metadata, forbidden_mode)?;
+        if owner_policy != SecretOwner::Any {
+            // The installed key is provisioned by root and then shared
+            // read-only with the device-identity group. Custom/test stores may
+            // be owned by the caller, but a third account may never substitute
+            // the signing identity merely by matching its mode.
+            // SAFETY: geteuid takes no arguments and has no failure mode.
+            let reader = unsafe { libc::geteuid() };
+            if !secret_key_owner_is_accepted(owner_policy, metadata.uid(), reader) {
+                return Err(PersistError::InsecureOwner {
+                    path: path.display().to_string(),
+                    owner: metadata.uid(),
+                    expected: match owner_policy {
+                        SecretOwner::Any => unreachable!(),
+                        SecretOwner::Reader => format!("uid {reader}"),
+                        SecretOwner::RootOrReader => format!("root or uid {reader}"),
+                    },
+                });
+            }
+        }
         if metadata.nlink() != 1 {
             return Err(PersistError::InsecureLinkCount {
                 path: path.display().to_string(),
@@ -296,6 +389,22 @@ fn signing_key_from_file(path: &Path, forbidden_mode: u32) -> Result<SigningKey,
     let mut seed = Zeroizing::new([0u8; 32]);
     seed.copy_from_slice(&bytes);
     Ok(SigningKey::from_bytes(&seed))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SecretOwner {
+    Any,
+    Reader,
+    RootOrReader,
+}
+
+#[cfg(unix)]
+fn secret_key_owner_is_accepted(policy: SecretOwner, owner: u32, reader: u32) -> bool {
+    match policy {
+        SecretOwner::Any => true,
+        SecretOwner::Reader => owner == reader,
+        SecretOwner::RootOrReader => owner == 0 || owner == reader,
+    }
 }
 
 /// Write a 32-byte Ed25519 signing key to disk with mode 0600.
@@ -336,10 +445,25 @@ pub const DEVICE_KEY_MODE: u32 = 0o640;
 ///
 /// Returns [`PersistError::InsecurePermissions`] if the file is
 /// accessible to users outside the device-trust group,
+/// [`PersistError::InsecureOwner`] if it is owned by neither root nor the
+/// reader,
 /// [`PersistError::Io`] if it cannot be read, or
 /// [`PersistError::WrongKeyLength`] if it is not exactly 32 bytes.
 pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
-    signing_key_from_file(path, 0o007)
+    signing_key_from_file(path, 0o007, SecretOwner::RootOrReader)
+}
+
+/// Read the former group-owned key during its one-time privileged migration.
+/// Historical versions allowed the session account to create that inode, so
+/// ownership can be tightened only after adoption into the protected store.
+/// New callers must use [`read_device_key`].
+///
+/// # Errors
+///
+/// Applies the same bounded no-follow, regular-file, mode, link-count, and
+/// length checks as [`read_device_key`], except for the historical owner rule.
+pub fn read_legacy_device_key(path: &Path) -> Result<SigningKey, PersistError> {
+    signing_key_from_file(path, 0o007, SecretOwner::Any)
 }
 
 /// Write the device key with [`DEVICE_KEY_MODE`], atomically.
@@ -666,6 +790,12 @@ mod tests {
         fs::write(&real, [7_u8; 32]).unwrap();
         symlink(&real, &link).unwrap();
         assert!(matches!(read_public_key(&link), Err(PersistError::Io(_))));
+        let linked_parent = tmp.path().join("linked-parent");
+        symlink(tmp.path(), &linked_parent).unwrap();
+        assert!(matches!(
+            read_public_key(&linked_parent.join("pubkey.bin")),
+            Err(PersistError::Io(_))
+        ));
 
         write_public_key(&link, &[8_u8; 32]).unwrap();
         assert_eq!(fs::read(&real).unwrap(), [7_u8; 32]);
@@ -723,6 +853,13 @@ mod tests {
             PersistError::Io(error) => assert_eq!(error.raw_os_error(), Some(libc::ELOOP)),
             other => panic!("expected symlink refusal, got {other:?}"),
         }
+
+        let linked_parent = tmp.path().join("linked-parent");
+        symlink(tmp.path(), &linked_parent).unwrap();
+        match read_signing_key(&linked_parent.join("real.key")).unwrap_err() {
+            PersistError::Io(error) => assert_eq!(error.raw_os_error(), Some(libc::ELOOP)),
+            other => panic!("expected parent-symlink refusal, got {other:?}"),
+        }
     }
 
     #[cfg(unix)]
@@ -739,6 +876,33 @@ mod tests {
             PersistError::InsecureLinkCount { links, .. } => assert_eq!(links, 2),
             other => panic!("expected hard-link refusal, got {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_key_owner_policies_are_distinct() {
+        assert!(secret_key_owner_is_accepted(SecretOwner::Any, 1001, 1000));
+        assert!(secret_key_owner_is_accepted(
+            SecretOwner::Reader,
+            1000,
+            1000
+        ));
+        assert!(!secret_key_owner_is_accepted(SecretOwner::Reader, 0, 1000));
+        assert!(secret_key_owner_is_accepted(
+            SecretOwner::RootOrReader,
+            0,
+            1000
+        ));
+        assert!(secret_key_owner_is_accepted(
+            SecretOwner::RootOrReader,
+            1000,
+            1000
+        ));
+        assert!(!secret_key_owner_is_accepted(
+            SecretOwner::RootOrReader,
+            1001,
+            1000
+        ));
     }
 
     #[test]

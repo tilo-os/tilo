@@ -22,7 +22,7 @@ ed25519-dalek.workspace = true
 getrandom.workspace = true
 # Keep PDF/video features in the file manager to avoid native decoding
 # dependencies in the filesystem daemon.
-thumbnail = { path = "../crates/thumbnail" }
+thumbnail = { path = "../crates/media/thumbnail" }
 tilo-user-identity = { path = "../crates/identity/tilo-user-identity" }
 tilo-power-mgmt = { path = "../crates/system/power", default-features = false }
 runtime-fs = { path = "../crates/runtime/runtime-fs" }

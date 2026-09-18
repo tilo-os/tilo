@@ -42,7 +42,7 @@ uuid.workspace = true
 sha2.workspace = true
 # Shared thumbnail generator and cache. PDF previews use dynamically loaded
 # pdfium and fall back to a badge; video remains a badge in this crate.
-thumbnail = { path = "../../crates/thumbnail", features = ["pdf"] }
+thumbnail = { path = "../../crates/media/thumbnail", features = ["pdf"] }
 trash = "5.2.6"
 open.workspace = true
 mime_guess = "2.0.5"

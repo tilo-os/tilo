@@ -34,6 +34,12 @@ pub(crate) struct ZoomControl {
 
 impl ZoomControl {
     pub(crate) const WIDTH: f64 = 88.0;
+    /// Stable semantic targets for the three controls painted by this component.
+    /// Keeping these beside the hit-testing means assistive technology and the
+    /// pointer path cannot grow different zoom behaviours.
+    pub(crate) const TARGET_OUT: &'static str = "word-processor.zoom:out";
+    pub(crate) const TARGET_RESET: &'static str = "word-processor.zoom:reset";
+    pub(crate) const TARGET_IN: &'static str = "word-processor.zoom:in";
 
     pub(crate) fn width(text_scale: f64) -> f64 {
         Self::WIDTH * text_scale
@@ -102,6 +108,39 @@ impl ZoomControl {
         else {
             return false;
         };
+        self.apply(action)
+    }
+
+    /// Activate a painted zoom control by its stable accessibility target.
+    /// This deliberately uses the same `apply` routine as pointer input.
+    pub(crate) fn activate_target(&mut self, target: &str) -> bool {
+        let action = match target {
+            Self::TARGET_OUT => Action::Out,
+            Self::TARGET_RESET => Action::Reset,
+            Self::TARGET_IN => Action::In,
+            _ => return false,
+        };
+        self.apply(action);
+        true
+    }
+
+    /// The rendered hit bounds paired with their stable semantic target.
+    /// Empty until the component has been drawn, just like the pointer targets.
+    pub(crate) fn accessibility_targets(&self) -> Vec<(&'static str, Rect)> {
+        self.hits
+            .iter()
+            .map(|(action, rect)| {
+                let target = match action {
+                    Action::Out => Self::TARGET_OUT,
+                    Action::Reset => Self::TARGET_RESET,
+                    Action::In => Self::TARGET_IN,
+                };
+                (target, *rect)
+            })
+            .collect()
+    }
+
+    fn apply(&mut self, action: Action) -> bool {
         match action {
             Action::Out => self.step(-STEP),
             Action::Reset => self.set(1.0),

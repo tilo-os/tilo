@@ -125,7 +125,7 @@ openh264.workspace = true
 # and pulls frames from it; `media`'s default (no `decode`) build carries no
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
 # An app that wants real decode enables `media/decode` in its own manifest.
-media = { path = "../crates/media" }
+media = { path = "../crates/media/core" }
 # MPRIS D-Bus media control for the `VideoPlayer` widget (behind the `mpris`
 # feature). Pinned to 4.4 with `p2p` to match `apps/music` + `apps/chat`, so the
 # workspace resolves a single zbus 4.4 copy (the hermetic p2p round-trip test

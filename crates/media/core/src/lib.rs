@@ -78,7 +78,7 @@ pub mod transport;
 pub mod gst_backend;
 
 /// `GStreamer` itself, re-exported so consumers can configure the sink returned
-/// by [`MediaEngine::audio_sink`] without adding another GStreamer dependency.
+/// by [`MediaEngine::audio_sink`] without adding another `GStreamer` dependency.
 #[cfg(feature = "decode")]
 pub use gstreamer as gst;
 

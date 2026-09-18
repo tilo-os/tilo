@@ -53,7 +53,27 @@ fn game_sched_attr() -> SchedAttr {
 }
 
 fn apply_game_uclamp() -> libc::c_long {
-    let attr = game_sched_attr();
+    let mut attr = game_sched_attr();
+    // Preserve the launcher/cgroup's existing policy, nice value, deadline
+    // parameters and utilization ceiling. Supplying zero-filled attributes to
+    // sched_setattr would silently reset a deliberately deprioritized game.
+    // SAFETY: `attr` is writable for its declared size; pid/flags zero request
+    // the calling thread's current scheduler attributes.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_sched_getattr,
+            0,
+            &raw mut attr,
+            std::mem::size_of::<SchedAttr>(),
+            0,
+        )
+    };
+    if result != 0 {
+        return result;
+    }
+    attr.flags |= SCHED_FLAG_UTIL_CLAMP_MIN;
+    attr.util_min = GAME_UTIL_MIN;
+    attr.util_max = attr.util_max.max(GAME_UTIL_MIN);
     // SAFETY: `attr` has Linux's sched_attr C layout and remains live for the
     // direct syscall. pid 0 means only the calling process.
     unsafe { libc::syscall(libc::SYS_sched_setattr, 0, &raw const attr, 0) }
@@ -203,6 +223,32 @@ mod tests {
         })
         .join()
         .expect("game profile test thread");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn game_uclamp_preserves_existing_nice_value() {
+        std::thread::spawn(|| {
+            // SAFETY: setpriority consumes scalar arguments. A positive nice
+            // value is always an unprivileged, thread-local de-prioritization
+            // on Linux and keeps this mutation inside the test thread.
+            assert_eq!(unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 7) }, 0);
+            let before = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+            assert_eq!(before, 7);
+
+            let applied = apply_game_uclamp();
+            if applied == 0 {
+                let after = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+                assert_eq!(after, before);
+            } else {
+                assert_eq!(
+                    std::io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EOPNOTSUPP)
+                );
+            }
+        })
+        .join()
+        .expect("nice-preservation test thread");
     }
 
     #[cfg(target_os = "linux")]

@@ -207,6 +207,10 @@ enum MenuItem {
     ClearFormat,
     // Settings.
     OpenDocSettings,
+    /// A view-only operation: display raw formulas in the grid instead of
+    /// their calculated values. Kept alongside the other painted commands so
+    /// narrow layouts do not hide this useful inspection mode behind Ctrl+K.
+    ToggleFormulaView,
     // Inline bar action.
     AutoSum,
 }
@@ -217,6 +221,9 @@ enum OpenMenu {
     None,
     File,
     Format,
+    /// Holds secondary commands when the accessible text scale or viewport
+    /// leaves insufficient room for the full toolbar.
+    More,
 }
 
 /// Whether the per-document settings panel is open.
@@ -1075,6 +1082,13 @@ impl SheetsApp {
     /// Shots hook: open the Format menu.
     pub fn shots_open_format_menu(&mut self) {
         self.open_menu = OpenMenu::Format;
+    }
+
+    /// Shots hook: expose the compact-toolbar overflow menu so responsive
+    /// visual regression covers controls that are intentionally moved off the
+    /// narrow, enlarged-text command row.
+    pub fn shots_open_more_menu(&mut self) {
+        self.open_menu = OpenMenu::More;
     }
 
     /// Shots hook: open the per-document settings panel.
@@ -3305,7 +3319,9 @@ impl SheetsApp {
         self.grid_rect = Rect::new(r.x0, self.formula_rect.y1, r.x1, self.tabs_rect.y0);
         self.grid.rect = self.grid_rect;
 
-        // Menu bar: File ▾  Format ▾  Σ Sum  Settings ▾  ...  [type indicator]
+        // Menu bar: File ▾  Format ▾  Σ Sum  Settings ▾. At high text scale on
+        // a narrow window, the latter commands collapse into More instead of
+        // clipping labels or shrinking targets below the shared minimum.
         self.menu_buttons.clear();
         // Fine-pointer controls still honour the shared 32 px minimum; the
         // same geometry grows for accessibility text and coarse input.
@@ -3328,29 +3344,32 @@ impl SheetsApp {
                 opens,
             }
         };
-        let (file_w, format_w, sum_w, settings_w) = if scale > 1.25 {
-            (72.0, 104.0, 62.0, 156.0)
-        } else {
-            (56.0, 70.0, 66.0, 104.0)
-        };
+        let compact_toolbar = r.width() < 360.0 * scale;
+        let (file_w, format_w, sum_w, settings_w) =
+            (56.0 * scale, 76.0 * scale, 66.0 * scale, 108.0 * scale);
         self.menu_buttons
             .push(mk("File", &mut x, file_w, None, Some(OpenMenu::File)));
         self.menu_buttons
             .push(mk("Format", &mut x, format_w, None, Some(OpenMenu::Format)));
-        self.menu_buttons.push(mk(
-            "\u{03A3} Sum",
-            &mut x,
-            sum_w,
-            Some(MenuItem::AutoSum),
-            None,
-        ));
-        self.menu_buttons.push(mk(
-            "Doc settings",
-            &mut x,
-            settings_w,
-            Some(MenuItem::OpenDocSettings),
-            None,
-        ));
+        if compact_toolbar {
+            self.menu_buttons
+                .push(mk("More", &mut x, 64.0 * scale, None, Some(OpenMenu::More)));
+        } else {
+            self.menu_buttons.push(mk(
+                "\u{03A3} Sum",
+                &mut x,
+                sum_w,
+                Some(MenuItem::AutoSum),
+                None,
+            ));
+            self.menu_buttons.push(mk(
+                "Doc settings",
+                &mut x,
+                settings_w,
+                Some(MenuItem::OpenDocSettings),
+                None,
+            ));
+        }
 
         // Formula bar field (after the name box + fx label).
         let fx_w = 30.0 * scale;
@@ -3439,6 +3458,21 @@ impl SheetsApp {
                     self.layout_dropdown(anchor, &items, 160.0);
                 }
             }
+            OpenMenu::More => {
+                if let Some(anchor) = opener {
+                    let formula_label = if self.grid.formula_view() {
+                        "Hide formulas"
+                    } else {
+                        "Show formulas"
+                    };
+                    let items = [
+                        ("AutoSum", MenuItem::AutoSum),
+                        ("Document settings", MenuItem::OpenDocSettings),
+                        (formula_label, MenuItem::ToggleFormulaView),
+                    ];
+                    self.layout_dropdown(anchor, &items, 190.0);
+                }
+            }
         }
 
         if self.settings_panel != SettingsPanel::None {
@@ -3509,9 +3543,16 @@ impl SheetsApp {
     }
 
     fn layout_dropdown(&mut self, anchor: Rect, items: &[(&str, MenuItem)], width: f64) {
-        let row_h = 34.0;
-        let pad = 6.0;
-        let x0 = anchor.x0;
+        let scale = self.text_scale;
+        let row_h = 34.0 * scale;
+        let pad = 6.0 * scale;
+        // Never let an enlarged menu escape a narrow viewport. The menu still
+        // uses normal-size rows; this only bounds its horizontal surface.
+        let width = (width * scale).min((self.rect.width() - 8.0 * scale).max(1.0));
+        let x0 = anchor
+            .x0
+            .min(self.rect.x1 - width - 4.0 * scale)
+            .max(self.rect.x0 + 4.0 * scale);
         let y0 = anchor.y1 + 4.0;
         let h = count_f64(items.len()) * row_h + pad * 2.0;
         self.dropdown_rect = Rect::new(x0, y0, x0 + width, y0 + h);
@@ -3719,7 +3760,9 @@ impl SheetsApp {
         for b in &self.menu_buttons {
             let active = matches!(
                 (&b.opens, self.open_menu),
-                (Some(OpenMenu::File), OpenMenu::File) | (Some(OpenMenu::Format), OpenMenu::Format)
+                (Some(OpenMenu::File), OpenMenu::File)
+                    | (Some(OpenMenu::Format), OpenMenu::Format)
+                    | (Some(OpenMenu::More), OpenMenu::More)
             );
             let accent = matches!(b.item, Some(MenuItem::AutoSum));
             let label = if b.opens.is_some() {
@@ -5046,6 +5089,7 @@ fn menu_item_label(item: &MenuItem) -> &'static str {
         MenuItem::ClearFormat => "Clear format",
         MenuItem::OpenDocSettings => "Document settings",
         MenuItem::AutoSum => "AutoSum",
+        MenuItem::ToggleFormulaView => "Show/hide formulas",
     }
 }
 
@@ -5212,14 +5256,7 @@ impl Widget for SheetsApp {
             }
             actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(doc),
             actions::SheetsOperation::GoToCell { reference } => self.go_to_cell(&reference),
-            actions::SheetsOperation::ToggleFormulaView => {
-                let on = self.grid.toggle_formula_view();
-                self.status = if on {
-                    "Showing formulas".into()
-                } else {
-                    "Showing results".into()
-                };
-            }
+            actions::SheetsOperation::ToggleFormulaView => self.toggle_formula_view(),
             actions::SheetsOperation::RevealSheet { sheet_id } => {
                 if !self
                     .searchable_sheets
@@ -5690,15 +5727,109 @@ impl Widget for SheetsApp {
         use ui::a11y::{AccessNode, AccessState, Role};
         let active = self.grid.active();
         let active_name = crate::model::addr_to_a1(active.0, active.1);
+        let toolbar_controls = self
+            .menu_buttons
+            .iter()
+            .filter_map(|button| {
+                let (name, target, description) = match (button.opens, &button.item) {
+                    (Some(OpenMenu::File), _) => (
+                        "File menu",
+                        "sheets.toolbar.file",
+                        "Open file and interchange actions",
+                    ),
+                    (Some(OpenMenu::Format), _) => (
+                        "Format menu",
+                        "sheets.toolbar.format",
+                        "Apply a number or text format to the selection",
+                    ),
+                    (Some(OpenMenu::More), _) => (
+                        "More sheet actions",
+                        "sheets.toolbar.more",
+                        "Open AutoSum, document settings, and formula-view actions",
+                    ),
+                    (_, Some(MenuItem::AutoSum)) => (
+                        "AutoSum",
+                        "sheets.toolbar.autosum",
+                        "Insert a sum for the numeric run above the active cell",
+                    ),
+                    (_, Some(MenuItem::OpenDocSettings)) => (
+                        "Document settings",
+                        "sheets.toolbar.settings",
+                        "Set workbook-wide currency, date, and time conventions",
+                    ),
+                    _ => return None,
+                };
+                Some(
+                    AccessNode::new(Role::Button)
+                        .with_name(name)
+                        .with_description(description)
+                        .with_action_target(target)
+                        .with_bounds(button.rect)
+                        .with_state(AccessState::new().focusable(true)),
+                )
+            })
+            .chain([
+                AccessNode::new(Role::Button)
+                    .with_name(if self.grid.formula_view() {
+                        "Show calculated results"
+                    } else {
+                        "Show formulas"
+                    })
+                    .with_description(
+                        "Toggle calculated values and raw formulas; shortcut Control+Shift+F",
+                    )
+                    .with_action_target("sheets.toolbar.formula-view")
+                    .with_bounds(self.fx_rect)
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::TextInput)
+                    .with_name("Name box")
+                    .with_description("Go to a cell or range; shortcut Control+G")
+                    .with_value(self.grid.selection_label())
+                    .with_action_target("sheets.name-box")
+                    .with_bounds(self.name_box_rect)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.name_box_edit.is_some()),
+                    ),
+                AccessNode::new(Role::TextInput)
+                    .with_name("Formula bar")
+                    .with_description("Edit the active cell's value or formula")
+                    .with_value(self.grid.active_display_raw())
+                    .with_action_target("sheets.formula-bar")
+                    .with_bounds(self.formula_field_rect)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.grid.is_editing()),
+                    ),
+                AccessNode::new(Role::Button)
+                    .with_name("Add sheet")
+                    .with_action_target("sheets.new-sheet")
+                    .with_bounds(self.add_tab_rect)
+                    .with_state(AccessState::new().focusable(true)),
+            ])
+            .collect();
         let tabs = self
             .sheet_names
             .iter()
             .enumerate()
             .map(|(index, name)| {
+                let bounds = self
+                    .tab_rects
+                    .iter()
+                    .find(|(_, candidate)| *candidate == index)
+                    .map(|(rect, _)| *rect);
                 AccessNode::new(Role::Tab)
                     .with_name(name.clone())
                     .with_position(index + 1, self.sheet_names.len())
-                    .with_state(AccessState::new().selected(index == self.active_sheet))
+                    .with_action_target(format!("sheets.tab:{}", self.sheet_identity(index)))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(index == self.active_sheet),
+                    )
+                    .with_bounds(bounds.unwrap_or_default())
             })
             .collect();
         // The painted grid is virtualized, so its semantic tree must be too:
@@ -5866,6 +5997,9 @@ impl Widget for SheetsApp {
                 .with_description("Editable workbook with formula bar and sheet tabs")
                 .with_state(AccessState::new().focusable(true))
                 .with_children(vec![
+                    AccessNode::new(Role::Toolbar)
+                        .with_name("Spreadsheet actions")
+                        .with_children(toolbar_controls),
                     AccessNode::new(Role::TabBar)
                         .with_name("Sheets")
                         .with_children(tabs),
@@ -5882,6 +6016,64 @@ impl Widget for SheetsApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        let activates = matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus);
+        if activates {
+            let opened = match target {
+                "sheets.toolbar.file" => Some(OpenMenu::File),
+                "sheets.toolbar.format" => Some(OpenMenu::Format),
+                "sheets.toolbar.more" => Some(OpenMenu::More),
+                _ => None,
+            };
+            if let Some(menu) = opened {
+                self.settings_panel = SettingsPanel::None;
+                self.tab_menu_target = None;
+                self.open_menu = if self.open_menu == menu {
+                    OpenMenu::None
+                } else {
+                    menu
+                };
+                self.relayout_overlays();
+                self.pending.redraw = true;
+                return true;
+            }
+            match target {
+                "sheets.toolbar.autosum" => {
+                    self.run_menu_item(state, &MenuItem::AutoSum);
+                    return true;
+                }
+                "sheets.toolbar.settings" => {
+                    self.run_menu_item(state, &MenuItem::OpenDocSettings);
+                    return true;
+                }
+                "sheets.toolbar.formula-view" => {
+                    self.toggle_formula_view();
+                    return true;
+                }
+                "sheets.name-box" => {
+                    self.begin_name_box_edit();
+                    return true;
+                }
+                "sheets.formula-bar" => {
+                    self.grid.begin_edit_in_place();
+                    self.pending.redraw = true;
+                    return true;
+                }
+                "sheets.new-sheet" => {
+                    self.add_sheet(state);
+                    return true;
+                }
+                _ => {}
+            }
+            if let Some(sheet_id) = target.strip_prefix("sheets.tab:")
+                && let Some(index) = self
+                    .searchable_sheets
+                    .iter()
+                    .position(|sheet| sheet.id == sheet_id)
+            {
+                self.switch_sheet(state, index);
+                return true;
+            }
+        }
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -6551,18 +6743,31 @@ impl SheetsApp {
             *handled = true;
             return;
         }
-        // Ctrl+K opens the command palette.
+        // Familiar spreadsheet navigation remains available even when the
+        // compact toolbar has moved secondary commands into More.
         if let WindowEvent::KeyboardInput { event: ke, .. } = event {
             let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
             if ke.state.is_pressed()
                 && ctrl
                 && !self.grid.is_editing()
                 && let winit::keyboard::Key::Character(c) = &ke.logical_key
-                && c.as_str().eq_ignore_ascii_case("k")
             {
-                self.open_command_palette(state);
-                *handled = true;
-                return;
+                if c.as_str().eq_ignore_ascii_case("g") {
+                    self.begin_name_box_edit();
+                    *handled = true;
+                    return;
+                }
+                if modifiers.state().shift_key() && c.as_str().eq_ignore_ascii_case("f") {
+                    self.toggle_formula_view();
+                    *handled = true;
+                    return;
+                }
+                // Ctrl+K opens the command palette.
+                if c.as_str().eq_ignore_ascii_case("k") {
+                    self.open_command_palette(state);
+                    *handled = true;
+                    return;
+                }
             }
         }
 
@@ -6761,7 +6966,21 @@ impl SheetsApp {
                 self.relayout_overlays();
             }
             MenuItem::AutoSum => self.auto_sum(doc),
+            MenuItem::ToggleFormulaView => self.toggle_formula_view(),
         }
+        self.pending.redraw = true;
+    }
+
+    /// Shared implementation behind the More menu, accessibility control, and
+    /// the canonical view operation. Formula visibility is presentation state,
+    /// so it intentionally does not create a CRDT/undo entry.
+    fn toggle_formula_view(&mut self) {
+        let on = self.grid.toggle_formula_view();
+        self.status = if on {
+            "Showing formulas".into()
+        } else {
+            "Showing results".into()
+        };
         self.pending.redraw = true;
     }
 
@@ -9023,12 +9242,18 @@ mod tests {
         app.grid.select_only((1, 1));
         let tree = app.accessibility().expect("spreadsheet semantics");
         assert_eq!(tree.role, ui::a11y::Role::Document);
-        let tabs = &tree.children[0];
+        let toolbar = &tree.children[0];
+        assert_eq!(toolbar.role, ui::a11y::Role::Toolbar);
+        assert!(toolbar.children.iter().any(|control| {
+            control.name.as_deref() == Some("Name box") && control.action_target.is_some()
+        }));
+        let tabs = &tree.children[1];
         assert_eq!(tabs.role, ui::a11y::Role::TabBar);
         assert!(tabs.children.iter().any(|tab| tab.state.selected));
-        let cell = &tree.children[1].children[0].children[0];
+        assert!(tabs.children.iter().all(|tab| tab.action_target.is_some()));
+        let cell = &tree.children[2].children[0].children[0];
         assert_eq!(cell.name.as_deref(), Some("Column A"));
-        let visible_row = tree.children[1]
+        let visible_row = tree.children[2]
             .children
             .iter()
             .find(|row| row.name.as_deref() == Some("Row 2"))
@@ -9049,8 +9274,59 @@ mod tests {
         let (mut app, _doc) = seeded_app();
         app.shots_show_loading();
         let tree = app.accessibility().expect("spreadsheet semantics");
-        let table = &tree.children[1];
+        let table = &tree.children[2];
         assert!(table.state.busy);
         assert!(table.children.len() < 30, "a11y remains viewport-bounded");
+    }
+
+    #[test]
+    fn semantic_toolbar_and_tabs_use_the_same_live_controls() {
+        use ui::widget::Widget as _;
+
+        let (mut app, mut doc) = seeded_app();
+        let root = automerge::ROOT;
+        assert!(app.perform_semantic_action(
+            "sheets.toolbar.formula-view",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &root,
+        ));
+        assert!(app.grid.formula_view());
+        assert!(app.perform_semantic_action(
+            "sheets.name-box",
+            &ui::a11y::Action::Focus,
+            &mut doc,
+            &root,
+        ));
+        assert!(app.name_box_edit.is_some());
+        let target = format!("sheets.tab:{}", app.sheet_identity(1));
+        assert!(
+            app.perform_semantic_action(&target, &ui::a11y::Action::Activate, &mut doc, &root,)
+        );
+        assert_eq!(app.active_sheet, 1);
+    }
+
+    #[test]
+    fn narrow_large_text_collapses_secondary_toolbar_actions_without_clipping() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.text_scale = 2.0;
+        app.grid.set_text_scale(2.0);
+        app.relayout();
+        let labels: Vec<&str> = app
+            .menu_buttons
+            .iter()
+            .map(|button| button.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["File", "Format", "More"]);
+        assert!(
+            app.menu_buttons
+                .iter()
+                .all(|button| button.rect.x1 <= app.rect.x1)
+        );
+        app.open_menu = OpenMenu::More;
+        app.relayout_overlays();
+        assert_eq!(app.dropdown_rows.len(), 3);
+        assert!(app.dropdown_rect.x0 >= app.rect.x0 && app.dropdown_rect.x1 <= app.rect.x1);
     }
 }

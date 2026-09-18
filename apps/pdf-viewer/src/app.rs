@@ -38,7 +38,8 @@ use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::tooltip::Tooltip;
 use ui::widget::{
-    Avatar, SegmentedFace, SegmentedStyle, SmallContentAlign, TextInput, ToggleGroup, ViewportState,
+    Avatar, ContextMenu as SharedContextMenu, MenuItem, SegmentedFace, SegmentedStyle,
+    SmallContentAlign, TextInput, ToggleGroup, ViewportState,
 };
 
 use crate::doc::{PagePlanEntry, PdfDoc};
@@ -279,12 +280,18 @@ enum DeleteTarget {
     Signature(String),
 }
 
-#[derive(Clone)]
 struct ContextMenu {
-    at: Point,
     target: DeleteTarget,
-    /// Captured during draw so the click handler knows the menu-item rect.
-    item_rect: Rect,
+    widget: SharedContextMenu,
+}
+
+impl ContextMenu {
+    fn delete(target: DeleteTarget, at: Point, viewport: Rect) -> Self {
+        let mut widget = SharedContextMenu::new();
+        widget.push(MenuItem::destructive_selection("Delete").with_icon(ui::icons::Icon::Trash));
+        widget.open_at_clamped([at.x as f32, at.y as f32], viewport);
+        Self { target, widget }
+    }
 }
 
 #[derive(Clone)]
@@ -403,6 +410,9 @@ pub struct PdfApp {
     /// Screenshot-only: pin the floating page bubble open so a still frame shows
     /// the transient page-info overlay. Never set at runtime.
     shots_page_bubble: bool,
+    /// Screenshot-only: defer opening the annotation menu until after the
+    /// initial CRDT sync has populated its target.
+    shots_context_menu: bool,
     /// Screenshot-only: land on the Signatures panel (which the demo seed would
     /// otherwise override to Comments) so a still frame shows the composer.
     shots_sign: bool,
@@ -748,6 +758,12 @@ impl PdfApp {
         self.page_bubble.poke(std::time::Instant::now());
     }
 
+    /// Screenshot-only: open the annotation action menu over the sample page
+    /// so shared floating-surface styling can be reviewed in the real app.
+    pub fn arm_shots_context_menu(&mut self) {
+        self.shots_context_menu = true;
+    }
+
     /// Screenshot-only: open the find bar with a query and live matches so a
     /// still frame shows the (non-overlapping) find bar.
     pub fn arm_shots_search(&mut self) {
@@ -870,6 +886,7 @@ impl PdfApp {
             shots_edit_first_comment: false,
             shots_rail_drag: false,
             shots_page_bubble: false,
+            shots_context_menu: false,
             shots_sign: false,
             annotations: Vec::new(),
             comments: Vec::new(),
@@ -4030,17 +4047,74 @@ impl Widget for PdfApp {
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
+        if self.context_menu.is_some() {
+            let (selected_target, still_open) = {
+                match self.context_menu.as_mut() {
+                    Some(menu) => {
+                        menu.widget.handle_event(
+                            event,
+                            scale_factor,
+                            modifiers,
+                            state,
+                            path,
+                            handled,
+                            focus_target,
+                            node_id,
+                            taffy,
+                        );
+                        let selected = menu.widget.take_selection().map(|_| menu.target.clone());
+                        (selected, menu.widget.is_open())
+                    }
+                    None => (None, false),
+                }
+            };
+            if let Some(target) = selected_target {
+                self.delete_target(&target, state);
+                self.context_menu = None;
+                *handled = true;
+                return;
+            }
+            if !still_open {
+                self.context_menu = None;
+            }
+            let modal_event = matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::MouseInput {
+                        button: MouseButton::Left,
+                        ..
+                    }
+            );
+            if *handled || modal_event {
+                *handled = true;
+                return;
+            }
+        }
         self.on_event(event, scale_factor, *modifiers, state, handled);
     }
 
     fn name(&self) -> &'static str {
         "PdfApp"
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.context_menu
+            .as_ref()
+            .is_some_and(|menu| menu.widget.traps_focus())
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.context_menu
+            .as_ref()
+            .and_then(|menu| menu.widget.modal_capture())
     }
 
     /// The reader paints its document chrome and pages directly, so expose the
@@ -4371,21 +4445,27 @@ impl Widget for PdfApp {
                     .with_live(Politeness::Polite),
             );
         }
+        let mut window_children = vec![
+            AccessNode::new(Role::Toolbar)
+                .with_name("Document tools")
+                .with_hashed_key("pdf.toolbar")
+                .with_children(controls),
+            page_list,
+            AccessNode::new(Role::Group)
+                .with_name("Document")
+                .with_hashed_key("pdf.content")
+                .with_children(content_children),
+        ];
+        if let Some(menu) = self.context_menu.as_ref()
+            && let Some(menu_node) = menu.widget.accessibility()
+        {
+            window_children.push(menu_node);
+        }
         Some(
             AccessNode::new(Role::Window)
                 .with_name("PDF Viewer")
                 .with_bounds(self.rect)
-                .with_children(vec![
-                    AccessNode::new(Role::Toolbar)
-                        .with_name("Document tools")
-                        .with_hashed_key("pdf.toolbar")
-                        .with_children(controls),
-                    page_list,
-                    AccessNode::new(Role::Group)
-                        .with_name("Document")
-                        .with_hashed_key("pdf.content")
-                        .with_children(content_children),
-                ]),
+                .with_children(window_children),
         )
     }
 
@@ -4402,6 +4482,25 @@ impl Widget for PdfApp {
     ) -> bool {
         use crate::actions::PdfOperation;
         use ui::a11y::Action as A11yAction;
+        if target.starts_with("context-menu:item:") {
+            let Some(menu) = self.context_menu.as_mut() else {
+                return false;
+            };
+            let handled = menu
+                .widget
+                .perform_semantic_action(target, action, state, path);
+            let selected = menu.widget.take_selection().map(|_| menu.target.clone());
+            let still_open = menu.widget.is_open();
+            if let Some(target) = selected {
+                self.delete_target(&target, state);
+                self.context_menu = None;
+                return true;
+            }
+            if !still_open {
+                self.context_menu = None;
+            }
+            return handled;
+        }
         if target == "pdf.search.input" {
             match action {
                 A11yAction::Activate | A11yAction::Focus => self.open_search(),

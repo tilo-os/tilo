@@ -428,12 +428,12 @@ pub enum PersonalFabricAction {
     /// scanner. PipeWire/V4L2 identities and local app approvals never appear
     /// in this payload.
     RemoteCaptureSignal {
-        signal: crate::shell::remote_capture_device::RemoteCaptureSignal,
+        signal: crate::shell::remote_capture::device::RemoteCaptureSignal,
     },
     /// One bounded media or scanner chunk. The runtime validates it again
     /// against the exact authenticated peer/session/grant/profile binding.
     RemoteCaptureChunk {
-        chunk: crate::shell::remote_capture_device::RemoteCaptureChunk,
+        chunk: crate::shell::remote_capture::device::RemoteCaptureChunk,
     },
     /// Shell-owned liveness/RTT probe. The random nonce is bound to the exact
     /// authenticated peer and is never exposed through an app contract.
@@ -805,7 +805,7 @@ impl PersonalFabricActionEnvelope {
                 }
             }
             PersonalFabricAction::RemoteCaptureChunk { chunk } => {
-                use crate::shell::remote_capture_device::RemoteCaptureKind;
+                use crate::shell::remote_capture::device::RemoteCaptureKind;
                 if !chunk.valid_for(RemoteCaptureKind::Camera)
                     && !chunk.valid_for(RemoteCaptureKind::Microphone)
                     && !chunk.valid_for(RemoteCaptureKind::DocumentScanner)

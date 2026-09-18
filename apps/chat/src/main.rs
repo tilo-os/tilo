@@ -96,6 +96,7 @@ pub fn main() {
             .shot_handler(shot_handler)
             .scenarios(&[
                 "narrow",
+                "history",
                 "compact",
                 "starter",
                 "people",

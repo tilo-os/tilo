@@ -1023,6 +1023,87 @@ fn scrollback_reveals_older_lines_and_snaps_back() {
     );
 }
 
+#[test]
+fn find_in_scrollback_is_local_reveals_matches_and_reflows_at_large_text() {
+    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+    use vello::{Scene, kurbo::Affine};
+
+    let (mut widget, _writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    let viewport = Rect::new(0.0, 0.0, 390.0, 844.0);
+    widget.force_geometry(viewport, 10.0, 20.0);
+    widget.force_grid(
+        (0..120)
+            .map(|row| format!("build step {row:03}: compiling local terminal output"))
+            .collect(),
+    );
+    let heads_before = doc.get_heads();
+
+    widget.open_find();
+    widget.set_find_query("build step 020");
+    assert!(widget.find_test_state().0);
+    assert_eq!(widget.find_test_state().1, vec![20]);
+    assert!(
+        widget.scroll_offset() > 0,
+        "find reveals a distant history row"
+    );
+    assert_eq!(
+        doc.get_heads(),
+        heads_before,
+        "find text/matches stay local rather than mutating the collaborative transcript"
+    );
+
+    // The actual draw route computes the 200% compact composition: the shared
+    // input owns one row and all three explicit controls remain disjoint.
+    let mut scene = Scene::new();
+    let mut text = TextRenderer::new();
+    let theme = Theme::high_contrast().with_text_scale(2.0);
+    widget.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &theme,
+        &PresenceCtx::empty(),
+    );
+    let (panel, input, previous, next, close) = widget.find_test_geometry();
+    assert!(panel.x0 >= viewport.x0 && panel.x1 <= viewport.x1);
+    assert!(panel.y0 >= viewport.y0 && panel.y1 <= viewport.y1);
+    for control in [previous, next, close] {
+        assert!(input.intersect(control).area() <= 0.0);
+        assert!(control.width() >= 28.0 && control.height() >= 28.0);
+    }
+
+    // Assistive activation uses the same local state path and never makes a
+    // blind terminal keystroke. The target includes the shared pane id so
+    // embedded terminals do not collide.
+    let next = widget.find_test_target("next");
+    assert!(ui::widget::Widget::perform_semantic_action(
+        &mut widget,
+        &next,
+        &ui::a11y::Action::Activate,
+        &mut doc,
+        &ROOT,
+    ));
+    let query = widget.find_test_target("query");
+    assert!(ui::widget::Widget::perform_semantic_action(
+        &mut widget,
+        &query,
+        &ui::a11y::Action::SetValue("build step 042".into()),
+        &mut doc,
+        &ROOT,
+    ));
+    assert_eq!(widget.find_test_state().1, vec![42]);
+    let close = widget.find_test_target("close");
+    assert!(ui::widget::Widget::perform_semantic_action(
+        &mut widget,
+        &close,
+        &ui::a11y::Action::Activate,
+        &mut doc,
+        &ROOT,
+    ));
+    assert!(!widget.find_test_state().0);
+}
+
 // ---------------------------------------------------------------
 // Scrollbar honesty — the gutter only claims travel that exists.
 // `scrollbar_visible` is the predicate `draw_scrollbar` gates on, so

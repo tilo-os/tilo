@@ -1867,7 +1867,7 @@ fn test_touch_input_event(
 /// Wayland establishes touch focus.
 fn forward_test_control_touch(
     state: &mut Option<&mut State>,
-    fb: &FrameBuilder,
+    fb: &mut FrameBuilder,
     touch: crate::compositor::backend::TouchEvent,
 ) {
     let Some(state) = state.as_deref_mut() else {
@@ -1918,7 +1918,7 @@ fn dispatch_test_control_touch(
     };
     let frame = |ownership: &mut DirectTouchOwnership,
                  state: &mut Option<&mut State>,
-                 fb: &FrameBuilder| {
+                 fb: &mut FrameBuilder| {
         if ownership.take_client_frame() {
             forward_test_control_touch(state, fb, BackendTouchEvent::Frame);
         }
@@ -3563,7 +3563,7 @@ fn install_device_fabric_bridge(
                             binding.workspace_id,
                         )
                         .map_err(|error| error.to_string())?;
-                    crate::shell::remote_capture_runtime::request_remote_capture(
+                    crate::shell::remote_capture::runtime::request_remote_capture(
                         &fabric_net,
                         app,
                         peer,
@@ -3574,19 +3574,19 @@ fn install_device_fabric_bridge(
                     request_id,
                     approved,
                 } => {
-                    crate::shell::remote_capture_runtime::decide_remote_capture(
+                    crate::shell::remote_capture::runtime::decide_remote_capture(
                         &fabric_net,
                         request_id,
                         approved,
                     )?;
                 }
                 DeviceFabricUiAction::ApproveRemoteCaptureTarget { session_id } => {
-                    crate::shell::remote_capture_runtime::approve_remote_capture_target(
+                    crate::shell::remote_capture::runtime::approve_remote_capture_target(
                         session_id,
                     )?;
                 }
                 DeviceFabricUiAction::StopRemoteCapture { session_id } => {
-                    crate::shell::remote_capture_runtime::stop_remote_capture(
+                    crate::shell::remote_capture::runtime::stop_remote_capture(
                         &fabric_net,
                         session_id,
                     )?;
@@ -4788,13 +4788,13 @@ pub fn run() {
         )
         .map(|capture| {
             std::sync::Arc::new(std::sync::Mutex::new(
-                crate::shell::remote_capture_runtime::RemoteCaptureFabricRuntime::production(
+                crate::shell::remote_capture::runtime::RemoteCaptureFabricRuntime::production(
                     capture,
                 ),
             ))
         });
     if let Some(remote_capture) = remote_capture_runtime.as_ref() {
-        crate::shell::remote_capture_runtime::install_active_runtime(remote_capture);
+        crate::shell::remote_capture::runtime::install_active_runtime(remote_capture);
         if let Some(runtime) = device_fabric_runtime.as_mut() {
             runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
         }
@@ -5632,7 +5632,7 @@ pub fn run() {
                         {
                             client_input::focus_touch_target(
                                 &mut state,
-                                &frame_builder,
+                                &mut frame_builder,
                                 surface_id,
                             );
                         }
@@ -6499,13 +6499,13 @@ pub fn run() {
                     .and_then(crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::realtime_capture_broker)
                     .map(|capture| {
                         std::sync::Arc::new(std::sync::Mutex::new(
-                            crate::shell::remote_capture_runtime::RemoteCaptureFabricRuntime::production(
+                            crate::shell::remote_capture::runtime::RemoteCaptureFabricRuntime::production(
                                 capture,
                             ),
                         ))
                     });
                 if let Some(remote_capture) = remote_capture_runtime.as_ref() {
-                    crate::shell::remote_capture_runtime::install_active_runtime(remote_capture);
+                    crate::shell::remote_capture::runtime::install_active_runtime(remote_capture);
                     if let Some(runtime) = device_fabric_runtime.as_mut() {
                         runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
                     }

@@ -1,8 +1,11 @@
 //! Offline tooling for the human-root -> device -> immutable-image trust chain.
 
 use std::{
+    ffi::CString,
     fs::{DirBuilder, OpenOptions},
     io::{Read, Write},
+    os::fd::FromRawFd as _,
+    os::unix::ffi::OsStrExt as _,
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
@@ -12,13 +15,73 @@ use tilo_user_identity::{
     MAX_IMAGE_SIGNING_AUTHORIZATION_LIFETIME_NS, RevocationEntry, RevocationList,
     canonical::{canonical_bytes, from_canonical_bytes},
     image_endorsement_signing_digest, image_signing_authorization_digest,
-    persist::{read_device_cert, read_device_key, read_signing_key},
+    persist::{read_device_cert, read_device_key, read_owned_signing_key},
     sign_image_endorsement, sign_image_signing_authorization, verify_device_cert_at,
     verify_image_endorsement_at, verify_image_endorsement_with_revocations_at,
     verify_image_signing_authorization_at, verify_revocation_entry,
 };
 
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024;
+
+fn open_without_symlinks(
+    path: &Path,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+) -> std::io::Result<std::fs::File> {
+    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "artifact path contains an embedded NUL byte",
+        )
+    })?;
+    let flags = u64::try_from(flags)
+        .map_err(|_| std::io::Error::other("open flags are outside the Linux u64 ABI"))?;
+    let how = OpenHow {
+        flags,
+        mode: u64::from(mode),
+        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: path and open_how remain live for this syscall. A successful
+    // descriptor is uniquely transferred into File below.
+    let descriptor = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let descriptor = i32::try_from(descriptor)
+        .map_err(|_| std::io::Error::other("openat2 returned an invalid descriptor"))?;
+    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
+    Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
+}
+
+fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<std::fs::File> {
+    open_without_symlinks(path, libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK, 0)
+}
+
+fn open_lock_without_symlinks(path: &Path) -> std::io::Result<std::fs::File> {
+    open_without_symlinks(
+        path,
+        libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NONBLOCK,
+        0o600,
+    )
+}
 
 fn usage() -> String {
     "usage:\n  tilo-image-trust parse-bootc-status < status.json\n  tilo-image-trust bootc-status-field SELECTOR < status.json\n  tilo-image-trust grant ROOT_KEY DEVICE_CERT ISSUED_NS EXPIRES_NS OUTPUT\n  tilo-image-trust prepare-grant DEVICE_CERT ISSUED_NS EXPIRES_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-grant UNSIGNED_GRANT SIGNATURE OUTPUT\n  tilo-image-trust endorse DEVICE_KEY DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS OUTPUT\n  tilo-image-trust prepare-endorsement DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-endorsement UNSIGNED_ENDORSEMENT SIGNATURE OUTPUT\n  tilo-image-trust revocations ROOT_PUBLIC_KEY OUTPUT [REVOCATION_ENTRY ...]\n  tilo-image-trust verify ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS\n  tilo-image-trust verify-and-record ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS GENERATION_STATE TIME_STATE\n  tilo-image-trust arm ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]\n  tilo-image-trust rotate ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]".into()
@@ -166,11 +229,7 @@ fn decode_sha256(value: &std::ffi::OsStr) -> Result<[u8; 32], String> {
 }
 
 fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options
-        .open(path)
+    let file = open_readonly_without_symlinks(path)
         .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
     if !file
         .metadata()
@@ -178,6 +237,39 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
         .is_file()
     {
         return Err(format!("{} is not a regular file", path.display()));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_ARTIFACT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    if bytes.len() as u64 > MAX_ARTIFACT_BYTES {
+        return Err(format!(
+            "{} exceeds the artifact size limit",
+            path.display()
+        ));
+    }
+    Ok(bytes)
+}
+
+fn read_private_bounded(path: &Path) -> Result<Vec<u8>, String> {
+    let file = open_readonly_without_symlinks(path)
+        .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+    // Live trust artifacts are mutable root authority, despite containing no
+    // secret material. Reject aliases and writable-by-others inodes so an
+    // update cannot verify bytes controlled through another pathname.
+    // SAFETY: geteuid takes no arguments and has no failure mode.
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+        || metadata.nlink() != 1
+    {
+        return Err(format!(
+            "{} must be caller-owned, mode 0600 or stricter, and have one link",
+            path.display()
+        ));
     }
     let mut bytes = Vec::new();
     file.take(MAX_ARTIFACT_BYTES + 1)
@@ -246,7 +338,7 @@ fn grant(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), Strin
     if args.next().is_some() {
         return Err(usage());
     }
-    let root = read_signing_key(&root_path).map_err(|error| error.to_string())?;
+    let root = read_owned_signing_key(&root_path).map_err(|error| error.to_string())?;
     let cert = read_device_cert(&cert_path).map_err(|error| error.to_string())?;
     verify_device_cert_at(&cert, issued_at_ns).map_err(|error| error.to_string())?;
     if root.verifying_key().to_bytes() != cert.user_public_key {
@@ -469,14 +561,16 @@ fn validate_rotation_continuity(
 }
 
 fn required_marker_is_armed(path: &Path) -> Result<bool, String> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
+    let file = match open_readonly_without_symlinks(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("cannot inspect {}: {error}", path.display())),
+        Err(error) => return Err(format!("cannot open {}: {error}", path.display())),
     };
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
     // SAFETY: geteuid takes no arguments and cannot fail.
     if !metadata.is_file()
-        || metadata.file_type().is_symlink()
         || metadata.uid() != unsafe { libc::geteuid() }
         || metadata.mode() & 0o777 != 0o600
         || metadata.nlink() != 1
@@ -486,7 +580,11 @@ fn required_marker_is_armed(path: &Path) -> Result<bool, String> {
                 .into(),
         );
     }
-    if read_bounded(path)? != b"armed\n" {
+    let mut contents = Vec::with_capacity(7);
+    file.take(7)
+        .read_to_end(&mut contents)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    if contents != b"armed\n" {
         return Err("image-trust required marker has invalid contents".into());
     }
     Ok(true)
@@ -531,15 +629,7 @@ fn install_trust(
         return Err("trust directory must be caller-owned mode 0700 and not a symlink".into());
     }
 
-    let mut update_lock_options = OpenOptions::new();
-    update_lock_options
-        .read(true)
-        .write(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let update_lock = update_lock_options
-        .open(&update_lock_path)
+    let update_lock = open_lock_without_symlinks(&update_lock_path)
         .map_err(|error| format!("cannot open {}: {error}", update_lock_path.display()))?;
     let update_lock_metadata = update_lock
         .metadata()
@@ -561,15 +651,7 @@ fn install_trust(
     }
 
     let lock_path = trust_dir.join(".arm.lock");
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let lock = options
-        .open(&lock_path)
+    let lock = open_lock_without_symlinks(&lock_path)
         .map_err(|error| format!("cannot open {}: {error}", lock_path.display()))?;
     let lock_metadata = lock
         .metadata()
@@ -721,8 +803,19 @@ fn verify_common(
             "current time {now_ns} is below recorded trusted-time floor {floor}"
         ));
     }
-    let trusted_root = read_root_public_key(&root_path)?;
-    let revocation_entries: Vec<RevocationEntry> = decode_artifact(&revocations_path)?;
+    let read_artifact = |path: &Path| {
+        if record_generation {
+            read_private_bounded(path)
+        } else {
+            read_bounded(path)
+        }
+    };
+    let trusted_root: [u8; 32] = read_artifact(&root_path)?
+        .try_into()
+        .map_err(|_| "root public key must contain exactly 32 bytes")?;
+    let revocation_entries: Vec<RevocationEntry> =
+        from_canonical_bytes(&read_artifact(&revocations_path)?)
+            .map_err(|error| error.to_string())?;
     let mut revocations = RevocationList::new();
     for entry in revocation_entries {
         if entry.user_public_key != trusted_root {
@@ -732,7 +825,8 @@ fn verify_common(
             .insert(entry)
             .map_err(|error| format!("revocation bundle is invalid: {error}"))?;
     }
-    let endorsement: ImageEndorsement = decode_artifact(&endorsement_path)?;
+    let endorsement: ImageEndorsement = from_canonical_bytes(&read_artifact(&endorsement_path)?)
+        .map_err(|error| error.to_string())?;
     verify_image_endorsement_with_revocations_at(&endorsement, &trusted_root, &revocations, now_ns)
         .map_err(|error| error.to_string())?;
     if endorsement.image_manifest_sha256 != expected_digest {
@@ -775,14 +869,7 @@ fn lock_generation_state(path: &Path) -> Result<std::fs::File, String> {
     let mut lock_name = path.as_os_str().to_owned();
     lock_name.push(".lock");
     let lock_path = PathBuf::from(lock_name);
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options.open(&lock_path).map_err(|error| {
+    let file = open_lock_without_symlinks(&lock_path).map_err(|error| {
         format!(
             "cannot open generation lock {}: {error}",
             lock_path.display()
@@ -818,11 +905,7 @@ fn lock_generation_state(path: &Path) -> Result<std::fs::File, String> {
 }
 
 fn read_generation_floor(path: &Path) -> Result<Option<u64>, String> {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = match options.open(path) {
+    let file = match open_readonly_without_symlinks(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("cannot open {}: {error}", path.display())),
@@ -968,6 +1051,9 @@ mod tests {
 
         atomic_file::write_with_mode(&marker, b"armed\n", 0o600).expect("valid marker");
         assert!(required_marker_is_armed(&marker).expect("valid marker accepted"));
+        let linked_parent = temp.path().join("linked-parent");
+        std::os::unix::fs::symlink(temp.path(), &linked_parent).expect("marker parent symlink");
+        assert!(required_marker_is_armed(&linked_parent.join("required")).is_err());
 
         fs::write(&marker, b"wrong\n").expect("corrupt marker contents");
         assert!(required_marker_is_armed(&marker).is_err());
@@ -999,6 +1085,27 @@ mod tests {
         fs::write(&artifact, b"fixture").expect("artifact fixture");
         symlink(&artifact, &link).expect("artifact symlink");
         assert!(read_bounded(&link).is_err());
+
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(temp.path(), &linked_parent).expect("parent-directory symlink");
+        assert!(read_bounded(&linked_parent.join("artifact")).is_err());
+        assert!(read_private_bounded(&linked_parent.join("artifact")).is_err());
+    }
+
+    #[test]
+    fn live_trust_reader_rejects_exposed_or_aliased_artifacts() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let artifact = temp.path().join("root.pub");
+        atomic_file::write_with_mode(&artifact, &[7; 32], 0o600).expect("private trust artifact");
+        assert_eq!(read_private_bounded(&artifact).unwrap(), vec![7; 32]);
+
+        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o640))
+            .expect("expose trust artifact");
+        assert!(read_private_bounded(&artifact).is_err());
+        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600))
+            .expect("restore private trust artifact");
+        fs::hard_link(&artifact, temp.path().join("root-alias.pub")).expect("alias trust artifact");
+        assert!(read_private_bounded(&artifact).is_err());
     }
 
     #[test]
@@ -1012,6 +1119,9 @@ mod tests {
             .expect("generation fixture");
         symlink(&state, &link).expect("generation symlink");
         assert!(read_generation_floor(&link).is_err());
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(temp.path(), &linked_parent).expect("generation parent symlink");
+        assert!(read_generation_floor(&linked_parent.join("generation")).is_err());
 
         fs::set_permissions(&state, fs::Permissions::from_mode(0o660))
             .expect("make generation state group writable");
@@ -1026,7 +1136,14 @@ mod tests {
 
     #[test]
     fn generation_lock_rejects_an_aliased_inode() {
+        use std::os::unix::fs::symlink;
+
         let temp = tempfile::tempdir().expect("temporary directory");
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(temp.path(), &linked_parent).expect("lock parent symlink");
+        assert!(lock_generation_state(&linked_parent.join("other-generation")).is_err());
+        assert!(!temp.path().join("other-generation.lock").exists());
+
         let state = temp.path().join("generation");
         drop(lock_generation_state(&state).expect("create generation lock"));
         let lock = temp.path().join("generation.lock");
@@ -1330,6 +1447,10 @@ mod tests {
             "50",
         ]))
         .expect("verify exact image");
+        for artifact in [&root_public_path, &revocations_path, &endorsement_path] {
+            fs::set_permissions(artifact, fs::Permissions::from_mode(0o600))
+                .expect("make live trust artifact private");
+        }
         verify_common(
             arguments(&[
                 root_public_path.to_str().expect("root path"),
