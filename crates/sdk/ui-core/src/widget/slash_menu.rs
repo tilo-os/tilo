@@ -750,8 +750,7 @@ mod tests {
     fn new_starts_hidden_with_full_row_set() {
         let m = SlashMenu::new();
         assert!(!m.is_visible());
-        // Paragraph, H1-3, lists, code, TeX, Typst, and divider.
-        assert_eq!(m.visible_len(), 11);
+        assert_eq!(m.visible_len(), m.rows.len());
     }
 
     #[test]
@@ -772,7 +771,7 @@ mod tests {
         m.set_filter("h");
         // "Heading 1/2/3" and "Checklist" (contains "h" in "Checklist")
         // match. All three Heading rows should be present.
-        assert!(m.visible_len() < 11);
+        assert!(m.visible_len() < m.rows.len());
         // Specifically: "Heading 1" must be in the visible set.
         let any_h1 = (0..m.visible_len()).any(|_| {
             matches!(m.highlighted_kind(), Some(BlockKind::Heading(1))) || m.visible_len() > 0
@@ -871,12 +870,13 @@ mod tests {
     fn ime_preedit_is_visible_but_filters_only_after_commit() {
         let mut m = SlashMenu::new();
         m.set_visible(true);
+        let initial_rows = m.visible_len();
         assert!(m.handle_key(&WindowEvent::Ime(winit::event::Ime::Preedit(
             "h2".into(),
             Some((1, 1)),
         ))));
         assert_eq!(m.filter(), "");
-        assert_eq!(m.visible_len(), 11);
+        assert_eq!(m.visible_len(), initial_rows);
         assert_eq!(Widget::accessibility(&m).unwrap().value, None);
 
         let mut scene = Scene::new();
