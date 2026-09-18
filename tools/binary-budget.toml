@@ -2,7 +2,7 @@
 # build that exceeds one.
 #
 # These are static release builds. The ~2 MB figure in the README is the
-# thin build (crates/packaging/hello/build-thin.sh), where the SDK is a
+# thin build (examples/packaging/hello/build-thin.sh), where the SDK is a
 # shared library from the runtime bundle rather than linked into each
 # binary. That number is not what this file measures.
 #

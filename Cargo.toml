@@ -138,15 +138,17 @@ members = [
     "crates/packaging/app-host",
     "crates/packaging/app-registry",
     "crates/packaging/cli-shim",
-    "crates/packaging/hello",
     "crates/packaging/install",
     "crates/packaging/launcher",
-    "crates/packaging/notes-cli",
     "crates/packaging/pkg",
     "crates/packaging/pkg-cli",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
     "crates/packaging/runtime-bundle",
+
+    # Examples
+    "examples/packaging/hello",
+    "examples/packaging/notes-cli",
 
     # Runtime
     "crates/runtime/cli",
