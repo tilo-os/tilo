@@ -71,3 +71,24 @@ fixture it also requires both H.264 and AAC decoder branches to reach EOS.
 These are headless decoder checks; audible device output and visible app
 playback require the separate app tests. The GnuTLS backend is packaged,
 but this relocation test does not claim live HTTPS playback coverage.
+
+Music and Video Player can be selected explicitly through the shared installer:
+
+```powershell
+./tools/install-windows-apps.ps1 -Apps music,video-player
+```
+
+Music builds its ordinary `music.exe` with default `audio` and `live` features.
+Its playback uses the shared GStreamer runtime; its live search/stream client
+uses Rustls and embeds QuickJS, so no external JavaScript runtime or downloader
+is installed. On Windows ARM64 the build requires libclang for QuickJS target
+bindings. Both media apps remain explicit selections rather than part of the
+installer's default application set.
+
+This selection enables building and packaging; it is not a claim that every
+online service or Windows integration has been verified. Music's shared MPRIS
+adapter is inactive on Windows, so Windows system media controls are not yet
+provided. Windows metered-network detection is also not implemented; Music
+currently treats an unknown network as unmetered (the `TILO_MUSIC_METERED`
+override is available). Start catalog verification still must pass before the
+installer reports success.
