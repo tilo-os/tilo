@@ -918,7 +918,7 @@ pub fn fetch(path: &Path, remote_name: Option<&str>) -> anyhow::Result<String> {
     let name = resolve_remote(&repo, remote_name)?;
     let mut remote = repo.find_remote(&name)?;
     let mut cb = git2::RemoteCallbacks::new();
-    cb.credentials(default_credentials);
+    cb.credentials(credentials(repo.config()?));
     let mut fo = git2::FetchOptions::new();
     fo.remote_callbacks(cb);
     let refspecs: Vec<String> = remote
@@ -965,9 +965,12 @@ pub fn pull(path: &Path, remote_name: Option<&str>) -> anyhow::Result<()> {
     if analysis.is_fast_forward() {
         let refname = format!("refs/heads/{branch_shorthand}");
         let mut reference = repo.find_reference(&refname)?;
+        // Check out against the old HEAD before advancing it: a conflict must
+        // leave both the user's edits and the branch tip untouched.
+        let target = repo.find_object(upstream_oid, None)?;
+        repo.checkout_tree(&target, Some(git2::build::CheckoutBuilder::new().safe()))
+            .context("cannot pull over local changes")?;
         reference.set_target(upstream_oid, "pull: fast-forward")?;
-        repo.set_head(&refname)?;
-        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
         let _ = name;
         Ok(())
     } else {
@@ -991,7 +994,15 @@ pub fn push(path: &Path, remote_name: Option<&str>) -> anyhow::Result<()> {
     let name = resolve_remote(&repo, remote_name)?;
     let mut remote = repo.find_remote(&name)?;
     let mut cb = git2::RemoteCallbacks::new();
-    cb.credentials(default_credentials);
+    cb.credentials(credentials(repo.config()?));
+    cb.push_update_reference(|reference, status| {
+        if let Some(reason) = status {
+            return Err(git2::Error::from_str(&format!(
+                "remote rejected {reference}: {reason}"
+            )));
+        }
+        Ok(())
+    });
     let mut po = git2::PushOptions::new();
     po.remote_callbacks(cb);
     let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
@@ -1059,25 +1070,43 @@ fn resolve_remote(repo: &Repository, want: Option<&str>) -> anyhow::Result<Strin
         .ok_or_else(|| anyhow!("no remotes configured"))
 }
 
-/// Best-effort credential callback: try the ssh agent for the requested
-/// username, then fall back to the default (which covers anonymous and
-/// credential-helper paths). Local `file://` and `path` remotes need no
-/// credentials and never invoke this.
-fn default_credentials(
-    _url: &str,
-    username: Option<&str>,
-    allowed: git2::CredentialType,
-) -> Result<git2::Cred, git2::Error> {
-    if allowed.contains(git2::CredentialType::SSH_KEY)
-        && let Some(user) = username
-        && let Ok(cred) = git2::Cred::ssh_key_from_agent(user)
-    {
-        return Ok(cred);
+/// Try each supported credential source once per connection. A rejected
+/// password or agent key must not cause an endless authentication loop.
+fn credentials(
+    config: git2::Config,
+) -> impl FnMut(&str, Option<&str>, git2::CredentialType) -> Result<git2::Cred, git2::Error> {
+    let mut helper_tried = false;
+    let mut agent_tried = false;
+    let mut default_tried = false;
+    let mut username_tried = false;
+    move |url, username, allowed| {
+        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) && !helper_tried {
+            helper_tried = true;
+            if let Ok(credential) = git2::Cred::credential_helper(&config, url, username) {
+                return Ok(credential);
+            }
+        }
+        if allowed.contains(git2::CredentialType::SSH_KEY) && !agent_tried {
+            agent_tried = true;
+            if let Some(user) = username {
+                return git2::Cred::ssh_key_from_agent(user);
+            }
+        }
+        if allowed.contains(git2::CredentialType::USERNAME) && !username_tried {
+            username_tried = true;
+            let configured = config.get_string("credential.username").ok();
+            if let Some(user) = username.or(configured.as_deref()) {
+                return git2::Cred::username(user);
+            }
+        }
+        if allowed.contains(git2::CredentialType::DEFAULT) && !default_tried {
+            default_tried = true;
+            return git2::Cred::default();
+        }
+        Err(git2::Error::from_str(
+            "authentication failed: configure a Git credential helper or SSH agent",
+        ))
     }
-    if allowed.contains(git2::CredentialType::DEFAULT) {
-        return git2::Cred::default();
-    }
-    git2::Cred::default()
 }
 
 /// Convenience used by tests and callers that already hold a path: the
