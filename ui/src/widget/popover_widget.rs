@@ -90,6 +90,11 @@ pub struct PopoverWidget<C: Widget> {
     /// Last cursor seen via `CursorMoved`: a `MouseInput { Pressed, Left }`
     /// fires dismiss when this isn't inside `self.rect`.
     last_cursor: Point,
+    /// Effective theme captured by the retained outer layout. The popover
+    /// positions its content from `apply_layout`, where the widget API no
+    /// longer supplies a theme, so this snapshot keeps measurement and hit
+    /// geometry aligned with large-text and UI-scale preferences.
+    layout_theme: Theme,
 }
 
 impl<C: Widget> PopoverWidget<C> {
@@ -108,6 +113,7 @@ impl<C: Widget> PopoverWidget<C> {
             viewport: Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6),
             resolved_side: side,
             last_cursor: Point::ZERO,
+            layout_theme: Theme::dark(),
         }
     }
 
@@ -342,6 +348,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = theme.clone();
         // Zero-extent leaf — the body is positioned manually in
         // `apply_layout` against `anchor_rect` and `viewport`, not the
         // parent's flexbox.
@@ -359,9 +366,11 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {
         // `apply_layout` doesn't receive a `TextRenderer`, but the flip
-        // resolver needs one — construct a throwaway one.
+        // resolver needs one. Match its scale to the captured outer theme so
+        // pre-paint hit testing and accessibility geometry are already exact.
+        let theme = self.layout_theme.clone();
         let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
+        tr.set_text_scale(theme.text_scale);
         self.recompute_layout(&theme, &mut tr);
         self.place_content(&theme, &mut tr);
     }
@@ -476,6 +485,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::Text;
     use taffy::prelude::TaffyMaxContent;
     use winit::event::DeviceId;
 
@@ -588,15 +598,36 @@ mod tests {
     /// Drive a popover through `build_layout` + `apply_layout` so `rect`
     /// and `resolved_side` reflect the current configuration.
     fn lay_out<C: Widget + 'static>(p: &mut PopoverWidget<C>) {
-        let theme = Theme::dark();
+        lay_out_with_theme(p, &Theme::dark());
+    }
+
+    fn lay_out_with_theme<C: Widget + 'static>(p: &mut PopoverWidget<C>, theme: &Theme) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = p.build_layout(&mut taffy, &theme, &mut node_map);
+        let node = p.build_layout(&mut taffy, theme, &mut node_map);
         let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
             .unwrap();
         p.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn retained_layout_preserves_large_text_before_the_first_draw() {
+        let mut p = PopoverWidget::new(
+            Rect::new(100.0, 100.0, 200.0, 130.0),
+            Text::new("Scaled popover").with_scaled_size(20.0),
+            PopoverSide::Below,
+        )
+        .open(true)
+        .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+        lay_out_with_theme(&mut p, &Theme::dark().with_text_scale(2.0));
+
+        assert!(
+            p.content.get_rect().height() >= 49.0,
+            "popover content must reserve its 200% line height before paint, got {:?}",
+            p.content.get_rect()
+        );
     }
 
     /// Anchor at (100, 100, 200, 130) with `Below` and a generous viewport

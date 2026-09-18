@@ -35,13 +35,16 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, Image, ImageFit, OutputSpan,
-    PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
+    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,
+    PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
 };
 use ui::{CommandEntry, CommandPalette};
 
+#[cfg(test)]
+use crate::shell::capture_surface::CaptureSurfaceKind;
 use crate::shell::capture_surface::{
-    CaptureMirrorImage, CaptureSurfaceKind, CaptureSurfaceRequest,
+    CaptureMirrorImage, CaptureSurfaceRequest, PreparedCaptureSurface, capture_mirror_initial_size,
+    capture_mirror_origin, visible_capture_spawn,
 };
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::collaborators_overlay::{
@@ -274,9 +277,140 @@ mod device_fabric_ui_tests {
                 revertible_calibrations: Vec::new(),
                 tethering: Vec::new(),
                 remote_capture: Default::default(),
+                display_mirror_consents: Vec::new(),
+                display_mirrors: Vec::new(),
+                display_mirror_available: false,
             },
             remote,
         )
+    }
+
+    #[test]
+    fn continuity_providers_register_in_either_order_and_replace_stale_bridges() {
+        use crate::shell::search::action_api::AllVisible;
+        use crate::shell::search::providers::continuity::{CALL_PROVIDER_ID, DEVICE_PROVIDER_ID};
+
+        let realtime: RealtimeContinuityBridge =
+            Rc::new(|_| Ok(RealtimeContinuityUiView::default()));
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.set_realtime_continuity_bridge(Rc::clone(&realtime));
+        assert_eq!(
+            host.search_registry
+                .providers_iter()
+                .filter(|provider| provider.id() == CALL_PROVIDER_ID)
+                .count(),
+            0
+        );
+
+        let (old_view, _) = fixture();
+        host.set_device_fabric_bridge(Rc::new(move |_| Ok(old_view.clone())));
+        for id in [DEVICE_PROVIDER_ID, CALL_PROVIDER_ID] {
+            assert_eq!(
+                host.search_registry
+                    .providers_iter()
+                    .filter(|provider| provider.id() == id)
+                    .count(),
+                1,
+                "{id} must be registered exactly once"
+            );
+        }
+
+        let (mut current_view, _) = fixture();
+        current_view.local_media[0].title = "Replacement film".into();
+        host.set_device_fabric_bridge(Rc::new(move |_| Ok(current_view.clone())));
+        for id in [DEVICE_PROVIDER_ID, CALL_PROVIDER_ID] {
+            assert_eq!(
+                host.search_registry
+                    .providers_iter()
+                    .filter(|provider| provider.id() == id)
+                    .count(),
+                1,
+                "rebinding must replace {id}, not append it"
+            );
+        }
+
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        let catalog = host.action_catalog(
+            "Replacement film",
+            &state,
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        assert!(
+            catalog
+                .enumerate()
+                .iter()
+                .any(|action| action.title.contains("Replacement film"))
+        );
+
+        let (view, _) = fixture();
+        let mut reverse = ShellOverlayHost::new(Box::new(Container::new()));
+        reverse.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
+        reverse.set_realtime_continuity_bridge(realtime);
+        assert_eq!(
+            reverse
+                .search_registry
+                .providers_iter()
+                .filter(|provider| provider.id() == CALL_PROVIDER_ID)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn headless_continuity_catalog_lists_and_resolves_beyond_palette_page() {
+        use crate::shell::search::action_api::{AllVisible, ResourceRef};
+        use crate::shell::search::providers::continuity::DEVICE_PROVIDER_ID;
+
+        let (mut view, _) = fixture();
+        view.devices = (0..60)
+            .map(|index| FabricDeviceView {
+                id: DeviceId::new(format!("certified-screen-{index}")).unwrap(),
+                label: format!("Screen {index}"),
+                kind: DeviceKind::Laptop,
+                is_local: false,
+                online: true,
+                audio_output: true,
+                video_output: true,
+                display: true,
+                controls_local: false,
+                local_can_control: false,
+            })
+            .collect();
+        view.local_media[0].targets = view
+            .devices
+            .iter()
+            .map(|device| device.id.clone())
+            .collect();
+        view.local_media[0].title = "Paging proof".into();
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+
+        let catalog =
+            host.action_catalog("Paging proof", &state, &doc, &automerge::ROOT, &AllVisible);
+        let actions = catalog
+            .enumerate()
+            .into_iter()
+            .filter(|action| action.resource.provider == DEVICE_PROVIDER_ID)
+            .collect::<Vec<_>>();
+        assert_eq!(actions.len(), 60);
+        let last = actions.last().unwrap().resource.clone();
+        let exact = host.exact_action_catalog(
+            &last.provider,
+            &last.id,
+            &state,
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        assert!(exact.contains(&ResourceRef::new(&last.provider, &last.id)));
     }
 
     #[test]
@@ -739,6 +873,63 @@ mod device_fabric_ui_tests {
                 kind: crate::shell::remote_capture_device::RemoteCaptureKind::Camera,
             })
         );
+    }
+
+    #[test]
+    fn device_pane_mirror_requires_consent_and_stops_exact_session() {
+        let (mut view, remote) = fixture();
+        view.local_media.clear();
+        view.local_outputs.clear();
+        view.display_mirror_available = true;
+        view.display_mirror_consents = vec![
+            crate::shell::device_fabric_runtime::DisplayMirrorConsentView {
+                session_id: [21; 16],
+                source_label: "Desk computer".into(),
+            },
+        ];
+        view.display_mirrors = vec![
+            crate::shell::device_fabric_runtime::DisplayMirrorStatusView {
+                session_id: [22; 16],
+                peer: remote.clone(),
+                peer_label: "Travel laptop".into(),
+                outbound: true,
+                phase: crate::shell::device_fabric_runtime::DisplayMirrorPhase::Streaming,
+            },
+        ];
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        let (allow, decline) =
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.handle_qs_device_fabric_click(allow.center());
+        host.handle_qs_device_fabric_click(decline.center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(3).center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
+
+        let actions = actions.borrow();
+        assert!(
+            actions.contains(&DeviceFabricUiAction::ResolveDisplayMirror {
+                session_id: [21; 16],
+                approved: true,
+            })
+        );
+        assert!(
+            actions.contains(&DeviceFabricUiAction::ResolveDisplayMirror {
+                session_id: [21; 16],
+                approved: false,
+            })
+        );
+        assert!(actions.contains(&DeviceFabricUiAction::RequestDisplayMirror { target: remote }));
+        assert!(actions.contains(&DeviceFabricUiAction::StopDisplayMirror {
+            session_id: [22; 16],
+        }));
     }
 
     #[test]
@@ -1225,12 +1416,17 @@ pub struct DeviceFabricView {
     pub calibration_proposals: Vec<crate::shell::spatial_calibration::CalibrationProposal>,
     pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
     pub tethering: Vec<crate::shell::personal_tethering_runtime::TetheringStatusView>,
-    pub remote_capture: crate::shell::remote_capture_runtime::RemoteCaptureView,
+    pub(crate) remote_capture: crate::shell::remote_capture_runtime::RemoteCaptureView,
+    pub display_mirror_consents: Vec<crate::shell::device_fabric_runtime::DisplayMirrorConsentView>,
+    pub display_mirrors: Vec<crate::shell::device_fabric_runtime::DisplayMirrorStatusView>,
+    pub display_mirror_available: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceFabricUiAction {
     Snapshot,
+    /// Bypass presentation caching for semantic action revalidation.
+    SnapshotFresh,
     HandoffMedia {
         session_id: String,
         target: crate::shell::personal_continuity::DeviceId,
@@ -1293,6 +1489,16 @@ pub enum DeviceFabricUiAction {
         session_id: [u8; 16],
     },
     StopRemoteCapture {
+        session_id: [u8; 16],
+    },
+    RequestDisplayMirror {
+        target: crate::shell::personal_continuity::DeviceId,
+    },
+    ResolveDisplayMirror {
+        session_id: [u8; 16],
+        approved: bool,
+    },
+    StopDisplayMirror {
         session_id: [u8; 16],
     },
     RequestPhoneTethering {
@@ -1359,6 +1565,9 @@ enum DeviceFabricPaneRow {
     RemoteCaptureSource(crate::shell::remote_capture_device::RemoteCaptureKind),
     RemoteCaptureSession(crate::shell::remote_capture_runtime::RemoteCaptureSessionView),
     RemoteCaptureDegraded(crate::shell::remote_capture_runtime::RemoteCaptureDegradedView),
+    DisplayMirrorConsent(crate::shell::device_fabric_runtime::DisplayMirrorConsentView),
+    DisplayMirrorSource,
+    DisplayMirrorStatus(crate::shell::device_fabric_runtime::DisplayMirrorStatusView),
     RealtimeConsent(crate::shell::collab_broker_capnp::RealtimeConsentUiView),
     RealtimeSource(crate::shell::collab_broker_capnp::RealtimeSourceUiView),
     BluetoothAuthorization(BluetoothHandoffAuthorizationView),
@@ -1448,6 +1657,22 @@ fn device_fabric_pane_rows(
                 .map(DeviceFabricPaneRow::RemoteCaptureDegraded),
         )
         .chain(
+            view.display_mirror_consents
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::DisplayMirrorConsent),
+        )
+        .chain(
+            view.display_mirror_available
+                .then_some(DeviceFabricPaneRow::DisplayMirrorSource),
+        )
+        .chain(
+            view.display_mirrors
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::DisplayMirrorStatus),
+        )
+        .chain(
             realtime
                 .consents
                 .iter()
@@ -1528,6 +1753,19 @@ fn remote_capture_kind_label(
     }
 }
 
+fn display_mirror_failure_label(
+    failure: crate::shell::device_fabric_runtime::DisplayMirrorFailure,
+) -> &'static str {
+    use crate::shell::device_fabric_runtime::DisplayMirrorFailure;
+    match failure {
+        DisplayMirrorFailure::Denied => "declined on the target",
+        DisplayMirrorFailure::PeerOffline => "certified peer went offline",
+        DisplayMirrorFailure::TimedOut => "session timed out",
+        DisplayMirrorFailure::Transport => "private video route failed",
+        DisplayMirrorFailure::Policy => "display continuity was disabled",
+    }
+}
+
 fn media_handoff_failure_label(
     failure: crate::shell::device_fabric::MediaHandoffFailure,
 ) -> &'static str {
@@ -1568,92 +1806,6 @@ pub enum WifiSecretAction {
 
 pub type WifiSecretBridge = std::rc::Rc<dyn Fn(WifiSecretAction) -> Result<Option<String>, String>>;
 
-fn capture_mirror_origin(
-    bounds: Rect,
-    source: Option<Rect>,
-    window_size: vello::kurbo::Size,
-) -> Point {
-    let top = bounds.y0 + 52.0;
-    let right = bounds.x1 - window_size.width - 16.0;
-    let bottom = bounds.y1 - window_size.height - 16.0;
-    let left = bounds.x0 + 16.0;
-    let candidates = [
-        Point::new(right, bottom),
-        Point::new(right, top),
-        Point::new(left, bottom),
-        Point::new(left, top),
-    ];
-    source.map_or(candidates[0], |source| {
-        candidates
-            .into_iter()
-            .enumerate()
-            .min_by(|(ai, a), (bi, b)| {
-                let a_rect = Rect::from_origin_size(*a, window_size);
-                let b_rect = Rect::from_origin_size(*b, window_size);
-                let a_overlap = a_rect.intersect(source).area().max(0.0);
-                let b_overlap = b_rect.intersect(source).area().max(0.0);
-                a_overlap.total_cmp(&b_overlap).then_with(|| ai.cmp(bi))
-            })
-            .map_or(candidates[0], |(_, origin)| origin)
-    })
-}
-
-/// Keep the ownership handoff meaningful when its source lives on the
-/// continuous desktop but wholly outside the physical output. Visible pixels
-/// are used exactly; off-screen pixels collapse to a small edge portal on the
-/// side where the source lives, so the resulting `PiP` arrives from its real
-/// virtual direction instead of popping in at the destination.
-fn visible_capture_spawn(bounds: Rect, source: Option<Rect>) -> Option<Rect> {
-    const PORTAL_WIDTH: f64 = 84.0;
-    const PORTAL_HEIGHT: f64 = 52.0;
-    const EDGE_INSET: f64 = 6.0;
-    const TOP_SAFE: f64 = 48.0;
-
-    let source = source.filter(|rect| rect.is_finite() && rect.area() > 1.0)?;
-    let visible = source.intersect(bounds);
-    if visible.width() > 1.0 && visible.height() > 1.0 {
-        return Some(visible);
-    }
-
-    let center = source.center();
-    let x = if center.x < bounds.x0 {
-        bounds.x0 + EDGE_INSET
-    } else if center.x > bounds.x1 {
-        bounds.x1 - EDGE_INSET - PORTAL_WIDTH
-    } else {
-        (center.x - PORTAL_WIDTH / 2.0).clamp(
-            bounds.x0 + EDGE_INSET,
-            bounds.x1 - EDGE_INSET - PORTAL_WIDTH,
-        )
-    };
-    let y = if center.y < bounds.y0 {
-        bounds.y0 + TOP_SAFE
-    } else if center.y > bounds.y1 {
-        bounds.y1 - EDGE_INSET - PORTAL_HEIGHT
-    } else {
-        (center.y - PORTAL_HEIGHT / 2.0)
-            .clamp(bounds.y0 + TOP_SAFE, bounds.y1 - EDGE_INSET - PORTAL_HEIGHT)
-    };
-    Some(Rect::new(x, y, x + PORTAL_WIDTH, y + PORTAL_HEIGHT))
-}
-
-fn capture_mirror_initial_size(
-    viewport: Rect,
-    source_aspect: f64,
-    preferred: Option<vello::kurbo::Size>,
-) -> vello::kurbo::Size {
-    let requested_width = preferred.map_or(420.0, |size| size.width);
-    let width_cap = (viewport.width() * 0.44).clamp(300.0, 720.0);
-    let width = requested_width.min(width_cap).clamp(240.0, 720.0);
-    let aspect = preferred
-        .filter(|size| size.width > 1.0 && size.height > 1.0)
-        .map_or(source_aspect, |size| size.width / size.height)
-        .max(0.1);
-    let height_cap = (viewport.height() * 0.55).max(135.0);
-    let height = (width / aspect).clamp(135.0, 520.0).min(height_cap);
-    vello::kurbo::Size::new(width, height)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShortcutGuideFocus {
     Binding(settings_store::hardware::ShortcutAction),
@@ -1671,6 +1823,7 @@ enum ShortcutGuideFocus {
 /// semantic path onto the wrong target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AccessibleOverlay {
+    PowerMenu,
     CommandPalette,
     MemberSheet,
     WorkspaceSettings,
@@ -1860,6 +2013,7 @@ pub struct ShellOverlayHost {
     qs_selected_gamepad: Option<u64>,
     qs_selected_remote_audio: Option<u64>,
     qs_selected_remote_capture: Option<crate::shell::remote_capture_device::RemoteCaptureKind>,
+    qs_selected_display_mirror: bool,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
@@ -1934,9 +2088,6 @@ pub struct ShellOverlayHost {
     /// surfaced. It follows the live session transport and can be enabled
     /// when first-login provisioning completes.
     peer_sync_enabled: bool,
-    /// Queue of peer-sync actions from [`Self::dispatch_palette_command`],
-    /// drained by the compositor into its `ShellNetwork` handle.
-    peer_sync_actions: Vec<PeerSyncAction>,
     /// Closure that carries out a peer-sync request against
     /// `ShellNetwork`, keeping the widget layer transport-agnostic.
     /// `None` in tests and in sessions booted without peer-sync, where
@@ -1962,6 +2113,11 @@ pub struct ShellOverlayHost {
     local_status: Option<String>,
     local_status_origin: ui::StatusOrigin,
     status_draft: String,
+    /// Caret/selection for the inline presence status editor.  Keeping this
+    /// beside the draft lets the field use the same complete text-editing
+    /// contract as workspace names and Wi-Fi passwords instead of its former
+    /// append/pop-only special case.
+    status_selection: ui::text_selection::Selection,
     status_editing: bool,
     status_sharing: ui::StatusSharing,
     /// Owns the invite/connect prompt state, painting, hit-testing and input.
@@ -2095,10 +2251,10 @@ pub struct ShellSceneSections {
     pub quick_settings_bounds: Option<Rect>,
 }
 
-/// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
-/// when the user picks a peer-sync command; the compositor drains these
-/// into its `ShellNetwork` handle so Iroh side-effects stay on the
-/// runtime thread.
+/// Action emitted by a search-provider callback into `ChromeState` when the
+/// user picks a peer-sync command. The overlay host drains that typed queue
+/// into its `ShellNetwork` bridge so Iroh side-effects stay on the runtime
+/// thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncAction {
     /// User invoked `/invite`. The compositor calls
@@ -2578,6 +2734,77 @@ struct CollaborationPreferences {
     manual_status: Option<String>,
 }
 
+/// Human-readable projection of the compositor's screen-share authority for
+/// the People popover. Unlike room presence, every clause names the exact
+/// surface a participant or agent can presently see or control.
+fn collaborators_screen_exposure(
+    state: &crate::shell::chrome_state::ChromeState,
+) -> Option<String> {
+    let tree = state.tree();
+    let clauses = state
+        .active_exposures()
+        .iter()
+        .map(|exposure| {
+            let participant = tree.workspaces.iter().find_map(|workspace| {
+                workspace
+                    .collaborators
+                    .iter()
+                    .find(|person| person.session == Some(exposure.peer))
+                    .map(|person| (workspace, person))
+            });
+            let (name, kind) = participant.map_or_else(
+                || {
+                    (
+                        crate::shell::state::session_handle(exposure.peer),
+                        "unidentified session",
+                    )
+                },
+                |(workspace, person)| {
+                    let agent = workspace.agent_members().iter().any(|(agent, _)| {
+                        agent.eq_ignore_ascii_case(&person.id)
+                            || agent.eq_ignore_ascii_case(&person.name)
+                    });
+                    (person.name.clone(), if agent { "agent" } else { "person" })
+                },
+            );
+            let target = tree
+                .workspaces
+                .iter()
+                .find_map(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .find(|tab| {
+                            matches!(
+                                &tab.tile,
+                                crate::shell::state::TileContent::Foreign { surface_id, .. }
+                                    if *surface_id == exposure.surface
+                            )
+                        })
+                        .map(|tab| {
+                            if workspace.id == tree.active {
+                                tab.title.clone()
+                            } else {
+                                format!("{} › {}", workspace.name, tab.title)
+                            }
+                        })
+                })
+                .unwrap_or_else(|| format!("surface {}", exposure.surface));
+            format!(
+                "{name} ({kind}) {} {target}",
+                if exposure.can_control {
+                    "controls"
+                } else {
+                    "views"
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+    (!clauses.is_empty()).then(|| clauses.join("; "))
+}
+
 impl CollaborationPreferences {
     fn from_values(values: &serde_json::Map<String, serde_json::Value>) -> Self {
         let sharing = match values
@@ -2901,8 +3128,11 @@ impl ShellOverlayHost {
     }
 
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
-        let mut order = Vec::with_capacity(6);
+        let mut order = Vec::with_capacity(8);
         let flags = self.overlay_flags();
+        if self.power_menu.is_open() {
+            order.push(AccessibleOverlay::PowerMenu);
+        }
         // The palette has a complete semantic tree (query, result list, and
         // focused result).  It is drawn as a top overlay, so publish it from
         // the same ordered synthetic tree as every other overlay rather than
@@ -2966,9 +3196,18 @@ impl ShellOverlayHost {
         // first Win+K query. A persisted metadata snapshot makes search
         // useful immediately; this refresh quietly makes it current.
         let _ = crate::shell::catalogue::available_apps();
-        let mut search_registry = crate::shell::search::SearchRegistry::new();
+        let search_preferences = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::shell::search::SearchPreferences::load(),
+        ));
+        let mut search_registry = crate::shell::search::SearchRegistry::with_preferences_handle(
+            std::rc::Rc::clone(&search_preferences),
+        );
+        let provider_catalog = search_registry.provider_catalog_handle();
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ActionsProvider::new(),
+            crate::shell::search::providers::ActionsProvider::with_preferences_and_catalog(
+                search_preferences,
+                provider_catalog,
+            ),
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
@@ -3068,6 +3307,7 @@ impl ShellOverlayHost {
             qs_selected_gamepad: None,
             qs_selected_remote_audio: None,
             qs_selected_remote_capture: None,
+            qs_selected_display_mirror: false,
             power_menu: PowerMenu::default(),
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
@@ -3088,7 +3328,6 @@ impl ShellOverlayHost {
             file_picker_overlay: FilePickerOverlay::default(),
             portal_dialogs: PortalDialogController::default(),
             peer_sync_enabled: false,
-            peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
             clipboard_manager_bridge: None,
             device_fabric_bridge: None,
@@ -3102,6 +3341,7 @@ impl ShellOverlayHost {
             local_status: collaboration_preferences.manual_status,
             local_status_origin: ui::StatusOrigin::Manual,
             status_draft: String::new(),
+            status_selection: ui::text_selection::Selection::default(),
             status_editing: false,
             status_sharing: collaboration_preferences.sharing,
             peer_sync_overlay: PeerSyncOverlay::default(),
@@ -3565,61 +3805,17 @@ impl ShellOverlayHost {
     /// user's window geometry; pinned requests use unique ids and remain
     /// immutable after insertion.
     pub(crate) fn upsert_capture_surface(&mut self, request: CaptureSurfaceRequest<'_>) {
-        let CaptureSurfaceRequest {
+        let PreparedCaptureSurface {
             id,
             title,
-            rgba,
-            width,
-            height,
+            image,
+            pixel_aspect,
+            preferred_size,
             spawn_from,
-            kind,
-        } = request;
-        let pixel_aspect = f64::from(width) / f64::from(height.max(1));
-        let (image, preferred_size, handoff_layers, crossfade_preview, document_aspect) = match kind
-        {
-            CaptureSurfaceKind::Live {
-                preferred_size,
-                handoff_layers,
-            } => (
-                Image::from_rgba(rgba, width, height)
-                    .with_fit(ImageFit::Contain)
-                    .with_alt(format!("Live capture: {title}")),
-                preferred_size,
-                handoff_layers,
-                None,
-                None,
-            ),
-            CaptureSurfaceKind::Pinned { preview } => {
-                let document_aspect = (pixel_aspect < 0.58).then_some(pixel_aspect);
-                let fit = if document_aspect.is_some() {
-                    ImageFit::Fill
-                } else {
-                    ImageFit::Contain
-                };
-                let image = Image::from_rgba(rgba, width, height)
-                    .with_fit(fit)
-                    .with_alt(format!("Pinned screenshot: {title}"));
-                let preview_rgba: Vec<u8> = preview
-                    .pixels
-                    .into_iter()
-                    .flat_map(std::iter::IntoIterator::into_iter)
-                    .collect();
-                let preview_image = Image::from_rgba(
-                    std::sync::Arc::from(preview_rgba),
-                    u32::from(preview.columns.max(1)),
-                    u32::from(preview.rows.max(1)),
-                )
-                .with_fit(ImageFit::Fill)
-                .with_alt(format!("Pinned screenshot preview: {title}"));
-                (
-                    image,
-                    document_aspect.map(|_| vello::kurbo::Size::new(340.0, 420.0)),
-                    Vec::new(),
-                    Some(preview_image),
-                    document_aspect,
-                )
-            }
-        };
+            handoff_layers,
+            crossfade_preview,
+            document_aspect,
+        } = request.prepare();
         if let Some((_, window)) = self
             .capture_mirrors
             .iter_mut()
@@ -3997,15 +4193,20 @@ impl ShellOverlayHost {
         self.peer_sync_enabled
     }
 
-    /// Drain pending [`PeerSyncAction`]s since the last call, FIFO. Pumped
-    /// each frame by the compositor into its `ShellNetwork` handle. No
-    /// de-dup or coalescing, so repeated `/invite` all surface.
-    pub fn take_peer_sync_actions(&mut self) -> Vec<PeerSyncAction> {
-        std::mem::take(&mut self.peer_sync_actions)
+    /// Session-local presence controls as shown in trusted chrome. Used by
+    /// semantic inspection so an agent can verify what it is publishing and
+    /// whether this view is attached to somebody else.
+    pub(crate) fn presence_snapshot(&self) -> (ui::StatusSharing, Option<String>, Option<String>) {
+        (
+            self.status_sharing,
+            self.local_status.clone(),
+            self.followed_peer.clone(),
+        )
     }
 
     /// Install the closure that carries out [`PeerSyncRequest`]s. Without
-    /// one, `/invite` and `/connect` push to a queue nothing drains.
+    /// one, requests fail visibly as unavailable when the frame pump drains
+    /// them.
     #[must_use]
     pub fn with_peer_sync_bridge(mut self, bridge: PeerSyncBridge) -> Self {
         self.set_peer_sync_bridge(bridge);
@@ -4027,13 +4228,38 @@ impl ShellOverlayHost {
     /// Attach the authenticated personal-device and local-output control
     /// surface. An absent bridge renders an honest unprovisioned state.
     pub fn set_device_fabric_bridge(&mut self, bridge: DeviceFabricBridge) {
-        self.device_fabric_bridge = Some(bridge);
+        self.device_fabric_bridge = Some(std::rc::Rc::clone(&bridge));
+        self.search_registry.register_or_replace(std::rc::Rc::new(
+            crate::shell::search::providers::DeviceContinuityActionsProvider::new(
+                std::rc::Rc::clone(&bridge),
+            ),
+        ));
+        if let Some(realtime) = self.realtime_continuity_bridge.as_ref() {
+            self.search_registry.register_or_replace(std::rc::Rc::new(
+                crate::shell::search::providers::CallContinuityActionsProvider::new(
+                    std::rc::Rc::clone(realtime),
+                    bridge,
+                ),
+            ));
+        }
+        self.last_search_query = "\0continuity-provider-rebound\0".into();
+        self.last_search_revision.clear();
     }
 
     /// Attach trusted shell-only call handoff controls. The app sees semantic
     /// lifecycle edges, never the certified-device picker or raw source IDs.
     pub fn set_realtime_continuity_bridge(&mut self, bridge: RealtimeContinuityBridge) {
-        self.realtime_continuity_bridge = Some(bridge);
+        self.realtime_continuity_bridge = Some(std::rc::Rc::clone(&bridge));
+        if let Some(devices) = self.device_fabric_bridge.as_ref() {
+            self.search_registry.register_or_replace(std::rc::Rc::new(
+                crate::shell::search::providers::CallContinuityActionsProvider::new(
+                    bridge,
+                    std::rc::Rc::clone(devices),
+                ),
+            ));
+        }
+        self.last_search_query = "\0call-continuity-provider-rebound\0".into();
+        self.last_search_revision.clear();
     }
 
     fn realtime_continuity_call(
@@ -4150,10 +4376,9 @@ impl ShellOverlayHost {
     /// frame from [`Widget::update`]. `/invite` mints a token; `/connect`
     /// opens the token prompt. Both write their outcome into chrome.
     fn pump_peer_sync(&mut self) {
-        let mut actions = std::mem::take(&mut self.peer_sync_actions);
-        if let Some(chrome) = self.chrome.clone() {
-            actions.extend(chrome.borrow_mut().take_peer_sync_requests());
-        }
+        let actions = self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
+            chrome.borrow_mut().take_peer_sync_requests()
+        });
         if actions.is_empty() {
             return;
         }
@@ -5021,9 +5246,20 @@ impl ShellOverlayHost {
             return;
         }
         let st = chrome.borrow_mut();
+        let mut changed = false;
         for (strip_id, closing) in closing_per_strip {
-            st.tree_mut()
-                .nudge_active_group_off_closing(strip_id, &closing);
+            let mut tree = st.tree_mut();
+            let before = tree.active_group_for(strip_id);
+            let after = tree.nudge_active_group_off_closing(strip_id, &closing);
+            changed |= before != after;
+        }
+        if changed {
+            // Closing the focused group's last tab changes the destination
+            // for keyboard input immediately, before the fade finishes. Keep
+            // that focus hand-off durable at the same boundary: a crash or
+            // logout during the animation must not restart with the stale
+            // closing group selected.
+            st.tree().flush_to_disk();
         }
     }
 
@@ -5068,16 +5304,23 @@ impl ShellOverlayHost {
                 st.set_maximized_group(None);
             }
         }
+        let mut tree = st.tree_mut();
+        let mut changed = false;
         for (_strip_id, group_id, new_value) in changes {
             // Flat scan is correct since group ids are tree-unique.
-            let mut tree = st.tree_mut();
             for ws in &mut tree.workspaces {
                 for strip in &mut ws.strips {
                     if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
-                        g.maximized = new_value;
+                        if g.maximized != new_value {
+                            g.maximized = new_value;
+                            changed = true;
+                        }
                     }
                 }
             }
+        }
+        if changed {
+            tree.flush_to_disk();
         }
     }
 
@@ -5106,22 +5349,25 @@ impl ShellOverlayHost {
             // accessor — captured from a `Box<GroupRow>` owned through
             // the content tree, host outlives the content; this is a
             // read-only deref.
-            let row: &GroupRow = unsafe { &*ptr };
-            for g in &row.groups {
-                writes.push(Writeback {
-                    strip: strip_id,
-                    group: g.id,
-                    tab: g.active_tab_id(),
-                });
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in &mut row.groups {
+                if let Some(tab) = g.take_tab_activation() {
+                    writes.push(Writeback {
+                        strip: strip_id,
+                        group: g.id,
+                        tab,
+                    });
+                }
             }
         }
         if writes.is_empty() {
             return;
         }
         let st = chrome.borrow_mut();
-        // A divergence between `bar.active_id()` and the tree means a tab
-        // pill was clicked; stamp `active_strip`/`active_group` after the
-        // writeback, or Ctrl+K's scope stays on the old group.
+        // Only an explicit pointer/keyboard/accessibility edge reaches this
+        // list. A newly rebuilt retained row can temporarily disagree with
+        // the model; treating that divergence as a click steals focus back
+        // from an application which just opened.
         let mut focus_writes: Vec<(WorkspaceId, StripId, GroupId)> = Vec::new();
         // A FileReference card is inert until the person explicitly selects
         // its tab.  Capture that activation while holding the tree, then
@@ -5515,6 +5761,7 @@ impl ShellOverlayHost {
             // search boundary. Machine-wide search belongs to Super+K; a
             // local "+" must not silently reach into other workspaces.
             st.search_scope = crate::shell::chrome_state::SearchScope::Workspace;
+            st.search_resource_scope = None;
             st.bump();
         }
         // Narrowed to kinds that can *be* a tab, so results aren't buried
@@ -5546,6 +5793,9 @@ impl ShellOverlayHost {
             return;
         };
         let mut st = chrome.borrow_mut();
+        if st.search_resource_scope.take().is_some() {
+            st.bump();
+        }
         if st.open_target != crate::shell::chrome_state::OpenTarget::Beside {
             st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
             st.bump();
@@ -6868,6 +7118,7 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.clone() {
             let mut st = chrome.borrow_mut();
             st.search_scope = effective;
+            st.search_resource_scope = None;
             st.bump();
         }
         if !self.palette_visible {
@@ -7038,6 +7289,9 @@ impl ShellOverlayHost {
                     .icon(icon_for_kind(&r.kind));
                 if let Some(sub) = &r.subtitle {
                     e = e.description(sub.clone());
+                }
+                if let Some(badge) = &r.badge {
+                    e = e.badge(badge.clone());
                 }
                 if r.id == "room.activity.open" {
                     e = e.keybinding("Super+H");
@@ -7322,9 +7576,28 @@ impl ShellOverlayHost {
         self.last_scrolled_active_group.insert(strip_id, group_id);
     }
 
-    /// Toggle a kind in the chip filter. Multiple kinds may be active
-    /// simultaneously; the empty state means "everything shows".
+    /// Toggle a kind in the chip filter. Multiple content kinds may be
+    /// active simultaneously; the empty state means "everything shows".
+    ///
+    /// Applications and Host Apps are the exception: they are alternative
+    /// launch sources, not additive content facets. In particular a picker
+    /// opened for a new window starts with both sources available. Clicking
+    /// the Host Apps chip must narrow to host rows, rather than merely
+    /// toggling that source out and leaving the Tilo-app rows behind.
     fn toggle_kind_filter(&mut self, kind: crate::shell::search::ResourceKind) {
+        use crate::shell::search::ResourceKind;
+
+        if matches!(
+            kind,
+            ResourceKind::Application | ResourceKind::HostApplication
+        ) {
+            if self.active_kind_filter.as_slice() == std::slice::from_ref(&kind) {
+                self.active_kind_filter.clear();
+            } else {
+                self.active_kind_filter = vec![kind];
+            }
+            return;
+        }
         if let Some(pos) = self.active_kind_filter.iter().position(|k| k == &kind) {
             self.active_kind_filter.remove(pos);
         } else {
@@ -7431,29 +7704,31 @@ impl ShellOverlayHost {
                 } else {
                     (result.on_open)(doc, root, &chrome, &args)
                 };
+                let entered_resource_scope =
+                    outcome.is_ok() && result.id.starts_with("directory-resource\u{1f}");
                 if let Err(err) = outcome {
                     chrome.borrow_mut().push_warning_notification(
                         format!("Can't run “{}”", result.title),
                         err.to_string(),
                     );
                 }
+                if entered_resource_scope {
+                    let label = chrome
+                        .borrow()
+                        .search_resource_scope
+                        .as_ref()
+                        .map_or("resource", |scope| scope.label.as_str())
+                        .to_string();
+                    self.palette.set_query("");
+                    self.palette
+                        .set_query_placeholder(format!("Search in {label}…"));
+                    self.last_search_query = "\0resource-scope-enter\0".into();
+                    self.palette_visible = true;
+                    return;
+                }
             }
             self.palette_visible = false;
             return;
-        }
-        // Legacy id-based dispatch for peer-sync rows, which enqueue an
-        // action drained by `take_peer_sync_actions`.
-        if id.starts_with("peer:") {
-            match id.as_str() {
-                "peer:invite" => {
-                    self.peer_sync_actions.push(PeerSyncAction::IssueInvite);
-                }
-                "peer:connect" => {
-                    self.peer_sync_actions.push(PeerSyncAction::PromptConnect);
-                }
-                _ => {}
-            }
-            self.palette_visible = false;
         }
     }
 
@@ -7628,6 +7903,31 @@ impl ShellOverlayHost {
         )
     }
 
+    /// Rebuild one exact semantic action from current provider state.
+    pub fn exact_action_catalog(
+        &self,
+        provider: &str,
+        id: &str,
+        chrome: &crate::shell::chrome_state::ChromeState,
+        doc: &automerge::AutoCommit,
+        root: &ObjId,
+        visibility: &dyn crate::shell::search::action_api::ActionVisibility,
+    ) -> crate::shell::search::action_api::ActionCatalog {
+        let scope = chrome.search_scope;
+        let active_provider = active_tab_provider_id(chrome, &self.search_registry);
+        crate::shell::search::action_api::ActionCatalog::build_exact(
+            &self.search_registry,
+            provider,
+            id,
+            scope,
+            active_provider.as_deref(),
+            chrome,
+            doc,
+            root,
+            visibility,
+        )
+    }
+
     /// The command-palette query buffer, for the `shots` harness to
     /// assert a synthetic `Type("…")` landed.
     pub fn palette_query(&self) -> &str {
@@ -7737,7 +8037,7 @@ impl ShellOverlayHost {
         };
         for reading in readings {
             let mut st = chrome.borrow_mut();
-            Self::apply_one_qs_reading(&mut st, reading);
+            self.apply_one_qs_reading(&mut st, reading);
         }
     }
 
@@ -7787,6 +8087,7 @@ impl ShellOverlayHost {
     /// [`Self::apply_quick_settings_readings`], split out to keep that
     /// function under the line-count ceiling.
     fn apply_one_qs_reading(
+        &mut self,
         st: &mut crate::shell::chrome_state::ChromeState,
         reading: crate::shell::qs_refresh::QsReading,
     ) {
@@ -7809,6 +8110,10 @@ impl ShellOverlayHost {
                 QsReading::Firmware(updates) => {
                     st.quick_settings.firmware_updates = updates.map(|v| v.len());
                     st.bump();
+                    return;
+                }
+                QsReading::WifiJoin(join) => {
+                    self.apply_wifi_join_result(st, join);
                     return;
                 }
             };
@@ -7866,6 +8171,77 @@ impl ShellOverlayHost {
         st.bump();
     }
 
+    fn apply_wifi_join_result(
+        &mut self,
+        st: &mut crate::shell::chrome_state::ChromeState,
+        join: crate::shell::qs_refresh::WifiJoinResult,
+    ) {
+        let crate::shell::qs_refresh::WifiJoinResult {
+            ssid,
+            password,
+            shared_credential,
+            result,
+        } = join;
+        st.quick_settings.wifi_joining = None;
+        match result {
+            Ok(()) => {
+                st.quick_settings.wifi_password = None;
+                for network in &mut st.quick_settings.wifi_networks {
+                    network.connected = network.ssid == ssid;
+                }
+                st.quick_settings.wifi = true;
+                let share_result = if !shared_credential {
+                    password.as_ref().and_then(|password| {
+                        self.wifi_secret_bridge.as_ref().map(|bridge| {
+                            bridge(WifiSecretAction::Share {
+                                ssid: ssid.clone(),
+                                password: password.clone(),
+                            })
+                        })
+                    })
+                } else {
+                    None
+                };
+                let detail = if shared_credential {
+                    "Used the encrypted credential from one of your certified devices."
+                } else if share_result.as_ref().is_some_and(Result::is_err) {
+                    "Connected, but encrypted sharing is temporarily unavailable."
+                } else if share_result.is_some() {
+                    "Connected and encrypted separately for each certified device."
+                } else if password.is_some() {
+                    "Connected. This saved network will rejoin automatically."
+                } else {
+                    "Connected to the open network."
+                };
+                st.push_notification(format!("Connected to {ssid}"), detail);
+            }
+            Err(error) => {
+                tracing::warn!(target: "tilo::os_actions", op = "connect_wifi", %error, "wifi join failed");
+                if let Some(prompt) = st
+                    .quick_settings
+                    .wifi_password
+                    .as_mut()
+                    .filter(|prompt| prompt.ssid == ssid)
+                {
+                    prompt.connecting = false;
+                    prompt.selection.anchor = 0;
+                    prompt.selection.cursor = prompt.password.len();
+                    prompt.error = Some(if shared_credential {
+                        "The saved password no longer works. Enter the current password.".into()
+                    } else {
+                        "Couldn't join. Check the password.".into()
+                    });
+                } else {
+                    st.push_notification(
+                        format!("Couldn’t connect to {ssid}"),
+                        "The network did not accept the connection. Try again from Wi‑Fi settings.",
+                    );
+                }
+            }
+        }
+        st.bump();
+    }
+
     /// See [`Self::force_palette_settled`].
     pub fn force_ws_settings_settled(&mut self) {
         if !self.overlay_flags().ws_settings {
@@ -7880,73 +8256,6 @@ impl ShellOverlayHost {
     /// theme's typography token.
     pub fn overview_header_font_size(&self, theme: &Theme) -> f32 {
         Self::overview_header_font_size_for(&theme.tokens)
-    }
-
-    /// Dispatches the shell action for a palette command id, then closes
-    /// the palette (even on an unknown id, to avoid a stale overlay).
-    // No production caller routes a selection here, so `/invite` and
-    // `/connect` are inert even under --enable-peer-sync. Kept as the
-    // only definition of what those commands do; tests pin the contract.
-    #[allow(dead_code)]
-    pub(crate) fn dispatch_palette_command(&mut self, id: &str) -> bool {
-        // Peer-sync rows enqueue an action for the compositor to drain
-        // (Iroh stays on the runtime thread) rather than mutating
-        // chrome directly. Ignored when the flag is off, in case a stale
-        // palette row survives a toggle.
-        if self.peer_sync_enabled {
-            match id {
-                "peer.invite" => {
-                    self.peer_sync_actions.push(PeerSyncAction::IssueInvite);
-                    self.palette_visible = false;
-                    return true;
-                }
-                "peer.connect" => {
-                    self.peer_sync_actions.push(PeerSyncAction::PromptConnect);
-                    self.palette_visible = false;
-                    return true;
-                }
-                _ => {}
-            }
-        }
-
-        let matched = if let Some(chrome) = self.chrome.clone() {
-            let mut st = chrome.borrow_mut();
-            let hit = match id {
-                "overview.toggle" => {
-                    st.overlays.overview = !st.overlays.overview;
-                    true
-                }
-                "settings.open" => {
-                    st.open_workspace_settings(WsTab::General);
-                    true
-                }
-                "quick-settings.open" => {
-                    st.open_quick_settings();
-                    true
-                }
-                "projection.open" => {
-                    st.overlays.projection = true;
-                    true
-                }
-                "capture.open" => {
-                    st.overlays.capture = true;
-                    true
-                }
-                // `search.open` is a no-op: the palette is already open
-                // when the user reaches this row. We close it below like
-                // the other commands so behaviour is consistent.
-                "search.open" => true,
-                _ => false,
-            };
-            if hit {
-                st.bump();
-            }
-            hit
-        } else {
-            false
-        };
-        self.palette_visible = false;
-        matched
     }
 
     fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {
@@ -8485,6 +8794,7 @@ impl ShellOverlayHost {
                     Some(
                         DeviceFabricPaneRow::RemoteAudioConsent(_)
                             | DeviceFabricPaneRow::RemoteCaptureConsent(_)
+                            | DeviceFabricPaneRow::DisplayMirrorConsent(_)
                             | DeviceFabricPaneRow::RealtimeConsent(_)
                             | DeviceFabricPaneRow::GamepadAuthorization(_)
                     )
@@ -9010,6 +9320,29 @@ impl ShellOverlayHost {
     ) -> String {
         use crate::shell::chrome_state::SearchScope;
         const MAX_APP_PILL_CHARS: usize = 14;
+        if let Some(resource_label) = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            (state.search_scope == scope)
+                .then(|| {
+                    state
+                        .search_resource_scope
+                        .as_ref()
+                        .map(|resource| resource.label.clone())
+                })
+                .flatten()
+        }) {
+            const MAX_RESOURCE_PILL_CHARS: usize = 18;
+            let label = if resource_label.chars().count() > MAX_RESOURCE_PILL_CHARS {
+                let head: String = resource_label
+                    .chars()
+                    .take(MAX_RESOURCE_PILL_CHARS)
+                    .collect();
+                format!("{head}…")
+            } else {
+                resource_label
+            };
+            return format!("‹ {label}");
+        }
         match scope {
             SearchScope::ActiveApp => {
                 let Some(raw) = self
@@ -10164,38 +10497,68 @@ impl ShellOverlayHost {
         let mstate = modifiers.state();
         let super_down = mstate.super_key();
         let shift_down = mstate.shift_key();
+        // Workspace naming is a text-field modal.  It must arbitrate before
+        // every shell chord: otherwise Super+W/K/T can close a tab or open a
+        // palette while the field is visibly active.
+        if self.handle_workspace_rename_key(logical_key, modifiers, handled) {
+            return true;
+        }
         if self.status_editing {
-            match logical_key {
-                Key::Named(NamedKey::Escape) => {
+            let edit = if repeat
+                && matches!(logical_key, Key::Character(_) | Key::Named(NamedKey::Space))
+            {
+                // DRM synthesises repeat events for native widgets, but text
+                // insertion is edge-triggered: holding a printable key must
+                // not race through an unbounded status string. Navigation and
+                // deletion intentionally keep their conventional repeat.
+                crate::shell::text_entry::Edit::ConsumedQuiet
+            } else {
+                crate::shell::text_entry::apply(
+                    logical_key,
+                    crate::shell::text_entry::Mods::from_state(mstate),
+                    &mut self.status_draft,
+                    &mut self.status_selection,
+                )
+            };
+            match edit {
+                crate::shell::text_entry::Edit::Cancel => {
                     self.status_editing = false;
                     self.status_draft.clear();
+                    self.status_selection = ui::text_selection::Selection::default();
                 }
-                Key::Named(NamedKey::Enter) => {
+                crate::shell::text_entry::Edit::Submit => {
                     let text = self
                         .status_draft
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" ");
-                    self.local_status = (!text.is_empty()).then_some(text);
-                    self.local_status_origin = ui::StatusOrigin::Manual;
+                    let status = (!text.is_empty()).then_some(text);
                     self.status_editing = false;
                     self.status_draft.clear();
-                    self.persist_collaboration_preferences();
-                    if self.status_sharing == ui::StatusSharing::Off {
-                        self.publish_local_status(None);
-                    } else {
-                        self.publish_local_status(self.local_status.clone());
+                    self.status_selection = ui::text_selection::Selection::default();
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        chrome.borrow_mut().push_presence_request(
+                            crate::shell::chrome_state::PresenceRequest::SetManualStatus(status),
+                        );
                     }
                 }
-                Key::Named(NamedKey::Backspace) => {
-                    self.status_draft.pop();
+                crate::shell::text_entry::Edit::Changed => {
+                    let char_count = self.status_draft.chars().count();
+                    if char_count > ui::MAX_STATUS_CHARS {
+                        let mut byte_cap = self.status_draft.len();
+                        for (seen, (byte, _)) in self.status_draft.char_indices().enumerate() {
+                            if seen == ui::MAX_STATUS_CHARS {
+                                byte_cap = byte;
+                                break;
+                            }
+                        }
+                        self.status_draft.truncate(byte_cap);
+                        self.status_selection.anchor = self.status_selection.anchor.min(byte_cap);
+                        self.status_selection.cursor = self.status_selection.cursor.min(byte_cap);
+                    }
                 }
-                Key::Character(text) if !mstate.control_key() && !mstate.super_key() && !repeat => {
-                    let room =
-                        ui::MAX_STATUS_CHARS.saturating_sub(self.status_draft.chars().count());
-                    self.status_draft.extend(text.chars().take(room));
-                }
-                _ => {}
+                crate::shell::text_entry::Edit::Ignored
+                | crate::shell::text_entry::Edit::ConsumedQuiet => {}
             }
             *handled = true;
             return true;
@@ -10275,6 +10638,32 @@ impl ShellOverlayHost {
                         .then_some(ShortcutGuideFocus::Binding(
                             settings_store::hardware::ShortcutAction::FocusPreviousWindow,
                         ));
+            }
+            *handled = true;
+            return true;
+        }
+        // Quick Settings is modal. Its own drill-in/root handler above gets
+        // first refusal, F1 remains the documented shortcut-guide escape
+        // hatch, and Escape follows the normal dismissal/back ladder. Every
+        // other key is consumed before it can reach a hidden app or shell
+        // action (including configured shortcuts and Super chords below).
+        if self.overlay_flags().quick_settings {
+            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                if self.overlay_flags().shortcut_help {
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        let mut st = chrome.borrow_mut();
+                        st.overlays.shortcut_help = false;
+                        st.bump();
+                    }
+                    self.shortcut_rebind = None;
+                    self.shortcut_rebind_message = None;
+                    self.shortcut_guide_focus = None;
+                    *handled = true;
+                    return true;
+                }
+                if self.handle_shell_escape_chord(handled) {
+                    return true;
+                }
             }
             *handled = true;
             return true;
@@ -10544,17 +10933,7 @@ impl ShellOverlayHost {
         {
             return true;
         }
-        // Quick Settings is a modal input owner even when the key is not one
-        // of its navigation controls. Keep ordinary text and unknown keys
-        // from falling through to the focused client (a terminal must not
-        // receive characters typed while the popover is open). F1 remains the
-        // explicit desktop-help escape hatch above, and Escape is handled by
-        // the dismissal ladder immediately above.
-        if self.overlay_flags().quick_settings {
-            *handled = true;
-            return true;
-        }
-        self.handle_workspace_rename_key(logical_key, modifiers, handled)
+        false
     }
 
     /// Arrow/Enter navigation of the room overview list, unmodified so
@@ -10900,6 +11279,18 @@ impl ShellOverlayHost {
     /// overview > ws settings > quick settings.
     fn handle_shell_escape_chord(&mut self, handled: &mut bool) -> bool {
         if self.palette_visible {
+            if let Some(chrome) = self.chrome.clone() {
+                let mut state = chrome.borrow_mut();
+                if state.search_resource_scope.take().is_some() {
+                    state.bump();
+                    drop(state);
+                    self.palette.set_query("");
+                    self.palette.set_query_placeholder("Search…");
+                    self.last_search_query = "\0resource-scope-back\0".into();
+                    *handled = true;
+                    return true;
+                }
+            }
             self.palette_visible = false;
             *handled = true;
             return true;
@@ -11011,6 +11402,12 @@ impl ShellOverlayHost {
         let shift = mods_state.shift_key();
         let ctrl = mods_state.control_key() || mods_state.super_key();
         let mut st = chrome.borrow_mut();
+        if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+            st.editing_workspace_name = None;
+            st.bump();
+            *handled = true;
+            return true;
+        }
         // Pulled out by value first so it isn't a separate
         // immutable borrow alongside `buf`.
         let sel = st.editing_workspace_name_selection;
@@ -11033,7 +11430,10 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        false
+        // A modal text field owns even keys it does not interpret. This is
+        // what prevents a reserved/global chord from mutating the desktop.
+        *handled = true;
+        true
     }
 
     /// Every workspace-rename chord but `Enter`, applied to `buf`/`sel` in
@@ -11372,7 +11772,14 @@ impl ShellOverlayHost {
                 if let Some(chrome) = self.chrome.clone() {
                     let mut state = chrome.borrow_mut();
                     state.search_scope = *scope;
+                    let left_resource = state.search_resource_scope.take().is_some();
                     state.bump();
+                    drop(state);
+                    if left_resource {
+                        self.palette.set_query("");
+                        self.palette.set_query_placeholder("Search…");
+                        self.last_search_query = "\0resource-scope-pill-back\0".into();
+                    }
                 }
                 return true;
             }
@@ -11497,25 +11904,14 @@ impl ShellOverlayHost {
                 } else {
                     String::new()
                 };
+                self.status_selection =
+                    ui::text_selection::Selection::collapsed(self.status_draft.len());
                 self.status_editing = true;
                 *handled = true;
                 return;
             }
             CollaboratorsHit::SetStatusSharing(mode) => {
-                self.status_sharing = mode;
-                if mode != ui::StatusSharing::Automatic
-                    && matches!(self.local_status_origin, ui::StatusOrigin::Inferred { .. })
-                {
-                    self.local_status = None;
-                    self.local_status_origin = ui::StatusOrigin::Manual;
-                    self.status_narrative_request = None;
-                }
-                if mode == ui::StatusSharing::Off {
-                    self.publish_local_status(None);
-                } else {
-                    self.publish_local_status(self.local_status.clone());
-                }
-                self.persist_collaboration_preferences();
+                self.set_status_sharing(mode);
                 *handled = true;
                 return;
             }
@@ -11593,6 +11989,62 @@ impl ShellOverlayHost {
             updated_at: std::time::SystemTime::now(),
         });
         bridge(room, status);
+    }
+
+    fn set_status_sharing(&mut self, mode: ui::StatusSharing) {
+        self.status_sharing = mode;
+        if mode != ui::StatusSharing::Automatic
+            && matches!(self.local_status_origin, ui::StatusOrigin::Inferred { .. })
+        {
+            self.local_status = None;
+            self.local_status_origin = ui::StatusOrigin::Manual;
+            self.status_narrative_request = None;
+        }
+        if mode == ui::StatusSharing::Off {
+            self.publish_local_status(None);
+        } else {
+            self.publish_local_status(self.local_status.clone());
+        }
+        self.persist_collaboration_preferences();
+    }
+
+    /// Apply semantic presence requests queued by the shared action provider.
+    /// This is the same local state and publisher used by pointer/keyboard UI,
+    /// so agents do not get a parallel or less truthful collaboration path.
+    fn pump_presence_requests(&mut self) -> bool {
+        let requests = self
+            .chrome
+            .as_ref()
+            .map(|chrome| chrome.borrow_mut().take_presence_requests())
+            .unwrap_or_default();
+        if requests.is_empty() {
+            return false;
+        }
+        for request in requests {
+            match request {
+                crate::shell::chrome_state::PresenceRequest::Follow(id) => {
+                    self.set_followed_peer(Some(id));
+                }
+                crate::shell::chrome_state::PresenceRequest::StopFollowing => {
+                    self.set_followed_peer(None);
+                }
+                crate::shell::chrome_state::PresenceRequest::SetManualStatus(status) => {
+                    self.local_status = status;
+                    self.local_status_origin = ui::StatusOrigin::Manual;
+                    self.status_narrative_request = None;
+                    if self.status_sharing == ui::StatusSharing::Off {
+                        self.publish_local_status(None);
+                    } else {
+                        self.publish_local_status(self.local_status.clone());
+                    }
+                    self.persist_collaboration_preferences();
+                }
+                crate::shell::chrome_state::PresenceRequest::SetStatusSharing(mode) => {
+                    self.set_status_sharing(mode);
+                }
+            }
+        }
+        true
     }
 
     fn persist_collaboration_preferences(&self) {
@@ -11721,7 +12173,18 @@ impl ShellOverlayHost {
             &mut chrome.borrow_mut().quick_settings,
             self.qs_actions.as_ref(),
         );
-        Self::finish_quick_settings_drill_in_click(&chrome, outcome);
+        match outcome {
+            crate::shell::quick_settings_wifi::WifiPaneOutcome::DrillIn(outcome) => {
+                Self::finish_quick_settings_drill_in_click(&chrome, outcome);
+            }
+            crate::shell::quick_settings_wifi::WifiPaneOutcome::JoinOpen(ssid) => {
+                let mut state = chrome.borrow_mut();
+                state.quick_settings.wifi_joining = Some(ssid.clone());
+                state.bump();
+                drop(state);
+                self.qs_refresh.kick_wifi_join(ssid, None, false);
+            }
+        }
         let _ = self.try_connect_with_shared_wifi_password();
     }
 
@@ -11882,6 +12345,7 @@ impl ShellOverlayHost {
                 self.qs_selected_media = None;
                 self.qs_selected_gamepad = None;
                 self.qs_selected_remote_capture = None;
+                self.qs_selected_display_mirror = false;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -11921,6 +12385,7 @@ impl ShellOverlayHost {
                 self.qs_selected_realtime = None;
                 self.qs_selected_media = None;
                 self.qs_selected_gamepad = None;
+                self.qs_selected_display_mirror = false;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -11946,6 +12411,56 @@ impl ShellOverlayHost {
                 }
             }
             DeviceFabricPaneRow::RemoteCaptureDegraded(_) => None,
+            DeviceFabricPaneRow::DisplayMirrorConsent(consent) => {
+                let (allow, decline) =
+                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+                let approved = if allow.contains(point) {
+                    true
+                } else if decline.contains(point) {
+                    false
+                } else {
+                    return;
+                };
+                Some((
+                    DeviceFabricUiAction::ResolveDisplayMirror {
+                        session_id: consent.session_id,
+                        approved,
+                    },
+                    if approved {
+                        format!("Allowed {} to mirror here once", consent.source_label)
+                    } else {
+                        format!("Declined display mirroring from {}", consent.source_label)
+                    },
+                ))
+            }
+            DeviceFabricPaneRow::DisplayMirrorSource => {
+                self.qs_selected_display_mirror = true;
+                self.qs_selected_remote_capture = None;
+                self.qs_selected_remote_audio = None;
+                self.qs_selected_realtime = None;
+                self.qs_selected_media = None;
+                self.qs_selected_gamepad = None;
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                return;
+            }
+            DeviceFabricPaneRow::DisplayMirrorStatus(status) => {
+                use crate::shell::device_fabric_runtime::DisplayMirrorPhase;
+                if matches!(
+                    status.phase,
+                    DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+                ) {
+                    None
+                } else {
+                    Some((
+                        DeviceFabricUiAction::StopDisplayMirror {
+                            session_id: status.session_id,
+                        },
+                        format!("Stopped display mirroring with {}", status.peer_label),
+                    ))
+                }
+            }
             DeviceFabricPaneRow::RealtimeConsent(consent) => {
                 let (allow, decline) =
                     Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
@@ -12074,6 +12589,7 @@ impl ShellOverlayHost {
                     self.qs_selected_realtime = None;
                     self.qs_selected_remote_audio = None;
                     self.qs_selected_remote_capture = None;
+                    self.qs_selected_display_mirror = false;
                     if let Some(chrome) = self.chrome.as_ref() {
                         chrome.borrow_mut().bump();
                     }
@@ -12105,6 +12621,7 @@ impl ShellOverlayHost {
                 self.qs_selected_gamepad = None;
                 self.qs_selected_remote_audio = None;
                 self.qs_selected_remote_capture = None;
+                self.qs_selected_display_mirror = false;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -12157,6 +12674,17 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::Device(device)
                 if !device.is_local
                     && device.online
+                    && device.video_output
+                    && self.qs_selected_display_mirror =>
+            {
+                Some((
+                    DeviceFabricUiAction::RequestDisplayMirror { target: device.id },
+                    format!("Asked {} to allow display mirroring once", device.label),
+                ))
+            }
+            DeviceFabricPaneRow::Device(device)
+                if !device.is_local
+                    && device.online
                     && self.qs_selected_remote_capture.is_some() =>
             {
                 let kind = self
@@ -12199,6 +12727,7 @@ impl ShellOverlayHost {
                     && self.qs_selected_gamepad.is_none()
                     && self.qs_selected_realtime.is_none()
                     && self.qs_selected_remote_capture.is_none()
+                    && !self.qs_selected_display_mirror
                     && self.qs_selected_media.is_none() =>
             {
                 Some((
@@ -13431,14 +13960,48 @@ pub(crate) fn shortcut_chord_matches(
     modifiers: winit::event::Modifiers,
     chord: &settings_store::hardware::KeyChord,
 ) -> bool {
-    let key_matches =
-        shortcut_key_name(logical_key).is_some_and(|key| chord.key.eq_ignore_ascii_case(&key));
     let state = modifiers.state();
+    let key_matches = shortcut_key_name(logical_key).is_some_and(|key| {
+        chord.key.eq_ignore_ascii_case(&key)
+            || state.shift_key()
+                && unshifted_shortcut_key(&key)
+                    .is_some_and(|base| chord.key.eq_ignore_ascii_case(base))
+    });
     key_matches
         && chord.modifiers.contains("Super") == state.super_key()
         && chord.modifiers.contains("Ctrl") == state.control_key()
         && chord.modifiers.contains("Alt") == state.alt_key()
         && chord.modifiers.contains("Shift") == state.shift_key()
+}
+
+/// Winit reports the logical character produced by Shift, while shortcut
+/// configuration stores the physical punctuation printed on the key. Keep
+/// those two representations equivalent without weakening modifier matching.
+fn unshifted_shortcut_key(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "?" => "/",
+        ":" => ";",
+        "\"" => "'",
+        "<" => ",",
+        ">" => ".",
+        "_" => "-",
+        "+" => "=",
+        "{" => "[",
+        "}" => "]",
+        "|" => "\\",
+        "~" => "`",
+        "!" => "1",
+        "@" => "2",
+        "#" => "3",
+        "$" => "4",
+        "%" => "5",
+        "^" => "6",
+        "&" => "7",
+        "*" => "8",
+        "(" => "9",
+        ")" => "0",
+        _ => return None,
+    })
 }
 
 /// The sole configurable shortcut resolver.  The input pre-router owns a
@@ -13555,6 +14118,9 @@ fn shortcut_action_label(action: settings_store::hardware::ShortcutAction) -> &'
 /// pairs. Configurable global actions use their live chord so the guide never
 /// promises a default the user has rebound; the remaining entries correspond
 /// directly to unconditional branches in the production shell dispatcher.
+/// The guide itself is intentionally omitted: the title and opening copy
+/// already explain how to reopen this surface, so repeating F1 in the action
+/// wall adds noise rather than a new affordance.
 fn shortcut_reference_rows(
     shortcuts: &settings_store::hardware::ShortcutConfig,
 ) -> Vec<(&'static str, String)> {
@@ -13566,29 +14132,41 @@ fn shortcut_reference_rows(
             .map_or_else(|| "Unassigned".into(), shortcut_guide_chord)
     };
     vec![
-        ("Screenshot", "Print Screen".into()),
         ("Switch windows", "Alt+Tab".into()),
         ("Close tab", "Alt+F4  /  Super+W".into()),
         ("Change workspace", "Super+Page Up / Down".into()),
         ("New window", "Super+N".into()),
         ("Add tab here", "Super+T".into()),
         ("Duplicate tab", "Super+D".into()),
-        ("Open terminal", "Super+Enter".into()),
         ("Global search", chord(ShortcutAction::Search)),
         ("Global search", "Super+Space".into()),
         ("Overview", chord(ShortcutAction::WorkspaceOverview)),
-        ("Lock", chord(ShortcutAction::Lock)),
         ("Quick Settings", chord(ShortcutAction::QuickSettings)),
-        (
-            "Shortcut guide",
-            format!("F1  /  {}", chord(ShortcutAction::ShortcutHelp)),
-        ),
         ("Workspace wheel", "Super+S".into()),
+        ("Lock", chord(ShortcutAction::Lock)),
+        ("Screenshot", "Print Screen".into()),
         ("Wireless display", "Super+P".into()),
         ("Capture screenshot", "Super+Shift+S".into()),
+        ("Open terminal", "Super+Enter".into()),
         ("Picture in picture", "Super+Shift+P".into()),
         ("Save recent replay", "Super+Shift+R".into()),
     ]
+}
+
+/// The reference is deliberately split into three semantic columns. That
+/// keeps the complete desktop vocabulary scannable without turning the lower
+/// half of the guide into a grid of equally loud buttons.
+fn shortcut_reference_columns(body_width: f64) -> usize {
+    let _ = body_width;
+    3
+}
+
+fn shortcut_reference_step(compact: bool) -> f64 {
+    if compact { 31.0 } else { 34.0 }
+}
+
+fn shortcut_reference_group_height(compact: bool) -> f64 {
+    if compact { 221.0 } else { 238.0 }
 }
 
 fn shortcut_guide_chord(chord: &settings_store::hardware::KeyChord) -> String {
@@ -13751,6 +14329,7 @@ impl Widget for ShellOverlayHost {
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
         self.harvest_active_tab_writeback();
+        let presence_dirty = self.pump_presence_requests();
         let follow_dirty = self.reconcile_followed_peer();
         // Both edge-triggered on `active_group`, so they run after the
         // writeback above reflects this frame's focus change.
@@ -13798,6 +14377,7 @@ impl Widget for ShellOverlayHost {
             || picker_dirty
             || dialog_dirty
             || mirror_dirty
+            || presence_dirty
             || follow_dirty
     }
 
@@ -14527,6 +15107,11 @@ impl Widget for ShellOverlayHost {
         if self.route_dropped_file_event(event, handled) {
             return;
         }
+        // An opening pointer/accessibility/search action can be followed by
+        // a key before the next draw. Observe the authoritative chrome edge
+        // here so every entry point starts keyboard traversal from the same
+        // visible first control rather than a retained selection.
+        self.reconcile_quick_settings_open_edge(self.overlay_flags().quick_settings);
         // The shell keyboard helper intentionally handles only pressed keys;
         // absorb releases here as well so a key held across a QS opening
         // cannot be delivered to the client behind the modal.
@@ -14545,7 +15130,13 @@ impl Widget for ShellOverlayHost {
             *handled = true;
             return;
         }
-        self.release_follow_for_local_key(event);
+        // The first local key is the handoff edge out of Follow mode. Consume
+        // that same event after releasing the peer so a shell chord (for
+        // example Super+W) cannot also mutate the local desktop.
+        if self.release_follow_for_local_key(event) {
+            *handled = true;
+            return;
+        }
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -14642,11 +15233,13 @@ impl Widget for ShellOverlayHost {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Group).with_name("Tilo workspace");
-        if let Some(power_menu) = self.power_menu.accessibility_snapshot() {
-            root.children.push(power_menu);
-        }
         for overlay in self.accessible_overlay_order() {
             match overlay {
+                AccessibleOverlay::PowerMenu => {
+                    if let Some(power_menu) = self.power_menu.accessibility_snapshot() {
+                        root.children.push(power_menu);
+                    }
+                }
                 AccessibleOverlay::CommandPalette => {
                     if let Some(palette) = self.palette.accessibility() {
                         root.children.push(palette);
@@ -15042,6 +15635,39 @@ impl Widget for ShellOverlayHost {
                                             },
                                             Vec::new(),
                                         ),
+                                        DeviceFabricPaneRow::DisplayMirrorConsent(consent) => (
+                                            format!("Mirror display from {}", consent.source_label),
+                                            "A certified device requested a private, view-only display mirror"
+                                                .into(),
+                                            vec![
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Allow display mirroring once"),
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Decline display mirroring"),
+                                            ],
+                                        ),
+                                        DeviceFabricPaneRow::DisplayMirrorSource => (
+                                            "Mirror this display".into(),
+                                            "Choose a certified video display; the target must approve once and receives no input authority"
+                                                .into(),
+                                            Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::DisplayMirrorStatus(status) => (
+                                            format!("Display mirror with {}", status.peer_label),
+                                            match status.phase {
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::AwaitingConsent =>
+                                                    "Waiting for target approval; activate to cancel".into(),
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::Starting =>
+                                                    "Starting private view-only stream; activate to stop".into(),
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::Streaming =>
+                                                    "Private view-only stream active; activate to stop".into(),
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::Failed(failure) =>
+                                                    format!("Display mirroring ended: {}", display_mirror_failure_label(failure)),
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::Stopped =>
+                                                    "Display mirroring stopped".into(),
+                                            },
+                                            Vec::new(),
+                                        ),
                                         DeviceFabricPaneRow::RealtimeConsent(consent) => (
                                             format!("Continue call in {}", consent.room_label),
                                             "Approve this one handoff and its requested local capture sources"
@@ -15297,6 +15923,9 @@ impl Widget for ShellOverlayHost {
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let (&overlay_index, child_path) = path.split_first()?;
         match self.accessible_overlay_order().get(overlay_index)? {
+            AccessibleOverlay::PowerMenu => self
+                .power_menu
+                .accessibility_rect_for_path(self.rect, child_path),
             AccessibleOverlay::CommandPalette => {
                 self.palette.synthetic_accessibility_rect(child_path)
             }
@@ -15356,6 +15985,7 @@ impl Widget for ShellOverlayHost {
             return false;
         };
         match overlay {
+            AccessibleOverlay::PowerMenu => self.power_menu.focus_accessibility_path(child_path),
             AccessibleOverlay::CommandPalette => {
                 self.palette.focus_synthetic_accessibility(child_path)
             }
@@ -16311,13 +16941,14 @@ impl ShellOverlayHost {
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
         if flags.collaborators {
-            let (mut rows, unavailable) = self.chrome.as_ref().map_or_else(
-                || (Vec::new(), None),
+            let (mut rows, unavailable, screen_exposure) = self.chrome.as_ref().map_or_else(
+                || (Vec::new(), None, None),
                 |chrome| {
                     let state = chrome.borrow();
                     (
                         collaborator_roster_rows(&state.tree()),
                         state.collab_unavailable.clone(),
+                        collaborators_screen_exposure(&state),
                     )
                 },
             );
@@ -16410,6 +17041,7 @@ impl ShellOverlayHost {
                     ),
                     status_sharing: self.status_sharing,
                     status_editing: self.status_editing,
+                    screen_exposure: screen_exposure.as_deref(),
                 },
                 self.last_cursor,
             );
@@ -16514,12 +17146,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        if flags.quick_settings && !self.qs_was_open {
-            self.qs_refresh.kick_fast();
-            self.qs_refresh.kick_firmware();
-            self.qs_root.reset_focus();
-        }
-        self.qs_was_open = flags.quick_settings;
+        self.reconcile_quick_settings_open_edge(flags.quick_settings);
         self.apply_quick_settings_readings();
         self.qs_transition.set_open(
             flags.quick_settings,
@@ -16530,6 +17157,20 @@ impl ShellOverlayHost {
             },
             ui::Curve::EaseOut,
         );
+    }
+
+    /// Reconcile Quick Settings' retained widget with the authoritative
+    /// chrome flag before another input edge can arrive. Open requests can
+    /// originate in top-bar pointer/accessibility controls, media chrome,
+    /// search actions, or configured shortcuts; none of those callers should
+    /// need to know that the popover owns a retained keyboard cursor.
+    fn reconcile_quick_settings_open_edge(&mut self, open: bool) {
+        if open && !self.qs_was_open {
+            self.qs_refresh.kick_fast();
+            self.qs_refresh.kick_firmware();
+            self.qs_root.reset_focus();
+        }
+        self.qs_was_open = open;
     }
 
     /// The quick-settings dropdown: no scrim, so it reads as a dropdown
@@ -16629,11 +17270,11 @@ impl ShellOverlayHost {
 
     fn shortcut_help_panel_rect(&self) -> Rect {
         // Keep the desktop visible around the guide: it is a contextual
-        // reference, not a replacement screen.  The compact height is sized
-        // to the complete two-column reference at 800x600 without relying on
-        // a clipped footer or an unexplained scrollbar.
+        // reference, not a replacement screen. The additional desktop height
+        // gives the two sections room to breathe, while compact height still
+        // contains every documented action.
         let width = (self.rect.width() - 64.0).clamp(0.0, 960.0);
-        let height = (self.rect.height() - 64.0).clamp(0.0, 560.0);
+        let height = (self.rect.height() - 64.0).clamp(0.0, 600.0);
         Rect::new(
             self.rect.center().x - width / 2.0,
             self.rect.center().y - height / 2.0,
@@ -16685,9 +17326,40 @@ impl ShellOverlayHost {
             Some(f64_to_f32_lossy(panel.width() - 140.0)),
             TextWeight::Semibold,
         );
+        let (title_width, _) = text_renderer.measure("Desktop help", title_size, None);
+        let f1_hint = Rect::new(
+            panel.x0 + 34.0 + f64::from(title_width),
+            panel.y0 + 22.0,
+            panel.x0 + 68.0 + f64::from(title_width),
+            panel.y0 + 46.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[2],
+            None,
+            &RoundedRect::from_rect(f1_hint, 7.0),
+        );
+        let f1_size = theme.tokens.typography.scale.xs;
+        let (f1_width, f1_height) = text_renderer.measure("F1", f1_size, None);
+        text_renderer.draw_text_weighted(
+            scene,
+            "F1",
+            f1_size,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    f1_hint.center().x - f64::from(f1_width) / 2.0,
+                    f1_hint.center().y - f64::from(f1_height) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+            TextWeight::Semibold,
+        );
         text_renderer.draw_text(
             scene,
-            "Press F1 anywhere · Select a navigation shortcut below to change it",
+            "Press F1 anywhere to reopen this guide · Select a navigation keycap to change it",
             theme.tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 54.0).into()),
@@ -16711,7 +17383,7 @@ impl ShellOverlayHost {
                 &RoundedRect::from_rect(done.inflate(3.0, 3.0), 12.0),
             );
         }
-        let label_size = theme.tokens.typography.scale.xs;
+        let label_size = theme.tokens.typography.scale.sm;
         let (done_w, done_h) = text_renderer.measure("Done", label_size, None);
         text_renderer.draw_text_weighted(
             scene,
@@ -16791,7 +17463,7 @@ impl ShellOverlayHost {
                     scene,
                     "Hold Guide for desktop controls. Release it and every button goes back to your game.",
                     theme.tokens.typography.scale.sm,
-                    colors.text_dim,
+                    colors.text_primary,
                     transform.pre_translate((body.x0 + 104.0, body.y0 + 14.0).into()),
                     Some(f64_to_f32_lossy(body.width() - 104.0)),
                 );
@@ -16955,21 +17627,35 @@ impl ShellOverlayHost {
                     ),
                 ];
                 let compact = body.height() < 450.0;
-                let navigation_step = if compact { 48.0 } else { 50.0 };
+                let navigation_step = if compact { 41.0 } else { 44.0 };
+                let navigation_height = if compact { 154.0 } else { 168.0 };
+                let navigation_surface =
+                    Rect::new(body.x0, body.y0, body.x1, body.y0 + navigation_height);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.neutral[1],
+                    None,
+                    &RoundedRect::from_rect(navigation_surface, 14.0),
+                );
                 text_renderer.draw_text_weighted(
                     scene,
-                    "NAVIGATE & ARRANGE",
+                    "EDIT NAVIGATION SHORTCUTS",
                     theme.tokens.typography.scale.xs,
                     colors.text_dim,
-                    transform.pre_translate((body.x0, body.y0).into()),
+                    transform.pre_translate((body.x0 + 14.0, body.y0 + 11.0).into()),
                     None,
                     TextWeight::Semibold,
                 );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
                     let column = index % 2;
                     let row = index / 2;
-                    let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
-                    let y = body.y0 + 22.0 + usize_to_f64_lossy(row) * navigation_step;
+                    let column_width = (navigation_surface.width() - 36.0) / 2.0;
+                    let x = navigation_surface.x0
+                        + 14.0
+                        + usize_to_f64_lossy(column) * (column_width + 8.0);
+                    let y =
+                        navigation_surface.y0 + 31.0 + usize_to_f64_lossy(row) * navigation_step;
                     text_renderer.draw_text(
                         scene,
                         label,
@@ -16982,7 +17668,7 @@ impl ShellOverlayHost {
                     let hit_rects = InputHint::paint_keyboard_choice_at(
                         scene,
                         transform,
-                        Point::new(x, y + 26.0),
+                        Point::new(x, y + 18.0),
                         &binding(*previous),
                         &binding(*next),
                         platform,
@@ -17011,9 +17697,9 @@ impl ShellOverlayHost {
 
                     let reset = Rect::new(
                         hit_rects[1].x1 + 12.0,
-                        y + 26.0,
+                        y + 18.0,
                         hit_rects[1].x1 + 34.0,
-                        y + 48.0,
+                        y + 40.0,
                     );
                     let changed = actions.into_iter().any(|action| {
                         shortcuts.bindings.get(&action) != defaults.bindings.get(&action)
@@ -17061,10 +17747,10 @@ impl ShellOverlayHost {
                         self.shortcut_reset_rects.push((*previous, *next, reset));
                     }
                 }
-                let essentials_y = body.y0 + 22.0 + 3.0 * navigation_step + 6.0;
+                let essentials_y = navigation_surface.y1 + 12.0;
                 text_renderer.draw_text_weighted(
                     scene,
-                    "OPEN, FIND & RECOVER",
+                    "DESKTOP ESSENTIALS",
                     theme.tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((body.x0, essentials_y).into()),
@@ -17072,57 +17758,84 @@ impl ShellOverlayHost {
                     TextWeight::Semibold,
                 );
                 let references = shortcut_reference_rows(shortcuts);
-                let visible_references = references.as_slice();
-                let reference_columns = 4;
-                let reference_step = if compact { 37.0 } else { 41.0 };
-                let reference_offset = 18.0;
-                for (index, (label, chord)) in visible_references.iter().enumerate() {
-                    let reference_columns = reference_columns.max(1);
-                    let column = index.checked_rem(reference_columns).unwrap_or_default();
-                    let row = index.checked_div(reference_columns).unwrap_or_default();
-                    let cell_width = body.width() / usize_to_f64_lossy(reference_columns);
-                    let x = body.x0 + usize_to_f64_lossy(column) * cell_width;
-                    let y =
-                        essentials_y + reference_offset + usize_to_f64_lossy(row) * reference_step;
-                    text_renderer.draw_text(
-                        scene,
-                        label,
-                        theme.tokens.typography.scale.sm,
-                        colors.text_primary,
-                        transform.pre_translate((x, y).into()),
-                        Some(f64_to_f32_lossy(cell_width - 12.0)),
-                    );
-                    let chord_size = theme.tokens.typography.scale.sm;
-                    let (chord_width, chord_height) =
-                        text_renderer.measure(chord, chord_size, None);
-                    let pill = Rect::new(
+                let reference_columns = shortcut_reference_columns(body.width());
+                let reference_step = shortcut_reference_step(compact);
+                let reference_top = essentials_y + 18.0;
+                let reference_gap = 12.0;
+                let reference_width = (body.width()
+                    - reference_gap * usize_to_f64_lossy(reference_columns - 1))
+                    / usize_to_f64_lossy(reference_columns);
+                let reference_height = shortcut_reference_group_height(compact);
+                let group_titles = [
+                    "WINDOWS & WORKSPACES",
+                    "SEARCH & SYSTEM",
+                    "CAPTURE & DISPLAY",
+                ];
+                for (group_index, group_rows) in references.chunks(6).enumerate() {
+                    let x = body.x0
+                        + usize_to_f64_lossy(group_index) * (reference_width + reference_gap);
+                    let group = Rect::new(
                         x,
-                        y + 19.0,
-                        (x + f64::from(chord_width) + 22.0).min(x + cell_width - 12.0),
-                        y + 19.0 + f64::from(chord_height) + 10.0,
+                        reference_top,
+                        x + reference_width,
+                        reference_top + reference_height,
                     );
                     scene.fill(
                         Fill::NonZero,
                         transform,
-                        colors.neutral[2],
+                        colors.neutral[1],
                         None,
-                        &RoundedRect::from_rect(pill, 5.0),
+                        &RoundedRect::from_rect(group, 12.0),
                     );
                     text_renderer.draw_text_weighted(
                         scene,
-                        chord,
-                        chord_size,
-                        colors.text_primary,
-                        transform.pre_translate((pill.x0 + 7.0, pill.y0 + 5.0).into()),
-                        Some(f64_to_f32_lossy((pill.width() - 14.0).max(0.0))),
+                        group_titles[group_index],
+                        theme.tokens.typography.scale.xs,
+                        colors.text_dim,
+                        transform.pre_translate((group.x0 + 12.0, group.y0 + 10.0).into()),
+                        Some(f64_to_f32_lossy(group.width() - 24.0)),
                         TextWeight::Semibold,
                     );
+                    for (row_index, (label, chord)) in group_rows.iter().enumerate() {
+                        let entry_y =
+                            group.y0 + 29.0 + usize_to_f64_lossy(row_index) * reference_step;
+                        let chord_size = theme.tokens.typography.scale.xs;
+                        let (chord_width, chord_height) =
+                            text_renderer.measure(chord, chord_size, None);
+                        let pill_height = f64::from(chord_height) + 6.0;
+                        let pill = Rect::new(
+                            group.x0 + 12.0,
+                            entry_y + 13.0,
+                            (group.x0 + 28.0 + f64::from(chord_width)).min(group.x1 - 12.0),
+                            entry_y + 13.0 + pill_height,
+                        );
+                        text_renderer.draw_text(
+                            scene,
+                            label,
+                            chord_size,
+                            colors.text_primary,
+                            transform.pre_translate((group.x0 + 12.0, entry_y).into()),
+                            Some(f64_to_f32_lossy(group.width() - 24.0)),
+                        );
+                        scene.fill(
+                            Fill::NonZero,
+                            transform,
+                            colors.neutral[2],
+                            None,
+                            &RoundedRect::from_rect(pill, 5.0),
+                        );
+                        text_renderer.draw_text_weighted(
+                            scene,
+                            chord,
+                            chord_size,
+                            colors.text_primary,
+                            transform.pre_translate((pill.x0 + 6.0, pill.y0 + 3.0).into()),
+                            Some(f64_to_f32_lossy((pill.width() - 12.0).max(0.0))),
+                            TextWeight::Semibold,
+                        );
+                    }
                 }
-                let reference_rows = visible_references.len().div_ceil(reference_columns);
-                let pointer_y = essentials_y
-                    + reference_offset
-                    + usize_to_f64_lossy(reference_rows) * reference_step
-                    + 2.0;
+                let pointer_y = reference_top + reference_height + 4.0;
                 if pointer_y + 18.0 <= body.y1 {
                     scene.fill(
                         Fill::NonZero,
@@ -17135,7 +17848,7 @@ impl ShellOverlayHost {
                         scene,
                         "Pointer: click to focus · drag tabs or groups to reorder · drag an edge to resize",
                         theme.tokens.typography.scale.xs,
-                        colors.text_dim,
+                        colors.text_primary,
                         transform.pre_translate((body.x0, pointer_y + 14.0).into()),
                         Some(f64_to_f32_lossy(body.width())),
                     );
@@ -17146,7 +17859,7 @@ impl ShellOverlayHost {
                             scene,
                             "Vim mode · h j k l",
                             theme.tokens.typography.scale.xs,
-                            colors.text_dim,
+                            colors.text_primary,
                             transform.pre_translate((body.x0, pointer_y + 50.0).into()),
                             None,
                         );
@@ -19979,6 +20692,42 @@ impl ShellOverlayHost {
                     false,
                     false,
                 ),
+                DeviceFabricPaneRow::DisplayMirrorConsent(consent) => (
+                    "Allow display mirroring?".into(),
+                    format!(
+                        "{} requested a private view-only stream · allow once or decline",
+                        consent.source_label
+                    ),
+                    ui::icons::Icon::Monitor,
+                    false,
+                    true,
+                ),
+                DeviceFabricPaneRow::DisplayMirrorSource => (
+                    "Mirror this display".into(),
+                    "Select a certified video display below · approval required there".into(),
+                    ui::icons::Icon::Monitor,
+                    self.qs_selected_display_mirror,
+                    true,
+                ),
+                DeviceFabricPaneRow::DisplayMirrorStatus(status) => {
+                    use crate::shell::device_fabric_runtime::DisplayMirrorPhase;
+                    let detail = match status.phase {
+                        DisplayMirrorPhase::AwaitingConsent => "Waiting for approval · select to cancel",
+                        DisplayMirrorPhase::Starting => "Starting view-only stream · select to stop",
+                        DisplayMirrorPhase::Streaming => "View-only stream active · select to stop",
+                        DisplayMirrorPhase::Failed(failure) => {
+                            display_mirror_failure_label(failure)
+                        }
+                        DisplayMirrorPhase::Stopped => "Display mirroring stopped",
+                    };
+                    (
+                        format!("Mirror · {}", status.peer_label),
+                        detail.into(),
+                        ui::icons::Icon::Monitor,
+                        status.phase == DisplayMirrorPhase::Streaming,
+                        !matches!(status.phase, DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped),
+                    )
+                }
                 DeviceFabricPaneRow::RealtimeConsent(consent) => {
                     let source_label = view
                         .devices
@@ -20172,6 +20921,7 @@ impl ShellOverlayHost {
                             || self.qs_selected_gamepad.is_some()
                             || self.qs_selected_remote_audio.is_some()
                             || self.qs_selected_remote_capture.is_some()
+                            || (self.qs_selected_display_mirror && device.video_output)
                             || self.qs_selected_realtime.is_some()
                             || selected.is_some_and(|media| media.targets.contains(&device.id)));
                     let mut detail = if device.kind
@@ -20181,6 +20931,7 @@ impl ShellOverlayHost {
                         && self.qs_selected_gamepad.is_none()
                         && self.qs_selected_remote_audio.is_none()
                         && self.qs_selected_remote_capture.is_none()
+                        && !self.qs_selected_display_mirror
                         && self.qs_selected_realtime.is_none()
                         && self.qs_selected_media.is_none()
                     {
@@ -20190,6 +20941,15 @@ impl ShellOverlayHost {
                         && device.online
                     {
                         "Use selected controller here · target approves once".into()
+                    } else if self.qs_selected_display_mirror
+                        && !device.is_local
+                        && device.online
+                    {
+                        if device.video_output {
+                            "Mirror this display here · view-only · target approves once".into()
+                        } else {
+                            "This device cannot receive video".into()
+                        }
                     } else if let Some(kind) = self.qs_selected_remote_capture
                         && !device.is_local
                         && device.online
@@ -20255,6 +21015,7 @@ impl ShellOverlayHost {
                         | DeviceFabricPaneRow::CalibrationProposal(_)
                         | DeviceFabricPaneRow::RemoteAudioConsent(_)
                         | DeviceFabricPaneRow::RemoteCaptureConsent(_)
+                        | DeviceFabricPaneRow::DisplayMirrorConsent(_)
                         | DeviceFabricPaneRow::RealtimeConsent(_)
                         | DeviceFabricPaneRow::GamepadAuthorization(_)
                 ) {
@@ -20306,6 +21067,7 @@ impl ShellOverlayHost {
                     DeviceFabricPaneRow::CalibrationProposal(_)
                         | DeviceFabricPaneRow::RemoteAudioConsent(_)
                         | DeviceFabricPaneRow::RemoteCaptureConsent(_)
+                        | DeviceFabricPaneRow::DisplayMirrorConsent(_)
                         | DeviceFabricPaneRow::RealtimeConsent(_)
                         | DeviceFabricPaneRow::GamepadAuthorization(_)
                 )
@@ -20329,6 +21091,9 @@ impl ShellOverlayHost {
                             }
                             DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
                                 "Allow this remote input once"
+                            }
+                            DeviceFabricPaneRow::DisplayMirrorConsent(_) => {
+                                "Allow display mirroring once"
                             }
                             DeviceFabricPaneRow::GamepadAuthorization(_) => {
                                 "Allow this controller once"
@@ -20358,6 +21123,9 @@ impl ShellOverlayHost {
                             }
                             DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
                                 "Decline this remote input"
+                            }
+                            DeviceFabricPaneRow::DisplayMirrorConsent(_) => {
+                                "Decline display mirroring"
                             }
                             DeviceFabricPaneRow::GamepadAuthorization(_) => {
                                 "Decline this controller"
@@ -20689,59 +21457,16 @@ impl ShellOverlayHost {
                 p.connecting = true;
                 p.error = None;
             }
+            st.quick_settings.wifi_joining = Some(ssid.clone());
             st.bump();
         }
-        let result = self.qs_actions.connect_wifi(&ssid, Some(&password));
-        let share_result = if result.is_ok() {
-            self.wifi_secret_bridge.as_ref().map(|bridge| {
-                bridge(WifiSecretAction::Share {
-                    ssid: ssid.clone(),
-                    password: password.clone(),
-                })
-            })
-        } else {
-            None
-        };
-        let mut st = chrome.borrow_mut();
-        match result {
-            Ok(()) => {
-                st.quick_settings.wifi_password = None;
-                // Mark the joined row directly — the next poll is on the
-                // popover's next open.
-                for n in &mut st.quick_settings.wifi_networks {
-                    n.connected = n.ssid == ssid;
-                }
-                st.quick_settings.wifi = true;
-                st.push_notification(
-                    format!("Connected to {ssid}"),
-                    if share_result.as_ref().is_some_and(Result::is_err) {
-                        "Saved on this device, but encrypted sharing is temporarily unavailable."
-                    } else if share_result.is_some() {
-                        "Saved and encrypted separately for each of your certified devices."
-                    } else {
-                        "This network is saved; the machine will rejoin it automatically."
-                    },
-                );
-            }
-            Err(e) => {
-                tracing::warn!(target: "tilo::os_actions", op = "connect_wifi", error = %e, "wifi join failed");
-                if let Some(p) = st.quick_settings.wifi_password.as_mut() {
-                    p.connecting = false;
-                    // Kept (not cleared) and selected, so a typo is a
-                    // correction and a fresh keystroke replaces it.
-                    p.selection.anchor = 0;
-                    p.selection.cursor = p.password.len();
-                    p.error = Some("Couldn't join. Check the password.".to_string());
-                }
-            }
-        }
-        st.bump();
+        self.qs_refresh.kick_wifi_join(ssid, Some(password), false);
     }
 
     /// Use a credential from another certified device without ever putting it
     /// into the visible password editor. A rejected saved secret leaves the
     /// ordinary prompt in place so the person can correct it.
-    fn try_connect_with_shared_wifi_password(&self) -> bool {
+    fn try_connect_with_shared_wifi_password(&mut self) -> bool {
         let (Some(chrome), Some(bridge)) = (self.chrome.clone(), self.wifi_secret_bridge.as_ref())
         else {
             return false;
@@ -20762,31 +21487,12 @@ impl ShellOverlayHost {
             prompt.connecting = true;
             prompt.error = None;
         }
-        let result = self.qs_actions.connect_wifi(&ssid, Some(&password));
-        let mut state = chrome.borrow_mut();
-        match result {
-            Ok(()) => {
-                state.quick_settings.wifi_password = None;
-                for network in &mut state.quick_settings.wifi_networks {
-                    network.connected = network.ssid == ssid;
-                }
-                state.quick_settings.wifi = true;
-                state.push_notification(
-                    format!("Connected to {ssid}"),
-                    "Used the encrypted credential from one of your certified devices.",
-                );
-            }
-            Err(error) => {
-                tracing::warn!(target: "tilo::os_actions", op = "connect_wifi", error = %error, "shared wifi credential was rejected");
-                if let Some(prompt) = state.quick_settings.wifi_password.as_mut() {
-                    prompt.connecting = false;
-                    prompt.error = Some(
-                        "The saved password no longer works. Enter the current password.".into(),
-                    );
-                }
-            }
+        {
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.wifi_joining = Some(ssid.clone());
+            state.bump();
         }
-        state.bump();
+        self.qs_refresh.kick_wifi_join(ssid, Some(password), true);
         true
     }
 
@@ -21779,6 +22485,24 @@ mod wifi_password_tests {
         Key::Character(s.into())
     }
 
+    fn finish_join(
+        host: &mut ShellOverlayHost,
+        chrome: &crate::shell::chrome_state::Chrome,
+        password: Option<&str>,
+        shared_credential: bool,
+        result: Result<(), &str>,
+    ) {
+        host.apply_wifi_join_result(
+            &mut chrome.borrow_mut(),
+            crate::shell::qs_refresh::WifiJoinResult {
+                ssid: "Cafe WiFi".into(),
+                password: password.map(str::to_owned),
+                shared_credential,
+                result: result.map_err(str::to_owned),
+            },
+        );
+    }
+
     #[test]
     fn a_protected_network_asks_for_a_password_instead_of_failing_silently() {
         let (mut h, chrome, rec) = host_on_wifi_pane(false);
@@ -21826,19 +22550,29 @@ mod wifi_password_tests {
         reason = "the borrow feeds both assertions right after; ending it earlier would mean \
                   cloning test fixture data for no real gain"
     )]
-    fn enter_submits_the_typed_password_to_the_join() {
+    fn enter_starts_a_nonblocking_password_join_and_success_finishes_it() {
         let (mut h, chrome, rec) = host_on_wifi_pane(false);
         h.begin_wifi_password("Cafe WiFi");
         for c in ["p", "w", "1"] {
             press(&mut h, &ch(c));
         }
         press(&mut h, &Key::Named(NamedKey::Enter));
-        assert_eq!(
-            rec.attempts.borrow().as_slice(),
-            [("Cafe WiFi".to_string(), Some("pw1".to_string()))],
-            "the passphrase reaches nmcli — this is the whole point of the field"
+        assert!(
+            rec.attempts.borrow().is_empty(),
+            "the input thread never calls nmcli"
         );
+        assert!(
+            chrome
+                .borrow()
+                .quick_settings
+                .wifi_password
+                .as_ref()
+                .is_some_and(|prompt| prompt.connecting),
+            "the prompt immediately exposes progress"
+        );
+        finish_join(&mut h, &chrome, Some("pw1"), false, Ok(()));
         let st = chrome.borrow();
+        assert!(st.quick_settings.wifi_joining.is_none());
         assert!(
             st.quick_settings.wifi_password.is_none(),
             "a successful join closes the prompt"
@@ -21854,7 +22588,7 @@ mod wifi_password_tests {
 
     #[test]
     fn successful_join_shares_the_password_through_the_secret_bridge() {
-        let (mut host, _chrome, _) = host_on_wifi_pane(false);
+        let (mut host, chrome, _) = host_on_wifi_pane(false);
         let shared = std::rc::Rc::new(RefCell::new(Vec::new()));
         let observed = shared.clone();
         host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| match action {
@@ -21869,6 +22603,7 @@ mod wifi_password_tests {
             press(&mut host, &ch(character));
         }
         press(&mut host, &Key::Named(NamedKey::Enter));
+        finish_join(&mut host, &chrome, Some("pw1"), false, Ok(()));
         assert_eq!(
             shared.borrow().as_slice(),
             [("Cafe WiFi".to_string(), "pw1".to_string())]
@@ -21886,14 +22621,25 @@ mod wifi_password_tests {
         }));
         host.begin_wifi_password("Cafe WiFi");
         assert!(host.try_connect_with_shared_wifi_password());
-        assert_eq!(
-            recorder.attempts.borrow().as_slice(),
-            [(
-                "Cafe WiFi".to_string(),
-                Some("from-another-device".to_string())
-            )]
+        assert!(recorder.attempts.borrow().is_empty());
+        assert!(
+            chrome
+                .borrow()
+                .quick_settings
+                .wifi_password
+                .as_ref()
+                .unwrap()
+                .connecting
+        );
+        finish_join(
+            &mut host,
+            &chrome,
+            Some("from-another-device"),
+            true,
+            Ok(()),
         );
         assert!(chrome.borrow().quick_settings.wifi_password.is_none());
+        assert!(chrome.borrow().quick_settings.wifi_joining.is_none());
     }
 
     #[test]
@@ -21909,12 +22655,14 @@ mod wifi_password_tests {
             press(&mut h, &ch(c));
         }
         press(&mut h, &Key::Named(NamedKey::Enter));
+        finish_join(&mut h, &chrome, Some("bad"), false, Err("rejected"));
         let st = chrome.borrow();
         let p = st
             .quick_settings
             .wifi_password
             .as_ref()
             .expect("the prompt survives a rejection");
+        assert!(st.quick_settings.wifi_joining.is_none());
         assert!(!p.connecting, "the attempt is over");
         assert!(p.error.is_some(), "and the reason is on screen");
         assert_eq!(p.password, "bad", "a typo is a correction, not a retype");
@@ -21931,6 +22679,7 @@ mod wifi_password_tests {
         h.begin_wifi_password("Cafe WiFi");
         press(&mut h, &ch("x"));
         press(&mut h, &Key::Named(NamedKey::Enter));
+        finish_join(&mut h, &chrome, Some("x"), false, Err("rejected"));
         assert!(
             chrome
                 .borrow()
@@ -22015,6 +22764,108 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    fn workspace_rename_owns_reserved_chords_in_production_dispatch() {
+        let (mut host, chrome) = host_with_chrome();
+        {
+            let mut state = chrome.borrow_mut();
+            state.editing_workspace_name = Some("Draft name".into());
+            state.editing_workspace_name_selection =
+                ui::text_selection::Selection::collapsed("Draft name".len());
+        }
+        let before = chrome.borrow().tree().clone();
+        let modifiers = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+        let state = AutoCommit::new();
+        for key in ["w", "k", "t"] {
+            let mut handled = false;
+            assert!(host.handle_shell_keyboard_event(
+                &Key::Character(key.into()),
+                modifiers,
+                false,
+                &state,
+                &automerge::ROOT,
+                &mut handled,
+            ));
+            assert!(handled);
+            assert!(!host.palette_visible, "Super+{key} must not open a palette");
+            assert!(chrome.borrow().editing_workspace_name.is_some());
+        }
+        assert_eq!(
+            format!("{:?}", chrome.borrow().tree().workspaces),
+            format!("{:?}", before.workspaces)
+        );
+        assert_eq!(chrome.borrow().tree().active_strip, before.active_strip);
+    }
+
+    #[test]
+    fn quick_settings_owns_reserved_chords_but_keeps_f1_and_escape_paths() {
+        let (mut host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.quick_settings = true;
+        let before = chrome.borrow().tree().clone();
+        let modifiers = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+        let state = AutoCommit::new();
+        for key in ["w", "k", "t"] {
+            let mut handled = false;
+            assert!(host.handle_shell_keyboard_event(
+                &Key::Character(key.into()),
+                modifiers,
+                false,
+                &state,
+                &automerge::ROOT,
+                &mut handled,
+            ));
+            assert!(handled);
+            assert!(
+                !host.palette_visible,
+                "Super+{key} must not escape Quick Settings"
+            );
+            assert!(chrome.borrow().overlays.quick_settings);
+        }
+        assert_eq!(
+            format!("{:?}", chrome.borrow().tree().workspaces),
+            format!("{:?}", before.workspaces)
+        );
+        assert_eq!(chrome.borrow().tree().active_strip, before.active_strip);
+
+        let mut handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::F1),
+            winit::event::Modifiers::default(),
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(chrome.borrow().overlays.quick_settings);
+        assert!(chrome.borrow().overlays.shortcut_help);
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Escape),
+            winit::event::Modifiers::default(),
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(!chrome.borrow().overlays.shortcut_help);
+        assert!(chrome.borrow().overlays.quick_settings);
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Escape),
+            winit::event::Modifiers::default(),
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(!chrome.borrow().overlays.quick_settings);
+    }
+
+    #[test]
     fn inline_status_editor_commits_and_publishes_without_leaking_keys_to_apps() {
         let (mut host, _) = host_with_chrome();
         let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -22049,6 +22900,156 @@ mod palette_dispatch_tests {
             published.borrow().as_slice(),
             &[Some("Preparing Q2 review".into())]
         );
+    }
+
+    #[test]
+    fn inline_status_editor_uses_full_selection_and_navigation_contract() {
+        let (mut host, _) = host_with_chrome();
+        host.status_editing = true;
+        host.status_draft = "alpha beta".into();
+        host.status_selection = ui::text_selection::Selection::collapsed(host.status_draft.len());
+        let state = AutoCommit::new();
+        let mut handled = false;
+        let ctrl_shift = winit::event::Modifiers::from(
+            winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
+        );
+
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::ArrowLeft),
+            ctrl_shift,
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert_eq!(
+            host.status_selection.range(),
+            6..10,
+            "Ctrl+Shift+Left selects the previous Unicode word"
+        );
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Character("x".into()),
+            winit::event::Modifiers::default(),
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(host.status_draft, "alpha x");
+        assert_eq!(
+            host.status_selection,
+            ui::text_selection::Selection::collapsed(7)
+        );
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Character("a".into()),
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(host.status_selection.range(), 0..7);
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Backspace),
+            winit::event::Modifiers::default(),
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(host.status_draft.is_empty());
+        assert_eq!(
+            host.status_selection,
+            ui::text_selection::Selection::collapsed(0)
+        );
+    }
+
+    #[test]
+    fn inline_status_editor_repeats_navigation_and_deletion_but_not_text_insertion() {
+        let (mut host, _) = host_with_chrome();
+        host.status_editing = true;
+        host.status_draft = "abcd".into();
+        host.status_selection = ui::text_selection::Selection::collapsed(4);
+        let state = AutoCommit::new();
+        let modifiers = winit::event::Modifiers::default();
+        let mut handled = false;
+
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Backspace),
+            modifiers,
+            true,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(host.status_draft, "abc");
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Character("z".into()),
+            modifiers,
+            true,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(
+            host.status_draft, "abc",
+            "a synthetic repeat press cannot duplicate printable text"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn semantic_status_requests_use_the_live_presence_publisher_and_privacy_state() {
+        let settings = tempfile::tempdir().expect("isolated settings directory");
+        let old_config = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: the process_env serial group excludes concurrent env users.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", settings.path()) };
+        let (mut host, chrome) = host_with_chrome();
+        let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let capture = std::rc::Rc::clone(&published);
+        host.set_status_presence_bridge(std::rc::Rc::new(move |_room, status| {
+            capture.borrow_mut().push(status.map(|status| status.text));
+        }));
+        {
+            let mut state = chrome.borrow_mut();
+            state.push_presence_request(
+                crate::shell::chrome_state::PresenceRequest::SetManualStatus(Some(
+                    "Reviewing the release".into(),
+                )),
+            );
+            state.push_presence_request(
+                crate::shell::chrome_state::PresenceRequest::SetStatusSharing(
+                    ui::StatusSharing::Off,
+                ),
+            );
+        }
+
+        assert!(host.pump_presence_requests());
+
+        assert_eq!(host.local_status.as_deref(), Some("Reviewing the release"));
+        assert_eq!(host.status_sharing, ui::StatusSharing::Off);
+        assert_eq!(
+            published.borrow().as_slice(),
+            &[Some("Reviewing the release".into()), None],
+            "the same publisher first receives the manual status and then its privacy revocation"
+        );
+        assert!(chrome.borrow_mut().take_presence_requests().is_empty());
+        // SAFETY: restore the serialised process environment.
+        unsafe {
+            match old_config {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
     }
 
     #[test]
@@ -22142,21 +23143,25 @@ mod palette_dispatch_tests {
     }
 
     #[test]
-    fn palette_panel_routes_replace_the_other_top_right_panel() {
+    fn direct_quick_settings_open_reconciles_focus_before_the_first_draw() {
         let (mut host, chrome) = host_with_chrome();
-        chrome.borrow_mut().open_workspace_settings(WsTab::General);
 
-        assert!(host.dispatch_palette_command("quick-settings.open"));
-        {
-            let state = chrome.borrow();
-            assert!(state.overlays.quick_settings);
-            assert!(!state.overlays.ws_settings);
-        }
+        // Simulate a retained selection from the previous visit, then open
+        // through ChromeState as top-bar, accessibility and deep-link paths
+        // do. The first key may arrive before any rendering pass.
+        chrome.borrow_mut().overlays.quick_settings = true;
+        host.reconcile_quick_settings_open_edge(true);
+        assert!(
+            host.qs_root
+                .focus_next(&chrome.borrow().quick_settings, false)
+        );
 
-        assert!(host.dispatch_palette_command("settings.open"));
-        let state = chrome.borrow();
-        assert!(state.overlays.ws_settings);
-        assert!(!state.overlays.quick_settings);
+        assert_eq!(
+            host.qs_root
+                .activate_focused(host.rect, &mut chrome.borrow_mut().quick_settings),
+            RootAction::LayoutChanged,
+            "the first Tab after every direct open must select Edit"
+        );
     }
 
     #[test]
@@ -22361,6 +23366,31 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    fn escape_leaves_resource_search_scope_before_closing_palette() {
+        let (mut host, chrome) = host_with_chrome();
+        host.palette_visible = true;
+        chrome.borrow_mut().search_resource_scope =
+            Some(crate::shell::chrome_state::SearchResourceScope {
+                peer_id: 9,
+                cluster_id: "room".into(),
+                app_id: "dev.tilo.reader".into(),
+                resource: "book:42".into(),
+                label: "Book of Tilo".into(),
+            });
+
+        let mut handled = false;
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(handled);
+        assert!(host.palette_visible, "Back keeps search open");
+        assert!(chrome.borrow().search_resource_scope.is_none());
+
+        handled = false;
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(handled);
+        assert!(!host.palette_visible, "Escape at the root closes search");
+    }
+
+    #[test]
     fn escape_cancels_wifi_password_before_leaving_wifi_page() {
         let (mut host, chrome) = host_with_chrome();
         {
@@ -22407,7 +23437,6 @@ mod palette_dispatch_tests {
             "Overview:Super+Tab",
             "Lock:Super+L",
             "Quick Settings:Super+Q",
-            "Shortcut guide:F1  /  Super+/",
             "Workspace wheel:Super+S",
             "Wireless display:Super+P",
             "Capture screenshot:Super+Shift+S",
@@ -22436,20 +23465,35 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    fn shortcut_reference_does_not_repeat_the_open_guide_action() {
+        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        assert_eq!(rows.len(), 18);
+        assert!(rows.iter().all(|(label, _)| *label != "Shortcut guide"));
+    }
+
+    #[test]
+    fn shortcut_reference_groups_keep_a_consistent_responsive_rhythm() {
+        assert_eq!(shortcut_reference_columns(688.0), 3);
+        assert_eq!(shortcut_reference_columns(912.0), 3);
+        assert_eq!(shortcut_reference_step(true), 31.0);
+        assert_eq!(shortcut_reference_step(false), 34.0);
+        assert!(shortcut_reference_group_height(true) >= 6.0 * shortcut_reference_step(true));
+        assert!(shortcut_reference_group_height(false) >= 6.0 * shortcut_reference_step(false));
+    }
+
+    #[test]
     fn compact_shortcut_reference_keeps_the_complete_action_set_visible() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
-        let body_height = 422.0;
-        let essentials_y = 22.0 + 3.0 * 48.0 + 6.0;
-        let reference_offset = 18.0;
-        let reference_step = 37.0;
-        let final_row = rows.len().div_ceil(4).saturating_sub(1);
-        let final_pill_bottom =
-            essentials_y + reference_offset + usize_to_f64_lossy(final_row) * reference_step + 35.0;
+        let body_height = 426.0;
+        let navigation_height = 154.0;
+        let essentials_y = navigation_height + 12.0;
+        let reference_top = essentials_y + 18.0;
+        let final_pill_bottom = reference_top + 29.0 + 5.0 * shortcut_reference_step(true) + 31.0;
 
         assert_eq!(
             rows.len(),
-            19,
-            "the guide must retain every documented desktop action"
+            18,
+            "the guide must retain every documented desktop action without repeating itself"
         );
         assert!(
             final_pill_bottom <= body_height,
@@ -22469,17 +23513,28 @@ mod palette_dispatch_tests {
     fn compact_shortcut_recovery_actions_fit_their_cells() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         let mut renderer = TextRenderer::new();
-        let chord_size = Theme::dark().tokens.typography.scale.sm;
+        let chord_size = Theme::dark().tokens.typography.scale.xs;
         // An 800-wide viewport yields a 736-wide panel and 688-wide body. The
-        // compact guide uses four columns without truncating key labels.
-        let available_text_width = 688.0 / 4.0 - 26.0;
+        // compact guide uses three semantic columns with quiet key pills.
+        let columns = shortcut_reference_columns(688.0);
+        assert_eq!(columns, 3);
+        let available_text_width = (688.0 - 12.0 * 2.0) / 3.0 - 24.0;
         for (_, chord) in rows {
             let (width, _) = renderer.measure(&chord, chord_size, None);
             assert!(
-                f64::from(width) <= available_text_width,
+                f64::from(width) + 16.0 <= available_text_width,
                 "{chord:?} must not clip inside the compact guide's key pill"
             );
         }
+    }
+
+    #[test]
+    fn shortcut_reference_columns_stay_semantically_grouped() {
+        assert_eq!(shortcut_reference_columns(688.0), 3);
+        assert_eq!(shortcut_reference_columns(912.0), 3);
+        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        assert_eq!(rows.len(), 18);
+        assert!(rows.chunks(6).all(|group| group.len() == 6));
     }
 
     #[test]
@@ -22585,7 +23640,7 @@ mod palette_dispatch_tests {
         assert!(description.contains("workspaces with"));
         assert!(description.contains("move groups with"));
         assert!(description.contains("Screenshot: Print Screen"));
-        assert!(description.contains("Shortcut guide: F1  /  Super+/"));
+        assert!(!description.contains("Shortcut guide:"));
     }
 
     #[test]
@@ -22610,10 +23665,10 @@ mod palette_dispatch_tests {
             .shortcut_config
             .bindings
             .get(&ShortcutAction::ShortcutHelp)
-            .cloned()
             .expect("default global help binding");
-        let key = Key::Character(chord.key.into());
-        let modifiers = Modifiers::from(ModifiersState::SUPER);
+        assert_eq!(chord.display(), "Super+Shift+/");
+        let key = Key::Character("?".into());
+        let modifiers = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
         handled = false;
         assert!(host.handle_shell_keyboard_event(
             &key,
@@ -22756,36 +23811,6 @@ mod palette_dispatch_tests {
         );
     }
 
-    #[test]
-    fn dispatch_overview_toggle_flips_overlay_and_closes_palette() {
-        let (mut h, chrome) = host_with_chrome();
-        h.palette_visible = true;
-        assert!(h.dispatch_palette_command("overview.toggle"));
-        assert!(
-            chrome.borrow().overlays.overview,
-            "overview overlay must be on after dispatch"
-        );
-        assert!(!h.palette_visible, "palette must close after dispatch");
-    }
-
-    #[test]
-    fn dispatch_settings_open_raises_ws_settings_flag() {
-        let (mut h, chrome) = host_with_chrome();
-        h.palette_visible = true;
-        assert!(h.dispatch_palette_command("settings.open"));
-        assert!(chrome.borrow().overlays.ws_settings);
-        assert!(!h.palette_visible);
-    }
-
-    #[test]
-    fn dispatch_quick_settings_open_raises_quick_settings_flag() {
-        let (mut h, chrome) = host_with_chrome();
-        h.palette_visible = true;
-        assert!(h.dispatch_palette_command("quick-settings.open"));
-        assert!(chrome.borrow().overlays.quick_settings);
-        assert!(!h.palette_visible);
-    }
-
     #[allow(
         clippy::items_after_statements,
         reason = "the local test helper is deliberately introduced beside the scenario that exercises it"
@@ -22892,88 +23917,11 @@ mod palette_dispatch_tests {
     }
 
     #[test]
-    fn dispatch_unknown_command_still_closes_palette() {
-        let (mut h, _chrome) = host_with_chrome();
-        h.palette_visible = true;
-        assert!(!h.dispatch_palette_command("does.not.exist"));
-        assert!(
-            !h.palette_visible,
-            "palette should close even for unknown ids so no stale overlay stays up"
-        );
-    }
-
-    #[test]
-    fn dispatch_search_open_is_noop_but_closes_palette() {
-        let (mut h, chrome) = host_with_chrome();
-        h.palette_visible = true;
-        let before = chrome.borrow().overlays;
-        assert!(h.dispatch_palette_command("search.open"));
-        assert_eq!(
-            chrome.borrow().overlays,
-            before,
-            "search.open should not mutate overlay flags"
-        );
-        assert!(!h.palette_visible);
-    }
-
-    /// `peer.invite` / `peer.connect` must not register as known
-    /// commands when the peer-sync flag is off — defence-in-depth in
-    /// case a stale row lingers across a flag toggle.
-    #[test]
-    fn peer_sync_palette_ids_ignored_when_flag_off() {
-        let (mut h, _chrome) = host_with_chrome();
-        assert!(!h.peer_sync_enabled());
-        assert!(!h.dispatch_palette_command("peer.invite"));
-        assert!(!h.dispatch_palette_command("peer.connect"));
-        assert!(
-            h.take_peer_sync_actions().is_empty(),
-            "no actions should leak when flag is off"
-        );
-    }
-
-    #[test]
-    fn peer_sync_invite_enqueues_action_when_flag_on() {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let chrome = ChromeState::new(tree);
-        let mut h = ShellOverlayHost::new(Box::new(Container::new()))
-            .with_chrome(chrome)
-            .with_peer_sync_enabled(true);
-        assert!(h.peer_sync_enabled());
-        h.palette_visible = true;
-        assert!(h.dispatch_palette_command("peer.invite"));
-        assert!(!h.palette_visible, "palette must close after dispatch");
-        let actions = h.take_peer_sync_actions();
-        assert_eq!(actions, vec![PeerSyncAction::IssueInvite]);
-        // Drain is destructive; second call returns empty.
-        assert!(h.take_peer_sync_actions().is_empty());
-    }
-
-    #[test]
-    fn peer_sync_connect_enqueues_action_when_flag_on() {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let chrome = ChromeState::new(tree);
-        let mut h = ShellOverlayHost::new(Box::new(Container::new()))
-            .with_chrome(chrome)
-            .with_peer_sync_enabled(true);
-        h.palette_visible = true;
-        assert!(h.dispatch_palette_command("peer.connect"));
-        assert!(!h.palette_visible);
-        assert_eq!(
-            h.take_peer_sync_actions(),
-            vec![PeerSyncAction::PromptConnect]
-        );
-    }
-
-    #[test]
     fn with_peer_sync_enabled_is_idempotent() {
         let host = ShellOverlayHost::new(Box::new(Container::new()))
             .with_peer_sync_enabled(true)
             .with_peer_sync_enabled(true);
-        // No entry-count API, so proven indirectly: invoking a peer-sync id
-        // twice must still dispatch exactly one action, no panic.
-        let mut h = host.with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
-        assert!(h.dispatch_palette_command("peer.invite"));
-        assert_eq!(h.take_peer_sync_actions().len(), 1);
+        assert!(host.peer_sync_enabled());
     }
 
     #[test]
@@ -22988,7 +23936,6 @@ mod palette_dispatch_tests {
 
         assert!(host.peer_sync_enabled());
         assert!(chrome.borrow().peer_sync_enabled);
-        assert!(host.dispatch_palette_command("peer.invite"));
     }
 
     // Proves both halves of the invite-token crossing (mint → clipboard
@@ -23963,6 +24910,7 @@ mod overlay_event_absorb_tests {
                 id: "directory\u{1f}7\u{1f}r1\u{1f}code.project\u{1f}open".into(),
                 title: "Open project workspace".into(),
                 subtitle: Some("Example project · Code Editor".into()),
+                badge: None,
                 score: 100,
                 params: Vec::new(),
                 contract: Some(tilo_actions::ActionContract::view()),
@@ -23970,6 +24918,61 @@ mod overlay_event_absorb_tests {
                 on_invoke: None,
                 on_begin_invoke: None,
             }]
+        }
+    }
+
+    /// A synchronous two-source app provider for chip-routing tests. The
+    /// production registry invokes it through the same `wanted` kinds that
+    /// reach the real Applications and Host Applications providers.
+    struct AppSourceFilterFixtureProvider;
+
+    impl crate::shell::search::SearchProvider for AppSourceFilterFixtureProvider {
+        fn id(&self) -> &'static str {
+            "app-source-filter-fixture"
+        }
+
+        fn name(&self) -> &'static str {
+            "App source fixture"
+        }
+
+        fn resource_kinds(&self) -> &[crate::shell::search::ResourceKind] {
+            const KINDS: [crate::shell::search::ResourceKind; 2] = [
+                crate::shell::search::ResourceKind::Application,
+                crate::shell::search::ResourceKind::HostApplication,
+            ];
+            &KINDS
+        }
+
+        fn query(
+            &self,
+            context: crate::shell::search::SearchContext<'_>,
+        ) -> Vec<crate::shell::search::SearchResult> {
+            use crate::shell::search::{ResourceKind, SearchResult};
+
+            let mut rows = Vec::new();
+            if context.wanted.contains(&ResourceKind::Application) {
+                rows.push(SearchResult::nullary(
+                    ResourceKind::Application,
+                    self.id(),
+                    "fixture-tilo-app",
+                    "Open Tilo fixture",
+                    None,
+                    100,
+                    |_, _, _| {},
+                ));
+            }
+            if context.wanted.contains(&ResourceKind::HostApplication) {
+                rows.push(SearchResult::nullary(
+                    ResourceKind::HostApplication,
+                    self.id(),
+                    "fixture-host-app",
+                    "Open Host fixture",
+                    Some("System · unconfined host app".into()),
+                    100,
+                    |_, _, _| {},
+                ));
+            }
+            rows
         }
     }
 
@@ -24191,9 +25194,16 @@ mod overlay_event_absorb_tests {
     }
 
     fn pump(h: &mut AbsorbHarness, event: &WindowEvent) -> bool {
+        pump_with_modifiers(h, event, winit::event::Modifiers::default())
+    }
+
+    fn pump_with_modifiers(
+        h: &mut AbsorbHarness,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT.clone();
-        let modifiers = winit::event::Modifiers::default();
         let mut focus: Option<NodeId> = None;
         let mut handled = false;
         h.host.handle_event(
@@ -24208,6 +25218,30 @@ mod overlay_event_absorb_tests {
             &h.taffy,
         );
         handled
+    }
+
+    #[test]
+    fn first_local_key_releases_follow_without_also_running_a_shell_chord() {
+        let mut h = build_harness();
+        h.host.set_followed_peer(Some("ada".into()));
+        let before = h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .len();
+        let modifiers = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+
+        assert!(pump_with_modifiers(
+            &mut h,
+            &key_pressed(Key::Character("w".into())),
+            modifiers,
+        ));
+        assert!(h.host.followed_peer.is_none(), "the key exits Follow mode");
+        assert_eq!(
+            h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .len(),
+            before,
+            "the handoff key must not also close the focused tab"
+        );
     }
 
     #[allow(
@@ -24634,6 +25668,55 @@ mod overlay_event_absorb_tests {
         );
     }
 
+    /// A new-window picker deliberately begins with both launch sources so
+    /// either kind of program can be opened. Selecting Host Apps from that
+    /// state must replace the source selection, not toggle host rows off and
+    /// leave Applications lit (the live picker regression this covers).
+    #[test]
+    fn host_apps_chip_exclusively_filters_a_new_window_picker() {
+        use crate::shell::search::ResourceKind;
+
+        let mut h = build_harness();
+        h.host
+            .search_registry
+            .register(Rc::new(AppSourceFilterFixtureProvider));
+        h.host.active_kind_filter = app_kind_filter();
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+
+        let host_chip = h
+            .host
+            .search_registry
+            .registered_kinds()
+            .iter()
+            .position(|kind| *kind == ResourceKind::HostApplication)
+            .expect("Host Apps chip is registered");
+        paint_then_click(&mut h, |host| host.search_chip_rects[host_chip].center());
+
+        assert_eq!(
+            h.host.active_kind_filter,
+            vec![ResourceKind::HostApplication]
+        );
+        assert!(
+            h.host.search_results.iter().any(|row| {
+                row.provider_id == "app-source-filter-fixture" && row.id == "fixture-host-app"
+            }),
+            "the selected Host Apps source must reach the production palette query"
+        );
+        assert!(
+            h.host
+                .search_results
+                .iter()
+                .all(|row| row.kind == ResourceKind::HostApplication),
+            "Host Apps must not leave Tilo application rows visible: {:?}",
+            h.host
+                .search_results
+                .iter()
+                .map(|row| (&row.title, &row.kind))
+                .collect::<Vec<_>>()
+        );
+    }
+
     /// Same for the scope switch, which shares the band.
     #[test]
     fn clicking_a_scope_segment_switches_scope_without_dismissing() {
@@ -24642,6 +25725,32 @@ mod overlay_event_absorb_tests {
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
         h.chrome.borrow_mut().search_scope = SearchScope::Workspace;
+        h.chrome.borrow_mut().search_resource_scope =
+            Some(crate::shell::chrome_state::SearchResourceScope {
+                peer_id: 7,
+                cluster_id: "room:test".into(),
+                app_id: "dev.tilo.reader".into(),
+                resource: "book:42".into(),
+                label: "Book of Tilo".into(),
+            });
+        assert_eq!(
+            h.host.search_scope_pill_label(SearchScope::Workspace),
+            "‹ Book of Tilo",
+            "the selected place pill doubles as a visible resource breadcrumb"
+        );
+
+        paint_then_click(&mut h, |host| {
+            let workspace = host
+                .search_scope_list()
+                .iter()
+                .position(|scope| *scope == SearchScope::Workspace)
+                .expect("workspace scope segment");
+            host.search_scope_pill_rect(workspace).center()
+        });
+        assert!(
+            h.chrome.borrow().search_resource_scope.is_none(),
+            "clicking the visible breadcrumb leaves the nested resource scope"
+        );
 
         // The last segment is All (the scope list is
         // [ActiveApp?, Workspace, All]).
@@ -24655,6 +25764,10 @@ mod overlay_event_absorb_tests {
             h.chrome.borrow().search_scope,
             SearchScope::All,
             "clicking the trailing segment must select the All scope"
+        );
+        assert!(
+            h.chrome.borrow().search_resource_scope.is_none(),
+            "choosing a place leaves the nested resource scope"
         );
     }
 
@@ -24709,6 +25822,25 @@ mod overlay_event_absorb_tests {
             "content.handle_event must NOT see Released when QS absorbs it; log = {:?}",
             *log
         );
+    }
+
+    #[test]
+    fn quick_settings_power_tile_opens_the_power_menu_on_the_first_click() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.quick_settings = true;
+        h.host.force_quick_settings_settled();
+        paint(&mut h);
+        let power = h
+            .host
+            .quick_settings_semantic_rects()
+            .into_iter()
+            .find_map(|(name, rect)| (name == "quick_settings_power").then_some(rect))
+            .expect("the visible Power tile has semantic geometry");
+
+        let _ = pump(&mut h, &cursor_moved_at(power.center()));
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(h.host.power_menu.is_open());
+        assert!(!h.chrome.borrow().overlays.quick_settings);
     }
 
     #[test]
@@ -25143,8 +26275,10 @@ mod overlay_event_absorb_tests {
 
         let body_bottom = panel.y1 - 22.0;
         let body_top = panel.y0 + 88.0;
-        let essentials_y = body_top + 22.0 + 3.0 * 48.0 + 6.0;
-        let compact_final_pill_bottom = essentials_y + 18.0 + 4.0 * 37.0 + 35.0;
+        let navigation_height = 154.0;
+        let essentials_y = body_top + navigation_height + 12.0;
+        let compact_final_pill_bottom =
+            essentials_y + 18.0 + 29.0 + 5.0 * shortcut_reference_step(true) + 31.0;
         assert!(
             compact_final_pill_bottom <= body_bottom,
             "compact help's final recovery shortcut must fit without clipping: pill={compact_final_pill_bottom}, body={body_bottom}"
@@ -25156,7 +26290,7 @@ mod overlay_event_absorb_tests {
         let h = build_harness_sized(1280.0, 800.0);
         let panel = h.host.shortcut_help_panel_rect();
         assert_eq!(panel.width(), 960.0);
-        assert_eq!(panel.height(), 560.0);
+        assert_eq!(panel.height(), 600.0);
         assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
         assert!(panel.y0 >= 100.0 && panel.y1 <= 700.0);
     }
@@ -25221,6 +26355,24 @@ mod tests {
     use super::*;
     use crate::shell::chrome_state::{ChromeState, WsTab};
     use crate::shell::state::WorkspaceTree;
+
+    #[test]
+    fn screen_exposure_summary_never_hides_an_unknown_viewer_or_target() {
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        chrome.borrow_mut().set_active_exposures(vec![
+            crate::shell::chrome_state::ActiveExposure {
+                peer: 7,
+                surface: 42,
+                can_control: false,
+            },
+        ]);
+
+        let state = chrome.borrow();
+        let summary = collaborators_screen_exposure(&state).expect("live disclosure");
+        assert!(summary.contains(&crate::shell::state::session_handle(7)));
+        assert!(summary.contains("unidentified session"));
+        assert!(summary.contains("views surface 42"));
+    }
 
     #[test]
     fn unseen_activity_reveals_catch_up_only_on_workspace_entry() {
@@ -25840,6 +26992,48 @@ mod tests {
         assert!(
             h.host.synthetic_accessibility_rect(&[2, 0]).is_some(),
             "Quick Settings moves to child two when both earlier overlays are visible"
+        );
+    }
+
+    #[test]
+    fn power_menu_accessibility_paths_focus_and_activate_exact_rows() {
+        let mut h = build_harness();
+        h.host.power_menu.open();
+        h.host.power_menu.force_settled_for_visual_test();
+
+        let semantics = h.host.accessibility().expect("shell semantics");
+        assert_eq!(
+            semantics
+                .children
+                .first()
+                .and_then(|node| node.name.as_deref()),
+            Some("Session")
+        );
+        assert_eq!(
+            h.host.synthetic_accessibility_rect(&[0, 0]),
+            h.host
+                .power_menu_semantic_rects()
+                .into_iter()
+                .find(|(name, _)| *name == "power_lock")
+                .map(|(_, rect)| rect)
+        );
+        assert!(h.host.focus_synthetic_accessibility(&[0, 0]));
+        assert_eq!(
+            h.host.power_menu.key(
+                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                false
+            ),
+            PowerMenuClick::Lock
+        );
+
+        h.host.power_menu.open();
+        assert!(h.host.focus_synthetic_accessibility(&[0, 5]));
+        assert_eq!(
+            h.host.power_menu.key(
+                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                false
+            ),
+            PowerMenuClick::Execute(os_actions::SessionAction::ShutDown)
         );
     }
 
@@ -28526,6 +29720,41 @@ mod resync_strips_tests {
             .group_at_for_tests(strip_id, 0)
             .expect("the sibling window group remains");
         assert_eq!(group.active_tab_id(), 2);
+    }
+
+    #[test]
+    fn closing_focused_group_persists_focus_on_the_surviving_window() {
+        let (mut tree, strip_id, first_group) = one_group_seed();
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        let second_group = 202;
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .push(make_stub_group(second_group, "Second"));
+        tree.persist_path = Some(state_path.clone());
+        tree.seed_doc_from_cache();
+        tree.flush_to_disk();
+
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        assert!(host.close_tab_in_group(first_group, Some(1)));
+        host.tick_active_group_reconcile_for_tests();
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("focus hand-off is durable during the close fade");
+        assert_eq!(
+            restarted.active_group_for(strip_id),
+            Some(second_group),
+            "restart must focus the surviving sibling, not the group whose close animation began"
+        );
+        assert_eq!(
+            restarted.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .map(|group| group.id)
+                .collect::<Vec<_>>(),
+            vec![second_group],
+            "the close and its focus hand-off must reach disk as one observable state"
+        );
     }
 
     #[test]

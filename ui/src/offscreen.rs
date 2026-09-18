@@ -43,21 +43,17 @@ use vello::{AaConfig, AaSupport, FineDamageRect, RenderParams, Renderer, Rendere
 static SHARED_RENDER_CONTEXT: OnceLock<Arc<Mutex<RenderContext>>> = OnceLock::new();
 
 /// A complex first frame can make Vello grow its bump reservation more than
-/// once before it produces pixels. Keep enough room for several growths and
-/// one final confirmation pass, while remaining strictly bounded for
-/// intentionally transparent scenes.
-const RESILIENT_RENDER_ATTEMPTS: usize = 8;
+/// once before it produces pixels. Two growths plus two clean submissions
+/// covers the observed atlas warm-up path. Keeping this bounded at four is
+/// important on software Vulkan: a full-size screenshot is otherwise able to
+/// monopolize a CPU core for minutes before it can publish anything.
+const RESILIENT_RENDER_ATTEMPTS: usize = 4;
 
 /// Decide whether a screenshot submission is safe to return. A non-empty
 /// scene must fit twice in succession: the first clean submission may still
 /// be populating Vello's atlas after a bump allocation changed.
-const fn resilient_submission_accepted(
-    scene_is_empty: bool,
-    confirmed: bool,
-    overflowed: bool,
-    unexpectedly_transparent: bool,
-) -> bool {
-    !overflowed && !unexpectedly_transparent && (scene_is_empty || confirmed)
+const fn resilient_submission_accepted(scene_is_empty: bool, confirmed: bool) -> bool {
+    scene_is_empty || confirmed
 }
 
 /// Damage targets change by a handful of pixels during animation. Keeping
@@ -2008,6 +2004,16 @@ impl OffscreenRenderer {
     /// dropped, up to a strict attempt limit. This checks the renderer's GPU
     /// counters, so partially missing glyphs are caught as reliably as a
     /// completely transparent failed frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `Vello` cannot produce two consecutive valid submissions
+    /// within the bounded retry count. Returning partial screenshot pixels
+    /// would make visual-regression output silently untrustworthy.
+    #[allow(
+        clippy::panic,
+        reason = "exhausting bounded screenshot retries is a fatal renderer invariant"
+    )]
     pub fn render_resilient(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
         let mut confirmed = false;
         for _ in 0..RESILIENT_RENDER_ATTEMPTS {
@@ -2025,12 +2031,7 @@ impl OffscreenRenderer {
                 confirmed = false;
                 continue;
             }
-            if resilient_submission_accepted(
-                scene.encoding().is_empty(),
-                confirmed,
-                overflowed,
-                unexpectedly_transparent,
-            ) {
+            if resilient_submission_accepted(scene.encoding().is_empty(), confirmed) {
                 return pixels;
             }
             // A scene that just fit is still not sufficient: Vello can use
@@ -2051,6 +2052,25 @@ impl OffscreenRenderer {
         self.render_resilient(scene, Color::TRANSPARENT)
     }
 
+    /// Encode a complete PNG before publishing it. Screenshot tools are often
+    /// interrupted by a new iteration or CI timeout; writing the final path
+    /// directly made those interruptions look like successful, corrupt PNGs.
+    #[allow(
+        clippy::expect_used,
+        reason = "PNG encoding is internal to the explicitly infallible render_png debug helper"
+    )]
+    fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("png header");
+            writer.write_image_data(rgba).expect("png write");
+        }
+        bytes
+    }
+
     /// Convenience: render `scene` and write the result to `path` as a
     /// PNG. Creates parent dirs if they don't exist.
     ///
@@ -2066,17 +2086,11 @@ impl OffscreenRenderer {
     )]
     pub fn render_png<P: AsRef<Path>>(&mut self, scene: &Scene, bg: Color, path: P) {
         let rgba = self.render_resilient(scene, bg);
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let file = std::fs::File::create(path).expect("create png file");
-        let mut w = std::io::BufWriter::new(file);
-        let mut encoder = png::Encoder::new(&mut w, self.width, self.height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().expect("png header");
-        writer.write_image_data(&rgba).expect("png write");
+        atomic_file::write_creating_parent(
+            path.as_ref(),
+            &Self::encode_png(self.width, self.height, &rgba),
+        )
+        .expect("atomically publish png");
     }
 
     /// Sample the RGBA at `(x, y)` from a tight-packed buffer (4 *
@@ -2152,16 +2166,31 @@ mod tests {
     fn resilient_render_requires_a_second_clean_nonempty_submission() {
         // A first clean output may have warmed Vello's atlas, so only the
         // next clean submission may leave the offscreen renderer.
-        assert!(!resilient_submission_accepted(false, false, false, false));
-        assert!(resilient_submission_accepted(false, true, false, false));
-
-        // A new bump allocation or a blank nonempty scene invalidates a
-        // prior confirmation and must retry instead of emitting corruption.
-        assert!(!resilient_submission_accepted(false, true, true, false));
-        assert!(!resilient_submission_accepted(false, true, false, true));
+        assert!(!resilient_submission_accepted(false, false));
+        assert!(resilient_submission_accepted(false, true));
 
         // Intentionally empty transparent scenes need no atlas warm-up.
-        assert!(resilient_submission_accepted(true, false, false, false));
+        assert!(resilient_submission_accepted(true, false));
+    }
+
+    #[test]
+    fn png_publication_is_complete_and_decodable() {
+        let dir = tempfile::tempdir().expect("temporary screenshot directory");
+        let path = dir.path().join("frame.png");
+        let rgba = [0x12, 0x34, 0x56, 0xff];
+        atomic_file::write_creating_parent(&path, &OffscreenRenderer::encode_png(1, 1, &rgba))
+            .expect("publish png");
+
+        let file = std::fs::File::open(&path).expect("published png exists");
+        let mut reader = png::Decoder::new(std::io::BufReader::new(file))
+            .read_info()
+            .expect("published png header is complete");
+        let mut decoded = vec![0; reader.output_buffer_size().expect("decoded output size")];
+        let info = reader
+            .next_frame(&mut decoded)
+            .expect("published png image is complete");
+        assert_eq!((info.width, info.height), (1, 1));
+        assert_eq!(&decoded[..info.buffer_size()], &rgba);
     }
 
     #[test]

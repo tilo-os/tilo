@@ -25,6 +25,7 @@ exec "$@"
 EOF
 cat >"$work/bin/flock" <<'EOF'
 #!/usr/bin/env bash
+if [[ ${1:-} == --close ]]; then shift; fi
 shift
 exec "$@"
 EOF
@@ -40,6 +41,11 @@ case " $* " in
     printf 'tilo-dev-session-build-marker-v1\n' >"$CARGO_TARGET_DIR/debug/shell"
     chmod 700 "$CARGO_TARGET_DIR/debug/shell"
     ;;
+  *' -p launcher '* )
+    mkdir -p "$CARGO_TARGET_DIR/debug"
+    printf 'launcher\n' >"$CARGO_TARGET_DIR/debug/tilo-launcher"
+    chmod 700 "$CARGO_TARGET_DIR/debug/tilo-launcher"
+    ;;
 esac
 EOF
 cat >"$work/bin/sudo" <<'EOF'
@@ -50,6 +56,7 @@ EOF
 cat >"$work/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 printf 'ssh %s\n' "$*" >>"$FAST_LOOP_LOG"
+cat >>"$FAST_LOOP_LOG"
 exit 0
 EOF
 chmod 755 "$work/bin"/*
@@ -64,6 +71,7 @@ test -f "$repo_root/$target_rel/CACHEDIR.TAG"
 grep -Fqx 'Signature: 8a477f597d28d172789f06886806bc55' "$repo_root/$target_rel/CACHEDIR.TAG"
 grep -Fq -- '--features dev-session' "$log"
 grep -Fq -- '--bin shell' "$log"
+grep -Fq -- '-p launcher --bin tilo-launcher' "$log"
 ! grep -Fq -- '--no-default-features' "$log"
 grep -Fq 'SCCACHE_SERVER_PORT=' "$log"
 grep -Fq 'tilo-fedora44-' "$log"
@@ -99,12 +107,14 @@ env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
     TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
     TILO_VM_SSH_PORT=29999 TILO_VM_SSH_IDENTITY="$work/test_vm_key" "$tool" deploy shell
 grep -Fq -- "-i $work/test_vm_key" "$log"
+grep -Fq 'Tilo *developer* session entry point.' "$log"
+grep -Fq 'sudo install -m 0755 "$wrapper" /usr/libexec/tilo-session-dev' "$log"
 
 : >"$log"
 env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
     TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
     TILO_VM_SSH_PORT=29999 "$tool" verify
-grep -Fq '/proc/$pid/exe' "$log"
+grep -Fq 'tilo-dev-session/active' "$log"
 ! grep -Eq 'loginctl|systemctl|terminate-session|reboot|poweroff' "$log"
 
 rm -rf "$repo_root/$target_rel"

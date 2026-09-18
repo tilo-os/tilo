@@ -43,12 +43,14 @@ use winit::event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, WindowEv
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
+use crate::gesture::{DragSelect, Granularity};
 use crate::presence::PresenceCtx;
 use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use crate::text_edit::{EditCore, Motion};
 use crate::text_render::TextRenderer;
 use crate::text_selection::{
-    TextAffinity, TextPosition, clipboard_copy, clipboard_paste, word_boundaries,
+    TextAffinity, TextPosition, clipboard_copy, clipboard_paste, extend_span_drag, line_boundaries,
+    word_boundaries,
 };
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -59,8 +61,6 @@ use crate::widget::marks::{self, Mark, MarkSpan};
 const PAD: f64 = 12.0;
 /// Extra left indent for a bulleted block, leaving room for the marker.
 const BULLET_INDENT: f64 = 22.0;
-/// Double-click threshold.
-const MULTI_CLICK: Duration = Duration::from_millis(400);
 
 /// Narrows a screen-space `f64` (rect extent or coordinate) to the `f32`
 /// vello/`RichTextLayout` expect.
@@ -130,9 +130,9 @@ impl RichBlockStyle {
 /// A CRDT-native WYSIWYG rich-text editor. Bind it to a field key under the
 /// widget's sync path; it stores `{ text: Text, style }` there.
 ///
-/// `frame`, `layout_dirty`, `redraw`, `focused`, `is_dragging` and `dirty`
-/// are six independent state axes (frame chrome, layout cache, paint cache,
-/// focus, drag interaction, unsaved-edit) rather than one state machine, and
+/// `frame`, `layout_dirty`, `redraw`, `focused`, drag selection and `dirty`
+/// are independent state axes (frame chrome, layout cache, paint cache,
+/// focus, selection interaction, unsaved-edit) rather than one state machine, and
 /// every field is set through named struct-literal / method assignment, never
 /// a positional bool argument — so bundling them into a bitflags type would
 /// touch every read/write site in this widget for no behavioural change.
@@ -170,9 +170,8 @@ pub struct RichTextEditor {
     // --- interaction ---
     focused: bool,
     last_cursor: Point,
-    is_dragging: bool,
-    click_count: u32,
-    last_click_time: Option<Instant>,
+    drag_select: DragSelect,
+    drag_anchor_span: (usize, usize),
 
     // --- IME ---
     preedit: String,
@@ -206,9 +205,8 @@ impl RichTextEditor {
             redraw: true,
             focused: false,
             last_cursor: Point::ZERO,
-            is_dragging: false,
-            click_count: 0,
-            last_click_time: None,
+            drag_select: DragSelect::new(),
+            drag_anchor_span: (0, 0),
             preedit: String::new(),
             preedit_cursor: None,
             last_caret_width: 2.0,
@@ -762,6 +760,72 @@ impl RichTextEditor {
             _ => {}
         }
     }
+
+    fn handle_cursor_move(&mut self, point: Point, handled: &mut bool) {
+        self.last_cursor = point;
+        let Some(granularity) = self.drag_select.drag() else {
+            return;
+        };
+        let position = self.position_at(point);
+        let raw = position.byte;
+        let (anchor_start, anchor_end) = self.drag_anchor_span;
+        let (anchor, caret) = match granularity {
+            Granularity::Char => (anchor_start, raw),
+            Granularity::Word => {
+                let (start, end) = word_boundaries(&self.text, raw);
+                extend_span_drag(anchor_start, anchor_end, raw, start, end)
+            }
+            Granularity::Line => {
+                let (start, end) = line_boundaries(&self.text, raw);
+                extend_span_drag(anchor_start, anchor_end, raw, start, end)
+            }
+        };
+        self.core.set_selection(anchor, caret);
+        self.redraw = true;
+        *handled = true;
+    }
+
+    fn handle_primary_press(
+        &mut self,
+        shift: bool,
+        node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        handled: &mut bool,
+    ) {
+        let point = self.last_cursor;
+        if !self.rect.contains(point) {
+            return;
+        }
+        // Clear any in-flight preedit before hit-testing so byte offsets are
+        // in committed-text space.
+        self.preedit.clear();
+        let intent = self.drag_select.press(point, shift);
+        let position = self.position_at(point);
+        let byte = position.byte;
+        match intent.granularity {
+            Granularity::Char => self.core.place_position(position, intent.extend),
+            Granularity::Word => {
+                let (start, end) = word_boundaries(&self.text, byte);
+                self.core.set_selection(start, end);
+            }
+            Granularity::Line => {
+                let (start, end) = line_boundaries(&self.text, byte);
+                self.core.set_selection(start, end);
+            }
+        }
+        let selection = self.core.selection();
+        self.drag_anchor_span = if intent.granularity == Granularity::Char {
+            // Preserve the true (possibly right-hand) anchor for Shift-click.
+            (selection.anchor, selection.anchor)
+        } else {
+            (selection.min(), selection.max())
+        };
+        self.focused = true;
+        *focus_target = Some(node_id);
+        self.goal_x = None;
+        self.redraw = true;
+        *handled = true;
+    }
 }
 
 fn char_to_byte(text: &str, char_idx: usize) -> usize {
@@ -955,60 +1019,22 @@ impl Widget for RichTextEditor {
         let shift = modifiers.state().shift_key();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_cursor = pt;
-                if self.is_dragging {
-                    let position = self.position_at(pt);
-                    self.core.place_position(position, true);
-                    self.redraw = true;
-                    *handled = true;
-                }
+                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.handle_cursor_move(point, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                let pt = self.last_cursor;
-                if !self.rect.contains(pt) {
-                    return;
-                }
-                // Clear any in-flight preedit before hit-testing so byte offsets
-                // are in committed-text space.
-                self.preedit.clear();
-                let now = Instant::now();
-                let is_double = self
-                    .last_click_time
-                    .is_some_and(|t| now.duration_since(t) < MULTI_CLICK);
-                self.last_click_time = Some(now);
-                self.click_count = if is_double {
-                    self.click_count.saturating_add(1)
-                } else {
-                    1
-                };
-
-                let position = self.position_at(pt);
-                let b = position.byte;
-                if self.click_count >= 2 {
-                    let (s, e) = word_boundaries(&self.text, b);
-                    self.core.set_selection(s, e);
-                } else {
-                    self.core.place_position(position, shift);
-                    self.is_dragging = true;
-                }
-                self.focused = true;
-                *focus_target = Some(node_id);
-                self.goal_x = None;
-                self.redraw = true;
-                *handled = true;
+                self.handle_primary_press(shift, node_id, focus_target, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.is_dragging {
-                    self.is_dragging = false;
+                if self.drag_select.release() {
                     *handled = true;
                 }
             }
@@ -1739,6 +1765,36 @@ mod tests {
             ed.selection(),
             0..5,
             "double-click selects the word under the pointer"
+        );
+    }
+
+    #[test]
+    fn double_click_drag_expands_by_words_and_triple_click_selects_the_line() {
+        let (mut state, mut ed) = setup();
+        type_str(&mut ed, &mut state, "hello world");
+        layout(&mut ed, 400.0, 80.0);
+        let origin = ed.text_origin();
+        let hello = mouse_move(origin.x + 12.0, origin.y + 4.0);
+        let world = mouse_move(origin.x + 90.0, origin.y + 4.0);
+
+        press(&mut ed, &mut state, &hello, mods(false, false));
+        press(&mut ed, &mut state, &left_press(), mods(false, false));
+        press(&mut ed, &mut state, &left_release(), mods(false, false));
+        press(&mut ed, &mut state, &left_press(), mods(false, false));
+        press(&mut ed, &mut state, &world, mods(false, false));
+        assert_eq!(
+            ed.selection(),
+            0..11,
+            "dragging from a double-click expands in whole-word units"
+        );
+
+        press(&mut ed, &mut state, &left_release(), mods(false, false));
+        press(&mut ed, &mut state, &hello, mods(false, false));
+        press(&mut ed, &mut state, &left_press(), mods(false, false));
+        assert_eq!(
+            ed.selection(),
+            0..11,
+            "triple-click selects the paragraph's whole logical line"
         );
     }
 

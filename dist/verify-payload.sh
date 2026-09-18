@@ -13,7 +13,8 @@ libexec_dir=${TILO_LIBEXEC_DIR:-/usr/libexec}
 }
 
 for file in /usr/bin/tilo-shell /usr/bin/tilo-launcher \
-            "$libexec_dir/tilo-unlock-helper" "$libexec_dir/tilo-session"; do
+            "$libexec_dir/tilo-unlock-helper" "$libexec_dir/tilo-session" \
+            "$libexec_dir/tilo-session-runner"; do
     [[ -x $(path "$file") ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
 for file in /etc/pam.d/tilo-unlock \
@@ -35,12 +36,13 @@ grep -q '^DesktopNames=tilo$' "$(path /usr/share/wayland-sessions/tilo.desktop)"
 grep -q '^UseIn=tilo$' "$(path /usr/share/xdg-desktop-portal/portals/tilo.portal)"
 grep -q '^default=tilo$' "$(path /usr/share/xdg-desktop-portal/tilo-portals.conf)"
 grep -q '^TILO_SHELL=/usr/bin/tilo-shell$' "$(path "$libexec_dir/tilo-session")"
-grep -q '^SYSTEMD_CAT=/usr/bin/systemd-cat$' "$(path "$libexec_dir/tilo-session")"
+grep -Fqx "SESSION_RUNNER=$libexec_dir/tilo-session-runner" "$(path "$libexec_dir/tilo-session")"
+grep -q '^SYSTEMD_CAT=/usr/bin/systemd-cat$' "$(path "$libexec_dir/tilo-session-runner")"
 grep -Fq -- '--identifier=tilo-session --level-prefix=false' \
-    "$(path "$libexec_dir/tilo-session")"
-grep -q -- '--firstboot' "$(path "$libexec_dir/tilo-session")"
-grep -Fq '"$SYSTEMCTL" --user start "$SESSION_TARGET"' "$(path "$libexec_dir/tilo-session")"
-grep -Fq '"$SYSTEMCTL" --user stop "$SESSION_TARGET"' "$(path "$libexec_dir/tilo-session")"
+    "$(path "$libexec_dir/tilo-session-runner")"
+grep -q -- '--firstboot' "$(path "$libexec_dir/tilo-session-runner")"
+grep -Fq '"$SYSTEMCTL" --user start "$SESSION_TARGET"' "$(path "$libexec_dir/tilo-session-runner")"
+grep -Fq '"$SYSTEMCTL" --user stop "$SESSION_TARGET"' "$(path "$libexec_dir/tilo-session-runner")"
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' \
     "$(path /usr/lib/systemd/user/tilo-graphical-session.target)"
 grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.target' \

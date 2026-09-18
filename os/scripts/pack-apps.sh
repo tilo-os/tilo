@@ -26,9 +26,8 @@
 #   PKG_BIN / INSTALL_BIN / BUNDLE_BIN / SHIM_BIN
 #                  tool paths                        [default: $BIN_DIR/<name>]
 #   REQUIRE_MIN    fail unless at least this many packages install [default: 1]
-#   MAX_QPKG_BYTES refuse a larger archive; decimal 10 MB by default
-#   RECOVERY_MAX_QPKG_BYTES
-#                  ceiling for the trusted Files recovery package [default: 50 MB]
+#   MAX_QPKG_BYTES refuse a larger archive; defaults to the canonical 5 MiB
+#                  application-format ceiling and may only be made stricter
 #
 # STORE is written at its *final* path on purpose: `tilo-install` records
 # absolute payload paths in registry.toml, so staging it elsewhere and moving
@@ -68,11 +67,16 @@ SHIM_BIN="${SHIM_BIN:-$BIN_DIR/tilo-cli-shim}"
 QPKG_DIR="${QPKG_DIR:-}"
 EXPECTED_PUBKEY="${EXPECTED_PUBKEY:-}"
 REQUIRE_MIN="${REQUIRE_MIN:-1}"
-MAX_QPKG_BYTES="${MAX_QPKG_BYTES:-10000000}"
-RECOVERY_MAX_QPKG_BYTES="${RECOVERY_MAX_QPKG_BYTES:-50000000}"
+POLICY_MAX_QPKG_BYTES=5242880
+MAX_QPKG_BYTES="${MAX_QPKG_BYTES:-$POLICY_MAX_QPKG_BYTES}"
 
 msg() { printf '[pack-apps] %s\n' "$*" >&2; }
 die() { printf '[pack-apps] ERROR: %s\n' "$*" >&2; exit 1; }
+
+[[ "$MAX_QPKG_BYTES" =~ ^[0-9]+$ ]] \
+    || die "MAX_QPKG_BYTES must be an integer"
+(( MAX_QPKG_BYTES <= POLICY_MAX_QPKG_BYTES )) \
+    || die "MAX_QPKG_BYTES cannot exceed the 5 MiB application policy"
 
 for t in "$PKG_BIN" "$INSTALL_BIN" "$BUNDLE_BIN"; do
     [ -x "$t" ] || die "$t not found or not executable"
@@ -121,7 +125,7 @@ shipped=(); missing=(); failed=()
 if [ "$prebuilt" = 1 ]; then
     for qpkg in "$QPKG_DIR"/*.qpkg; do
         qpkg_bytes=$(wc -c < "$qpkg")
-        if [ "$qpkg_bytes" -ge "$MAX_QPKG_BYTES" ]; then
+        if [ "$qpkg_bytes" -gt "$MAX_QPKG_BYTES" ]; then
             failed+=("$(basename "$qpkg"): $qpkg_bytes bytes exceeds $MAX_QPKG_BYTES")
             continue
         fi
@@ -196,10 +200,8 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     fi
 
     qpkg_bytes="$(stat -c %s "$qpkg")"
-    qpkg_limit="$MAX_QPKG_BYTES"
-    [ "$id" != "dev.tilo.file-explorer" ] || qpkg_limit="$RECOVERY_MAX_QPKG_BYTES"
-    if [ "$qpkg_bytes" -ge "$qpkg_limit" ]; then
-        failed+=("$app ($id): package is $qpkg_bytes bytes; limit is strictly below $qpkg_limit")
+    if [ "$qpkg_bytes" -gt "$MAX_QPKG_BYTES" ]; then
+        failed+=("$app ($id): package is $qpkg_bytes bytes; limit is $MAX_QPKG_BYTES")
         continue
     fi
 

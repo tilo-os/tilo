@@ -44,13 +44,26 @@ use tilo_actions::{
 };
 
 use crate::doc::PhotosDoc;
-use crate::model::{Album, Edits, LibraryPhoto, OpenImage, Rect01};
+use crate::model::{Album, Edits, ImageAnalysis, LibraryPhoto, OpenImage, PhotoLocation, Rect01};
 
 /// Registry `type_id` for every action this app exports.
 pub const PHOTOS_ACTION_TYPE: &str = "photos.action";
 
 /// The resource `kind` an open photograph publishes under.
 pub const IMAGE_KIND: &str = "photos.image";
+/// The derived, durable browse collection for photographs marked favourite.
+///
+/// Membership itself is shared document state; opening this resource is a
+/// device-local view, just like opening an album or a metadata label.
+pub const FAVORITES_KIND: &str = "photos.favorites";
+/// A derived collection of the explicitly shared photo locations.
+pub const PLACES_KIND: &str = "photos.places";
+/// The complete chronological browse surface. It is distinct from the
+/// library resource so an agent can open a position in time rather than an
+/// arbitrary insertion-ordered collection.
+pub const TIMELINE_KIND: &str = "photos.timeline";
+pub const TIMELINE_MONTH_KIND: &str = "photos.timeline.month";
+pub const TIMELINE_DAY_KIND: &str = "photos.timeline.day";
 pub const PHOTOS_OPERATION_TYPE: &str = "photos.operation";
 /// Contextual enumeration is intentionally small; callers resolve any stable
 /// id outside this window through `ResourceProvider::resource`.
@@ -59,11 +72,32 @@ const ALBUM_CONTEXT_LIMIT: usize = 24;
 const FOLDER_CONTEXT_LIMIT: usize = 24;
 const PERSON_CONTEXT_LIMIT: usize = 24;
 const TAG_CONTEXT_LIMIT: usize = 24;
+/// A resource survey remains small even when the library has years of daily
+/// photographs. Exact stable ids and the search catalogue still resolve any
+/// extant boundary.
+const TIMELINE_MONTH_CONTEXT_LIMIT: usize = 24;
+const TIMELINE_DAY_CONTEXT_LIMIT: usize = 48;
 const MAX_RESOURCE_ID_CHARS: usize = 4_096;
 const MAX_ALBUM_ID_CHARS: usize = 160;
 const MAX_NAME_CHARS: usize = 256;
 const MAX_ALBUM_MEMBERS: usize = 4_096;
+const MAX_BATCH_PHOTOS: usize = 4_096;
+const MAX_ANALYSIS_TEXT_CHARS: usize = crate::analysis::MAX_OCR_CHARS;
+const MAX_ANALYSIS_LABELS: usize = 64;
+const MAX_ANALYSIS_LABEL_CHARS: usize = 128;
 type LabelCounts = Vec<(String, usize)>;
+
+/// A stable, metadata-only position in the chronological timeline.
+///
+/// No timezone conversion or inferred capture date is involved: `Month` and
+/// `Day` occur only when an imported/shared capture value actually starts
+/// with that ISO calendar boundary. Non-calendar values are deliberately
+/// absent instead of being assigned an invented date.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TimelineAnchor {
+    Month { month: String },
+    Day { day: String },
+}
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PhotosOperation {
@@ -76,6 +110,34 @@ pub enum PhotosOperation {
     /// Reveal the Photos-owned browsing and management surface without
     /// opening a chooser or mutating the shared library.
     ViewLibrary,
+    /// Open the chronological timeline, optionally at one canonical calendar
+    /// boundary. This is device-local presentation; capture metadata remains
+    /// untouched and the same stable anchor is meaningful to every replica.
+    ViewTimeline {
+        anchor: Option<TimelineAnchor>,
+    },
+    /// Open Photos' People collection and device-local review surface.
+    ViewPeople,
+    /// Open the signed local-model manager for face recognition.
+    ManagePeopleRecognition,
+    /// Explicit per-device opt-in. This changes no collaborative metadata and
+    /// does not begin a scan; it only permits the separate scan action.
+    EnablePeopleRecognition,
+    /// Scan the next bounded local library batch with the separately signed
+    /// face model. Suggestions remain device-local until approved.
+    AnalyzePeopleLibrary,
+    /// Show the durable favourites collection without changing any shared
+    /// favourite marker. This is intentionally its own addressable resource,
+    /// rather than a hidden in-app filter, so search, agents, history and a
+    /// collaborator can all name the same collection.
+    ViewFavorites,
+    /// Open the offline-first places browser. This changes only local
+    /// presentation; it does not disclose a coordinate to a map provider.
+    ViewPlaces,
+    /// Open one exact shared place cluster.
+    ViewPlace {
+        place_key: String,
+    },
     /// Bring a durable album's filtered grid into view. This is presentation
     /// state only: unlike membership actions, activating it never edits the
     /// shared library.
@@ -94,12 +156,31 @@ pub enum PhotosOperation {
     ViewTag {
         tag: String,
     },
+    ViewObject {
+        object: String,
+    },
+    ViewPet {
+        pet: String,
+    },
     Open {
         path: Option<String>,
+    },
+    /// Import a folder asynchronously.  With no path the desktop portal
+    /// grants one; a supplied path is for an already-authorised host/agent.
+    ImportDirectory {
+        path: Option<String>,
+        retain_exif_location: bool,
     },
     ImportCameraMedia {
         media_id: String,
         name: String,
+    },
+    /// Re-scan a user-selected directory. This intentionally has the same
+    /// explicit path boundary as import; Photos never watches arbitrary local
+    /// folders or synchronizes their machine-specific path names.
+    ReindexDirectory {
+        path: String,
+        retain_exif_location: bool,
     },
     Copy,
     /// Copy a portable resource reference to the local clipboard. This is an
@@ -111,6 +192,21 @@ pub enum PhotosOperation {
     },
     Save {
         path: Option<String>,
+    },
+    /// Run shared Tilo OCR against locally available bytes, then ask the
+    /// document action boundary to publish the compact result. Invoking this
+    /// effect is the user's explicit sharing consent; bytes never leave the
+    /// device and only text/provenance enter collaboration.
+    AnalyzeText {
+        resource_id: String,
+        language: String,
+    },
+    /// Run the selected signed local vision model against bounded local pixels.
+    /// This is distinct from OCR: it may return a concise description and
+    /// generic labels as well as text, and it is never substituted with a
+    /// hosted provider.
+    AnalyzeImage {
+        resource_id: String,
     },
 }
 
@@ -134,10 +230,17 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         op,
         PhotosOperation::View
             | PhotosOperation::ViewLibrary
+            | PhotosOperation::ViewTimeline { .. }
+            | PhotosOperation::ViewPeople
+            | PhotosOperation::ViewFavorites
+            | PhotosOperation::ViewPlaces
+            | PhotosOperation::ViewPlace { .. }
             | PhotosOperation::ViewAlbum { .. }
             | PhotosOperation::ViewFolder { .. }
             | PhotosOperation::ViewPerson { .. }
             | PhotosOperation::ViewTag { .. }
+            | PhotosOperation::ViewObject { .. }
+            | PhotosOperation::ViewPet { .. }
     ) {
         OperationKind::View
     } else {
@@ -146,13 +249,22 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     let tags = match op {
         PhotosOperation::View
         | PhotosOperation::ViewLibrary
+        | PhotosOperation::ViewTimeline { .. }
+        | PhotosOperation::ViewPeople
+        | PhotosOperation::ViewFavorites
+        | PhotosOperation::ViewPlaces
+        | PhotosOperation::ViewPlace { .. }
         | PhotosOperation::ViewAlbum { .. }
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
-        | PhotosOperation::ViewTag { .. } => vec!["device-local".into(), "presentation".into()],
+        | PhotosOperation::ViewTag { .. }
+        | PhotosOperation::ViewObject { .. }
+        | PhotosOperation::ViewPet { .. } => vec!["device-local".into(), "presentation".into()],
         PhotosOperation::Open { .. }
+        | PhotosOperation::ImportDirectory { .. }
         | PhotosOperation::Save { .. }
-        | PhotosOperation::ImportCameraMedia { .. } => vec![
+        | PhotosOperation::ImportCameraMedia { .. }
+        | PhotosOperation::ReindexDirectory { .. } => vec![
             "device-local".into(),
             "filesystem".into(),
             "portal".into(),
@@ -161,11 +273,48 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         PhotosOperation::Copy | PhotosOperation::ShareReference { .. } => {
             vec!["device-local".into(), "clipboard".into()]
         }
+        PhotosOperation::AnalyzeText { .. } | PhotosOperation::AnalyzeImage { .. } => vec![
+            "device-local".into(),
+            "privacy-sensitive".into(),
+            "local-analysis".into(),
+            "explicit-share".into(),
+        ],
+        PhotosOperation::AnalyzePeopleLibrary => vec![
+            "device-local".into(),
+            "privacy-sensitive".into(),
+            "local-analysis".into(),
+            "biometric".into(),
+            "explicit-consent".into(),
+            "not-shared".into(),
+        ],
+        PhotosOperation::ManagePeopleRecognition => vec![
+            "device-local".into(),
+            "privacy-sensitive".into(),
+            "signed-model".into(),
+            "settings-route".into(),
+        ],
+        PhotosOperation::EnablePeopleRecognition => vec![
+            "device-local".into(),
+            "privacy-sensitive".into(),
+            "explicit-consent".into(),
+        ],
     };
     let contract = if kind == OperationKind::View {
         ActionContract {
             tags,
             ..ActionContract::view()
+        }
+    } else if matches!(
+        op,
+        PhotosOperation::AnalyzeText { .. }
+            | PhotosOperation::AnalyzeImage { .. }
+            | PhotosOperation::AnalyzePeopleLibrary
+    ) {
+        ActionContract {
+            tags,
+            execution: ExecutionMode::Background { cancellable: true },
+            result: ResultSpec::Job,
+            ..ActionContract::default()
         }
     } else {
         ActionContract {
@@ -179,15 +328,29 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     Some(match op {
         PhotosOperation::View
         | PhotosOperation::ViewLibrary
+        | PhotosOperation::ViewTimeline { .. }
+        | PhotosOperation::ViewPeople
+        | PhotosOperation::ViewFavorites
+        | PhotosOperation::ViewPlaces
+        | PhotosOperation::ViewPlace { .. }
         | PhotosOperation::ViewAlbum { .. }
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
         | PhotosOperation::ViewTag { .. }
+        | PhotosOperation::ViewObject { .. }
+        | PhotosOperation::ViewPet { .. }
         | PhotosOperation::Open { .. }
         | PhotosOperation::Copy
         | PhotosOperation::ShareReference { .. } => spec.retry_policy(RetryPolicy::Idempotent),
-        PhotosOperation::Save { .. } | PhotosOperation::ImportCameraMedia { .. } => {
-            spec.retry_policy(RetryPolicy::AtMostOnce)
+        PhotosOperation::Save { .. }
+        | PhotosOperation::ImportDirectory { .. }
+        | PhotosOperation::ImportCameraMedia { .. }
+        | PhotosOperation::ReindexDirectory { .. }
+        | PhotosOperation::AnalyzeText { .. }
+        | PhotosOperation::AnalyzeImage { .. }
+        | PhotosOperation::AnalyzePeopleLibrary => spec.retry_policy(RetryPolicy::AtMostOnce),
+        PhotosOperation::ManagePeopleRecognition | PhotosOperation::EnablePeopleRecognition => {
+            spec.retry_policy(RetryPolicy::Idempotent)
         }
     })
 }
@@ -213,6 +376,13 @@ pub enum PhotosAction {
     RemovePhoto { photo_id: String },
     /// Toggle a durable favourite marker.
     SetFavorite { photo_id: String, favorite: bool },
+    /// Replace the favourite state for a bounded, explicitly addressed batch.
+    /// The selection that produced this list is device-local presentation;
+    /// this resulting change is the one shared, replayable document action.
+    SetFavorites {
+        photo_ids: Vec<String>,
+        favorite: bool,
+    },
     /// Replace the complete small metadata record for one photograph.  One
     /// absolute payload avoids a concurrent series of add/remove operations
     /// exposing a half-edited tag list to collaborators.
@@ -223,6 +393,42 @@ pub enum PhotosAction {
         tags: Vec<String>,
         captured_at: Option<String>,
     },
+    /// Replace one person's complete, explicit membership.  This is the
+    /// collaboration boundary for the local People review: face clusters,
+    /// embeddings and geometry never enter the document, while a person can
+    /// deliberately approve the compact labels that should be shared.
+    SetPersonMembership {
+        /// The visible, user-approved person label.
+        person: String,
+        /// The complete set of shared photographs carrying that label.
+        photo_ids: Vec<String>,
+    },
+    /// Rename an explicitly shared person label across its complete current
+    /// membership.  Naming a label that already exists is a deliberate merge,
+    /// not a hidden local face-cluster operation.
+    RenamePerson { from: String, to: String },
+    /// Remove an explicitly shared person label from all photographs.  This
+    /// deletes no photographs and never touches device-local biometric data.
+    RemovePerson { person: String },
+    /// Replace a photograph's intentionally shared intelligence result.
+    /// The action carries final bounded data rather than an OCR request: every
+    /// collaborator converges without re-running a local model or reading a
+    /// source path that may not exist on their device.
+    SetImageAnalysis {
+        photo_id: String,
+        analysis: Option<ImageAnalysis>,
+    },
+    /// Set one explicit, already user-authorized shared location. This action
+    /// never reverse-geocodes or uploads; `provenance` tells peers where the
+    /// retained coordinates came from.
+    SetPhotoLocation {
+        photo_id: String,
+        location: PhotoLocation,
+    },
+    /// Remove the complete shared location record for one photo. It is a
+    /// distinct canonical action so history and collaborators can distinguish
+    /// a deliberate privacy removal from a photo without location metadata.
+    ClearPhotoLocation { photo_id: String },
     /// Create a named collection with a caller-supplied stable id.
     CreateAlbum { id: String, name: String },
     /// Rename a collection without changing its stable address or membership.
@@ -331,6 +537,61 @@ fn valid_photo(photo: &LibraryPhoto) -> bool {
             &photo.tags,
             photo.captured_at.as_deref(),
         )
+        && photo.analysis.as_ref().is_none_or(valid_analysis)
+        && photo.location.as_ref().is_none_or(PhotoLocation::is_valid)
+}
+
+fn valid_analysis(analysis: &ImageAnalysis) -> bool {
+    fn compact_text(value: &str, max: usize) -> bool {
+        value.chars().count() <= max && !value.chars().any(char::is_control)
+    }
+    fn labels(values: &[String]) -> bool {
+        values.len() <= MAX_ANALYSIS_LABELS
+            && values.iter().all(|value| {
+                !value.trim().is_empty() && compact_text(value, MAX_ANALYSIS_LABEL_CHARS)
+            })
+            && values
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == values.len()
+    }
+    let valid_ocr = analysis.ocr_text.chars().count() <= MAX_ANALYSIS_TEXT_CHARS
+        && analysis
+            .ocr_text
+            .chars()
+            .all(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'));
+    let provenance = &analysis.provenance;
+    !analysis.is_empty()
+        && valid_ocr
+        && compact_text(&analysis.description, 1_024)
+        && labels(&analysis.objects)
+        && labels(&analysis.pets)
+        && labels(&analysis.people)
+        && matches!(provenance.scope.as_str(), "shared")
+        && matches!(
+            provenance.source.as_str(),
+            "local-ocr" | "local-vision" | "local-description" | "user"
+        )
+        && compact_text(&provenance.engine, 128)
+        && compact_text(&provenance.model_id, 128)
+        && (provenance.model_revision.is_empty()
+            || (matches!(provenance.model_revision.len(), 40 | 64)
+                && provenance
+                    .model_revision
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())))
+        && (provenance.source != "local-vision"
+            || (!provenance.model_id.is_empty()
+                && !provenance.model_revision.is_empty()
+                && provenance.engine == "tilo-vision"))
+        && compact_text(&provenance.language, 16)
+        && (provenance.content.is_empty()
+            || (provenance.content.len() == CONTENT_HEX_LEN
+                && provenance
+                    .content
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))))
 }
 
 impl Action for PhotosAction {
@@ -406,6 +667,37 @@ impl Action for PhotosAction {
                 PhotosDoc::set_library(doc, &library);
                 Ok(())
             }
+            Self::SetFavorites {
+                photo_ids,
+                favorite,
+            } => {
+                if photo_ids.is_empty()
+                    || photo_ids.len() > MAX_BATCH_PHOTOS
+                    || photo_ids.iter().any(|id| validate_resource_id(id).is_err())
+                    || photo_ids.iter().enumerate().any(|(index, id)| {
+                        photo_ids
+                            .get(..index)
+                            .is_some_and(|previous| previous.contains(id))
+                    })
+                {
+                    return Err(ActionError::Refused(
+                        "favorite batch must contain unique, valid photograph ids".into(),
+                    ));
+                }
+                let mut library = PhotosDoc::library(doc);
+                if !photo_ids.iter().all(|id| library.photo(id).is_some()) {
+                    return Err(ActionError::Refused(
+                        "a selected photograph is no longer in the library".into(),
+                    ));
+                }
+                for photo in &mut library.photos {
+                    if photo_ids.contains(&photo.id) {
+                        photo.favorite = *favorite;
+                    }
+                }
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
             Self::SetMetadata {
                 photo_id,
                 folder,
@@ -432,6 +724,197 @@ impl Action for PhotosAction {
                 photo.people.clone_from(people);
                 photo.tags.clone_from(tags);
                 photo.captured_at.clone_from(captured_at);
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::SetPersonMembership { person, photo_ids } => {
+                if !valid_person_label(person)
+                    || photo_ids.len() > MAX_BATCH_PHOTOS
+                    || photo_ids.iter().any(|id| validate_resource_id(id).is_err())
+                    || photo_ids.iter().enumerate().any(|(index, id)| {
+                        photo_ids
+                            .get(..index)
+                            .is_some_and(|prior| prior.contains(id))
+                    })
+                {
+                    return Err(ActionError::Refused(
+                        "person membership must name a short label and unique valid photograph ids"
+                            .into(),
+                    ));
+                }
+                let person = person.trim();
+                let mut library = PhotosDoc::library(doc);
+                if !photo_ids.iter().all(|id| library.photo(id).is_some()) {
+                    return Err(ActionError::Refused(
+                        "a person membership photograph is no longer in the library".into(),
+                    ));
+                }
+                // Refuse rather than silently dropping an existing label when
+                // a remote caller asks to add a 33rd person to one photo.
+                // The People surface should make that conflict explicit.
+                for photo in &library.photos {
+                    let mut next_people = photo.people.clone();
+                    let has_person = next_people.iter().any(|label| label == person);
+                    let should_have_person = photo_ids.contains(&photo.id);
+                    if should_have_person && !has_person {
+                        next_people.push(person.to_owned());
+                    } else if !should_have_person && has_person {
+                        next_people.retain(|label| label != person);
+                    }
+                    if !valid_metadata(
+                        photo.folder.as_deref(),
+                        &next_people,
+                        &photo.tags,
+                        photo.captured_at.as_deref(),
+                    ) {
+                        return Err(ActionError::Refused(
+                            "person membership would exceed this photograph's metadata limit"
+                                .into(),
+                        ));
+                    }
+                }
+                for photo in &mut library.photos {
+                    let has_person = photo.people.iter().any(|label| label == person);
+                    let should_have_person = photo_ids.contains(&photo.id);
+                    if should_have_person && !has_person {
+                        photo.people.push(person.trim().to_owned());
+                    } else if !should_have_person && has_person {
+                        photo.people.retain(|label| label != person);
+                    }
+                }
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::RenamePerson { from, to } => {
+                if !valid_person_label(from) || !valid_person_label(to) {
+                    return Err(ActionError::Refused(
+                        "person labels must be short, non-empty, and free of control characters"
+                            .into(),
+                    ));
+                }
+                let from = from.trim();
+                let to = to.trim();
+                let mut library = PhotosDoc::library(doc);
+                if !library
+                    .photos
+                    .iter()
+                    .any(|photo| photo.people.iter().any(|label| label == from))
+                {
+                    return Err(ActionError::Refused(
+                        "that person is no longer in the shared library".into(),
+                    ));
+                }
+                if from != to {
+                    for photo in &library.photos {
+                        if photo.people.iter().any(|label| label == from) {
+                            let mut next_people: Vec<_> = photo
+                                .people
+                                .iter()
+                                .filter(|label| label.as_str() != from)
+                                .cloned()
+                                .collect();
+                            if !next_people.iter().any(|label| label == to) {
+                                next_people.push(to.to_owned());
+                            }
+                            if !valid_metadata(
+                                photo.folder.as_deref(),
+                                &next_people,
+                                &photo.tags,
+                                photo.captured_at.as_deref(),
+                            ) {
+                                return Err(ActionError::Refused(
+                                    "renaming this person would exceed a photograph's metadata limit".into(),
+                                ));
+                            }
+                        }
+                    }
+                    for photo in &mut library.photos {
+                        if photo.people.iter().any(|label| label == from) {
+                            photo.people.retain(|label| label != from);
+                            if !photo.people.iter().any(|label| label == to) {
+                                photo.people.push(to.to_owned());
+                            }
+                        }
+                    }
+                }
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::RemovePerson { person } => {
+                if !valid_person_label(person) {
+                    return Err(ActionError::Refused(
+                        "person label must be short, non-empty, and free of control characters"
+                            .into(),
+                    ));
+                }
+                let person = person.trim();
+                let mut library = PhotosDoc::library(doc);
+                if !library
+                    .photos
+                    .iter()
+                    .any(|photo| photo.people.iter().any(|label| label == person))
+                {
+                    return Err(ActionError::Refused(
+                        "that person is no longer in the shared library".into(),
+                    ));
+                }
+                for photo in &mut library.photos {
+                    photo.people.retain(|label| label != person);
+                }
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::SetImageAnalysis { photo_id, analysis } => {
+                if validate_resource_id(photo_id).is_err()
+                    || analysis
+                        .as_ref()
+                        .is_some_and(|value| !valid_analysis(value))
+                {
+                    return Err(ActionError::Refused(
+                        "image analysis must be compact, explicitly shared, and carry safe provenance".into(),
+                    ));
+                }
+                let mut library = PhotosDoc::library(doc);
+                let photo = library.photo_mut(photo_id).ok_or_else(|| {
+                    ActionError::Refused("that photograph is no longer in the library".into())
+                })?;
+                if let Some(value) = analysis
+                    && !value.provenance.content.is_empty()
+                    && photo.image.content.as_deref() != Some(&value.provenance.content)
+                {
+                    return Err(ActionError::Refused(
+                        "analysis provenance does not name this photograph's content".into(),
+                    ));
+                }
+                photo.analysis.clone_from(analysis);
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::SetPhotoLocation { photo_id, location } => {
+                if validate_resource_id(photo_id).is_err() || !location.is_valid() {
+                    return Err(ActionError::Refused(
+                        "a shared location needs finite WGS-84 coordinates, an explicit shared scope, and safe provenance".into(),
+                    ));
+                }
+                let mut library = PhotosDoc::library(doc);
+                let photo = library.photo_mut(photo_id).ok_or_else(|| {
+                    ActionError::Refused("that photograph is no longer in the library".into())
+                })?;
+                photo.location = Some(location.clone());
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::ClearPhotoLocation { photo_id } => {
+                validate_resource_id(photo_id)?;
+                let mut library = PhotosDoc::library(doc);
+                let photo = library.photo_mut(photo_id).ok_or_else(|| {
+                    ActionError::Refused("that photograph is no longer in the library".into())
+                })?;
+                if photo.location.take().is_none() {
+                    return Err(ActionError::Refused(
+                        "that photograph does not have a shared location".into(),
+                    ));
+                }
                 PhotosDoc::set_library(doc, &library);
                 Ok(())
             }
@@ -683,11 +1166,42 @@ impl ResourceProvider for PhotosResources {
         if id == "photos.library" {
             return Some(library_root_resource());
         }
+        if id == "photos.timeline" {
+            return Some(timeline_resource(&PhotosDoc::library(doc)));
+        }
+        if id == "photos.favorites" {
+            return Some(favorites_resource(
+                PhotosDoc::library(doc)
+                    .photos
+                    .iter()
+                    .filter(|photo| photo.favorite)
+                    .count(),
+            ));
+        }
+        if id == "photos.places" {
+            return Some(places_resource(&PhotosDoc::library(doc)));
+        }
+        if id == "photos.people" {
+            return Some(people_root_resource(&PhotosDoc::library(doc)));
+        }
         if let Some(photo) = PhotosDoc::photo(doc, id) {
             return Some(photo_resource(&photo));
         }
         if let Some(album) = PhotosDoc::album(doc, id) {
             return Some(album_resource(&album));
+        }
+        // Place ids hash an opaque compact cluster key.  Unlike the few
+        // contextual children, an exact lookup is allowed to scan bounded
+        // document metadata; it never touches images, files, or a network.
+        let library = PhotosDoc::library(doc);
+        if let Some(resource) = timeline_resource_for_id(&library, id) {
+            return Some(resource);
+        }
+        if let Some((key, label, count)) = place_counts(&library)
+            .into_iter()
+            .find(|(key, _, _)| place_resource_id(key) == id)
+        {
+            return Some(place_resource(&key, &label, count));
         }
         // Exact metadata ids are opaque collision-resistant hashes, so do
         // not attempt to recover them by scanning every photo. The document
@@ -698,6 +1212,8 @@ impl ResourceProvider for PhotosResources {
             crate::doc::MetadataViewKind::Folder => folder_resource(&view.label, view.count),
             crate::doc::MetadataViewKind::Person => person_resource(&view.label, view.count),
             crate::doc::MetadataViewKind::Tag => tag_resource(&view.label, view.count),
+            crate::doc::MetadataViewKind::Object => object_resource(&view.label, view.count),
+            crate::doc::MetadataViewKind::Pet => pet_resource(&view.label, view.count),
         })
     }
 }
@@ -781,13 +1297,19 @@ fn open_image_resource(doc: &AutoCommit, image: &OpenImage) -> Resource {
 fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     let library = PhotosDoc::library(doc);
     let mut root = library_root_resource();
+    root = root.with_child(favorites_resource(
+        library.photos.iter().filter(|photo| photo.favorite).count(),
+    ));
+    root = root.with_child(places_resource(&library));
+    root = root.with_child(people_root_resource(&library));
+    root = root.with_child(timeline_resource(&library));
     for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
         root = root.with_child(photo_resource(photo));
     }
     for album in library.albums.iter().take(ALBUM_CONTEXT_LIMIT) {
         root = root.with_child(album_resource(album));
     }
-    let (folders, people, tags) = metadata_label_counts(&library);
+    let (folders, people, tags, objects, pets) = metadata_label_counts(&library);
     for (folder, count) in folders.into_iter().take(FOLDER_CONTEXT_LIMIT) {
         root = root.with_child(folder_resource(&folder, count));
     }
@@ -796,6 +1318,12 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     }
     for (tag, count) in tags.into_iter().take(TAG_CONTEXT_LIMIT) {
         root = root.with_child(tag_resource(&tag, count));
+    }
+    for (object, count) in objects.into_iter().take(TAG_CONTEXT_LIMIT) {
+        root = root.with_child(object_resource(&object, count));
+    }
+    for (pet, count) in pets.into_iter().take(TAG_CONTEXT_LIMIT) {
+        root = root.with_child(pet_resource(&pet, count));
     }
     vec![root]
 }
@@ -807,8 +1335,367 @@ pub(crate) fn library_root_resource() -> Resource {
     }
     root = root
         .with_action(file_operation("import", "Import photograph", true))
-        .with_action(create_album_spec());
+        .with_action(import_directory_spec(false))
+        .with_action(import_directory_spec(true))
+        .with_action(directory_import_spec())
+        .with_action(create_album_spec())
+        .with_action(set_favorites_spec());
     root
+}
+
+/// Compact, shared-metadata-only counts for timeline navigation.  The vectors
+/// are newest-first to match the rendered timeline, while every entry is
+/// still addressable by its stable id outside the contextual resource window.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TimelineBoundaries {
+    pub months: Vec<(String, usize)>,
+    pub days: Vec<(String, usize)>,
+}
+
+pub(crate) fn timeline_boundaries(library: &crate::model::PhotoLibrary) -> TimelineBoundaries {
+    let mut months = std::collections::BTreeMap::<String, usize>::new();
+    let mut days = std::collections::BTreeMap::<String, usize>::new();
+    for photo in &library.photos {
+        let Some(day) = photo
+            .captured_at
+            .as_deref()
+            .and_then(timeline_day_from_capture)
+        else {
+            continue;
+        };
+        let month = day[..7].to_owned();
+        *months.entry(month).or_default() += 1;
+        *days.entry(day).or_default() += 1;
+    }
+    TimelineBoundaries {
+        months: months.into_iter().rev().collect(),
+        days: days.into_iter().rev().collect(),
+    }
+}
+
+pub(crate) fn timeline_day_from_capture(captured_at: &str) -> Option<String> {
+    let day = captured_at.get(..10)?;
+    let bytes = day.as_bytes();
+    let month = std::str::from_utf8(&bytes[5..7]).ok()?.parse::<u8>().ok()?;
+    let day_of_month = std::str::from_utf8(&bytes[8..10])
+        .ok()?
+        .parse::<u8>()
+        .ok()?;
+    let year = std::str::from_utf8(&bytes[..4]).ok()?.parse::<u16>().ok()?;
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => 0,
+    };
+    (bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
+        && (1..=12).contains(&month)
+        && (1..=days_in_month).contains(&day_of_month))
+    .then(|| day.to_owned())
+}
+
+pub(crate) fn timeline_month_resource_id(month: &str) -> String {
+    format!("photos.timeline:month:{month}")
+}
+
+pub(crate) fn timeline_day_resource_id(day: &str) -> String {
+    format!("photos.timeline:day:{day}")
+}
+
+pub(crate) fn timeline_resource(library: &crate::model::PhotoLibrary) -> Resource {
+    let boundaries = timeline_boundaries(library);
+    timeline_resource_from_search(library.photos.len(), &boundaries)
+}
+
+pub(crate) fn timeline_resource_from_search(
+    total: usize,
+    boundaries: &TimelineBoundaries,
+) -> Resource {
+    let mut resource = Resource::new(
+        "photos.timeline",
+        TIMELINE_KIND,
+        crate::strings::tr("photos-timeline"),
+    )
+    .with_child(Resource::new(
+        "photos.timeline#count",
+        "photos.count",
+        format!("{total} {}", crate::strings::tr("photos-photographs")),
+    ));
+    if let Some(spec) = operation(
+        "open",
+        &crate::strings::tr("photos-open-timeline"),
+        &PhotosOperation::ViewTimeline { anchor: None },
+    ) {
+        resource = resource
+            .with_action(spec.with_description(crate::strings::tr("photos-timeline-description")));
+    }
+    for (month, count) in boundaries.months.iter().take(TIMELINE_MONTH_CONTEXT_LIMIT) {
+        resource = resource.with_child(timeline_month_resource(month, *count));
+    }
+    for (day, count) in boundaries.days.iter().take(TIMELINE_DAY_CONTEXT_LIMIT) {
+        resource = resource.with_child(timeline_day_resource(day, *count));
+    }
+    resource
+}
+
+pub(crate) fn timeline_month_resource(month: &str, count: usize) -> Resource {
+    let mut resource = Resource::new(
+        timeline_month_resource_id(month),
+        TIMELINE_MONTH_KIND,
+        month,
+    )
+    .with_child(Resource::new(
+        format!("{}#count", timeline_month_resource_id(month)),
+        "photos.count",
+        format!("{count} {}", crate::strings::tr("photos-photographs")),
+    ));
+    if let Some(spec) = operation(
+        "open",
+        &crate::strings::tr("photos-open-timeline-month"),
+        &PhotosOperation::ViewTimeline {
+            anchor: Some(TimelineAnchor::Month {
+                month: month.to_owned(),
+            }),
+        },
+    ) {
+        resource = resource.with_action(
+            spec.with_description(crate::strings::tr("photos-timeline-month-description")),
+        );
+    }
+    resource
+}
+
+pub(crate) fn timeline_day_resource(day: &str, count: usize) -> Resource {
+    let mut resource = Resource::new(timeline_day_resource_id(day), TIMELINE_DAY_KIND, day)
+        .with_child(Resource::new(
+            format!("{}#count", timeline_day_resource_id(day)),
+            "photos.count",
+            format!("{count} {}", crate::strings::tr("photos-photographs")),
+        ));
+    if let Some(spec) = operation(
+        "open",
+        &crate::strings::tr("photos-open-timeline-day"),
+        &PhotosOperation::ViewTimeline {
+            anchor: Some(TimelineAnchor::Day {
+                day: day.to_owned(),
+            }),
+        },
+    ) {
+        resource = resource.with_action(
+            spec.with_description(crate::strings::tr("photos-timeline-day-description")),
+        );
+    }
+    resource
+}
+
+fn timeline_resource_for_id(library: &crate::model::PhotoLibrary, id: &str) -> Option<Resource> {
+    let boundaries = timeline_boundaries(library);
+    if let Some(month) = id.strip_prefix("photos.timeline:month:") {
+        if let Some((_, count)) = boundaries
+            .months
+            .iter()
+            .find(|(candidate, _)| candidate == month)
+        {
+            return Some(timeline_month_resource(month, *count));
+        }
+        return None;
+    }
+    if let Some(day) = id.strip_prefix("photos.timeline:day:") {
+        if let Some((_, count)) = boundaries
+            .days
+            .iter()
+            .find(|(candidate, _)| candidate == day)
+        {
+            return Some(timeline_day_resource(day, *count));
+        }
+        return None;
+    }
+    None
+}
+
+fn directory_import_spec() -> ActionSpec {
+    ActionSpec::typed_operation(
+        "import-folder",
+        "Import photo folder",
+        "Choose a folder and import its supported photographs in the background",
+        OperationKind::Effect,
+        PHOTOS_OPERATION_TYPE,
+        vec![ActionParam::optional_owned(
+            "path",
+            ParamType::Text,
+            "Authorised folder path",
+        )],
+        |args: &ActionArgs| {
+            EncodedAction::encode_operation(
+                PHOTOS_OPERATION_TYPE,
+                &PhotosOperation::ImportDirectory {
+                    path: args
+                        .text("path")
+                        .filter(|path| !path.trim().is_empty())
+                        .map(str::to_owned),
+                    retain_exif_location: true,
+                },
+            )
+            .unwrap_or_else(|error| EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                payload: format!("photos folder import could not be serialized: {error}")
+                    .into_bytes(),
+            })
+        },
+    )
+    .with_description("Imports supported photo files with progress; cancelling stops future files")
+}
+
+/// The stable virtual collection a person expects the star controls to feed.
+///
+/// This deliberately exists even when it is empty: an empty favourite view is
+/// useful as a predictable destination, and it does not falsely imply there
+/// are hidden entries waiting to load.
+pub(crate) fn favorites_resource(count: usize) -> Resource {
+    let mut resource =
+        Resource::new("photos.favorites", FAVORITES_KIND, "Favorites").with_child(Resource::new(
+            "photos.favorites#count",
+            "photos.count",
+            format!("{count} photographs"),
+        ));
+    if let Some(spec) = operation("open", "View favorites", &PhotosOperation::ViewFavorites) {
+        resource = resource.with_action(
+            spec.with_description("Show photographs marked as favorites in the shared library"),
+        );
+    }
+    resource
+}
+
+/// First-class People collection derived only from explicitly approved,
+/// collaborative labels. Private face proposals never enter this resource.
+pub(crate) fn people_root_resource(library: &crate::model::PhotoLibrary) -> Resource {
+    let count = crate::people::approved_people(library).len();
+    let mut resource =
+        Resource::new("photos.people", "photos.people", "People").with_child(Resource::new(
+            "photos.people#approved-count",
+            "photos.count",
+            format!("{count} approved people"),
+        ));
+    if let Some(spec) = operation("open", "Open People", &PhotosOperation::ViewPeople) {
+        resource = resource.with_action(
+            spec.with_description("Review local suggestions and browse approved people"),
+        );
+    }
+    if let Some(spec) = operation(
+        "manage-recognition",
+        "Manage local recognition model",
+        &PhotosOperation::ManagePeopleRecognition,
+    ) {
+        resource = resource.with_action(spec.with_description(
+            "Install or manage a signed local face-recognition model in Settings",
+        ));
+    }
+    if let Some(spec) = operation(
+        "enable-local-recognition",
+        "Enable private People recognition",
+        &PhotosOperation::EnablePeopleRecognition,
+    ) {
+        resource = resource.with_action(spec.with_description(
+            "Allow signed local face recognition on this device; it does not scan or share anything yet",
+        ));
+    }
+    if let Some(spec) = operation(
+        "scan-local-library",
+        "Scan local library for faces",
+        &PhotosOperation::AnalyzePeopleLibrary,
+    ) {
+        resource = resource.with_action(spec.with_description(
+            "Use the opt-in signed local face model on a bounded local batch; suggestions remain private until approved",
+        ));
+    }
+    resource
+}
+
+/// The stable derived collection of locations that were explicitly shared
+/// with this library. It is always present, including when empty, so a global
+/// shortcut/agent address never depends on which cards happen to be visible.
+pub(crate) fn places_resource(library: &crate::model::PhotoLibrary) -> Resource {
+    let count = library
+        .photos
+        .iter()
+        .filter(|photo| photo.location.is_some())
+        .count();
+    let mut resource = places_resource_from_count(count);
+    for (key, label, photos) in place_counts(library).into_iter().take(TAG_CONTEXT_LIMIT) {
+        resource = resource.with_child(place_resource(&key, &label, photos));
+    }
+    resource
+}
+
+pub(crate) fn places_resource_from_count(count: usize) -> Resource {
+    let mut resource =
+        Resource::new("photos.places", PLACES_KIND, "Places").with_child(Resource::new(
+            "photos.places#count",
+            "photos.count",
+            format!("{count} located photographs"),
+        ));
+    if let Some(spec) = operation("open", "View places", &PhotosOperation::ViewPlaces) {
+        resource = resource.with_action(spec.with_description(
+            "Browse explicitly shared photo locations on an offline-first map; Photos never uploads coordinates",
+        ));
+    }
+    resource
+}
+
+/// Deterministic, bounded place clusters based only on intentional location
+/// metadata. The returned label is safe for a resource tree and the key is
+/// addressable by search, history and collaborators.
+pub(crate) fn place_counts(library: &crate::model::PhotoLibrary) -> Vec<(String, String, usize)> {
+    let mut counts = std::collections::BTreeMap::<String, (String, usize)>::new();
+    for photo in &library.photos {
+        let Some(location) = &photo.location else {
+            continue;
+        };
+        let key = location.place_key();
+        let entry = counts
+            .entry(key)
+            .or_insert_with(|| (location.display_name(), 0));
+        entry.1 += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(key, (label, count))| (key, label, count))
+        .collect()
+}
+
+pub(crate) fn place_resource_id(place_key: &str) -> String {
+    format!(
+        "photos.place:{}",
+        qdoc::blobstore::hash_bytes(place_key.as_bytes())
+    )
+}
+
+pub(crate) fn place_resource(place_key: &str, label: &str, count: usize) -> Resource {
+    let id = place_resource_id(place_key);
+    let mut resource = Resource::new(&id, "photos.place", label).with_child(Resource::new(
+        format!("{id}#count"),
+        "photos.count",
+        format!("{count} photographs"),
+    ));
+    if let Some(spec) = operation(
+        "open",
+        "View place",
+        &PhotosOperation::ViewPlace {
+            place_key: place_key.to_owned(),
+        },
+    ) {
+        resource = resource.with_action(spec.with_description(
+            "Show this offline-capable place cluster; no location is sent to a map service",
+        ));
+    }
+    resource
 }
 
 /// Deterministically collect the small virtual browse namespace.  It is
@@ -816,10 +1703,18 @@ pub(crate) fn library_root_resource() -> Resource {
 /// safe to publish to search, agents, history, and collaborators.
 pub(crate) fn metadata_label_counts(
     library: &crate::model::PhotoLibrary,
-) -> (LabelCounts, LabelCounts, LabelCounts) {
+) -> (
+    LabelCounts,
+    LabelCounts,
+    LabelCounts,
+    LabelCounts,
+    LabelCounts,
+) {
     let mut folders = std::collections::BTreeMap::<String, usize>::new();
     let mut people = std::collections::BTreeMap::<String, usize>::new();
     let mut tags = std::collections::BTreeMap::<String, usize>::new();
+    let mut objects = std::collections::BTreeMap::<String, usize>::new();
+    let mut pets = std::collections::BTreeMap::<String, usize>::new();
     for photo in &library.photos {
         if let Some(folder) = &photo.folder {
             *folders.entry(folder.clone()).or_default() += 1;
@@ -830,11 +1725,21 @@ pub(crate) fn metadata_label_counts(
         for tag in &photo.tags {
             *tags.entry(tag.clone()).or_default() += 1;
         }
+        if let Some(analysis) = &photo.analysis {
+            for object in &analysis.objects {
+                *objects.entry(object.clone()).or_default() += 1;
+            }
+            for pet in &analysis.pets {
+                *pets.entry(pet.clone()).or_default() += 1;
+            }
+        }
     }
     (
         folders.into_iter().collect(),
         people.into_iter().collect(),
         tags.into_iter().collect(),
+        objects.into_iter().collect(),
+        pets.into_iter().collect(),
     )
 }
 
@@ -856,6 +1761,17 @@ pub(crate) fn person_resource_id(person: &str) -> String {
 /// the same portable, content-independent identity on every replica.
 pub(crate) fn tag_resource_id(tag: &str) -> String {
     format!("photos.tag:{}", qdoc::blobstore::hash_bytes(tag.as_bytes()))
+}
+
+pub(crate) fn object_resource_id(object: &str) -> String {
+    format!(
+        "photos.object:{}",
+        qdoc::blobstore::hash_bytes(object.as_bytes())
+    )
+}
+
+pub(crate) fn pet_resource_id(pet: &str) -> String {
+    format!("photos.pet:{}", qdoc::blobstore::hash_bytes(pet.as_bytes()))
 }
 
 pub(crate) fn folder_resource(folder: &str, count: usize) -> Resource {
@@ -895,6 +1811,21 @@ pub(crate) fn person_resource(person: &str, count: usize) -> Resource {
     ) {
         item = item.with_action(spec.with_description("Show photographs tagged with this person"));
     }
+    item = item
+        .with_action(person_membership_spec(person))
+        .with_action(person_rename_spec(person));
+    if let Some(spec) = direct_spec(
+        "remove-person",
+        "Remove person label",
+        &PhotosAction::RemovePerson {
+            person: person.to_owned(),
+        },
+    ) {
+        item =
+            item.with_action(spec.destructive().reversible().with_description(
+                "Remove this approved person label from every shared photograph",
+            ));
+    }
     item
 }
 
@@ -917,6 +1848,49 @@ pub(crate) fn tag_resource(tag: &str, count: usize) -> Resource {
     item
 }
 
+pub(crate) fn object_resource(object: &str, count: usize) -> Resource {
+    let mut item = Resource::new(object_resource_id(object), "photos.object", object).with_child(
+        Resource::new(
+            format!("{}#count", object_resource_id(object)),
+            "photos.count",
+            format!("{count} photographs"),
+        ),
+    );
+    if let Some(spec) = operation(
+        "open",
+        "View object",
+        &PhotosOperation::ViewObject {
+            object: object.to_owned(),
+        },
+    ) {
+        item = item.with_action(
+            spec.with_description("Show photographs with this explicitly shared object label"),
+        );
+    }
+    item
+}
+
+pub(crate) fn pet_resource(pet: &str, count: usize) -> Resource {
+    let mut item =
+        Resource::new(pet_resource_id(pet), "photos.pet", pet).with_child(Resource::new(
+            format!("{}#count", pet_resource_id(pet)),
+            "photos.count",
+            format!("{count} photographs"),
+        ));
+    if let Some(spec) = operation(
+        "open",
+        "View pet",
+        &PhotosOperation::ViewPet {
+            pet: pet.to_owned(),
+        },
+    ) {
+        item = item.with_action(
+            spec.with_description("Show photographs with this explicitly shared pet label"),
+        );
+    }
+    item
+}
+
 /// The authoritative subset needed to materialize a photo resource. Search
 /// retains this rather than a complete library record, so machine-local path
 /// hints and content-store identifiers are not duplicated into its index.
@@ -931,6 +1905,8 @@ pub(crate) struct PhotoResourceSeed {
     pub people: Vec<String>,
     pub tags: Vec<String>,
     pub captured_at: Option<String>,
+    pub analysis: Option<ImageAnalysis>,
+    pub location: Option<PhotoLocation>,
 }
 
 impl From<&LibraryPhoto> for PhotoResourceSeed {
@@ -945,6 +1921,8 @@ impl From<&LibraryPhoto> for PhotoResourceSeed {
             people: photo.people.clone(),
             tags: photo.tags.clone(),
             captured_at: photo.captured_at.clone(),
+            analysis: photo.analysis.clone(),
+            location: photo.location.clone(),
         }
     }
 }
@@ -964,6 +1942,20 @@ impl PhotoResourceSeed {
         if let Some(captured_at) = &self.captured_at {
             parts.push(format!("Captured: {captured_at}"));
         }
+        if let Some(location) = &self.location {
+            parts.push(format!("Place: {}", location.display_name()));
+        }
+        if let Some(analysis) = &self.analysis {
+            if !analysis.description.is_empty() {
+                parts.push(format!("Description: {}", analysis.description));
+            }
+            if !analysis.objects.is_empty() {
+                parts.push(format!("Objects: {}", analysis.objects.join(", ")));
+            }
+            if !analysis.pets.is_empty() {
+                parts.push(format!("Pets: {}", analysis.pets.join(", ")));
+            }
+        }
         parts.join(" · ")
     }
 }
@@ -972,6 +1964,23 @@ pub(crate) fn photo_resource(photo: &LibraryPhoto) -> Resource {
     photo_resource_from_seed(&PhotoResourceSeed::from(photo))
 }
 
+/// Return the human-safe reason the explicit local-vision operation cannot be
+/// admitted on this device. This reads only Settings' non-secret provider
+/// description; discovery never probes an endpoint and never falls back to a
+/// remote provider.
+pub(crate) fn local_vision_unavailable_reason() -> Option<String> {
+    tilo_vision::discover_local_capability(&agent_provider_config::ProviderConfig::load())
+        .is_none()
+        .then(|| {
+            "No verified local image-analysis model is ready. Install and start one in Settings."
+                .to_owned()
+        })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete context action surface stays adjacent to its resource declaration"
+)]
 pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
     let mut item = Resource::new(&photo.id, "photos.photo", &photo.name).with_child(Resource::new(
         format!("{}#size", photo.id),
@@ -984,6 +1993,39 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
             "photos.metadata",
             photo.metadata_summary(),
         ));
+    }
+    if let Some(analysis) = &photo.analysis {
+        item = item.with_child(Resource::new(
+            format!("{}#analysis", photo.id),
+            "photos.analysis",
+            if analysis.description.is_empty() {
+                "Shared image intelligence".to_owned()
+            } else {
+                analysis.description.clone()
+            },
+        ));
+    }
+    if let Some(location) = &photo.location {
+        item = item.with_child(Resource::new(
+            format!("{}#location", photo.id),
+            "photos.location",
+            format!(
+                "{} · explicitly shared from {}",
+                location.display_name(),
+                location.provenance.source
+            ),
+        ));
+        if let Some(spec) = operation(
+            "view-place",
+            "View on map",
+            &PhotosOperation::ViewPlace {
+                place_key: location.place_key(),
+            },
+        ) {
+            item = item.with_action(spec.with_description(
+                "Open the local Places view without sending this coordinate anywhere",
+            ));
+        }
     }
     if let Some(spec) = direct_spec(
         "open",
@@ -1020,6 +2062,63 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
         ));
     }
     item = item.with_action(photo_metadata_spec(&photo.id));
+    item = item.with_action(photo_location_spec(&photo.id));
+    if photo.location.is_some()
+        && let Some(spec) = direct_spec(
+            "clear-location",
+            "Remove shared location",
+            &PhotosAction::ClearPhotoLocation {
+                photo_id: photo.id.clone(),
+            },
+        )
+    {
+        item = item.with_action(spec.destructive().reversible().with_description(
+            "Remove the explicit shared location from this photograph; no files or pixels are changed",
+        ));
+    }
+    if let Some(spec) = operation(
+        "recognize-text",
+        "Recognize text locally",
+        &PhotosOperation::AnalyzeText {
+            resource_id: photo.id.clone(),
+            language: "eng".to_owned(),
+        },
+    ) {
+        item = item.with_action(spec.with_description(
+            "Run local OCR and explicitly share only bounded text and provenance",
+        ));
+    }
+    if let Some(spec) = operation(
+        "analyze-image",
+        "Analyze image locally",
+        &PhotosOperation::AnalyzeImage {
+            resource_id: photo.id.clone(),
+        },
+    ) {
+        let unavailable = local_vision_unavailable_reason();
+        let description = if let Some(reason) = unavailable.as_deref() {
+            format!("Unavailable: {reason}")
+        } else {
+            "Use the signed local model to describe this image, extract generic labels and recognize text; explicitly share only the bounded result".to_owned()
+        };
+        let spec = spec.with_description(description);
+        item = item.with_action(match unavailable {
+            Some(reason) => spec.unavailable("local_vision_unavailable", reason),
+            None => spec,
+        });
+    }
+    if photo.analysis.is_some()
+        && let Some(spec) = direct_spec(
+            "remove-analysis",
+            "Remove shared analysis",
+            &PhotosAction::SetImageAnalysis {
+                photo_id: photo.id.clone(),
+                analysis: None,
+            },
+        )
+    {
+        item = item.with_action(spec.destructive().reversible());
+    }
     if let Some(spec) = direct_spec(
         "remove",
         "Remove from library",
@@ -1075,6 +2174,15 @@ fn valid_metadata(
     folder.is_none_or(text) && captured_at.is_none_or(text) && labels(people) && labels(tags)
 }
 
+/// A person is a compact user-authored label.  This intentionally has the
+/// same limit and character rules as the `people` metadata array so a review
+/// action can never create a record an ordinary metadata edit would reject.
+fn valid_person_label(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.trim().chars().count() <= 128
+        && !value.chars().any(char::is_control)
+}
+
 fn metadata_labels(args: &ActionArgs, name: &str) -> Vec<String> {
     args.text(name)
         .map(|value| {
@@ -1122,6 +2230,45 @@ fn photo_metadata_spec(photo_id: &str) -> ActionSpec {
     .with_description("Replace this photograph's shared folder, people, tags, and capture date")
 }
 
+fn photo_location_spec(photo_id: &str) -> ActionSpec {
+    let photo_id = photo_id.to_owned();
+    ActionSpec::typed(
+        "set-location",
+        "Set shared location",
+        "Explicit WGS-84 coordinates and optional place label",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("latitude", ParamType::Number, "latitude from -90 to 90"),
+            ActionParam::required("longitude", ParamType::Number, "longitude from -180 to 180"),
+            ActionParam::optional("label", ParamType::Text, "optional shared place label"),
+            ActionParam::optional(
+                "source",
+                ParamType::Text,
+                "user, exif, or device; defaults to user",
+            ),
+        ],
+        move |args| {
+            encode(&PhotosAction::SetPhotoLocation {
+                photo_id: photo_id.clone(),
+                location: PhotoLocation {
+                    latitude: args.number("latitude").unwrap_or(f64::NAN),
+                    longitude: args.number("longitude").unwrap_or(f64::NAN),
+                    label: optional_metadata_text(args, "label"),
+                    provenance: crate::model::LocationProvenance {
+                        source: optional_metadata_text(args, "source")
+                            .unwrap_or_else(|| "user".to_owned()),
+                        scope: "shared".to_owned(),
+                    },
+                },
+            })
+        },
+    )
+    .reversible()
+    .with_description(
+        "Explicitly share a compact location. Photos never uploads it for geocoding or map tiles.",
+    )
+}
+
 pub(crate) fn album_resource(album: &Album) -> Resource {
     album_resource_from_fields(&album.id, &album.name, album.photo_ids.len())
 }
@@ -1157,16 +2304,88 @@ pub(crate) fn album_resource_from_fields(id: &str, name: &str, photo_count: usiz
 }
 
 fn membership_ids(args: &ActionArgs) -> Vec<String> {
-    args.text("photo_ids")
+    args.array("photo_ids")
+        .unwrap_or_default()
+        .iter()
+        // The parameter schema makes every item a non-empty string before
+        // this builder runs. Keep an unexpected value as an invalid id rather
+        // than dropping it and accidentally changing a caller's request.
         .map(|value| {
             value
-                .split(',')
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_owned)
-                .collect()
+                .as_str()
+                .map_or_else(|| "\u{0}".to_owned(), str::to_owned)
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+fn photo_ids_param(required: bool, description: &'static str, min_items: usize) -> ActionParam {
+    let param = if required {
+        ActionParam::required("photo_ids", ParamType::Array, description)
+    } else {
+        ActionParam::optional("photo_ids", ParamType::Array, description)
+    };
+    param.with_schema(serde_json::json!({
+        "type": "array",
+        "minItems": min_items,
+        "maxItems": MAX_BATCH_PHOTOS,
+        "uniqueItems": true,
+        "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_RESOURCE_ID_CHARS
+        }
+    }))
+}
+
+/// The complete membership is supplied by an explicit People review.  The
+/// visible proposal/cluster remains device-local; this action carries only
+/// already-approved photograph ids and a label a collaborator can understand.
+fn person_membership_spec(person: &str) -> ActionSpec {
+    let person = person.to_owned();
+    ActionSpec::typed(
+        "set-membership",
+        "Set person membership",
+        "JSON array of approved photos.photo:… ids (an empty array removes the label)",
+        ExecutionLocus::ClientLocal,
+        vec![photo_ids_param(
+            true,
+            "JSON array of stable photo ids; an empty array removes this person label",
+            0,
+        )],
+        move |args| {
+            encode(&PhotosAction::SetPersonMembership {
+                person: person.clone(),
+                photo_ids: membership_ids(args),
+            })
+        },
+    )
+    .reversible()
+    .with_description("Replace this approved person's shared photograph membership atomically")
+}
+
+/// Renaming to an existing label deliberately merges explicit labels.  It
+/// does not, and cannot, merge private local face clusters.
+fn person_rename_spec(person: &str) -> ActionSpec {
+    let from = person.to_owned();
+    ActionSpec::typed(
+        "rename",
+        "Rename or merge person",
+        "New approved person label; an existing label merges shared memberships",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "name",
+            ParamType::Text,
+            "new approved person label",
+        )],
+        move |args| {
+            encode(&PhotosAction::RenamePerson {
+                from: from.clone(),
+                to: args.text("name").unwrap_or_default().trim().to_owned(),
+            })
+        },
+    )
+    .reversible()
+    .with_description("Rename this approved person label, or merge it into an existing label")
 }
 
 fn create_album_spec() -> ActionSpec {
@@ -1182,11 +2401,7 @@ fn create_album_spec() -> ActionSpec {
                 "stable album id, for example photos.album:holiday",
             ),
             ActionParam::required("name", ParamType::Text, "visible album name"),
-            ActionParam::optional(
-                "photo_ids",
-                ParamType::Text,
-                "comma-separated stable photo ids",
-            ),
+            photo_ids_param(false, "JSON array of stable photo ids", 0),
         ],
         |args| {
             encode(&PhotosAction::SaveAlbum {
@@ -1201,6 +2416,34 @@ fn create_album_spec() -> ActionSpec {
     .with_description("Create an album and its initial photograph membership atomically")
 }
 
+/// The agent/search counterpart of the visible library selection command.
+/// Selection never leaks into the shared document; callers name exactly the
+/// resources whose durable favorite markers should change.
+fn set_favorites_spec() -> ActionSpec {
+    ActionSpec::typed(
+        "set-favorites",
+        "Set favorites",
+        "Photograph ids and desired favorite state",
+        ExecutionLocus::ClientLocal,
+        vec![
+            photo_ids_param(
+                true,
+                "non-empty JSON array of stable photograph resource ids",
+                1,
+            ),
+            ActionParam::required("favorite", ParamType::Boolean, "whether to mark favorite"),
+        ],
+        |args| {
+            encode(&PhotosAction::SetFavorites {
+                photo_ids: membership_ids(args),
+                favorite: args.boolean("favorite").unwrap_or(false),
+            })
+        },
+    )
+    .reversible()
+    .with_description("Set the favorite marker for a bounded batch of selected photographs")
+}
+
 fn album_save_spec(album_id: &str) -> ActionSpec {
     let id = album_id.to_owned();
     ActionSpec::typed(
@@ -1210,11 +2453,7 @@ fn album_save_spec(album_id: &str) -> ActionSpec {
         ExecutionLocus::ClientLocal,
         vec![
             ActionParam::required("name", ParamType::Text, "visible album name"),
-            ActionParam::optional(
-                "photo_ids",
-                ParamType::Text,
-                "comma-separated stable photo ids",
-            ),
+            photo_ids_param(false, "JSON array of stable photo ids", 0),
         ],
         move |args| {
             encode(&PhotosAction::SaveAlbum {
@@ -1257,28 +2496,17 @@ fn album_membership_spec(album_id: &str) -> ActionSpec {
     ActionSpec::typed(
         "set-membership",
         "Set album membership",
-        "photos.photo:… , photos.photo:… (empty clears the album)",
+        "JSON array of photos.photo:… ids (an empty array clears the album)",
         ExecutionLocus::ClientLocal,
-        vec![ActionParam::required(
-            "photo_ids",
-            ParamType::Text,
-            "comma-separated stable photo ids; empty clears the album",
+        vec![photo_ids_param(
+            true,
+            "JSON array of stable photo ids; an empty array clears the album",
+            0,
         )],
         move |args: &ActionArgs| {
-            let ids = args
-                .text("photo_ids")
-                .map(|value| {
-                    value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|id| !id.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default();
             encode(&PhotosAction::SetAlbumMembership {
                 album_id: album_id.clone(),
-                photo_ids: ids,
+                photo_ids: membership_ids(args),
             })
         },
     )
@@ -1334,6 +2562,61 @@ fn file_operation(id: &str, label: &str, open: bool) -> ActionSpec {
         ],
         ..ActionContract::default()
     })
+}
+
+/// The indexer is a local job rather than a document action because directory
+/// enumeration depends on this machine's consented filesystem. Each result is
+/// later admitted through `ImportPhoto`, preserving collaboration/history.
+fn import_directory_spec(reindex: bool) -> ActionSpec {
+    let id = if reindex {
+        "reindex-directory"
+    } else {
+        "import-directory"
+    };
+    let label = if reindex {
+        "Reindex photo folder"
+    } else {
+        "Import photo folder"
+    };
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "A local folder and EXIF-location choice",
+        OperationKind::Effect,
+        PHOTOS_OPERATION_TYPE,
+        vec![
+            ActionParam::required("path", ParamType::Text, "explicit local folder path"),
+            ActionParam::optional(
+                "retain_exif_location",
+                ParamType::Boolean,
+                "retain GPS read from imported files; defaults to true",
+            ),
+        ],
+        move |args| {
+            let path = args.text("path").unwrap_or_default().trim().to_owned();
+            let retain_exif_location = args.boolean("retain_exif_location").unwrap_or(true);
+            let operation = if reindex {
+                PhotosOperation::ReindexDirectory { path, retain_exif_location }
+            } else {
+                PhotosOperation::ImportDirectory {
+                    path: Some(path),
+                    retain_exif_location,
+                }
+            };
+            EncodedAction::encode_operation(PHOTOS_OPERATION_TYPE, &operation).unwrap_or_else(|error| EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                payload: format!("photos directory operation could not be serialized: {error}").into_bytes(),
+            })
+        },
+    )
+    .with_contract(ActionContract {
+        retry: RetryPolicy::AtMostOnce,
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Job,
+        tags: vec!["device-local".into(), "filesystem".into(), "portal".into(), "sensitive-path".into(), "bounded-index".into()],
+        ..ActionContract::default()
+    })
+    .with_description("Recursively index a selected folder with bounded real-file reads; paths never enter collaboration and EXIF GPS is never uploaded")
 }
 
 /// The address of a photograph: what it is, not where a machine put it.
@@ -1434,6 +2717,304 @@ mod tests {
         doc
     }
 
+    fn shared_analysis(content: String) -> ImageAnalysis {
+        ImageAnalysis {
+            ocr_text: "invoice total forty two".to_owned(),
+            description: "A dog beside a red bicycle".to_owned(),
+            objects: vec!["bicycle".to_owned()],
+            pets: vec!["dog".to_owned()],
+            people: vec!["Sam".to_owned()],
+            provenance: crate::model::AnalysisProvenance {
+                source: "local-ocr".to_owned(),
+                engine: "tilo-ocr".to_owned(),
+                language: "eng".to_owned(),
+                content,
+                scope: "shared".to_owned(),
+                ..crate::model::AnalysisProvenance::default()
+            },
+        }
+    }
+
+    #[test]
+    fn explicit_location_is_typed_searchable_addressable_and_can_be_cleared() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("place.png", 40, 20);
+        let id = photo.id.clone();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+        let location = PhotoLocation {
+            latitude: 37.7749,
+            longitude: -122.4194,
+            label: Some("San Francisco".to_owned()),
+            provenance: crate::model::LocationProvenance {
+                source: "exif".to_owned(),
+                scope: "shared".to_owned(),
+            },
+        };
+        PhotosAction::SetPhotoLocation {
+            photo_id: id.clone(),
+            location: location.clone(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            PhotosDoc::photo(&doc, &id).unwrap().location,
+            Some(location.clone())
+        );
+        let place_id = place_resource_id(&location.place_key());
+        let place = PhotosResources.resource(&doc, &place_id).unwrap();
+        assert_eq!(place.kind, "photos.place");
+        assert!(place.actions.iter().any(|action| action.id == "open"));
+        let photo_resource = PhotosResources.resource(&doc, &id).unwrap();
+        assert!(
+            photo_resource
+                .actions
+                .iter()
+                .any(|action| action.id == "view-place")
+        );
+        assert!(
+            photo_resource
+                .actions
+                .iter()
+                .any(|action| action.id == "clear-location")
+        );
+        PhotosAction::ClearPhotoLocation {
+            photo_id: id.clone(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(PhotosDoc::photo(&doc, &id).unwrap().location.is_none());
+        assert!(PhotosResources.resource(&doc, &place_id).is_none());
+    }
+
+    #[test]
+    fn locations_refuse_local_scope_or_out_of_range_coordinates() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("invalid-place.png", 40, 20);
+        let id = photo.id.clone();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+        let invalid = PhotoLocation {
+            latitude: 91.0,
+            longitude: 0.0,
+            label: None,
+            provenance: crate::model::LocationProvenance {
+                source: "user".to_owned(),
+                scope: "local".to_owned(),
+            },
+        };
+        assert!(
+            PhotosAction::SetPhotoLocation {
+                photo_id: id,
+                location: invalid
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_shared_analysis_is_bounded_addressable_and_removable() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("analysis.png", 40, 20);
+        let id = photo.id.clone();
+        let content = photo.image.content.clone().unwrap();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+        PhotosAction::SetImageAnalysis {
+            photo_id: id.clone(),
+            analysis: Some(shared_analysis(content)),
+        }
+        .apply(&mut doc)
+        .unwrap();
+
+        let stored = PhotosDoc::photo(&doc, &id).unwrap();
+        assert_eq!(stored.analysis.unwrap().ocr_text, "invoice total forty two");
+        assert!(
+            PhotosResources
+                .resource(&doc, &object_resource_id("bicycle"))
+                .is_some()
+        );
+        assert!(
+            PhotosResources
+                .resource(&doc, &pet_resource_id("dog"))
+                .is_some()
+        );
+        let resource = PhotosResources.resource(&doc, &id).unwrap();
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == "recognize-text")
+        );
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == "remove-analysis")
+        );
+
+        let local = ImageAnalysis {
+            provenance: crate::model::AnalysisProvenance {
+                scope: "local".to_owned(),
+                ..crate::model::AnalysisProvenance::default()
+            },
+            ocr_text: "must not silently sync".to_owned(),
+            ..ImageAnalysis::default()
+        };
+        assert!(
+            PhotosAction::SetImageAnalysis {
+                photo_id: id,
+                analysis: Some(local),
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn image_analysis_is_a_cancellable_background_operation() {
+        let spec = operation(
+            "analyze-image",
+            "Analyze image locally",
+            &PhotosOperation::AnalyzeImage {
+                resource_id: "photos.photo:abc".to_owned(),
+            },
+        )
+        .expect("operation serializes");
+        assert_eq!(spec.kind, OperationKind::Effect);
+        assert_eq!(
+            spec.contract.execution,
+            ExecutionMode::Background { cancellable: true }
+        );
+        assert_eq!(spec.contract.result, ResultSpec::Job);
+        assert_eq!(spec.contract.retry, RetryPolicy::AtMostOnce);
+        for tag in [
+            "device-local",
+            "privacy-sensitive",
+            "local-analysis",
+            "explicit-share",
+        ] {
+            assert!(spec.contract.tags.iter().any(|candidate| candidate == tag));
+        }
+    }
+
+    #[test]
+    fn vision_analysis_requires_a_pinned_model_provenance() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("vision.png", 40, 20);
+        let id = photo.id.clone();
+        let content = photo.image.content.clone().unwrap();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+        let analysis = ImageAnalysis {
+            description: "A bicycle outside".to_owned(),
+            objects: vec!["bicycle".to_owned()],
+            provenance: crate::model::AnalysisProvenance {
+                source: "local-vision".to_owned(),
+                engine: "tilo-vision".to_owned(),
+                model_id: "signed-vision-model".to_owned(),
+                model_revision: "a".repeat(64),
+                content,
+                scope: "shared".to_owned(),
+                ..crate::model::AnalysisProvenance::default()
+            },
+            ..ImageAnalysis::default()
+        };
+        PhotosAction::SetImageAnalysis {
+            photo_id: id.clone(),
+            analysis: Some(analysis),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let stored = PhotosDoc::photo(&doc, &id).unwrap().analysis.unwrap();
+        assert_eq!(stored.provenance.model_id, "signed-vision-model");
+        assert_eq!(stored.provenance.model_revision, "a".repeat(64));
+
+        let rejected = ImageAnalysis {
+            description: "A bicycle outside".to_owned(),
+            provenance: crate::model::AnalysisProvenance {
+                source: "local-vision".to_owned(),
+                engine: "tilo-vision".to_owned(),
+                content: stored.provenance.content,
+                scope: "shared".to_owned(),
+                ..crate::model::AnalysisProvenance::default()
+            },
+            ..ImageAnalysis::default()
+        };
+        assert!(
+            PhotosAction::SetImageAnalysis {
+                photo_id: id,
+                analysis: Some(rejected),
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn approved_people_membership_is_atomic_searchable_and_never_carries_biometrics() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let first = portable_photo("people-one.png", 40, 20);
+        let second = portable_photo("people-two.png", 40, 20);
+        let first_id = first.id.clone();
+        let second_id = second.id.clone();
+        PhotosAction::ImportPhoto { photo: first }
+            .apply(&mut doc)
+            .unwrap();
+        PhotosAction::ImportPhoto { photo: second }
+            .apply(&mut doc)
+            .unwrap();
+
+        PhotosAction::SetPersonMembership {
+            person: "Sam".to_owned(),
+            photo_ids: vec![first_id.clone(), second_id.clone()],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(PhotosDoc::photo(&doc, &first_id).unwrap().people, ["Sam"]);
+        assert_eq!(PhotosDoc::photo(&doc, &second_id).unwrap().people, ["Sam"]);
+        let person = PhotosResources
+            .resource(&doc, &person_resource_id("Sam"))
+            .expect("approved person is a resource");
+        assert!(
+            person
+                .actions
+                .iter()
+                .any(|action| action.id == "set-membership")
+        );
+        assert!(person.actions.iter().any(|action| action.id == "rename"));
+        assert!(
+            person
+                .actions
+                .iter()
+                .any(|action| action.id == "remove-person")
+        );
+
+        PhotosAction::RenamePerson {
+            from: "Sam".to_owned(),
+            to: "Samantha".to_owned(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            PhotosDoc::photo(&doc, &first_id).unwrap().people,
+            ["Samantha"]
+        );
+        PhotosAction::RemovePerson {
+            person: "Samantha".to_owned(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(PhotosDoc::photo(&doc, &first_id).unwrap().people.is_empty());
+        assert!(
+            PhotosResources
+                .resource(&doc, &person_resource_id("Samantha"))
+                .is_none()
+        );
+    }
+
     /// The address of a photograph that names its content is that content.
     ///
     /// Asserted on the published tree rather than on `resource_id` alone, so
@@ -1496,6 +3077,92 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "import")
         );
+    }
+
+    #[test]
+    fn timeline_boundaries_are_canonical_actions_with_a_bounded_context_tree() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut library = crate::model::PhotoLibrary::default();
+        for index in 0..80 {
+            let mut photo = portable_photo(&format!("timeline-{index}.png"), 40, 20);
+            photo.captured_at = Some(format!("2026-{:02}-{:02}", index / 28 + 1, index % 28 + 1));
+            library.photos.push(photo);
+        }
+        // A non-calendar label remains in the library but is not made into a
+        // fake chronological boundary.
+        let mut undated = portable_photo("undated.png", 40, 20);
+        undated.captured_at = Some("summer holidays".into());
+        library.photos.push(undated);
+        PhotosDoc::set_library(&mut doc, &library);
+
+        let root = PhotosResources
+            .resources(&doc)
+            .pop()
+            .expect("library root is published");
+        let timeline = root
+            .children
+            .iter()
+            .find(|child| child.id.0 == "photos.timeline")
+            .expect("timeline is discoverable beneath the library");
+        assert_eq!(timeline.kind, TIMELINE_KIND);
+        assert!(
+            timeline.children.len()
+                <= 1 + TIMELINE_MONTH_CONTEXT_LIMIT + TIMELINE_DAY_CONTEXT_LIMIT
+        );
+        let open = timeline
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("timeline has a stable open action");
+        let tilo_actions::ActionInput::Immediate(encoded) = &open.input else {
+            panic!("timeline opening is a presentation operation");
+        };
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PhotosOperation::ViewTimeline { anchor: None })
+        );
+
+        let day_id = timeline_day_resource_id("2026-01-01");
+        let day = PhotosResources
+            .resource(&doc, &day_id)
+            .expect("late timeline day resolves outside the bounded root context");
+        let action = day
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("day has a stable open action");
+        let tilo_actions::ActionInput::Immediate(encoded) = &action.input else {
+            panic!("timeline day opening is a presentation operation");
+        };
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PhotosOperation::ViewTimeline {
+                anchor: Some(TimelineAnchor::Day {
+                    day: "2026-01-01".into(),
+                }),
+            })
+        );
+        assert!(
+            PhotosResources
+                .resource(&doc, "photos.timeline:day:summer holidays")
+                .is_none(),
+            "free-form metadata cannot masquerade as a chronological resource"
+        );
+    }
+
+    #[test]
+    fn timeline_boundaries_refuse_invalid_or_free_form_capture_dates() {
+        assert_eq!(
+            timeline_day_from_capture("2024-02-29 12:00"),
+            Some("2024-02-29".into())
+        );
+        for capture in ["2025-02-29", "2026-13-01", "2026-04-31", "summer 2026"] {
+            assert!(
+                timeline_day_from_capture(capture).is_none(),
+                "{capture} must not be published as a chronological boundary"
+            );
+        }
     }
 
     #[test]
@@ -2039,7 +3706,14 @@ mod tests {
         let late = library.photos.last().unwrap().id.clone();
         PhotosDoc::set_library(&mut doc, &library);
         let root = PhotosResources.resources(&doc).pop().unwrap();
-        assert!(root.children.len() <= LIBRARY_CONTEXT_LIMIT);
+        assert!(
+            root.children
+                .iter()
+                .filter(|child| child.kind == "photos.photo")
+                .count()
+                <= LIBRARY_CONTEXT_LIMIT,
+            "contextual photos stay bounded even as fixed virtual collections are added"
+        );
         let resolved = PhotosResources
             .resource(&doc, &late)
             .expect("late stable id resolves");
@@ -2049,6 +3723,128 @@ mod tests {
             PhotosResources
                 .resource(&doc, "photos.photo:stale")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn favorites_are_a_stable_browse_resource_with_an_honest_count() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut favorite = portable_photo("/photos/favorite.png", 20, 10);
+        favorite.favorite = true;
+        let ordinary = portable_photo("/photos/ordinary.png", 20, 10);
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![favorite, ordinary],
+                albums: Vec::new(),
+            },
+        );
+
+        let favorites = PhotosResources
+            .resource(&doc, "photos.favorites")
+            .expect("favorites is addressable even outside a materialized shelf");
+        assert_eq!(favorites.kind, FAVORITES_KIND);
+        assert!(favorites.actions.iter().any(|action| action.id == "open"));
+        assert!(
+            favorites
+                .children
+                .iter()
+                .any(|child| child.label == "1 photographs")
+        );
+        let root = PhotosResources.resources(&doc).pop().expect("library root");
+        assert!(
+            root.children
+                .iter()
+                .any(|child| child.id.0 == "photos.favorites")
+        );
+        let batch = root
+            .actions
+            .iter()
+            .find(|action| action.id == "set-favorites")
+            .expect("the library publishes the batch operation agents and selection use");
+        assert!(batch.contract.reversible);
+        assert_eq!(batch.params().len(), 2);
+        assert_eq!(batch.params()[0].ty, ParamType::Array);
+        assert!(
+            batch
+                .build_args([
+                    (
+                        "photo_ids".into(),
+                        tilo_actions::ArgValue::Array(Vec::new())
+                    ),
+                    ("favorite".into(), tilo_actions::ArgValue::Boolean(true)),
+                ])
+                .is_err(),
+            "an empty batch is rejected by the public action contract"
+        );
+        assert!(
+            batch
+                .build_args([
+                    (
+                        "photo_ids".into(),
+                        tilo_actions::ArgValue::Array(vec![serde_json::Value::from(7)]),
+                    ),
+                    ("favorite".into(), tilo_actions::ArgValue::Boolean(true)),
+                ])
+                .is_err(),
+            "an invalid array item is refused rather than disappearing from the request"
+        );
+    }
+
+    #[test]
+    fn favorite_batch_is_atomic_replayable_and_refuses_a_stale_selection() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let first = portable_photo("/photos/first.png", 20, 10);
+        let second = portable_photo("/photos/second.png", 20, 10);
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![first.clone(), second.clone()],
+                albums: Vec::new(),
+            },
+        );
+        let initial = PhotosDoc::library(&doc);
+        let batch = PhotosAction::SetFavorites {
+            photo_ids: vec![first.id.clone(), second.id],
+            favorite: true,
+        };
+        batch
+            .apply(&mut doc)
+            .expect("both known ids apply together");
+        assert!(
+            PhotosDoc::library(&doc)
+                .photos
+                .iter()
+                .all(|photo| photo.favorite)
+        );
+
+        let before = PhotosDoc::library(&doc);
+        PhotosAction::SetFavorites {
+            photo_ids: vec![first.id, "photos.photo:gone".into()],
+            favorite: false,
+        }
+        .apply(&mut doc)
+        .expect_err("a stale selection cannot partially change favorites");
+        assert_eq!(PhotosDoc::library(&doc), before);
+
+        let encoded = encode(&batch);
+        let mut replica = AutoCommit::new();
+        PhotosDoc::seed(&mut replica);
+        PhotosDoc::set_library(&mut replica, &initial);
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        registry
+            .decode(&encoded)
+            .expect("the canonical registry decodes the selection result")
+            .apply(&mut replica)
+            .expect("replaying an absolute favorite state succeeds");
+        assert!(
+            PhotosDoc::library(&replica)
+                .photos
+                .iter()
+                .all(|photo| photo.favorite)
         );
     }
 

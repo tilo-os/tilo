@@ -34,7 +34,9 @@
 // the `ui` toolkit this app links -- and with it wgpu, vello,
 // cosmic-text, automerge, taffy and fluent -- so with `-C
 // prefer-dynamic` rustc serves `ui` and libstd from the dylib instead
-// of baking ~18 MB of `.text` into this binary. Naming the crate here
+// of baking ~18 MB of `.text` into this binary. The thin-app wrapper also
+// size-optimizes, merges, and folds repeated app-local code so the qpkg meets its
+// 5 MiB wire contract without slowing the shared runtime. Naming the crate here
 // is what keeps rustc from eliminating it as unused. Compiled out in
 // normal (static) builds.
 #![cfg_attr(

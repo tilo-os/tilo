@@ -143,6 +143,13 @@ impl ChatApp {
                     MouseScrollDelta::PixelDelta(p) => p.y / scale,
                 };
                 self.scroll += dy;
+                // A positive offset moves away from the live edge. Do this at
+                // event time rather than waiting for paint: `sync` may run
+                // between the input event and the next frame, and must not
+                // acknowledge messages the reader has just scrolled away from.
+                if dy > 0.0 {
+                    self.timeline_at_end = false;
+                }
                 *handled = true;
             }
             WindowEvent::MouseInput {
@@ -385,6 +392,16 @@ impl ChatApp {
             return;
         }
 
+        // Preserve TextInput's ordinary End behaviour, but offer the familiar
+        // Ctrl+End route to the conversation's live edge from anywhere in the
+        // app. The visible button below exposes the same operation to pointer,
+        // Tab, and assistive-technology users.
+        if modifiers.state().control_key() && matches!(logical_key, Key::Named(NamedKey::End)) {
+            self.jump_to_latest();
+            *handled = true;
+            return;
+        }
+
         // Tab walks Chat's real primary-control inventory. Enter/Space then
         // activates the same `Hit` path as a pointer, including the composers.
         // This check deliberately precedes composer routing: a multiline input
@@ -608,6 +625,7 @@ impl ChatApp {
         // Search reveal accents are transient selection affordances. Once the
         // person interacts with Chat directly, ordinary navigation takes over.
         self.revealed_message = None;
+        self.reveal_scroll_pending = false;
         self.revealed_person = None;
         // Any click dismisses an open context menu unless it's a menu action.
         if !matches!(hit, Hit::MenuAction { .. }) {
@@ -667,6 +685,7 @@ impl ChatApp {
                 self.set_composer_focus();
             }
             Hit::Send => self.send_focused(doc),
+            Hit::JumpToLatest => self.jump_to_latest(),
             Hit::ComposerEmoji(anchor) if self.can_participate() => {
                 self.emoji_open = true;
                 self.emoji_target = None;
@@ -722,7 +741,7 @@ impl ChatApp {
         if self.active_ws != id {
             self.active_ws = id;
             self.thread_open = None;
-            self.scroll = 0.0;
+            self.reset_timeline_to_latest();
             self.focus = Focus::Main;
             self.active_channel.clear(); // force reload to pick first text channel
         }
@@ -738,7 +757,7 @@ impl ChatApp {
             }
             self.active_channel = id;
             self.thread_open = None;
-            self.scroll = 0.0;
+            self.reset_timeline_to_latest();
             self.focus = Focus::Main;
             // Picking a channel in overlay mode closes the left flap.
             if self.left_mode == crate::responsive::FlapMode::Overlay {
@@ -1428,9 +1447,25 @@ impl ChatApp {
         );
         ChatDoc::clear_draft(doc, &key);
         if matches!(self.focus, Focus::Main) {
-            self.scroll = 0.0;
+            self.jump_to_latest();
         }
         self.reload(doc);
+    }
+
+    /// Return to the newest message. This is intentionally local state: it
+    /// changes no shared message/read record by itself; the next sync records
+    /// a read watermark only because the reader can then see that edge.
+    pub(crate) fn jump_to_latest(&mut self) {
+        self.scroll = 0.0;
+        self.timeline_at_end = true;
+    }
+
+    /// A channel switch has no meaningful visual anchor to preserve, so start
+    /// at the current conversation's newest edge and discard the previous
+    /// channel's measured height.
+    pub(crate) fn reset_timeline_to_latest(&mut self) {
+        self.jump_to_latest();
+        self.timeline_total_height = 0.0;
     }
 
     /// Open the workspace file picker (the composer "+"). Lists the real
@@ -3884,6 +3919,96 @@ mod tests {
         let up = app.scroll;
         feed(&mut app, &mut doc, &wheel(-5.0));
         assert!(app.scroll < up, "scrolling the other way moves it back");
+    }
+
+    #[test]
+    fn reading_history_does_not_mark_new_messages_read_until_returning_to_latest() {
+        let (mut app, mut doc) = app_with_doc();
+        app.mark_active_read(&mut doc);
+        let watermark = ChatDoc::read_watermark(&doc, &app.active_channel, &app.me.id);
+
+        // A remote message arrives after the current read boundary. Being in
+        // the room is not enough to acknowledge it once the reader has moved
+        // back through history.
+        ChatDoc::push_message(
+            &mut doc,
+            &app.active_channel,
+            NewMessage {
+                author: "u_aria".into(),
+                ts: NOW + 1,
+                text: "A newer update while you are reading history".into(),
+                ..Default::default()
+            },
+        );
+        app.timeline_at_end = false;
+        app.mark_active_read(&mut doc);
+        assert_eq!(
+            ChatDoc::read_watermark(&doc, &app.active_channel, &app.me.id),
+            watermark,
+            "a reader away from the live edge does not send a false read receipt"
+        );
+
+        app.jump_to_latest();
+        app.mark_active_read(&mut doc);
+        assert!(
+            ChatDoc::read_watermark(&doc, &app.active_channel, &app.me.id) > watermark,
+            "the same message is acknowledged once the reader returns to it"
+        );
+    }
+
+    #[test]
+    fn history_scroll_exposes_an_accessible_return_to_latest_control() {
+        let (mut app, mut doc) = app_with_doc();
+        for n in 0..24 {
+            ChatDoc::push_message(
+                &mut doc,
+                &app.active_channel,
+                NewMessage {
+                    author: "u_aria".into(),
+                    ts: NOW + i64::from(n),
+                    text: format!(
+                        "Longer history line {n}: enough text to wrap inside a narrow conversation column."
+                    ),
+                    ..Default::default()
+                },
+            );
+        }
+        app.reload(&doc);
+        render_frame(&mut app, 390.0, 620.0);
+        feed(&mut app, &mut doc, &wheel(12.0));
+        render_frame(&mut app, 390.0, 620.0);
+
+        assert!(
+            !app.timeline_at_end,
+            "history-directed wheel input leaves the live edge"
+        );
+        assert!(
+            app.semantic_hits().iter().any(|(_, hit, name, role, _)| {
+                matches!(hit, Hit::JumpToLatest)
+                    && name == "Jump to latest message"
+                    && *role == ui::a11y::Role::Button
+            }),
+            "the return route is a labelled semantic button, not pointer-only chrome"
+        );
+
+        app.on_hit(Hit::JumpToLatest, &mut doc);
+        assert_eq!(app.scroll, 0.0);
+        assert!(app.timeline_at_end);
+    }
+
+    #[test]
+    fn ctrl_end_returns_to_the_live_edge_without_stealing_plain_end() {
+        let (mut app, mut doc) = app_with_doc();
+        app.scroll = -180.0;
+        app.timeline_at_end = false;
+        feed_mods(
+            &mut app,
+            &mut doc,
+            &key_named(NamedKey::End),
+            mods(true, false),
+        );
+        assert_eq!(app.scroll, 0.0);
+        assert!(app.timeline_at_end);
     }
 
     #[test]

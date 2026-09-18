@@ -24,7 +24,7 @@ pub struct InspectionPolicy {
 impl Default for InspectionPolicy {
     fn default() -> Self {
         Self {
-            max_package_bytes: 512 * 1024 * 1024,
+            max_package_bytes: app_registry::MAX_APP_QPKG_BYTES,
             timeout: Duration::from_secs(30),
             allow_insecure_local: false,
         }
@@ -252,6 +252,10 @@ pub fn inspect_bytes(
         version: version.version.clone(),
         reason: error.to_string(),
     })?;
+    app_registry::validate_payload_shape(&meta).map_err(|error| BundleReviewError::Verify {
+        version: version.version.clone(),
+        reason: error.to_string(),
+    })?;
     if meta.manifest.package.id != entry.package_id
         || meta.manifest.package.version != version.version
     {
@@ -317,6 +321,20 @@ mod tests {
     use super::*;
     use pkg::pack::{SigningIdentity, pack};
     use pkg::{Manifest, MemoryBlobStore};
+
+    #[test]
+    fn default_review_policy_enforces_the_app_limit_before_download() {
+        let policy = InspectionPolicy::default();
+        assert_eq!(policy.max_package_bytes, app_registry::MAX_APP_QPKG_BYTES);
+
+        let mut entry = sample_entry("https://example.com/app.qpkg");
+        entry.versions[0].qpkg_size_bytes = app_registry::MAX_APP_QPKG_BYTES + 1;
+        assert!(matches!(
+            inspect_entry(&entry, policy),
+            Err(BundleReviewError::TooLarge { limit, .. })
+                if limit == app_registry::MAX_APP_QPKG_BYTES
+        ));
+    }
 
     #[test]
     fn review_fetch_refuses_local_and_credentialed_urls_before_network_io() {

@@ -22,6 +22,7 @@ const INVITED_TAG: &str = "invited";
 const INVITED_ROW_ALPHA: f32 = 0.55;
 const ROW_H: f64 = 64.0;
 const MY_STATUS_H: f64 = 92.0;
+const EXPOSURE_H: f64 = 44.0;
 const ROSTER_PAGE_SIZE: usize = 3;
 const ROSTER_PAGER_H: f64 = 36.0;
 
@@ -141,6 +142,9 @@ pub struct CollaboratorsModel<'a> {
     pub own_status_automatic: bool,
     pub status_sharing: ui::StatusSharing,
     pub status_editing: bool,
+    /// Compositor-authoritative disclosure of exactly who can currently see
+    /// or control which shared surface. Presence alone never implies this.
+    pub screen_exposure: Option<&'a str>,
 }
 
 /// Direction of a transient attachment relative to one roster row.
@@ -195,6 +199,7 @@ pub struct CollaboratorsOverlay {
     accessibility_status_automatic: bool,
     accessibility_sharing: ui::StatusSharing,
     accessibility_editing: bool,
+    accessibility_screen_exposure: Option<String>,
 }
 
 impl CollaboratorsOverlay {
@@ -212,6 +217,7 @@ impl CollaboratorsOverlay {
             model.rows.len(),
             model.unavailable.is_some(),
             model.may_invite,
+            model.screen_exposure.is_some(),
         );
         self.accessibility_rows.clear();
         self.accessibility_rows.extend_from_slice(model.rows);
@@ -220,6 +226,7 @@ impl CollaboratorsOverlay {
         self.accessibility_status_automatic = model.own_status_automatic;
         self.accessibility_sharing = model.status_sharing;
         self.accessibility_editing = model.status_editing;
+        self.accessibility_screen_exposure = model.screen_exposure.map(str::to_string);
         for (target, row) in self.row_actions.iter_mut().zip(model.rows) {
             if !row.followable || target.y1 > self.activity.y0 - 4.0 {
                 *target = Rect::ZERO;
@@ -279,6 +286,42 @@ impl CollaboratorsOverlay {
             scene.fill(Fill::NonZero, transform, color, None, &dot);
         }
         self.draw_own_status(scene, transform, text_renderer, theme, model, cursor);
+        if let Some(exposure) = model.screen_exposure {
+            let banner = Rect::new(
+                rect.x0 + 12.0,
+                rect.y0 + 48.0 + MY_STATUS_H,
+                rect.x1 - 12.0,
+                rect.y0 + 48.0 + MY_STATUS_H + EXPOSURE_H - 4.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5].multiply_alpha(0.12),
+                None,
+                &RoundedRect::from_rect(banner, f64::from(tokens.radii.sm)),
+            );
+            text_renderer.draw_text(
+                scene,
+                "Screen visible now",
+                tokens.typography.scale.xs,
+                colors.accent[5],
+                transform.pre_translate((banner.x0 + 8.0, banner.y0 + 5.0).into()),
+                None,
+            );
+            let detail = text_renderer.elide_to_width(
+                exposure,
+                tokens.typography.scale.xs,
+                (banner.width() - 16.0).max(0.0) as f32,
+            );
+            text_renderer.draw_text(
+                scene,
+                &detail,
+                tokens.typography.scale.xs,
+                colors.text_primary,
+                transform.pre_translate((banner.x0 + 8.0, banner.y0 + 21.0).into()),
+                None,
+            );
+        }
 
         if let Some(reason) = model.unavailable {
             text_renderer.draw_text(
@@ -301,11 +344,19 @@ impl CollaboratorsOverlay {
             );
         }
 
-        let list_top = if model.unavailable.is_some() {
-            rect.y0 + 48.0 + WARNING_H + MY_STATUS_H
-        } else {
-            rect.y0 + 48.0 + MY_STATUS_H
-        };
+        let list_top = rect.y0
+            + 48.0
+            + MY_STATUS_H
+            + if model.screen_exposure.is_some() {
+                EXPOSURE_H
+            } else {
+                0.0
+            }
+            + if model.unavailable.is_some() {
+                WARNING_H
+            } else {
+                0.0
+            };
         for (visible_index, index) in self.roster_range.clone().enumerate() {
             let row = &model.rows[index];
             let relationship = model.relationship_for(&row.id);
@@ -656,11 +707,16 @@ impl CollaboratorsOverlay {
             }
             children.push(node);
         }
+        let mut description =
+            "Live workspace presence, current activity, intent, and status privacy controls"
+                .to_string();
+        if let Some(exposure) = &self.accessibility_screen_exposure {
+            description.push_str("; Screen visible now: ");
+            description.push_str(exposure);
+        }
         AccessNode::new(Role::Dialog)
             .with_name("People")
-            .with_description(
-                "Live workspace presence, current activity, intent, and status privacy controls",
-            )
+            .with_description(description)
             .with_children(children)
     }
 
@@ -691,7 +747,14 @@ impl CollaboratorsOverlay {
         true
     }
 
-    fn layout(&mut self, host: Rect, member_count: usize, unavailable: bool, may_invite: bool) {
+    fn layout(
+        &mut self,
+        host: Rect,
+        member_count: usize,
+        unavailable: bool,
+        may_invite: bool,
+        has_exposure: bool,
+    ) {
         if self.roster_offset >= member_count {
             self.roster_offset = 0;
         }
@@ -709,8 +772,16 @@ impl CollaboratorsOverlay {
         };
         let actions_h = if may_invite { ACTIONS_H } else { 0.0 };
         let pager_h = if paged { ROSTER_PAGER_H } else { 0.0 };
-        let height =
-            48.0 + MY_STATUS_H + warning_h + rows * ROW_H + pager_h + 16.0 + actions_h + FOOTER_H;
+        let exposure_h = if has_exposure { EXPOSURE_H } else { 0.0 };
+        let height = 48.0
+            + MY_STATUS_H
+            + exposure_h
+            + warning_h
+            + rows * ROW_H
+            + pager_h
+            + 16.0
+            + actions_h
+            + FOOTER_H;
         let x1 = host.x1 - 16.0;
         let y0 = host.y0 + 48.0;
         self.panel = Rect::new(x1 - 320.0, y0, x1, y0 + height);
@@ -731,6 +802,7 @@ impl CollaboratorsOverlay {
                 let y = self.panel.y0
                     + 48.0
                     + MY_STATUS_H
+                    + exposure_h
                     + warning_h
                     + row_count_as_f64(visible_index) * ROW_H;
                 Rect::new(
@@ -752,13 +824,15 @@ impl CollaboratorsOverlay {
                 let y = self.panel.y0
                     + 48.0
                     + MY_STATUS_H
+                    + exposure_h
                     + warning_h
                     + row_count_as_f64(visible_index) * ROW_H;
                 Rect::new(self.panel.x0 + 8.0, y, self.panel.x1 - 8.0, y + ROW_H)
             })
             .collect();
         if paged {
-            let pager_y = self.panel.y0 + 48.0 + MY_STATUS_H + warning_h + rows * ROW_H;
+            let pager_y =
+                self.panel.y0 + 48.0 + MY_STATUS_H + exposure_h + warning_h + rows * ROW_H;
             let center = self.panel.x0 + self.panel.width() / 2.0;
             self.previous_people = (self.roster_offset > 0)
                 .then(|| {
@@ -1453,7 +1527,10 @@ pub(crate) fn collaborator_roster_rows_with_local_user(
         .map(|participant| {
             let agent_role = agent_members
                 .iter()
-                .find(|(agent, _)| agent.eq_ignore_ascii_case(&participant.name))
+                .find(|(agent, _)| {
+                    agent.eq_ignore_ascii_case(&participant.id)
+                        || agent.eq_ignore_ascii_case(&participant.name)
+                })
                 .map(|(_, role)| *role);
             let is_agent = agent_role.is_some();
             let (red, green, blue) = colors
@@ -1486,7 +1563,7 @@ pub(crate) fn collaborator_roster_rows_with_local_user(
         .collect();
     // The collaborators popover is immediate presence, not membership
     // administration. An agent granted access but not connected belongs in
-    // Members; once its live session arrives in `roster`, the name match
+    // Members; once its live session arrives in `roster`, the identity match
     // above tags it as an agent and exposes the same cursor/follow affordance
     // through truthful semantic activity rather than a fabricated cursor.
     rows
@@ -1515,9 +1592,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn agent_classification_uses_stable_identity_not_display_label() {
+        use crate::shell::state::{CapOverride, Subject, Verb, Workspace, WorkspaceId};
+
+        let mut workspace = Workspace::new(WorkspaceId::new(), "Shared");
+        workspace.owner = Some("owner".into());
+        workspace
+            .grant_as(
+                &"owner".to_string(),
+                CapOverride::membership(
+                    Subject::agent("scribe"),
+                    workspace.id.raw().to_string(),
+                    Verb::Write,
+                ),
+            )
+            .expect("owner admits agent");
+        workspace
+            .collaborators
+            .push(crate::shell::state::Collaborator::new(
+                "scribe",
+                "Release Notes Agent",
+            ));
+        let mut tree = WorkspaceTree::default();
+        tree.active = workspace.id;
+        tree.workspaces.push(workspace);
+
+        let rows = collaborator_roster_rows(&tree);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "Release Notes Agent");
+        assert!(
+            rows[0].is_agent,
+            "a renamed agent must never appear as a person"
+        );
+        assert_eq!(rows[0].role.as_deref(), Some("editor"));
+    }
+
+    #[test]
     fn hit_testing_uses_the_same_cached_geometry_as_paint() {
         let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true);
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true, false);
         let (invite, join) = overlay.action_rects();
         assert_eq!(overlay.hit_test(invite.center()), CollaboratorsHit::Invite);
         assert_eq!(overlay.hit_test(join.center()), CollaboratorsHit::Join);
@@ -1540,9 +1653,9 @@ mod tests {
     fn policy_removes_invite_geometry_instead_of_only_hiding_it() {
         let mut overlay = CollaboratorsOverlay::default();
         let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        overlay.layout(host, 1, false, true);
+        overlay.layout(host, 1, false, true, false);
         assert!(overlay.action_rects().0.area() > 0.0);
-        overlay.layout(host, 1, false, false);
+        overlay.layout(host, 1, false, false, false);
         assert_eq!(overlay.action_rects(), (Rect::ZERO, Rect::ZERO));
     }
 
@@ -1550,7 +1663,7 @@ mod tests {
     fn crowded_rosters_page_without_putting_rows_under_the_footer() {
         let mut overlay = CollaboratorsOverlay::default();
         let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        overlay.layout(host, 8, false, true);
+        overlay.layout(host, 8, false, true, false);
 
         assert_eq!(
             overlay
@@ -1574,7 +1687,7 @@ mod tests {
         );
 
         overlay.change_people_page(true, 8);
-        overlay.layout(host, 8, false, true);
+        overlay.layout(host, 8, false, true, false);
         assert_eq!(overlay.roster_range, 3..6);
         assert!(overlay.previous_people.area() > 0.0);
         assert_eq!(
@@ -1583,7 +1696,7 @@ mod tests {
         );
 
         overlay.change_people_page(true, 8);
-        overlay.layout(host, 8, false, true);
+        overlay.layout(host, 8, false, true, false);
         assert_eq!(overlay.roster_range, 6..8);
         assert_eq!(
             overlay
@@ -1599,7 +1712,7 @@ mod tests {
     #[test]
     fn clearing_drops_every_invisible_hit_target() {
         let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true);
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true, false);
         overlay.clear();
         assert_eq!(overlay.panel_rect(), Rect::ZERO);
         assert_eq!(overlay.action_rects(), (Rect::ZERO, Rect::ZERO));
@@ -1610,7 +1723,7 @@ mod tests {
     #[test]
     fn own_status_and_privacy_modes_are_first_class_hit_targets() {
         let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true);
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true, false);
         assert_eq!(
             overlay.hit_test(overlay.status.center()),
             CollaboratorsHit::EditStatus
@@ -1626,7 +1739,7 @@ mod tests {
     #[test]
     fn keyboard_reaches_status_privacy_follow_and_activity_without_pointer_input() {
         let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true);
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true, false);
 
         assert_eq!(overlay.key(&Key::Named(NamedKey::Home), false), None);
         assert_eq!(
@@ -1647,7 +1760,7 @@ mod tests {
     #[test]
     fn accessibility_distinguishes_live_action_from_inferred_intent() {
         let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, false);
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, false, false);
         overlay.accessibility_rows = vec![RosterRow {
             id: "ada".into(),
             label: "Ada".into(),
@@ -1677,7 +1790,7 @@ mod tests {
     #[test]
     fn accessibility_keeps_own_live_action_separate_from_own_intent() {
         let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 0, false, false);
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 0, false, false, false);
         overlay.accessibility_status = Some("Closing the Q3 forecast".into());
         overlay.accessibility_own_activity = Some("Reconciling · Q3 forecast".into());
         let snapshot = overlay.accessibility_snapshot();
@@ -1692,6 +1805,28 @@ mod tests {
                 .as_deref()
                 .is_some_and(|description| description.contains("Now: Reconciling · Q3 forecast"))
         );
+    }
+
+    #[test]
+    fn screen_exposure_is_persistent_layout_and_accessibility_content() {
+        let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        let mut ordinary = CollaboratorsOverlay::default();
+        ordinary.layout(host, 0, false, false, false);
+        let ordinary_height = ordinary.panel.height();
+
+        let mut exposed = CollaboratorsOverlay::default();
+        exposed.layout(host, 0, false, false, true);
+        exposed.accessibility_screen_exposure =
+            Some("Ada (person) views Draft; Scribe (agent) controls Terminal".into());
+
+        assert_eq!(exposed.panel.height(), ordinary_height + EXPOSURE_H);
+        let description = exposed
+            .accessibility_snapshot()
+            .description
+            .expect("People dialog has a privacy description");
+        assert!(description.contains("Screen visible now"));
+        assert!(description.contains("Ada (person) views Draft"));
+        assert!(description.contains("Scribe (agent) controls Terminal"));
     }
 
     #[test]
@@ -1737,6 +1872,7 @@ mod tests {
             own_status_automatic: false,
             status_sharing: ui::StatusSharing::Automatic,
             status_editing: false,
+            screen_exposure: None,
         };
         assert_eq!(
             model.relationship_for("ada"),

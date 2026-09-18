@@ -2169,90 +2169,102 @@ mod sync_state_tests {
 /// Fail before ambient boundaries in the isolated library-test process.
 #[cfg(test)]
 pub(crate) mod fixture_io_guard {
+    use std::cell::{Cell, RefCell};
+    use std::marker::PhantomData;
     use std::path::{Path, PathBuf};
-    use std::sync::{
-        Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    };
+    use std::rc::Rc;
 
-    static DENY: AtomicBool = AtomicBool::new(false);
-    static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
     struct ListingState {
         root: PathBuf,
         entries: Vec<(PathBuf, bool)>,
     }
-    static LISTINGS: Mutex<Option<ListingState>> = Mutex::new(None);
 
-    pub(crate) struct DenyAmbientIo(&'static AtomicUsize);
+    thread_local! {
+        static DENY: Cell<bool> = const { Cell::new(false) };
+        static ATTEMPTS: Cell<usize> = const { Cell::new(0) };
+        static LISTINGS: RefCell<Option<ListingState>> = const { RefCell::new(None) };
+    }
+
+    /// Per-test-thread ambient-I/O guard.
+    ///
+    /// Rust runs independent unit tests concurrently in one process. Keeping
+    /// this state thread-local prevents one negative-boundary test from
+    /// denying legitimate fixture I/O in an unrelated test.
+    pub(crate) struct DenyAmbientIo {
+        owner: std::thread::ThreadId,
+        not_send: PhantomData<Rc<()>>,
+    }
     impl DenyAmbientIo {
         pub(crate) fn new() -> Self {
-            assert!(
-                !DENY.swap(true, Ordering::SeqCst),
-                "ambient guard already armed"
-            );
-            ATTEMPTS.store(0, Ordering::SeqCst);
-            Self(&ATTEMPTS)
+            DENY.with(|deny| assert!(!deny.replace(true), "ambient guard already armed"));
+            ATTEMPTS.set(0);
+            Self {
+                owner: std::thread::current().id(),
+                not_send: PhantomData,
+            }
         }
         pub(crate) fn attempts(&self) -> usize {
-            self.0.load(Ordering::SeqCst)
+            assert_eq!(self.owner, std::thread::current().id());
+            ATTEMPTS.get()
         }
     }
     impl Drop for DenyAmbientIo {
         fn drop(&mut self) {
-            DENY.store(false, Ordering::SeqCst);
+            DENY.set(false);
         }
     }
     pub(crate) fn ambient_io(boundary: &'static str) {
-        ATTEMPTS.fetch_add(1, Ordering::SeqCst);
-        assert!(
-            !DENY.load(Ordering::SeqCst),
-            "ambient I/O denied: {boundary}"
-        );
+        ATTEMPTS.set(ATTEMPTS.get().saturating_add(1));
+        DENY.with(|deny| assert!(!deny.get(), "ambient I/O denied: {boundary}"));
     }
 
-    pub(crate) struct OwnedListings(&'static Mutex<Option<ListingState>>);
+    pub(crate) struct OwnedListings {
+        owner: std::thread::ThreadId,
+        not_send: PhantomData<Rc<()>>,
+    }
     impl OwnedListings {
         pub(crate) fn new(root: &Path) -> Self {
-            let mut state = LISTINGS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert!(state.is_none(), "listing observer already armed");
-            *state = Some(ListingState {
-                root: root.to_path_buf(),
-                entries: Vec::new(),
+            LISTINGS.with(|listings| {
+                let mut state = listings.borrow_mut();
+                assert!(state.is_none(), "listing observer already armed");
+                *state = Some(ListingState {
+                    root: root.to_path_buf(),
+                    entries: Vec::new(),
+                });
             });
-            drop(state);
-            Self(&LISTINGS)
+            Self {
+                owner: std::thread::current().id(),
+                not_send: PhantomData,
+            }
         }
         pub(crate) fn observations(&self) -> Vec<(PathBuf, bool)> {
-            self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .unwrap()
-                .entries
-                .clone()
+            assert_eq!(self.owner, std::thread::current().id());
+            LISTINGS.with(|listings| {
+                listings
+                    .borrow()
+                    .as_ref()
+                    .expect("listing observer is armed")
+                    .entries
+                    .clone()
+            })
         }
     }
     impl Drop for OwnedListings {
         fn drop(&mut self) {
-            *self
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            LISTINGS.with(|listings| *listings.borrow_mut() = None);
         }
     }
     pub(crate) fn observe_owned_listing(path: &Path, in_workspace: bool) {
-        let mut state = LISTINGS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(state) = state.as_mut() {
-            assert!(
-                path.starts_with(&state.root),
-                "listing outside owned fixture: {}",
-                path.display()
-            );
-            state.entries.push((path.to_path_buf(), in_workspace));
-        }
+        LISTINGS.with(|listings| {
+            let mut state = listings.borrow_mut();
+            if let Some(state) = state.as_mut() {
+                assert!(
+                    path.starts_with(&state.root),
+                    "listing outside owned fixture: {}",
+                    path.display()
+                );
+                state.entries.push((path.to_path_buf(), in_workspace));
+            }
+        });
     }
 }

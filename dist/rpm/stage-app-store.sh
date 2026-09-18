@@ -18,6 +18,15 @@ usage() {
 release_dir=$1
 bin_dir=$2
 stage=$3
+final_app_root=${TILO_STAGE_FINAL_APP_ROOT:-/usr/lib/tilo-apps}
+final_runtime_root=${TILO_STAGE_FINAL_RUNTIME_ROOT:-/usr/lib/tilo-runtime}
+final_registry_root=${TILO_STAGE_FINAL_REGISTRY_ROOT:-/usr/share/tilo-apps}
+for final_root in "$final_app_root" "$final_runtime_root" "$final_registry_root"; do
+    [[ $final_root == /* && $final_root != / && $final_root != *'/../'* && $final_root != */.. ]] || {
+        echo "unsafe final app-store path: $final_root" >&2
+        exit 1
+    }
+done
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 arch=$(uname -m)
 collection=$release_dir/tilo-apps-$arch.tar.gz
@@ -79,7 +88,7 @@ for package in "$work"/qpkg/*.qpkg; do
     "$bin_dir/tilo-install" install "$package" --allow-self-signed >/dev/null
 done
 
-python3 - "$store/registry.toml" "$registry" "$store" /usr/lib/tilo-apps <<'PY'
+python3 - "$store/registry.toml" "$registry" "$store" "$final_app_root" <<'PY'
 import pathlib, sys, tomllib
 
 source_registry, registry, staged, final = map(pathlib.Path, sys.argv[1:])

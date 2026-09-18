@@ -31,6 +31,8 @@ pub(crate) struct ExportDialog {
     scroll: f64,
     open: bool,
     focused: ExportFocus,
+    /// Keep hit targets and semantic bounds in sync with enlarged text.
+    text_scale: f64,
 }
 
 /// Hand-drawn modal focus is kept by durable contact ID, never an incidental
@@ -61,10 +63,15 @@ pub(crate) struct Geometry {
     pub(crate) rows: Vec<(ContactId, Rect, Rect)>,
     pub(crate) row_start: usize,
     pub(crate) row_count: usize,
+    visible_first: usize,
+    visible_last: usize,
     pub(crate) export_v3: Rect,
     pub(crate) export_v4: Rect,
     pub(crate) cancel: Rect,
     content_h: f64,
+    row_h: f64,
+    text_scale: f64,
+    compact: bool,
 }
 
 impl ExportDialog {
@@ -74,7 +81,12 @@ impl ExportDialog {
             scroll: 0.0,
             open: false,
             focused: ExportFocus::ExportV4,
+            text_scale: 1.0,
         }
+    }
+
+    pub(crate) fn set_text_scale(&mut self, scale: f32) {
+        self.text_scale = f64::from(scale).clamp(1.0, 2.0);
     }
 
     pub(crate) fn open(&mut self, selected: impl IntoIterator<Item = ContactId>) {
@@ -97,8 +109,19 @@ impl ExportDialog {
         &self.selection
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "responsive export geometry keeps its virtualized rows and footer hit targets synchronized"
+    )]
     pub(crate) fn geometry(&self, window: Rect, store: &ContactStore, sort: SortKey) -> Geometry {
         let ids = store.filtered_sorted("", None, sort);
+        // At 200% the original single-line header/footer cannot contain their
+        // labels. Use a stacked layout rather than painting enlarged text into
+        // controls sized for 100%.
+        let compact = self.text_scale >= 1.75 || window.width() < 440.0;
+        let header_h = if compact { 176.0 } else { EXPORT_HEADER_H };
+        let footer_h = if compact { 120.0 } else { EXPORT_FOOTER_H };
+        let row_h = if compact { 56.0 } else { EXPORT_ROW_H };
         let width = 460.0_f64.min((window.width() - 32.0).max(280.0));
         let max_height = (window.height() * 0.8)
             .clamp(EXPORT_MIN_H, EXPORT_MAX_H)
@@ -106,26 +129,39 @@ impl ExportDialog {
         // Small address books should not get a large inert well below the
         // last checkbox.  The list grows with its content through the normal
         // minimum dialog height, then caps and scrolls for large directories.
-        // Header/footer are fixed so their 28–32px controls keep their
-        // existing touch geometry at every resulting height.
-        let content_height = EXPORT_HEADER_H + ids.len() as f64 * EXPORT_ROW_H + EXPORT_FOOTER_H;
-        let height = content_height.clamp(EXPORT_MIN_H.min(max_height), max_height);
+        let content_height = header_h + ids.len() as f64 * row_h + footer_h;
+        let min_height = if compact {
+            header_h + row_h * 2.0 + footer_h
+        } else {
+            EXPORT_MIN_H
+        };
+        let height = content_height.clamp(min_height.min(max_height), max_height);
         let panel = Rect::from_center_size(window.center(), (width, height));
-        let head_y = panel.y0 + 18.0;
-        let select_none = Rect::new(panel.x1 - 112.0, head_y, panel.x1 - 16.0, head_y + 28.0);
-        let select_all = Rect::new(
-            select_none.x0 - 104.0,
-            head_y,
-            select_none.x0 - 8.0,
-            head_y + 28.0,
-        );
+        let (select_all, select_none) = if compact {
+            let gap = 8.0;
+            let button_w = (panel.width() - 32.0 - gap) / 2.0;
+            let y = panel.y0 + 124.0;
+            (
+                Rect::new(panel.x0 + 16.0, y, panel.x0 + 16.0 + button_w, y + 36.0),
+                Rect::new(
+                    panel.x0 + 16.0 + button_w + gap,
+                    y,
+                    panel.x1 - 16.0,
+                    y + 36.0,
+                ),
+            )
+        } else {
+            let y = panel.y0 + 18.0;
+            let select_none = Rect::new(panel.x1 - 112.0, y, panel.x1 - 16.0, y + 28.0);
+            let select_all = Rect::new(select_none.x0 - 104.0, y, select_none.x0 - 8.0, y + 28.0);
+            (select_all, select_none)
+        };
         let list_body = Rect::new(
             panel.x0 + 16.0,
-            panel.y0 + EXPORT_HEADER_H,
+            panel.y0 + header_h,
             panel.x1 - 16.0,
-            panel.y1 - EXPORT_FOOTER_H,
+            panel.y1 - footer_h,
         );
-        let row_h = EXPORT_ROW_H;
         let first_visible = (self.scroll / row_h).floor().max(0.0) as usize;
         let visible = (list_body.height() / row_h).ceil().max(1.0) as usize;
         let row_start = first_visible
@@ -135,6 +171,7 @@ impl ExportDialog {
             .saturating_add(visible)
             .saturating_add(EXPORT_OVERSCAN_ROWS)
             .min(ids.len());
+        let visible_last = first_visible.saturating_add(visible).min(ids.len());
         let rows = ids
             .iter()
             .enumerate()
@@ -145,17 +182,44 @@ impl ExportDialog {
                 let row = Rect::new(list_body.x0, y, list_body.x1, y + row_h);
                 let checkbox = Rect::new(
                     row.x0 + 4.0,
-                    row.center().y - 10.0,
-                    row.x0 + 24.0,
-                    row.center().y + 10.0,
+                    row.center().y - if compact { 12.0 } else { 10.0 },
+                    row.x0 + if compact { 28.0 } else { 24.0 },
+                    row.center().y + if compact { 12.0 } else { 10.0 },
                 );
                 (*id, row, checkbox)
             })
             .collect();
-        let by = panel.y1 - 44.0;
-        let export_v4 = Rect::new(panel.x1 - 136.0, by, panel.x1 - 16.0, by + 32.0);
-        let export_v3 = Rect::new(export_v4.x0 - 128.0, by, export_v4.x0 - 8.0, by + 32.0);
-        let cancel = Rect::new(panel.x0 + 16.0, by, panel.x0 + 104.0, by + 32.0);
+        let (cancel, export_v3, export_v4) = if compact {
+            let gap = 8.0;
+            let action_w = (panel.width() - 32.0 - gap) / 2.0;
+            let action_y = panel.y1 - 48.0;
+            (
+                Rect::new(
+                    panel.x0 + 16.0,
+                    panel.y1 - 104.0,
+                    panel.x1 - 16.0,
+                    panel.y1 - 64.0,
+                ),
+                Rect::new(
+                    panel.x0 + 16.0,
+                    action_y,
+                    panel.x0 + 16.0 + action_w,
+                    panel.y1 - 8.0,
+                ),
+                Rect::new(
+                    panel.x0 + 16.0 + action_w + gap,
+                    action_y,
+                    panel.x1 - 16.0,
+                    panel.y1 - 8.0,
+                ),
+            )
+        } else {
+            let by = panel.y1 - 44.0;
+            let export_v4 = Rect::new(panel.x1 - 136.0, by, panel.x1 - 16.0, by + 32.0);
+            let export_v3 = Rect::new(export_v4.x0 - 128.0, by, export_v4.x0 - 8.0, by + 32.0);
+            let cancel = Rect::new(panel.x0 + 16.0, by, panel.x0 + 104.0, by + 32.0);
+            (cancel, export_v3, export_v4)
+        };
         Geometry {
             panel,
             select_all,
@@ -164,10 +228,15 @@ impl ExportDialog {
             rows,
             row_start,
             row_count: ids.len(),
+            visible_first: first_visible,
+            visible_last,
             export_v3,
             export_v4,
             cancel,
             content_h: ids.len() as f64 * row_h,
+            row_h,
+            text_scale: self.text_scale,
+            compact,
         }
     }
 
@@ -223,9 +292,37 @@ impl ExportDialog {
             &format!("{} selected", self.selection.len()),
             12.0,
             colors.text_dim,
-            transform * Affine::translate((geometry.panel.x0 + 18.0, geometry.panel.y0 + 40.0)),
+            transform
+                * Affine::translate((
+                    geometry.panel.x0 + 18.0,
+                    geometry.panel.y0 + if geometry.compact { 62.0 } else { 40.0 },
+                )),
             None,
         );
+        if geometry.compact {
+            text.draw_text(
+                scene,
+                "Choose vCard format",
+                12.0,
+                colors.text_dim,
+                transform * Affine::translate((geometry.panel.x0 + 18.0, geometry.panel.y0 + 88.0)),
+                None,
+            );
+            text.draw_text(
+                scene,
+                &format!(
+                    "{}–{} of {}",
+                    geometry.visible_first.saturating_add(1),
+                    geometry.visible_last,
+                    geometry.row_count
+                ),
+                12.0,
+                colors.text_dim,
+                transform
+                    * Affine::translate((geometry.panel.x1 - 106.0, geometry.panel.y0 + 62.0)),
+                None,
+            );
+        }
         chip(
             scene,
             transform,
@@ -321,7 +418,11 @@ impl ExportDialog {
                 &contact.display_name(),
                 14.0,
                 colors.text_primary,
-                transform * Affine::translate((checkbox.x1 + 12.0, row.center().y - 9.0)),
+                transform
+                    * Affine::translate((
+                        checkbox.x1 + 12.0,
+                        row.center().y - 9.0 * geometry.text_scale,
+                    )),
                 Some((row.x1 - checkbox.x1 - 20.0) as f32),
             );
         }
@@ -355,7 +456,7 @@ impl ExportDialog {
             text,
             theme,
             geometry.export_v3,
-            "Export 3.0",
+            "vCard 3.0",
             false,
             geometry.export_v3.contains(pointer),
             false,
@@ -366,7 +467,7 @@ impl ExportDialog {
             text,
             theme,
             geometry.export_v4,
-            "Export 4.0",
+            "vCard 4.0",
             true,
             geometry.export_v4.contains(pointer),
             false,
@@ -699,8 +800,8 @@ impl ExportDialog {
             return;
         };
         let geometry = self.geometry(window, store, sort);
-        let top = index as f64 * EXPORT_ROW_H;
-        let bottom = top + EXPORT_ROW_H;
+        let top = index as f64 * geometry.row_h;
+        let bottom = top + geometry.row_h;
         if top < self.scroll {
             self.scroll = top;
         }
@@ -734,6 +835,25 @@ mod tests {
         let geometry = dialog.geometry(window, &store(), SortKey::Name);
         assert!(window.contains(geometry.panel.origin()));
         assert!(geometry.panel.x1 <= window.x1);
+    }
+
+    #[test]
+    fn true_two_hundred_percent_narrow_layout_stacks_without_overlap() {
+        let mut dialog = ExportDialog::new();
+        dialog.set_text_scale(2.0);
+        let window = Rect::new(0.0, 0.0, 390.0, 844.0);
+        let geometry = dialog.geometry(window, &store(), SortKey::Name);
+
+        assert!(geometry.compact);
+        assert!(geometry.panel.y0 >= window.y0);
+        assert!(geometry.panel.y1 <= window.y1);
+        assert!(geometry.select_all.y1 <= geometry.list_body.y0);
+        assert!(geometry.select_none.y1 <= geometry.list_body.y0);
+        assert!(geometry.list_body.y1 <= geometry.cancel.y0);
+        assert!(geometry.cancel.y1 <= geometry.export_v3.y0);
+        assert!(geometry.cancel.y1 <= geometry.export_v4.y0);
+        assert!(geometry.export_v3.x1 <= geometry.export_v4.x0);
+        assert!(geometry.rows.iter().all(|(_, row, _)| row.height() >= 56.0));
     }
 
     #[test]

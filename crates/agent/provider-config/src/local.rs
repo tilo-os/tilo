@@ -133,6 +133,15 @@ pub struct LocalModelRelease {
     pub required_memory_mib: u64,
     pub required_accelerator_mib: u64,
     pub context_window: u32,
+    /// Signed statement that this exact model revision accepts image input.
+    /// The model manager propagates it into provider metadata; no app guesses
+    /// this based on a model id or a manual label.
+    #[serde(default)]
+    pub vision: bool,
+    /// Signed declaration for the dedicated local Photos face protocol.
+    /// Generic vision labels/descriptions never imply this capability.
+    #[serde(default)]
+    pub face_recognition: bool,
 }
 
 /// Catalogs are supplied by a signed/pinned desktop update channel. They are
@@ -572,6 +581,7 @@ mod tests {
                 required_memory_mib: 8192,
                 required_accelerator_mib: 0,
                 context_window: 8192,
+                vision: false,
             }],
         }
     }

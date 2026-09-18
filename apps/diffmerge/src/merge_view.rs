@@ -21,7 +21,7 @@ use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{CodeEditor, Language, Widget};
 
 use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
 use crate::doc::MergeDoc;
@@ -126,6 +126,9 @@ pub struct MergeView {
     /// drained by the parent app and dispatched as a [`DiffmergeAction`] through
     /// the shared action path (so a chip and Ctrl+K produce one undo boundary).
     pending_action: Option<DiffmergeAction>,
+    /// The authoritative merged CRDT text, edited through the same shared
+    /// caret/selection/IME/clipboard implementation as every code surface.
+    merged_editor: CodeEditor,
 }
 
 impl Default for MergeView {
@@ -152,6 +155,9 @@ impl MergeView {
             dirty: true,
             pending_seed: true,
             pending_action: None,
+            merged_editor: CodeEditor::new(Vec::new())
+                .with_language(Language::PlainText)
+                .with_id("diffmerge_merged_editor"),
         }
     }
 
@@ -178,6 +184,10 @@ impl MergeView {
 
     pub fn model(&self) -> &MergeModel {
         &self.model
+    }
+
+    pub(crate) fn merged_editor_focused(&self) -> bool {
+        self.merged_editor.is_focused()
     }
 
     fn is_compact(&self) -> bool {
@@ -786,7 +796,7 @@ impl MergeView {
     /// The merged-result band: header (with conflict count) and the scrolled
     /// merged buffer body.
     fn draw_merged_band(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
@@ -830,34 +840,12 @@ impl MergeView {
             Some((merged.width() - PAD_X * 2.0 - 8.0) as f32),
         );
 
-        // Merged buffer body.
+        // Merged buffer body. The shared editor owns text, caret, selection,
+        // scrolling, clipboard, IME, accessibility, and CRDT splices.
         let merged_body = Rect::new(merged.x0, merged.y0 + HEADER_H, merged.x1, merged.y1);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &merged_body,
-        );
-        let lines: Vec<String> = self.model.merged_lines();
-        for (i, line) in lines.iter().enumerate() {
-            let ly = merged_body.y0 + 4.0 + i as f64 * ROW_H;
-            if ly > merged_body.y1 {
-                break;
-            }
-            // Line number gutter.
-            let no = (i + 1).to_string();
-            tr.draw_text(
-                scene,
-                &no,
-                11.0,
-                c.text_dim,
-                transform * Affine::translate((merged_body.x0 + 6.0, ly + 2.0)),
-                None,
-            );
-            draw_code_segments(scene, transform, tr, theme, merged_body.x0 + 44.0, ly, line);
-        }
-        scene.pop_layer();
+        self.merged_editor.set_rect(merged_body);
+        self.merged_editor
+            .draw_embedded(scene, transform, tr, theme);
     }
 }
 
@@ -870,12 +858,14 @@ impl Widget for MergeView {
             MergeDoc::clear_resolutions(state);
             MergeDoc::set_merged(state, &self.model.merged_text());
             self.pending_seed = false;
-            return;
         }
         // Seed once for a late joiner that has no buffer yet.
         if !MergeDoc::has_merged(state) {
             MergeDoc::set_merged(state, &self.model.merged_text());
         }
+        let merged = MergeDoc::merged_text_obj(state);
+        self.merged_editor.bind_text(merged);
+        self.merged_editor.pull(state);
         // Reconcile chip state from resolutions recorded by (possibly remote)
         // actions, so a reload or a peer shows the same take-a-side selections.
         // The merged `Text` itself stays authoritative — the actions already
@@ -928,6 +918,13 @@ impl Widget for MergeView {
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.recompute_spans();
+        let merged = self.merged_band_rect();
+        self.merged_editor.set_rect(Rect::new(
+            merged.x0,
+            merged.y0 + HEADER_H,
+            merged.x1,
+            merged.y1,
+        ));
     }
 
     fn draw(
@@ -977,14 +974,30 @@ impl Widget for MergeView {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
+        m: &winit::event::Modifiers,
+        s: &mut AutoCommit,
+        p: &ObjId,
         handled: &mut bool,
-        _focus: &mut Option<NodeId>,
-        _node: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
+        if self.merged_editor.is_focused() || self.merged_editor.rect().contains(self.cursor) {
+            self.merged_editor.handle_event(
+                event,
+                scale_factor,
+                m,
+                s,
+                p,
+                handled,
+                focus,
+                node,
+                taffy,
+            );
+            if *handled {
+                return;
+            }
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -1060,6 +1073,14 @@ impl Widget for MergeView {
 
     fn is_focusable(&self) -> bool {
         true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.merged_editor.set_focused(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.merged_editor.is_focused()
     }
 
     fn test_rects(&self) -> Vec<(String, Rect)> {

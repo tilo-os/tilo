@@ -23,6 +23,9 @@ registry-types = { path = "../registry-types" }
 # enumerates installed apps from, so "available" is exactly "not in
 # there".
 launcher = { path = "../launcher" }
+# Canonical application qpkg wire-size ceiling; catalogue downloads enforce
+# the same boundary as the installer rather than duplicating a number.
+pkg = { path = "../pkg" }
 clap.workspace = true
 dirs.workspace = true
 hex.workspace = true
@@ -38,7 +41,6 @@ rustls.workspace = true
 
 [dev-dependencies]
 # The end-to-end test packs, publishes, and installs a .qpkg.
-pkg = { path = "../pkg" }
 app-registry = { path = "../app-registry" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true

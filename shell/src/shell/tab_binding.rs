@@ -537,7 +537,9 @@ pub fn app_id_for_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<&str>
 }
 
 /// Walk the tree for a `TileContent::Foreign` tab whose `surface_id` matches
-/// `destroyed_surface_id`, remove it, return `true` if found. The widget tree handles close animation; this just records absence.
+/// `destroyed_surface_id`, remove it, return `true` if found. [`remove_tab`]
+/// also removes a group left empty by the close and advances focus off it, so
+/// a host/X11 window cannot leave a dead column for the next open or reorder.
 pub fn close_tab_for_destroyed_surface(
     tree: &mut WorkspaceTree,
     destroyed_surface_id: u64,
@@ -1282,24 +1284,35 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn close_tab_for_destroyed_surface_removes_matching_foreign_tab() {
+    fn closing_a_host_window_prunes_its_group_before_the_next_open_and_reorder() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let _ = adopt_toplevel(&mut tree, 42, Some("io.example.thing".into()));
+        let _ = adopt_toplevel_at(
+            &mut tree,
+            42,
+            Some("io.example.thing".into()),
+            Placement::NewGroup,
+        );
         let owner = group_of(&tree, 42).id;
-        let before = group_of(&tree, 42).tabs.len();
+        let strip_id = tree.workspaces[0].strips[0].id;
+        let groups_before = tree.workspaces[0].strips[0].window_groups.len();
         let removed = close_tab_for_destroyed_surface(&mut tree, 42);
         assert!(removed, "close should report it removed a tab");
-        let after = tree
-            .workspaces
-            .iter()
-            .flat_map(|w| w.strips.iter())
-            .flat_map(|s| s.window_groups.iter())
-            .find(|g| g.id == owner)
-            .expect("the owning group still exists")
-            .tabs
-            .len();
-        assert_eq!(after, before - 1, "tab count must drop by exactly one");
+        let strip = &tree.workspaces[0].strips[0];
+        assert_eq!(
+            strip.window_groups.len(),
+            groups_before - 1,
+            "a closed one-window host/X11 group must not leave a dead column"
+        );
+        assert!(
+            !strip.window_groups.iter().any(|group| group.id == owner),
+            "the now-empty group must be removed from the strip"
+        );
+        assert_ne!(
+            tree.active_group_for(strip_id),
+            Some(owner),
+            "focus must never keep pointing at the removed group"
+        );
         let still_there = tree
             .workspaces
             .iter()
@@ -1310,6 +1323,27 @@ mod tests {
         assert!(
             !still_there,
             "the foreign tab with surface_id=42 must be gone"
+        );
+
+        let _ = adopt_toplevel_at(
+            &mut tree,
+            43,
+            Some("io.example.thing".into()),
+            Placement::NewGroup,
+        );
+        let reopened = group_of(&tree, 43).id;
+        assert_eq!(
+            tree.workspaces[0].strips[0].window_groups.len(),
+            groups_before,
+            "reopening starts one live group, not a live group beside a retained corpse"
+        );
+        assert!(
+            tree.reorder_group_within_strip(strip_id, reopened, 0),
+            "the reopened group can move across the compact live ordering"
+        );
+        assert_eq!(
+            tree.workspaces[0].strips[0].window_groups[0].id, reopened,
+            "reorder must address the live host/X11 window directly"
         );
     }
 

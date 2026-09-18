@@ -18,4 +18,5 @@ entry=$(path /usr/share/wayland-sessions/tilo-dev.desktop)
 [[ -f $entry ]] || { echo "missing developer session entry" >&2; exit 1; }
 grep -Fqx "Exec=$libexec_dir/tilo-session-dev" "$entry"
 grep -Fqx "TryExec=$libexec_dir/tilo-session-dev" "$entry"
-grep -q -- '--firstboot' "$wrapper"
+grep -Fq 'SESSION_RUNNER=$(dirname -- "$SELF_REAL")/tilo-session-runner' "$wrapper"
+grep -Fq 'exec "$SESSION_RUNNER" "$TARGET_REAL" "$@"' "$wrapper"

@@ -2673,13 +2673,9 @@ mod tests {
         )
         .unwrap();
         let path = record_path(&fixture.root, fixture.key);
-        let temp_name = format!(
-            ".{}.{}.tmp",
-            path.file_name().unwrap().to_string_lossy(),
-            std::process::id()
-        );
-        let temp_path = path.parent().unwrap().join(temp_name);
-        std::fs::create_dir(&temp_path).unwrap();
+        let backup_path = path.with_extension("json.test-backup");
+        std::fs::rename(&path, &backup_path).unwrap();
+        std::fs::create_dir(&path).unwrap();
 
         assert!(matches!(
             repo.apply(
@@ -2693,7 +2689,8 @@ mod tests {
             .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, false))
             .unwrap();
         assert_eq!(snapshot.metadata.unwrap().observed_at_ms, 1);
-        std::fs::remove_dir(temp_path).unwrap();
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(backup_path, path).unwrap();
         drop(repo);
 
         let reopened = RecordRepository::open(&fixture.root).unwrap();

@@ -10,9 +10,34 @@ on:
     branches: ["main"]
     tags: ["v*"]
     paths:
+      - ".cargo/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "keys/cosign.pub"
+      - "os/base-snapshot.env"
+      - "os/rpms-snapshot.env"
+      - "os/dev/verify-rpm-snapshot-package-set.sh"
       - "crates/hosting/tilo-relay/**"
       - "os/containers/tilo-relay/**"
       - "crates/identity/tilo-user-identity/**"
+      - "crates/collab/collab-types/**"
+      - "crates/collab/threshold-identity/**"
+      - "crates/doc/qdoc/**"
+      - "crates/packaging/app-registry/**"
+      - "crates/packaging/install/**"
+      - "crates/packaging/launcher/**"
+      - "crates/packaging/pkg/**"
+      - "crates/packaging/runtime-bundle/**"
+      - "crates/runtime/runtime-fs/**"
+      - "crates/runtime/runtime-identity/**"
+      - "crates/runtime/runtime-portal/**"
+      - "crates/system/atomic-file/**"
+      - "crates/system/bounded-command/**"
+      - "crates/system/desktop-entry/**"
+      - "crates/system/power/**"
+      - "crates/system/settings-store/**"
+      - "crates/media/thumbnail/**"
+      - "fs/**"
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
@@ -20,9 +45,34 @@ on:
   pull_request:
     branches: ["main"]
     paths:
+      - ".cargo/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "keys/cosign.pub"
+      - "os/base-snapshot.env"
+      - "os/rpms-snapshot.env"
+      - "os/dev/verify-rpm-snapshot-package-set.sh"
       - "crates/hosting/tilo-relay/**"
       - "os/containers/tilo-relay/**"
       - "crates/identity/tilo-user-identity/**"
+      - "crates/collab/collab-types/**"
+      - "crates/collab/threshold-identity/**"
+      - "crates/doc/qdoc/**"
+      - "crates/packaging/app-registry/**"
+      - "crates/packaging/install/**"
+      - "crates/packaging/launcher/**"
+      - "crates/packaging/pkg/**"
+      - "crates/packaging/runtime-bundle/**"
+      - "crates/runtime/runtime-fs/**"
+      - "crates/runtime/runtime-identity/**"
+      - "crates/runtime/runtime-portal/**"
+      - "crates/system/atomic-file/**"
+      - "crates/system/bounded-command/**"
+      - "crates/system/desktop-entry/**"
+      - "crates/system/power/**"
+      - "crates/system/settings-store/**"
+      - "crates/media/thumbnail/**"
+      - "fs/**"
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
@@ -58,12 +108,14 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           resolved="$RUNNER_TEMP/relay-release-signing-authority.pub"
           cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"
           cmp --silent keys/cosign.pub "$resolved" || {
@@ -200,12 +252,14 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           ref="code.podesta.ai/qos/tilo-relay@${{ steps.build.outputs.digest }}"
           cosign sign --yes --key "$COSIGN_KEY_REF" "$ref"
           cosign verify --key keys/cosign.pub "$ref" >/dev/null

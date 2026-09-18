@@ -52,7 +52,6 @@ impl HttpMethod {
     /// Parse a verb from its wire string, defaulting unknown values to
     /// GET. The inverse of [`HttpMethod::as_str`]; used when importing a
     /// request whose method arrives as raw text.
-    #[allow(dead_code)]
     pub fn from_str(s: &str) -> HttpMethod {
         match s.to_ascii_uppercase().as_str() {
             "POST" => HttpMethod::Post,

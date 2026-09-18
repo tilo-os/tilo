@@ -62,19 +62,46 @@ SH
 chmod 0755 "$work/systemctl" "$work/systemd-cat" \
     "$work/dbus-update-activation-environment" "$work/shell"
 sed \
-    -e "s|TILO_SHELL=/usr/bin/tilo-shell|TILO_SHELL=$work/shell|" \
     -e "s|SYSTEMCTL=/usr/bin/systemctl|SYSTEMCTL=$work/systemctl|" \
     -e "s|SYSTEMD_CAT=/usr/bin/systemd-cat|SYSTEMD_CAT=$work/systemd-cat|" \
     -e "s|DBUS_UPDATE=/usr/bin/dbus-update-activation-environment|DBUS_UPDATE=$work/dbus-update-activation-environment|" \
-    "$repo_root/dist/session/tilo-session" >"$work/tilo-session"
+    "$repo_root/dist/session/tilo-session-runner" >"$work/tilo-session"
 chmod 0755 "$work/tilo-session"
+
+# The shared runner is an internal package component, but it still fails
+# closed when a broken wrapper omits or supplies an unsafe compositor path.
+set +e
+"$work/tilo-session" >"$work/no-arg.out" 2>&1
+no_arg_status=$?
+"$work/tilo-session" relative-shell >"$work/relative.out" 2>&1
+relative_status=$?
+"$work/tilo-session" "$work/missing-shell" >"$work/missing.out" 2>&1
+missing_status=$?
+set -e
+[[ $no_arg_status == 2 ]]
+[[ $relative_status == 2 ]]
+[[ $missing_status == 1 ]]
+grep -Fqx 'tilo-session-runner: missing compositor path' "$work/no-arg.out"
+grep -Fqx 'tilo-session-runner: compositor path must be absolute' "$work/relative.out"
+grep -Fqx "tilo-session-runner: $work/missing-shell is missing or not executable" "$work/missing.out"
+
+# The public production entry must remain non-redirectable. In particular,
+# environment names used by an older developer-wrapper prototype cannot turn
+# into an authorization channel: only its literal package shell and runner are
+# consulted. Source-level assertions are appropriate because their absolute
+# paths are replaced by each package format after staging.
+production=$repo_root/dist/session/tilo-session
+grep -Fqx 'TILO_SHELL=/usr/bin/tilo-shell' "$production"
+grep -Fqx 'SESSION_RUNNER=/usr/libexec/tilo-session-runner' "$production"
+! grep -Fq 'TILO_SESSION_SHELL' "$production"
+! grep -Fq 'TILO_SESSION_DEV_VERIFIED' "$production"
 
 export XDG_RUNTIME_DIR=$work/runtime
 mkdir -m 0700 "$XDG_RUNTIME_DIR"
 
 set +e
 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_STATUS=7 \
-    TILO_SESSION_TEST_SECRET='must-not-be-logged' "$work/tilo-session"
+    TILO_SESSION_TEST_SECRET='must-not-be-logged' "$work/tilo-session" "$work/shell"
 status=$?
 set -e
 [[ $status == 7 ]]
@@ -99,7 +126,7 @@ cmp "$work/expected" "$log"
 
 : >"$log"
 set +e
-TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_PREDECESSOR=1 "$work/tilo-session"
+TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_PREDECESSOR=1 "$work/tilo-session" "$work/shell"
 status=$?
 set -e
 [[ $status == 1 ]]
@@ -122,7 +149,7 @@ EOF
 cmp "$work/expected-predecessor" "$log"
 
 : >"$log"
-TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_HOLD=1 "$work/tilo-session" &
+TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_HOLD=1 "$work/tilo-session" "$work/shell" &
 wrapper_pid=$!
 for _ in $(seq 1 100); do
     grep -Fq 'shell --host-desktop-session' "$log" 2>/dev/null && break
@@ -139,7 +166,7 @@ grep -Fqx 'shell-term' "$log"
 # importantly, target/environment teardown happens exactly once rather than
 # being killed alongside `loginctl terminate-session self`.
 : >"$log"
-TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_REQUEST_LOGOUT=1 "$work/tilo-session"
+TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_REQUEST_LOGOUT=1 "$work/tilo-session" "$work/shell"
 ! grep -Fq 'compositor exited without a logout request' "$log"
 grep -Fqx 'systemctl --user stop tilo-graphical-session.target' "$log"
 grep -Fqx 'dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=' "$log"
@@ -152,7 +179,7 @@ fi
 
 : >"$log"
 set +e
-TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_FAIL_START=1 "$work/tilo-session"
+TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_FAIL_START=1 "$work/tilo-session" "$work/shell"
 status=$?
 set -e
 [[ $status == 1 ]]
@@ -166,8 +193,8 @@ for failure in dbus import; do
     : >"$log"
     set +e
     case "$failure" in
-        dbus) TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_FAIL_DBUS=1 "$work/tilo-session" ;;
-        import) TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_FAIL_IMPORT=1 "$work/tilo-session" ;;
+        dbus) TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_FAIL_DBUS=1 "$work/tilo-session" "$work/shell" ;;
+        import) TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_FAIL_IMPORT=1 "$work/tilo-session" "$work/shell" ;;
     esac
     status=$?
     set -e

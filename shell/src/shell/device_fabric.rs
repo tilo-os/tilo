@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::shell::personal_continuity::DeviceId;
 
-pub const FABRIC_SCHEMA_VERSION: u16 = 2;
+pub const FABRIC_SCHEMA_VERSION: u16 = 3;
 pub const MAX_DEVICES: usize = 64;
 pub const MAX_MEDIA_SESSIONS: usize = 64;
 pub const MAX_CLIPBOARD_ITEMS: usize = 50;
@@ -457,6 +457,21 @@ pub enum PersonalFabricAction {
         request_id: [u8; 16],
         address: String,
     },
+    /// Ask one exact certified peer to receive a mirror-only full-display
+    /// stream. This never changes durable placement or grants input.
+    DisplayMirrorRequest {
+        session_id: [u8; 16],
+    },
+    /// Target-local consent bound to the exact mirror session.
+    DisplayMirrorDecision {
+        session_id: [u8; 16],
+        approved: bool,
+        profile: Option<DisplayStreamProfile>,
+    },
+    /// Revoke one exact mirror session on both peers.
+    DisplayMirrorStop {
+        session_id: [u8; 16],
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -859,6 +874,24 @@ impl PersonalFabricActionEnvelope {
                 authorization,
             } => {
                 if !valid_bluetooth_pairing_action(request_id, address, authorization) {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::DisplayMirrorRequest { session_id }
+            | PersonalFabricAction::DisplayMirrorStop { session_id } => {
+                if session_id == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::DisplayMirrorDecision {
+                session_id,
+                approved,
+                profile,
+            } => {
+                if session_id == &[0; 16]
+                    || (*approved && profile.is_none_or(|profile| !profile.valid()))
+                    || (!*approved && profile.is_some())
+                {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -2642,6 +2675,60 @@ mod tests {
             })
             .validate_at(&source, &target, 10_100),
             Err(FabricError::InvalidAction)
+        );
+    }
+
+    #[test]
+    fn display_mirror_actions_require_exact_bounded_session_consent() {
+        let source = id("source");
+        let target = id("target");
+        let envelope = |action| PersonalFabricActionEnvelope {
+            request_id: [3; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action,
+        };
+        let request = envelope(PersonalFabricAction::DisplayMirrorRequest {
+            session_id: [7; 16],
+        });
+        assert!(request.validate_at(&source, &target, 10_100).is_ok());
+        assert!(
+            envelope(PersonalFabricAction::DisplayMirrorRequest {
+                session_id: [0; 16],
+            })
+            .validate_at(&source, &target, 10_100)
+            .is_err()
+        );
+        assert!(
+            envelope(PersonalFabricAction::DisplayMirrorDecision {
+                session_id: [7; 16],
+                approved: true,
+                profile: Some(DisplayStreamProfile {
+                    codec: DisplayStreamCodec::H264AnnexB,
+                    max_width: 1920,
+                    max_height: 1080,
+                    max_fps: 60,
+                    max_bitrate_kbps: 12_000,
+                }),
+            })
+            .validate_at(&source, &target, 10_100)
+            .is_ok()
+        );
+        assert!(
+            envelope(PersonalFabricAction::DisplayMirrorDecision {
+                session_id: [7; 16],
+                approved: false,
+                profile: Some(DisplayStreamProfile {
+                    codec: DisplayStreamCodec::H264AnnexB,
+                    max_width: 1920,
+                    max_height: 1080,
+                    max_fps: 60,
+                    max_bitrate_kbps: 12_000,
+                }),
+            })
+            .validate_at(&source, &target, 10_100)
+            .is_err()
         );
     }
 
