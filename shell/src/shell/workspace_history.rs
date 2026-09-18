@@ -726,7 +726,7 @@ impl WorkspaceHistoryIndex {
     }
 }
 
-/// RecordStore's mutable access finishes pending component actions. History
+/// `RecordStore`'s mutable access finishes pending component actions. History
 /// instead takes a private committed view and leaves the live action owner alone.
 fn committed_snapshot(doc: &AutoCommit) -> AutoCommit {
     let mut snapshot = doc.clone();
