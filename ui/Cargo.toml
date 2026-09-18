@@ -213,6 +213,8 @@ base32.workspace = true
 # pre-shared long-term key. SHA-512 is already a transitive via
 # `tilo-threshold-identity`, so direct pin keeps the lock single-copy.
 sha2.workspace = true
+# SIMD compiler fingerprinting and integrity for the private DX12 cache.
+blake3.workspace = true
 toml.workspace = true
 unicode-script = "=0.5.8"
 # Pairing-channel authentication. HMAC binds the round-1 broadcast to

@@ -68,6 +68,8 @@ pub mod diag;
 pub mod dmabuf_import;
 pub mod dnd;
 pub mod doc;
+#[cfg(any(windows, test))]
+mod dx12_shader_cache;
 pub mod floating_surface;
 pub mod font_catalog;
 pub mod format;
