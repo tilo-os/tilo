@@ -289,6 +289,8 @@ RUN set -eux; \
         CONFIG_LIST_HARDENED=y \
         '# CONFIG_LEGACY_PTYS is not set' \
         '# CONFIG_LEGACY_TIOCSTI is not set' \
+        '# CONFIG_USB_GADGET is not set' \
+        '# CONFIG_USBIP_CORE is not set' \
         '# CONFIG_ATM is not set' \
         '# CONFIG_CAN is not set' \
         '# CONFIG_HAMRADIO is not set' \
