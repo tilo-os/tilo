@@ -25,6 +25,24 @@ CACHE = driver.cache_configuration(CACHE_ENV)
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_native_setup_never_pulls_or_probes_base_rootfs(self):
+        with patch.object(driver, 'run') as run, \
+             patch.object(driver, 'installation_tooling') as probe, \
+             patch.object(driver, 'write_receipt') as receipt:
+            driver.prepare_base_installation_tooling('native-payload', WPE)
+            run.assert_not_called()
+            probe.assert_not_called()
+            receipt.assert_not_called()
+
+    def test_full_build_still_pulls_and_records_base_tooling(self):
+        with patch.object(driver, 'run') as run, \
+             patch.object(driver, 'installation_tooling', return_value={'image': WPE}) as probe, \
+             patch.object(driver, 'write_receipt') as receipt:
+            driver.prepare_base_installation_tooling('full-build', WPE)
+            run.assert_called_once_with('podman', '--remote=false', 'pull', WPE)
+            probe.assert_called_once_with(WPE)
+            receipt.assert_called_once_with('base-installation-tooling.json', {'image': WPE})
+
     def test_native_payload_never_reads_or_exports_a_kernel_pin(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
