@@ -574,6 +574,10 @@ pub struct PhotosApp {
     /// Tag filtering is local navigation derived from a durable tag resource.
     /// It never mutates a collaborator's metadata just by opening a view.
     active_tag: Option<String>,
+    /// AI-derived object/pet collections use the same local-only navigation
+    /// rule as tags. Their labels are present only after explicit sharing.
+    active_object: Option<String>,
+    active_pet: Option<String>,
     /// The stable Favorites resource is a view over shared favourite markers,
     /// never a private second list. Opening it is local; toggling a star is a
     /// typed shared document action.
@@ -755,6 +759,8 @@ impl PhotosApp {
             active_folder: None,
             active_person: None,
             active_tag: None,
+            active_object: None,
+            active_pet: None,
             active_favorites: false,
             library_folders: Vec::new(),
             library_people: Vec::new(),
@@ -993,6 +999,8 @@ impl PhotosApp {
         self.active_folder = None;
         self.active_person = None;
         self.active_tag = None;
+        self.active_object = None;
+        self.active_pet = None;
         self.active_favorites = false;
         self.library_remove_confirm = None;
         self.finish_selection();
@@ -1928,6 +1936,9 @@ impl PhotosApp {
                     "Camera import requires document dispatch: {media_id} ({name})"
                 ));
             }
+            crate::actions::PhotosOperation::AnalyzeText { .. } => {
+                return Err("text recognition requires document dispatch".to_owned());
+            }
             crate::actions::PhotosOperation::Copy => {
                 self.copy_to_clipboard();
             }
@@ -1964,6 +1975,8 @@ impl PhotosApp {
             | crate::actions::PhotosOperation::ViewFolder { .. }
             | crate::actions::PhotosOperation::ViewPerson { .. }
             | crate::actions::PhotosOperation::ViewTag { .. }
+            | crate::actions::PhotosOperation::ViewObject { .. }
+            | crate::actions::PhotosOperation::ViewPet { .. }
             | crate::actions::PhotosOperation::Open { path: Some(_) } => {}
         }
         Ok(())
@@ -1983,6 +1996,8 @@ impl PhotosApp {
         self.active_folder = None;
         self.active_person = None;
         self.active_tag = None;
+        self.active_object = None;
+        self.active_pet = None;
         self.active_favorites = false;
         self.library_offset = 0;
         self.album_editor = false;
@@ -2025,11 +2040,47 @@ impl PhotosApp {
         self.active_folder = folder;
         self.active_person = person;
         self.active_tag = tag;
+        self.active_object = None;
+        self.active_pet = None;
         self.active_favorites = false;
         self.library_offset = 0;
         self.album_editor = false;
         self.album_delete_confirm = false;
         self.notice = Some("Showing shared photo metadata view".to_owned());
+        Ok(())
+    }
+
+    /// Open one exact intelligence-derived collection. These labels are
+    /// still local navigation; only the accepted analysis record is shared.
+    fn view_analysis_filter(
+        &mut self,
+        doc: &AutoCommit,
+        label: String,
+        pet: bool,
+    ) -> Result<(), String> {
+        let exists = PhotosDoc::library(doc).photos.iter().any(|photo| {
+            photo.analysis.as_ref().is_some_and(|analysis| {
+                if pet {
+                    analysis.pets.contains(&label)
+                } else {
+                    analysis.objects.contains(&label)
+                }
+            })
+        });
+        if !exists {
+            return Err("that analysis collection is no longer in the library".to_owned());
+        }
+        self.library_mode = true;
+        self.active_album = None;
+        self.active_folder = None;
+        self.active_person = None;
+        self.active_tag = None;
+        self.active_object = (!pet).then_some(label.clone());
+        self.active_pet = pet.then_some(label);
+        self.active_favorites = false;
+        self.library_offset = 0;
+        self.album_editor = false;
+        self.notice = Some("Showing explicitly shared image analysis".to_owned());
         Ok(())
     }
 
@@ -2049,6 +2100,8 @@ impl PhotosApp {
         self.active_folder = None;
         self.active_person = None;
         self.active_tag = None;
+        self.active_object = None;
+        self.active_pet = None;
         self.active_favorites = true;
         self.library_offset = 0;
         self.album_editor = false;
@@ -6165,6 +6218,12 @@ impl Widget for PhotosApp {
             crate::actions::PhotosOperation::ViewTag { tag } => {
                 self.view_metadata_filter(doc, None, None, Some(tag))?;
             }
+            crate::actions::PhotosOperation::ViewObject { object } => {
+                self.view_analysis_filter(doc, object, false)?;
+            }
+            crate::actions::PhotosOperation::ViewPet { pet } => {
+                self.view_analysis_filter(doc, pet, true)?;
+            }
             crate::actions::PhotosOperation::Open { path: Some(_) } => {
                 return Err("direct open requires lifecycle dispatch".into());
             }
@@ -6225,6 +6284,36 @@ impl Widget for PhotosApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
+        if let crate::actions::PhotosOperation::AnalyzeText {
+            resource_id,
+            language,
+        } = operation
+        {
+            let photo = PhotosDoc::photo(doc, &resource_id)
+                .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
+            let mut analysis = crate::analysis::recognize_text(&photo.image, &language)?;
+            // `recognize_text` deliberately returns a local-only result. This
+            // operation is the explicit consent boundary that turns its
+            // bounded data into a collaborative record.
+            analysis.provenance.scope = "shared".to_owned();
+            let action = crate::actions::PhotosAction::SetImageAnalysis {
+                photo_id: resource_id,
+                analysis: Some(analysis),
+            };
+            self.actions
+                .try_dispatch_with_context(
+                    doc,
+                    crate::actions::PHOTOS_ACTION_TYPE,
+                    &action,
+                    tilo_actions::ActionContext::for_action("org.tilo.Photos", "Photos", &action),
+                )
+                .map_err(|error| error.to_string())?;
+            self.notice = Some("Recognized text was shared with this photo library".to_owned());
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+
         let crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } = operation
         else {
             return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
@@ -6379,6 +6468,18 @@ impl Widget for PhotosApp {
                     .active_tag
                     .as_ref()
                     .is_none_or(|tag| photo.tags.contains(tag))
+                && self.active_object.as_ref().is_none_or(|object| {
+                    photo
+                        .analysis
+                        .as_ref()
+                        .is_some_and(|analysis| analysis.objects.contains(object))
+                })
+                && self.active_pet.as_ref().is_none_or(|pet| {
+                    photo
+                        .analysis
+                        .as_ref()
+                        .is_some_and(|analysis| analysis.pets.contains(pet))
+                })
         };
         self.library_total = library
             .photos
