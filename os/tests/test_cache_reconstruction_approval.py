@@ -5,6 +5,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dev'))
 from test_native_reconstruction_approval import ApprovalTests, a, ROOT
@@ -120,5 +121,10 @@ class CacheApprovalTests(unittest.TestCase):
         self.extensions['partial_metadata'][key] = self.extensions['partial_metadata'][key][:-1]
         self.material['restore_helper'] += b'\n'
         with self.assertRaises(ValueError): self.approve_cache(receipt)
+
+    def test_incompatible_host_encoding_has_explicit_remedy(self):
+        with patch.object(Path, 'read_text', return_value='incorrect decoding'):
+            with self.assertRaisesRegex(ValueError, 'Python with -X utf8'):
+                self.completed()
 
 if __name__ == '__main__': unittest.main()
