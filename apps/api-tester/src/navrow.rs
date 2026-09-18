@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -498,23 +498,4 @@ impl NavRow {
             TextWeight::Semibold,
         );
     }
-}
-
-// A tiny unused helper kept to document that a caret glyph is a triangle;
-// `draw` uses the unicode caret directly for parity with the original.
-#[allow(dead_code)]
-fn draw_caret(scene: &mut Scene, t: Affine, center: Point, color: Color, expanded: bool) {
-    let mut p = BezPath::new();
-    let (cx, cy) = (center.x, center.y);
-    if expanded {
-        p.move_to((cx - 3.0, cy - 2.0));
-        p.line_to((cx + 3.0, cy - 2.0));
-        p.line_to((cx, cy + 3.0));
-    } else {
-        p.move_to((cx - 2.0, cy - 3.0));
-        p.line_to((cx + 3.0, cy));
-        p.line_to((cx - 2.0, cy + 3.0));
-    }
-    p.close_path();
-    scene.fill(Fill::NonZero, t, color, None, &p);
 }
