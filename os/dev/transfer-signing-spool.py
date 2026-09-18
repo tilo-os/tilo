@@ -57,7 +57,8 @@ def bounded_process(argv, sink, limit, *, source=None, timeout=120):
 def validate_binding(binding):
     expected = {'schema', 'namespace', 'pod', 'container', 'pod_uid', 'container_id', 'image',
                 'image_id', 'restart_count', 'pod_spec_sha256', 'context_sha256', 'endpoint'}
-    if not isinstance(binding, dict) or set(binding) != expected or binding['schema'] != 1:
+    if (not isinstance(binding, dict) or set(binding) not in (expected, expected | {'docker'})
+            or binding['schema'] != 1):
         raise ValueError('invalid pinned transport binding')
     for name in ('namespace', 'pod', 'container'):
         if not re.fullmatch(r'[a-z0-9][a-z0-9.-]{0,252}', binding[name]):
@@ -73,6 +74,14 @@ def validate_binding(binding):
     path = PurePosixPath(binding['endpoint'])
     if not path.is_absolute() or '..' in path.parts or path.name != 'signing-spool-endpoint.py':
         raise ValueError('endpoint must be the installed fixed signing helper')
+    if 'docker' in binding:
+        nested = binding['docker']
+        if (not isinstance(nested, dict) or set(nested) != {'id', 'image_id', 'started_at', 'restart_count'}
+                or not isinstance(nested['id'], str) or not re.fullmatch(r'[0-9a-f]{64}', nested['id'])
+                or not isinstance(nested['image_id'], str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', nested['image_id'])
+                or not isinstance(nested['started_at'], str) or not 1 <= len(nested['started_at']) <= 64
+                or type(nested['restart_count']) is not int or nested['restart_count'] < 0):
+            raise ValueError('invalid pinned nested Docker identity')
     return binding
 
 
@@ -99,15 +108,35 @@ class Transport:
         self.runner = runner
         self.prefix = ['kubectl', '--context=' + context, '--namespace=' + binding['namespace']]
 
+    def exec_prefix(self):
+        return self.prefix + ['exec', '-i', self.binding['pod'], '-c', self.binding['container'], '--']
+
     def check(self):
         output = io.BytesIO()
         self.runner(self.prefix + ['get', 'pod', self.binding['pod'], '-o', 'json', '--request-timeout=15s'], output, 1024 * 1024, timeout=30)
         check_pod(json.loads(output.getvalue(), object_pairs_hook=spool.unique), self.binding)
+        if 'docker' in self.binding:
+            nested = self.binding['docker']
+            output = io.BytesIO()
+            # Inspect only public identity/state fields, never Config.Env or
+            # registry authentication. A full ID cannot select a replacement name.
+            template = '{"Id":{{json .Id}},"Image":{{json .Image}},"State":{{json .State}},"RestartCount":{{json .RestartCount}}}'
+            self.runner(self.exec_prefix() + ['docker', 'inspect', '--type=container', '--format', template, nested['id']],
+                        output, spool.MAX_JSON, timeout=30)
+            info = json.loads(output.getvalue(), object_pairs_hook=spool.unique)
+            state = info.get('State', {})
+            if (info.get('Id') != nested['id'] or info.get('Image') != nested['image_id']
+                    or info.get('RestartCount') != nested['restart_count']
+                    or state.get('StartedAt') != nested['started_at'] or state.get('Status') != 'running'
+                    or state.get('Running') is not True or any(state.get(k) is not False for k in ('Paused', 'Restarting', 'Dead'))):
+                raise ValueError('nested Docker container identity or state changed')
 
     def transfer(self, operation, nonce=None, response=None, source=None, sink=None, limit=spool.MAX_JSON):
         self.check()
-        command = self.prefix + ['exec', '-i', self.binding['pod'], '-c', self.binding['container'], '--',
-                                 '/usr/bin/python3', self.binding['endpoint'], operation]
+        command = self.exec_prefix()
+        if 'docker' in self.binding:
+            command += ['docker', 'exec', '-i', self.binding['docker']['id']]
+        command += ['/usr/bin/python3', self.binding['endpoint'], operation]
         if nonce is not None:
             command += ['--request-id', nonce]
         if response is not None:
