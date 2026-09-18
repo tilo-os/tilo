@@ -9,6 +9,7 @@ use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Line, Point, Rect, Stroke
 use vello::peniko::{Color, Fill};
 
 use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
 
 /// Linear blend between two sRGB colours (`t` in `0..=1`, 0 → a, 1 → b).
 pub fn mix(a: Color, b: Color, t: f32) -> Color {
@@ -133,9 +134,9 @@ pub fn polygon(scene: &mut Scene, t: Affine, pts: &[Point], color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &path);
 }
 
-/// A soft elevated card: fill + 1px border.
-pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color, border: Color) {
-    // Faux drop-shadow: a slightly larger, very transparent black plate.
+/// The faux drop-shadow every floating map surface casts: a slightly
+/// larger, very transparent black plate seated a few pixels below.
+fn floating_shadow(scene: &mut Scene, t: Affine, rect: Rect, radius: f64) {
     let shadow = Rect::new(rect.x0 - 1.0, rect.y0 + 3.0, rect.x1 + 1.0, rect.y1 + 5.0);
     fill_rrect(
         scene,
@@ -144,8 +145,71 @@ pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color, 
         radius + 1.0,
         Color::from_rgba8(0, 0, 0, 46),
     );
+}
+
+/// A soft elevated card floating over the map: shadow, fill, and the 1 px
+/// rest edge *derived* from the fill (`ui::surface::card`, HIG §9.5) — never
+/// a declared `border_standard`, which vanishes on a raised dark surface.
+pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color) {
+    floating_shadow(scene, t, rect, radius);
+    ui::surface::card(scene, t, rect, radius, fill);
+}
+
+/// [`card`] whose edge carries a *state* rather than the rest hairline: the
+/// focus ring on the search field, the accent ring on an active control.
+/// The ring is stroked centred on the outline at `width`, like every
+/// toolkit control's focus ring.
+pub fn card_ring(
+    scene: &mut Scene,
+    t: Affine,
+    rect: Rect,
+    radius: f64,
+    fill: Color,
+    ring: Color,
+    width: f64,
+) {
+    floating_shadow(scene, t, rect, radius);
     fill_rrect(scene, t, rect, radius, fill);
-    stroke_rrect(scene, t, rect, radius, 1.0, border);
+    stroke_rrect(scene, t, rect, radius, width, ring);
+}
+
+/// A row, field or track *inside* a panel: fill plus its derived rest edge,
+/// no shadow (it sits on the panel, it does not float over the map).
+pub fn edged(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color) {
+    ui::surface::card(scene, t, rect, radius, fill);
+}
+
+/// Alpha of the chosen row's wash: one step up `ui::surface::EDGE_ALPHA_STEPS`
+/// from the hover hairline, so chosen and hovered never look alike.
+const SELECTED_WASH_ALPHA: u8 = 40;
+
+/// The chosen row of a list on the raised panel: a *lift* (HIG §9.3 — never
+/// an accent wash) derived against the panel — white over a dark one, black
+/// over a light one — with the panel's derived edge. The wash is
+/// translucent, so the edge is judged against the panel it sits on (the
+/// surface actually seen), not against the wash's own RGB.
+pub fn selected_row(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, theme: &Theme) {
+    let ground = theme.tokens.colors.surfaces.raised;
+    fill_rrect(
+        scene,
+        t,
+        rect,
+        radius,
+        ui::tokens::colors::Colors::hairline_on(ground, SELECTED_WASH_ALPHA),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        t,
+        ui::surface::edge_on(ground),
+        None,
+        &ui::surface::edge_outline(rect, radius),
+    );
+}
+
+/// A 1 px separator between groups inside a surface of colour `surface`,
+/// derived against it and centred on `y` (`ui::surface::separator`).
+pub fn separator(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, surface: Color) {
+    ui::surface::separator(scene, t, x0, x1, y, 0.0, surface);
 }
 
 /// Left-aligned text with top-left at `(x, y)`.
