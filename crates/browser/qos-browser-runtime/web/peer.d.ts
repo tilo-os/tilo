@@ -4,6 +4,8 @@ export interface PeerSnapshot {
  phase:'authenticating'|'admitting'|'ready'|'incomplete'|'failed'|'closed';
  room?:string;deviceId?:string;records:CertifiedRecord[];error?:string|null;
  pendingPrerequisites?:number;persistenceNeeded?:boolean;
+ outgoingPending?:number;outgoingBlocked?:number;synchronization?:'acknowledged'|'pending'|'blocked';
+ recoveryAvailable?:boolean;
 }
 export interface CertifiedPeer {
  getSnapshot():PeerSnapshot;
@@ -15,3 +17,6 @@ export interface CertifiedPeer {
 }
 /** Resolves after authenticated join; observe ready for admitted durable records. */
 export function connectPeer(options?:{enrollmentBaseUrl?:string;identitySlots?:string[];signal?:AbortSignal;onStatus?:(snapshot:PeerSnapshot)=>void}):Promise<CertifiedPeer>;
+
+export function pendingPeerRecoveryCount():number;
+export function retryPendingPeerRecovery():Promise<void>;

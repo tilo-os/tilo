@@ -11,3 +11,5 @@ pub use state::{StatePeer,SeedState,SeedDocument,DocumentRow,ReceiveOutcome,Tran
 pub mod transport;
 pub mod coverage;
 pub use collab_types::DocumentMutation;
+
+pub mod outbox;

@@ -74,6 +74,7 @@ struct Document {
     channel: ChannelState,
     encryption_required: bool,
     covered: BTreeMap<String, u64>,
+    covered_snapshot: Option<Vec<u8>>,
 }
 #[derive(Serialize, Deserialize)]
 struct DurableDocument {
@@ -82,6 +83,7 @@ struct DurableDocument {
     watermarks: Vec<([u8; 32], u64)>,
     encryption_required: bool,
     covered: BTreeMap<String, u64>,
+    covered_snapshot: Option<Vec<u8>>,
 }
 #[derive(Serialize, Deserialize)]
 struct Durable {
@@ -91,6 +93,8 @@ struct Durable {
     room_bytes: Option<Vec<u8>>,
     documents: Vec<DurableDocument>,
     receipts: BTreeMap<String, Vec<u8>>,
+    certificates: Vec<DeviceCert>,
+    revocations: Vec<qos_user_identity::RevocationEntry>,
 }
 #[derive(Clone)]
 pub struct StatePeer {
@@ -103,6 +107,7 @@ pub struct StatePeer {
     documents: BTreeMap<Route, Document>,
     pending: VecDeque<([u8; 32], NeighbourMsg)>,
     pending_bytes: usize,
+    checkpoint_times: BTreeMap<Route, SystemTime>,
 }
 impl StatePeer {
     pub fn new(
@@ -131,7 +136,50 @@ impl StatePeer {
             documents: BTreeMap::new(),
             pending: VecDeque::new(),
             pending_bytes: 0,
+            checkpoint_times: BTreeMap::new(),
         })
+    }
+    /// Verified public identity metadata; never includes signing keys.
+    pub fn certificates(&self) -> Vec<DeviceCert> {
+        self.certificates.values().cloned().collect()
+    }
+    pub fn revocations(&self) -> Vec<qos_user_identity::RevocationEntry> {
+        let mut entries = self.revocations.iter().cloned().collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.revoked_device_public_key);
+        entries
+    }
+    pub fn replay_floors(&self) -> Vec<(String, String, [u8; 32], u64)> {
+        let mut rows = self
+            .documents
+            .iter()
+            .flat_map(|(route, document)| {
+                document
+                    .channel
+                    .last_seq_per_author
+                    .iter()
+                    .map(|(author, seq)| {
+                        (
+                            route.app.clone(),
+                            route.record.clone(),
+                            *author.as_bytes(),
+                            *seq,
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+        rows.sort();
+        rows
+    }
+    pub(crate) fn fresh_checkpoint_for(&self, app: &str, record: &str, now: SystemTime) -> bool {
+        self.checkpoint_times
+            .get(&Route {
+                app: app.into(),
+                record: record.into(),
+            })
+            .is_some_and(|at| {
+                now.duration_since(*at)
+                    .is_ok_and(|age| age <= Duration::from_secs(300))
+            })
     }
     pub fn authority(&self) -> &DeviceCert {
         &self.authority
@@ -170,15 +218,40 @@ impl StatePeer {
         else {
             return false;
         };
-        self.documents
-            .get(&Route {
-                app: app_id.clone(),
-                record: record_id.clone(),
-            })
-            .and_then(|doc| doc.covered.get(&hex::encode(envelope.author.as_bytes())))
+        let Some(document) = self.documents.get(&Route {
+            app: app_id.clone(),
+            record: record_id.clone(),
+        }) else {
+            return false;
+        };
+        if document
+            .covered
+            .get(&hex::encode(envelope.author.as_bytes()))
             .copied()
             .unwrap_or(0)
-            >= envelope.seq
+            < envelope.seq
+        {
+            return false;
+        }
+        let Some(snapshot) = &document.covered_snapshot else {
+            return false;
+        };
+        let Ok(collab_types::RoutedDocumentPayload::Cleartext(DocumentMutation::Incremental(
+            bytes,
+        ))) =
+            collab_types::validate_document_payload_route(app_id, &self.room, record_id, envelope)
+        else {
+            return false;
+        };
+        let Ok(mut proof) = AutoCommit::load(snapshot) else {
+            return false;
+        };
+        let before = proof.base_heads();
+        // A sequence floor is not causal coverage: an out-of-order incremental
+        // may have been validated while its dependencies were unavailable.
+        proof.load_incremental(&bytes).is_ok()
+            && proof.get_missing_deps(&[]).is_empty()
+            && proof.base_heads() == before
     }
     pub fn rows(&self) -> Vec<DocumentRow> {
         self.documents
@@ -296,6 +369,7 @@ impl StatePeer {
                     }
                 }
                 qos_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
+                let mut metadata_changed = self.certificates.get(&source) != Some(cert.as_ref());
                 for entry in revocations {
                     if entry.user_public_key != cert.user_public_key {
                         return Err("revocation root mismatch".into());
@@ -307,13 +381,16 @@ impl StatePeer {
                     {
                         return Err("revocation cannot cross identity roots".into());
                     }
-                    self.revocations.insert(entry).map_err(err)?;
+                    metadata_changed |= self.revocations.insert(entry).map_err(err)?;
                 }
                 if self.revocations.is_revoked(&source) {
                     return Err("device revoked".into());
                 }
                 self.certificates.insert(source, *cert);
-                Ok(ReceiveOutcome::default())
+                Ok(ReceiveOutcome {
+                    metadata_changed,
+                    ..Default::default()
+                })
             }
             NeighbourMsg::SyncResp {
                 changes,
@@ -383,15 +460,23 @@ impl StatePeer {
                 let pending = std::mem::take(&mut self.pending);
                 self.pending_bytes = 0;
                 let mut applied = changed;
+                let mut metadata_changed = false;
                 let mut rejected = 0;
                 for (author, message) in pending {
                     match self.receive(author, message, now) {
-                        Ok(outcome) => applied |= outcome.changed,
+                        Ok(outcome) => {
+                            applied |= outcome.changed;
+                            metadata_changed |= outcome.metadata_changed;
+                            rejected += outcome.rejected;
+                        }
                         Err(_) => rejected += 1,
                     }
                 }
                 Ok(ReceiveOutcome {
                     changed: applied,
+                    metadata_changed,
+                    incomplete: self.incomplete_reason(),
+                    deferred: !self.pending.is_empty(),
                     rejected,
                     ..Default::default()
                 })
@@ -492,6 +577,7 @@ impl StatePeer {
                 channel: ChannelState::default(),
                 encryption_required: false,
                 covered: BTreeMap::new(),
+                covered_snapshot: None,
             });
         candidate
             .channel
@@ -577,6 +663,7 @@ impl StatePeer {
             if coverage.watermarks.get(&hex::encode(source)).copied() != Some(envelope.seq) {
                 return Err("checkpoint author coverage mismatch".into());
             }
+            candidate.covered_snapshot = Some(bytes.clone());
             for (author, sequence) in &coverage.watermarks {
                 let key: [u8; 32] = hex::decode(author)
                     .map_err(err)?
@@ -605,6 +692,9 @@ impl StatePeer {
         }
         let changed = document::merge_committed(&mut candidate.doc, &mutation)
             .map_err(|e| format!("{e:?}"))?;
+        if matches!(mutation, DocumentMutation::Snapshot(_)) {
+            self.checkpoint_times.insert(route.clone(), now);
+        }
         self.documents.insert(route, candidate);
         Ok(ReceiveOutcome {
             changed,
@@ -800,15 +890,22 @@ impl StatePeer {
                     .collect(),
                 encryption_required: entry.encryption_required,
                 covered: entry.covered.clone(),
+                covered_snapshot: entry.covered_snapshot.clone(),
             })
             .collect();
         postcard::to_allocvec(&Durable {
-            version: 1,
+            version: 2,
             room: self.room.clone(),
             authority: self.authority.clone(),
             room_bytes: self.room_doc.clone().map(|mut doc| doc.save()),
             documents,
             receipts: self.receipts.clone(),
+            certificates: self.certificates.values().cloned().collect(),
+            revocations: {
+                let mut entries = self.revocations.iter().cloned().collect::<Vec<_>>();
+                entries.sort_by_key(|entry| entry.revoked_device_public_key);
+                entries
+            },
         })
         .map_err(err)
     }
@@ -820,11 +917,38 @@ impl StatePeer {
         revocations: RevocationList,
         now: SystemTime,
     ) -> Result<Self, String> {
+        let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
+        if version != 2 {
+            return Err("incomplete: legacy admission lacks durable identity/revocation prerequisites; preserve bytes for authenticated migration".into());
+        }
         let durable: Durable = postcard::from_bytes(bytes).map_err(err)?;
-        if durable.version != 1 || durable.room != room || durable.authority != authority {
+        if durable.version != 2 || durable.room != room || durable.authority != authority {
             return Err("durable admission namespace mismatch".into());
         }
-        let mut peer = Self::new(room, authority, roster, revocations, now)?;
+        let mut certificates = durable.certificates;
+        for certificate in roster {
+            if certificates.iter().any(|prior| {
+                prior.device_public_key == certificate.device_public_key && prior != &certificate
+            }) {
+                return Err("durable certificate conflicts with enrollment".into());
+            }
+            certificates.push(certificate);
+        }
+        let mut peer = Self::new(room, authority, certificates, RevocationList::new(), now)?;
+        for entry in durable
+            .revocations
+            .into_iter()
+            .chain(revocations.iter().cloned())
+        {
+            if peer
+                .certificates
+                .get(&entry.revoked_device_public_key)
+                .is_some_and(|certificate| certificate.user_public_key != entry.user_public_key)
+            {
+                return Err("durable revocation root mismatch".into());
+            }
+            peer.revocations.insert(entry).map_err(err)?;
+        }
         peer.receipts = durable.receipts;
         peer.room_doc = durable
             .room_bytes
@@ -844,6 +968,7 @@ impl StatePeer {
                     channel,
                     encryption_required: document.encryption_required,
                     covered: document.covered,
+                    covered_snapshot: document.covered_snapshot,
                 },
             );
         }

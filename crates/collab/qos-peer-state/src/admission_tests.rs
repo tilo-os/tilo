@@ -570,12 +570,25 @@ fn aged_retained_checkpoint_rejects_without_poisoning_fresh_sync_or_durable_read
     let (mut native, key, _, browser_cert, created) = seeded();
     let delayed = created + Duration::from_secs(301);
     let stale = native.bootstrap_messages(&key, created).unwrap();
-    let mut receiver = StatePeer::new(native.room(), native.authority().clone(),
-        vec![native.authority().clone(), browser_cert], RevocationList::new(), delayed).unwrap();
+    let mut receiver = StatePeer::new(
+        native.room(),
+        native.authority().clone(),
+        vec![native.authority().clone(), browser_cert],
+        RevocationList::new(),
+        delayed,
+    )
+    .unwrap();
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    receiver.receive_from(origin, stale[0].clone(), delayed).unwrap();
+    receiver
+        .receive_from(origin, stale[0].clone(), delayed)
+        .unwrap();
     let before = receiver.durable().unwrap();
-    assert!(receiver.receive_from(origin, stale[1].clone(), delayed).unwrap_err().contains("timestamp"));
+    assert!(
+        receiver
+            .receive_from(origin, stale[1].clone(), delayed)
+            .unwrap_err()
+            .contains("timestamp")
+    );
     assert_eq!(receiver.durable().unwrap(), before);
     assert!(receiver.rows().is_empty());
     assert_eq!(receiver.incomplete_reason(), None);
@@ -584,7 +597,482 @@ fn aged_retained_checkpoint_rejects_without_poisoning_fresh_sync_or_durable_read
     }
     assert_eq!(receiver.rows(), native.rows());
     let admitted = receiver.durable().unwrap();
-    assert!(receiver.receive_from(origin, stale[1].clone(), delayed).is_err());
+    assert!(
+        receiver
+            .receive_from(origin, stale[1].clone(), delayed)
+            .is_err()
+    );
     assert_eq!(receiver.durable().unwrap(), admitted);
     assert_eq!(receiver.incomplete_reason(), None);
+}
+
+#[test]
+fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
+    use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+    let (mut native, a, b, bc, now) = seeded();
+    let mut receiver = StatePeer::new(
+        native.room(),
+        native.authority().clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    for msg in native.bootstrap_messages(&a, now).unwrap() {
+        receiver
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                msg,
+                now,
+            )
+            .unwrap();
+    }
+    let learned = receiver
+        .receive_from(
+            TransportOrigin::UntrustedPresence(bc.device_public_key),
+            NeighbourMsg::IdentityHello {
+                cert: Box::new(bc.clone()),
+                revocations: vec![],
+            },
+            now,
+        )
+        .unwrap();
+    assert!(
+        learned.metadata_changed,
+        "learned governed certificate must be journaled"
+    );
+    let restored = StatePeer::restore(
+        &receiver.durable().unwrap(),
+        native.room(),
+        native.authority().clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    assert!(restored.permissions(bc.device_public_key, now).is_ok());
+    let mut revocation = RevocationEntry {
+        user_public_key: bc.user_public_key,
+        revoked_device_public_key: bc.device_public_key,
+        revoked_at_ns: 1,
+        reason: RevocationReason::Compromised,
+        signature: [0; 64],
+    };
+    sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    let learned = receiver
+        .receive_from(
+            TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
+            NeighbourMsg::IdentityHello {
+                cert: Box::new(native.authority().clone()),
+                revocations: vec![revocation],
+            },
+            now,
+        )
+        .unwrap();
+    assert!(learned.metadata_changed);
+    let mut restored = StatePeer::restore(
+        &receiver.durable().unwrap(),
+        native.room(),
+        native.authority().clone(),
+        vec![bc],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    assert!(
+        restored
+            .permissions(b.verifying_key().to_bytes(), now)
+            .unwrap_err()
+            .contains("revoked")
+    );
+    let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
+    let heads = doc.get_heads();
+    doc.put(ROOT, "new", "forbidden").unwrap();
+    doc.commit();
+    let op = native
+        .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &b, now)
+        .unwrap();
+    assert!(
+        restored
+            .receive_from(
+                TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+                op,
+                now
+            )
+            .unwrap_err()
+            .contains("revoked")
+    );
+}
+
+#[test]
+fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance() {
+    for existing in [false, true] {
+        let (mut native, a, b, bc, now) = seeded();
+        let mut receiver = StatePeer::new(
+            native.room(),
+            native.authority().clone(),
+            vec![],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        if existing {
+            for msg in native.bootstrap_messages(&a, now).unwrap() {
+                receiver
+                    .receive_from(
+                        TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                        msg,
+                        now,
+                    )
+                    .unwrap();
+            }
+        }
+        let messages = native.bootstrap_messages(&a, now).unwrap();
+        // Install exactly the room we will drain again: the existing path then
+        // has no changed room heads, only the deferred metadata obligation.
+        if existing {
+            receiver
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    messages[0].clone(),
+                    now,
+                )
+                .unwrap();
+        }
+        let mut encrypted = messages[1].clone();
+        if let NeighbourMsg::AppDocument {
+            envelope,
+            app_id,
+            cluster_id,
+            record_id,
+            ..
+        } = &mut encrypted
+        {
+            envelope.encryption = Some(collab_types::EncryptionMetadata {
+                epoch: 1,
+                channel: collab_types::document_channel_id(app_id, cluster_id, record_id),
+            });
+            envelope.payload = vec![1, 2, 3];
+            collab_types::sign_op(envelope, &a).unwrap();
+        }
+        let author = if existing {
+            b.verifying_key().to_bytes()
+        } else {
+            a.verifying_key().to_bytes()
+        };
+        if existing {
+            if let NeighbourMsg::AppDocument { peer, envelope, .. } = &mut encrypted {
+                *peer = peer_handle(&author);
+                envelope.author = collab_types::Ed25519PublicKey::from_bytes(author);
+                envelope.seq = 1;
+                collab_types::sign_op(envelope, &b).unwrap();
+            }
+        }
+        assert!(
+            receiver
+                .receive_from(TransportOrigin::RelayDelta(author), encrypted, now)
+                .unwrap()
+                .deferred
+        );
+        if existing {
+            receiver
+                .receive_from(
+                    TransportOrigin::UntrustedPresence(author),
+                    NeighbourMsg::IdentityHello {
+                        cert: Box::new(bc),
+                        revocations: vec![],
+                    },
+                    now,
+                )
+                .unwrap();
+        }
+        let outcome = receiver
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                messages[0].clone(),
+                now,
+            )
+            .unwrap();
+        assert!(
+            outcome.metadata_changed,
+            "deferred metadata must survive outer room outcome"
+        );
+        assert!(outcome.incomplete.is_some());
+        if existing {
+            assert!(!outcome.changed);
+        }
+        let mut restored = StatePeer::restore(
+            &receiver.durable().unwrap(),
+            native.room(),
+            native.authority().clone(),
+            vec![],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert!(restored.incomplete_reason().is_some());
+        assert!(
+            restored
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    messages[1].clone(),
+                    now
+                )
+                .unwrap_err()
+                .contains("downgrade")
+        );
+    }
+}
+
+#[test]
+fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_changes() {
+    for delivered in [false, true] {
+        let (mut governor, a, b, bc, now) = seeded();
+        let mut client = StatePeer::new(
+            governor.room(),
+            governor.authority().clone(),
+            vec![bc.clone()],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        for msg in governor.bootstrap_messages(&a, now).unwrap() {
+            client
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    msg,
+                    now,
+                )
+                .unwrap();
+        }
+        let mut doc = AutoCommit::load(&client.document("test.app", "tab:1").unwrap()).unwrap();
+        doc.set_actor(automerge::ActorId::from(
+            b.verifying_key().to_bytes().to_vec(),
+        ));
+        let before = doc.get_heads();
+        let text = doc
+            .put_object(ROOT, "text", automerge::ObjType::Text)
+            .unwrap();
+        doc.splice_text(&text, 0, 0, "saved once").unwrap();
+        doc.commit();
+        let original = client
+            .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
+            .unwrap();
+        if delivered {
+            governor
+                .receive_from(
+                    TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+                    original.clone(),
+                    now,
+                )
+                .unwrap();
+        }
+        let later = now + Duration::from_secs(301);
+        let mut client = StatePeer::restore(
+            &client.durable().unwrap(),
+            governor.room(),
+            governor.authority().clone(),
+            vec![bc],
+            RevocationList::new(),
+            later,
+        )
+        .unwrap();
+        let old_bytes = postcard::to_allocvec(&original).unwrap();
+        let mut outbox = vec![original.clone()];
+        assert_eq!(client.outbox_status(&outbox, later).blocked_expired, 1);
+        // A reload alone cannot authorize re-signing or turn persistence into sync.
+        assert_eq!(client.reconcile_outbox(&outbox, &b, later).unwrap(), outbox);
+        for msg in governor.bootstrap_messages(&a, later).unwrap() {
+            client
+                .receive_from(
+                    TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                    msg,
+                    later,
+                )
+                .unwrap();
+        }
+        outbox = client.reconcile_outbox(&outbox, &b, later).unwrap();
+        if delivered {
+            assert!(outbox.is_empty());
+        } else {
+            assert_eq!(outbox.len(), 2);
+            assert_eq!(postcard::to_allocvec(&outbox[0]).unwrap(), old_bytes);
+            let (
+                NeighbourMsg::AppDocument { envelope: old, .. },
+                NeighbourMsg::AppDocument { envelope: new, .. },
+            ) = (&outbox[0], &outbox[1])
+            else {
+                panic!()
+            };
+            assert_eq!(old.payload, new.payload);
+            assert_eq!(new.seq, old.seq + 1);
+            assert_eq!(old.timestamp, now);
+            assert_eq!(new.timestamp, later);
+            assert_eq!(client.outbox_status(&outbox, later).blocked_expired, 0);
+            governor
+                .receive_from(
+                    TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+                    outbox[1].clone(),
+                    later,
+                )
+                .unwrap();
+            assert!(
+                governor
+                    .receive_from(
+                        TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+                        outbox[1].clone(),
+                        later
+                    )
+                    .unwrap()
+                    .duplicate
+            );
+            assert!(
+                governor
+                    .receive_from(
+                        TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+                        original,
+                        later
+                    )
+                    .is_err()
+            );
+            for msg in governor.bootstrap_messages(&a, later).unwrap() {
+                client
+                    .receive_from(
+                        TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                        msg,
+                        later,
+                    )
+                    .unwrap();
+            }
+            outbox = client.reconcile_outbox(&outbox, &b, later).unwrap();
+            assert!(outbox.is_empty());
+        }
+        assert_eq!(client.rows(), governor.rows());
+        let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
+        use automerge::ReadDoc;
+        let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
+        assert_eq!(final_doc.text(text).unwrap(), "saved once");
+        assert_eq!(client.outbox_status(&outbox, later).pending, 0);
+    }
+}
+
+#[test]
+fn legacy_durable_identity_metadata_is_not_silently_assumed_empty() {
+    let (peer, _, _, bc, now) = seeded();
+    let mut bytes = peer.durable().unwrap();
+    bytes[0] = 1;
+    let unchanged = bytes.clone();
+    let error = StatePeer::restore(
+        &bytes,
+        peer.room(),
+        peer.authority().clone(),
+        vec![bc],
+        RevocationList::new(),
+        now,
+    )
+    .err()
+    .unwrap();
+    assert!(error.contains("incomplete"));
+    assert!(error.contains("identity/revocation"));
+    assert_eq!(bytes, unchanged);
+}
+
+#[test]
+fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
+    let (mut governor, a, b, bc, now) = seeded();
+    let mut client = StatePeer::new(
+        governor.room(),
+        governor.authority().clone(),
+        vec![bc],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    for message in governor.bootstrap_messages(&a, now).unwrap() {
+        client
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                message,
+                now,
+            )
+            .unwrap();
+    }
+    let mut doc = AutoCommit::load(&client.document("test.app", "tab:1").unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        b.verifying_key().to_bytes().to_vec(),
+    ));
+    let before = doc.get_heads();
+    let text = doc
+        .put_object(ROOT, "text", automerge::ObjType::Text)
+        .unwrap();
+    doc.splice_text(&text, 0, 0, "one ").unwrap();
+    doc.commit();
+    let first = client
+        .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
+        .unwrap();
+    let before = doc.get_heads();
+    doc.splice_text(&text, 4, 0, "two").unwrap();
+    doc.commit();
+    let second = client
+        .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
+        .unwrap();
+    let outcome = governor
+        .receive_from(
+            TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+            second.clone(),
+            now,
+        )
+        .unwrap();
+    assert!(!outcome.changed);
+    let later = now + Duration::from_secs(301);
+    for message in governor.bootstrap_messages(&a, later).unwrap() {
+        client
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                message,
+                later,
+            )
+            .unwrap();
+    }
+    assert!(
+        !client.covers(&first),
+        "higher author floor cannot acknowledge a missing causal change"
+    );
+    assert!(
+        !client.covers(&second),
+        "missing dependencies are not materialized checkpoint coverage"
+    );
+    let outbox = client
+        .reconcile_outbox(&[first, second], &b, later)
+        .unwrap();
+    assert_eq!(outbox.len(), 4);
+    for message in &outbox[2..] {
+        governor
+            .receive_from(
+                TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+                message.clone(),
+                later,
+            )
+            .unwrap();
+    }
+    for message in governor.bootstrap_messages(&a, later).unwrap() {
+        client
+            .receive_from(
+                TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
+                message,
+                later,
+            )
+            .unwrap();
+    }
+    assert!(
+        client
+            .reconcile_outbox(&outbox, &b, later)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(client.rows(), governor.rows());
+    use automerge::ReadDoc;
+    let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
+    let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
+    assert_eq!(final_doc.text(text).unwrap(), "one two");
 }

@@ -74,7 +74,9 @@ fn report(peer: &Peer, phase: &str, error: Option<String>) {
         && rows
             .iter()
             .any(|r| r.app_id == "dev.qos.chat" && r.record_id.is_empty() && !r.heads.is_empty());
-    let incomplete = state.incomplete_reason().or_else(||peer.admission_failure.borrow().clone());
+    let outgoing=state.outbox_status(&peer.outbox.borrow(),SystemTime::now());
+    let incomplete = state.incomplete_reason().or_else(||peer.admission_failure.borrow().clone())
+        .or_else(||(outgoing.blocked_expired>0).then(||"unsent durable edits await a fresh authorized checkpoint for reconciliation".into()));
     let phase = if incomplete.is_some() && !matches!(phase, "closed" | "failed") {
         "incomplete"
     } else if phase == "admitting" && complete && peer.cache.pending_writes().is_empty() {
@@ -85,7 +87,7 @@ fn report(peer: &Peer, phase: &str, error: Option<String>) {
     let phase=if phase=="admitting"&&peer.was_ready.get()&&complete{"ready"}else{phase};
     if phase=="ready"{peer.was_ready.set(true);}
     let error = error.or(incomplete);
-    let value = serde_json::json!({"phase":phase,"room":state.room(),"deviceId":peer._key.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>(),"records":state.rows(),"pendingPrerequisites":state.pending_count(),"persistenceNeeded":!peer.cache.pending_writes().is_empty(),"error":error});
+    let value = serde_json::json!({"phase":phase,"room":state.room(),"deviceId":peer._key.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>(),"records":state.rows(),"pendingPrerequisites":state.pending_count(),"persistenceNeeded":!peer.cache.pending_writes().is_empty(),"outgoingPending":outgoing.pending,"outgoingBlocked":outgoing.blocked_expired,"synchronization":if outgoing.blocked_expired>0{"blocked"}else if outgoing.pending>0{"pending"}else{"acknowledged"},"error":error});
     let _ = peer
         .callback
         .call1(&JsValue::NULL, &JsValue::from_str(&value.to_string()));
@@ -186,7 +188,7 @@ pub async fn connect_peer(
         .bind()
         .await
         .map_err(error)?;
-    let client = RelayClient::connect_to_enrolled_home_peer(
+    let connected = RelayClient::connect_to_enrolled_home_peer(
         endpoint.clone(),
         config.relay_address,
         config.root_public_key,
@@ -195,9 +197,9 @@ pub async fn connect_peer(
         key.clone(),
         revoked,
     )
-    .await
-    .map_err(error)?;
-    let session = Rc::new(RelayCoeditSession::join(client, workspace, device).map_err(error)?);
+    .await;
+    let client=match connected {Ok(client)=>client,Err(failure)=>{endpoint.close().await;return Err(error(failure));}};
+    let session = match RelayCoeditSession::join(client, workspace, device) {Ok(session)=>Rc::new(session),Err(failure)=>{endpoint.close().await;return Err(error(failure));}};
     let id = NEXT.with(|next| {
         let id = next.get();
         next.set(id + 1);
@@ -217,23 +219,21 @@ pub async fn connect_peer(
         callback,
         closed: std::cell::Cell::new(false),
     });
-    PEERS.with(|peers| peers.borrow_mut().insert(id, peer.clone()));
-    report(&peer, "admitting", None);
     let hello = NeighbourMsg::IdentityHello {
         cert: Box::new(config.certificate),
         revocations: vec![],
     };
-    session
-        .publish_presence(postcard::to_allocvec(&hello).map_err(error)?)
-        .map_err(error)?;
     let request = NeighbourMsg::SyncReq {
-        since: vec![],
-        room: config.bootstrap.room,
-        invite_id: None,
+        since: vec![], room: config.bootstrap.room, invite_id: None,
     };
-    session
-        .publish_presence(postcard::to_allocvec(&request).map_err(error)?)
-        .map_err(error)?;
+    let setup=(||->Result<(),JsValue>{
+        session.publish_presence(postcard::to_allocvec(&hello).map_err(error)?).map_err(error)?;
+        session.publish_presence(postcard::to_allocvec(&request).map_err(error)?).map_err(error)?;
+        Ok(())
+    })();
+    if let Err(error)=setup { peer.endpoint.close().await; return Err(error); }
+    PEERS.with(|peers| peers.borrow_mut().insert(id, peer.clone()));
+    report(&peer, "admitting", None);
     wasm_bindgen_futures::spawn_local(async move {
         while let Some(inbound) = session.recv().await {
             if peer.closed.get() {
@@ -283,21 +283,20 @@ pub async fn connect_peer(
             match result {
                 Ok(outcome) => {
                     if outcome.changed || outcome.metadata_changed {
-                        let outbox = peer
-                            .outbox
-                            .borrow()
-                            .iter()
-                            .filter(|message| !candidate.covers(message))
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        let install = if outcome.incomplete.is_some() {
+                        let (outbox,reconciliation_error)=match candidate.reconcile_outbox(&peer.outbox.borrow(),&peer._key,SystemTime::now()) {
+                            Ok(outbox)=>(outbox,None),
+                            // Never discard newly accepted revocations/prerequisites
+                            // merely because local outgoing recovery is forbidden.
+                            Err(error)=>(peer.outbox.borrow().iter().filter(|message|!candidate.covers(message)).cloned().collect(),Some(error)),
+                        };
+                        let install = if candidate.incomplete_reason().is_some() {
                             Ok(())
                         } else {
                             install_records(&peer, &candidate)
                         };
                         match install.and_then(|()| stage_journal(&peer, &candidate, &outbox)) {
                             Ok(()) => {
-                                *peer.admission_failure.borrow_mut()=None;
+                                *peer.admission_failure.borrow_mut()=reconciliation_error;
                                 *peer.outbox.borrow_mut() = outbox;
                                 *peer.state.borrow_mut() = candidate;
                                 crate::browser::refresh_peer_mounts(peer.id);
@@ -334,6 +333,12 @@ pub async fn connect_peer(
         }
     });
     Ok(id)
+}
+/// Disconnect transport without destroying durable cache/outbox ownership.
+#[wasm_bindgen]
+pub async fn disconnect_peer(id:u32) {
+    let peer=PEERS.with(|peers|peers.borrow().get(&id).cloned());
+    if let Some(peer)=peer {peer.closed.set(true);peer.endpoint.close().await;}
 }
 #[wasm_bindgen]
 pub async fn close_peer(id: u32) {
@@ -455,8 +460,10 @@ pub fn peer_committed(id: u32) -> Result<(), JsValue> {
         if !peer.cache.pending_writes().is_empty() {
             return Err(error("admission/record transaction not committed"));
         }
+        if peer.closed.get() { return Ok(()); }
         let pending = peer.outbox.borrow().clone();
         for message in &pending {
+            if !qos_peer_state::outbox::fresh(message,SystemTime::now()) {continue;}
             let Some((channel, qos_peer_state::transport::Retention::Delta)) =
                 qos_peer_state::transport::retention(message, false)
             else {

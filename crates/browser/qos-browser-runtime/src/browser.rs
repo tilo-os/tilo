@@ -128,6 +128,7 @@ struct Gpu {
     failure: Arc<Mutex<Option<String>>>,
 }
 struct Mount {
+    peer_suspended: bool,
     peer:Option<u32>,
     app_id:String,
     window: Arc<Window>,
@@ -305,6 +306,7 @@ impl ApplicationHandler<u64> for Runner {
                     }
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                    if m.peer_suspended {return;}
                     if let Err(e) = m.resize() {
                         m.error = Some(e);
                     }
@@ -319,6 +321,7 @@ impl ApplicationHandler<u64> for Runner {
                 }
                 WindowEvent::Destroyed => {}
                 _ => {
+                    if m.peer_suspended { return; }
                     m.frame.send_host_event(&event);
                     m.pending = true;
                     m.window.request_redraw();
@@ -331,7 +334,7 @@ impl ApplicationHandler<u64> for Runner {
         let mut deadline = None;
         MOUNTS.with_borrow(|mounts| {
             for m in mounts.values() {
-                if m.hidden || m.error.is_some() || m.gpu.is_none() {
+                if m.peer_suspended || m.hidden || m.error.is_some() || m.gpu.is_none() {
                     continue;
                 }
                 let output = m.frame.frame_output();
@@ -468,6 +471,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         ui::platform::Platform::Linux
     }));
     let mount = Mount {
+        peer_suspended: false,
         peer:config.peer,
         app_id:definition.app_id.into(),
         window: window.clone(),
@@ -572,7 +576,7 @@ impl Mount {
         Ok(())
     }
     fn draw(&mut self) -> Result<(), String> {
-        if self.hidden || self.error.is_some() {
+        if self.peer_suspended || self.hidden || self.error.is_some() {
             return Ok(());
         }
         let size = self.window.inner_size();
@@ -645,7 +649,7 @@ impl Mount {
         Ok(())
     }
     fn publish(&self, id: u64) {
-        if let Some(peer)=self.peer {
+        if let Some(peer)=self.peer.filter(|_| !self.peer_suspended) {
             let captured=crate::admitted_records::capture(&self.records,&self.checkout.id);
             let record=if self.checkout.id.is_package_primary(){""}else{self.checkout.id.as_str()};
             if let Err(error)=captured.and_then(|bytes|crate::peer::local_document(peer,&self.app_id,record,bytes)){crate::peer::mark_failure(peer,error.clone());emit(&self.status,serde_json::json!({"phase":"failed","error":error}));return;}
@@ -671,7 +675,7 @@ impl Mount {
         let ime=f.ime.map(|i|serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)}));
         emit(
             &self.status,
-            serde_json::json!({"phase":if self.error.is_some(){"failed"}else{"presented"},"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.window.scale_factor(),"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.checkout.id.as_str(),"actorId":self.records.read(&self.checkout.id,|doc|doc.get_actor().to_hex_string()),"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
+            serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.window.scale_factor(),"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.checkout.id.as_str(),"actorId":self.records.read(&self.checkout.id,|doc|doc.get_actor().to_hex_string()),"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
         );
     }
 }
@@ -688,6 +692,7 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
     };
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+        if m.peer_suspended { return Ok(()); }
         m.frame.send_host_event(&WindowEvent::Ime(event));
         m.pending = true;
         m.window.request_redraw();
@@ -715,6 +720,7 @@ pub fn semantic(
     };
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+        if m.peer_suspended { return Ok(false); }
         m.frame
             .perform_semantic_named(path, target.as_deref(), &action)
             .map_err(error)?;
@@ -816,6 +822,7 @@ pub fn clipboard_event(
     crate::clipboard::during(transfer, || {
         MOUNTS.with_borrow_mut(|m| {
             let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+            if m.peer_suspended { return Ok(false); }
             let mut modifiers =
                 if m.frame.platform_conventions().platform() == ui::platform::Platform::MacOs {
                     winit::keyboard::ModifiersState::SUPER
@@ -968,6 +975,7 @@ pub fn modifiers(
     flags.set(M::SUPER, meta);
     MOUNTS.with_borrow_mut(|mounts| {
         let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+        if m.peer_suspended {return Ok(());}
         m.frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(flags),
         ));
@@ -1071,7 +1079,14 @@ pub(crate) fn refresh_peer_mounts(peer:u32){
 }
 
 #[wasm_bindgen]
-pub fn rebind_peer(old:u32,new:u32){MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(old)){mount.peer=Some(new);});}
+pub fn rebind_peer(old:u32,new:u32){MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(old)){mount.peer=Some(new);mount.peer_suspended=false;let _=mount.resize();mount.frame.relayout();mount.pending=true;mount.window.request_redraw();});}
+
+#[wasm_bindgen]
+pub fn suspend_peer(peer:u32,suspended:bool)->Result<(),JsValue>{
+ if suspended { prepare_peer_remote(peer).map_err(error)?; }
+ MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(peer)){mount.peer_suspended=suspended;emit(&mount.status,serde_json::json!({"phase":if suspended{"suspended"}else{"presented"},"inputSuspended":suspended}));});
+ Ok(())
+}
 
 pub(crate) fn prepare_peer_remote(peer:u32)->Result<(),String>{
  MOUNTS.with_borrow(|mounts|{

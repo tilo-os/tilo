@@ -2,7 +2,7 @@ import init,* as runtime from './pkg/qos_browser_runtime.js';
 import {MountRegistry,wheelPixels} from './host-core.mjs';
 import {acquireStorage} from './storage.mjs';
 import {semanticBridge} from './semantics.mjs';
-import {settleComponentClose} from './close-recovery.mjs';
+import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
 let registry=new MountRegistry();
 const closures=new Set();
 const recoveryJobs=new Set();
@@ -26,10 +26,12 @@ export async function mountDesktop(target,options={}) {
   delete config.onStatus;delete config.signal;delete config.loadAsset;
   const semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report);
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
-  function active(){return !closed&&registry.current(token)&&id!==undefined;}
+  function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined;}
   function update(raw){
     if(closed||!registry.current(token))return;
     const state=JSON.parse(raw);lastState={...lastState,...state};report(state);
+    if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed')readyReject(Error(state.error));
     if(state.semantics)semantic.update(state.semantics);
@@ -74,31 +76,25 @@ export async function mountDesktop(target,options={}) {
     });
     return flush;
   }
-  let cleanupPromise;
-  function cleanup(){
-    return cleanupPromise??=(async()=>{
-    closed=true;listeners.abort();readyReject(Error('mount disposed'));
-    let writes=[];
-    if(id!==undefined)writes=JSON.parse(runtime.close(id));
-    semantic.close();surface.remove();
-    try{
+  let closeWrites=[];
+  const cleanup=recoverableClose({
+    begin(){
+      closed=true;listeners.abort();readyReject(Error('mount disposed'));
+      if(id!==undefined)closeWrites=JSON.parse(runtime.close(id));
+      semantic.close();surface.remove();
+    },
+    async settle(){
       await flush.catch(()=>{});
       if(storage&&id!==undefined)await settleComponentClose(runtime,id,storage,config.profile,config.device);
-      report({phase:'closed',persistence:'committed'});
-    }catch(error){
-      // Keep actor custody and the immutable pending bytes until durable retry.
-      const retained=storage;storage=undefined;
-      const retry=async()=>{
-        await settleComponentClose(runtime,id,retained,config.profile,config.device);
-        await retained.release();recoveryJobs.delete(retry);
-        report({phase:'closed',persistence:'committed',pendingWrites:0,error:null});
-      };
-      if(retained)recoveryJobs.add(retry);
-      report({phase:'closed',persistence:'failed',pendingWrites:writes.length,recoveryAvailable:!!retained,error:String(error)});throw error;
+      if(storage){await storage.release();storage=undefined;}
+      recoveryJobs.delete(cleanup);closures.delete(cleanup);
+      report({phase:'closed',persistence:'committed',pendingWrites:0,error:null});
+    },
+    onError(error){
+      recoveryJobs.add(cleanup);
+      report({phase:'closed',persistence:'failed',pendingWrites:closeWrites.length,recoveryAvailable:true,error:String(error)});
     }
-    finally{if(storage)await storage.release();closures.delete(cleanup);}
-    })();
-  }
+  });
   closures.add(cleanup);
   const host={close:()=>{void cleanup().catch(error=>report({error:String(error)}));}};
   registry.finish(token,host);

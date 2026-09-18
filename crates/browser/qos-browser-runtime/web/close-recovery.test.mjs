@@ -30,3 +30,12 @@ test('aborted IDB commit never settles component reports',async()=>{
   await assert.rejects(settleComponentClose(runtime,1,{async commit(){throw Error('abort');}},'p','d'),/abort/);
   assert.equal(finalized,false);
 });
+
+test('host close retries retained actual component settlement after aborted write, then becomes idempotent',async()=>{
+  const {recoverableClose}=await import('./close-recovery.mjs');let began=0,releases=0,failed=true,retained=1;
+  const runtime={prepare_close:()=>JSON.stringify({writes:[{revision:7}],errors:[]}),acknowledge_storage(){},finish_close(){retained--;}};
+  const storage={commit:async()=>{if(failed)throw Error('aborted close write');}};
+  const close=recoverableClose({begin:()=>{began++;},settle:async()=>{await settleComponentClose(runtime,1,storage,'p','d');releases++;}});
+  await assert.rejects(close(),/aborted/);assert.equal(retained,1);assert.equal(releases,0);
+  failed=false;await Promise.all([close(),close()]);await close();assert.equal(began,1);assert.equal(retained,0);assert.equal(releases,1);
+});
