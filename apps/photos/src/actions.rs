@@ -44,7 +44,7 @@ use tilo_actions::{
 };
 
 use crate::doc::PhotosDoc;
-use crate::model::{Album, Edits, ImageAnalysis, LibraryPhoto, OpenImage, Rect01};
+use crate::model::{Album, Edits, ImageAnalysis, LibraryPhoto, OpenImage, PhotoLocation, Rect01};
 
 /// Registry `type_id` for every action this app exports.
 pub const PHOTOS_ACTION_TYPE: &str = "photos.action";
@@ -56,6 +56,8 @@ pub const IMAGE_KIND: &str = "photos.image";
 /// Membership itself is shared document state; opening this resource is a
 /// device-local view, just like opening an album or a metadata label.
 pub const FAVORITES_KIND: &str = "photos.favorites";
+/// A derived collection of the explicitly shared photo locations.
+pub const PLACES_KIND: &str = "photos.places";
 pub const PHOTOS_OPERATION_TYPE: &str = "photos.operation";
 /// Contextual enumeration is intentionally small; callers resolve any stable
 /// id outside this window through `ResourceProvider::resource`.
@@ -90,6 +92,13 @@ pub enum PhotosOperation {
     /// rather than a hidden in-app filter, so search, agents, history and a
     /// collaborator can all name the same collection.
     ViewFavorites,
+    /// Open the offline-first places browser. This changes only local
+    /// presentation; it does not disclose a coordinate to a map provider.
+    ViewPlaces,
+    /// Open one exact shared place cluster.
+    ViewPlace {
+        place_key: String,
+    },
     /// Bring a durable album's filtered grid into view. This is presentation
     /// state only: unlike membership actions, activating it never edits the
     /// shared library.
@@ -170,6 +179,8 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         PhotosOperation::View
             | PhotosOperation::ViewLibrary
             | PhotosOperation::ViewFavorites
+            | PhotosOperation::ViewPlaces
+            | PhotosOperation::ViewPlace { .. }
             | PhotosOperation::ViewAlbum { .. }
             | PhotosOperation::ViewFolder { .. }
             | PhotosOperation::ViewPerson { .. }
@@ -185,6 +196,8 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         PhotosOperation::View
         | PhotosOperation::ViewLibrary
         | PhotosOperation::ViewFavorites
+        | PhotosOperation::ViewPlaces
+        | PhotosOperation::ViewPlace { .. }
         | PhotosOperation::ViewAlbum { .. }
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
@@ -237,6 +250,8 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         PhotosOperation::View
         | PhotosOperation::ViewLibrary
         | PhotosOperation::ViewFavorites
+        | PhotosOperation::ViewPlaces
+        | PhotosOperation::ViewPlace { .. }
         | PhotosOperation::ViewAlbum { .. }
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
@@ -299,6 +314,17 @@ pub enum PhotosAction {
         photo_id: String,
         analysis: Option<ImageAnalysis>,
     },
+    /// Set one explicit, already user-authorized shared location. This action
+    /// never reverse-geocodes or uploads; `provenance` tells peers where the
+    /// retained coordinates came from.
+    SetPhotoLocation {
+        photo_id: String,
+        location: PhotoLocation,
+    },
+    /// Remove the complete shared location record for one photo. It is a
+    /// distinct canonical action so history and collaborators can distinguish
+    /// a deliberate privacy removal from a photo without location metadata.
+    ClearPhotoLocation { photo_id: String },
     /// Create a named collection with a caller-supplied stable id.
     CreateAlbum { id: String, name: String },
     /// Rename a collection without changing its stable address or membership.
@@ -408,6 +434,7 @@ fn valid_photo(photo: &LibraryPhoto) -> bool {
             photo.captured_at.as_deref(),
         )
         && photo.analysis.as_ref().is_none_or(valid_analysis)
+        && photo.location.as_ref().is_none_or(PhotoLocation::is_valid)
 }
 
 fn valid_analysis(analysis: &ImageAnalysis) -> bool {
@@ -619,6 +646,34 @@ impl Action for PhotosAction {
                     ));
                 }
                 photo.analysis.clone_from(analysis);
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::SetPhotoLocation { photo_id, location } => {
+                if validate_resource_id(photo_id).is_err() || !location.is_valid() {
+                    return Err(ActionError::Refused(
+                        "a shared location needs finite WGS-84 coordinates, an explicit shared scope, and safe provenance".into(),
+                    ));
+                }
+                let mut library = PhotosDoc::library(doc);
+                let photo = library.photo_mut(photo_id).ok_or_else(|| {
+                    ActionError::Refused("that photograph is no longer in the library".into())
+                })?;
+                photo.location = Some(location.clone());
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::ClearPhotoLocation { photo_id } => {
+                validate_resource_id(photo_id)?;
+                let mut library = PhotosDoc::library(doc);
+                let photo = library.photo_mut(photo_id).ok_or_else(|| {
+                    ActionError::Refused("that photograph is no longer in the library".into())
+                })?;
+                if photo.location.take().is_none() {
+                    return Err(ActionError::Refused(
+                        "that photograph does not have a shared location".into(),
+                    ));
+                }
                 PhotosDoc::set_library(doc, &library);
                 Ok(())
             }
@@ -879,11 +934,24 @@ impl ResourceProvider for PhotosResources {
                     .count(),
             ));
         }
+        if id == "photos.places" {
+            return Some(places_resource(&PhotosDoc::library(doc)));
+        }
         if let Some(photo) = PhotosDoc::photo(doc, id) {
             return Some(photo_resource(&photo));
         }
         if let Some(album) = PhotosDoc::album(doc, id) {
             return Some(album_resource(&album));
+        }
+        // Place ids hash an opaque compact cluster key.  Unlike the few
+        // contextual children, an exact lookup is allowed to scan bounded
+        // document metadata; it never touches images, files, or a network.
+        let library = PhotosDoc::library(doc);
+        if let Some((key, label, count)) = place_counts(&library)
+            .into_iter()
+            .find(|(key, _, _)| place_resource_id(key) == id)
+        {
+            return Some(place_resource(&key, &label, count));
         }
         // Exact metadata ids are opaque collision-resistant hashes, so do
         // not attempt to recover them by scanning every photo. The document
@@ -982,6 +1050,7 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     root = root.with_child(favorites_resource(
         library.photos.iter().filter(|photo| photo.favorite).count(),
     ));
+    root = root.with_child(places_resource(&library));
     for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
         root = root.with_child(photo_resource(photo));
     }
@@ -1035,6 +1104,86 @@ pub(crate) fn favorites_resource(count: usize) -> Resource {
         resource = resource.with_action(
             spec.with_description("Show photographs marked as favorites in the shared library"),
         );
+    }
+    resource
+}
+
+/// The stable derived collection of locations that were explicitly shared
+/// with this library. It is always present, including when empty, so a global
+/// shortcut/agent address never depends on which cards happen to be visible.
+pub(crate) fn places_resource(library: &crate::model::PhotoLibrary) -> Resource {
+    let count = library
+        .photos
+        .iter()
+        .filter(|photo| photo.location.is_some())
+        .count();
+    let mut resource = places_resource_from_count(count);
+    for (key, label, photos) in place_counts(library).into_iter().take(TAG_CONTEXT_LIMIT) {
+        resource = resource.with_child(place_resource(&key, &label, photos));
+    }
+    resource
+}
+
+pub(crate) fn places_resource_from_count(count: usize) -> Resource {
+    let mut resource =
+        Resource::new("photos.places", PLACES_KIND, "Places").with_child(Resource::new(
+            "photos.places#count",
+            "photos.count",
+            format!("{count} located photographs"),
+        ));
+    if let Some(spec) = operation("open", "View places", &PhotosOperation::ViewPlaces) {
+        resource = resource.with_action(spec.with_description(
+            "Browse explicitly shared photo locations on an offline-first map; Photos never uploads coordinates",
+        ));
+    }
+    resource
+}
+
+/// Deterministic, bounded place clusters based only on intentional location
+/// metadata. The returned label is safe for a resource tree and the key is
+/// addressable by search, history and collaborators.
+pub(crate) fn place_counts(library: &crate::model::PhotoLibrary) -> Vec<(String, String, usize)> {
+    let mut counts = std::collections::BTreeMap::<String, (String, usize)>::new();
+    for photo in &library.photos {
+        let Some(location) = &photo.location else {
+            continue;
+        };
+        let key = location.place_key();
+        let entry = counts
+            .entry(key)
+            .or_insert_with(|| (location.display_name(), 0));
+        entry.1 += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(key, (label, count))| (key, label, count))
+        .collect()
+}
+
+pub(crate) fn place_resource_id(place_key: &str) -> String {
+    format!(
+        "photos.place:{}",
+        qdoc::blobstore::hash_bytes(place_key.as_bytes())
+    )
+}
+
+pub(crate) fn place_resource(place_key: &str, label: &str, count: usize) -> Resource {
+    let id = place_resource_id(place_key);
+    let mut resource = Resource::new(&id, "photos.place", label).with_child(Resource::new(
+        format!("{id}#count"),
+        "photos.count",
+        format!("{count} photographs"),
+    ));
+    if let Some(spec) = operation(
+        "open",
+        "View place",
+        &PhotosOperation::ViewPlace {
+            place_key: place_key.to_owned(),
+        },
+    ) {
+        resource = resource.with_action(spec.with_description(
+            "Show this offline-capable place cluster; no location is sent to a map service",
+        ));
     }
     resource
 }
@@ -1232,6 +1381,7 @@ pub(crate) struct PhotoResourceSeed {
     pub tags: Vec<String>,
     pub captured_at: Option<String>,
     pub analysis: Option<ImageAnalysis>,
+    pub location: Option<PhotoLocation>,
 }
 
 impl From<&LibraryPhoto> for PhotoResourceSeed {
@@ -1247,6 +1397,7 @@ impl From<&LibraryPhoto> for PhotoResourceSeed {
             tags: photo.tags.clone(),
             captured_at: photo.captured_at.clone(),
             analysis: photo.analysis.clone(),
+            location: photo.location.clone(),
         }
     }
 }
@@ -1265,6 +1416,9 @@ impl PhotoResourceSeed {
         }
         if let Some(captured_at) = &self.captured_at {
             parts.push(format!("Captured: {captured_at}"));
+        }
+        if let Some(location) = &self.location {
+            parts.push(format!("Place: {}", location.display_name()));
         }
         if let Some(analysis) = &self.analysis {
             if !analysis.description.is_empty() {
@@ -1326,6 +1480,28 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
             },
         ));
     }
+    if let Some(location) = &photo.location {
+        item = item.with_child(Resource::new(
+            format!("{}#location", photo.id),
+            "photos.location",
+            format!(
+                "{} · explicitly shared from {}",
+                location.display_name(),
+                location.provenance.source
+            ),
+        ));
+        if let Some(spec) = operation(
+            "view-place",
+            "View on map",
+            &PhotosOperation::ViewPlace {
+                place_key: location.place_key(),
+            },
+        ) {
+            item = item.with_action(spec.with_description(
+                "Open the local Places view without sending this coordinate anywhere",
+            ));
+        }
+    }
     if let Some(spec) = direct_spec(
         "open",
         "Open photograph",
@@ -1361,6 +1537,20 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
         ));
     }
     item = item.with_action(photo_metadata_spec(&photo.id));
+    item = item.with_action(photo_location_spec(&photo.id));
+    if photo.location.is_some()
+        && let Some(spec) = direct_spec(
+            "clear-location",
+            "Remove shared location",
+            &PhotosAction::ClearPhotoLocation {
+                photo_id: photo.id.clone(),
+            },
+        )
+    {
+        item = item.with_action(spec.destructive().reversible().with_description(
+            "Remove the explicit shared location from this photograph; no files or pixels are changed",
+        ));
+    }
     if let Some(spec) = operation(
         "recognize-text",
         "Recognize text locally",
@@ -1504,6 +1694,45 @@ fn photo_metadata_spec(photo_id: &str) -> ActionSpec {
     )
     .reversible()
     .with_description("Replace this photograph's shared folder, people, tags, and capture date")
+}
+
+fn photo_location_spec(photo_id: &str) -> ActionSpec {
+    let photo_id = photo_id.to_owned();
+    ActionSpec::typed(
+        "set-location",
+        "Set shared location",
+        "Explicit WGS-84 coordinates and optional place label",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("latitude", ParamType::Number, "latitude from -90 to 90"),
+            ActionParam::required("longitude", ParamType::Number, "longitude from -180 to 180"),
+            ActionParam::optional("label", ParamType::Text, "optional shared place label"),
+            ActionParam::optional(
+                "source",
+                ParamType::Text,
+                "user, exif, or device; defaults to user",
+            ),
+        ],
+        move |args| {
+            encode(&PhotosAction::SetPhotoLocation {
+                photo_id: photo_id.clone(),
+                location: PhotoLocation {
+                    latitude: args.number("latitude").unwrap_or(f64::NAN),
+                    longitude: args.number("longitude").unwrap_or(f64::NAN),
+                    label: optional_metadata_text(args, "label"),
+                    provenance: crate::model::LocationProvenance {
+                        source: optional_metadata_text(args, "source")
+                            .unwrap_or_else(|| "user".to_owned()),
+                        scope: "shared".to_owned(),
+                    },
+                },
+            })
+        },
+    )
+    .reversible()
+    .with_description(
+        "Explicitly share a compact location. Photos never uploads it for geocoding or map tiles.",
+    )
 }
 
 pub(crate) fn album_resource(album: &Album) -> Resource {
@@ -1864,6 +2093,84 @@ mod tests {
                 ..crate::model::AnalysisProvenance::default()
             },
         }
+    }
+
+    #[test]
+    fn explicit_location_is_typed_searchable_addressable_and_can_be_cleared() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("place.png", 40, 20);
+        let id = photo.id.clone();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+        let location = PhotoLocation {
+            latitude: 37.7749,
+            longitude: -122.4194,
+            label: Some("San Francisco".to_owned()),
+            provenance: crate::model::LocationProvenance {
+                source: "exif".to_owned(),
+                scope: "shared".to_owned(),
+            },
+        };
+        PhotosAction::SetPhotoLocation {
+            photo_id: id.clone(),
+            location: location.clone(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            PhotosDoc::photo(&doc, &id).unwrap().location,
+            Some(location.clone())
+        );
+        let place_id = place_resource_id(&location.place_key());
+        let place = PhotosResources.resource(&doc, &place_id).unwrap();
+        assert_eq!(place.kind, "photos.place");
+        assert!(place.actions.iter().any(|action| action.id == "open"));
+        let photo_resource = PhotosResources.resource(&doc, &id).unwrap();
+        assert!(
+            photo_resource
+                .actions
+                .iter()
+                .any(|action| action.id == "view-place")
+        );
+        assert!(
+            photo_resource
+                .actions
+                .iter()
+                .any(|action| action.id == "clear-location")
+        );
+        PhotosAction::ClearPhotoLocation {
+            photo_id: id.clone(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(PhotosDoc::photo(&doc, &id).unwrap().location.is_none());
+        assert!(PhotosResources.resource(&doc, &place_id).is_none());
+    }
+
+    #[test]
+    fn locations_refuse_local_scope_or_out_of_range_coordinates() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("invalid-place.png", 40, 20);
+        let id = photo.id.clone();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+        let invalid = PhotoLocation {
+            latitude: 91.0,
+            longitude: 0.0,
+            label: None,
+            provenance: crate::model::LocationProvenance {
+                source: "user".to_owned(),
+                scope: "local".to_owned(),
+            },
+        };
+        assert!(
+            PhotosAction::SetPhotoLocation {
+                photo_id: id,
+                location: invalid
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
     }
 
     #[test]

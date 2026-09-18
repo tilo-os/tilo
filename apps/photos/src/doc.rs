@@ -23,7 +23,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::{Edits, ImageAnalysis, LibraryPhoto, OpenImage, PhotoLibrary};
+use crate::model::{Edits, ImageAnalysis, LibraryPhoto, OpenImage, PhotoLibrary, PhotoLocation};
 
 /// The bytes of the picture `open` names, from wherever this machine has them.
 ///
@@ -458,6 +458,7 @@ impl PhotosDoc {
         let _ = Self::map_or_make(doc, &root, "photo_tags");
         let _ = Self::map_or_make(doc, &root, "photo_captured_at");
         let _ = Self::map_or_make(doc, &root, "photo_analysis");
+        let _ = Self::map_or_make(doc, &root, "photo_location");
         let _ = Self::map_or_make(doc, &root, "albums");
         let _ = Self::map_or_make(doc, &root, "removed_photos");
         let _ = Self::map_or_make(doc, &root, "removed_albums");
@@ -611,6 +612,9 @@ impl PhotosDoc {
                 if existing.analysis.is_none() {
                     existing.analysis = photo.analysis;
                 }
+                if existing.location.is_none() {
+                    existing.location = photo.location;
+                }
             } else {
                 into.photos.push(photo);
             }
@@ -681,6 +685,9 @@ impl PhotosDoc {
             analysis: Self::conflicting_at::<ImageAnalysis>(doc, &row, "analysis")
                 .into_iter()
                 .next(),
+            location: Self::conflicting_at::<PhotoLocation>(doc, &row, "location")
+                .into_iter()
+                .next(),
         })
     }
 
@@ -734,6 +741,12 @@ impl PhotosDoc {
                 Self::conflicting_at::<ImageAnalysis>(doc, &map, id)
                     .into_iter()
                     .next()
+            }),
+            location: field("photo_location").and_then(|map| {
+                Self::conflicting_at::<Option<PhotoLocation>>(doc, &map, id)
+                    .into_iter()
+                    .next()
+                    .flatten()
             }),
         })
     }
@@ -831,6 +844,9 @@ impl PhotosDoc {
         let Some(photo_analysis) = Self::map_or_make(doc, root, "photo_analysis") else {
             return;
         };
+        let Some(photo_location) = Self::map_or_make(doc, root, "photo_location") else {
+            return;
+        };
         let Some(albums) = Self::map_or_make(doc, root, "albums") else {
             return;
         };
@@ -862,6 +878,7 @@ impl PhotosDoc {
                     &photo_tags,
                     &photo_captured_at,
                     &photo_analysis,
+                    &photo_location,
                     None,
                     photo,
                 );
@@ -897,6 +914,7 @@ impl PhotosDoc {
                 &photo_tags,
                 &photo_captured_at,
                 &photo_analysis,
+                &photo_location,
                 old,
                 photo,
             );
@@ -1048,6 +1066,9 @@ impl PhotosDoc {
         if old.and_then(|value| value.captured_at.as_ref()) != photo.captured_at.as_ref() {
             Self::put_optional_string(doc, &row, "captured_at", photo.captured_at.as_deref());
         }
+        if old.and_then(|value| value.location.as_ref()) != photo.location.as_ref() {
+            Self::write_json_at(doc, &row, "location", &photo.location);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1060,6 +1081,7 @@ impl PhotosDoc {
         tags: &ObjId,
         captured: &ObjId,
         analysis: &ObjId,
+        location: &ObjId,
         old: Option<&LibraryPhoto>,
         photo: &LibraryPhoto,
     ) {
@@ -1087,6 +1109,9 @@ impl PhotosDoc {
             if photo.analysis.is_some() {
                 Self::write_json_at(doc, analysis, &photo.id, &photo.analysis);
             }
+            if photo.location.is_some() {
+                Self::write_json_at(doc, location, &photo.id, &photo.location);
+            }
             return;
         }
         if old.is_none_or(|value| value.favorite != photo.favorite) {
@@ -1106,6 +1131,9 @@ impl PhotosDoc {
         }
         if old.and_then(|value| value.analysis.as_ref()) != photo.analysis.as_ref() {
             Self::write_json_at(doc, analysis, &photo.id, &photo.analysis);
+        }
+        if old.and_then(|value| value.location.as_ref()) != photo.location.as_ref() {
+            Self::write_json_at(doc, location, &photo.id, &photo.location);
         }
     }
 
