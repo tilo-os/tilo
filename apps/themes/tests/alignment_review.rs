@@ -357,3 +357,38 @@ fn specimen_and_customizer_reflow_with_large_text() {
         specimen_2x.height()
     );
 }
+
+/// The gallery is one rhythm (HIG §7b): every row sits exactly one `s2` —
+/// the gallery's related-rows step — below the row above it, inset `s4`
+/// from the pane on both sides, and no two rows ever touch (the 1× polish
+/// bar). Measured on the real docked layout, not on the constants.
+#[test]
+fn gallery_rows_stack_on_the_s2_step_and_never_touch() {
+    let sp = ui::tokens::Spacing::BASE;
+    let mut app = ThemesApp::new_demo();
+    app.seed_shot(1280.0, "");
+    lay_out(&mut app, (1280.0, 1500.0));
+    let mut rows = by_widget_name(&app, "ThemeRow");
+    rows.retain(|r| r.width() > 0.0 && r.height() > 0.0);
+    rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+    assert!(
+        rows.len() >= 3,
+        "the demo gallery lists its presets and the custom theme, found {}",
+        rows.len()
+    );
+    for pair in rows.windows(2) {
+        let gap = pair[1].y0 - pair[0].y1;
+        assert!(
+            gap >= f64::from(sp.s1),
+            "gallery rows touch: {:?} → {:?} (gap {gap})",
+            pair[0],
+            pair[1]
+        );
+        close(gap, f64::from(sp.s2), "row to row");
+        close(pair[0].x0, pair[1].x0, "rows share a left edge");
+        close(pair[0].x1, pair[1].x1, "rows share a right edge");
+    }
+    let gallery = by_widget_name(&app, "Gallery")[0];
+    close(rows[0].x0 - gallery.x0, f64::from(sp.s4), "row inset from the gallery edge");
+    close(gallery.x1 - rows[0].x1, f64::from(sp.s4), "row inset from the gallery edge");
+}
