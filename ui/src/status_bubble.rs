@@ -11,7 +11,7 @@
 use std::time::{Duration, Instant};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Rect, Stroke, Vec2};
 use vello::peniko::Color;
 
 use crate::text_metrics::centered_text_top;
@@ -150,20 +150,15 @@ pub fn draw_pill(
 
     crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
 
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(
-        vello::peniko::Fill::NonZero,
+    // Overlay fill under a rest edge derived from it (HIG §9.5): the
+    // declared `border_standard` this replaces is one fixed colour per theme
+    // and lands within rounding distance of the dark preset's overlay.
+    crate::surface::card(
+        scene,
         transform,
+        rect,
+        radius,
         theme.tokens.colors.surfaces.overlay,
-        None,
-        &shape,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        theme.tokens.colors.border_standard,
-        None,
-        &shape,
     );
 
     let (tw, th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
