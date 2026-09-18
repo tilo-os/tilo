@@ -2418,6 +2418,12 @@ impl FrameBuilder {
             "collab_room_activity".into(),
             host.collaborators_activity_rect_for_tests(),
         );
+        for (name, rect) in host.quick_settings_semantic_rects() {
+            put(name, rect);
+        }
+        for (name, rect) in host.power_menu_semantic_rects() {
+            put(name.into(), rect);
+        }
     }
 }
 

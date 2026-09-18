@@ -43,10 +43,22 @@ use vello::{AaConfig, AaSupport, FineDamageRect, RenderParams, Renderer, Rendere
 static SHARED_RENDER_CONTEXT: OnceLock<Arc<Mutex<RenderContext>>> = OnceLock::new();
 
 /// A complex first frame can make Vello grow its bump reservation more than
-/// once before it produces pixels. Four submissions covered the observed
-/// two-growth case with one spare attempt, while remaining strictly bounded
-/// for intentionally transparent scenes.
-const RESILIENT_RENDER_ATTEMPTS: usize = 4;
+/// once before it produces pixels. Keep enough room for several growths and
+/// one final confirmation pass, while remaining strictly bounded for
+/// intentionally transparent scenes.
+const RESILIENT_RENDER_ATTEMPTS: usize = 8;
+
+/// Decide whether a screenshot submission is safe to return. A non-empty
+/// scene must fit twice in succession: the first clean submission may still
+/// be populating Vello's atlas after a bump allocation changed.
+const fn resilient_submission_accepted(
+    scene_is_empty: bool,
+    confirmed: bool,
+    overflowed: bool,
+    unexpectedly_transparent: bool,
+) -> bool {
+    !overflowed && !unexpectedly_transparent && (scene_is_empty || confirmed)
+}
 
 /// Damage targets change by a handful of pixels during animation. Keeping
 /// their allocations on a small grid avoids a texture allocation for every
@@ -1997,39 +2009,38 @@ impl OffscreenRenderer {
     /// counters, so partially missing glyphs are caught as reliably as a
     /// completely transparent failed frame.
     pub fn render_resilient(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
-        let (mut pixels, mut overflowed) = self.render_with_overflow(scene, bg);
-        let mut grew_budget = overflowed;
-        // A first Vello submission can be non-transparent and report no bump
-        // overflow while its glyph atlas is still only partially populated.
-        // Always require one subsequent confirmed frame for a non-empty scene;
-        // this keeps deterministic screenshots from blessing missing text.
-        let mut needs_warmup_confirmation = !scene.encoding().is_empty();
-        for _ in 1..RESILIENT_RENDER_ATTEMPTS {
+        let mut confirmed = false;
+        for _ in 0..RESILIENT_RENDER_ATTEMPTS {
+            let (pixels, overflowed) = self.render_with_overflow(scene, bg);
             let unexpectedly_transparent = bg == Color::TRANSPARENT
                 && !scene.encoding().is_empty()
                 && pixels
                     .chunks_exact(4)
                     .all(|pixel| pixel.get(3).copied().unwrap_or(0) == 0);
-            if !overflowed
-                && !unexpectedly_transparent
-                && !grew_budget
-                && !needs_warmup_confirmation
-            {
-                break;
+            if overflowed || unexpectedly_transparent {
+                // Growth invalidates every earlier target. A new atlas or
+                // bump allocation can make a non-empty first retry look
+                // plausible while still omitting the earliest paths, so do
+                // not let it count as the confirmation frame.
+                confirmed = false;
+                continue;
             }
-            // The first frame that fits after a growth can still be the one
-            // that finishes populating glyph/image atlas state. Require one
-            // additional confirmed-fit submission, then return immediately.
-            let confirm_after_growth = grew_budget && !overflowed && !unexpectedly_transparent;
-            (pixels, overflowed) = self.render_with_overflow(scene, bg);
-            needs_warmup_confirmation = false;
-            grew_budget = if confirm_after_growth {
-                overflowed
-            } else {
-                grew_budget || overflowed
-            };
+            if resilient_submission_accepted(
+                scene.encoding().is_empty(),
+                confirmed,
+                overflowed,
+                unexpectedly_transparent,
+            ) {
+                return pixels;
+            }
+            // A scene that just fit is still not sufficient: Vello can use
+            // that submission to populate its glyph/image atlas. Require a
+            // second consecutive clean frame before writing a screenshot.
+            confirmed = true;
         }
-        pixels
+        panic!(
+            "Vello did not produce two consecutive overflow-free screenshot renders after {RESILIENT_RENDER_ATTEMPTS} attempts"
+        );
     }
 
     /// Render a one-shot scene without accepting Vello's transparent
@@ -2122,7 +2133,7 @@ mod tests {
         SparseSubmissionAccounting, damage_texture_extent,
         damage_texture_geometric_needs_replacement, damage_texture_geometric_width_extent,
         damage_texture_height_extent, damage_texture_needs_replacement, env_enabled_by_default,
-        shared_gpu, timestamp_last_and_other_pass_ns,
+        resilient_submission_accepted, shared_gpu, timestamp_last_and_other_pass_ns,
     };
     use vello::Scene;
     use vello::kurbo::{Affine, BezPath, Rect};
@@ -2135,6 +2146,22 @@ mod tests {
     fn offscreen_renderer_stays_send() {
         fn assert_send<T: Send>() {}
         assert_send::<OffscreenRenderer>();
+    }
+
+    #[test]
+    fn resilient_render_requires_a_second_clean_nonempty_submission() {
+        // A first clean output may have warmed Vello's atlas, so only the
+        // next clean submission may leave the offscreen renderer.
+        assert!(!resilient_submission_accepted(false, false, false, false));
+        assert!(resilient_submission_accepted(false, true, false, false));
+
+        // A new bump allocation or a blank nonempty scene invalidates a
+        // prior confirmation and must retry instead of emitting corruption.
+        assert!(!resilient_submission_accepted(false, true, true, false));
+        assert!(!resilient_submission_accepted(false, true, false, true));
+
+        // Intentionally empty transparent scenes need no atlas warm-up.
+        assert!(resilient_submission_accepted(true, false, false, false));
     }
 
     #[test]
