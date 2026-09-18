@@ -6,8 +6,8 @@ provider indexes `dirs::home_dir()` (i.e. `$HOME`), and the host-app
 provider walks `$XDG_DATA_HOME` then each `$XDG_DATA_DIRS` entry looking
 for `.desktop` files. Run the demo against a real login session and the
 command palette fills with whatever happens to be on the machine —
-`~/Downloads`, game directories, every installed Flatpak. That is noise
-on camera and it puts the operator's own filesystem on the recording.
+`~/Downloads`, game directories, every installed Flatpak. That adds noise
+and puts the operator's own filesystem on the recording.
 
 So the demo gets its own HOME. Nothing here is wired into the shell; it
 is purely the environment the demo processes are launched with, which is
@@ -28,9 +28,9 @@ hyphenated, so `import demo_home` cannot resolve it. Load it by path:
     spec.loader.exec_module(demo_home)
     env = demo_home.stage()             # -> dict of environment overrides
 
-The staged tree holds a small, real corpus so the palette has something
-to find. It is demo data behind a demo entrypoint, not content shipped
-inside an app: the apps themselves still start empty.
+The staged tree holds a small corpus so the palette has something to find.
+It is demo data behind a demo entrypoint, not content shipped inside an app:
+the apps themselves still start empty.
 """
 from __future__ import annotations
 
@@ -39,8 +39,7 @@ import shutil
 import sys
 from pathlib import Path
 
-# Deliberately small. Every one of these should be something a viewer can
-# read off a search result in half a second without pausing the video.
+# Deliberately small. Every entry should be readable in a search result.
 CORPUS: dict[str, str] = {
     "Documents/Roadmap.md": (
         "# Roadmap\n\n"
@@ -91,19 +90,8 @@ def stage(root: Path | None = None, *, fresh: bool = True) -> dict[str, str]:
         "XDG_DATA_HOME": str(data_home),
         "XDG_CONFIG_HOME": str(root / ".config"),
         "XDG_CACHE_HOME": str(root / ".cache"),
-        # Pin the demo's language.
-        #
-        # The word processor is currently the only component with real
-        # i18n - its own catalogue, its own LC_ALL/LANGUAGE/LANG detection.
-        # The shell chrome is English string literals with no translation
-        # call sites at all. So on a machine whose LANG is German, exactly
-        # one tab renders in German and everything around it does not,
-        # which reads as a bug rather than as localisation.
-        #
-        # Pinning the locale for the demo's processes is not the fix for
-        # that - the fix is a session locale the whole desktop honours -
-        # but it is the honest way to record a demo in one language today,
-        # and it changes nothing about the app's German support.
+        # Only the word processor currently translates its UI, so pin the
+        # locale to avoid mixed-language output in the demo.
         "LANG": "en_US.UTF-8",
         "LC_ALL": "en_US.UTF-8",
         "LANGUAGE": "en",

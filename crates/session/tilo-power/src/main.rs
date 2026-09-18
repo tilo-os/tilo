@@ -17,11 +17,9 @@
 //!
 //! # Why not the desktop's power-profiles-daemon (PPD)?
 //!
-//! PPD is a great front-end for the user's power-profile choice (Power
-//! Saver / Balanced / Performance) — a UI concept. What PPD does under
-//! the hood is exactly what we do here: write governors + EPP hints.
-//! tilo-power is the automatic AC-detect + default-mapping layer that
-//! sits under whatever the user's currently-active PPD profile picks;
+//! PPD provides the user's power-profile choice (Power Saver / Balanced /
+//! Performance). It writes governors and EPP hints. Tilo-power detects AC
+//! state and supplies the default mapping below the active PPD profile;
 //! when PPD (or a user override) wants a different governor it writes
 //! `/run/tilo-power/lock` and we back off.
 //!
@@ -39,8 +37,8 @@
 //! # No systemd bus dep
 //!
 //! The service is `Type=notify` and reports readiness via the
-//! `NOTIFY_SOCKET` `sd_notify(3)` protocol directly — we don't pull in
-//! `systemd-sys` just for a one-line handshake.
+//! `NOTIFY_SOCKET` `sd_notify(3)` protocol directly, avoiding a dependency on
+//! `systemd-sys` for a one-line handshake.
 
 #![cfg_attr(
     test,

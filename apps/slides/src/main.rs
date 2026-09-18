@@ -27,7 +27,7 @@ use ui::widget::Widget;
 const NARROW_VIEWPORT: (u32, u32) = (820, 800);
 
 // The signature is fixed by `ui::launch::ShotFactory`: other apps' shot roots
-// genuinely can fail, so the alias is fallible even where this one isn't.
+// may fail, so the alias is fallible even where this one isn't.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "signature is dictated by ui::launch::ShotFactory, which other apps' fallible shot roots need"

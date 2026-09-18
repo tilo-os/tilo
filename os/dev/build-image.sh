@@ -17,7 +17,7 @@
 #      ostree-backend install refuses it ("bootupd is required for ostree-based
 #      installs").
 #
-# Notes / gotchas baked in from bringup:
+# Build notes:
 #   * First build is a long COLD Rust compile inside the container; the
 #     Containerfile uses cargo + sccache cache mounts so rebuilds are fast.
 #   * TILO_WITH_BROWSER=0 ./os/dev/build-image.sh omits the browser and the WPE
@@ -28,8 +28,8 @@
 #   * The image is SEALED: it carries a Unified Kernel Image whose signed command
 #     line includes the hardening kargs and `tilo.generation=<N>`, which
 #     systemd-stub measures into PCR 11. Two consequences for this script:
-#       - the generation has to come from somewhere real, so it is resolved from
-#         the published series (os/dev/next-generation.sh) rather than defaulted;
+#       - the generation is resolved from the published series
+#         (os/dev/next-generation.sh) rather than defaulted;
 #       - the build runs TWICE when bootc#2334 bites, because `bootc container
 #         ukify` and `bootc install` compute different composefs digests for the
 #         same image. The loop below reads the digest install asked for, rebuilds
@@ -154,7 +154,7 @@ if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
 else
   "$TILO_OS_DIR/dev/cache-github-assets.sh"
 fi
-# The digest-pinned base the build starts FROM — our own mirror of the Fedora
+# The digest-pinned base the build starts FROM — the mirror of the Fedora
 # bootc image, because upstream deletes the manifest a digest points at within
 # about a day (see os/base-snapshot.env). Written by the mirror-base CI job.
 # shellcheck disable=SC1091
@@ -296,7 +296,7 @@ export TMPDIR
 # series unless given, and never defaulted: a constant here is what made every
 # image claim to be generation 0, and a rollback floor that cannot move is a
 # machine that will not unseal after a few updates. Reproducibility is
-# "same commit + same TILO_GENERATION -> same image" — a published image is genuinely
+# "same commit + same TILO_GENERATION -> same image" — a published image contains
 # new content, so it must be a new generation.
 if [ -z "${TILO_GENERATION:-}" ] && [ "$TILO_SKIP_BUILD" = "1" ]; then
   # Read back, not allocated: the number is already sealed into this image's

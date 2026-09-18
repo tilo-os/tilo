@@ -1,7 +1,7 @@
-//! What a sandboxed app can actually reach — proven by reading, or by
-//! failing to.
+//! Paths a sandboxed app can reach, checked by reading them or observing
+//! the access failure.
 //!
-//! These tests start the real thing under `bwrap`, through the same
+//! These tests start the app under `bwrap`, through the same
 //! `run_with_captured` path the launcher uses, and assert on what a
 //! syscall answered inside the sandbox. **They deliberately do not
 //! assert on the argv** — a bind-list check can pass while the app
@@ -9,9 +9,8 @@
 //! boundary.
 //!
 //! Not `#[ignore]`d, unlike other live-bwrap tests here: bwrap is how a
-//! Tilo app runs at all, so a machine that can't run these can't run the
-//! product, and a boundary whose proof is opt-in is a boundary nobody
-//! checks.
+//! Tilo app runs at all, so a machine that cannot run these cannot run the
+//! Tilo app. They remain enabled so the boundary is checked in every run.
 
 #![allow(
     clippy::unwrap_used,
@@ -230,7 +229,7 @@ fn an_app_cannot_read_across_rooms() {
         "room B's directory must not contain room A's record: {listing}"
     );
 
-    // Proof the fixture can read what it wrote: back in room A, it can.
+    // Confirm that the fixture can read what it wrote back in room A.
     let from_a = run_in_room(
         payload.path(),
         Some("room-a"),
@@ -267,8 +266,8 @@ fn a_workspace_cannot_read_the_personal_room() {
 
 /// Everything the app writes with no thought about where — `$HOME`,
 /// `$XDG_DATA_HOME`, `$XDG_CONFIG_HOME` — has to land in the directory
-/// it was given, or the confinement above is true of one path and
-/// false of the paths apps actually use.
+/// it was given, or the confinement above applies to one path and
+/// not to the paths apps actually use.
 #[test]
 #[serial_test::serial(process_env)]
 fn home_and_the_xdg_variables_all_point_into_the_one_directory() {
@@ -441,7 +440,7 @@ fn one_app_cannot_read_another_apps_directory() {
     assert_eq!(std::fs::read(&victim).unwrap(), b"totp-seed");
 }
 
-/// The launch-time half of the refusal, on the real `run` path: a
+/// The launch-time half of the refusal, on the `run` path: a
 /// manifest naming a path is refused before bwrap is spawned, and
 /// nothing it named is created.
 #[test]

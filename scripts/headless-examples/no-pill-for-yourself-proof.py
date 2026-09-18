@@ -27,8 +27,7 @@ carry this session's own name.
 
     cargo build -p shell -p tilo-launcher -p word-processor -p file-explorer
 
-The control that keeps this fix honest is a separate script, and it is
-not optional: `peers-cross-both-ways.py` puts two real people in a room
+The related check is `peers-cross-both-ways.py`, which puts two people in a room
 and requires each to keep seeing the other's caret and pointer, named
 and coloured. A guard that silences your own pill by silencing
 everybody passes this file and fails that one.

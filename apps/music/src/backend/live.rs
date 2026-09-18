@@ -1,4 +1,4 @@
-//! Live backend — real `YouTube` Music via the pure-Rust `rustypipe` `InnerTube`
+//! Live backend — `YouTube` Music via the pure-Rust `rustypipe` `InnerTube`
 //! client. **Compiled only under `--features live`.**
 //!
 //! `rustypipe` is async (tokio); the [`MusicBackend`] trait is sync because it
@@ -10,10 +10,10 @@
 //! ## API surface used (rustypipe 0.11.x — verified against the crate source)
 //! * construct: `RustyPipe::builder()…build()?`, then `rp.query()`
 //! * `query.music_search_tracks(q).await` → `MusicSearchResult<TrackItem>`
-//!   (real `YouTube` Music song search — titles, artists, album, duration, id)
+//!   (`YouTube` Music song search — titles, artists, album, duration, id)
 //! * `query.player(id).await` → `VideoPlayer` whose `audio_streams` carry
 //!   directly-playable googlevideo URLs. With no `BotGuard` configured rustypipe
-//!   uses the iOS/TV player clients, which return real stream URLs **without a
+//!   uses the iOS/TV player clients, which return stream URLs **without a
 //!   `PoToken`** (see [`crate::backend::potoken`]).
 //!
 //! Search and metadata stay pure Rust through rustypipe. Stream resolution

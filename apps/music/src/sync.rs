@@ -11,7 +11,7 @@
 //! between replicas, plus a **headless relay mode** so a home server can run
 //! this app with no GUI and serve its clients.
 //!
-//! ## Real vs. gated
+//! ## Offline and live transports
 //! The *transport contract* ([`LibrarySync`]) and an always-compiled
 //! in-process [`LoopbackSync`] are the default: they exercise the full
 //! save → sync-message → merge → converge path with zero network, so tests,

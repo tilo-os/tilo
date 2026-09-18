@@ -324,7 +324,7 @@ pub enum Action {
     SeedStatus(&'static str),
     /// Raise the transient hardware-key readout, by preset name.
     ///
-    /// The real trigger is a media key, and a `--shots` render has no
+    /// The trigger is a media key, and a `--shots` render has no
     /// keyboard and no audio daemon to answer it — so the slab would
     /// never appear in a capture, which is precisely where its styling
     /// wants reviewing. This writes the same `ChromeState::osd` the key
@@ -336,14 +336,14 @@ pub enum Action {
     /// Raise the portal's file-chooser dialog, by mode (`open`,
     /// `open_multiple`, `save`).
     ///
-    /// The real trigger is a sandboxed app calling
+    /// The trigger is a sandboxed app calling
     /// `org.freedesktop.impl.portal.FileChooser`, which a `--shots`
     /// render has no session bus to carry — so the dialog would never
     /// appear in a capture, which is exactly where its styling wants
     /// reviewing. This pushes a `FilePickerRequest` onto the same
     /// `FilePickerQueue` the D-Bus backend pushes to, and turns the same
-    /// `pump_file_picker` the compositor turns every frame. Everything
-    /// downstream of the queue is the production path.
+    /// `pump_file_picker` the compositor turns every frame. The queue's
+    /// downstream path is the same one used by the compositor.
     SeedFilePicker(&'static str),
     /// Cut the `idx`-th group of the active strip down to one tab, so a
     /// scenario can set up the "lone window selected" shape rather than
@@ -351,7 +351,7 @@ pub enum Action {
     LoneWindow(usize),
     /// Replace one live shell-hosted window with a long Notes document. This
     /// exercises complete semantic App capture through the same provider and
-    /// shared card path used by the real shell, without typing hundreds of
+    /// shared card path used by the shell, without typing hundreds of
     /// deterministic key events into the visual harness.
     SeedLongNotes(usize),
     /// Resize every window in the active strip to `permille` of the
@@ -1628,9 +1628,9 @@ fn host_desktop_first_login() -> Scenario {
     }
 }
 
-/// Desktop help is itself a reachable control surface, not a documentation
-/// mock. F1 is deliberately modifier-free so this scenario is stable even
-/// when the developer running shots has customized the ordinary help chord.
+/// Desktop help is itself a reachable control surface. F1 is modifier-free,
+/// keeping the scenario stable when the developer running shots has
+/// customized the ordinary help chord.
 fn shortcut_guide() -> Scenario {
     Scenario {
         name: "shortcut_guide",
@@ -1647,11 +1647,10 @@ fn shortcut_guide() -> Scenario {
     }
 }
 
-/// The canonical collaboration journey. Each frame is a state a person can
-/// actually reach: an invitation is not shown as presence, a remote edit is
-/// attributed in room history, and recovery creates a new forward change.
-/// The last frame switches to a second native app so the collaborator's
-/// location is proven to be workspace data rather than chrome decoration.
+/// The collaboration journey. Each frame is a reachable state: an invitation
+/// is not shown as presence, a remote edit is attributed in room history, and
+/// recovery creates a new forward change. The last frame switches to a second
+/// native app to show that collaborator location is workspace data.
 fn collaboration_product_proof() -> Scenario {
     Scenario {
         name: "collaboration_product_proof",
@@ -2024,7 +2023,7 @@ fn new_tab_from_the_plus_chip() -> Scenario {
 }
 
 // =====================================================================
-// The strip itself: several real apps along it, and the pan across them.
+// The strip itself: several hosted apps along it, and the pan across them.
 // =====================================================================
 
 /// Frames to let the eased focus travel settle before a snapshot — the
@@ -2039,10 +2038,9 @@ const HALF_WIDTH_PERMILLE: u16 = 500;
 /// Four shell-hosted apps side by side along the strip, then the strip
 /// panned across them.
 ///
-/// Nothing else in the catalogue shows the scrollable strip doing its
-/// job: the placement scenarios open *foreign* toplevels (card-only
-/// until a real client attaches), and every hosted-app scenario has one
-/// window in the strip. This opens Notes, Files, Terminal and Editor —
+/// Placement scenarios open *foreign* toplevels (card-only until a client
+/// attaches), and other hosted-app scenarios have one window in the strip.
+/// This opens Notes, Files, Terminal and Editor —
 /// each drawing its own content in-process — as four separate windows
 /// (each opened with the previous one selected and alone in its group,
 /// so the placement rule's "beside a lone window" branch grows the
@@ -2362,7 +2360,7 @@ fn narrow_groups_side_by_side() -> Scenario {
 // =====================================================================
 // Where a new window lands, and the motion that makes room for it.
 // One scenario per branch of `shell::shell::placement`, each driving the
-// production adopt path so the recording shows the rule, not a mock.
+// adopt path so the recording shows the placement rule.
 // =====================================================================
 
 /// Frames to let the motion finish before the settled capture.
@@ -3649,9 +3647,8 @@ fn overview_transition() -> Scenario {
 /// edge, then call it back to the pointer with Super+S and dismiss it
 /// with Escape.
 ///
-/// This is the gesture's whole reason for existing, so the capture has
-/// to show the state it is meant to rescue: the wheel genuinely gone,
-/// not merely somewhere else on screen.
+/// The capture shows the state this gesture rescues: the wheel gone, not
+/// merely somewhere else on screen.
 fn wheel_summon_at_pointer() -> Scenario {
     Scenario {
         name: "wheel_summon_at_pointer",

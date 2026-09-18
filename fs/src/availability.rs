@@ -3,8 +3,7 @@
 //! Availability is deliberately keyed by [`FileRecordId`], never by a path:
 //! paths are mutable presentation metadata, while pin and eviction decisions
 //! must survive renames and moves.  This module records policy and evidence;
-//! the content store remains responsible for actually retaining or deleting
-//! bytes.
+//! the content store remains responsible for retaining or deleting bytes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -383,7 +382,7 @@ impl AvailabilityRegistry {
     }
 
     /// Cancel durable automatic-hydration state below a pin that was removed.
-    /// This is paid once by the explicit unpin action, allowing the periodic
+    /// The explicit unpin action pays this cost once, allowing the periodic
     /// worker to take the zero-scan fast path whenever no pins remain.
     ///
     /// # Errors

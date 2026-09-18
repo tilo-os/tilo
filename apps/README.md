@@ -117,7 +117,7 @@ actions and records their mutations in shared history.
 | `typst-editor` | Split-view Typst editor: source pane + live compiled preview (`typst` / `typst-render` / tiny-skia), diagnostics panel, page thumbnails, background compile. |
 | `calculator` | Scientific calculator with 2D/3D function graphing. |
 | `snippets` | Snippet manager: taggable library, `${placeholder}` expansion, syntax-highlighted preview. |
-| `ebook` | EPUB reader ("Books"): in-tree ZIP+OPF+XHTML parser, reflowable pagination, real embedded cover art, shared annotation model. |
+| `ebook` | EPUB reader ("Books"): in-tree ZIP+OPF+XHTML parser, reflowable pagination, embedded cover art, shared annotation model. |
 | `pdf-viewer` | Collaborative PDF reader ("PDF"): pdfium rasterisation (dynamically loaded) with a pure-Rust text-extract fallback; highlight/ink/sticky-note annotations + signing. |
 
 ## Media

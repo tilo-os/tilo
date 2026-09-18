@@ -1,7 +1,7 @@
 //! `SearchField` — a search-styled text box: a rounded pill with a leading
-//! magnifier, a real editable [`TextInput`] in the middle, and a trailing "×"
+//! magnifier, an editable [`TextInput`] in the middle, and a trailing "×"
 //! that clears the query. Composes the toolkit's own [`TextInput`] so caret,
-//! selection, IME, and CRDT binding come for free.
+//! selection, IME, and CRDT binding are shared.
 //!
 //! ## Launcher mode — search does not live in the app
 //!

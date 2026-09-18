@@ -24,8 +24,8 @@
 //!
 //! [`resolve_workspace_path`] returns a path a CLI can `open()`: under
 //! `/var/workspace/` inside Tilo ([`is_tilo_native`]), or under
-//! `~/.local/share/<package id>/` standalone (stock Linux, Flatpak) —
-//! deliberately unrelated to `runtime-fs` so the CLI keeps working when the
+//! `~/.local/share/<package id>/` standalone (stock Linux, Flatpak). The
+//! fallback does not depend on `runtime-fs`, so the CLI also works when the
 //! FUSE driver is offline.
 //!
 //! This SDK exposes no grant API. CLI access is enforced outside the app by
@@ -149,8 +149,8 @@ pub fn data_home() -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
         return Path::new(&home).join(".local/share");
     }
-    // Last-ditch temporary storage is not persistent, but keeps the CLI alive
-    // when the platform's home/data environment is unavailable.
+    // Temporary storage is not persistent and is used when the platform's
+    // home/data environment is unavailable.
     std::env::temp_dir()
 }
 

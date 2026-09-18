@@ -60,12 +60,12 @@ RUN printf '[virtio-win-pinned]\nname=Pinned virtio-win 0.1.302-1\nbaseurl=file:
 ARG PACKAGES
 ARG TARGETARCH
 
-# Resolve the REAL install transaction against the base (captures rich/
+# Resolve the install transaction against the base (captures rich/
 # conditional deps like greetd-selinux and the exact non-conflicting versions),
 # download-only, then collect the cached RPMs into a repo. Preserve the full
 # weak-dependency closure; unavailable packages must fail resolution.
 #
-# We ALSO download the Fedora kernel SRPM so os/kernel/Containerfile can
+# Download the Fedora kernel SRPM so os/kernel/Containerfile can
 # rebuild it offline against this same digest-pinned base (no live-mirror
 # fetch mid-build — required for the kernel image to be reproducible).
 # dnf5 uses --srpm; dnf4 uses --source; try dnf5 first (the base's dnf is
@@ -101,6 +101,6 @@ ARG PACKAGES
 COPY --from=repository /repo /repo
 RUN --network=none dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}
 
-# The published artifact: just the repo, nothing else.
+# The published artifact contains only the repository.
 FROM scratch
 COPY --from=offline-check /repo /repo

@@ -246,7 +246,7 @@ impl DatePicker {
         let first = NaiveDate::from_ymd_opt(y, m, 1)?;
         // row < GRID_ROWS (6) and col < GRID_COLS (7), so the grid index
         // and first_visible_col() (0..=6) are always tiny; saturating
-        // arithmetic and try_from keep the conversion honest without
+        // arithmetic and try_from keep the conversion safe without
         // ever panicking or wrapping even outside that invariant.
         let grid_index =
             i64::try_from(row.saturating_mul(GRID_COLS).saturating_add(col)).unwrap_or(i64::MAX);

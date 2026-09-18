@@ -55,7 +55,7 @@ impl Drop for FixtureDirectory {
 }
 
 impl HostedTileInputs {
-    /// Native host startup data for the real Files widget. This chooses its
+    /// Native host startup data for the Files widget. This chooses its
     /// initial directory; it does not claim to sandbox filesystem access.
     /// # Errors
     /// Returns an error if the directory cannot be resolved or is not a directory.
@@ -96,7 +96,7 @@ impl HostedTileInputs {
     }
 
     /// Explicit deterministic inputs for scratch scenes, tests and captures.
-    /// The real Files widget reads only this owned temporary directory; Terminal
+    /// The Files widget reads only this owned temporary directory; Terminal
     /// uses its existing null backend. This does not advertise a host provider.
     /// # Errors
     /// Returns filesystem errors while creating the fixture.
@@ -160,7 +160,7 @@ impl HostedTileInputs {
         self.fixture.is_some()
     }
 
-    /// The real hosted application catalogue for this native session.
+    /// The hosted application catalogue for this native session.
     pub fn native_apps(&self) -> &[NativeAppRegistration] {
         &self.native_apps
     }

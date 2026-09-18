@@ -163,7 +163,7 @@ or `sandbox.fs.write` is refused at install and at launch. See
 
 Notes on the placeholder `publisher.identity`: `tilo-pkg pack` with no
 `--identity` flag generates a fresh Ed25519 keypair, signs the package
-with it, and overwrites this field with the actual public key. What you
+with it, and overwrites this field with the generated public key. What you
 put here is discarded. For repeatable publishing, pass
 `--identity <keyfile.json>`.
 
@@ -174,7 +174,7 @@ $ mkdir -p /tmp/hw-walkthrough/pkg-workdir/payload/bin
 $ cp target/release/my-example-hello /tmp/hw-walkthrough/pkg-workdir/payload/bin/
 ```
 
-The payload's structure IS the shape your binary will see inside the
+The payload's structure is the shape your binary will see inside the
 sandbox (rooted at `/var/tilo-apps/my.example.hello/`). Manifest field
 `entrypoint.bin = "bin/my-example-hello"` is relative to the payload
 root.
@@ -242,11 +242,11 @@ The launcher:
    pass any fds because `--no-services` was set and the manifest
    declared no `[sandbox.services]` deps anyway.
 
-## Optional: install into your real user data
+## Optional: install into your user data
 
 The walkthrough above scoped `XDG_DATA_HOME` and `XDG_CONFIG_HOME` to
 `/tmp/tilo-hw-data` / `/tmp/tilo-hw-config` for isolation. To install
-into your actual home:
+into your home directory:
 
 ```bash
 unset XDG_DATA_HOME XDG_CONFIG_HOME

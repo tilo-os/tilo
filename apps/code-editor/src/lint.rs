@@ -1,13 +1,11 @@
 //! A lightweight, language-agnostic linter that powers the Problems panel.
 //!
-//! This is intentionally *not* a language server. It runs a handful of cheap,
-//! genuinely-useful textual checks that hold for most code: trailing
+//! It runs a handful of cheap textual checks that hold for most code: trailing
 //! whitespace, tab/space mixing, over-long lines, lonely `TODO`/`FIXME`
-//! markers, and unbalanced brackets. The result is real, position-accurate
-//! feedback the user can click through, with zero external process — which is
-//! what makes it the right thing to show in the seconds or minutes before a
-//! language server has finished indexing, and for the many file types no
-//! language server covers.
+//! markers, and unbalanced brackets. The result is position-accurate feedback
+//! the user can click through without an external process. This fills the gap
+//! before a language server finishes indexing and for file types it does not
+//! cover.
 
 use crate::bottom_panel::{Diagnostic, Severity};
 use crate::model::Language;

@@ -177,7 +177,7 @@ impl Widget for Link {
     // Exact equality is intentional: `new_rect` and `self.rect` are both
     // widths/heights from finite taffy layout resolution, not independent
     // float computations prone to precision drift — any bit-level
-    // difference means the layout genuinely changed and a redraw is due.
+    // difference means the layout changed and a redraw is due.
     #[allow(
         clippy::float_cmp,
         reason = "dirty-checking wants exact equality against the previous layout, not a fuzzy tolerance"

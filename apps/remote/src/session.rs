@@ -5,9 +5,9 @@
 //! * **Terminal** (SSH): a scrollback grid of styled cells rendered with
 //!   the toolkit's monospace text path and ANSI palette. The cell model
 //!   lives here ([`Cell`] / [`TermLine`]); the bytes that fill it come from
-//!   a real remote PTY, parsed by [`crate::vt`].
+//!   a remote PTY, parsed by [`crate::vt`].
 //!
-//! * **Framebuffer** (VNC): a rectangular pixel surface. The real remote
+//! * **Framebuffer** (VNC): a rectangular pixel surface. The remote
 //!   framebuffer is decoded by [`crate::rfb`] and painted straight into the
 //!   scene — no synthetic desktop.
 //!
@@ -20,7 +20,7 @@
 
 use crate::model::{Connection, ConnectionKind};
 
-/// What Remote can honestly do with a saved connection *in this process*.
+/// What Remote can do with a saved connection *in this process*.
 ///
 /// This is intentionally more expressive than a boolean. It is used by the
 /// on-screen list, session recovery card, Ctrl+K resources, and agents, so an
@@ -116,8 +116,8 @@ pub fn transport_readiness(kind: ConnectionKind) -> TransportReadiness {
 /// the accessibility tree, Ctrl+K/agent resources, and the effect handler. A
 /// malformed profile therefore never reaches an I/O constructor merely because
 /// one surface forgot a preflight check. Cached `Presence::Offline` is not an
-/// availability gate: it is stale by design, so a deliberate reconnect remains
-/// the only honest way to discover that a machine recovered.
+/// availability gate: it is stale by design, so a deliberate reconnect is
+/// required to discover that a machine recovered.
 pub fn connection_readiness(connection: &Connection) -> TransportReadiness {
     let transport = transport_readiness(connection.kind);
     if !transport.can_connect() {
@@ -129,7 +129,7 @@ pub fn connection_readiness(connection: &Connection) -> TransportReadiness {
     TransportReadiness::Ready
 }
 
-/// Whether this connection kind may start its real transport now. Tilo is a
+/// Whether this connection kind may start its transport now. Tilo is a
 /// production broker capability; SSH/VNC retain the explicit developer gate.
 pub fn can_attempt_live(kind: ConnectionKind) -> bool {
     transport_readiness(kind).can_connect()
@@ -137,8 +137,8 @@ pub fn can_attempt_live(kind: ConnectionKind) -> bool {
 
 /// The state of a live transport, shared from the background I/O thread to
 /// the UI thread. The UI reads this every frame to choose what to draw:
-/// a spinner while connecting, the real surface once up, or the honest
-/// error text on failure — never a fabricated session.
+/// a spinner while connecting, the session surface once up, or the error text
+/// on failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionStatus {
     /// Handshake / auth in flight.
@@ -233,7 +233,7 @@ mod tests {
 }
 
 /// One styled terminal cell. We keep this tiny — a glyph plus a palette
-/// index — because a real ANSI grid is thousands of these.
+/// index — because an ANSI grid is thousands of these.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cell {
     pub ch: char,

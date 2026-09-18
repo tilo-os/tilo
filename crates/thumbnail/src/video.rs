@@ -20,11 +20,11 @@ const DEADLINE: Duration = Duration::from_secs(6);
 const SEEK_MS: u64 = 1_000;
 
 /// Extract a representative keyframe from `path` as an RGBA thumbnail no wider
-/// than `max_edge`. `None` if real decode is unavailable or no frame arrives.
+/// than `max_edge`. `None` if decoding is unavailable or no frame arrives.
 pub fn video_thumb(path: &Path, max_edge: u32) -> Option<RgbaThumb> {
     let mut engine = MediaEngine::new();
     // With the `decode` feature off the engine only synthesises frames; never
-    // pass those off as a real preview.
+    // pass synthesized frames off as a preview.
     if !engine.is_real_decode() {
         return None;
     }

@@ -15,17 +15,16 @@
 # Expects generation 1 built and installed:
 #     ./os/dev/composefs/build.sh 1 && ./os/dev/composefs/install.sh 1
 #
-# ## What is real here and what is a stand-in
+# ## Test scope
 #
 # The boot chain is the production one: the same sealed UKI, the same
 # systemd-boot, the same tilo-deployment, tilo-boot-health, tilo-boot-mode-generator
 # and loader entries the desktop image ships (os/dev/composefs/build.sh copies
 # them out of os/ rather than restating them).
 #
-# The one substitution is what "the session came up" means. This image has no
-# greetd — it is the boot chain without the desktop — so tilo-boot-health is
-# pointed at tilo-probe-session.service, and the broken generation is one whose
-# stand-in fails. Everything downstream of that verdict (boot-complete.target,
+# This image has no greetd, so tilo-boot-health uses
+# tilo-probe-session.service to represent session readiness. Everything
+# downstream of that verdict (boot-complete.target,
 # systemd-bless-boot, the try counter, sd-boot's ordering) is untouched.
 set -uo pipefail
 
@@ -81,15 +80,14 @@ proof_repair() {
   sleep 8
   "$VM" stop >/dev/null 2>&1 || true
 
-  # A serial line that can be typed into. Repair mode masks sshd on purpose, so
-  # this is the only channel there is — which is the point of it.
+  # Repair mode masks sshd, so the serial line is the only input channel.
   "$VM" boot 1 --serial-socket || { bad "repair-mode boot did not start"; return 1; }
   local sock; sock="$("$VM" console)"
   for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
   [ -S "$sock" ] || { bad "no serial socket at $sock"; return 1; }
 
   # The console is the evidence. Each `expect` fails the run if it never
-  # arrives, so a pass means these words were actually on the wire.
+  # arrives, so a pass means the expected text was received.
   python3 "$CONSOLE_DRIVER" "$sock" --log "$OUT/02-repair-console.log" \
     timeout:400 \
     expect:"tilo\\.mode=repair" \

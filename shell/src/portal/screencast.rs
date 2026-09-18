@@ -12,7 +12,7 @@
 //! the prompt.
 //!
 //! [`ScreenCastStreamProvisioner`] lets tests substitute a
-//! [`MockScreenCastProvisioner`] for the real `PipeWire` connection.
+//! [`MockScreenCastProvisioner`] for the `PipeWire` connection.
 
 #![allow(
     clippy::used_underscore_binding,

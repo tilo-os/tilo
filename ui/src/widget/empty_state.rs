@@ -186,8 +186,8 @@ fn paint_empty_state(
     // the recovery explanation even after the decorative icon is shed.
     // Preserve the action *and* the explanation by compacting only the
     // display size of the heading, while keeping its heading semantics and
-    // full accessible name intact.  The final fallback still prefers the
-    // action if a parent genuinely offers too little vertical space.
+    // full accessible name intact. The final fallback still prefers the
+    // action if a parent offers too little vertical space.
     if message.is_some() && !fit.message {
         for factor in [0.82_f32, 0.72, 0.60] {
             let candidate_style =

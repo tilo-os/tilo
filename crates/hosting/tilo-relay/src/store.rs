@@ -17,8 +17,7 @@
 //! `snapshot.automerge` is only written when a workspace is
 //! `pin = true` in the config; unpinned workspaces are pure fan-out
 //! + store-and-forward. Pending directories exist regardless of
-//!   pin state — the point of a host is that a peer's phone can be
-//!   offline for a week and still catch up.
+//!   pin state — a peer can be offline and still catch up when it reconnects.
 
 use std::fs;
 use std::io::{self, Write};

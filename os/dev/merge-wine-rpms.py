@@ -17,7 +17,7 @@ import wine_rpm_contract as contract
 # Differences here describe RPM encoding/signing/build-machine bookkeeping,
 # never installed contents, dependencies, scripts, triggers, ownership or flags.
 # OPTFLAGS and PLATFORM record the compiler flags and build target, even for
-# noarch RPMs. Actual installed bytes and package architecture stay compared.
+# noarch RPMs. Installed bytes and package architecture stay compared.
 ENCODING_TAGS = frozenset('''
 SIGSIZE SIGMD5 SIGPGP SIGGPG RSAHEADER DSAHEADER SHA1HEADER SHA256HEADER
 LONGSIGSIZE LONGARCHIVESIZE ARCHIVESIZE PAYLOADDIGEST PAYLOADDIGESTALT

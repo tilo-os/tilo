@@ -126,8 +126,8 @@ maximum it becomes **vertically scrollable within the card**.
 
 ## 3. Text editing (everywhere)
 
-Editable text is a **real CRDT-backed editor**, via the shared `ui` caret /
-selection core — not a per-app buffer:
+Editable text is a **CRDT-backed editor**, via the shared `ui` caret /
+selection core:
 
 - Undo / redo (Ctrl+Z / Ctrl+Y).
 - Selection: shift+arrows, drag-select, word-wise (ctrl+arrows), select-all.
@@ -146,7 +146,7 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
   "Stored in the document CRDT", a leaked `/var/workspace` path).
 - Settings toggles live in **Settings**, not duplicated as always-on top-bar
   chips.
-- Never fabricate content and present it as real (no synthesized "video feed"
+- Never present fabricated content as live data (no synthesized "video feed"
   gradients, no invented data on an empty state).
 
 ---
@@ -169,7 +169,7 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
 ## 6. Performance (felt responsiveness)
 
 - **No idle redraw spin.** An app at rest requests **no** frames; animate only
-  while something is genuinely animating. (A caret blink or a 1 Hz clock is not a
+  while something is animating. (A caret blink or a 1 Hz clock is not a
   license to re-render the whole scene every vsync.)
 - **No unbounded per-frame work.** CRDT writes are **diffed** — never rewrite the
   whole document (or delete+reinsert a whole text) per keystroke; that is
@@ -184,17 +184,15 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
 
 ## 7. Visual craft & polish (the bar for *every* app)
 
-Working, honest, and consistent is the floor, not the goal. **Every app ships at
-a "genuinely nice to look at and use" bar** — the same craft whether it is chat,
-the calculator, or a system pane. An app that is functionally complete but looks
-cramped, unbalanced, or unfinished is **not done**. Grade every screen against
-this section the way you grade correctness against the tests.
+Every screen must meet the spacing, hierarchy, responsive layout, state
+visibility, motion, interaction, and theming requirements below. Functional
+completeness does not exempt a screen from these requirements.
 
 - **Layout breathes.** Deliberate spacing on the `Theme` scale; content is not
   jammed edge-to-edge, controls are not scattered. A clear reading order and a
   single primary action per screen. Groups are separated by space and hierarchy,
   not by hairlines and boxes-within-boxes.
-- **Real typographic hierarchy.** Size / weight / color establish
+- **Typographic hierarchy.** Size / weight / color establish
   title → section → body → caption; digits that line up use tabular figures. No
   wall of same-size text; no illegible low-contrast label on a colored fill
   (the permissions-pane and camera regressions were exactly this).
@@ -204,7 +202,7 @@ this section the way you grade correctness against the tests.
   **recomputed on resize**, never laid out once.
 - **State reads at a glance.** Selection, focus, active/live, speaking, syncing,
   error — each has a *visible form* (an emphasis, a ring, a pill, a severity
-  stripe), not only a text label. Empty states are composed and inviting (a real
+  stripe), not only a text label. Empty states are composed and inviting (a
   zero-state, per §4 — never fabricated content), loading and error states are
   designed, not raw.
 - **Motion is purposeful and quiet.** Transitions clarify a change (a panel
@@ -218,12 +216,10 @@ this section the way you grade correctness against the tests.
   colors, no 1px seams from mismatched fills, no clipped glyphs or overlapping
   text.
 
-The proof is visual, not a green build: `--shots` the primary screens (populated,
-empty, and a mid-interaction state), **open the PNGs and look critically** — if a
-screen would embarrass you next to a best-in-class native app, it is not done.
-When a polish pattern recurs (a media/participant grid, a stat tile, a huddle
-overlay, a segmented control), promote it to a `ui` primitive so the *nice*
-version is the default and no app has to re-earn it.
+Validate these requirements with `--shots` for the primary screens (populated,
+empty, and a mid-interaction state), then inspect the output. When a pattern
+recurs (a media/participant grid, a stat tile, a huddle overlay, a segmented
+control), promote it to a `ui` primitive so the shared version is the default.
 
 ---
 
@@ -242,7 +238,7 @@ widget already gets right:
 - **Keyboard** — a painted button cannot be focused or activated with
   Space/Enter; a hand-rolled field has no caret navigation or IME.
 - **Focus** — the 2D directional focus ring (`App::focusable_order`) skips
-  anything that is not a real widget, so hand-rolled controls are unreachable by
+  anything that is not a widget, so hand-rolled controls are unreachable by
   keyboard and invisible to focus-follow.
 - **Accessibility** — the AT-SPI / a11y tree is built from the widget tree; a
   painted rect has no role, name, or state, so it does not exist to a screen
@@ -369,7 +365,7 @@ One shared constant, `CHROME_SURFACE_ALPHA`, sets the opacity of every Bar and
 Panel, so the whole chrome is one material. Per-surface alpha literals are what
 made quick settings read as a different substance from the bar it hangs off.
 
-**That material is opaque, and chrome does not fake glass.** Translucency is
+**That material is opaque.** Translucency is
 only worth its cost when the backdrop is blurred, and this renderer cannot blur
 a backdrop — vello can blur a *shape*, which is what a drop shadow is made of,
 but there is no backdrop filter short of rendering the scene to a texture and
@@ -433,7 +429,7 @@ to the inactive things brightening toward the active tier.
 > **A shadow means "off the surface". A lift means "chosen on the surface".**
 
 A selected pill casts no shadow — it is not floating, it is picked. A dragged
-object casts `e4` — it is genuinely lifted and will land somewhere. Rows of
+object casts `e4` — it is lifted and will land somewhere. Rows of
 idle pills each laying down a soft shadow is what made the tab strip read as
 muddy rather than as chrome.
 

@@ -1,8 +1,8 @@
-//! The real `systemd-logind` glue (`org.freedesktop.login1`) over `zbus`.
+//! `systemd-logind` integration (`org.freedesktop.login1`) over `zbus`.
 //!
 //! Everything here performs actual D-Bus I/O against the system bus, so it only works where
 //! `systemd-logind` is running. The pure decision logic for *whether* to call these lives in
-//! [`super::policy`] / [`super::battery`]; this module is the thin, honest actuator.
+//! [`super::policy`] / [`super::battery`]; this module performs the D-Bus operations.
 //!
 //! Three capabilities the compositor needs:
 //!

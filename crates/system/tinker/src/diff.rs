@@ -9,8 +9,8 @@
 //!   first write);
 //! * anything else is new.
 //!
-//! No bookkeeping at layer-write time is needed, so this cannot drift out of sync with
-//! reality the way a recorded change journal can.
+//! No bookkeeping at layer-write time is needed, so the change set is derived
+//! directly from the layer and base directories.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;

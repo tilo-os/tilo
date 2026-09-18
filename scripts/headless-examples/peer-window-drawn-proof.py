@@ -3,10 +3,9 @@
 
 `room-index-proof.py` already proves the window *replicates*: xaver's
 session receives the tab quinten opened and reads it back out of his own
-state. That is not the same claim as this one, and the difference is the
-whole point — the tab was in his tree, provably, while his screen showed
-an empty desktop. An assertion that goes green over a blank screen is
-worse than one that fails.
+state. That is not the same claim as this one: the tab was in his tree
+while his screen showed an empty desktop. This script checks the rendered
+result too.
 
 So this asks the receiving session three questions in order, each
 strictly stronger than the last:
@@ -15,7 +14,7 @@ strictly stronger than the last:
   2. is there a widget for it?         (the widget tree, via list_targets)
   3. did your screen change?           (pixels, before and after)
 
-Two real compositors, separate identities, separate homes, one room.
+Two compositors with separate identities and homes share one room.
 
 Usage:
   ./peer-window-drawn-proof.py [--keep] [--out DIR]

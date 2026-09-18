@@ -35,6 +35,7 @@ there. A notification pierces scheduled focus only when its verified app has an
 explicit user grant and its bounded contact handle matches that registry.
 
 The authorized communication app still asserts which sender produced a
-message. It is therefore part of the trusted path for that assertion; Tilo does
-not call this ungamable until mail/chat transport itself is OS-owned. Unknown
-callers, stale PIDs, unapproved apps and unmatched handles never gain priority.
+message. It is therefore part of the trusted path for that assertion; this
+guarantee remains provisional until mail/chat transport itself is OS-owned.
+Unknown callers, stale PIDs, unapproved apps and unmatched handles never gain
+priority.

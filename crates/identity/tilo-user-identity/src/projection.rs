@@ -1,6 +1,6 @@
 //! Host-to-app projection of human identities admitted by governance.
 //!
-//! This is deliberately not an address-book format.  A producer may add a
+//! This is not an address-book format. A producer may add a
 //! row only after it has associated the human root key with an authoritative
 //! governance name.  Device labels, presence payloads and Contacts entries
 //! are not such an association.  When that association is unavailable the

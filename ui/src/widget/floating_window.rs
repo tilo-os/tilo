@@ -1,6 +1,6 @@
 //! A movable + resizable in-app overlay window: draggable title bar,
 //! edge/corner resize grips, on-screen clamping that keeps the title bar
-//! reachable. Genuinely modal while open via
+//! reachable. Modal while open via
 //! [`crate::widget::Widget::modal_capture`] — it consumes every event
 //! inside its rect and swallows out-of-rect clicks without closing (use the
 //! title-bar close affordance or an explicit host action to dismiss).
@@ -339,7 +339,7 @@ impl<C: Widget> FloatingWindow<C> {
 
     /// Update proximity without forwarding an event into the `PiP` payload.
     /// The shell calls this for every mirror, including the one the pointer
-    /// just left, so hidden chrome can genuinely fade instead of sticking.
+    /// just left, so hidden chrome can fade instead of sticking.
     pub fn update_pointer_position(&mut self, point: Point) {
         self.last_cursor = point;
         self.update_pointer_presence(point);

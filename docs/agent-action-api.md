@@ -172,7 +172,7 @@ or more than one content result stops the sequence rather than selecting one.
 
 This is deliberately not a workflow language: there are no named variables,
 JSONPath expressions, graphs or implicit reuse of an older result. The narrow
-one-step hand-off is enough to express a real cross-app operation such as
+one-step hand-off is enough to express a cross-app operation such as
 “rotate the photograph, then place the result in the document”, while keeping
 the origin of the content mechanically checkable.
 

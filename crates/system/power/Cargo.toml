@@ -26,7 +26,7 @@ service = [
 # Power management for the compositor: suspend-on-idle, lid / power-key
 # policy, suspend inhibitors, and battery thresholds, over systemd-logind +
 # UPower. Split into a pure policy core (unit-testable without a bus) and a
-# thin real zbus actuator. Depended on by `shell`; the Settings pane shares
+# thin zbus actuator. Depended on by `shell`; the Settings pane shares
 # only the on-disk JSON contract, not a code dependency.
 
 [dependencies]
@@ -47,7 +47,7 @@ futures-util = { version = "0.3", optional = true }
 [dev-dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
 # Fixture power-supply trees for the sysfs battery reader, so its parsing
-# is tested against real directory layouts rather than a mocked reader.
+# is tested against representative directory layouts.
 tempfile = { workspace = true }
 
 [lints]

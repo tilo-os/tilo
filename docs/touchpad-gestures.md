@@ -1,4 +1,4 @@
-# Real touchpad pinch-to-zoom in Tilo — what's needed
+# Touchpad pinch-to-zoom in Tilo — what's needed
 
 Today apps zoom on **Ctrl + two-finger scroll** because that's the only touchpad-zoom
 signal the toolkit (winit) delivers on Wayland. Bare **pinch-to-zoom** needs work at two
@@ -20,7 +20,7 @@ layers. The gesture chain is: touchpad → libinput → compositor → Wayland p
      *already* advertises `zwp_pointer_gestures_v1`, so this layer isn't what's blocking
      dev testing — layer 3 is.
 
-3. **Toolkit (winit) — THE ACTUAL GAP.** winit's Wayland backend does **not** bind
+3. **Toolkit (winit) — the gap.** winit's Wayland backend does **not** bind
    `zwp_pointer_gestures_v1`; `WindowEvent::PinchGesture` is emitted **only** on macOS/iOS
    (verified against winit 0.30.13 source). So even when the compositor advertises the
    protocol (Mutter does today), winit-based Tilo apps never receive a pinch event.
@@ -34,10 +34,11 @@ layers. The gesture chain is: touchpad → libinput → compositor → Wayland p
    vendored deps).
 
 4. **App** — already handles `WindowEvent::PinchGesture` (the PDF fix kept the macOS arm).
-   **No further work** once winit delivers the event; every ui app gets pinch for free.
+   **No further work** once winit delivers the event; every ui app gets pinch through
+   the shared toolkit.
 
 ## Recommendation
-Do **layer 3 (the winit patch) first** — it's the real fix, it's **testable today on the
+Do **layer 3 (the winit patch) first** — it is **testable today on the
 GNOME dev box** (Mutter already delivers the protocol), and it unblocks pinch across every
 Tilo app at once since they all go through `ui` → winit. Then add **layer 2** (smithay
 `wp_pointer_gestures`) so the Tilo compositor advertises the protocol when you're not on

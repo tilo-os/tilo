@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""A real application launches into a session and paints.
+"""An application launches into a session and paints.
 
-The claim is "you can open an app on this desktop", so it is verified
-the only way that means anything: the app is started by address through
+The app is started by address through
 the compositor's own action surface, and the compositor is then asked
 how many frames it has taken from that client. `frame_seq > 0` is the
 ground truth — a tile can look like a window while being a placeholder,
 and only the frame counter tells those apart.
 
-A PNG of the final state is written for each app so the result can be
-looked at rather than trusted.
+A PNG of the final state is written for each app for visual inspection.
 
 What a session needs before any of this works
 ---------------------------------------------
@@ -23,7 +21,7 @@ isolating documents silently isolates them too:
                          Without it every launch fails with "no bundle
                          was found".
 
-Both are set below, pointed at the machine's real stores, while
+Both are set below, pointed at the machine's stores, while
 documents stay in the session's own directory.
 
 Usage:

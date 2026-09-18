@@ -1,6 +1,6 @@
 //! The power **service** — the async orchestrator that pairs the pure policy
-//! ([`super::policy`], [`super::battery`], [`super::inhibit`]) with the real `systemd-logind`
-//! / `UPower` glue ([`super::logind`], [`super::upower`]).
+//! ([`super::policy`], [`super::battery`], [`super::inhibit`]) with the `systemd-logind`
+//! / `UPower` integration ([`super::logind`], [`super::upower`]).
 //!
 //! Runs on a background tokio runtime (spawned by the compositor next to the notification
 //! service) and:
@@ -15,7 +15,7 @@
 //! * resets the compositor's idle timer on resume.
 //!
 //! The reaction *mappings* (battery events → signals, lid → effect) are pure functions
-//! tested below; `run` only wires them to real streams.
+//! tested below; `run` only wires them to the D-Bus streams.
 
 use futures_util::StreamExt;
 use tracing::{debug, info, warn};
@@ -58,9 +58,9 @@ impl From<Option<PowerAction>> for Effect {
     }
 }
 
-/// Decide the effect of a lid observation given the previous state. Only a genuine
+/// Decide the effect of a lid observation given the previous state. Only an
 /// open→closed edge acts; the first observation (`prev == None`) or a lid that stays closed
-/// just records. Pure — the async [`PowerService`] calls exactly this.
+/// records the state. Pure — the async [`PowerService`] calls exactly this.
 pub fn lid_edge_effect(prev: Option<bool>, now: bool, policy: &PowerPolicy) -> Effect {
     if now && prev == Some(false) {
         Effect::from(policy.on_lid(true))
@@ -70,7 +70,7 @@ pub fn lid_edge_effect(prev: Option<bool>, now: bool, policy: &PowerPolicy) -> E
 }
 
 /// Map battery-threshold events to the compositor signals + whether to auto-suspend. Pure:
-/// this is what [`PowerService::run`] applies for real.
+/// this is what [`PowerService::run`] applies.
 pub fn battery_reaction(events: &[BatteryEvent], policy: &PowerPolicy) -> (Vec<PowerSignal>, bool) {
     let mut signals = Vec::new();
     let mut suspend = false;
@@ -432,7 +432,7 @@ impl PowerService {
         }
     }
 
-    /// Issue the real suspend, if logind says it can. The inhibitor registry is the compositor's
+    /// Issue the suspend request, if logind allows it. The inhibitor registry is the compositor's
     /// gate for *idle* suspend; lid/critical suspends are deliberate and proceed regardless.
     async fn start_suspend(&mut self) {
         if self.suspend_task.is_some() {

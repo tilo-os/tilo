@@ -1,8 +1,8 @@
 //! Global-search projection for the photograph currently in Photos.
 //!
-//! The app deliberately edits one addressed photograph at a time, rather than
-//! keeping a second, lossy recent-files list. Search therefore indexes the
-//! complete resource that is actually exported now: its Unicode filename,
+//! The app edits one addressed photograph at a time, rather than keeping a
+//! second, lossy recent-files list. Search therefore indexes the complete
+//! exported resource: its Unicode filename,
 //! dimensions/content metadata, and every published action. The result itself
 //! uses the harmless canonical `view` action; activating a search row never
 //! accidentally rotates, crops, copies, or saves a picture just because the

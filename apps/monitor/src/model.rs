@@ -3,8 +3,8 @@
 //! Nothing in here touches `sysinfo`, the CRDT, or the renderer — it is
 //! the shared vocabulary the live sampler ([`crate::sampler`]) writes into
 //! and the widgets ([`crate::app`]) read out of. Keeping it free of IO is
-//! what lets `--shots` seed a fully-populated [`MonitorModel::sample`]
-//! snapshot offline that renders identically to a live frame.
+//! what lets `--shots` seed a [`MonitorModel::sample`] snapshot offline that
+//! renders identically to a live frame.
 
 /// A fixed-capacity rolling history of `f32` samples — the backing store
 /// for every time-series chart and sparkline. Oldest sample falls off the

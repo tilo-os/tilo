@@ -3,15 +3,15 @@
 //! `qdoc::history::VersionMeta` hands back an `actor_hex` — a raw hex string,
 //! unreadable on its own. This module is the join.
 //!
-//! Three shapes show up in a real document: a raw 32-byte public key (the
+//! Three shapes occur in documents: a raw 32-byte public key (the
 //! only cryptographically meaningful one, joining to a
 //! `collab_types::Identity`); a self-declared handle
 //! (`ActorId::from(app_id.as_bytes())`, the same key `ui::presence::user_color`
 //! and the per-character `author` marks already use, but **unverified**); and
 //! a random id (`ActorId::random()`, which resolves to nobody).
 //!
-//! For an actor never seen before, nothing is invented: the name becomes
-//! [`UNKNOWN_AUTHOR_NAME`], the label is the first eight hex characters, and
+//! For an unknown actor, use [`UNKNOWN_AUTHOR_NAME`] as the name, the first
+//! eight hex characters as the label, and
 //! the avatar hue is derived deterministically from the actor id so the same
 //! stranger keeps the same colour across sessions.
 
@@ -35,8 +35,8 @@ const MAX_HANDLE_LEN: usize = 64;
 
 /// Maps automerge actor ids to the people the chrome should name.
 ///
-/// Registrations win over inference: the collaboration layer knows who a peer
-/// actually is, and the local process knows who the user is, so both call
+/// Registrations win over inference: the collaboration layer resolves peer
+/// identity and the local process resolves the user, so both call
 /// [`AuthorDirectory::register`]. Everything else falls through the
 /// handle-decode and then the unknown-participant path.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -143,7 +143,7 @@ pub fn local_identity_author() -> Option<HistoryAuthor> {
         let name = if id.display_name().is_empty() {
             // First boot writes an empty display name and the user names
             // themselves later. An empty string would render as a blank row, so
-            // fall back to the honest label rather than to a guess.
+            // fall back to the stable label rather than to a guess.
             UNKNOWN_AUTHOR_NAME.to_string()
         } else {
             id.display_name().to_string()
@@ -266,7 +266,7 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
         let hi = (*p0 as char).to_digit(16)?;
         let lo = (*p1 as char).to_digit(16)?;
         // Both digits are `0..=15`, so `combined` is always `0..=255` and
-        // the cast below never actually truncates.
+        // the cast below does not truncate.
         let combined = hi.saturating_mul(16).saturating_add(lo);
         out.push(u8::try_from(combined).unwrap_or(u8::MAX));
     }
@@ -352,7 +352,7 @@ mod tests {
     }
 
     /// An explicit registration beats the decoded handle — the collaboration
-    /// layer knows the peer's real name; the handle is just self-declared.
+    /// layer knows the peer's registered name; the handle is self-declared.
     #[test]
     fn registration_wins_over_the_decoded_handle() {
         let hex = automerge::ActorId::from("wp-1234".as_bytes()).to_hex_string();
@@ -409,12 +409,10 @@ mod tests {
     /// short id, is the same on every run.
     const FIXTURE_SEED: [u8; 32] = [0x5a; 32];
 
-    /// Mint an identity record through the **real writer**, exactly as
-    /// `shell::firstboot::ensure_primary_identity` does. Returns the JSON
-    /// bytes alongside the public key the seed *actually* derives — computed
-    /// here straight from `ed25519-dalek`, independently of anything the
-    /// writer or reader reports, so a test asserting on it checks the whole
-    /// chain rather than echoing one side of it.
+    /// Mint an identity record through the same path as
+    /// `shell::firstboot::ensure_primary_identity`. Return the JSON bytes and
+    /// independently derive the public key with `ed25519-dalek` so the test
+    /// checks both sides of the serialization chain.
     fn firstboot_identity_bytes(display_name: &str, avatar_color: [u8; 3]) -> (Vec<u8>, [u8; 32]) {
         let identity =
             threshold_identity::ThresholdIdentity::from_single_device_seed(&FIXTURE_SEED);
@@ -490,14 +488,13 @@ mod tests {
         }
     }
 
-    /// A real on-disk identity file is read and turned into an author.
+    /// An on-disk identity file is read and turned into an author.
     ///
-    /// The record is minted by the writer `shell::firstboot` actually calls,
-    /// not hand-typed: this schema is declared twice on purpose
+    /// The record is minted by the writer `shell::firstboot` calls. This schema
+    /// is declared twice on purpose
     /// (`ui::widget::identity_flow::IdentityRecord` serialises it,
     /// `runtime_identity` re-declares it rather than depending on `ui`), so
-    /// only a fixture that came out of the writer proves the reader still
-    /// accepts what the writer emits.
+    /// so the fixture checks that the reader accepts the writer's output.
     #[test]
     #[serial_test::serial(tilo_user_identity)]
     fn local_identity_is_read_from_the_firstboot_json_shape() {
@@ -513,10 +510,8 @@ mod tests {
             "the record must carry the key its own secret derives"
         );
 
-        // ...and the production entry point turns that file into the row the
-        // timeline renders. This is the function the chrome calls; asserting
-        // on a locally reassembled `HistoryAuthor` instead would only restate
-        // its body.
+        // The production entry point turns the file into the row the timeline
+        // renders.
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("primary.json");
         std::fs::write(&path, &bytes).expect("write identity");
@@ -535,7 +530,7 @@ mod tests {
 
     /// First boot writes an empty display name and neutral grey — the user
     /// names and colours themselves later. That record must still load, and
-    /// must render as the honest unknown-participant label rather than as a
+    /// must render as the unknown-participant label rather than as a
     /// blank row.
     #[test]
     #[serial_test::serial(tilo_user_identity)]

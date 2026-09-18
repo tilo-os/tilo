@@ -1,8 +1,8 @@
 //! Production-renderer review harness for the first-login identity setup.
 //!
-//! It drives the compositor-owned [`OnboardingView`] through its real layout
-//! and draw path, with only identity I/O replaced by the view's existing test
-//! seam. It never creates an identity or changes the running session.
+//! It drives the compositor-owned [`OnboardingView`] through its layout and
+//! draw path, with identity I/O replaced by the view's existing test seam. It
+//! never creates an identity or changes the running session.
 //!
 //! ```text
 //! TILO_ONBOARDING_SHOT_DIR=/tmp/tilo-onboarding-shots \

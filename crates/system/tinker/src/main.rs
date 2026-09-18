@@ -267,9 +267,7 @@ fn cmd_shell(store: &Store, args: &ShellArgs) -> Result<()> {
 
         let layer = store.load(&name)?;
         if layer.kind == LayerKind::Ephemeral {
-            // The one moment where the whole design pays off: the layer is still
-            // on disk, so the offer to keep it is real and not a consolation
-            // message about work already deleted.
+            // The layer is still on disk, so the user can choose to keep it.
             let d = diff::compute(&store.upper_dir(&name), Some(&store.base_path(&layer.base)))?;
             if d.is_empty() {
                 store.discard(&name)?;
@@ -302,7 +300,7 @@ impl std::fmt::Display for ChildExit {
 
 impl std::error::Error for ChildExit {}
 
-/// What the user sees when a throwaway shell that actually changed something
+/// What the user sees when a temporary shell changed something
 /// exits. It must state the deadline and both commands, because an offer whose
 /// expiry is unclear is an offer people resolve by never using the tool again.
 fn report_ephemeral_exit(name: &str, d: &Diff) {

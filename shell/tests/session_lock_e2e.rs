@@ -1,10 +1,10 @@
 //! End-to-end session-lock test over the headless compositor + the
-//! `TILO_TEST_CONTROL` socket: spawns the real compositor with an injected
+//! `TILO_TEST_CONTROL` socket: spawns the compositor with an injected
 //! unlock password (`TILO_LOCK_TEST_PASSWORD`) and a short idle-lock, then
 //! drives the live `run()` loop — idle auto-lock, wrong password stays
 //! locked, correct password unlocks.
 //!
-//! Everything is the shipped path (run loop, `LockController`, input
+//! The test covers the run loop, `LockController`, input
 //! gating, overlay, and the async verify where Enter hands the credential
 //! to a worker thread and the per-tick `poll_verification` delivers the
 //! unlock) *except* the credential check itself: [`FixedVerifier`] stands

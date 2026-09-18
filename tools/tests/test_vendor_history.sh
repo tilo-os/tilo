@@ -8,7 +8,7 @@ repo_root=$(git rev-parse --show-toplevel)
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/tilo-vendor-history-test.XXXXXX")
 trap 'chmod -R u+w "$test_root" 2>/dev/null || true; rm -rf -- "$test_root"' EXIT
 
-# The real repository check covers byte equivalence and the documented Tilo
+# The repository check covers byte equivalence and the documented Tilo
 # overlay. The artificial repository below exercises remote-ref resolution.
 "$repo_root/tools/vendor-history.sh" verify
 
@@ -19,7 +19,7 @@ git init --quiet "$isolated_repo"
 source_objects=$(git -C "$repo_root" rev-parse --path-format=absolute --git-path objects)
 printf '%s\n' "$source_objects" >"$isolated_repo/.git/objects/info/alternates"
 
-# Materialize the current main tree just as a fresh clone would. The
+# Materialize the current main tree as a fresh clone would. The
 # standalone histories themselves remain remote-tracking refs below.
 main_tip=$(git -C "$repo_root" rev-parse HEAD)
 git -C "$isolated_repo" update-ref refs/heads/main "$main_tip"

@@ -1,15 +1,9 @@
 //! Whether something in the room is being said *to* the agent.
 //!
-//! The agent used to notice one thing: a paragraph in a document whose first
-//! word was its own name. That is a command line with extra steps — you have
-//! to know the agent is there, know the spelling, and go to the one app it
-//! reads. Everywhere a person actually talks, it was deaf.
-//!
-//! The opposite failure is worse. An agent that reads every message in a room
-//! and decides for itself which ones were meant for it is unpredictable to sit
-//! next to: nobody can tell, before typing, whether a sentence will move their
-//! document. So the question this module answers is deliberately narrow, and
-//! it is two questions rather than one.
+//! The agent recognizes explicit paragraph names and structured mentions.
+//! Reading every room message and inferring intent would make ordinary
+//! conversation mutate documents unpredictably, so this module separates
+//! proximity from addressing.
 //!
 //! ## Close, and addressed
 //!

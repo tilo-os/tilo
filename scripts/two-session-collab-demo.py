@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Two Tilo sessions collaborating in one workspace, end to end.
 
-Starts two real compositors — separate state directories, separate
+Starts two compositors — separate state directories, separate
 Iroh endpoint keys, separate user identities, separate control sockets —
 and drives them through the flow a pair of users would take:
 

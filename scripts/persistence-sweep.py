@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Prove, per app, that a change made through the real UI survives a restart.
+"""Check, per app, that a change made through the UI survives a restart.
 
-The claim being tested is the whole point of `app-state`: change something
-in an app, kill it, start it again, and the change is still there. This
-script checks it the only way that means anything — by running the app's own
-binary three times against a scratch data directory:
+The behavior under test is `app-state`: change something in an app, kill it,
+start it again, and verify that the change is still there. The script runs
+the app's own binary three times against a scratch data directory:
 
   cold      a fresh store, no input. Dumps the document the app comes up on.
   hot       the same store, plus a list of clicks/keystrokes delivered
-            through `ui::headless`, i.e. the same `Widget::handle_event` a
-            real click goes through. The process then exits, flushing.
+            through `ui::headless`, i.e. the same `Widget::handle_event` used
+            for a click. The process then exits, flushing.
   restored  the same store again, no input. Dumps what came back off disk.
 
 Two assertions, both necessary:
@@ -21,7 +20,7 @@ Two assertions, both necessary:
 Actions come from `persistence-scenarios.json` when an app needs specific
 ones, otherwise the harness picks addressable widgets out of the app's own
 live widget tree. Names matching the deny-list in DANGEROUS are never
-clicked — several apps front real destructive operations.
+clicked — several apps expose destructive operations.
 
 Usage:
     scripts/persistence-sweep.py                 # every app

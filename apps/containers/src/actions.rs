@@ -4,12 +4,12 @@
 //! interaction into exactly one of two buckets: a *document-mutating* operation
 //! becomes an [`Action`](tilo_actions::Action) — a serializable value that
 //! deterministically changes the shared Automerge document, so undo and
-//! multi-peer replay come for free — while presentation / view state stays plain
+//! multi-peer replay use the same action — while presentation / view state stays plain
 //! app code. Container lifecycle commands are therefore exported as
 //! [`OperationKind::Effect`](tilo_actions::OperationKind::Effect) operations,
 //! while this module verifies they never masquerade as document mutations.
 //!
-//! ## What Containers actually is
+//! ## Container data and actions
 //!
 //! Containers is a projection of a host resource — rootless podman. The list of
 //! containers, images, volumes and distroboxes, their status, stats and logs are
@@ -46,7 +46,7 @@
 //!   ports / env / volumes / command) are Automerge `Text` objects, edited by
 //!   `splice_text_diffed` on the toolkit's CRDT-native text path — the same path
 //!   the recipe says a flowing text body must take *instead of* the action
-//!   executor. Two peers typing into the create form converge and undo for free
+//!   executor. Two peers typing into the create form converge and undo through
 //!   through the `Text` object; re-encoding a keystroke as an action would
 //!   duplicate what the text path already gives. The create draft is transient:
 //!   submitting it shells out to `podman run` (external) and clears the draft.

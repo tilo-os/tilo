@@ -1,4 +1,4 @@
-//! `app-host` — the runtime backbone for Tilo's native app model.
+//! `app-host` — the runtime service for Tilo's native app model.
 //!
 //! The daemon owns the local content-addressed package store at
 //! `~/.local/share/tilo-apps/store/`, maintains a `Pinned` vs `LRU

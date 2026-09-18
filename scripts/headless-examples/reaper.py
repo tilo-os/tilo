@@ -1,11 +1,10 @@
 """Make a spawned compositor die when the script that spawned it does.
 
-Every harness here starts real compositors, and each one costs the better
+Every harness here starts a compositor, and each one costs the better
 part of a core while it lives. They are started with `start_new_session=True`
 so a `--keep` run can outlive the script — which also means a script that is
-killed, times out, or panics leaves them running forever. Eleven of them
-were once found still spinning at 80% CPU apiece, the oldest 47 minutes
-after the run that made it had gone. That is most of a machine.
+killed, times out, or panics leaves them running indefinitely and can
+consume most of a machine.
 
 `atexit` and signal handlers do not fix it: they do not run on `SIGKILL`,
 and that is exactly how a hung harness is usually stopped.
@@ -23,7 +22,7 @@ Usage — replace `start_new_session=True` with `preexec_fn=die_with_parent()`:
     proc = subprocess.Popen(argv, env=env, preexec_fn=die_with_parent())
     track(proc)                       # optional: also swept at exit
 
-A harness that genuinely wants survivors (`--keep`) passes
+A harness that wants survivors (`--keep`) passes
 `die_with_parent(enabled=False)` and says so on the command line.
 """
 from __future__ import annotations

@@ -164,8 +164,8 @@ mod tests {
     /// A command that never exits is killed at the deadline and reported as a timeout rather
     /// than blocking its caller forever — the property the compositor depends on, since the
     /// shell-out helpers run on a worker that would otherwise leak a thread per attempt.
-    /// Asserting on `run_capture` itself (not a mock) makes the guarantee real for every getter
-    /// and setter, since they all route through it.
+    /// The test calls `run_capture`, so the same guarantee applies to every getter and setter
+    /// that routes through it.
     #[test]
     fn a_hanging_command_is_killed_at_the_deadline() {
         // No `sleep` binary means the deadline cannot be exercised. Fail rather than skip: a check

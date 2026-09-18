@@ -1,7 +1,7 @@
 //! `Tooltip` primitive — a small label revealed after a short hover delay.
 //!
 //! `on_hover_enter`/`on_hover_leave`/`tick` drive the timing state so the
-//! primitive is unit-testable without a winit event loop or a real clock.
+//! primitive is unit-testable without a winit event loop or a wall clock.
 
 use automerge::{AutoCommit, ObjId};
 use std::time::{Duration, Instant};
@@ -109,7 +109,7 @@ pub fn draw_chip(
     let radius = f64::from(theme.tokens.radii.sm);
 
     // Vello has no blur primitive on this path, so two stacked translucent
-    // copies offset downward fake a soft shadow.
+    // copies offset downward approximate a soft shadow.
     let elev = &theme.tokens.elevation.e2;
     let base = elev.color;
     for (inflate, dy, alpha_scale) in [(3.0_f64, 5.0_f64, 0.5_f32), (1.0, 2.0, 1.0)] {

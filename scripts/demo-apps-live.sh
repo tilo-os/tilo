@@ -4,33 +4,23 @@
 #   scripts/demo-apps-live.sh            # optimised (profile: demo)
 #   TILO_DEMO_PROFILE=debug scripts/demo-apps-live.sh
 #
-# `scripts/yc-demo.py` reads this tree twice, and both readings are the
-# app a viewer waits for:
+# `scripts/yc-demo.py` uses this tree for both the preinstalled app and the
+# `.qpkg` fetched from `serve-test-registry`.
 #
-#   * xaver and the agent get it as an already-installed app, straight
-#     out of `payloads/<id>/`;
-#   * quinten does NOT have it, and fetches it in beat 5 — that beat is
-#     a `.qpkg` packed out of this same payload and served over
-#     loopback by `serve-test-registry`.
-#
-# So the size of one binary here is the whole of what "search, Enter,
-# and it opens" costs on camera. That is why the default profile is an
-# optimised one and not `debug`: a `debug` word processor is ~449 MB,
-# and moving and BLAKE3-hashing 449 MB is most of the 16-21 s that beat
-# used to take. Nothing about the architecture required that wait —
-# only the profile did.
+# The size of one binary determines the fetch cost of "search, Enter,
+# and it opens". The default profile is optimised: a `debug` word processor
+# is ~449 MB, and moving and BLAKE3-hashing it accounts for most of the
+# 16-21 s measured for that step.
 #
 # `demo` rather than `release` because that is what the compositor is
 # built as and what `yc-demo.py` resolves first; for every package
-# built here it IS the release configuration (opt-level 3, fat LTO,
+# built here it is the release configuration (opt-level 3, fat LTO,
 # one codegen unit, `strip = "symbols"`). `[profile.demo]` inherits
 # `release` and overrides exactly one thing — `debug-assertions` for
 # the `shell` package, which this script does not build.
 #
 # This tree is a build artefact under `target/`, so it is not in git and
-# a clean checkout has none of it. Before this script it was assembled
-# by hand, which is how it came to hold a `debug` binary that nobody
-# had a reason to look at again.
+# a clean checkout has none of it.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -56,10 +46,8 @@ for b in word-processor tilo-pkg tilo-install; do
     [ -x "$BIN/$b" ] || die "$BIN/$b missing after build"
 done
 
-# A binary older than its own sources is the one failure mode this
-# script exists to make loud: a measurement taken against a stale
-# payload is a measurement of a build nobody can reproduce, and it
-# looks exactly like a good one.
+# Reject binaries older than their sources so measurements cannot use a
+# stale, unreproducible payload.
 newer="$(find "$REPO/apps/word-processor/src" "$REPO/ui/src" -name '*.rs' \
          -newer "$BIN/word-processor" -print -quit 2>/dev/null || true)"
 [ -z "$newer" ] || die "$BIN/word-processor is older than $newer — the build did not take"
@@ -70,9 +58,7 @@ if [ ! -f "$IDENTITY" ]; then
     "$BIN/tilo-pkg" keygen --out "$IDENTITY" >/dev/null
 fi
 
-# `cp`, never a hardlink: the payload has to survive the next
-# `cargo build` unchanged, or a rebuild silently redefines what an
-# already-taken measurement measured.
+# Copy the binary so a later `cargo build` cannot change an existing payload.
 say "staging the payload"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/word-processor/bin"
@@ -85,11 +71,8 @@ say "packing $PKG_ID"
     --identity "$IDENTITY" \
     --output "$STAGE/word-processor.qpkg"
 
-# Installed fresh rather than edited in place. `registry.toml` names a
-# `package_id_hex`, and `tilo-install verify` replays that hash down to
-# every payload file, so a binary swapped in underneath a kept entry is
-# not a faster demo — it is a package that fails its own integrity
-# check at the least convenient moment.
+# Install fresh rather than editing in place. `tilo-install verify` checks
+# every payload file against the `package_id_hex` recorded in `registry.toml`.
 say "installing into $OUT"
 rm -rf "$OUT/payloads" "$OUT/registry.toml"
 TILO_APPS_DATA_DIR="$OUT" "$BIN/tilo-install" install "$STAGE/word-processor.qpkg" --force

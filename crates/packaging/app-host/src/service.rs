@@ -340,8 +340,7 @@ mod command_tests {
 // `LocalSet`: `capnp::capability::Rc` (captured as `self`) is a
 // non-atomic, non-`Send` reference count by capnp's own design, so
 // these futures can never be `Send` and are never meant to cross a
-// thread. Forcing `Send` here isn't a real fix, it's a different
-// (wrong) threading model.
+// thread. Forcing `Send` here would use a different threading model.
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc Server methods run on a single-threaded LocalSet via the non-atomic capnp::capability::Rc; the futures are never sent across threads"

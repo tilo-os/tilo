@@ -585,7 +585,7 @@ impl ProtocolHandler for SyncProtocol {
         // Bounded so a client that opens a stream but never sends/closes
         // can't leak an accept task or connection forever.
         let exchange = async {
-            // This is deliberately the first application-layer exchange. No
+            // This is the first application-layer exchange. No
             // mode byte or namespace data is accepted until the transport key
             // has been bound to a certified human/device and checked against
             // the current revocation snapshot.
@@ -828,7 +828,7 @@ async fn peer_may_read_blob_with_records(
 /// nothing later still knows who is asking. Only the connect event names
 /// the peer (a request event carries just a connection id), so identity
 /// is recorded at connect and looked up per request. Pushes are refused
-/// outright: this is a *read* plane, content arrives via the FUSE write
+/// outright: this is a *read* plane; content arrives via the FUSE write
 /// path where the write-side capability model is enforced.
 #[allow(clippy::too_many_lines)]
 fn blob_guard(
@@ -1788,7 +1788,7 @@ async fn pump_loop(
                         // dead-sync the workspace) — back off briefly and keep going.
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
-                    None => break, // stream genuinely ended
+                    None => break, // stream ended
                 }
             }
         }
@@ -2475,7 +2475,7 @@ mod tests {
             .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
             .spawn();
 
-        // This hash is real but its serving endpoint is intentionally absent
+        // This hash is valid, but its serving endpoint is intentionally absent
         // during the first pass, modelling an auth warm-up/offline source.
         let late_store = ContentStore::memory();
         let late_thumbnail = late_store.ingest("late preview").await.unwrap();

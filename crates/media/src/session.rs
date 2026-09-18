@@ -1,16 +1,13 @@
 //! One decode pipeline per source, shared by everything that needs it.
 //!
-//! Building a `MediaEngine` stands up a whole `GStreamer` pipeline: element
-//! discovery, a decoder, a demuxer, an audio chain, and — on the hardware path
-//! — a VA display or CUDA context. Doing that **per thumbnail**, on a fresh
-//! thread, is why a timeline full of clips stalls: a dozen pipelines racing to
-//! open the same file, each one paying full setup cost to pull a single frame,
-//! and none of them reusing the decoder the preview already has open.
+//! Building a `MediaEngine` sets up a `GStreamer` pipeline with element
+//! discovery, a decoder, a demuxer, an audio chain, and, on the hardware path,
+//! a VA display or CUDA context. Creating one per thumbnail would duplicate
+//! setup work and prevent reuse of the decoder held by the preview.
 //!
 //! A [`SessionPool`] keeps one [`EngineSession`] per source. The preview and
-//! every thumbnail request for that source share it, so the second frame from
-//! a clip costs a seek rather than a pipeline. Each session carries its own
-//! [`FrameCache`], so revisited times cost neither.
+//! thumbnail requests for that source share it, and each session carries its
+//! own [`FrameCache`].
 //!
 //! # Threading
 //!
@@ -54,16 +51,14 @@ impl EngineSession {
             engine,
             cache: FrameCache::for_preview(),
             key,
-            // Until the source's real frame rate is known, bucket at 1ms so no
+            // Until the source's frame rate is known, bucket at 1ms so no
             // two distinct times are ever conflated. `set_fps` narrows it.
             bucket_ms: 1,
             last_used: Instant::now(),
         }
     }
 
-    /// Tell the session the source's frame rate so cache buckets line up with
-    /// real frames. Without this every distinct millisecond is its own entry
-    /// and the cache barely helps.
+    /// Tell the session the source's frame rate so cache buckets match frames.
     pub fn set_fps(&mut self, fps: f64) {
         let b = bucket_ms_for_fps(fps);
         if b != self.bucket_ms {

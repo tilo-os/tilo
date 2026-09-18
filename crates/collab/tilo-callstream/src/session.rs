@@ -1,4 +1,4 @@
-//! The clean send/receive seam over the streaming stack.
+//! Send/receive composition over the streaming stack.
 //!
 //! [`VideoStreamSender`] composes [`crate::throttle::StreamingThrottle`] +
 //! [`crate::encoder::H264Encoder`] and emits [`crate::stream::SurfaceFrame`]
@@ -68,7 +68,7 @@ pub struct VideoStreamSender {
 }
 
 impl VideoStreamSender {
-    /// Builds a sender encoding `width × height` at up to `fps` frames per second (the throttle enforces the real cadence).
+    /// Builds a sender encoding `width × height` at up to `fps` frames per second (the throttle enforces the cadence).
     ///
     /// # Errors
     ///
@@ -228,7 +228,7 @@ mod tests {
         out
     }
 
-    /// The headline reuse contract: a captured RGBA frame runs the full
+    /// A captured RGBA frame runs the full
     /// shared stack (throttle + encoder → framed bytes → reframe + decoder →
     /// RGBA) and lands as a same-sized decoded frame — the same path a chat
     /// screen-share tile runs.

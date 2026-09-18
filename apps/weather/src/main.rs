@@ -88,11 +88,10 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     ))
 }
 
-/// Exercise the exact live networking stack the app uses (`net` + `api`)
-/// against the real keyless Open-Meteo endpoints and print what came back.
-/// This is the same [`weather::net::WeatherService`] the event loop drives —
-/// a standalone proof that the app fetches real data, not a mock. Invoked
-/// with `--probe`; it touches no UI and no window.
+/// Exercise the live networking stack the app uses (`net` + `api`) against the
+/// keyless Open-Meteo endpoints and print what came back. This is the same
+/// [`weather::net::WeatherService`] the event loop drives. Invoked with
+/// `--probe`; it touches no UI and no window.
 fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
     use weather::model::SavedLocation;

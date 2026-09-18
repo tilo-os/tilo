@@ -1,18 +1,13 @@
 //! Route the toolkit's co-edit protocol through the workspace host.
 //!
 //! The `ui` collaboration layer (`ui::collaboration`) speaks
-//! `CollabRequest` / `CollabEvent` frames carrying Automerge deltas +
-//! presence; the host speaks [`Envelope`]. Historically the two never
-//! met: apps reach a broker (Unix socket / capnp) that fans a document
-//! out *within one machine*, while `tilo-relay` — the durable,
-//! offline-capable host tier — was unreachable from the app path.
-//!
-//! This module is that missing seam. [`RelayCoeditSession`] wraps a
+//! `CollabRequest` / `CollabEvent` frames carrying Automerge deltas and
+//! presence; the host speaks [`Envelope`]. [`RelayCoeditSession`] wraps a
 //! [`RelayClient`] and exposes the co-edit verbs an app needs — publish
 //! a document delta, publish presence, receive peer deltas/presence —
 //! mapping each onto an [`Envelope`]. Because document deltas travel as
 //! [`Envelope::Delta`] they inherit the host's fan-out **and** its
-//! on-disk store-and-forward: two peers that are never simultaneously
+//! on-disk store-and-forward: two peers that are not simultaneously
 //! online still converge on the shared document.
 //!
 //! # Correspondence with the toolkit protocol
@@ -24,7 +19,7 @@
 //! certified local collaboration service, which signs and authorizes them
 //! before the shell transports them.
 //!
-//! Keeping the mapping here — rather than importing `ui` — mirrors the
+//! Keeping the mapping here rather than importing `ui` mirrors the
 //! native shell collaboration service, which likewise translates the toolkit
 //! protocol without pulling `ui`/wgpu into a transport crate.
 //!

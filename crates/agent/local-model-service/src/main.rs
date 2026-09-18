@@ -296,7 +296,7 @@ fn load_catalog(path: &PathBuf, keys: &PathBuf) -> Result<CatalogPayload, String
     Ok(signed.payload)
 }
 
-/// Real range downloader. The service already constrains URL+size+digest;
+/// Range downloader. The service already constrains URL+size+digest;
 /// this implementation additionally refuses redirects away from HTTPS.
 struct ReqwestTransport {
     client: reqwest::blocking::Client,
@@ -504,7 +504,7 @@ impl ProcessSupervisor for SystemdSupervisor {
             .split('/')
             .next()
             .unwrap_or_default();
-        // Loading real model weights routinely takes minutes. This worker is
+        // Loading model weights routinely takes minutes. This worker is
         // already detached from Settings, so favour a truthful bounded wait
         // over reporting a healthy large model as failed after 20 seconds.
         let deadline = Instant::now() + Duration::from_secs(10 * 60);
@@ -558,7 +558,8 @@ fn local_hardware() -> HardwareSnapshot {
     let free_storage_mib = free_storage_mib("/var/lib/tilo/models").unwrap_or(0);
     let mut accelerators = Vec::new();
     // NVIDIA's vendor tool is called with a fixed query/format, never a
-    // caller-provided argument. Sysfs discovery keeps absence honest.
+    // caller-provided argument. Sysfs discovery distinguishes an absent
+    // accelerator from an unavailable vendor tool.
     let mut nvidia = Command::new("nvidia-smi");
     nvidia.args([
         "--query-gpu=memory.total,driver_version",
@@ -605,9 +606,9 @@ fn local_hardware() -> HardwareSnapshot {
                     .iter()
                     .any(|item| matches!(item, Accelerator::Nvidia { .. }))
             {
-                // The PCI device is real even when `nvidia-smi` is absent.
-                // Retain that fact so policy asks for the signed driver boot
-                // pack instead of quietly launching an unsuitable CPU model.
+                // Retain the PCI device when `nvidia-smi` is absent so policy
+                // asks for the signed driver boot pack instead of quietly
+                // launching an unsuitable CPU model.
                 accelerators.push(Accelerator::Nvidia {
                     vram_mib: 0,
                     driver: String::new(),

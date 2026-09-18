@@ -1785,7 +1785,7 @@ fn test_touch_input_event(
     })
 }
 
-/// Send an already arbitrated direct-touch event across the real Wayland
+/// Send an already arbitrated direct-touch event across the Wayland
 /// `wl_touch` seat. `touch_target` deliberately runs only for `Down`, where
 /// Wayland establishes touch focus.
 fn forward_test_control_touch(
@@ -4208,7 +4208,7 @@ fn start_portal_backend(
         )),
         input_capture: input_capture.clone(),
         documents: documents.clone(),
-        // The real spooler: unlike the picker it needs no chrome/seat (a process
+        // The spooler: unlike the picker it needs no chrome/seat (a process
         // invocation), and reports no destinations on a machine with no CUPS.
         print_spooler: crate::portal::PrintSpoolerHandle::cups(),
         notifications,
@@ -4452,7 +4452,7 @@ pub fn run() {
 
     spawn_auto_brightness_worker();
 
-    // `--backend drm|winit` selects the real native backend implementation.
+    // `--backend drm|winit` selects the native backend implementation.
     let backend_kind = parse_backend_from_args();
     let mut backend: Box<dyn Backend> = build_backend(backend_kind);
 

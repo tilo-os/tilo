@@ -1,10 +1,9 @@
-//! Packet-level proof of per-host egress filtering, run against a real
-//! `bwrap` sandbox.
+//! Packet-level tests for per-host egress filtering in a `bwrap` sandbox.
 //!
-//! Everything here asserts on **connection outcomes from inside the
+//! These tests assert on **connection outcomes from inside the
 //! sandbox** — bytes that arrived, or a refusal code — never the argv
-//! that built it: an argv assertion proves a string was constructed,
-//! these prove a packet did or did not go anywhere.
+//! that built it: argv only describes the requested command, while these
+//! outcomes show whether a packet could leave the sandbox.
 //!
 //! ## The two kernel properties underneath
 //!
@@ -70,7 +69,7 @@ const SANDBOX_SOCKET_PATH: &str = "/run/tilo-gate.sock";
 const PROBE_RELAY_PORT: u16 = 19050;
 
 /// The name the allowlist is written against in these tests. `localhost`
-/// resolves on every host, so the gate's real resolution step runs.
+/// resolves on every host, so the gate's resolution step runs.
 const ALLOWED_NAME: &str = "localhost";
 
 /// RFC 2606 reserves `.invalid` as never-resolvable, so a refusal for

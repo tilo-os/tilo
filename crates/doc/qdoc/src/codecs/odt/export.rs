@@ -2818,7 +2818,7 @@ mod tests {
             original_styles.as_slice(),
             "segmented styles.xml re-emits byte-for-byte"
         );
-        // It really is stored segmented (two style atoms are addressable).
+        // The part is stored as two addressable style atoms.
         let r = d.as_ref();
         assert!(
             crate::model::preserved_atoms(r.doc, r.c, "odt/part/styles.xml").len() >= 2,
@@ -2826,10 +2826,9 @@ mod tests {
         );
     }
 
-    /// THE convergence win, through the real `.odt` codec path: two replicas import
-    /// the same document, each rewrites a DIFFERENT preserved style atom, merge —
-    /// and BOTH edits survive in the exported `styles.xml`. Under the old whole-part
-    /// `Bytes` scalar this clobbered (last-writer-wins on the entire part).
+    /// Two replicas import the same document, each rewrites a different
+    /// preserved style atom, and both edits survive in the exported
+    /// `styles.xml`. A whole-part `Bytes` scalar would overwrite the other edit.
     #[test]
     fn different_preserved_atom_edits_converge_through_codec() {
         let odt = odt_with_two_style_atoms();

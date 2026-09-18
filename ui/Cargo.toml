@@ -42,7 +42,7 @@ gpu-video = ["dmabuf-import"]
 # copy `apps/music` + `apps/chat` already resolve, so no second zbus lands.
 mpris = ["dep:zbus", "zbus/tokio"]
 # Host-native file open/save through the XDG Desktop Portal (`ui::portal`).
-# Pulls `ashpd` (D-Bus / FileChooser) only when an app actually needs to open or
+# Pulls `ashpd` (D-Bus / FileChooser) only when an app needs to open or
 # save files — an app opts in with `ui = { …, features = ["portal"] }`. The pure
 # parts always compile, so headless tests drive the exact per-frame drain path
 # with no portal, and a feature-less build degrades to a clean

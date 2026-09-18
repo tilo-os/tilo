@@ -93,8 +93,8 @@ the normal FreeRDP RAIL request. This is explicitly best-effort because client
 Windows does not promise a RemoteApp host API; Tilo never installs RDP Wrapper
 or patches `termsrv`. If RAIL is unavailable, Tilo attaches an app-focused
 whole-guest SPICE/virt-viewer surface after the guest has focused the requested
-program; the Tilo UI labels this as a whole-surface fallback, never as seamless
-windows. The full desktop remains a separate owner-authorised recovery surface.
+program; the Tilo UI labels this as a whole-surface fallback. The full desktop
+remains a separate owner-authorised recovery surface.
 
 When the host selects `app_focused_spice`, the authenticated guest bridge
 requires an active console user, creates a one-shot interactive Scheduled Task

@@ -23,7 +23,7 @@ tar -C "$work" -czf "$work/tilo-$version.tar.gz" "tilo-$version"
 install -pm 0644 "$repo_root/dist/arch/PKGBUILD" "$work/PKGBUILD"
 sed -i "s/^pkgver=.*/pkgver=$version/" "$work/PKGBUILD"
 # Arch Linux ARM still defaults to xz on some images, while the release and
-# Forgejo package contracts use the modern .pkg.tar.zst format.  Pin the
+# Forgejo package contracts use the .pkg.tar.zst format.  Pin the
 # compressor locally instead of relying on the base image's makepkg.conf.
 command -v zstd >/dev/null
 makepkg_config=$work/makepkg.conf

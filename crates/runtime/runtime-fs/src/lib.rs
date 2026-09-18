@@ -442,8 +442,8 @@ mod tests {
 
     #[test]
     fn open_mode_maps_to_wire_enum() {
-        // Round-trip the enum. If someone reorders the schema the
-        // From impl won't compile — this is belt-and-suspenders.
+        // The conversion preserves each wire variant; a schema reorder would
+        // fail to compile.
         assert!(matches!(
             fs_capnp::OpenMode::from(OpenMode::Read),
             fs_capnp::OpenMode::Read

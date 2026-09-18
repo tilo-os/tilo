@@ -1,7 +1,7 @@
 //! Human context carried by an action into durable history.
 //!
 //! The action payload says how to reproduce a mutation. [`ActionContext`]
-//! says how a person should find and understand it later. It deliberately
+//! says how a person should find and understand it later. It
 //! contains no generated prose: apps provide the stable action/resource
 //! labels they already expose through the action door, while a person or
 //! agent may add an explicit purpose and work-group label.

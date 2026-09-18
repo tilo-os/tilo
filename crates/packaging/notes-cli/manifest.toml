@@ -1,8 +1,8 @@
 # notes-cli package manifest.
 #
-# Shape mirrors `pkg::Manifest` — the launcher's minimal shim
-# also decodes this file. Placeholder publisher key; a real
-# publish would go through `tilo-pkg-cli sign`.
+# Shape mirrors `pkg::Manifest`; the launcher's minimal shim also
+# decodes this file. Replace the placeholder publisher key when signing
+# with `tilo-pkg-cli sign`.
 
 [package]
 id      = "dev.tilo.notes-cli"

@@ -26,7 +26,7 @@ say() { printf '\n== %s\n' "$*"; }
 # host do not necessarily carry the same libavcodec soname (Fedora 43 ships
 # .so.61, Fedora 44 ships .so.62), and a compositor that cannot load is a
 # session that fails at the login screen. Dropping the default set also drops
-# `hosted-test-control`, which a real login session never reaches anyway.
+# `hosted-test-control`, which a normal login session never reaches.
 #
 # What is lost: receive-side HEVC Main10 decode, i.e. viewing a peer's HDR
 # stream. Everything else, including sending, is unaffected.
@@ -44,7 +44,7 @@ fi
 
 # Cargo resolves a relative CARGO_TARGET_DIR from the repository root (the
 # directory used by both builds above). Canonicalise that path here as well so
-# packaging follows the artifacts Cargo actually produced.
+# packaging follows the artifacts produced by Cargo.
 target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 [[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir
 target_dir=$(realpath -m "$target_dir")

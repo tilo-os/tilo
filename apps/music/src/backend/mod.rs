@@ -6,9 +6,9 @@
 //!   library. `--shots`, CI and every test run here — no network, fully
 //!   hermetic, deterministic screenshots. [`offline::OfflineBackend`] answers
 //!   metadata from the sample and reports "cannot stream".
-//! * **live** (included in shipping defaults): real `YouTube` Music via the pure-Rust
+//! * **live** (included in shipping defaults): `YouTube` Music via the pure-Rust
 //!   [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client —
-//!   `music_search_tracks` for real search results and, crucially, `player`
+//!   `music_search_tracks` for search results and `player`
 //!   to resolve a **directly-playable audio-only stream URL** for a track.
 //!
 //! Both worlds implement the same [`MusicBackend`] trait: the cargo feature

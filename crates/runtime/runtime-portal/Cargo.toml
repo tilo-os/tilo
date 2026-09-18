@@ -27,9 +27,8 @@ thiserror.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-# nix gives us `fcntl(F_GETFD)` so we can probe whether a fd is open
-# before we hand it to tokio. 0.30 is the latest line already in the
-# workspace's lock file (transitive via shell).
+# nix provides `fcntl(F_GETFD)` so we can probe whether a fd is open before
+# handing it to tokio.
 nix = { version = "0.30", features = ["fs"] }
 
 [dev-dependencies]

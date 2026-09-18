@@ -16,7 +16,7 @@
 //!   and any future adopter get identical, tested behaviour.
 //! * **Runs render through [`RichTextLayout`].** Marks become [`RichSpan`]s via
 //!   the shared [`marks::segments_for`] partition, so bold/italic/underline
-//!   shape as real attributed runs (not glyph over-paint).
+//!   shape as attributed runs.
 //! * **IME-friendly.** Committed IME text is inserted; an in-progress preedit is
 //!   rendered inline at the caret without touching the CRDT until it commits.
 //!

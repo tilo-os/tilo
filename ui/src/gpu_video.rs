@@ -17,7 +17,7 @@
 //! Either way the result is a set of YUV planes, and [`YuvConverter`] turns
 //! them into one sampleable RGBA texture with a fullscreen pass. That is the
 //! same arithmetic [`media::frame::planar_to_rgba`] does per pixel on the CPU,
-//! moved to where it costs nothing.
+//! moved to the GPU.
 
 use media::dmabuf::{ColorRange, Colorimetry};
 use media::frame::{PlanarFormat, PlanarImage};

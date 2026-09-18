@@ -2,9 +2,9 @@
 //!
 //! `WindowEvent::DroppedFile` carries a path but NO coordinate, so the
 //! compositor tracks the pointer from `CursorMoved` and routes the drop
-//! to the window group under the last-known position. These drive the
-//! real production path: two side-by-side groups laid out for real
-//! rects, then `CursorMoved` + `DroppedFile` through
+//! to the window group under the last-known position. The test builds two
+//! side-by-side groups with laid-out rects, then sends `CursorMoved` +
+//! `DroppedFile` through
 //! `ShellOverlayHost::handle_event` — winit's own entry point in the
 //! live binary.
 

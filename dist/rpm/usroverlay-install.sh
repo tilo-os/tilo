@@ -2,9 +2,9 @@
 # Install the tilo-session RPMs into the *running* system via
 # `rpm-ostree usroverlay`, without a reboot.
 #
-# `rpm-ostree install` is the real install: it layers the package into a new
-# deployment, which the machine boots into. That is what you want long-term,
-# and it needs a reboot. `usroverlay` instead mounts a writable overlay over
+# `rpm-ostree install` creates a new deployment by layering the package into it.
+# The machine boots into that deployment; this is the long-term path and needs a
+# reboot. `usroverlay` instead mounts a writable overlay over
 # /usr for as long as this boot lasts, so the files are there immediately and
 # gone at the next reboot. Good for "does the session entry show up in the
 # login screen", not a way to run Tilo day to day.
@@ -13,7 +13,7 @@
 #   sudo dist/rpm/usroverlay-install.sh --devel     # runtime + developer entry
 #
 # Everything this writes lives under /usr (transient) except the PAM stack in
-# /etc, which is a genuinely writable directory on an ostree host and so
+# /etc, which is writable on an ostree host and so
 # persists; it is inert without the compositor, and `--uninstall` removes it.
 set -euo pipefail
 
@@ -78,8 +78,8 @@ fi
 # the thing that must not happen by accident.
 for f in "${files[@]}"; do
     if [[ -e $f && ! -L $f ]]; then
-        # Ours from a previous run of this script is fine to replace; a file
-        # owned by a real package is not.
+        # A file from a previous run of this script is fine to replace; a file
+        # owned by another package is not.
         if rpm -qf "$f" >/dev/null 2>&1; then
             echo "refusing: $f belongs to $(rpm -qf "$f")" >&2
             exit 1

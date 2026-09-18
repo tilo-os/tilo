@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
-"""Compose the per-app sweep PNGs into one labelled contact sheet, and
-report which apps actually painted.
+"""Compose the per-app sweep PNGs into one labelled contact sheet and report
+which apps painted.
 
 Whether an app rendered is taken from the compositor's own per-surface
 frame counters, recorded by the sweep (`frames` in results.json).
 `frame_seq > 0` means the compositor took a frame from that client.
 
-Pixel clustering below is only a cross-check for rows with no counters,
-because it cannot be trusted on its own: apps here start empty by
-design, so a real first frame can look like the placeholder - and like
-every other empty app.
+Pixel clustering below is only a cross-check for rows with no counters.
+Apps start empty by design, so a first frame can resemble the placeholder.
 
-The clustering rationale, for those fallback rows: When an app has not produced a frame, the compositor paints the
-tile with two centred text lines (the app-id and "waiting for first
-frame") over the flat card. Every such shot is therefore near-identical
-to every other such shot — they differ only in the app-id glyphs, a few
-hundred pixels out of a million. Two *real* apps cannot render
-pixel-identical content to each other.
+For fallback rows, an app with no frame gets two centred text lines (the
+app-id and "waiting for first frame") over a flat card. These shots are
+near-identical, differing only in the app-id glyphs.
 
 So: cluster the shots by near-identity. Any group of >= 2 shots agreeing
 on >= 99.0% of pixels is the placeholder class. A shot with no near-twin
@@ -39,7 +34,7 @@ LANCZOS = _RS.LANCZOS
 
 # Two shots agreeing on at least this fraction of pixels are the same
 # picture for our purposes. The placeholder differs between apps only in
-# the app-id text; real content differs everywhere.
+# the app-id text; rendered content differs elsewhere.
 SAME_PICTURE = 0.990
 # Downscale before comparing: kills PNG-level noise, keeps layout.
 CMP_SIZE = (320, 180)
@@ -54,7 +49,7 @@ PLACEHOLDER_TINT = (196, 92, 92)
 
 
 # Per-channel tolerance: absorbs resampling and dither noise without
-# letting two genuinely different pictures count as equal.
+# letting different pictures count as equal.
 CHANNEL_TOLERANCE = 6
 
 

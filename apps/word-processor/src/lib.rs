@@ -4,9 +4,7 @@
 //!
 //! The interactive GUI widget (draw/layout/keyboard over winit) is intentionally
 //! deferred — it is app polish, not part of CRDT-native file-format support. This
-//! crate currently provides the binding and proves the end-to-end integration
-//! (undo, two-peer convergence, timeline, codec round-trip) against the real
-//! `ui::State` via tests.
+//! crate currently provides the binding and its integration with `ui::State`.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot

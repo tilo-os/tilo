@@ -1,10 +1,7 @@
 //! `qdoc-rtf` — render a [`qdoc::DocSnapshot`] to RTF (Rich Text Format).
 //!
-//! Rounds out qdoc's export formats alongside `qdoc-pdf` and
-//! `qdoc-html`. Takes the materialized, read-only document view and
-//! emits a well-formed RTF document: a `{\rtf1\ansi …}` group with a
-//! font table, a color table, and a body of paragraphs. Every group is
-//! balanced so the output opens cleanly in WordPad/LibreOffice/Word/TextEdit.
+//! Takes the materialized, read-only document view and emits an RTF document:
+//! a `{\rtf1\ansi …}` group with a font table, a color table, and paragraphs.
 //!
 //! ## Block mapping
 //!

@@ -149,4 +149,4 @@ delegated admin. “Could not observe” is failure, not skip.
    memory-safe media/rendering paths and exploit mitigations; commission external
    review and recurring red-team work.
 
-These gaps are release-engineering inputs, not optional future polish.
+These gaps are release-engineering inputs.

@@ -1,8 +1,8 @@
 //! Transient, semantic action presence.
 //!
-//! These updates describe an invocation's real resource and lifecycle. They
-//! deliberately do not write the pointer, caret, selection, or typing stores:
-//! an agent acting through the resource door must never acquire a fake mouse.
+//! These updates describe an invocation's resource and lifecycle. They do not
+//! write the pointer, caret, selection, or typing stores: resource actions do
+//! not synthesize pointer input.
 
 #![allow(
     clippy::arithmetic_side_effects,

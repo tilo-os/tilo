@@ -436,7 +436,7 @@ impl Hydrator {
     ///
     /// Returns `Ok(false)` when the file exceeds `max_bytes`; that is a policy
     /// refusal, not a transport failure. A later foreground read remains free
-    /// to hydrate the range the caller actually requested.
+    /// to hydrate the range the caller requested.
     ///
     /// # Errors
     ///

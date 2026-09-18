@@ -58,7 +58,7 @@ Required and nightly tests set both `CARGO_PROFILE_TEST_DEBUG=0` and
 `CARGO_PROFILE_DEV_DEBUG=0`. Cargo puts the built-in test and dev profiles in
 the same `target/debug` tree, but debuginfo is part of an artifact's
 fingerprint. Leaving dev at its default therefore made the all-target and
-example steps rebuild dependencies that nextest had just emitted, solely to
+example steps rebuild dependencies that nextest had already emitted, solely to
 add debugger data that CI never consumes.
 
 A controlled qdoc-pdf probe used fresh target directories and no compiler

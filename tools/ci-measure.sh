@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run a CI command and publish wall-clock and process CPU usage. The numbers are
-# deliberately collected per selected shard so package weights can be tuned
-# from evidence without adding another compilation pass.
+# Run a CI command and publish wall-clock and process CPU usage. Collect numbers
+# per selected shard so package weights can be tuned without another compilation
+# pass.
 set -euo pipefail
 
 label="${1:?usage: ci-measure.sh <label> -- <command...>}"

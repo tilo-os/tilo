@@ -1,9 +1,10 @@
 # Security
 
 Start with **[threat-model.md](threat-model.md)** for the current assurance
-boundary, then [architecture.md](architecture.md). The latter is the concept: what Tilo
+boundary, then [architecture.md](architecture.md). The latter describes what Tilo
 defends against, what it deliberately does not, and how identity, boot, sandbox
-and collaboration fit together. Everything else here is detail hanging off it.
+and collaboration fit together. The remaining documents provide details for
+specific areas.
 
 ## The documents
 

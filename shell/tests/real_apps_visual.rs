@@ -1,11 +1,11 @@
-//! Visual probe: does every bootstrap tab come up as a *real* app?
+//! Visual probe: does every bootstrap tab come up as an app?
 //!
 //! Renders each boot-workspace tab (Notes/Files/Terminal) after activating
 //! it, so the result can be looked at instead of inferred; the terminal's
 //! frames are pumped over a short window since its PTY needs a moment to
 //! emit a prompt.
 //!
-//! `#[ignore]` — needs a GPU adapter and spawns a real shell; a review
+//! `#[ignore]` — needs a GPU adapter and spawns a shell; a review
 //! tool, not a gate.
 //! ```text
 //! TILO_SHOT_DIR=/tmp/shots cargo test -p shell --test real_apps_visual \

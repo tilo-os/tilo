@@ -243,7 +243,7 @@ fn settle_layout(
 /// can be reviewed offscreen:
 ///
 /// - `Some("drawer")` — open the narrow-mode page drawer.
-/// - `Some("first_note")` — a genuinely empty workspace, with the clear
+/// - `Some("first_note")` — an empty workspace, with the clear
 ///   first-note action a new person sees before any sample content exists.
 /// - `Some("drag")` — begin dragging a sidebar row (floating ghost +
 ///   live reflow gap).
@@ -538,10 +538,7 @@ fn dispatch_rename_commit(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesAp
 }
 
 fn dispatch_slash_applied(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
-    // Fresh page → open the block menu → filter to "Heading 1" → click
-    // that row. The `/` trigger is stripped and the block becomes a
-    // heading, which we then type into. Proves the slash command applies
-    // AND removes its trigger text.
+    // Fresh page → open the block menu → filter to "Heading 1" → click that row.
     let btn = app.sidebar_new_page_btn_center_for_test();
     send(app, &cursor_event(btn.x, btn.y));
     send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));

@@ -159,7 +159,7 @@ fn extract_socket_name(line: &str) -> Option<String> {
 }
 
 /// `native::run` ends with `process::exit`, so endpoint guards cannot be left
-/// to ordinary Rust destruction. Run the real production binary twice against
+/// to ordinary Rust destruction. Run the production binary twice against
 /// one throwaway runtime and require the first run's endpoints to be gone
 /// before the second can reclaim the canonical `wayland-1` name.
 #[test]

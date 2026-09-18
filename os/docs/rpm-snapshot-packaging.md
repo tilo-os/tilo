@@ -45,7 +45,7 @@ podman image inspect "localhost/qos-rpms:$(uname -m)-candidate"
 
 The pinned base must already be present locally when using `--pull=never`.
 Snapshot creation downloads Fedora inputs; consumption uses the frozen repository.
-Record the actual resulting immutable local repository digest before supplying
+Record the resulting immutable local repository digest before supplying
 `RPMS_REF` to `os/dev/build-image.sh`. A local digest is not a published release pin.
 
 Every non-VirtIO RPM must produce a verified cryptographic signature and valid
@@ -72,8 +72,8 @@ The local artifact digest is
 `localhost/qos-rpms@sha256:3e8d4070f55b8e7975f0d9d236dab3969186c571707f825656f6bbe9b1f567ac`.
 Its preparation records are retained under
 `/home/benn1x/qos-install-prep/arm-rpm-artifact/` on the preparation machine.
-The stricter signature helper subsequently rechecked each actual Fedora RPM;
-real signed, wrong-key, tampered-payload and generated unsigned controls passed.
+The stricter signature helper subsequently rechecked each Fedora RPM; signed,
+wrong-key, tampered-payload and generated unsigned controls passed.
 
 The final refactored Containerfile itself has not been rebuilt end to end locally:
 physical disk headroom was reserved after artifact creation. Its stage boundaries,

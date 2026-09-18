@@ -1,86 +1,61 @@
 #!/usr/bin/env python3
-"""One take of a photograph going into the document, by hand, on film.
+"""Record a photograph being dragged from Files into the word processor.
 
-The storyboard's beat is a drag: a picture is dragged out of Files and
-dropped into the word processor. This script is the recording half of
-it. Everything is staged before a window appears; you drag the file;
-it stops itself when the picture lands.
+Everything is staged before a window appears. The operator performs one
+drag; the script stops after the picture lands.
 
-    ./scripts/yc-demo-insert.py              # you do the dragging
-    ./scripts/yc-demo-insert.py --self-test  # it drags, to prove the rig
+    ./scripts/yc-demo-insert.py              # operator performs the drag
+    ./scripts/yc-demo-insert.py --self-test  # automated drag
     ./scripts/yc-demo-insert.py --dry-run    # staging only, headless
 
-What you do: one drag. Files is already open on a home with
+Files opens on a home with
 `harbour.png` in it, the row is already selected, the document beside it
-already has a line in it, and the window comes to the front after a
-countdown. Press on the highlighted row, pull it across onto the page,
-let go. The counter runs while you do it and the take ends on its own a
-few seconds after the picture appears.
+has a line in it, and the window comes to the front after a countdown.
+Press the highlighted row, drag it onto the page, and release. The script
+stops a few seconds after the picture appears.
 
-What it does, in order: stages a home with the photograph in it, raises
+The script stages a home with the photograph, raises
 a D-Bus session of its own, starts one compositor in a window sized to
 what the window manager will grant, launches the word processor *and*
 Files into two groups side by side, checks both are wholly on screen,
 types a line into the document, selects the photograph's row so the
-first press is yours rather than spent focusing a window, counts down,
-records off the compositor's own `snapshot` op, watches the session log
-for the picture reaching the document, holds a few seconds so the
-landing is on film, stops by itself, verifies the image really is in the
-document and writes a 1920x1080 clip.
+first press targets the row, counts down, records with the compositor's
+`snapshot` op, watches the session log for the picture reaching the
+document, and writes a 1920x1080 clip.
 
-Re-runnable. Every run is its own directory, its own sockets and its own
-timestamped video, so a bad take costs nothing but running it again.
+Each run uses its own directory, sockets and timestamped video.
 
-  Nothing here is granted access to anything
+  File access
   ------------------------------------------
-  There is no file-access grant in this script and it does not need one,
-  which is the whole point of the beat. Files reads its own file at the
-  start of the gesture, because it has the authority to read what it is
-  showing; the compositor brokers a pipe; the receiving toolkit spools
-  the bytes into its own directory. The word processor is never given a
-  path into the home, and could not resolve one if it were — it has its
-  own mount namespace.
+  Files reads the image from its own home, the compositor brokers a pipe,
+  and the receiving toolkit spools the bytes into its own directory. The
+  word processor receives no path into the home and runs in its own mount
+  namespace.
 
-  How the payoff is detected
-  --------------------------
-  Off the compositor's own log, not off pixels. The word processor
-  reports every change to its document as `[app] broadcast doc delta
-  <N>B`, and an image is stored in the document as its own bytes under a
-  BLAKE3 hash — so inserting the staged PNG produces a delta the size of
-  the file where a keystroke produces ~100 bytes. Both measured; the
-  threshold is derived from the file rather than written down.
+  Detection
+  ---------
+  The compositor log reports each document change as
+  `[app] broadcast doc delta <N>B`. An inserted image produces a delta
+  close to the file size, while a keystroke produces about 100 bytes, so
+  the threshold is derived from the staged file.
 
-  What capture does and does not cost
-  -----------------------------------
-  It does not cost input. Measured rather than assumed, because a whole
-  round of debugging was spent suspecting it: with the camera stopped,
-  17 synthetic keystrokes produced 17 document deltas; with the camera
-  running at 11 frames/s, 16 produced 16, and the document read back
-  `alphabravocharliedeltaechofoxtrot` — every character of both, in
-  order. A snapshot blocks its session ~50 ms, and that is all it does.
-
-  Windowed, not headless — and why
-  -------------------------------
-  A person cannot click on a headless compositor, and a drag is worth
-  driving where it can also be done by hand. `--backend winit` puts the
-  compositor in an ordinary window; because the session's
+  Windowed mode
+  ------------
+  `--backend winit` puts the compositor in an ordinary window. Because the
+  session's
   XDG_RUNTIME_DIR is its own (the collab broker binds inside it), winit
   is pointed at X11, whose DISPLAY and XAUTHORITY are absolute and
   survive the isolation where WAYLAND_DISPLAY does not.
 
-  The frames are *not* a screen grab. They come off the same `snapshot`
-  op the nine-beat recorder uses — the compositor re-renders its own
-  scene and hands back a PNG (`native.rs:992`) — so a frame is the
-  compositor's own render at 1:1. Nothing is interpolated, no frame is
-  repeated, and the host title bar is never in one.
+  Frames come from the same `snapshot` op as the nine-beat recorder: the
+  compositor re-renders its scene and returns a PNG (`native.rs:992`).
 
-  Why the window is never resized
-  -------------------------------
+  Window sizing
+  -------------
   The winit backend panics when its surface is reconfigured with a frame
   in flight — `Surface::configure` finds a live `SurfaceOutput` and the
-  present thread goes down, taking the session with it. Two runs died
-  exactly there. So nothing here resizes anything: the window is
-  *created* at the size the window manager will grant
+  present thread goes down, taking the session with it. The window is
+  created at the size the window manager grants
   (`TILO_WINIT_SIZE`), and is iconified and re-raised rather than
   resized while the rest is staged.
 """

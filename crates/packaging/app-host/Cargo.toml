@@ -53,7 +53,7 @@ libc.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 
-# systemd notify (sd_notify) — best-effort; we degrade if env vars missing.
+# systemd notify (sd_notify); missing environment variables are tolerated.
 sd-notify.workspace = true
 
 [build-dependencies]

@@ -124,11 +124,8 @@ pub struct SnippetsApp {
     settled_layout: bool,
 
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
-    /// [`SnippetsAction`] through this: the host brackets the undo boundary,
-    /// applies the action through the executor (so it replays byte-identically on
-    /// peers, exactly as the Ctrl+K palette does), and records the last one so a
-    /// test can prove a button and its [`tilo_actions::ActionSpec`] build the
-    /// identical action.
+    /// [`SnippetsAction`] through this; the host brackets the undo boundary and
+    /// applies the action through the executor.
     actions: ui::ActionHost,
 }
 
@@ -1998,10 +1995,9 @@ impl SnippetsApp {
         }
     }
 
-    /// The list pane's zero-state. A genuinely empty library gets a composed,
-    /// inviting onboarding with a primary "New snippet" call to action; a
-    /// non-empty library filtered down to nothing gets a "no match" note with
-    /// a Clear-search affordance. Never fabricated rows — an honest empty.
+    /// The list pane's zero-state. An empty library gets a primary "New snippet"
+    /// action; a non-empty library filtered down to nothing gets a "no match"
+    /// note with a Clear-search affordance.
     fn draw_list_empty(
         &mut self,
         scene: &mut Scene,
@@ -2792,8 +2788,8 @@ mod tests {
 
     #[test]
     fn live_app_starts_empty() {
-        // Honest empty: a fresh install fabricates no snippets and persists
-        // none. The starter set is demo/`--shots` only.
+        // A fresh install has no snippets; the starter set is demo/`--shots`
+        // only.
         let app = SnippetsApp::new();
         assert_eq!(app.library_len_for_test(), 0, "live library starts empty");
         assert!(

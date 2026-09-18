@@ -61,9 +61,9 @@ let inspector = ui::Button::new("toggle-inspector", "Toggle inspector", None)
     .on_view(move || inspector_state.toggle());
 ```
 
-These are not private callbacks. The button synthesizes and publishes a real
-resource/action and invokes the closure only through that action's operation
-handler. Search, scripts and agents can discover and invoke it by stable ID.
+The button synthesizes and publishes a resource/action and invokes the closure
+only through that action's operation handler. Search, scripts and agents can
+discover and invoke it by stable ID.
 Use `on_effect` for external work and `on_view` for transient presentation
 state; use the domain path below for document mutations, parameters, explicit
 contracts, or an action shared by several controls.
@@ -115,7 +115,7 @@ Those semantics and declared resources are projected into the searchable,
 agent-operable tree. Canvas geometry, native views, shaders and bespoke input
 remain app-defined; only the meaning and route of an interaction are explicit.
 
-### Certification is zero tolerance
+### Certification requirements
 
 Every scaffold includes a strict `Driver::native_app_audit()` assertion. It
 checks the actual laid-out accessibility tree and resolves the actual control
@@ -373,7 +373,7 @@ activates a button inside a row independently of row selection.
 
 `add component results-table --template table` completes the reusable
 collection set. It accepts app-defined `ColumnDef<Row>` values and any
-`TableModel<Row = Row>`, so ordinary text, custom-painted cells, and real
+`TableModel<Row = Row>`, so ordinary text, custom-painted cells, and
 interactive child widgets can be mixed without coupling the table to a data
 source:
 
@@ -544,8 +544,8 @@ beside the new one.
 Use `--app-only` when toolkit edits should not restart this app, and
 `--debounce-ms` to adjust the default 150 ms quiet period.
 
-The generated app is not a toy lifecycle that must later be replaced. It uses
-`ui::launch::LaunchSpec`, so the same root widget gets live startup, persisted
+The generated app uses `ui::launch::LaunchSpec`, so the same root widget gets
+live startup, persisted
 CRDT state, argument validation, and headless driving. It also starts with the
 minimum sandbox declaration, a package manifest, and a runnable semantic app
 test in `tests/app.rs`. Every generated template also includes an initial
@@ -555,7 +555,7 @@ without requiring a separate audit command. Interaction-specific states remain
 covered by `tilo-dev scenario run --audit`.
 `starter` demonstrates a
 complete local input-to-state-to-output loop; `data` begins with a selectable
-`DataTable` with a 100-million-row sparse model, a real background page
+`DataTable` with a 100-million-row sparse model, a background page
 request, stale-result suppression, targeted row notifications, and retained
 cell controls;
 `tree` begins with a
@@ -1293,7 +1293,7 @@ control must instead converge on a domain action with durable resource
 identity, typed parameters, collaboration semantics, and a useful verb such as
 “Archive conversation” instead of the generic “Activate”.
 
-To verify the real external path, enumerate the running app through the test
+To verify the external path, enumerate the running app through the test
 control socket, invoke the returned `(provider, id)` with `actions_invoke`, and
 assert the resulting document or effect. A successful invocation is never
 inferred from a stale snapshot: the shell re-resolves the address and checks
@@ -1858,7 +1858,7 @@ to enqueue a remote sort itself. Give a background worker a cloneable
 `WakeHandle` and call `wake()` after publishing its batch. The standard app
 lifecycle owns the event-loop connection, and the next redraw runs
 `update` before `sync`, so app models need neither a proxy nor busy polling.
-Reserve `needs_poll` for sources that genuinely require continuous frames
+Reserve `needs_poll` for sources that require continuous frames
 while a request is in flight.
 
 Use `VirtualList::from_items` for a typed list whose rows are real widgets:

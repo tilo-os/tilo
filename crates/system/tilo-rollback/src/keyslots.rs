@@ -104,7 +104,7 @@ pub fn verify_recovery(
 /// design (storing it would make it a second copy of the disk key) — so the two get
 /// different, honestly-labelled checks.
 pub enum RecoveryCheck<'a> {
-    /// Open the device with the recovery key. The real thing.
+    /// Open the device with the recovery key.
     Key(&'a [u8]),
     /// Unattended: confirm the keyslots that are *not* ours are still there. Strictly weaker —
     /// it proves the slot exists and we didn't remove it, nothing about whether the recovery key

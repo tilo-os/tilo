@@ -383,7 +383,7 @@ impl TabBar {
         self.hover_drop_animated_at = None;
     }
 
-    /// Report whether a retained tab row has reached a genuinely static
+    /// Report whether a retained tab row has reached a static
     /// resting state. Visual tests use this after one layout pass instead of
     /// assuming that a fixed sleep covers every nested curve.
     #[cfg(any(test, debug_assertions))]
@@ -1151,7 +1151,7 @@ impl TabBar {
             .map_or_else(
                 || {
                     // Title lengths never approach `u32::MAX` chars, so this is
-                    // lossless in practice; `f64::from` keeps the conversion honest.
+                    // lossless in practice; `f64::from` preserves the value.
                     let chars = u32::try_from(t.title.chars().count()).unwrap_or(u32::MAX);
                     f64::from(chars) * APPROX_CHAR_W
                 },

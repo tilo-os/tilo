@@ -507,7 +507,7 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
             let r = Rect::new(x, y, x + w, y + h);
             if inside(&r, &vp) && clear(&r, &placed) {
                 // Any corner but the first means the pill moved — no longer
-                // obviously its own pointer.
+                // the local pointer.
                 chosen = Some((r, n > 0));
                 break;
             }
@@ -2052,7 +2052,7 @@ mod tests {
         let mut ctx = PresenceCtx::empty();
         ctx.set_own_identity(["me"]);
         ctx.set_display_name(UserId("peer@7".to_string()), "Xaver");
-        // The frame a room really sends: a pointer keyed by the room, the
+        // The frame a room sends: a pointer keyed by the room, the
         // same key the compositor overlay and broker use.
         let _ = ctx.apply_remote_presence(
             "peer@7".to_string(),

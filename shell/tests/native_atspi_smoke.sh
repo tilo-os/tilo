@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Live AT-SPI smoke for compositor-owned surfaces. Unlike an app-local native
-# audit, this crosses the real session accessibility bus and catches a missing
+# audit, this crosses the session accessibility bus and catches a missing
 # provider adapter, a dead bus, or a tree invisible to external screen readers.
 set -euo pipefail
 
@@ -73,7 +73,7 @@ children() {
 }
 
 # Bound the walk so a corrupt cyclic provider fails rather than hanging the
-# release. Keep each node's real AT-SPI object path: action validation must
+# release. Keep each node's AT-SPI object path: action validation must
 # address the same externally-exported node a screen reader sees, not an
 # in-process mirror or a synthetic test bus.
 declare -A node_names=()

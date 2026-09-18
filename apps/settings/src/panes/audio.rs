@@ -352,7 +352,7 @@ impl DeviceControl for NoopDevice {
 }
 
 /// Read the default source gain as a `0.0..=1.0` fraction, so the input
-/// slider rests where the mic actually is. Best-effort; `None` on any
+/// slider rests at the current source level. Best-effort; `None` on any
 /// failure (no `wpctl`, parse error) so callers fall back to a default.
 fn get_source_volume() -> Option<f32> {
     let out = bounded_command::run(
@@ -497,7 +497,7 @@ impl AudioPane {
         let runtime_caps = runtime.capabilities();
         // Re-apply a remembered physical route when it is present. The action
         // is made against the current PipeWire node id; the persisted value is
-        // only a preference, never treated as proof that hardware exists.
+        // only a preference; it is applied only when the node is present.
         if let Some(name) = prefs.output_device.as_deref()
             && let Some(dev) = graph.sinks.iter().find(|d| d.description == name)
         {
@@ -2154,7 +2154,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Records the microphone gains the input slider forwards, so the test
-    /// can assert the source volume actually reached the backend.
+    /// can assert the source volume reached the backend.
     #[derive(Default)]
     struct RecordingInput {
         calls: Mutex<Vec<f32>>,

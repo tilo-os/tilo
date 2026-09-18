@@ -1,5 +1,5 @@
 //! The off-thread thumbnail service: request a preview, get a placeholder now
-//! and the real thing on a later frame.
+//! and the generated image on a later frame.
 //!
 //! Mirrors the ergonomics of `ui::image_store::ImageStore` (a background worker
 //! pool, a per-key slot, `Loading`→`Ready`, `block_until_idle` for `--shots`
@@ -31,9 +31,9 @@ use crate::generate::{self, DEFAULT_EDGE, RgbaThumb, Source};
 pub enum ThumbState {
     /// Generation is in flight — paint a placeholder (usually the badge).
     Loading,
-    /// A real preview is ready.
+    /// A rendered preview is ready.
     Ready(Arc<RgbaThumb>),
-    /// No real preview: an unsupported type, or a decode that failed. The client
+    /// No rendered preview: an unsupported type, or a decode that failed. The client
     /// draws a type badge for `category`.
     Badge(FileCategory),
 }
@@ -157,8 +157,8 @@ impl ThumbnailService {
     }
 
     /// Adopt an already-encoded PNG thumbnail the host provided (e.g. read from
-    /// the `user.tilo.thumb` xattr). `png` is a closure so it is only invoked on
-    /// a genuine miss — a warm slot never re-reads the xattr.
+    /// the `user.tilo.thumb` xattr). `png` is a closure invoked only on a cache
+    /// miss; a warm slot never re-reads the xattr.
     pub fn request_encoded(
         &self,
         key: ThumbKey,

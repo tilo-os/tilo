@@ -1,6 +1,5 @@
-//! Bundled sample inputs so the app opens with a real diff and a real
-//! three-way conflict to resolve — useful as a first-run demo and as the
-//! content the headless screenshot renders.
+//! Bundled sample inputs for the first-run demo and headless screenshot
+//! renderer, including a three-way conflict to resolve.
 
 /// A named text input with a short display label (shown in headers / pickers).
 #[derive(Clone, Debug)]

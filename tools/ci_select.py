@@ -49,8 +49,8 @@ HEAVY_PACKAGES = {
 }
 
 # Below this structural cost, a second clean target directory spends more CPU
-# rebuilding shared dependencies than it saves in wall time. Real shard timing
-# and CPU figures are emitted by ci-measure.sh so this can be tuned from runs.
+# rebuilding shared dependencies than it saves in wall time. Shard timing and
+# CPU figures are emitted by ci-measure.sh so this can be tuned from runs.
 SHARD_COST_BUDGET = 1_000
 
 
@@ -126,10 +126,9 @@ def closure(seeds: Iterable[str], reverse: dict[str, set[str]]) -> set[str]:
 def package_cost(pkg: dict) -> int:
     """Stable relative cost used only to balance shards.
 
-    CI records real elapsed/user/system time for every shard.  This structural
-    score avoids pretending that stale hand-entered timings are measurements,
-    while separating known heavy linkers and accounting for targets and direct
-    dependencies.
+    CI records elapsed/user/system time for every shard.  This structural score
+    remains stable between runs while separating known heavy linkers and
+    accounting for targets and direct dependencies.
     """
     targets = len(pkg.get("targets", []))
     local_and_external_deps = len(pkg.get("dependencies", []))

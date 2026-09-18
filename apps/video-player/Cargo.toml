@@ -18,7 +18,7 @@ thin = ["dep:runtime-dylib"]
 # `decode` ships by default for GStreamer-backed playback. Shots render a
 # synthesized frame and do not decode a file.
 default = ["decode", "portal"]
-# Real GStreamer decode of the opened file/stream, via the shared media layer.
+# GStreamer decode of the opened file/stream, via the shared media layer.
 decode = ["media/decode"]
 # Host-native file picking via the XDG FileChooser portal (ashpd). Hermetic
 # tests use `--no-default-features`; `--open PATH` supports direct launches.

@@ -837,8 +837,8 @@ impl PortalContext {
             remote_input_injector: RemoteInputInjectorHandle::null(),
             input_capture: InputCaptureCompositorHandle::unavailable(),
             documents: DocumentStoreHandle::host_paths(),
-            // The real spooler, not a null one — it's a process invocation, nothing
-            // a headless context is missing; no CUPS means it honestly reports no destinations.
+            // The spooler is a process invocation; a headless context without
+            // CUPS reports no destinations.
             print_spooler: PrintSpoolerHandle::cups(),
             notifications: crate::notifications::NotificationBridge::new(),
             desktop_services: DesktopPortalServices::default(),

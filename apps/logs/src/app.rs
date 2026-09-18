@@ -2,9 +2,8 @@
 //!
 //! A graphical systemd-journal viewer. It is a single self-rendering
 //! [`Widget`] (the data is read-only and the visuals — severity dots,
-//! coloured rows, a detail pane, a filter bar — are bespoke, exactly
-//! the case the toolkit calls out for "draw into the Vello Scene
-//! yourself"). Selection, filters, and search are local view state. Live tail is a local effect that
+//! coloured rows, a detail pane, and a filter bar — are drawn directly into
+//! the Vello scene. Selection, filters, and search are local view state. Live tail is a local effect that
 //! controls this process's journal poller; journal entries themselves are an
 //! external render cache.
 //!

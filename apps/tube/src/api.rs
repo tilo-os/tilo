@@ -45,7 +45,7 @@ pub enum Request {
     /// Run a search through the data-source backend.
     Search { query: String },
     /// Fetch the home / trending catalogue. Only a *live* backend answers this;
-    /// a failed or absent backend leaves the real app in its explicit empty,
+    /// a failed or absent backend leaves the app in its explicit empty,
     /// offline state rather than substituting demo content.
     Feed,
     /// Fetch full metadata + real "up next" recommendations for a video the
@@ -585,10 +585,10 @@ impl Worker {
                             // That endpoint (`FEtrending`) has been retired and now
                             // answers HTTP 400 "Request contains an invalid
                             // argument."; there is no no-login browse that returns a
-                            // general trending feed. When it fails we compose a real
+                            // general trending feed. When it fails we compose a
                             // "popular right now" feed from view-count-sorted,
-                            // last-week search across broad topics — genuine YouTube
-                            // data, never the offline sample.
+                            // last-week search across broad topics — YouTube data,
+                            // never the offline sample.
                             // Prefer rustypipe for the composed popular feed: its
                             // items carry creator avatars inline, so Home cards show
                             // real creator photos without a per-channel fetch.
@@ -903,7 +903,7 @@ fn enrich_video_avatars(videos: &mut [Video], items: &crate::backend::live::Sear
 }
 
 /// Run `query` against the live backend first (when present); callers may opt
-/// into the offline backend only for hermetic/demo use. The real app passes
+/// into the offline backend only for hermetic/demo use. The app passes
 /// `false`, so it never represents sample data as current content. Returns the
 /// result together with whether the *live* backend produced it. Live errors are
 /// surfaced as a status note.
@@ -928,10 +928,10 @@ fn fetch(
     None
 }
 
-/// Resolve the Home/Trending catalogue from real data, returning the videos and
-/// the honest status-pill label. Tries `YouTube`'s dedicated trending browse
-/// first; on failure (the endpoint has been retired) composes a real "popular
-/// right now" feed. Returns `None` only when there is no live data at all
+/// Resolve the Home/Trending catalogue from live data, returning the videos and
+/// the status-pill label. Tries `YouTube`'s dedicated trending browse first; on
+/// failure (the endpoint has been retired) composes a "popular right now" feed.
+/// Returns `None` only when there is no live data at all
 /// (offline / default build) so the caller keeps its explicit empty state.
 fn feed_trending(
     live: Option<&dyn YtBackend>,
@@ -939,7 +939,7 @@ fn feed_trending(
     offline: &dyn YtBackend,
     up_tx: &SyncSender<Update>,
 ) -> Option<(Vec<Video>, String)> {
-    // Dedicated endpoint first. `fetch` surfaces the real error as a status note
+    // Dedicated endpoint first. `fetch` surfaces the error as a status note
     // (e.g. "live Trending: trending: http status 400"), so the failure of the
     // retired endpoint is visible rather than silently swallowed.
     if let Some((BackendResult::Videos(vs), true)) =
@@ -954,9 +954,9 @@ fn feed_trending(
     live_popular_feed(search_backend, up_tx).map(|vs| (vs, "live · popular".into()))
 }
 
-/// Compose a real "popular right now" home feed: for each broad topic, ask the
+/// Compose a "popular right now" home feed: for each broad topic, ask the
 /// backend for the most-viewed videos uploaded in the last week, then
-/// round-robin interleave for variety and de-duplicate. Every video is genuine
+/// round-robin interleave for variety and de-duplicate. Every video comes from
 /// `YouTube` data (view-count-sorted search), not the offline sample. Returns
 /// `None` when there is no live backend so the caller keeps the empty state.
 fn live_popular_feed(

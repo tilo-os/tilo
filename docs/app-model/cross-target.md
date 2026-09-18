@@ -57,7 +57,7 @@ directory gets `EACCES` from Landlock.
 
 Use `runtime::is_tilo_native()` for cheap "which experience are we in"
 gating (welcome message, help text) — never as an authorization gate.
-For the actual gating of features, call `try_connect` and match on the
+To gate features, call `try_connect` and match on the
 result.
 
 ## Manifest side-by-side
@@ -67,7 +67,7 @@ The same source ships as:
 - A `.qpkg` under `tilo-pkg pack --manifest manifest.toml --payload
   payload/ --output my-app.qpkg`.
 - A Flatpak using the standard `org.flatpak.Builder` YAML. The Flatpak
-  runs the SAME entrypoint binary, but the sandbox is Flatpak's rather
+  runs the same entrypoint binary, but the sandbox is Flatpak's rather
   than Tilo's, and no `TILO_SVC_*_FD` env vars are set.
 
 Your Cargo.toml doesn't fork per target — same crate, same deps. Only
@@ -100,10 +100,10 @@ Note the `--talk-name=org.freedesktop.portal.Desktop` — Flatpak's way of
 declaring D-Bus portal access, analogous to `[sandbox.portals]` in the
 Tilo manifest.
 
-## The paved path
+## Build both targets
 
-If your codebase is _one_ crate and _one_ entrypoint binary, the "same
-source, two packages" story is trivial:
+For a codebase with one crate and one entrypoint binary, use this workflow for
+both package formats:
 
 ```
 # Rust build (used by both flows)
@@ -126,12 +126,11 @@ when they fail.
 
 ## What to feature-flag out for stock Linux
 
-**Nothing** — that's the point. If you find yourself reaching for
-`#[cfg(feature = "tilo-native")]`, step back and ask whether the SDK is
-already returning `NotAvailable` for that call on stock Linux. It almost
-certainly is.
+No feature flag is needed for the usual service-availability case. If you
+find yourself reaching for `#[cfg(feature = "tilo-native")]`, check whether
+the SDK already returns `NotAvailable` for that call on stock Linux.
 
-Real cases where a feature flag might be justified:
+Cases where a feature flag might be justified:
 
 - Depending on a native library that is licensed for Tilo distribution
   only. Split the crate; ship the Tilo-only variant.

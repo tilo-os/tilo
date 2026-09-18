@@ -17,22 +17,13 @@ use std::collections::HashSet;
 /// Size: ~75,000 words, ~700 KB. See `spellcheck/data/words.txt`.
 const BUILTIN_WORDS: &str = include_str!("../data/words.txt");
 
-/// Words this OS puts in front of people that a general English list has
-/// no reason to contain.
-///
-/// A spellchecker that underlines the name of the assistant shipped
-/// beside it is reporting the system as a mistake. These are proper
-/// nouns of the product itself, so they belong in the dictionary the
-/// product ships rather than in each person's user list — nobody should
-/// have to teach their computer what it is called.
+/// Product names included in the built-in dictionary.
 ///
 /// Membership is case-insensitive (see [`Dictionary::contains`]), so one
 /// spelling covers `Tilo`, `TILO` and `tilo`.
 const PRODUCT_WORDS: &[&str] = &["tilo", "claude", "tilo"];
 
-/// High-frequency conversational forms that broad word-list generation tends
-/// to lose (especially contractions and proper names). Full system Hunspell is
-/// preferred at runtime; these keep the embedded/offline fallback humane.
+/// Common contractions and proper names included in the embedded fallback.
 const CONVERSATIONAL_WORDS: &[&str] = &[
     "aren't",
     "can't",

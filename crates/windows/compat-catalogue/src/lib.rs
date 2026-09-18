@@ -829,7 +829,7 @@ impl BottlesProgram {
 
 /// Parse the bounded, metadata-only subset of a Bottles recipe/index entry.
 ///
-/// This is a deliberately small YAML reader for the stable public fields used
+/// This is a bounded YAML reader for the stable public fields used
 /// by Bottles recipes. It does not attempt to interpret YAML tags, anchors, or
 /// installer instructions; unknown fields are ignored.
 ///

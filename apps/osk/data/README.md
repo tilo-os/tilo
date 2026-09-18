@@ -31,8 +31,8 @@ Norvig distributes his n-gram contributions under the **MIT license**
 the same data backs the widely-used MIT-licensed
 [`google-10000-english`](https://github.com/first20hours/google-10000-english)
 word list. We bundle a cleaned, frequency-ranked **subset** (lowercase `[a-z]+`
-only, length-capped, size-capped) suitable for offline embedded use in a
-research OS.
+only, length-capped, size-capped) suitable for offline embedded use in the
+Tilo OS.
 
 ## Regenerating
 

@@ -526,11 +526,9 @@ impl TubeApp {
         {
             self.device_sync = crate::sync::DeviceSync::production("Tilo Tube");
         }
-        // No fabricated content: the real app starts with an EMPTY catalogue and
-        // populates only from live results (yt-dlp / rustypipe / trending). The
-        // bundled `sample` catalogue exists ONLY for the hermetic `--shots`/demo
-        // review path — never presented as real. Home shows a loading skeleton
-        // until the first live feed lands.
+        // The online app starts with an empty catalogue and populates it from
+        // live results. The bundled `sample` catalogue is reserved for the
+        // hermetic `--shots`/demo path; Home shows a loading skeleton first.
         self.model = TubeModel::default();
         self.model.history_owner = resolve_history_owner();
         self.model.feed_loading = true;
@@ -541,10 +539,9 @@ impl TubeApp {
         self
     }
 
-    /// Test/shots hook: attach a real image store so an offscreen `--shots`
-    /// render can paint fetched thumbnails/avatar/banner (the creator-page
-    /// proof). The live app gets its store via [`Self::online`]; the default
-    /// offscreen path leaves it `None` and stays hermetic.
+    /// Test/shots hook: attach an image store so an offscreen `--shots` render
+    /// can paint fetched thumbnails, avatars, and banners. The live app gets
+    /// its store via [`Self::online`].
     #[must_use]
     pub fn with_image_store(mut self, store: ui::ImageStore) -> Self {
         self.images = Some(store);
