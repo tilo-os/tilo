@@ -16,10 +16,10 @@
 //!   feature).
 //! - [`lyrics`] — LRC parsing + a bundled sample library, plus a feature-gated
 //!   async lrclib fetch worker (`lyrics` feature).
-//! - [`sync`] — the CRDT P2P sync seam: a [`sync::LibrarySync`] transport
-//!   contract, an in-process loopback, and a live iroh transport (`p2p`).
-//! - [`storage`] — on-disk persistence of the Automerge document.
-//! - [`relay`] — the headless library server (`music --relay`).
+//! - the platform app document + action host — canonical shared library state,
+//!   collaboration, history, and peer replication. Audio transport/cache stay
+//!   device-local.
+//! - [`storage`] — device-local playback profile and content-addressed cache.
 //! - [`art`] / [`icon`] — procedural cover art + vector chrome glyphs.
 //! - [`app`] — the root [`MusicApp`] widget that draws the whole UI.
 //!
@@ -61,12 +61,12 @@ pub mod lyrics;
 pub mod model;
 pub mod mpris;
 pub mod net;
-pub mod relay;
 pub mod search_type;
 pub mod seed;
 pub mod storage;
 pub mod stream;
-pub mod sync;
+#[cfg(test)]
+mod sync;
 
 pub use app::{MusicApp, View};
 pub use search_type::{MusicSearchProvider, SearchHit, SearchableType};
