@@ -13,8 +13,8 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Toggle, ToggleFace};
 
-use crate::shell::qs_actions::{QsActions, log_qs_result};
-use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
+use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
+use crate::shell::quick_settings::drill_in::{DrillInList, DrillInOutcome};
 
 #[allow(
     clippy::cast_possible_truncation,

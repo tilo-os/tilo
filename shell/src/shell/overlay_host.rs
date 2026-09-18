@@ -64,11 +64,11 @@ pub use crate::shell::peer_sync_overlay::{
 use crate::shell::portal_dialog::PortalDialogController;
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
-use crate::shell::quick_settings_bluetooth::{BluetoothOutcome, QuickSettingsBluetoothPane};
-use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
-use crate::shell::quick_settings_root::{QuickSettingsRoot, RootAction, SliderCommit};
-use crate::shell::quick_settings_vpn::QuickSettingsVpnPane;
-use crate::shell::quick_settings_wifi::QuickSettingsWifiPane;
+use crate::shell::quick_settings::bluetooth::{BluetoothOutcome, QuickSettingsBluetoothPane};
+use crate::shell::quick_settings::drill_in::{DrillInList, DrillInOutcome};
+use crate::shell::quick_settings::root::{QuickSettingsRoot, RootAction, SliderCommit};
+use crate::shell::quick_settings::vpn::QuickSettingsVpnPane;
+use crate::shell::quick_settings::wifi::QuickSettingsWifiPane;
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
 use crate::shell::workspace_settings::{CapEdit, EXPIRY_CHOICES};
@@ -1104,8 +1104,8 @@ mod idle_io_animation_tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         host.qs_refresh.kick_fast_with(move || {
             let _ = release_rx.recv();
-            crate::shell::qs_refresh::QsReading::Fast(Box::new(
-                crate::shell::qs_refresh::FastReading {
+            crate::shell::quick_settings::refresh::QsReading::Fast(Box::new(
+                crate::shell::quick_settings::refresh::FastReading {
                     brightness: None,
                     volume: None,
                     wifi: None,
@@ -1113,11 +1113,11 @@ mod idle_io_animation_tests {
                     bluetooth_available: false,
                     power: None,
                     wired: None,
-                    battery: crate::shell::qs_actions::BatteryInfo::from_root(
+                    battery: crate::shell::quick_settings::actions::BatteryInfo::from_root(
                         std::path::Path::new("/nonexistent"),
                     ),
                     radios: None,
-                    privacy: crate::shell::qs_actions::PrivacyStatus::default(),
+                    privacy: crate::shell::quick_settings::actions::PrivacyStatus::default(),
                     vpns: None,
                 },
             ))
@@ -2026,8 +2026,8 @@ pub struct ShellOverlayHost {
     /// Same as [`Self::strip_ribbon_hover`] for the strip rail.
     strip_rail_hover: Option<usize>,
     /// Off-thread reader for the OS state quick settings displays.
-    /// See [`crate::shell::qs_refresh`] for why the reads left the frame.
-    qs_refresh: crate::shell::qs_refresh::QsRefresh,
+    /// See [`crate::shell::quick_settings::refresh`] for why the reads left the frame.
+    qs_refresh: crate::shell::quick_settings::refresh::QsRefresh,
     /// Workspace-settings transition, geometry, painting chrome, and typed
     /// hit targets. Policy outcomes are applied by this host.
     workspace_settings_overlay: WorkspaceSettingsOverlay,
@@ -2146,9 +2146,9 @@ pub struct ShellOverlayHost {
     /// Quick-settings root-page presentation, geometry and input state.
     qs_root: QuickSettingsRoot,
     /// Side-effect dispatcher for quick-settings actions. Production
-    /// uses [`crate::shell::qs_actions::RealQsActions`]; tests swap in a
+    /// uses [`crate::shell::quick_settings::actions::RealQsActions`]; tests swap in a
     /// recording impl via [`Self::with_qs_actions`].
-    qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
+    qs_actions: Box<dyn crate::shell::quick_settings::actions::QsActions>,
     /// Wi-Fi network-list layout, painting and join hit-testing. The
     /// specialised ephemeral password editor remains host-owned.
     qs_wifi_pane: QuickSettingsWifiPane,
@@ -2964,15 +2964,15 @@ type GroupsPerStrip = Vec<(StripId, Vec<(u64, Vec<u64>)>)>;
 
 /// `(brightness, volume, wifi, bluetooth, power, wired, battery)` — the
 /// scalar fields [`ShellOverlayHost::apply_fast_qs_reading`] pulls out of a
-/// [`crate::shell::qs_refresh::FastReading`].
+/// [`crate::shell::quick_settings::refresh::FastReading`].
 type QsFastFields = (
     Option<f32>,
     Option<f32>,
     Option<bool>,
     Option<bool>,
-    Option<crate::shell::qs_actions::PowerProfile>,
-    Option<crate::shell::qs_actions::WiredInfo>,
-    Option<crate::shell::qs_actions::BatteryInfo>,
+    Option<crate::shell::quick_settings::actions::PowerProfile>,
+    Option<crate::shell::quick_settings::actions::WiredInfo>,
+    Option<crate::shell::quick_settings::actions::BatteryInfo>,
 );
 
 impl ShellOverlayHost {
@@ -3312,7 +3312,7 @@ impl ShellOverlayHost {
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
-            qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
+            qs_refresh: crate::shell::quick_settings::refresh::QsRefresh::new(),
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
@@ -3354,7 +3354,7 @@ impl ShellOverlayHost {
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
             qs_root: QuickSettingsRoot::load_persisted(),
-            qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
+            qs_actions: Box::new(crate::shell::quick_settings::actions::RealQsActions),
             qs_wifi_pane: QuickSettingsWifiPane::default(),
             qs_bluetooth_pane: QuickSettingsBluetoothPane::default(),
             qs_aux_drill_in: DrillInList::default(),
@@ -3408,8 +3408,8 @@ impl ShellOverlayHost {
         host.qs_root = QuickSettingsRoot::with_config(
             settings_store::hardware::QuickSettingsConfig::default(),
         );
-        host.qs_refresh = crate::shell::qs_refresh::QsRefresh::without_os_reads();
-        host.qs_actions = Box::new(crate::shell::qs_actions::UnavailableQsActions);
+        host.qs_refresh = crate::shell::quick_settings::refresh::QsRefresh::without_os_reads();
+        host.qs_actions = Box::new(crate::shell::quick_settings::actions::UnavailableQsActions);
         host.room_activity =
             crate::shell::room_activity::RoomActivityPane::with_local_user("shell-fixture".into());
         host.projection_overlay = ProjectionOverlay::from_controller(
@@ -3989,11 +3989,11 @@ impl ShellOverlayHost {
     /// recording impl that captures every `set_*` call instead of
     /// shelling out to `nmcli` / `brightnessctl` / `bluetoothctl` /
     /// `wpctl` / `powerprofilesctl`. Production builds keep the
-    /// default [`crate::shell::qs_actions::RealQsActions`].
+    /// default [`crate::shell::quick_settings::actions::RealQsActions`].
     #[must_use]
     pub fn with_qs_actions(
         mut self,
-        actions: Box<dyn crate::shell::qs_actions::QsActions>,
+        actions: Box<dyn crate::shell::quick_settings::actions::QsActions>,
     ) -> Self {
         self.qs_actions = actions;
         // Replacing where quick settings writes means this host is not
@@ -4043,7 +4043,7 @@ impl ShellOverlayHost {
     /// outside the popover — the media keys, which drive the same
     /// volume and brightness the sliders do and must go through the same
     /// dispatcher so a test can record them.
-    pub fn qs_actions(&self) -> &dyn crate::shell::qs_actions::QsActions {
+    pub fn qs_actions(&self) -> &dyn crate::shell::quick_settings::actions::QsActions {
         self.qs_actions.as_ref()
     }
 
@@ -8047,9 +8047,9 @@ impl ShellOverlayHost {
     /// — split out to keep that function under the line-count ceiling.
     fn apply_fast_qs_reading(
         st: &mut crate::shell::chrome_state::ChromeState,
-        reading: Box<crate::shell::qs_refresh::FastReading>,
+        reading: Box<crate::shell::quick_settings::refresh::FastReading>,
     ) -> QsFastFields {
-        use crate::shell::qs_refresh::FastReading;
+        use crate::shell::quick_settings::refresh::FastReading;
         let FastReading {
             brightness,
             volume,
@@ -8089,9 +8089,9 @@ impl ShellOverlayHost {
     fn apply_one_qs_reading(
         &mut self,
         st: &mut crate::shell::chrome_state::ChromeState,
-        reading: crate::shell::qs_refresh::QsReading,
+        reading: crate::shell::quick_settings::refresh::QsReading,
     ) {
-        use crate::shell::qs_refresh::QsReading;
+        use crate::shell::quick_settings::refresh::QsReading;
         let (brightness, volume, wifi, bluetooth, power, wired, battery, wifi_nets, bt_devices) =
             match reading {
                 QsReading::Fast(reading) => {
@@ -8136,8 +8136,8 @@ impl ShellOverlayHost {
             st.quick_settings.battery = v;
         }
         if let Some(p) = power {
-            use crate::shell::qs_actions::PowerProfile as ActPP;
             use crate::shell::quick_settings::PowerProfile as UiPP;
+            use crate::shell::quick_settings::actions::PowerProfile as ActPP;
             st.quick_settings.power_profile = match p {
                 ActPP::Saver => UiPP::Saver,
                 ActPP::Balanced => UiPP::Balanced,
@@ -8174,9 +8174,9 @@ impl ShellOverlayHost {
     fn apply_wifi_join_result(
         &mut self,
         st: &mut crate::shell::chrome_state::ChromeState,
-        join: crate::shell::qs_refresh::WifiJoinResult,
+        join: crate::shell::quick_settings::refresh::WifiJoinResult,
     ) {
-        let crate::shell::qs_refresh::WifiJoinResult {
+        let crate::shell::quick_settings::refresh::WifiJoinResult {
             ssid,
             password,
             shared_credential,
@@ -9784,13 +9784,13 @@ impl ShellOverlayHost {
                     .and_then(|chrome| self.qs_root.finish_drag(&chrome.borrow().quick_settings));
                 match commit {
                     Some(SliderCommit::Brightness(value_pct)) => {
-                        crate::shell::qs_actions::log_qs_result(
+                        crate::shell::quick_settings::actions::log_qs_result(
                             "set_brightness",
                             self.qs_actions.set_brightness(value_pct),
                         );
                     }
                     Some(SliderCommit::Volume(value_pct)) => {
-                        crate::shell::qs_actions::log_qs_result(
+                        crate::shell::quick_settings::actions::log_qs_result(
                             "set_volume",
                             self.qs_actions.set_volume(value_pct),
                         );
@@ -12174,10 +12174,10 @@ impl ShellOverlayHost {
             self.qs_actions.as_ref(),
         );
         match outcome {
-            crate::shell::quick_settings_wifi::WifiPaneOutcome::DrillIn(outcome) => {
+            crate::shell::quick_settings::wifi::WifiPaneOutcome::DrillIn(outcome) => {
                 Self::finish_quick_settings_drill_in_click(&chrome, outcome);
             }
-            crate::shell::quick_settings_wifi::WifiPaneOutcome::JoinOpen(ssid) => {
+            crate::shell::quick_settings::wifi::WifiPaneOutcome::JoinOpen(ssid) => {
                 let mut state = chrome.borrow_mut();
                 state.quick_settings.wifi_joining = Some(ssid.clone());
                 state.bump();
@@ -12849,7 +12849,10 @@ impl ShellOverlayHost {
                     );
                     state.bump();
                 }
-                crate::shell::qs_actions::log_qs_result("disconnect_bluetooth", result);
+                crate::shell::quick_settings::actions::log_qs_result(
+                    "disconnect_bluetooth",
+                    result,
+                );
             }
             Some(Some(device)) if !device.is_local && device.online => {
                 self.finish_qs_device_action(
@@ -13153,14 +13156,18 @@ impl ShellOverlayHost {
             commit
         };
         match commit {
-            Some(SliderCommit::Brightness(value_pct)) => crate::shell::qs_actions::log_qs_result(
-                "set_brightness",
-                self.qs_actions.set_brightness(value_pct),
-            ),
-            Some(SliderCommit::Volume(value_pct)) => crate::shell::qs_actions::log_qs_result(
-                "set_volume",
-                self.qs_actions.set_volume(value_pct),
-            ),
+            Some(SliderCommit::Brightness(value_pct)) => {
+                crate::shell::quick_settings::actions::log_qs_result(
+                    "set_brightness",
+                    self.qs_actions.set_brightness(value_pct),
+                )
+            }
+            Some(SliderCommit::Volume(value_pct)) => {
+                crate::shell::quick_settings::actions::log_qs_result(
+                    "set_volume",
+                    self.qs_actions.set_volume(value_pct),
+                )
+            }
             None => return false,
         }
         *handled = true;
@@ -13315,28 +13322,37 @@ impl ShellOverlayHost {
         pending_power: Option<crate::shell::quick_settings::PowerProfile>,
     ) {
         if let Some(v) = pending_wifi {
-            crate::shell::qs_actions::log_qs_result("set_wifi", self.qs_actions.set_wifi(v));
+            crate::shell::quick_settings::actions::log_qs_result(
+                "set_wifi",
+                self.qs_actions.set_wifi(v),
+            );
         }
         if let Some(v) = pending_bt {
-            crate::shell::qs_actions::log_qs_result(
+            crate::shell::quick_settings::actions::log_qs_result(
                 "set_bluetooth",
                 self.qs_actions.set_bluetooth(v),
             );
         }
         if let Some(v) = pending_wired {
-            crate::shell::qs_actions::log_qs_result("set_wired", self.qs_actions.set_wired(v));
+            crate::shell::quick_settings::actions::log_qs_result(
+                "set_wired",
+                self.qs_actions.set_wired(v),
+            );
         }
         if let Some(v) = pending_airplane {
-            crate::shell::qs_actions::log_qs_result(
+            crate::shell::quick_settings::actions::log_qs_result(
                 "set_airplane_mode",
                 self.qs_actions.set_airplane_mode(v),
             );
         }
         if let Some(v) = pending_hotspot {
-            crate::shell::qs_actions::log_qs_result("set_hotspot", self.qs_actions.set_hotspot(v));
+            crate::shell::quick_settings::actions::log_qs_result(
+                "set_hotspot",
+                self.qs_actions.set_hotspot(v),
+            );
         }
         if let Some(v) = pending_mobile {
-            crate::shell::qs_actions::log_qs_result(
+            crate::shell::quick_settings::actions::log_qs_result(
                 "set_mobile_broadband",
                 self.qs_actions.set_mobile_broadband(v),
             );
@@ -13349,14 +13365,14 @@ impl ShellOverlayHost {
             }
         }
         if let Some(p) = pending_power {
-            use crate::shell::qs_actions::PowerProfile as ActPP;
             use crate::shell::quick_settings::PowerProfile as UiPP;
+            use crate::shell::quick_settings::actions::PowerProfile as ActPP;
             let mapped = match p {
                 UiPP::Saver => ActPP::Saver,
                 UiPP::Balanced => ActPP::Balanced,
                 UiPP::Performance => ActPP::Performance,
             };
-            crate::shell::qs_actions::log_qs_result(
+            crate::shell::quick_settings::actions::log_qs_result(
                 "set_power_profile",
                 self.qs_actions.set_power_profile(mapped),
             );
@@ -22387,7 +22403,7 @@ mod wifi_password_tests {
         reject: bool,
     }
 
-    impl crate::shell::qs_actions::QsActions for JoinRecorder {
+    impl crate::shell::quick_settings::actions::QsActions for JoinRecorder {
         fn set_brightness(&self, _: f32) -> Result<(), String> {
             Ok(())
         }
@@ -22425,7 +22441,7 @@ mod wifi_password_tests {
         std::rc::Rc<JoinRecorder>,
     ) {
         struct Shim(std::rc::Rc<JoinRecorder>);
-        impl crate::shell::qs_actions::QsActions for Shim {
+        impl crate::shell::quick_settings::actions::QsActions for Shim {
             fn set_brightness(&self, v: f32) -> Result<(), String> {
                 self.0.set_brightness(v)
             }
@@ -22494,7 +22510,7 @@ mod wifi_password_tests {
     ) {
         host.apply_wifi_join_result(
             &mut chrome.borrow_mut(),
-            crate::shell::qs_refresh::WifiJoinResult {
+            crate::shell::quick_settings::refresh::WifiJoinResult {
                 ssid: "Cafe WiFi".into(),
                 password: password.map(str::to_owned),
                 shared_credential,

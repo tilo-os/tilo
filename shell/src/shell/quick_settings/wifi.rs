@@ -14,11 +14,11 @@ use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, Toggle, ToggleFace};
 
 use crate::shell::chrome_state::QuickSettingsState;
-use crate::shell::qs_actions::{QsActions, log_qs_result};
 #[cfg(test)]
 use crate::shell::quick_settings::WifiNetwork;
 use crate::shell::quick_settings::WifiPasswordPrompt;
-use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
+use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
+use crate::shell::quick_settings::drill_in::{DrillInList, DrillInOutcome};
 
 #[derive(Default)]
 pub struct QuickSettingsWifiPane {
