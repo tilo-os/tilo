@@ -382,10 +382,11 @@ test('caller palette publishes exact result test ID and search path routes and r
   const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},report=>reports.push(report));
   const target='action:exact-certified-host/room/record/revision:insert-table';
   const searchPath='caller-palette/SearchField[0]';
-  const field={path:searchPath,semantics:{role:'TextInput',name:'Search',value:'',state:{focusable:true}}};
+  const field={path:searchPath,semantics:{role:'TextInput',name:'Search',value:'',state:{focusable:true,focused:true}}};
   const results={path:'caller-palette/SearchResultsView[0]',test_id:'action-palette-results',semantics:{role:'List',name:'Search results',children:[{role:'ListItem',name:'Document — Insert table',action_target:target}]}};
-  const view=children=>({root:{path:'caller-palette',test_id:'caller-palette',children}});
+  const view=children=>({keyboard_focus_owner:searchPath,root:{path:'caller-palette',test_id:'caller-palette',children}});
   document.activeElement=document.body;bridge.update(view([field,results]));
+  assert.equal(document.activeElement,root.children[0],'the private palette publishes its current search-field owner');
   const row=root.children[1].children[0];row.dispatchEvent(event('click'));
   assert.deepEqual(calls.at(-1),['action-palette-results',target,'activate','',0,0]);
   const editor=root.children[0];document.activeElement=editor;editor.value='Insert table';
@@ -491,5 +492,25 @@ test('authoritative retained focus separates independent apps with locally focus
   bridge.update(view('desktop/first'));assert.equal(document.activeElement,first,'actual canonical owner change wins');
   const cleared=view('desktop/first');cleared.root.children[0].semantics.state.focused=false;bridge.update(cleared);
   assert.equal(document.activeElement,document.body,'an owner with cleared focus must not fall through to another app');
+  bridge.close();
+});
+
+test('authoritative no-owner clears managed focus without choosing another app or stealing external focus',()=>{
+  const root=new Element('div');document.activeElement=document.body;
+  const bridge=semanticBridge(root,()=>true,()=>{});
+  const view=owner=>({keyboard_focus_owner:owner,root:{path:'desktop',children:[
+    {path:'desktop/chat',semantics:{role:'MultilineTextInput',state:{focusable:true,focused:true},value:'draft'}},
+    {path:'desktop/notes',semantics:{role:'TextInput',state:{focusable:true,focused:owner==='desktop/notes'},value:'Title'}},
+  ]}});
+  bridge.update(view('desktop/notes'));
+  assert.equal(document.activeElement,root.children[1]);
+  for(let i=0;i<3;i++)bridge.update(view(null));
+  assert.equal(document.activeElement,document.body,'explicit no-owner must not adopt Chat local focus');
+  const external=new Element('input');external.focus();bridge.update(view(null));
+  assert.equal(document.activeElement,external,'canonical clear preserves external focus');
+  document.activeElement=document.body;
+  const legacy=view(null);delete legacy.keyboard_focus_owner;
+  bridge.update(legacy);
+  assert.equal(document.activeElement,root.children[0],'legacy snapshots still use their published focused state');
   bridge.close();
 });

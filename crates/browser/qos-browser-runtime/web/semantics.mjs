@@ -276,6 +276,8 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     // focus. An explicitly focused descendant is the more precise contract.
     // Apps retain local editor focus even when another app owns the keyboard.
     // The runner's exact current inspection path disambiguates those owners.
+    // Explicit null is authoritative no-owner; only omitted legacy metadata
+    // may fall back to independently retained local focus.
     const ownedCandidates=focusedCandidates.filter(element=>element.qosOwnerPath===snapshot.keyboard_focus_owner);
     const candidates=snapshot.keyboard_focus_owner!==undefined?ownedCandidates:focusedCandidates;
     canonicalFocus=candidates.find(candidate=>!candidates.some(other=>other.qosAncestors.includes(candidate.qosState.key)));

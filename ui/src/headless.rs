@@ -303,7 +303,7 @@ pub struct InspectionSnapshot {
     pub viewport: [u32; 2],
     /// Exact retained owner of the runner's current keyboard focus. Widgets
     /// in other mounted apps may independently retain local editor focus.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Always serialize absence as null: omission means legacy unknown ownership.
     pub keyboard_focus_owner: Option<String>,
     pub root: InspectionNode,
 }
@@ -2135,7 +2135,16 @@ impl FrameHarness {
         }
         // Use the same admitted retained-owner resolution as semantic dispatch,
         // never a DOM ordering heuristic or a pointer from another component.
-        let keyboard_focus_owner = self.focused.and_then(|focused| owner_path(&root, &self.named_target_nodes(), focused));
+        let keyboard_focus_owner = if self.caller_palette.palette.is_some() {
+            // The caller palette routes keyboard events to its private search
+            // field, outside the document's retained focus tree. Use the field
+            // from this exact palette inspection, not the background owner.
+            root.children.first()
+                .filter(|field| field.semantics.as_ref().is_some_and(|node| node.state.focused))
+                .map(|field| field.path.clone())
+        } else {
+            self.focused.and_then(|focused| owner_path(&root, &self.named_target_nodes(), focused))
+        };
         InspectionSnapshot { viewport: [self.viewport.0, self.viewport.1], keyboard_focus_owner, root }
     }
 
@@ -4723,6 +4732,17 @@ mod tests {
         driver.perform_named("first", &crate::a11y::Action::Focus).unwrap();
         let snapshot = driver.inspection();
         assert_eq!(serde_json::to_value(&snapshot).unwrap()["keyboard_focus_owner"].as_str(), Some(snapshot.root.children[0].path.as_str()));
+
+        let second_node = driver.named_target_nodes()["second"];
+        driver.mutate_node(second_node, |widget| widget.set_focus(true)).unwrap();
+        driver.set_focused(None);
+        let snapshot = driver.inspection();
+        assert!(snapshot.root.children[1].semantics.as_ref().unwrap().state.focused,
+            "a neighboring app can retain local focus after the runner clears its owner");
+        let wire = serde_json::to_value(&snapshot).unwrap();
+        assert!(wire.as_object().unwrap().contains_key("keyboard_focus_owner"),
+            "authoritative no-owner must not become a legacy snapshot with unknown ownership");
+        assert!(wire["keyboard_focus_owner"].is_null());
     }
 
     #[test]

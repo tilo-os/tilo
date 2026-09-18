@@ -331,6 +331,8 @@ mod tests {
         open(&mut frame);
         let snapshot = frame.caller_palette_inspection().unwrap();
         let field = &snapshot.children[0];
+        assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some(field.path.as_str()),
+            "the caller palette owns keyboard input outside the document focus tree");
         frame
             .perform_semantic_named(
                 &field.path,
