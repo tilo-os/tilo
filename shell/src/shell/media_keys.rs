@@ -15,7 +15,7 @@ use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::osd::{Osd, Transport};
-use crate::shell::qs_actions::QsActions;
+use crate::shell::quick_settings::actions::QsActions;
 use crate::shell::status::StatusBridge;
 
 /// One press of a hardware media / brightness key.

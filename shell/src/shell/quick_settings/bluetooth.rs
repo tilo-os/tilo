@@ -10,9 +10,9 @@ use vello::kurbo::{Affine, Circle, Point, Rect};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
-use crate::shell::qs_actions::{QsActions, log_qs_result};
 use crate::shell::quick_settings::BtDevice;
-use crate::shell::quick_settings_drill_in::DrillInList;
+use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
+use crate::shell::quick_settings::drill_in::DrillInList;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BluetoothOutcome {
@@ -170,7 +170,7 @@ mod tests {
         }
         fn set_power_profile(
             &self,
-            _: crate::shell::qs_actions::PowerProfile,
+            _: crate::shell::quick_settings::actions::PowerProfile,
         ) -> Result<(), String> {
             Ok(())
         }

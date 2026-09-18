@@ -3,6 +3,14 @@
 //! WiFi/Bluetooth drill-in via `nav_stack`). `wifi_ssid`/`bluetooth_device`
 //! populate the toggle-card sub-line, falling back to "Not connected" when off or unset.
 
+pub mod actions;
+pub(crate) mod bluetooth;
+pub(crate) mod drill_in;
+pub mod refresh;
+pub(crate) mod root;
+pub(crate) mod vpn;
+pub(crate) mod wifi;
+
 /// A single frame in the `QuickSettings` navigation stack.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QsLevel {
