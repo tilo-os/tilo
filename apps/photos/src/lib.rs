@@ -163,6 +163,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "opened",
     "library",
     "people",
+    "places",
     "selection",
     "selection-many-albums",
     "album-manage",
@@ -344,6 +345,7 @@ pub fn seed_scenario(
         // with repeated placeholder art.
         "library"
         | "people"
+        | "places"
         | "selection"
         | "selection-many-albums"
         | "album-manage"
@@ -396,6 +398,23 @@ pub fn seed_scenario(
                     "golden hour".into()
                 }];
                 photo.captured_at = Some(captured_at.into());
+                if scenario == "places" {
+                    let locations = [
+                        (37.7749, -122.4194, "San Francisco"),
+                        (48.8566, 2.3522, "Paris"),
+                        (35.6762, 139.6503, "Tokyo"),
+                    ];
+                    let (latitude, longitude, label) = locations[variant % locations.len()];
+                    photo.location = Some(crate::model::PhotoLocation {
+                        latitude,
+                        longitude,
+                        label: Some(label.into()),
+                        provenance: crate::model::LocationProvenance {
+                            source: "user".into(),
+                            scope: "shared".into(),
+                        },
+                    });
+                }
                 travel.push(photo.id.clone());
                 library.add_photo(photo);
             }
@@ -425,6 +444,8 @@ pub fn seed_scenario(
                 app.show_metadata_editor_for_shot(doc);
             } else if scenario == "people" {
                 app.show_people();
+            } else if scenario == "places" {
+                app.show_places_for_shot();
             } else {
                 app.show_library();
             }
