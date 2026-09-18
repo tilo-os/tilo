@@ -46,10 +46,11 @@ fn cancelled(flag: &AtomicBool) -> Result<(), StoreError> {
         Ok(())
     }
 }
-fn hash_file(
+fn hash_file_with_context(
     file: &mut (impl Read + Seek),
     flag: &AtomicBool,
     expected: u64,
+    context: Option<&super::NativeReadContext<'_>>,
 ) -> Result<([u8; 32], u64), StoreError> {
     file.seek(SeekFrom::Start(0))?;
     let mut digest = Sha256::new();
@@ -57,7 +58,13 @@ fn hash_file(
     let mut buffer = vec![0; 256 * 1024];
     loop {
         cancelled(flag)?;
+        if let Some(context) = context {
+            context.charge(buffer.len() as u64)?;
+        }
         let count = file.read(&mut buffer)?;
+        if let Some(context) = context {
+            context.check()?;
+        }
         if count == 0 {
             break;
         }
@@ -109,6 +116,7 @@ impl ConnectionStore {
             RecoveryReason::Conflict(_) => return Err(StoreError::StaleRevision),
         };
         let entry = format::Recovery {
+            captured: None,
             connection: connection.id,
             serial: intent.value.serial,
             slot,
@@ -138,7 +146,24 @@ impl ConnectionStore {
         source: &mut File,
         flag: &AtomicBool,
     ) -> Result<DurableAck<PreservedObject>, StoreError> {
+        if self
+            .operation(reservation.id.operation)?
+            .native_budget
+            .is_some()
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.preserve_file_with_context(reservation, source, flag, None)
+    }
+    pub(super) fn preserve_file_with_context(
+        &mut self,
+        reservation: RecoveryReservation,
+        source: &mut File,
+        flag: &AtomicBool,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<DurableAck<PreservedObject>, StoreError> {
         self.guard()?;
+        self.validate_payload_context(reservation.id.operation, context)?;
         #[cfg(windows)]
         {
             self.recovery_guards.retain(|_, guard| guard.is_live());
@@ -170,7 +195,7 @@ impl ConnectionStore {
             let object_name = name(id);
             let mut target = storage::open_file(&parent, &object_name, true)?;
             let target_identity = storage::regular(&target)?;
-            let (hash, size) = copy_bytes(source, &mut target, flag, &before)?;
+            let (hash, size) = copy_bytes(source, &mut target, flag, &before, context)?;
             storage::sync_file(&target)?;
             storage::validate_file(&parent, &object_name, &target, &target_identity)?;
             // Independently reopen and reread the private object; never reuse the source hash as evidence.
@@ -180,7 +205,7 @@ impl ConnectionStore {
             {
                 return Err(StoreError::IdentityChanged);
             }
-            let (verified, count) = hash_file(&mut reread, flag, size)?;
+            let (verified, count) = hash_file_with_context(&mut reread, flag, size, context)?;
             if verified != hash
                 || count != size
                 || !storage::same_snapshot(&reread_identity, &storage::regular(&reread)?)
@@ -209,11 +234,16 @@ impl ConnectionStore {
             });
             #[cfg(windows)]
             let (reread, guard) = storage::preserved_reader(target, reread)?;
-            self.append(Change::Bytes {
+            let change = Change::Bytes {
                 entry,
                 expected: connection.revision,
                 fence: connection.fence,
-            })?;
+            };
+            if let Some(context) = context {
+                self.append_native(change, context)?;
+            } else {
+                self.append(change)?;
+            }
             #[cfg(windows)]
             self.recovery_guards.insert(recovery_key(id), guard);
             Ok(self.ack(PreservedObject { id, file: reread }))
@@ -228,11 +258,114 @@ impl ConnectionStore {
         }
         result
     }
+    pub(super) fn retain_incomplete_recovery(
+        &mut self,
+        id: RecoveryId,
+        expected: u64,
+        fence: u64,
+    ) -> Result<(), StoreError> {
+        self.guard()?;
+        self.append(Change::IncompleteRecovery {
+            connection: id.operation.connection.0,
+            serial: id.operation.serial,
+            slot: id.slot,
+            expected,
+            fence,
+        })
+    }
+    pub(super) fn reduce_incomplete_recovery(
+        &self,
+        id: RecoveryId,
+        expected: u64,
+        fence: u64,
+    ) -> Result<Vec<Row>, StoreError> {
+        let mut connection = self.connection(id.operation.connection)?;
+        let mut operation = self.operation(id.operation)?;
+        if connection.lifecycle != 0 || connection.fence != fence {
+            return Err(StoreError::Disconnected);
+        }
+        if connection.revision != expected || connection.pending != Some(id.operation.serial) {
+            return Err(StoreError::StaleRevision);
+        }
+        let Some(Row::Recovery(mut entry)) = self.row(&recovery_key(id))? else {
+            return Err(StoreError::Corrupt);
+        };
+        if operation.native_budget.is_none()
+            || operation.stage > 1
+            || !operation.recovery.contains(&id.slot)
+            || entry.state != 0
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        // No object is opened, adopted, verified, replaced or deleted. The exact
+        // reserved slot remains pinned and can never become BytesVerified.
+        entry.state = 5;
+        entry.decode()?;
+        connection.revision = format::next(expected)?;
+        operation.revision = connection.revision;
+        Ok(vec![
+            Row::Connection(connection),
+            Row::Operation(operation),
+            Row::Recovery(entry),
+        ])
+    }
+    fn validate_payload_context(
+        &self,
+        id: OperationId,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<(), StoreError> {
+        match (self.operation(id)?.native_budget.is_some(), context) {
+            (false, None) => Ok(()),
+            (true, Some(context))
+                if context.id == id
+                    && context
+                        .lifetime
+                        .ptr_eq(&Arc::downgrade(&self.native_lifetime)) =>
+            {
+                context.check()
+            }
+            _ => Err(StoreError::RecoveryRequired),
+        }
+    }
     pub(super) fn verify_recovery(
         &self,
         entry: &format::Recovery,
     ) -> Result<storage::RecoveryReader, StoreError> {
+        if self
+            .operation(entry.id().operation)?
+            .native_budget
+            .is_some()
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.verify_recovery_with_context(entry, None)
+    }
+    pub(super) fn verify_recovery_with_context(
+        &self,
+        entry: &format::Recovery,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<storage::RecoveryReader, StoreError> {
         self.validate()?;
+        self.validate_payload_context(entry.id().operation, context)?;
+        if let Some(context) = context {
+            if context.id != entry.id().operation
+                || !context
+                    .lifetime
+                    .ptr_eq(&Arc::downgrade(&self.native_lifetime))
+            {
+                return Err(StoreError::StaleRevision);
+            }
+            context.check()?;
+        }
+        self.verify_recovery_file(entry, context)
+    }
+    // Callers must establish the canonical payer before entering this shared
+    // byte/identity verifier. Ordinary reads retain their original operation join.
+    fn verify_recovery_file(
+        &self,
+        entry: &format::Recovery,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<storage::RecoveryReader, StoreError> {
         let object = entry.object.as_ref().ok_or(StoreError::RecoveryRequired)?;
         if object.root != self.storage.identity {
             return Err(StoreError::IdentityChanged);
@@ -255,7 +388,9 @@ impl ConnectionStore {
         let Some(format::State::File { sha256, bytes, .. }) = entry.content else {
             return Err(StoreError::RecoveryRequired);
         };
-        let (actual, size) = hash_file(&mut file, &AtomicBool::new(false), bytes)?;
+        let idle = AtomicBool::new(false);
+        let flag = context.map_or(&idle, |context| context.cancel);
+        let (actual, size) = hash_file_with_context(&mut file, flag, bytes, context)?;
         if actual != sha256
             || size != bytes
             || !storage::same_snapshot(&identity, &storage::recovery_metadata(&file)?)
@@ -265,6 +400,259 @@ impl ConnectionStore {
         storage::validate_recovery_reader(&parent, &object_name, &file, &identity)?;
         Ok(file)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep operation/action/revision joins and the complete atomic durable-row transition together."
+    )]
+    pub(super) fn reduce_native_drain(
+        &self,
+        change: &Change,
+        checks: &mut RecoveryChecks<'_>,
+    ) -> Result<Vec<Row>, StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        let (entry, expected, operation_expected, fence, source, fact, selected) = match change {
+            Change::NativeDrain {
+                entry,
+                expected,
+                operation_expected,
+                fence,
+                source,
+                fact,
+            } => (
+                entry,
+                expected,
+                operation_expected,
+                fence,
+                source,
+                fact,
+                false,
+            ),
+            Change::SelectedDrain {
+                entry,
+                expected,
+                operation_expected,
+                fence,
+                source,
+                fact,
+            } => (
+                entry,
+                expected,
+                operation_expected,
+                fence,
+                source,
+                fact,
+                true,
+            ),
+            _ => return Err(StoreError::Corrupt),
+        };
+        entry.decode()?;
+        let mut connection = self.connection(ConnectionId(entry.connection))?;
+        let mut operation = self.operation(entry.id().operation)?;
+        if connection.revision != *expected
+            || connection.fence != *fence
+            || operation.revision != *operation_expected
+            || connection
+                .pending
+                .is_some_and(|serial| serial != entry.serial)
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        if operation.native_budget.is_none()
+            || !matches!(operation.stage, 0 | 1 | 2 | 3 | 7)
+            || entry.path != operation.path
+            || entry.reason > 1
+            || operation.action.is_some() != selected
+            || source.outcome.is_some()
+            || (!selected
+                && ((entry.reason == 0) != matches!(operation.decision, 3 | 4)
+                    || !matches!(operation.decision, 1..=4)))
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        if selected {
+            let Some(format::SelectedAction::Restore {
+                target,
+                replace: true,
+                ..
+            }) = &operation.action
+            else {
+                return Err(StoreError::RecoveryRequired);
+            };
+            if connection.lifecycle == 0
+                || entry.reason != 1
+                || entry.side != *target
+                || operation.native_capture.is_some()
+            {
+                return Err(StoreError::RecoveryRequired);
+            }
+            checks.verify_stopped_selected(self, &operation)?;
+        }
+        if operation.stage == 7 {
+            if !matches!(operation.native_boundary, Some(2 | 3))
+                || operation
+                    .native_boundary_evidence
+                    .as_ref()
+                    .is_none_or(|recorded| {
+                        recorded.attempt != source.attempt || recorded.displaced != source.displaced
+                    })
+            {
+                return Err(StoreError::RecoveryRequired);
+            }
+        } else if connection.pending != Some(entry.serial) {
+            return Err(StoreError::StaleRevision);
+        }
+        let mut key = format::key(5, entry.connection, entry.serial);
+        key.extend(source.attempt.to_be_bytes());
+        let Some(Row::NativeRegistration(registration)) = self.row(&key)? else {
+            return Err(StoreError::Corrupt);
+        };
+        registration.validate()?;
+        let intent = d::decode(
+            registration
+                .intent
+                .as_deref()
+                .ok_or(StoreError::RecoveryRequired)?,
+        )
+        .map_err(|_| StoreError::Corrupt)?;
+        let stage = registration
+            .stage
+            .as_ref()
+            .map(|bytes| d::decode(bytes))
+            .transpose()
+            .map_err(|_| StoreError::Corrupt)?;
+        let displaced = d::decode(
+            source
+                .displaced
+                .as_deref()
+                .ok_or(StoreError::RecoveryRequired)?,
+        )
+        .map_err(|_| StoreError::Corrupt)?;
+        displaced
+            .joined(&intent, stage.as_ref(), None)
+            .map_err(|_| StoreError::Corrupt)?;
+        let d::Body::Displaced(body) = &displaced.body else {
+            return Err(StoreError::Corrupt);
+        };
+        if let Some(action) = &operation.action {
+            let d::Body::Intent(before) = &intent.body else {
+                return Err(StoreError::Corrupt);
+            };
+            let tombstone = matches!(before.selection, d::Selection::Tombstone { .. });
+            if before.selection != self.selected_descriptor(&operation, action)?
+                || stage.is_some() == tombstone
+                || entry.side != 1 - before.direction
+            {
+                return Err(StoreError::RecoveryRequired);
+            }
+        }
+        if registration.admission != format::next(operation.expected)?
+            || registration.fence > *fence
+            || body.barriers != 3
+            || body.side != entry.side
+            || displaced.header.progress > *expected
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let mut fact_row = None;
+        match entry.state {
+            1 if operation.recovery.contains(&entry.slot) => {
+                let Some(Row::Recovery(mut previous)) = self.row(&entry.key())? else {
+                    return Err(StoreError::Corrupt);
+                };
+                if previous.state != 0 {
+                    return Err(StoreError::RecoveryRequired);
+                }
+                previous.state = 1;
+                previous.content.clone_from(&entry.content);
+                previous.object.clone_from(&entry.object);
+                if previous != *entry {
+                    return Err(StoreError::Corrupt);
+                }
+                let fact = fact.as_ref().ok_or(StoreError::RecoveryRequired)?;
+                fact.validate()?;
+                let bound = d::RecoveryFact::decode(&fact.fact).map_err(|_| StoreError::Corrupt)?;
+                let d::Body::Intent(before) = &intent.body else {
+                    return Err(StoreError::Corrupt);
+                };
+                let Some(format::State::File {
+                    sha256,
+                    bytes,
+                    executable,
+                }) = &entry.content
+                else {
+                    return Err(StoreError::Corrupt);
+                };
+                let object = entry.object.as_ref().ok_or(StoreError::Corrupt)?;
+                if fact.connection != entry.connection
+                    || fact.serial != entry.serial
+                    || fact.slot != entry.slot
+                    || fact.attempt != source.attempt
+                    || Some(&fact.displaced) != source.displaced.as_ref()
+                    || bound.intent != intent.digest
+                    || bound.side != entry.side
+                    || bound.role != 0
+                    || bound.endpoint
+                        != *before
+                            .endpoints
+                            .get(usize::from(entry.side))
+                            .ok_or(StoreError::Corrupt)?
+                    || bound.object != body.object
+                    || bound.artifact != artifact_view(object)
+                    || object.root != self.storage.identity
+                    || bound.content
+                        != (d::Content {
+                            digest: *sha256,
+                            length: *bytes,
+                            executable: *executable,
+                        })
+                    || bound.content.length != body.stamp.length
+                    || bound.content.executable != (body.stamp.mode & 0o111 != 0)
+                    || (body.matches_expected
+                        && !matches!(before.expected.get(usize::from(entry.side)).ok_or(StoreError::Corrupt)?, d::State::Regular { content, .. } if *content == bound.content))
+                    || self.row(&fact.key())?.is_some()
+                {
+                    return Err(StoreError::RecoveryRequired);
+                }
+                checks.verify(self, entry)?;
+                fact_row = Some(Row::NativeRecoveryFact(fact.clone()));
+            }
+            0 if fact.is_none()
+                && entry.slot as usize == operation.recovery.len()
+                && operation.recovery.len() < 128
+                && self.row(&entry.key())?.is_none() =>
+            {
+                operation.recovery.push(entry.slot);
+            }
+            5 if fact.is_none() && operation.recovery.contains(&entry.slot) => {
+                let Some(Row::Recovery(mut previous)) = self.row(&entry.key())? else {
+                    return Err(StoreError::Corrupt);
+                };
+                if previous.state != 0 {
+                    return Err(StoreError::RecoveryRequired);
+                }
+                previous.state = 5;
+                if previous != *entry {
+                    return Err(StoreError::Corrupt);
+                }
+            }
+            _ => return Err(StoreError::RecoveryRequired),
+        }
+        connection.revision = format::next(*expected)?;
+        operation.revision = connection.revision;
+        let mut rows = vec![
+            Row::Connection(connection),
+            Row::Operation(operation),
+            Row::Recovery(entry.clone()),
+        ];
+        if let Some(fact) = fact_row {
+            rows.push(fact);
+        }
+        Ok(rows)
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep operation/action/revision joins and the complete atomic durable-row transition together."
+    )]
     pub(super) fn reduce_recovery(
         &self,
         entry: &format::Recovery,
@@ -281,6 +669,57 @@ impl ConnectionStore {
             return Err(StoreError::StaleRevision);
         }
         let mut operation = self.operation(entry.id().operation)?;
+        if operation.native_capture.is_some() && operation.action.is_some() {
+            self.selected_collision_join(&operation)?;
+        }
+        if let Some(
+            action @ format::SelectedAction::Restore {
+                target, replace, ..
+            },
+        ) = &operation.action
+            && operation.native_capture.is_none()
+        {
+            if !replace || entry.side != *target || entry.reason != 1 || entry.captured.is_some() {
+                return Err(StoreError::RecoveryRequired);
+            }
+            let selection = self.selected_descriptor(&operation, action)?;
+            let mut prepared = false;
+            for row in self.rows()? {
+                let Row::NativeRegistration(registration) = row? else {
+                    continue;
+                };
+                if registration.connection != operation.connection
+                    || registration.serial != operation.serial
+                    || registration.side != *target
+                {
+                    continue;
+                }
+                registration.validate()?;
+                let tombstone = matches!(
+                    selection,
+                    super::super::transaction::native::descriptor::Selection::Tombstone { .. }
+                );
+                if registration.outcome.is_some() || registration.stage.is_some() == tombstone {
+                    continue;
+                }
+                let Some(bytes) = registration.intent else {
+                    continue;
+                };
+                let descriptor = super::super::transaction::native::descriptor::decode(&bytes)
+                    .map_err(|_| StoreError::Corrupt)?;
+                let super::super::transaction::native::descriptor::Body::Intent(intent) =
+                    descriptor.body
+                else {
+                    return Err(StoreError::Corrupt);
+                };
+                if intent.selection == selection {
+                    prepared = true;
+                }
+            }
+            if !prepared {
+                return Err(StoreError::RecoveryRequired);
+            }
+        }
         if operation.stage > 1 || entry.path != operation.path {
             return Err(StoreError::Corrupt);
         }
@@ -289,11 +728,37 @@ impl ConnectionStore {
         } else {
             &operation.destination
         };
-        if !matches!(before, Some(format::State::File { .. })) {
+        let captured = operation
+            .native_capture
+            .as_deref()
+            .map(super::super::transaction::native::descriptor::ConflictSnapshot::decode)
+            .transpose()
+            .map_err(|_| StoreError::Corrupt)?;
+        if let Some(capture) = &captured {
+            let origin = entry
+                .captured
+                .as_ref()
+                .ok_or(StoreError::RecoveryRequired)?;
+            if Some(&origin.snapshot) != operation.native_capture.as_ref()
+                || capture
+                    .versions
+                    .get(usize::from(origin.version))
+                    .is_none_or(|version| {
+                        version.side != entry.side
+                            || !matches!(
+                                version.state,
+                                super::super::transaction::native::descriptor::State::Regular { .. }
+                            )
+                    })
+            {
+                return Err(StoreError::RecoveryRequired);
+            }
+        } else if entry.captured.is_some() || !matches!(before, Some(format::State::File { .. })) {
             return Err(StoreError::RecoveryRequired);
         }
-        if (entry.reason == 2) != (operation.decision >= 10)
-            || (entry.reason == 0 && !matches!(operation.decision, 3 | 4))
+        if (operation.action.is_none() || captured.is_some())
+            && ((entry.reason == 2) != (operation.decision >= 10 || captured.is_some())
+                || (entry.reason == 0 && !matches!(operation.decision, 3 | 4)))
         {
             return Err(StoreError::Corrupt);
         }
@@ -309,6 +774,7 @@ impl ConnectionStore {
                 || old.side != entry.side
                 || old.path != entry.path
                 || old.reason != entry.reason
+                || old.captured != entry.captured
                 || entry
                     .object
                     .as_ref()
@@ -360,6 +826,11 @@ impl ConnectionStore {
         if !operation.recovery.contains(&entry.slot) {
             return Err(StoreError::Corrupt);
         }
+        // Bytes alone cannot establish which captured object/version was copied.
+        // NativeBound supplies that exact join separately.
+        if operation.native_capture.is_some() || operation.action.is_some() {
+            return Ok(false);
+        }
         let mut source = false;
         let mut destination = false;
         for slot in &operation.recovery {
@@ -375,6 +846,9 @@ impl ConnectionStore {
                 };
                 value
             };
+            if candidate.state == 5 {
+                continue;
+            }
             if candidate.state != 1 {
                 return Ok(false);
             }
@@ -475,7 +949,7 @@ impl ConnectionStore {
         Ok(Page { entries, next })
     }
 }
-fn recovery_key(id: RecoveryId) -> Vec<u8> {
+pub(super) fn recovery_key(id: RecoveryId) -> Vec<u8> {
     let mut key = format::key(2, id.operation.connection.0, id.operation.serial);
     key.extend(id.slot.to_be_bytes());
     key
@@ -548,6 +1022,9 @@ impl ConnectionStore {
             connection: ConnectionId(id),
             serial,
         })?;
+        if operation.action.is_some() || operation.native_capture.is_some() {
+            return Err(StoreError::RecoveryRequired);
+        }
         if verified {
             if operation.stage != 2 && !(operation.stage == 0 && operation.decision == 0) {
                 return Err(StoreError::RecoveryRequired);
@@ -652,13 +1129,39 @@ impl ConnectionStore {
         count: u32,
         revision: u64,
     ) -> Result<VerifiedBaseline, StoreError> {
+        self.read_baseline_with_context(connection, root, count, revision, None)
+    }
+    pub(super) fn read_baseline_with_context(
+        &self,
+        connection: &format::Connection,
+        root: Option<[u8; 32]>,
+        count: u32,
+        revision: u64,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<VerifiedBaseline, StoreError> {
+        if let Some(context) = context {
+            if context.id.connection.0 != connection.id {
+                return Err(StoreError::StaleRevision);
+            }
+            context.check()?;
+        }
         if count > 4096 || (count > 0) != root.is_some() {
             return Err(StoreError::LimitExceeded);
         }
         let mut entries = Vec::new();
         let mut previous = None;
         let mut bytes = 0_usize;
-        for result in storage::TreeIter::new(&self.storage, root)? {
+        let meter = |count: usize| {
+            context
+                .ok_or(StoreError::RecoveryRequired)?
+                .charge(count as u64)
+        };
+        let iterator = if context.is_some() {
+            storage::TreeIter::new_metered_baseline(&self.storage, root, count, &meter)?
+        } else {
+            storage::TreeIter::new(&self.storage, root)?
+        };
+        for result in iterator {
             let Row::Baseline(row) = result? else {
                 return Err(StoreError::Corrupt);
             };
@@ -700,6 +1203,61 @@ impl ConnectionStore {
         )
         .map_err(|_| StoreError::Corrupt)
     }
+    pub(super) fn native_baseline_value(
+        &self,
+        operation: &format::Operation,
+    ) -> Result<Option<super::EntryState>, StoreError> {
+        if operation.action.is_some() {
+            return Err(StoreError::RecoveryRequired);
+        }
+        if operation.decision == 0 {
+            return Ok(operation.source.clone().map(Into::into));
+        }
+        use super::super::transaction::native::descriptor as d;
+        let mut latest = None;
+        for row in self.rows()? {
+            if let Row::NativeRegistration(value) = row? {
+                if value.connection == operation.connection
+                    && value.serial == operation.serial
+                    && latest
+                        .as_ref()
+                        .is_none_or(|old: &format::NativeRegistration| old.attempt < value.attempt)
+                {
+                    latest = Some(value);
+                }
+            }
+        }
+        let registration = latest.ok_or(StoreError::RecoveryRequired)?;
+        registration.validate()?;
+        let outcome = d::decode(
+            registration
+                .outcome
+                .as_ref()
+                .ok_or(StoreError::RecoveryRequired)?,
+        )
+        .map_err(|_| StoreError::Corrupt)?;
+        let d::Body::Outcome(body) = outcome.body else {
+            return Err(StoreError::Corrupt);
+        };
+        let state = |value: &d::State| match value {
+            d::State::Absent => Ok(None),
+            d::State::Regular { content, .. } => Ok(Some(super::EntryState::File {
+                sha256: content.digest,
+                bytes: content.length,
+                executable: content.executable,
+            })),
+            _ => Err(StoreError::RecoveryRequired),
+        };
+        let source = state(&body.states[0])?;
+        if source != state(&body.states[1])? {
+            return Err(StoreError::RecoveryRequired);
+        }
+        Ok(source)
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep operation/action/revision joins and the complete atomic durable-row transition together."
+    )]
     pub(super) fn reduce_baseline(
         &self,
         id: [u8; 16],
@@ -726,12 +1284,76 @@ impl ConnectionStore {
             connection: ConnectionId(id),
             serial,
         })?;
-        if operation.stage != 3 {
+        if operation.stage != 3
+            || (operation.native_budget.is_some()
+                && connection.baseline.is_none()
+                && operation.initial_review.is_none())
+        {
             return Err(StoreError::RecoveryRequired);
         }
         let revision = format::next(connection.revision)?;
-        self.read_baseline(&connection, root, count, revision)?;
+        let context = match &recovery_checks.mode {
+            super::VerificationMode::NativeLive(context) => Some(*context),
+            _ => None,
+        };
+        let candidate =
+            self.read_baseline_with_context(&connection, root, count, revision, context)?;
+        if operation.native_budget.is_some() {
+            let mut patch = if let Some(old_revision) = connection.baseline {
+                self.read_baseline_with_context(
+                    &connection,
+                    connection.baseline_root,
+                    connection.baseline_count,
+                    old_revision,
+                    context,
+                )?
+                .entries()
+                .cloned()
+                .unwrap_or_default()
+            } else {
+                std::collections::BTreeMap::default()
+            };
+            let value = self.native_baseline_value(&operation)?;
+            let relative_path = operation.path.to_relative()?;
+            if let Some(value) = value {
+                patch.insert(relative_path, value);
+            } else {
+                patch.remove(&relative_path);
+            }
+            if candidate.entries() != Some(&patch) {
+                return Err(StoreError::RecoveryRequired);
+            }
+        }
         let mut rows = Vec::new();
+        for mut applied in self.selected_attention(ConnectionId(id), &operation.path)? {
+            recovery_checks.verify_applied_versions(self, &applied, &operation)?;
+            if let Some(format::SelectedAction::Restore {
+                conflict: Some(selection),
+                ..
+            }) = &applied.action
+            {
+                let Some(Row::Conflict(mut conflict)) =
+                    self.row(&format::key(3, id, selection.serial))?
+                else {
+                    return Err(StoreError::RecoveryRequired);
+                };
+                if conflict.revision != selection.revision
+                    || conflict.resolved
+                    || conflict.path != operation.path
+                {
+                    return Err(StoreError::StaleRevision);
+                }
+                conflict.resolved = true;
+                conflict.revision = format::next(conflict.revision)?;
+                rows.push(Row::Conflict(conflict));
+            }
+            applied
+                .selected_applied
+                .as_mut()
+                .ok_or(StoreError::Corrupt)?
+                .attention = false;
+            rows.push(Row::Operation(applied));
+        }
         for slot in &operation.recovery {
             let Some(Row::Recovery(mut entry)) = self.row(&recovery_key(RecoveryId {
                 operation: operation.decode()?.id,
@@ -740,6 +1362,9 @@ impl ConnectionStore {
             else {
                 return Err(StoreError::Corrupt);
             };
+            if entry.state == 5 {
+                continue;
+            }
             if entry.state != 1 {
                 return Err(StoreError::RecoveryRequired);
             }
@@ -766,6 +1391,7 @@ fn copy_bytes(
     target: &mut File,
     flag: &AtomicBool,
     before: &Metadata,
+    context: Option<&super::NativeReadContext<'_>>,
 ) -> Result<([u8; 32], u64), StoreError> {
     source.seek(SeekFrom::Start(0))?;
     let mut digest = Sha256::new();
@@ -773,7 +1399,13 @@ fn copy_bytes(
     let mut buffer = vec![0; 256 * 1024];
     loop {
         cancelled(flag)?;
+        if let Some(context) = context {
+            context.charge(buffer.len() as u64)?;
+        }
         let count = source.read(&mut buffer)?;
+        if let Some(context) = context {
+            context.check()?;
+        }
         if count == 0 {
             break;
         }
@@ -798,13 +1430,227 @@ fn copy_bytes(
     Ok((digest.finalize().into(), size))
 }
 
-impl RecoveryChecks {
+impl RecoveryChecks<'_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep native guards alive through ordered preservation, fresh rereads, barriers and durable acknowledgements."
+    )]
     #[cfg_attr(
         not(windows),
         expect(
-            clippy::unused_self,
             clippy::needless_pass_by_ref_mut,
-            reason = "Only Windows retains byte guards; Unix keeps the original immediate reader drop"
+            reason = "Windows retains verified recovery readers in self through the dependent durable transition."
+        )
+    )]
+    fn verify_applied_versions(
+        &mut self,
+        store: &ConnectionStore,
+        applied: &format::Operation,
+        current: &format::Operation,
+    ) -> Result<(), StoreError> {
+        let Some(action @ format::SelectedAction::Restore { selected, .. }) = &applied.action
+        else {
+            return Err(StoreError::Corrupt);
+        };
+        store.selected_descriptor(applied, action)?;
+        let content = match selected {
+            format::SelectedVersion::Recovery { content, .. } => Some(content),
+            format::SelectedVersion::Tombstone { .. } => None,
+        };
+        if current.action.is_some()
+            || current.decision != 0
+            || current.native_budget.is_none()
+            || applied.path != current.path
+            || applied.connection != current.connection
+            || current.source.as_ref() != content
+            || current.destination.as_ref() != content
+            || !applied
+                .selected_applied
+                .as_ref()
+                .is_some_and(|fact| fact.attention)
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let payer = OperationId {
+            connection: ConnectionId(current.connection),
+            serial: current.serial,
+        };
+        match &self.mode {
+            super::VerificationMode::NativeReplay(id) if *id == payer => {}
+            super::VerificationMode::NativeLive(read_access)
+                if read_access.id == payer
+                    && !read_access.recovery_only
+                    && !read_access.inspection_only
+                    && read_access
+                        .lifetime
+                        .ptr_eq(&Arc::downgrade(&store.native_lifetime)) =>
+            {
+                read_access.check()?;
+                store.validate()?;
+            }
+            _ => return Err(StoreError::RecoveryRequired),
+        }
+        let mut versions = Vec::new();
+        if let format::SelectedVersion::Recovery {
+            operation: selected_serial,
+            slot,
+            ..
+        } = selected
+        {
+            versions.push(RecoveryId {
+                operation: OperationId {
+                    connection: payer.connection,
+                    serial: *selected_serial,
+                },
+                slot: *slot,
+            });
+        }
+        versions.extend(applied.recovery.iter().map(|slot| RecoveryId {
+            operation: OperationId {
+                connection: payer.connection,
+                serial: applied.serial,
+            },
+            slot: *slot,
+        }));
+        for id in versions {
+            let Some(Row::Recovery(entry)) = store.row(&recovery_key(id))? else {
+                return Err(StoreError::Corrupt);
+            };
+            if entry.state == 5 {
+                continue;
+            }
+            if !matches!(entry.state, 1 | 2) || entry.path != applied.path {
+                return Err(StoreError::RecoveryRequired);
+            }
+            entry.decode()?;
+            let object = entry.object.as_ref().ok_or(StoreError::RecoveryRequired)?;
+            if object.root != store.storage.identity {
+                return Err(StoreError::IdentityChanged);
+            }
+            match &self.mode {
+                super::VerificationMode::NativeReplay(id) if *id == payer => {
+                    object.file_id.require_platform()?;
+                }
+                super::VerificationMode::NativeLive(read_access)
+                    if read_access.id == payer
+                        && !read_access.recovery_only
+                        && !read_access.inspection_only
+                        && read_access
+                            .lifetime
+                            .ptr_eq(&Arc::downgrade(&store.native_lifetime)) =>
+                {
+                    read_access.check()?;
+                    store.validate()?;
+                    let reader = store.verify_recovery_file(&entry, Some(read_access))?;
+                    #[cfg(windows)]
+                    self.readers.push(reader);
+                    #[cfg(not(windows))]
+                    drop(reader);
+                }
+                _ => return Err(StoreError::RecoveryRequired),
+            }
+        }
+        Ok(())
+    }
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "Windows retains verified recovery readers in self through the dependent durable transition."
+        )
+    )]
+    pub(super) fn verify_selected(
+        &mut self,
+        store: &ConnectionStore,
+        operation: &format::Operation,
+    ) -> Result<(), StoreError> {
+        let action = operation
+            .action
+            .as_ref()
+            .ok_or(StoreError::RecoveryRequired)?;
+        store.selected_descriptor(operation, action)?;
+        let format::SelectedAction::Restore { selected, .. } = action;
+        let id = OperationId {
+            connection: ConnectionId(operation.connection),
+            serial: operation.serial,
+        };
+        if matches!(selected, format::SelectedVersion::Tombstone { .. }) {
+            if operation.native_budget.is_none() {
+                return Err(StoreError::RecoveryRequired);
+            }
+            return match &self.mode {
+                super::VerificationMode::NativeReplay(replayed) if *replayed == id => Ok(()),
+                super::VerificationMode::NativeLive(context)
+                    if context.id == id
+                        && !context.recovery_only
+                        && !context.inspection_only
+                        && context
+                            .lifetime
+                            .ptr_eq(&Arc::downgrade(&store.native_lifetime)) =>
+                {
+                    store.validate()?;
+                    context.check()
+                }
+                _ => Err(StoreError::RecoveryRequired),
+            };
+        }
+        let format::SelectedVersion::Recovery {
+            operation: serial,
+            slot,
+            ..
+        } = selected
+        else {
+            return Err(StoreError::RecoveryRequired);
+        };
+        let selected = RecoveryId {
+            operation: OperationId {
+                connection: id.connection,
+                serial: *serial,
+            },
+            slot: *slot,
+        };
+        let Some(Row::Recovery(entry)) = store.row(&recovery_key(selected))? else {
+            return Err(StoreError::RecoveryRequired);
+        };
+        entry.decode()?;
+        if operation.native_budget.is_none() {
+            return Err(StoreError::RecoveryRequired);
+        }
+        match &self.mode {
+            super::VerificationMode::NativeReplay(replayed) if *replayed == id => {
+                entry
+                    .object
+                    .as_ref()
+                    .ok_or(StoreError::RecoveryRequired)?
+                    .file_id
+                    .require_platform()?;
+                Ok(())
+            }
+            super::VerificationMode::NativeLive(context)
+                if context.id == id
+                    && !context.recovery_only
+                    && !context.inspection_only
+                    && context
+                        .lifetime
+                        .ptr_eq(&Arc::downgrade(&store.native_lifetime)) =>
+            {
+                store.validate()?;
+                context.check()?;
+                let reader = store.verify_recovery_file(&entry, Some(context))?;
+                #[cfg(windows)]
+                self.readers.push(reader);
+                #[cfg(not(windows))]
+                drop(reader);
+                Ok(())
+            }
+            _ => Err(StoreError::RecoveryRequired),
+        }
+    }
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "Windows retains verified recovery readers in self through the dependent durable transition."
         )
     )]
     pub(super) fn verify(
@@ -812,7 +1658,27 @@ impl RecoveryChecks {
         store: &ConnectionStore,
         entry: &format::Recovery,
     ) -> Result<(), StoreError> {
-        let reader = store.verify_recovery(entry)?;
+        use super::VerificationMode;
+        let marked = store
+            .operation(entry.id().operation)?
+            .native_budget
+            .is_some();
+        let reader = match (&self.mode, marked) {
+            (VerificationMode::Legacy, false) => store.verify_recovery(entry)?,
+            (VerificationMode::NativeLive(context), true) if context.id == entry.id().operation => {
+                store.verify_recovery_with_context(entry, Some(context))?
+            }
+            (VerificationMode::NativeReplay(id), true) if *id == entry.id().operation => {
+                entry.decode()?;
+                let object = entry.object.as_ref().ok_or(StoreError::RecoveryRequired)?;
+                if object.root != store.storage.identity {
+                    return Err(StoreError::IdentityChanged);
+                }
+                object.file_id.require_platform()?;
+                return Ok(());
+            }
+            _ => return Err(StoreError::RecoveryRequired),
+        };
         #[cfg(windows)]
         self.readers.push(reader);
         #[cfg(not(windows))]
@@ -822,6 +1688,10 @@ impl RecoveryChecks {
 }
 
 impl ConnectionStore {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep operation/action/revision joins and the complete atomic durable-row transition together."
+    )]
     pub(super) fn reduce_native_bound(
         &self,
         fact: &format::NativeRecoveryFact,
@@ -830,6 +1700,9 @@ impl ConnectionStore {
     ) -> Result<Vec<Row>, StoreError> {
         use super::super::transaction::native::descriptor as d;
         fact.validate()?;
+        if fact.captured.is_some() {
+            return self.reduce_captured_bound(fact, expected, fence);
+        }
         let mut connection = self.connection(ConnectionId(fact.connection))?;
         if connection.lifecycle != 0 || connection.fence != fence {
             return Err(StoreError::Disconnected);
@@ -901,6 +1774,31 @@ impl ConnectionStore {
         if self.row(&fact.key())?.is_some() {
             return Err(StoreError::StaleRevision);
         }
+        if let Some(
+            action @ format::SelectedAction::Restore {
+                target, replace, ..
+            },
+        ) = &operation.action
+        {
+            let Some(d::State::Regular {
+                object, content, ..
+            }) = intent_body.expected.get(usize::from(*target))
+            else {
+                return Err(StoreError::RecoveryRequired);
+            };
+            if !replace
+                || bound.side != *target
+                || !displaced.matches_expected
+                || &bound.object != object
+                || &bound.content != content
+                || recovery.reason != 1
+                || intent_body.selection != self.selected_descriptor(&operation, action)?
+                || operation.stage > 1
+            {
+                return Err(StoreError::RecoveryRequired);
+            }
+            operation.stage = 1;
+        }
         connection.revision = format::next(connection.revision)?;
         operation.revision = connection.revision;
         Ok(vec![
@@ -911,7 +1809,7 @@ impl ConnectionStore {
     }
 }
 
-fn artifact_view(
+pub(super) fn artifact_view(
     value: &format::ObjectIdentity,
 ) -> super::super::transaction::native::descriptor::Artifact {
     use super::super::transaction::native::descriptor::Artifact;
@@ -946,6 +1844,9 @@ impl ConnectionStore {
         reason: RecoveryReason,
     ) -> Result<RecoveryReservation, StoreError> {
         self.check_native(live)?;
+        if !live.action().is_reconciliation() {
+            return Err(StoreError::RecoveryRequired);
+        }
         let next = format::next(live.revision())?;
         let reservation = self.reserve_recovery(
             &self.ack(live.id()),
@@ -969,7 +1870,8 @@ impl ConnectionStore {
     ) -> Result<DurableAck<super::BoundRecovery>, StoreError> {
         self.guard()?;
         self.check_native(live)?;
-        source.validate_for(live)?;
+        source.validate_for(self, live)?;
+        let context = self.native_read_context(live, source.deadline(), flag)?;
         let RecoveryReservation { id, session, fence } = reservation;
         if !Arc::ptr_eq(&session, &self.session)
             || id.operation != live.id()
@@ -1065,12 +1967,17 @@ impl ConnectionStore {
                 return Err(StoreError::Corrupt);
             }
             let next = format::next(live.revision())?;
-            self.append(Change::Bytes {
-                entry,
-                expected: live.revision(),
-                fence,
-            })?;
+            self.append_native(
+                Change::Bytes {
+                    entry,
+                    expected: live.revision(),
+                    fence,
+                },
+                &context,
+            )?;
+            let previous = live.revision;
             live.revision = next;
+            source.advance_selected(self, live, previous)?;
             #[cfg(test)]
             super::run_after_native_bytes();
             // A late break retains the durable Bytes artifact, but cannot mint a
@@ -1079,19 +1986,25 @@ impl ConnectionStore {
             cancelled(flag)?;
             self.check_native(live)?;
             let next = format::next(live.revision())?;
-            self.append(Change::NativeBound {
-                fact: format::NativeRecoveryFact {
-                    connection: id.operation.connection.0,
-                    serial: id.operation.serial,
-                    slot: id.slot,
-                    attempt,
-                    fact: fact.encode().map_err(|_| StoreError::Corrupt)?,
-                    displaced,
+            self.append_native(
+                Change::NativeBound {
+                    fact: format::NativeRecoveryFact {
+                        captured: None,
+                        connection: id.operation.connection.0,
+                        serial: id.operation.serial,
+                        slot: id.slot,
+                        attempt,
+                        fact: fact.encode().map_err(|_| StoreError::Corrupt)?,
+                        displaced,
+                    },
+                    expected: live.revision(),
+                    fence,
                 },
-                expected: live.revision(),
-                fence,
-            })?;
+                &context,
+            )?;
+            let previous = live.revision;
             live.revision = next;
+            source.advance_selected(self, live, previous)?;
             source.validate()?;
             self.check_native(live)?;
             cancelled(flag)?;
@@ -1115,5 +2028,2614 @@ impl ConnectionStore {
             self.poison_native();
         }
         result
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ConnectionStore {
+    pub(in super::super) fn native_recovery_slots(
+        &self,
+        live: &super::LiveOperation,
+    ) -> Result<Vec<RecoveryEntry>, StoreError> {
+        self.check_native(live)?;
+        let operation = self.operation(live.id())?;
+        let mut entries = Vec::new();
+        for slot in operation.recovery {
+            let id = RecoveryId {
+                operation: live.id(),
+                slot,
+            };
+            let Some(Row::Recovery(entry)) = self.row(&recovery_key(id))? else {
+                return Err(StoreError::Corrupt);
+            };
+            entries.push(entry.decode()?);
+        }
+        Ok(entries)
+    }
+    pub(in super::super) fn retain_native_incomplete(
+        &mut self,
+        live: &mut super::LiveOperation,
+        id: RecoveryId,
+    ) -> Result<(), StoreError> {
+        self.check_native(live)?;
+        if id.operation != live.id() {
+            return Err(StoreError::StaleRevision);
+        }
+        self.retain_incomplete_recovery(id, live.revision(), live.fence())?;
+        live.revision = format::next(live.revision())?;
+        Ok(())
+    }
+    /// Re-read the exact private artifact and join it to a newly leased actual
+    /// quarantine. Existing Bytes/NativeBound rows alone cannot construct this.
+    pub(in super::super) fn rebind_native_recovery(
+        &mut self,
+        live: &mut super::LiveOperation,
+        id: RecoveryId,
+        source: &mut super::super::transaction::native::NativeRecoveryReader<'_, '_>,
+        cancel: &AtomicBool,
+    ) -> Result<DurableAck<super::BoundRecovery>, StoreError> {
+        self.guard()?;
+        self.check_native(live)?;
+        source.validate_for(self, live)?;
+        if id.operation != live.id() {
+            return Err(StoreError::StaleRevision);
+        }
+        let context = self.native_read_context(live, source.deadline(), cancel)?;
+        let Some(Row::Recovery(entry)) = self.row(&recovery_key(id))? else {
+            return Err(StoreError::Corrupt);
+        };
+        let expected = source.content();
+        if entry.state != 1
+            || entry.content
+                != Some(format::State::File {
+                    sha256: expected.digest,
+                    bytes: expected.length,
+                    executable: expected.executable,
+                })
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let file = self.verify_recovery_with_context(&entry, Some(&context))?;
+        let metadata = storage::recovery_metadata(&file)?;
+        let parent = object_directory(self, id, false)?;
+        let (attempt, fact, displaced) = source.fact(
+            id,
+            artifact_view(entry.object.as_ref().ok_or(StoreError::Corrupt)?),
+        )?;
+        if fact.side != entry.side {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let bound = format::NativeRecoveryFact {
+            captured: None,
+            connection: id.operation.connection.0,
+            serial: id.operation.serial,
+            slot: id.slot,
+            attempt,
+            fact: fact.encode().map_err(|_| StoreError::Corrupt)?,
+            displaced,
+        };
+        source.validate()?;
+        match self.row(&bound.key())? {
+            Some(Row::NativeRecoveryFact(existing)) if existing == bound => {}
+            None => {
+                let previous = live.revision();
+                self.append_native(
+                    Change::NativeBound {
+                        fact: bound,
+                        expected: live.revision(),
+                        fence: live.fence(),
+                    },
+                    &context,
+                )?;
+                live.revision = format::next(live.revision())?;
+                source.advance_selected(self, live, previous)?;
+            }
+            _ => return Err(StoreError::RecoveryRequired),
+        }
+        source.validate()?;
+        self.check_native(live)?;
+        cancelled(cancel)?;
+        let proof = super::BoundRecovery {
+            fact,
+            preserved: PreservedObject { id, file },
+            parent,
+            lifetime: live.lifetime().clone(),
+            epoch: source.epoch(),
+            metadata,
+        };
+        proof.validate(live, source.epoch())?;
+        Ok(self.ack(proof))
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(in super::super) fn partial_native_recovery_for_test(
+    store: &mut ConnectionStore,
+    reservation: &RecoveryReservation,
+    bytes: &[u8],
+) -> Result<(), StoreError> {
+    store.guard()?;
+    if !Arc::ptr_eq(&reservation.session, &store.session) {
+        return Err(StoreError::StaleRevision);
+    }
+    let parent = object_directory(store, reservation.id, true)?;
+    let mut file = storage::open_file(&parent, &name(reservation.id), true)?;
+    file.write_all(bytes)?;
+    storage::sync_file(&file)?;
+    storage::sync_directory(&parent)
+}
+
+#[cfg(target_os = "linux")]
+impl ConnectionStore {
+    fn append_native_drain(
+        &mut self,
+        context: &mut super::RecoveryContext,
+        reader: &mut super::super::transaction::native::NativeDrainReader<'_, '_>,
+        entry: format::Recovery,
+        source: format::BoundaryEvidence,
+        fact: Option<format::NativeRecoveryFact>,
+        cancel: &AtomicBool,
+    ) -> Result<(), StoreError> {
+        self.check_recovery_context(context)?;
+        reader.validate_for(self, context)?;
+        let paid = self.recovery_read_context(context, reader.deadline()?, cancel)?;
+        let previous = context.revision;
+        let change = if reader.is_selected() {
+            Change::SelectedDrain {
+                entry,
+                source,
+                fact,
+                expected: previous,
+                operation_expected: context.operation_revision,
+                fence: context.fence,
+            }
+        } else {
+            Change::NativeDrain {
+                entry,
+                source,
+                fact,
+                expected: previous,
+                operation_expected: context.operation_revision,
+                fence: context.fence,
+            }
+        };
+        self.append_native(change, &paid)?;
+        context.revision = format::next(previous)?;
+        context.operation_revision = context.revision;
+        reader.advance(previous, context)?;
+        reader.validate_for(self, context)
+    }
+    /// Existing pre-fence quarantine only. Returns a private preserved reader,
+    /// never `LiveOperation`, `StepAdmission`, `BoundRecovery` or publication authority.
+    pub(in super::super) fn drain_native_recovery(
+        &mut self,
+        context: &mut super::RecoveryContext,
+        reader: &mut super::super::transaction::native::NativeDrainReader<'_, '_>,
+        cancel: &AtomicBool,
+    ) -> Result<DurableAck<PreservedObject>, StoreError> {
+        if reader.is_selected() {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.drain_recovery_bytes(context, reader, cancel)
+    }
+    pub(in super::super) fn drain_selected_recovery(
+        &mut self,
+        context: &mut super::RecoveryContext,
+        reader: &mut super::super::transaction::native::NativeDrainReader<'_, '_>,
+        cancel: &AtomicBool,
+    ) -> Result<DurableAck<PreservedObject>, StoreError> {
+        if !reader.is_selected()
+            || !matches!(context.action(), super::ExecutionAction::Selected(_))
+            || self.connection(context.id().connection)?.lifecycle == 0
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.drain_recovery_bytes(context, reader, cancel)
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep native guards alive through ordered preservation, fresh rereads, barriers and durable acknowledgements."
+    )]
+    fn drain_recovery_bytes(
+        &mut self,
+        context: &mut super::RecoveryContext,
+        reader: &mut super::super::transaction::native::NativeDrainReader<'_, '_>,
+        cancel: &AtomicBool,
+    ) -> Result<DurableAck<PreservedObject>, StoreError> {
+        self.guard()?;
+        self.check_recovery_context(context)?;
+        if !context.recovery_only {
+            return Err(StoreError::RecoveryRequired);
+        }
+        reader.validate_for(self, context)?;
+        let (attempt, displaced, side) = reader.source()?;
+        let origin = format::BoundaryEvidence {
+            attempt,
+            displaced: Some(displaced.clone()),
+            outcome: None,
+        };
+        let expected = reader.content().clone();
+        let operation = self.operation(context.id)?;
+        let reason = u8::from(reader.is_selected() || !matches!(operation.decision, 3 | 4));
+        // A partial object is never reused or overwritten. An already bound
+        // complete version can be returned only after another paid private read.
+        for slot in &operation.recovery {
+            let id = RecoveryId {
+                operation: context.id,
+                slot: *slot,
+            };
+            let Some(Row::Recovery(mut entry)) = self.row(&recovery_key(id))? else {
+                return Err(StoreError::Corrupt);
+            };
+            if entry.state == 0 {
+                entry.state = 5;
+                self.append_native_drain(context, reader, entry, origin.clone(), None, cancel)?;
+            } else if entry.state == 1 && entry.side == side {
+                let mut key = format::key(6, id.operation.connection.0, id.operation.serial);
+                key.extend(id.slot.to_be_bytes());
+                if let Some(Row::NativeRecoveryFact(previous)) = self.row(&key)? {
+                    let actual = reader.fact(
+                        id,
+                        artifact_view(entry.object.as_ref().ok_or(StoreError::Corrupt)?),
+                    )?;
+                    if previous.attempt == attempt
+                        && previous.displaced == displaced
+                        && previous.fact == actual.encode().map_err(|_| StoreError::Corrupt)?
+                    {
+                        let paid =
+                            self.recovery_read_context(context, reader.deadline()?, cancel)?;
+                        let file = self.verify_recovery_with_context(&entry, Some(&paid))?;
+                        reader.validate_for(self, context)?;
+                        return Ok(self.ack(PreservedObject { id, file }));
+                    }
+                }
+            }
+        }
+        let operation = self.operation(context.id)?;
+        let slot =
+            u32::try_from(operation.recovery.len()).map_err(|_| StoreError::LimitExceeded)?;
+        let mut entry = format::Recovery {
+            captured: None,
+            connection: context.id.connection.0,
+            serial: context.id.serial,
+            slot,
+            side,
+            path: operation.path,
+            reason,
+            state: 0,
+            content: None,
+            object: None,
+            retained: 0,
+        };
+        let id = entry.id();
+        self.append_native_drain(context, reader, entry.clone(), origin.clone(), None, cancel)?;
+        let paid = self.recovery_read_context(context, reader.deadline()?, cancel)?;
+        let parent = object_directory(self, id, true)?;
+        let object_name = name(id);
+        let mut target = storage::open_file(&parent, &object_name, true)?;
+        let target_identity = storage::regular(&target)?;
+        let mut buffer = vec![0; 256 * 1024];
+        let mut count = 0_u64;
+        let mut copied = Sha256::new();
+        loop {
+            paid.check()?;
+            let read = reader.read_chunk(count, &mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            count = count
+                .checked_add(read as u64)
+                .filter(|size| *size <= expected.length)
+                .ok_or(StoreError::LimitExceeded)?;
+            let bytes = buffer.get(..read).ok_or(StoreError::Corrupt)?;
+            target.write_all(bytes)?;
+            copied.update(bytes);
+        }
+        if count != expected.length || <[u8; 32]>::from(copied.finalize()) != expected.digest {
+            return Err(StoreError::RecoveryRequired);
+        }
+        reader.validate_for(self, context)?;
+        storage::sync_file(&target)?;
+        storage::validate_file(&parent, &object_name, &target, &target_identity)?;
+        let mut reread = storage::reread_file(&parent, &object_name)?;
+        let metadata = storage::regular(&reread)?;
+        if storage::file_identity(&metadata) != storage::file_identity(&target_identity) {
+            return Err(StoreError::IdentityChanged);
+        }
+        let (digest, count) =
+            hash_file_with_context(&mut reread, cancel, expected.length, Some(&paid))?;
+        if digest != expected.digest
+            || count != expected.length
+            || !storage::same_snapshot(&metadata, &storage::regular(&reread)?)
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        storage::validate_recovery_reader(&parent, &object_name, &reread, &metadata)?;
+        storage::sync_directory(&parent)?;
+        reader.validate_for(self, context)?;
+        let object = format::ObjectIdentity {
+            root: self.storage.identity.clone(),
+            file_id: storage::file_identity(&metadata),
+        };
+        let fact = reader.fact(id, artifact_view(&object))?;
+        let fact = format::NativeRecoveryFact {
+            captured: None,
+            connection: id.operation.connection.0,
+            serial: id.operation.serial,
+            slot: id.slot,
+            attempt,
+            fact: fact.encode().map_err(|_| StoreError::Corrupt)?,
+            displaced,
+        };
+        entry.state = 1;
+        entry.content = Some(format::State::File {
+            sha256: digest,
+            bytes: count,
+            executable: expected.executable,
+        });
+        entry.object = Some(object);
+        self.append_native_drain(context, reader, entry, origin, Some(fact), cancel)?;
+        storage::validate_recovery_reader(&parent, &object_name, &reread, &metadata)?;
+        Ok(self.ack(PreservedObject { id, file: reread }))
+    }
+}
+
+impl ConnectionStore {
+    pub(super) fn reduce_native_capture(
+        &self,
+        snapshot: &[u8],
+        displaced: &[Vec<u8>],
+        expected: u64,
+        kind: u8,
+    ) -> Result<Vec<Row>, StoreError> {
+        self.reduce_capture_rows(snapshot, displaced, expected, kind, false)
+    }
+    pub(super) fn reduce_selected_collision(
+        &self,
+        snapshot: &[u8],
+        expected: u64,
+        checks: &mut RecoveryChecks<'_>,
+    ) -> Result<Vec<Row>, StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        let capture = d::ConflictSnapshot::decode(snapshot).map_err(|_| StoreError::Corrupt)?;
+        let id = OperationId {
+            connection: ConnectionId(capture.connection),
+            serial: capture.operation,
+        };
+        let operation = self.operation(id)?;
+        let Some(format::SelectedAction::Restore {
+            target,
+            replace: false,
+            ..
+        }) = &operation.action
+        else {
+            return Err(StoreError::RecoveryRequired);
+        };
+        if operation.stage != 0
+            || operation.native_capture.is_some()
+            || !operation.recovery.is_empty()
+            || capture.versions.len() != 2
+            || capture.versions.iter().any(|version| version.role != 0)
+            || !capture.versions.iter().any(|version| {
+                version.side == *target && matches!(version.state, d::State::Regular { .. })
+            })
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        for attempt in 1_u32..=8 {
+            let mut key = format::key(5, id.connection.0, id.serial);
+            key.extend(attempt.to_be_bytes());
+            if self.row(&key)?.is_some() {
+                return Err(StoreError::RecoveryRequired);
+            }
+        }
+        checks.verify_selected(self, &operation)?;
+        self.reduce_capture_rows(snapshot, &[], expected, 3, true)
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep operation/action/revision joins and the complete atomic durable-row transition together."
+    )]
+    fn reduce_capture_rows(
+        &self,
+        snapshot: &[u8],
+        displaced: &[Vec<u8>],
+        expected: u64,
+        kind: u8,
+        selected_collision: bool,
+    ) -> Result<Vec<Row>, StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        let capture = d::ConflictSnapshot::decode(snapshot).map_err(|_| StoreError::Corrupt)?;
+        let mut connection = self.connection(ConnectionId(capture.connection))?;
+        let id = OperationId {
+            connection: ConnectionId(capture.connection),
+            serial: capture.operation,
+        };
+        let mut operation = self.operation(id)?;
+        operation.validate_capture(&capture)?;
+        if connection.lifecycle != 0 || connection.fence != capture.fence {
+            return Err(StoreError::Disconnected);
+        }
+        if connection.revision != expected
+            || operation.revision != expected
+            || capture.revision != expected
+            || connection.pending != Some(id.serial)
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        if kind > 4
+            || !matches!(operation.stage, 0..=3 | 6)
+            || operation.action.is_some() != selected_collision
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        // QND is supplied by the owning capture even before any private copy exists.
+        // Join it to the registered QNI/QNS, never infer it from a recovery label.
+        if displaced.len()
+            != capture
+                .versions
+                .iter()
+                .filter(|version| version.displaced.is_some())
+                .count()
+        {
+            return Err(StoreError::Corrupt);
+        }
+        for version in &capture.versions {
+            if version.role == 2 {
+                let d::State::Regular { object, .. } = &version.state else {
+                    return Err(StoreError::Corrupt);
+                };
+                let mut matched = false;
+                for attempt in 1_u32..=8 {
+                    let mut key = format::key(5, capture.connection, capture.operation);
+                    key.extend(attempt.to_be_bytes());
+                    let Some(Row::NativeRegistration(registration)) = self.row(&key)? else {
+                        continue;
+                    };
+                    if registration.side != version.side {
+                        continue;
+                    }
+                    let Some(stage) = &registration.stage else {
+                        continue;
+                    };
+                    let intent =
+                        d::decode(registration.intent.as_deref().ok_or(StoreError::Corrupt)?)
+                            .map_err(|_| StoreError::Corrupt)?;
+                    let stage = d::decode(stage).map_err(|_| StoreError::Corrupt)?;
+                    stage
+                        .joined(&intent, None, None)
+                        .map_err(|_| StoreError::Corrupt)?;
+                    if stage.header.connection == capture.connection
+                        && stage.header.operation == capture.operation
+                        && stage.header.progress <= expected
+                        && matches!(&stage.body, d::Body::Stage(value) if &value.object == object)
+                    {
+                        if matched {
+                            return Err(StoreError::Corrupt);
+                        }
+                        matched = true;
+                    }
+                }
+                if !matched {
+                    return Err(StoreError::RecoveryRequired);
+                }
+            }
+            if let Some(digest) = version.displaced {
+                let mut matched = None;
+                for bytes in displaced {
+                    let clue = d::decode(bytes).map_err(|_| StoreError::Corrupt)?;
+                    if clue.digest == digest {
+                        if matched.is_some() {
+                            return Err(StoreError::Corrupt);
+                        }
+                        matched = Some(clue);
+                    }
+                }
+                let clue = matched.ok_or(StoreError::RecoveryRequired)?;
+                let mut key = format::key(5, capture.connection, capture.operation);
+                key.extend(
+                    u32::try_from(clue.header.attempt)
+                        .map_err(|_| StoreError::Corrupt)?
+                        .to_be_bytes(),
+                );
+                let Some(Row::NativeRegistration(registration)) = self.row(&key)? else {
+                    return Err(StoreError::RecoveryRequired);
+                };
+                let intent = d::decode(
+                    registration
+                        .intent
+                        .as_deref()
+                        .ok_or(StoreError::RecoveryRequired)?,
+                )
+                .map_err(|_| StoreError::Corrupt)?;
+                let stage = registration
+                    .stage
+                    .as_deref()
+                    .map(d::decode)
+                    .transpose()
+                    .map_err(|_| StoreError::Corrupt)?;
+                clue.joined(&intent, stage.as_ref(), None)
+                    .map_err(|_| StoreError::Corrupt)?;
+                let d::Body::Displaced(body) = &clue.body else {
+                    return Err(StoreError::Corrupt);
+                };
+                let (d::State::Regular { object: actual, .. }
+                | d::State::Unsupported { object: actual, .. }) = &version.state
+                else {
+                    return Err(StoreError::Corrupt);
+                };
+                if clue.header.connection != capture.connection
+                    || clue.header.operation != capture.operation
+                    || clue.header.progress > expected
+                    || body.side != version.side
+                    || body.barriers != 3
+                    || &body.object != actual
+                {
+                    return Err(StoreError::Corrupt);
+                }
+            }
+        }
+        let revision = format::next(expected)?;
+        let mut conflict = match self.row(&format::key(3, capture.connection, capture.operation))? {
+            Some(Row::Conflict(conflict)) if !conflict.resolved => conflict,
+            None => format::ConflictData {
+                native_capture: None,
+                connection: capture.connection,
+                serial: capture.operation,
+                revision,
+                kind,
+                path: operation.path.clone(),
+                source: operation.source.clone(),
+                destination: operation.destination.clone(),
+                preserved: Vec::new(),
+                resolved: false,
+            },
+            _ => return Err(StoreError::RecoveryRequired),
+        };
+        conflict.kind = kind;
+        conflict.revision = revision;
+        conflict.native_capture = Some(snapshot.to_vec());
+        operation.native_capture = Some(snapshot.to_vec());
+        operation.native_capture_displaced = displaced.to_vec();
+        operation.stage = 0;
+        operation.revision = revision;
+        connection.revision = revision;
+        Ok(vec![
+            Row::Connection(connection),
+            Row::Operation(operation),
+            Row::Conflict(conflict),
+        ])
+    }
+}
+
+impl ConnectionStore {
+    fn captured_recovery_ids(
+        &self,
+        operation: &format::Operation,
+        proposed: Option<&format::NativeRecoveryFact>,
+    ) -> Result<Option<Vec<RecoveryId>>, StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        let capture = d::ConflictSnapshot::decode(
+            operation
+                .native_capture
+                .as_deref()
+                .ok_or(StoreError::RecoveryRequired)?,
+        )
+        .map_err(|_| StoreError::Corrupt)?;
+        let mut ids = Vec::new();
+        for version in &capture.versions {
+            let (object, content) = match &version.state {
+                d::State::Absent => continue,
+                d::State::Regular {
+                    object, content, ..
+                } => (object, content),
+                _ => return Ok(None),
+            };
+            let mut found = false;
+            for slot in &operation.recovery {
+                let mut key = format::key(6, operation.connection, operation.serial);
+                key.extend(slot.to_be_bytes());
+                let fact = if let Some(fact) = proposed.filter(|fact| fact.slot == *slot) {
+                    Some(fact.clone())
+                } else {
+                    match self.row(&key)? {
+                        Some(Row::NativeRecoveryFact(fact)) => Some(fact),
+                        _ => None,
+                    }
+                };
+                let Some(fact) = fact else {
+                    continue;
+                };
+                if fact.captured.is_none() {
+                    continue;
+                }
+                fact.validate()?;
+                let source =
+                    d::RecoveryFact::decode(&fact.fact).map_err(|_| StoreError::Corrupt)?;
+                if source.side != version.side
+                    || source.role != version.role + 1
+                    || &source.object != object
+                    || &source.content != content
+                {
+                    continue;
+                }
+                let id = RecoveryId {
+                    operation: OperationId {
+                        connection: ConnectionId(operation.connection),
+                        serial: operation.serial,
+                    },
+                    slot: *slot,
+                };
+                let Some(Row::Recovery(entry)) = self.row(&recovery_key(id))? else {
+                    return Err(StoreError::Corrupt);
+                };
+                if entry.captured.as_ref().is_none_or(|origin| {
+                    Some(&origin.snapshot) != fact.captured.as_ref()
+                        || d::ConflictSnapshot::decode(&origin.snapshot)
+                            .ok()
+                            .and_then(|snapshot| {
+                                snapshot.versions.get(usize::from(origin.version)).cloned()
+                            })
+                            .is_none_or(|version| {
+                                version.side != source.side || version.role + 1 != source.role
+                            })
+                }) || entry.state != 1
+                    || entry.reason != 2
+                    || entry.side != source.side
+                    || entry.path != operation.path
+                    || entry
+                        .object
+                        .as_ref()
+                        .is_none_or(|identity| artifact_view(identity) != source.artifact)
+                    || entry.content
+                        != Some(format::State::File {
+                            sha256: content.digest,
+                            bytes: content.length,
+                            executable: content.executable,
+                        })
+                {
+                    return Err(StoreError::Corrupt);
+                }
+                ids.push(id);
+                found = true;
+                break;
+            }
+            if !found {
+                return Ok(None);
+            }
+        }
+        Ok(Some(ids))
+    }
+    fn reduce_captured_bound(
+        &self,
+        fact: &format::NativeRecoveryFact,
+        expected: u64,
+        fence: u64,
+    ) -> Result<Vec<Row>, StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        let mut connection = self.connection(ConnectionId(fact.connection))?;
+        let id = OperationId {
+            connection: ConnectionId(fact.connection),
+            serial: fact.serial,
+        };
+        let mut operation = self.operation(id)?;
+        if connection.lifecycle != 0 || connection.fence != fence {
+            return Err(StoreError::Disconnected);
+        }
+        if connection.revision != expected
+            || operation.revision != expected
+            || connection.pending != Some(id.serial)
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        if operation.action.is_some() {
+            self.selected_collision_join(&operation)?;
+        }
+        if !matches!(operation.stage, 0 | 1)
+            || operation.native_capture != fact.captured
+            || self.row(&fact.key())?.is_some()
+            || !operation.recovery.contains(&fact.slot)
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let source = d::RecoveryFact::decode(&fact.fact).map_err(|_| StoreError::Corrupt)?;
+        let Some(Row::Recovery(entry)) = self.row(&recovery_key(RecoveryId {
+            operation: id,
+            slot: fact.slot,
+        }))?
+        else {
+            return Err(StoreError::Corrupt);
+        };
+        if entry.captured.as_ref().is_none_or(|origin| {
+            Some(&origin.snapshot) != fact.captured.as_ref()
+                || d::ConflictSnapshot::decode(&origin.snapshot)
+                    .ok()
+                    .and_then(|snapshot| {
+                        snapshot.versions.get(usize::from(origin.version)).cloned()
+                    })
+                    .is_none_or(|version| {
+                        version.side != source.side || version.role + 1 != source.role
+                    })
+        }) || entry.state != 1
+            || entry.reason != 2
+            || entry.side != source.side
+            || entry.path != operation.path
+            || entry
+                .object
+                .as_ref()
+                .is_none_or(|identity| artifact_view(identity) != source.artifact)
+            || entry.content
+                != Some(format::State::File {
+                    sha256: source.content.digest,
+                    bytes: source.content.length,
+                    executable: source.content.executable,
+                })
+            || (!fact.displaced.is_empty()
+                && !operation.native_capture_displaced.contains(&fact.displaced))
+        {
+            return Err(StoreError::Corrupt);
+        }
+        operation.stage = u8::from(
+            self.captured_recovery_ids(&operation, Some(fact))?
+                .is_some(),
+        );
+        connection.revision = format::next(expected)?;
+        operation.revision = connection.revision;
+        Ok(vec![
+            Row::Connection(connection),
+            Row::Operation(operation),
+            Row::NativeRecoveryFact(fact.clone()),
+        ])
+    }
+}
+
+impl ConnectionStore {
+    pub(super) fn reduce_native_conflict_complete(
+        &self,
+        id: OperationId,
+        expected: u64,
+        fence: u64,
+        conflict_expected: u64,
+        capture: [u8; 32],
+        checks: &mut RecoveryChecks<'_>,
+    ) -> Result<Vec<Row>, StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        let mut connection = self.connection(id.connection)?;
+        let mut operation = self.operation(id)?;
+        if connection.lifecycle != 0 || connection.fence != fence {
+            return Err(StoreError::Disconnected);
+        }
+        if connection.revision != expected
+            || operation.revision != expected
+            || connection.pending != Some(id.serial)
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        let bytes = operation
+            .native_capture
+            .as_deref()
+            .ok_or(StoreError::RecoveryRequired)?;
+        let snapshot = d::ConflictSnapshot::decode(bytes).map_err(|_| StoreError::Corrupt)?;
+        if !matches!(operation.stage, 0 | 1)
+            || operation.action.is_some()
+            || snapshot.fence != fence
+            || snapshot.binding_digest().map_err(|_| StoreError::Corrupt)? != capture
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let Some(Row::Conflict(mut conflict)) =
+            self.row(&format::key(3, id.connection.0, id.serial))?
+        else {
+            return Err(StoreError::Corrupt);
+        };
+        if conflict.resolved
+            || conflict.revision != conflict_expected
+            || conflict.native_capture.as_deref() != Some(bytes)
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        let required = self
+            .captured_recovery_ids(&operation, None)?
+            .ok_or(StoreError::RecoveryRequired)?;
+        for recovery_id in required {
+            let Some(Row::Recovery(entry)) = self.row(&recovery_key(recovery_id))? else {
+                return Err(StoreError::Corrupt);
+            };
+            checks.verify(self, &entry)?;
+        }
+        let revision = format::next(expected)?;
+        conflict.revision = revision;
+        operation.revision = revision;
+        operation.stage = 8;
+        connection.revision = revision;
+        connection.pending = None;
+        Ok(vec![
+            Row::Connection(connection),
+            Row::Operation(operation),
+            Row::Conflict(conflict),
+        ])
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ConnectionStore {
+    pub(in super::super) fn record_native_capture(
+        &mut self,
+        live: &mut super::LiveOperation,
+        capture: &mut super::super::transaction::native::NativeConflictCapture<'_>,
+        cancel: &AtomicBool,
+    ) -> Result<(), StoreError> {
+        if !live.action().is_reconciliation() {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.guard()?;
+        self.check_native(live)?;
+        cancelled(cancel)?;
+        capture.validate(live)?;
+        let previous = live.revision();
+        self.append(Change::NativeCapture {
+            snapshot: capture
+                .snapshot()
+                .encode()
+                .map_err(|_| StoreError::Corrupt)?,
+            displaced: capture.displaced(),
+            expected: previous,
+            kind: capture.kind()?,
+        })?;
+        live.revision = format::next(previous)?;
+        live.action = super::ExecutionAction::Captured;
+        capture.advance(live, previous)?;
+        self.check_native(live)
+    }
+    pub(in super::super) fn preserve_native_conflict(
+        &mut self,
+        live: &mut super::LiveOperation,
+        capture: &mut super::super::transaction::native::NativeConflictCapture<'_>,
+        cancel: &AtomicBool,
+    ) -> Result<(), StoreError> {
+        if !matches!(live.action(), super::ExecutionAction::Captured) {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.preserve_captured_versions(live, capture, None, cancel)
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep native guards alive through ordered preservation, fresh rereads, barriers and durable acknowledgements."
+    )]
+    fn preserve_captured_versions(
+        &mut self,
+        live: &mut super::LiveOperation,
+        capture: &mut super::super::transaction::native::NativeConflictCapture<'_>,
+        mut selected: Option<&mut super::VerifiedSelection<'_>>,
+        cancel: &AtomicBool,
+    ) -> Result<(), StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        self.guard()?;
+        self.check_native(live)?;
+        capture.validate(live)?;
+        if let Some(reader) = selected.as_deref_mut() {
+            reader.validate(self, live)?;
+        }
+        let snapshot = capture.snapshot().clone();
+        let encoded = snapshot.encode().map_err(|_| StoreError::Corrupt)?;
+        if self.operation(live.id())?.native_capture.as_ref() != Some(&encoded) {
+            return Err(StoreError::StaleRevision);
+        }
+        for (index, version) in snapshot.versions.iter().enumerate() {
+            let d::State::Regular {
+                object, content, ..
+            } = &version.state
+            else {
+                continue;
+            };
+            let (attempt, displaced) = capture.origin(index)?;
+            let origin = format::CapturedSlot {
+                snapshot: encoded.clone(),
+                version: u8::try_from(index).map_err(|_| StoreError::Corrupt)?,
+            };
+            let mut complete = None;
+            for slot in self.operation(live.id())?.recovery {
+                let id = RecoveryId {
+                    operation: live.id(),
+                    slot,
+                };
+                let Some(Row::Recovery(entry)) = self.row(&recovery_key(id))? else {
+                    return Err(StoreError::Corrupt);
+                };
+                if entry.captured.as_ref() != Some(&origin) {
+                    continue;
+                }
+                if entry.state == 0 {
+                    let previous = live.revision();
+                    self.retain_native_incomplete(live, id)?;
+                    capture.advance(live, previous)?;
+                    if let Some(reader) = selected.as_deref_mut() {
+                        reader.advance(self, live, previous)?;
+                    }
+                } else if entry.state == 1 && complete.is_none() {
+                    complete = Some(entry);
+                }
+            }
+            if let Some(entry) = complete {
+                capture.validate(live)?;
+                if let Some(reader) = selected.as_deref_mut() {
+                    reader.validate(self, live)?;
+                }
+                let context = self.native_read_context(live, capture.deadline(), cancel)?;
+                let reader = self.verify_recovery_with_context(&entry, Some(&context))?;
+                let expected = d::RecoveryFact {
+                    intent: snapshot.binding_digest().map_err(|_| StoreError::Corrupt)?,
+                    recovery: d::Recovery {
+                        connection: entry.connection,
+                        operation: entry.serial,
+                        slot: entry.slot,
+                    },
+                    side: version.side,
+                    role: version.role + 1,
+                    endpoint: *snapshot
+                        .endpoints
+                        .get(usize::from(version.side))
+                        .ok_or(StoreError::Corrupt)?,
+                    object: object.clone(),
+                    content: content.clone(),
+                    artifact: artifact_view(entry.object.as_ref().ok_or(StoreError::Corrupt)?),
+                };
+                let fact = format::NativeRecoveryFact {
+                    captured: Some(encoded.clone()),
+                    connection: entry.connection,
+                    serial: entry.serial,
+                    slot: entry.slot,
+                    attempt,
+                    fact: expected.encode().map_err(|_| StoreError::Corrupt)?,
+                    displaced: displaced.clone(),
+                };
+                match self.row(&fact.key())? {
+                    Some(Row::NativeRecoveryFact(existing)) if existing == fact => {}
+                    None => {
+                        capture.validate(live)?;
+                        if let Some(reader) = selected.as_deref_mut() {
+                            reader.validate(self, live)?;
+                        }
+                        let previous = live.revision();
+                        self.append_native(
+                            Change::NativeBound {
+                                fact,
+                                expected: previous,
+                                fence: live.fence(),
+                            },
+                            &context,
+                        )?;
+                        live.revision = format::next(previous)?;
+                        capture.advance(live, previous)?;
+                        if let Some(reader) = selected.as_deref_mut() {
+                            reader.advance(self, live, previous)?;
+                        }
+                    }
+                    _ => return Err(StoreError::RecoveryRequired),
+                }
+                capture.validate(live)?;
+                if let Some(reader) = selected.as_deref_mut() {
+                    reader.validate(self, live)?;
+                }
+                drop(reader);
+                continue;
+            }
+            let previous = live.revision();
+            let reservation = self.reserve_capture_slot(live, &snapshot, index)?;
+            capture.advance(live, previous)?;
+            if let Some(reader) = selected.as_deref_mut() {
+                reader.advance(self, live, previous)?;
+            }
+            let context = self.native_read_context(live, capture.deadline(), cancel)?;
+            let id = reservation.id;
+            let Some(Row::Recovery(mut entry)) = self.row(&recovery_key(id))? else {
+                return Err(StoreError::Corrupt);
+            };
+            let parent = object_directory(self, id, true)?;
+            let object_name = name(id);
+            let mut target = storage::open_file(&parent, &object_name, true)?;
+            let identity = storage::regular(&target)?;
+            let mut buffer = vec![0; 256 * 1024];
+            let mut count = 0_u64;
+            let mut hash = Sha256::new();
+            loop {
+                cancelled(cancel)?;
+                if let Some(reader) = selected.as_deref_mut() {
+                    reader.retained_check()?;
+                }
+                let read = capture.read_chunk(index, count, &mut buffer)?;
+                if let Some(reader) = selected.as_deref_mut() {
+                    reader.retained_check()?;
+                }
+                if read == 0 {
+                    break;
+                }
+                count = count
+                    .checked_add(read as u64)
+                    .filter(|count| *count <= content.length)
+                    .ok_or(StoreError::LimitExceeded)?;
+                let bytes = buffer.get(..read).ok_or(StoreError::Corrupt)?;
+                target.write_all(bytes)?;
+                hash.update(bytes);
+            }
+            if count != content.length || <[u8; 32]>::from(hash.finalize()) != content.digest {
+                return Err(StoreError::RecoveryRequired);
+            }
+            capture.validate(live)?;
+            if let Some(reader) = selected.as_deref_mut() {
+                reader.validate(self, live)?;
+            }
+            storage::sync_file(&target)?;
+            storage::validate_file(&parent, &object_name, &target, &identity)?;
+            let mut reread = storage::reread_file(&parent, &object_name)?;
+            let reread_identity = storage::regular(&reread)?;
+            if storage::file_identity(&identity) != storage::file_identity(&reread_identity) {
+                return Err(StoreError::IdentityChanged);
+            }
+            let (hash, count) =
+                hash_file_with_context(&mut reread, cancel, content.length, Some(&context))?;
+            if count != content.length
+                || hash != content.digest
+                || !storage::same_snapshot(&reread_identity, &storage::regular(&reread)?)
+            {
+                return Err(StoreError::RecoveryRequired);
+            }
+            storage::validate_recovery_reader(&parent, &object_name, &reread, &reread_identity)?;
+            storage::sync_directory(&parent)?;
+            capture.validate(live)?;
+            if let Some(reader) = selected.as_deref_mut() {
+                reader.validate(self, live)?;
+            }
+            self.check_native(live)?;
+            cancelled(cancel)?;
+            entry.state = 1;
+            entry.content = Some(format::State::File {
+                sha256: content.digest,
+                bytes: content.length,
+                executable: content.executable,
+            });
+            entry.object = Some(format::ObjectIdentity {
+                root: self.storage.identity.clone(),
+                file_id: storage::file_identity(&reread_identity),
+            });
+            let fact = d::RecoveryFact {
+                intent: snapshot.binding_digest().map_err(|_| StoreError::Corrupt)?,
+                recovery: d::Recovery {
+                    connection: id.operation.connection.0,
+                    operation: id.operation.serial,
+                    slot: id.slot,
+                },
+                side: version.side,
+                role: version.role + 1,
+                endpoint: *snapshot
+                    .endpoints
+                    .get(usize::from(version.side))
+                    .ok_or(StoreError::Corrupt)?,
+                object: object.clone(),
+                content: content.clone(),
+                artifact: artifact_view(entry.object.as_ref().ok_or(StoreError::Corrupt)?),
+            };
+            let previous = live.revision();
+            self.append_native(
+                Change::Bytes {
+                    entry,
+                    expected: previous,
+                    fence: live.fence(),
+                },
+                &context,
+            )?;
+            live.revision = format::next(previous)?;
+            #[cfg(test)]
+            super::run_after_native_bytes();
+            capture.advance(live, previous)?;
+            if let Some(reader) = selected.as_deref_mut() {
+                reader.advance(self, live, previous)?;
+            }
+            storage::validate_recovery_reader(&parent, &object_name, &reread, &reread_identity)?;
+            let previous = live.revision();
+            self.append_native(
+                Change::NativeBound {
+                    fact: format::NativeRecoveryFact {
+                        captured: Some(encoded.clone()),
+                        connection: id.operation.connection.0,
+                        serial: id.operation.serial,
+                        slot: id.slot,
+                        attempt,
+                        fact: fact.encode().map_err(|_| StoreError::Corrupt)?,
+                        displaced,
+                    },
+                    expected: previous,
+                    fence: live.fence(),
+                },
+                &context,
+            )?;
+            live.revision = format::next(previous)?;
+            capture.advance(live, previous)?;
+            if let Some(reader) = selected.as_deref_mut() {
+                reader.advance(self, live, previous)?;
+            }
+        }
+        self.check_native(live)
+    }
+    pub(in super::super) fn record_native_conflict(
+        &mut self,
+        live: &mut super::LiveOperation,
+        capture: &mut super::super::transaction::native::NativeConflictCapture<'_>,
+        cancel: &AtomicBool,
+    ) -> Result<DurableAck<super::ConflictRecord>, StoreError> {
+        if !matches!(live.action(), super::ExecutionAction::Captured) {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.guard()?;
+        self.check_native(live)?;
+        capture.validate(live)?;
+        cancelled(cancel)?;
+        let Some(Row::Conflict(conflict)) =
+            self.row(&format::key(3, live.id().connection.0, live.id().serial))?
+        else {
+            return Err(StoreError::RecoveryRequired);
+        };
+        let context = self.native_read_context(live, capture.deadline(), cancel)?;
+        let previous = live.revision();
+        self.append_native(
+            Change::NativeConflictComplete {
+                connection: live.id().connection.0,
+                serial: live.id().serial,
+                expected: previous,
+                fence: live.fence(),
+                conflict_expected: conflict.revision,
+                capture: capture
+                    .snapshot()
+                    .binding_digest()
+                    .map_err(|_| StoreError::Corrupt)?,
+            },
+            &context,
+        )?;
+        live.revision = format::next(previous)?;
+        capture.advance(live, previous)?;
+        let Some(Row::Conflict(conflict)) =
+            self.row(&format::key(3, live.id().connection.0, live.id().serial))?
+        else {
+            return Err(StoreError::Corrupt);
+        };
+        Ok(self.ack(conflict.decode()?))
+    }
+}
+
+impl ConnectionStore {
+    pub(super) fn reserve_capture_slot(
+        &mut self,
+        live: &mut super::LiveOperation,
+        snapshot: &super::super::transaction::native::descriptor::ConflictSnapshot,
+        index: usize,
+    ) -> Result<RecoveryReservation, StoreError> {
+        self.guard()?;
+        self.check_native(live)?;
+        let operation = self.operation(live.id())?;
+        let encoded = snapshot.encode().map_err(|_| StoreError::Corrupt)?;
+        if operation.native_capture.as_ref() != Some(&encoded) {
+            return Err(StoreError::StaleRevision);
+        }
+        let version = snapshot.versions.get(index).ok_or(StoreError::Corrupt)?;
+        let slot =
+            u32::try_from(operation.recovery.len()).map_err(|_| StoreError::LimitExceeded)?;
+        let entry = format::Recovery {
+            captured: Some(format::CapturedSlot {
+                snapshot: encoded,
+                version: u8::try_from(index).map_err(|_| StoreError::Corrupt)?,
+            }),
+            connection: live.id().connection.0,
+            serial: live.id().serial,
+            slot,
+            side: version.side,
+            path: operation.path,
+            reason: 2,
+            state: 0,
+            content: None,
+            object: None,
+            retained: 0,
+        };
+        let id = entry.id();
+        self.append(Change::Reserve {
+            entry,
+            expected: live.revision(),
+            fence: live.fence(),
+        })?;
+        live.revision = format::next(live.revision())?;
+        Ok(RecoveryReservation {
+            id,
+            session: Arc::clone(&self.session),
+            fence: live.fence(),
+        })
+    }
+}
+
+impl ConnectionStore {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep operation/action/revision joins and the complete atomic durable-row transition together."
+    )]
+    pub(super) fn reduce_captured_drain(
+        &self,
+        change: &Change,
+        checks: &mut RecoveryChecks<'_>,
+    ) -> Result<Vec<Row>, StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        let (entry, expected, operation_expected, fence, fact, selected) = match change {
+            Change::NativeCaptureDrain {
+                entry,
+                expected,
+                operation_expected,
+                fence,
+                fact,
+            } => (entry, expected, operation_expected, fence, fact, false),
+            Change::SelectedCaptureDrain {
+                entry,
+                expected,
+                operation_expected,
+                fence,
+                fact,
+            } => (entry, expected, operation_expected, fence, fact, true),
+            _ => return Err(StoreError::Corrupt),
+        };
+        entry.decode()?;
+        let mut connection = self.connection(ConnectionId(entry.connection))?;
+        let mut operation = self.operation(entry.id().operation)?;
+        if connection.revision != *expected
+            || operation.revision != *operation_expected
+            || connection.fence != *fence
+            || connection.pending != Some(entry.serial)
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        if connection.lifecycle == 0
+            || !matches!(operation.stage, 0 | 1)
+            || operation.action.is_some() != selected
+            || entry.reason != 2
+            || entry.path != operation.path
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        if selected {
+            self.selected_collision_join(&operation)?;
+            checks.verify_stopped_selected(self, &operation)?;
+        }
+        let origin = entry
+            .captured
+            .as_ref()
+            .ok_or(StoreError::RecoveryRequired)?;
+        if operation.native_capture.as_ref() != Some(&origin.snapshot) {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let snapshot =
+            d::ConflictSnapshot::decode(&origin.snapshot).map_err(|_| StoreError::Corrupt)?;
+        operation.validate_capture(&snapshot)?;
+        if snapshot.fence >= *fence {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let version = snapshot
+            .versions
+            .get(usize::from(origin.version))
+            .ok_or(StoreError::Corrupt)?;
+        if version.side != entry.side || !matches!(version.state, d::State::Regular { .. }) {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let mut bound_row = None;
+        let mut conflict_row = None;
+        match entry.state {
+            1 if operation.recovery.contains(&entry.slot) => {
+                let Some(Row::Recovery(mut previous)) = self.row(&entry.key())? else {
+                    return Err(StoreError::Corrupt);
+                };
+                if !matches!(previous.state, 0 | 1) || (previous.state == 1 && previous != *entry) {
+                    return Err(StoreError::RecoveryRequired);
+                }
+                previous.state = 1;
+                previous.content.clone_from(&entry.content);
+                previous.object.clone_from(&entry.object);
+                if previous != *entry {
+                    return Err(StoreError::Corrupt);
+                }
+                let fact = fact.as_ref().ok_or(StoreError::RecoveryRequired)?;
+                fact.validate()?;
+                let source =
+                    d::RecoveryFact::decode(&fact.fact).map_err(|_| StoreError::Corrupt)?;
+                let d::State::Regular {
+                    object, content, ..
+                } = &version.state
+                else {
+                    return Err(StoreError::Corrupt);
+                };
+                if fact.connection != entry.connection
+                    || fact.serial != entry.serial
+                    || fact.slot != entry.slot
+                    || fact.captured.as_ref() != Some(&origin.snapshot)
+                    || source.side != version.side
+                    || source.role != version.role + 1
+                    || &source.object != object
+                    || &source.content != content
+                    || entry.object.as_ref().is_none_or(|artifact| {
+                        artifact.root != self.storage.identity
+                            || artifact_view(artifact) != source.artifact
+                    })
+                    || entry.content
+                        != Some(format::State::File {
+                            sha256: content.digest,
+                            bytes: content.length,
+                            executable: content.executable,
+                        })
+                    || (!fact.displaced.is_empty()
+                        && !operation.native_capture_displaced.contains(&fact.displaced))
+                    || self.row(&fact.key())?.is_some()
+                {
+                    return Err(StoreError::RecoveryRequired);
+                }
+                checks.verify(self, entry)?;
+                let Some(Row::Conflict(mut conflict)) =
+                    self.row(&format::key(3, entry.connection, entry.serial))?
+                else {
+                    return Err(StoreError::Corrupt);
+                };
+                if conflict.resolved || conflict.native_capture.as_ref() != Some(&origin.snapshot) {
+                    return Err(StoreError::RecoveryRequired);
+                }
+                if !conflict.preserved.contains(&entry.slot) {
+                    conflict.preserved.push(entry.slot);
+                    conflict.preserved.sort_unstable();
+                }
+                conflict.revision = format::next(*expected)?;
+                conflict_row = Some(Row::Conflict(conflict));
+                bound_row = Some(Row::NativeRecoveryFact(fact.clone()));
+            }
+            0 if fact.is_none()
+                && entry.slot as usize == operation.recovery.len()
+                && operation.recovery.len() < 128
+                && self.row(&entry.key())?.is_none() =>
+            {
+                operation.recovery.push(entry.slot);
+            }
+            5 if fact.is_none() && operation.recovery.contains(&entry.slot) => {
+                let Some(Row::Recovery(mut previous)) = self.row(&entry.key())? else {
+                    return Err(StoreError::Corrupt);
+                };
+                if previous.state != 0 {
+                    return Err(StoreError::RecoveryRequired);
+                }
+                previous.state = 5;
+                if previous != *entry {
+                    return Err(StoreError::Corrupt);
+                }
+            }
+            _ => return Err(StoreError::RecoveryRequired),
+        }
+        connection.revision = format::next(*expected)?;
+        operation.revision = connection.revision;
+        // Accounting deliberately preserves stage, pending execution and the fence.
+        let mut rows = vec![
+            Row::Connection(connection),
+            Row::Operation(operation),
+            Row::Recovery(entry.clone()),
+        ];
+        if let Some(row) = conflict_row {
+            rows.push(row);
+        }
+        if let Some(row) = bound_row {
+            rows.push(row);
+        }
+        Ok(rows)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ConnectionStore {
+    fn append_captured_drain(
+        &mut self,
+        context: &mut super::RecoveryContext,
+        capture: &mut super::super::transaction::native::NativeConflictCapture<'_>,
+        mut selected: Option<&mut super::VerifiedSelection<'_>>,
+        entry: format::Recovery,
+        fact: Option<format::NativeRecoveryFact>,
+        cancel: &AtomicBool,
+    ) -> Result<(), StoreError> {
+        self.check_recovery_context(context)?;
+        let snapshot = if selected.is_some() {
+            self.selected_collision_snapshot(context)?
+        } else {
+            self.native_capture_snapshot(context)?
+        };
+        if !context.recovery_only || capture.snapshot() != &snapshot {
+            return Err(StoreError::RecoveryRequired);
+        }
+        capture.validate_recovery(context)?;
+        if let Some(reader) = selected.as_deref_mut() {
+            reader.validate_recovery(self, context)?;
+        }
+        let paid = self.recovery_read_context(context, capture.deadline(), cancel)?;
+        let previous = context.revision;
+        let event = if selected.is_some() {
+            Change::SelectedCaptureDrain {
+                entry,
+                expected: previous,
+                operation_expected: context.operation_revision,
+                fence: context.fence,
+                fact,
+            }
+        } else {
+            Change::NativeCaptureDrain {
+                entry,
+                expected: previous,
+                operation_expected: context.operation_revision,
+                fence: context.fence,
+                fact,
+            }
+        };
+        self.append_native(event, &paid)?;
+        context.revision = format::next(previous)?;
+        context.operation_revision = context.revision;
+        capture.advance_recovery(context, previous)?;
+        if let Some(reader) = selected.as_deref_mut() {
+            reader.advance_inspection(previous, context)?;
+            reader.validate_recovery(self, context)?;
+        }
+        self.check_recovery_context(context)
+    }
+    /// Private accounting of exactly the recorded pre-fence versions. No active
+    /// operation, namespace admission, completion or publication token is minted.
+    pub(in super::super) fn drain_native_capture(
+        &mut self,
+        context: &mut super::RecoveryContext,
+        capture: &mut super::super::transaction::native::NativeConflictCapture<'_>,
+        cancel: &AtomicBool,
+    ) -> Result<(), StoreError> {
+        if !matches!(context.action(), super::ExecutionAction::Captured) {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.drain_captured_versions(context, capture, None, cancel)
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep native guards alive through ordered preservation, fresh rereads, barriers and durable acknowledgements."
+    )]
+    fn drain_captured_versions(
+        &mut self,
+        context: &mut super::RecoveryContext,
+        capture: &mut super::super::transaction::native::NativeConflictCapture<'_>,
+        mut selected: Option<&mut super::VerifiedSelection<'_>>,
+        cancel: &AtomicBool,
+    ) -> Result<(), StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        self.guard()?;
+        self.check_recovery_context(context)?;
+        let canonical = if selected.is_some() {
+            self.selected_collision_snapshot(context)?
+        } else {
+            self.native_capture_snapshot(context)?
+        };
+        if !context.recovery_only
+            || capture.snapshot() != &canonical
+            || capture.snapshot().fence >= context.fence
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        capture.validate_recovery(context)?;
+        if let Some(reader) = selected.as_deref_mut() {
+            reader.validate_recovery(self, context)?;
+        }
+        let snapshot = capture.snapshot().clone();
+        let encoded = snapshot.encode().map_err(|_| StoreError::Corrupt)?;
+        for (index, version) in snapshot.versions.iter().enumerate() {
+            let d::State::Regular {
+                object, content, ..
+            } = &version.state
+            else {
+                continue;
+            };
+            let (attempt, displaced) = capture.origin(index)?;
+            let origin = format::CapturedSlot {
+                snapshot: encoded.clone(),
+                version: u8::try_from(index).map_err(|_| StoreError::Corrupt)?,
+            };
+            let mut complete = None;
+            for slot in self.operation(context.id)?.recovery {
+                let Some(Row::Recovery(mut entry)) = self.row(&recovery_key(RecoveryId {
+                    operation: context.id,
+                    slot,
+                }))?
+                else {
+                    return Err(StoreError::Corrupt);
+                };
+                if entry.captured.as_ref() != Some(&origin) {
+                    continue;
+                }
+                if entry.state == 0 {
+                    entry.state = 5;
+                    self.append_captured_drain(
+                        context,
+                        capture,
+                        selected.as_deref_mut(),
+                        entry,
+                        None,
+                        cancel,
+                    )?;
+                } else if entry.state == 1 && complete.is_none() {
+                    complete = Some(entry);
+                }
+            }
+            let make_fact =
+                |entry: &format::Recovery| -> Result<format::NativeRecoveryFact, StoreError> {
+                    let fact = d::RecoveryFact {
+                        intent: snapshot.binding_digest().map_err(|_| StoreError::Corrupt)?,
+                        recovery: d::Recovery {
+                            connection: entry.connection,
+                            operation: entry.serial,
+                            slot: entry.slot,
+                        },
+                        side: version.side,
+                        role: version.role + 1,
+                        endpoint: *snapshot
+                            .endpoints
+                            .get(usize::from(version.side))
+                            .ok_or(StoreError::Corrupt)?,
+                        object: object.clone(),
+                        content: content.clone(),
+                        artifact: artifact_view(entry.object.as_ref().ok_or(StoreError::Corrupt)?),
+                    };
+                    Ok(format::NativeRecoveryFact {
+                        captured: Some(encoded.clone()),
+                        connection: entry.connection,
+                        serial: entry.serial,
+                        slot: entry.slot,
+                        attempt,
+                        displaced: displaced.clone(),
+                        fact: fact.encode().map_err(|_| StoreError::Corrupt)?,
+                    })
+                };
+            if let Some(entry) = complete {
+                let paid = self.recovery_read_context(context, capture.deadline(), cancel)?;
+                let reader = self.verify_recovery_with_context(&entry, Some(&paid))?;
+                capture.validate_recovery(context)?;
+                if let Some(reader) = selected.as_deref_mut() {
+                    reader.validate_recovery(self, context)?;
+                }
+                let fact = make_fact(&entry)?;
+                match self.row(&fact.key())? {
+                    Some(Row::NativeRecoveryFact(existing)) if existing == fact => {}
+                    None => self.append_captured_drain(
+                        context,
+                        capture,
+                        selected.as_deref_mut(),
+                        entry,
+                        Some(fact),
+                        cancel,
+                    )?,
+                    _ => return Err(StoreError::RecoveryRequired),
+                }
+                capture.validate_recovery(context)?;
+                if let Some(reader) = selected.as_deref_mut() {
+                    reader.validate_recovery(self, context)?;
+                }
+                drop(reader);
+                continue;
+            }
+            let operation = self.operation(context.id)?;
+            let mut entry = format::Recovery {
+                captured: Some(origin),
+                connection: context.id.connection.0,
+                serial: context.id.serial,
+                slot: u32::try_from(operation.recovery.len())
+                    .map_err(|_| StoreError::LimitExceeded)?,
+                side: version.side,
+                path: operation.path,
+                reason: 2,
+                state: 0,
+                content: None,
+                object: None,
+                retained: 0,
+            };
+            let id = entry.id();
+            self.append_captured_drain(
+                context,
+                capture,
+                selected.as_deref_mut(),
+                entry.clone(),
+                None,
+                cancel,
+            )?;
+            let paid = self.recovery_read_context(context, capture.deadline(), cancel)?;
+            let directory = object_directory(self, id, true)?;
+            let object_name = name(id);
+            let mut target = storage::open_file(&directory, &object_name, true)?;
+            let identity = storage::regular(&target)?;
+            let mut buffer = vec![0; 256 * 1024];
+            let mut count = 0_u64;
+            let mut hash = Sha256::new();
+            loop {
+                paid.check()?;
+                if let Some(reader) = selected.as_deref_mut() {
+                    reader.retained_check()?;
+                }
+                let read = capture.read_chunk(index, count, &mut buffer)?;
+                if let Some(reader) = selected.as_deref_mut() {
+                    reader.retained_check()?;
+                }
+                if read == 0 {
+                    break;
+                }
+                count = count
+                    .checked_add(read as u64)
+                    .filter(|size| *size <= content.length)
+                    .ok_or(StoreError::LimitExceeded)?;
+                let bytes = buffer.get(..read).ok_or(StoreError::Corrupt)?;
+                target.write_all(bytes)?;
+                hash.update(bytes);
+                #[cfg(test)]
+                super::run_after_capture_chunk();
+            }
+            if count != content.length || <[u8; 32]>::from(hash.finalize()) != content.digest {
+                return Err(StoreError::RecoveryRequired);
+            }
+            capture.validate_recovery(context)?;
+            if let Some(reader) = selected.as_deref_mut() {
+                reader.validate_recovery(self, context)?;
+            }
+            storage::sync_file(&target)?;
+            storage::validate_file(&directory, &object_name, &target, &identity)?;
+            let mut reread = storage::reread_file(&directory, &object_name)?;
+            let metadata = storage::regular(&reread)?;
+            if storage::file_identity(&metadata) != storage::file_identity(&identity) {
+                return Err(StoreError::IdentityChanged);
+            }
+            let (digest, size) =
+                hash_file_with_context(&mut reread, cancel, content.length, Some(&paid))?;
+            if digest != content.digest
+                || size != content.length
+                || !storage::same_snapshot(&metadata, &storage::regular(&reread)?)
+            {
+                return Err(StoreError::RecoveryRequired);
+            }
+            storage::validate_recovery_reader(&directory, &object_name, &reread, &metadata)?;
+            storage::sync_directory(&directory)?;
+            capture.validate_recovery(context)?;
+            if let Some(reader) = selected.as_deref_mut() {
+                reader.validate_recovery(self, context)?;
+            }
+            entry.state = 1;
+            entry.content = Some(format::State::File {
+                sha256: digest,
+                bytes: size,
+                executable: content.executable,
+            });
+            entry.object = Some(format::ObjectIdentity {
+                root: self.storage.identity.clone(),
+                file_id: storage::file_identity(&metadata),
+            });
+            let fact = make_fact(&entry)?;
+            self.append_captured_drain(
+                context,
+                capture,
+                selected.as_deref_mut(),
+                entry,
+                Some(fact),
+                cancel,
+            )?;
+            storage::validate_recovery_reader(&directory, &object_name, &reread, &metadata)?;
+        }
+        capture.validate_recovery(context)?;
+        if let Some(reader) = selected.as_deref_mut() {
+            reader.validate_recovery(self, context)?;
+        }
+        self.check_recovery_context(context)
+    }
+}
+
+impl ConnectionStore {
+    fn selected_recovery_row(
+        &self,
+        live: &super::LiveOperation,
+    ) -> Result<format::Recovery, StoreError> {
+        self.check_native(live)?;
+        self.selected_recovery_row_for(live.id())
+    }
+    fn selected_recovery_row_for(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<format::Recovery, StoreError> {
+        let operation = self.operation(operation_id)?;
+        let Some(format::SelectedAction::Restore { selected, .. }) = &operation.action else {
+            return Err(StoreError::RecoveryRequired);
+        };
+        let format::SelectedVersion::Recovery {
+            operation: serial,
+            slot,
+            content,
+        } = selected
+        else {
+            return Err(StoreError::RecoveryRequired);
+        };
+        let id = RecoveryId {
+            operation: OperationId {
+                connection: operation_id.connection,
+                serial: *serial,
+            },
+            slot: *slot,
+        };
+        let Some(Row::Recovery(entry)) = self.row(&recovery_key(id))? else {
+            return Err(StoreError::RecoveryRequired);
+        };
+        entry.decode()?;
+        if !matches!(entry.state, 1 | 2)
+            || entry.path != operation.path
+            || entry.content.as_ref() != Some(content)
+            || entry
+                .object
+                .as_ref()
+                .is_none_or(|object| object.root != self.storage.identity)
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        Ok(entry)
+    }
+    pub(in super::super) fn open_verified_recovery<'a>(
+        &mut self,
+        live: &super::LiveOperation,
+        deadline: Instant,
+        cancel: &'a AtomicBool,
+    ) -> Result<super::VerifiedRecoveryRead<'a>, StoreError> {
+        self.guard()?;
+        let selected = self.selected_recovery_row(live)?;
+        let reads = self.native_read_context(live, deadline, cancel)?;
+        let parent = object_directory(self, selected.id(), false)?;
+        let object = selected.object.as_ref().ok_or(StoreError::Corrupt)?;
+        let object_name = name(selected.id());
+        #[cfg(not(windows))]
+        let file = storage::reread_file(&parent, &object_name)?;
+        #[cfg(windows)]
+        let file = storage::guarded_reader(
+            &parent,
+            &object_name,
+            object.file_id,
+            self.recovery_guards.get(&selected.key()),
+        )?;
+        let identity = storage::recovery_metadata(&file)?;
+        if storage::file_identity(&identity) != object.file_id.require_platform()? {
+            return Err(StoreError::IdentityChanged);
+        }
+        let mut reader = super::VerifiedRecoveryRead {
+            failed: false,
+            id: live.id(),
+            revision: live.revision(),
+            fence: live.fence(),
+            selected,
+            parent,
+            file,
+            identity,
+            reads,
+        };
+        reader.validate(self, live)?;
+        Ok(reader)
+    }
+}
+impl super::VerifiedRecoveryRead<'_> {
+    pub(in super::super) fn retained_check(&mut self) -> Result<(), StoreError> {
+        let result = self.metadata();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    fn metadata(&self) -> Result<(), StoreError> {
+        if self.failed {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.reads.check()?;
+        if !storage::same_snapshot(&self.identity, &storage::recovery_metadata(&self.file)?) {
+            return Err(StoreError::RecoveryRequired);
+        }
+        storage::validate_recovery_reader(
+            &self.parent,
+            &name(self.selected.id()),
+            &self.file,
+            &self.identity,
+        )?;
+        self.reads.check()
+    }
+    fn scope(
+        &self,
+        store: &ConnectionStore,
+        live: &super::LiveOperation,
+    ) -> Result<(), StoreError> {
+        if self.id != live.id()
+            || self.revision != live.revision()
+            || self.fence != live.fence()
+            || !self.reads.lifetime.ptr_eq(live.lifetime())
+            || store.selected_recovery_row(live)? != self.selected
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        Ok(())
+    }
+    pub(in super::super) fn validate(
+        &mut self,
+        store: &ConnectionStore,
+        live: &super::LiveOperation,
+    ) -> Result<(), StoreError> {
+        let result = self.validate_inner(store, live);
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    fn validate_inner(
+        &mut self,
+        store: &ConnectionStore,
+        live: &super::LiveOperation,
+    ) -> Result<(), StoreError> {
+        self.scope(store, live)?;
+        self.verify_bytes()?;
+        store.check_native(live)
+    }
+    pub(in super::super) fn advance(
+        &mut self,
+        store: &ConnectionStore,
+        live: &super::LiveOperation,
+        previous: u64,
+    ) -> Result<(), StoreError> {
+        if self.revision != previous || previous.checked_add(1) != Some(live.revision()) {
+            self.failed = true;
+            return Err(StoreError::StaleRevision);
+        }
+        self.revision = live.revision();
+        self.validate(store, live)
+    }
+    pub(in super::super) fn read_chunk(
+        &mut self,
+        store: &ConnectionStore,
+        live: &super::LiveOperation,
+        offset: u64,
+        buffer: &mut [u8],
+    ) -> Result<usize, StoreError> {
+        let result = (|| {
+            self.scope(store, live)?;
+            let Some(format::State::File { bytes, .. }) = self.selected.content else {
+                return Err(StoreError::Corrupt);
+            };
+            if buffer.len() > 256 * 1024 || offset > bytes {
+                return Err(StoreError::LimitExceeded);
+            }
+            self.metadata()?;
+            self.file.seek(SeekFrom::Start(offset))?;
+            self.reads.charge(buffer.len() as u64)?;
+            let read = self.file.read(buffer)?;
+            self.metadata()?;
+            Ok(read)
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    pub(in super::super) fn binding(
+        &self,
+    ) -> Result<
+        (
+            RecoveryId,
+            super::super::transaction::native::descriptor::Artifact,
+            super::super::transaction::native::descriptor::Content,
+        ),
+        StoreError,
+    > {
+        if self.failed {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let Some(format::State::File {
+            sha256,
+            bytes,
+            executable,
+        }) = self.selected.content
+        else {
+            return Err(StoreError::Corrupt);
+        };
+        Ok((
+            self.selected.id(),
+            artifact_view(self.selected.object.as_ref().ok_or(StoreError::Corrupt)?),
+            super::super::transaction::native::descriptor::Content {
+                digest: sha256,
+                length: bytes,
+                executable,
+            },
+        ))
+    }
+}
+
+impl ConnectionStore {
+    pub(in super::super) fn open_selected_recovery_reader<'a>(
+        &mut self,
+        context: &super::RecoveryContext,
+        deadline: Instant,
+        cancel: &'a AtomicBool,
+    ) -> Result<super::VerifiedRecoveryRead<'a>, StoreError> {
+        self.guard()?;
+        self.check_recovery_context(context)?;
+        let selected = self.selected_recovery_row_for(context.id())?;
+        let reads = self.recovery_read_context(context, deadline, cancel)?;
+        let parent = object_directory(self, selected.id(), false)?;
+        let object = selected.object.as_ref().ok_or(StoreError::Corrupt)?;
+        let object_name = name(selected.id());
+        #[cfg(not(windows))]
+        let file = storage::reread_file(&parent, &object_name)?;
+        #[cfg(windows)]
+        let file = storage::guarded_reader(
+            &parent,
+            &object_name,
+            object.file_id,
+            self.recovery_guards.get(&selected.key()),
+        )?;
+        let identity = storage::recovery_metadata(&file)?;
+        if storage::file_identity(&identity) != object.file_id.require_platform()? {
+            return Err(StoreError::IdentityChanged);
+        }
+        let mut reader = super::VerifiedRecoveryRead {
+            failed: false,
+            id: context.id(),
+            revision: context.revision(),
+            fence: context.fence(),
+            selected,
+            parent,
+            file,
+            identity,
+            reads,
+        };
+        reader.validate_recovery(self, context)?;
+        Ok(reader)
+    }
+}
+impl super::VerifiedRecoveryRead<'_> {
+    pub(in super::super) fn validate_recovery(
+        &mut self,
+        store: &ConnectionStore,
+        context: &super::RecoveryContext,
+    ) -> Result<(), StoreError> {
+        let result = (|| {
+            store.check_recovery_context(context)?;
+            if self.id != context.id()
+                || self.revision != context.revision()
+                || self.fence != context.fence()
+                || !self.reads.lifetime.ptr_eq(context.lifetime())
+                || store.selected_recovery_row_for(context.id())? != self.selected
+            {
+                return Err(StoreError::StaleRevision);
+            }
+            self.verify_bytes()?;
+            store.check_recovery_context(context)
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    fn verify_bytes(&mut self) -> Result<(), StoreError> {
+        self.metadata()?;
+        let Some(format::State::File { sha256, bytes, .. }) = self.selected.content else {
+            return Err(StoreError::Corrupt);
+        };
+        self.file.seek(SeekFrom::Start(0))?;
+        let (digest, size) =
+            hash_file_with_context(&mut self.file, self.reads.cancel, bytes, Some(&self.reads))?;
+        if digest != sha256 || size != bytes {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.metadata()
+    }
+    #[cfg(target_os = "linux")]
+    pub(in super::super) fn activate(
+        &mut self,
+        store: &ConnectionStore,
+        live: &super::LiveOperation,
+    ) -> Result<(), StoreError> {
+        self.validate(store, live)?;
+        if self.reads.recovery_only {
+            self.failed = true;
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.reads.inspection_only = false;
+        Ok(())
+    }
+}
+
+impl ConnectionStore {
+    pub(super) fn selected_collision_join(
+        &self,
+        operation: &format::Operation,
+    ) -> Result<format::ConflictData, StoreError> {
+        if !matches!(
+            operation.decode()?.action,
+            super::ExecutionAction::SelectedCollision(_)
+        ) {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let Some(action) = &operation.action else {
+            return Err(StoreError::Corrupt);
+        };
+        self.selected_descriptor(operation, action)?;
+        let Some(Row::Conflict(conflict)) =
+            self.row(&format::key(3, operation.connection, operation.serial))?
+        else {
+            return Err(StoreError::RecoveryRequired);
+        };
+        conflict.decode()?;
+        if conflict.kind != 3
+            || conflict.path != operation.path
+            || conflict.native_capture != operation.native_capture
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        Ok(conflict)
+    }
+}
+
+impl ConnectionStore {
+    pub(super) fn reduce_selected_collision_complete(
+        &self,
+        id: OperationId,
+        expected: u64,
+        fence: u64,
+        conflict_expected: u64,
+        digest: [u8; 32],
+        checks: &mut RecoveryChecks<'_>,
+    ) -> Result<Vec<Row>, StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        let mut connection = self.connection(id.connection)?;
+        let mut operation = self.operation(id)?;
+        let mut conflict = self.selected_collision_join(&operation)?;
+        let snapshot = d::ConflictSnapshot::decode(
+            operation
+                .native_capture
+                .as_deref()
+                .ok_or(StoreError::RecoveryRequired)?,
+        )
+        .map_err(|_| StoreError::Corrupt)?;
+        if connection.lifecycle != 0 || connection.fence != fence || snapshot.fence != fence {
+            return Err(StoreError::Disconnected);
+        }
+        if connection.revision != expected
+            || operation.revision != expected
+            || connection.pending != Some(id.serial)
+            || conflict.revision != conflict_expected
+            || conflict.resolved
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        if operation.stage != 1
+            || snapshot.binding_digest().map_err(|_| StoreError::Corrupt)? != digest
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        checks.verify_selected(self, &operation)?;
+        let required = self
+            .captured_recovery_ids(&operation, None)?
+            .ok_or(StoreError::RecoveryRequired)?;
+        let mut versions = Vec::new();
+        for id in required {
+            let Some(Row::Recovery(mut entry)) = self.row(&recovery_key(id))? else {
+                return Err(StoreError::Corrupt);
+            };
+            checks.verify(self, &entry)?;
+            entry.state = 2;
+            entry.retained = 0;
+            versions.push(Row::Recovery(entry));
+        }
+        let selected = if matches!(
+            &operation.action,
+            Some(format::SelectedAction::Restore {
+                selected: format::SelectedVersion::Recovery { .. },
+                ..
+            })
+        ) {
+            let mut selected = self.selected_recovery_row_for(id)?;
+            selected.retained = 0;
+            Some(selected)
+        } else {
+            None
+        };
+        let revision = format::next(expected)?;
+        operation.revision = revision;
+        operation.stage = 10;
+        conflict.revision = revision;
+        connection.revision = revision;
+        connection.pending = None;
+        operation.decode()?;
+        let mut rows = vec![
+            Row::Connection(connection),
+            Row::Operation(operation),
+            Row::Conflict(conflict),
+        ];
+        if let Some(selected) = selected {
+            rows.push(Row::Recovery(selected));
+        }
+        rows.extend(versions);
+        Ok(rows)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ConnectionStore {
+    pub(in super::super) fn record_selected_collision(
+        &mut self,
+        live: &mut super::LiveOperation,
+        proof: &mut super::super::transaction::native::NativeSelectedCollision<'_>,
+        cancel: &AtomicBool,
+    ) -> Result<(), StoreError> {
+        if !matches!(live.action(), super::ExecutionAction::Selected(_)) {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.guard()?;
+        proof.validate(self, live)?;
+        cancelled(cancel)?;
+        let (capture, _) = proof.parts();
+        let context = self.native_read_context(live, capture.deadline(), cancel)?;
+        let previous = live.revision();
+        self.append_native(
+            Change::NativeSelectedCollision {
+                snapshot: capture
+                    .snapshot()
+                    .encode()
+                    .map_err(|_| StoreError::Corrupt)?,
+                expected: previous,
+            },
+            &context,
+        )?;
+        live.revision = format::next(previous)?;
+        live.action = self.operation(live.id())?.decode()?.action;
+        proof.captured(self, live, previous)
+    }
+    pub(in super::super) fn preserve_selected_collision(
+        &mut self,
+        live: &mut super::LiveOperation,
+        proof: &mut super::super::transaction::native::NativeSelectedCollision<'_>,
+        cancel: &AtomicBool,
+    ) -> Result<(), StoreError> {
+        if !matches!(live.action(), super::ExecutionAction::SelectedCollision(_)) {
+            return Err(StoreError::RecoveryRequired);
+        }
+        proof.validate(self, live)?;
+        let (capture, reader) = proof.parts();
+        self.preserve_captured_versions(live, capture, Some(reader), cancel)
+    }
+    pub(in super::super) fn complete_selected_collision(
+        &mut self,
+        live: &mut super::LiveOperation,
+        proof: &mut super::super::transaction::native::NativeSelectedCollision<'_>,
+        cancel: &AtomicBool,
+    ) -> Result<DurableAck<super::ConflictRecord>, StoreError> {
+        if !matches!(live.action(), super::ExecutionAction::SelectedCollision(_)) {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.guard()?;
+        proof.validate(self, live)?;
+        cancelled(cancel)?;
+        let conflict = self.selected_collision_join(&self.operation(live.id())?)?;
+        let (capture, reader) = proof.parts();
+        let context = self.native_read_context(live, capture.deadline(), cancel)?;
+        let previous = live.revision();
+        self.append_native(
+            Change::SelectedCollisionComplete {
+                connection: live.id().connection.0,
+                serial: live.id().serial,
+                expected: previous,
+                fence: live.fence(),
+                conflict_expected: conflict.revision,
+                capture: capture
+                    .snapshot()
+                    .binding_digest()
+                    .map_err(|_| StoreError::Corrupt)?,
+            },
+            &context,
+        )?;
+        live.revision = format::next(previous)?;
+        capture.advance(live, previous)?;
+        reader.retained_check()?;
+        Ok(self.ack(self.conflict_record(super::ConflictId {
+            connection: live.id().connection,
+            serial: live.id().serial,
+        })?))
+    }
+}
+
+impl RecoveryChecks<'_> {
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "Windows retains verified recovery readers in self through the dependent durable transition."
+        )
+    )]
+    pub(super) fn verify_stopped_selected(
+        &mut self,
+        store: &ConnectionStore,
+        operation: &format::Operation,
+    ) -> Result<(), StoreError> {
+        let action = operation
+            .action
+            .as_ref()
+            .ok_or(StoreError::RecoveryRequired)?;
+        store.selected_descriptor(operation, action)?;
+        let id = OperationId {
+            connection: ConnectionId(operation.connection),
+            serial: operation.serial,
+        };
+        if operation.native_budget.is_none() {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let format::SelectedAction::Restore { selected, .. } = action;
+        if matches!(selected, format::SelectedVersion::Tombstone { .. }) {
+            return match &self.mode {
+                super::VerificationMode::NativeReplay(replayed) if *replayed == id => Ok(()),
+                super::VerificationMode::NativeLive(context)
+                    if context.id == id
+                        && context.recovery_only
+                        && context
+                            .lifetime
+                            .ptr_eq(&Arc::downgrade(&store.native_lifetime)) =>
+                {
+                    store.validate()?;
+                    context.check()
+                }
+                _ => Err(StoreError::RecoveryRequired),
+            };
+        }
+        let entry = store.selected_recovery_row_for(id)?;
+        match &self.mode {
+            super::VerificationMode::NativeReplay(replayed) if *replayed == id => {
+                entry
+                    .object
+                    .as_ref()
+                    .ok_or(StoreError::RecoveryRequired)?
+                    .file_id
+                    .require_platform()?;
+                Ok(())
+            }
+            super::VerificationMode::NativeLive(context)
+                if context.id == id
+                    && context.recovery_only
+                    && context
+                        .lifetime
+                        .ptr_eq(&Arc::downgrade(&store.native_lifetime)) =>
+            {
+                store.validate()?;
+                context.check()?;
+                let reader = store.verify_recovery_file(&entry, Some(context))?;
+                #[cfg(windows)]
+                self.readers.push(reader);
+                #[cfg(not(windows))]
+                drop(reader);
+                Ok(())
+            }
+            _ => Err(StoreError::RecoveryRequired),
+        }
+    }
+}
+
+impl super::VerifiedRecoveryRead<'_> {
+    #[cfg(target_os = "linux")]
+    pub(in super::super) fn advance_inspection(
+        &mut self,
+        previous: u64,
+        context: &super::RecoveryContext,
+    ) -> Result<(), StoreError> {
+        if !context.recovery_only()
+            || self.revision != previous
+            || previous.checked_add(1) != Some(context.revision())
+            || self.id != context.id()
+            || self.fence != context.fence()
+            || !self.reads.lifetime.ptr_eq(context.lifetime())
+        {
+            self.failed = true;
+            return Err(StoreError::StaleRevision);
+        }
+        self.revision = context.revision();
+        self.retained_check()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ConnectionStore {
+    pub(in super::super) fn drain_selected_capture(
+        &mut self,
+        context: &mut super::RecoveryContext,
+        proof: &mut super::super::transaction::native::NativeSelectedCollision<'_>,
+        cancel: &AtomicBool,
+    ) -> Result<(), StoreError> {
+        if !context.recovery_only
+            || !matches!(
+                context.action(),
+                super::ExecutionAction::SelectedCollision(_)
+            )
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        proof.validate_recovery(self, context)?;
+        let (capture, reader) = proof.parts();
+        self.drain_captured_versions(context, capture, Some(reader), cancel)
+    }
+}
+
+impl ConnectionStore {
+    pub(in super::super) fn open_verified_tombstone<'a>(
+        &mut self,
+        live: &super::LiveOperation,
+        deadline: Instant,
+        cancel: &'a AtomicBool,
+    ) -> Result<super::VerifiedSelection<'a>, StoreError> {
+        self.guard()?;
+        self.check_native(live)?;
+        let action = self
+            .operation(live.id())?
+            .action
+            .ok_or(StoreError::RecoveryRequired)?;
+        let mut proof = super::VerifiedSelection::Tombstone(super::VerifiedTombstoneRead {
+            failed: false,
+            revision: live.revision(),
+            fence: live.fence(),
+            action,
+            reads: self.native_read_context(live, deadline, cancel)?,
+        });
+        proof.validate(self, live)?;
+        Ok(proof)
+    }
+}
+impl super::VerifiedTombstoneRead<'_> {
+    fn retained_check(&mut self) -> Result<(), StoreError> {
+        let result = if self.failed {
+            Err(StoreError::RecoveryRequired)
+        } else {
+            self.reads.check()
+        };
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    fn scope(
+        &mut self,
+        store: &ConnectionStore,
+        id: OperationId,
+        revision: u64,
+        fence: u64,
+        lifetime: &std::sync::Weak<()>,
+    ) -> Result<(), StoreError> {
+        let result = (|| {
+            self.retained_check()?;
+            if self.reads.id != id
+                || self.revision != revision
+                || self.fence != fence
+                || !self.reads.lifetime.ptr_eq(lifetime)
+            {
+                return Err(StoreError::StaleRevision);
+            }
+            let operation = store.operation(id)?;
+            if operation.action.as_ref() != Some(&self.action) {
+                return Err(StoreError::StaleRevision);
+            }
+            store.selected_tombstone_descriptor(&operation, &self.action)?;
+            self.retained_check()
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+}
+impl super::VerifiedSelection<'_> {
+    pub(in super::super) fn validate(
+        &mut self,
+        store: &ConnectionStore,
+        live: &super::LiveOperation,
+    ) -> Result<(), StoreError> {
+        match self {
+            Self::Recovery(reader) => reader.validate(store, live),
+            Self::Tombstone(reader) => {
+                let result = store.check_native(live).and_then(|()| {
+                    reader.scope(
+                        store,
+                        live.id(),
+                        live.revision(),
+                        live.fence(),
+                        live.lifetime(),
+                    )
+                });
+                if result.is_err() {
+                    reader.failed = true;
+                }
+                result
+            }
+        }
+    }
+    pub(in super::super) fn retained_check(&mut self) -> Result<(), StoreError> {
+        match self {
+            Self::Recovery(reader) => reader.retained_check(),
+            Self::Tombstone(reader) => reader.retained_check(),
+        }
+    }
+    pub(in super::super) fn validate_recovery(
+        &mut self,
+        store: &ConnectionStore,
+        context: &super::RecoveryContext,
+    ) -> Result<(), StoreError> {
+        match self {
+            Self::Recovery(reader) => reader.validate_recovery(store, context),
+            Self::Tombstone(reader) => {
+                let result = store.check_recovery_context(context).and_then(|()| {
+                    reader.scope(
+                        store,
+                        context.id(),
+                        context.revision(),
+                        context.fence(),
+                        context.lifetime(),
+                    )
+                });
+                if result.is_err() {
+                    reader.failed = true;
+                }
+                result
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    pub(in super::super) fn activate(
+        &mut self,
+        store: &ConnectionStore,
+        live: &super::LiveOperation,
+    ) -> Result<(), StoreError> {
+        match self {
+            Self::Recovery(reader) => reader.activate(store, live),
+            Self::Tombstone(reader) => {
+                if reader.reads.recovery_only {
+                    reader.failed = true;
+                    return Err(StoreError::RecoveryRequired);
+                }
+                reader.scope(
+                    store,
+                    live.id(),
+                    live.revision(),
+                    live.fence(),
+                    live.lifetime(),
+                )?;
+                reader.reads.inspection_only = false;
+                store.check_native(live)
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    pub(in super::super) fn advance(
+        &mut self,
+        store: &ConnectionStore,
+        live: &super::LiveOperation,
+        previous: u64,
+    ) -> Result<(), StoreError> {
+        match self {
+            Self::Recovery(reader) => reader.advance(store, live, previous),
+            Self::Tombstone(reader) => {
+                if reader.revision != previous || previous.checked_add(1) != Some(live.revision()) {
+                    reader.failed = true;
+                    return Err(StoreError::StaleRevision);
+                }
+                reader.revision = live.revision();
+                self.validate(store, live)
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    pub(in super::super) fn advance_inspection(
+        &mut self,
+        previous: u64,
+        context: &super::RecoveryContext,
+    ) -> Result<(), StoreError> {
+        match self {
+            Self::Recovery(reader) => reader.advance_inspection(previous, context),
+            Self::Tombstone(reader) => {
+                if !context.recovery_only()
+                    || reader.revision != previous
+                    || previous.checked_add(1) != Some(context.revision())
+                    || reader.reads.id != context.id()
+                    || reader.fence != context.fence()
+                    || !reader.reads.lifetime.ptr_eq(context.lifetime())
+                {
+                    reader.failed = true;
+                    return Err(StoreError::StaleRevision);
+                }
+                reader.revision = context.revision();
+                reader.retained_check()
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ConnectionStore {
+    pub(in super::super) fn open_selected_source<'a>(
+        &mut self,
+        live: &super::LiveOperation,
+        deadline: Instant,
+        cancel: &'a AtomicBool,
+    ) -> Result<super::VerifiedSelection<'a>, StoreError> {
+        let action = self
+            .operation(live.id())?
+            .action
+            .ok_or(StoreError::RecoveryRequired)?;
+        match action {
+            format::SelectedAction::Restore {
+                selected: format::SelectedVersion::Recovery { .. },
+                ..
+            } => Ok(super::VerifiedSelection::Recovery(
+                self.open_verified_recovery(live, deadline, cancel)?,
+            )),
+            format::SelectedAction::Restore {
+                selected: format::SelectedVersion::Tombstone { .. },
+                ..
+            } => self.open_verified_tombstone(live, deadline, cancel),
+        }
+    }
+    pub(in super::super) fn inspect_selected_source<'a>(
+        &mut self,
+        context: &super::RecoveryContext,
+        deadline: Instant,
+        cancel: &'a AtomicBool,
+    ) -> Result<super::VerifiedSelection<'a>, StoreError> {
+        self.guard()?;
+        self.check_recovery_context(context)?;
+        let action = self
+            .operation(context.id())?
+            .action
+            .ok_or(StoreError::RecoveryRequired)?;
+        if matches!(
+            action,
+            format::SelectedAction::Restore {
+                selected: format::SelectedVersion::Recovery { .. },
+                ..
+            }
+        ) {
+            return Ok(super::VerifiedSelection::Recovery(
+                self.open_selected_recovery_reader(context, deadline, cancel)?,
+            ));
+        }
+        let mut proof = super::VerifiedSelection::Tombstone(super::VerifiedTombstoneRead {
+            failed: false,
+            revision: context.revision(),
+            fence: context.fence(),
+            action,
+            reads: self.recovery_read_context(context, deadline, cancel)?,
+        });
+        proof.validate_recovery(self, context)?;
+        Ok(proof)
+    }
+}
+#[cfg(target_os = "linux")]
+impl super::VerifiedSelection<'_> {
+    pub(in super::super) fn binding(
+        &self,
+    ) -> Result<
+        (
+            RecoveryId,
+            super::super::transaction::native::descriptor::Artifact,
+            super::super::transaction::native::descriptor::Content,
+        ),
+        StoreError,
+    > {
+        match self {
+            Self::Recovery(reader) => reader.binding(),
+            Self::Tombstone(_) => Err(StoreError::RecoveryRequired),
+        }
+    }
+    pub(in super::super) fn read_chunk(
+        &mut self,
+        store: &ConnectionStore,
+        live: &super::LiveOperation,
+        offset: u64,
+        buffer: &mut [u8],
+    ) -> Result<usize, StoreError> {
+        match self {
+            Self::Recovery(reader) => reader.read_chunk(store, live, offset, buffer),
+            Self::Tombstone(_) => Err(StoreError::RecoveryRequired),
+        }
     }
 }
