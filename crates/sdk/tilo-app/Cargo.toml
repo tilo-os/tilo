@@ -16,7 +16,7 @@ portal = ["ui-core/portal"]
 notifications = ["ui-core/notifications"]
 
 [dependencies]
-ui-core = { package = "ui", path = "../../../ui" }
+ui-core = { package = "ui", path = "../ui-core" }
 
 [lints]
 workspace = true

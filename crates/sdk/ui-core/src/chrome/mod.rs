@@ -4,7 +4,7 @@
 //! owns button specs and click handling, the toolkit owns the look);
 //! **shell chrome** ([`shell`]) is the vocabulary the *OS* paints in
 //! around and between apps — top bar, window decorations, workspace disc,
-//! quick settings, collaborator surfaces (see `ui/HIG.md` §9).
+//! quick settings, collaborator surfaces (see `crates/sdk/ui-core/HIG.md` §9).
 
 pub mod page;
 pub mod shell;

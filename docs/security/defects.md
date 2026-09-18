@@ -17,7 +17,7 @@ was wrong.
 
 ## P0-1 — The identity ceremony persists a key that cannot sign
 
-`ui/src/widget/identity_flow/mod.rs:180-191`
+`crates/sdk/ui-core/src/widget/identity_flow/mod.rs:180-191`
 
 `SerializableIdentity::from_identity` cannot reach into `frost_ed25519`'s `SigningKey`, so it
 persists `SHA-512("tilo-identity-flow-v1-placeholder-key" ‖ group_public_key)` as `secret_bytes`.
@@ -42,7 +42,7 @@ the ceremony persists that seed, and `IdentityRecord::into_threshold_identity` r
 whose secret does not derive its recorded public key. The mismatch is fatal in `runtime-identity`
 in every build profile. Firstboot now goes through the same encoder, so there is one writer of
 the format. Held by
-`ui/src/widget/identity_flow/mod.rs::tests::ceremony_minted_record_signs_for_its_own_recorded_public_key`
+`crates/sdk/ui-core/src/widget/identity_flow/mod.rs::tests::ceremony_minted_record_signs_for_its_own_recorded_public_key`
 and
 `crates/runtime/runtime-identity/src/lib.rs::tests::secret_that_does_not_derive_the_recorded_pubkey_is_refused`.
 
@@ -445,10 +445,10 @@ empty `authorised_signers` rejects every signed op).
 
 But `register_channel_state` has no non-test caller, and no production path mints a
 `RoleAttestation`. `CollaborationManager::set_identity` / `with_identity` likewise have no callers
-in `shell/`, `ui/`, or `apps/`. Roles are therefore advisory in practice.
+in `shell/`, `crates/sdk/ui-core/`, or `apps/`. Roles are therefore advisory in practice.
 
 `Space` (`crates/collab/collab-types/src/space.rs`) has zero consumers outside its own crate and
-tests. `ui/src/widget/channel_browser.rs` is a complete widget with no shell call site.
+tests. `crates/sdk/ui-core/src/widget/channel_browser.rs` is a complete widget with no shell call site.
 
 **Resolved.** Both production ingress paths now call
 `validate_admitted_inbound_op` before recording or fanning out an operation.
@@ -596,7 +596,7 @@ Two adjacent holes in the same guarantee were found alongside it:
 
 ## P1-8 — `catch_unwind` soft-fails are inert in release, so the compositor aborts at startup with no GPU adapter
 
-`ui/src/warmup.rs:191`, `shell/src/compositor/native.rs:707`,
+`crates/sdk/ui-core/src/warmup.rs:191`, `shell/src/compositor/native.rs:707`,
 `shell/src/compositor/backend/headless.rs:77` (line numbers as found; now fixed)
 
 Three call sites wrapped `ui::offscreen::OffscreenRenderer::new` in `std::panic::catch_unwind` to
@@ -621,13 +621,13 @@ panic strategy the release profile actually sets.
 **Fix direction (applied):** `OffscreenRenderer::try_new` returns `OffscreenError` instead of
 panicking; `new` is retained for its many test/example callers and panics through it. All three
 sites take the `Result`. `panic = "abort"` is unchanged. Pinned by
-`warmup_degrades_silently_when_no_wgpu_adapter_exists` (`ui/tests/warmup_no_adapter.rs`), which
+`warmup_degrades_silently_when_no_wgpu_adapter_exists` (`crates/sdk/ui-core/tests/warmup_no_adapter.rs`), which
 re-executes itself as a child with an empty wgpu backend set and an aborting panic hook — cargo
 ignores `panic` on the test profile, so the strategy has to be emulated — and fails if the child
 dies by signal rather than exiting. It first asserts no adapter is reachable, so it cannot pass
 vacuously on a GPU host. Against the previous code the child dies with SIGABRT.
 
-**Residual:** `OffscreenRenderer::render` still `expect`s internally (`ui/src/offscreen.rs`, the
+**Residual:** `OffscreenRenderer::render` still `expect`s internally (`crates/sdk/ui-core/src/offscreen.rs`, the
 `render_to_texture` and buffer-map paths). Those were nominally inside the same dead
 `catch_unwind`s, so nothing regressed, but a mid-render driver failure still aborts a release
 build. The `catch_unwind` pair in `crates/collab/channel-crypto/src/group.rs:237,379` was checked

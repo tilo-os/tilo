@@ -48,7 +48,7 @@ done
 
 # Reject binaries older than their sources so measurements cannot use a
 # stale, unreproducible payload.
-newer="$(find "$REPO/apps/word-processor/src" "$REPO/ui/src" -name '*.rs' \
+newer="$(find "$REPO/apps/word-processor/src" "$REPO/crates/sdk/ui-core/src" -name '*.rs' \
          -newer "$BIN/word-processor" -print -quit 2>/dev/null || true)"
 [ -z "$newer" ] || die "$BIN/word-processor is older than $newer — the build did not take"
 

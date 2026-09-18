@@ -2,7 +2,7 @@
 //!
 //! The live `App` renders `HiDPI` by keeping layout in *logical* space and
 //! compositing the whole scene through `Affine::scale(scale_factor)` into
-//! a *physical*-pixel surface (see `ui/src/app.rs`). This test pins that
+//! a *physical*-pixel surface (see `crates/sdk/ui-core/src/app.rs`). This test pins that
 //! contract deterministically for a **fractional** 1.5× factor: a shape
 //! placed at logical coordinates must land at `logical × 1.5` physical
 //! pixels, with a hard vector edge — not the blurry integer-rounded

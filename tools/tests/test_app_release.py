@@ -111,13 +111,13 @@ class AppReleaseTests(unittest.TestCase):
                 "packages": [
                     {
                         "name": "ui",
-                        "manifest_path": str(root / "ui/Cargo.toml"),
+                        "manifest_path": str(root / "crates/sdk/ui-core/Cargo.toml"),
                         "dependencies": [],
                     },
                     {
                         "name": "notes-bin",
                         "manifest_path": str(root / "apps/notes/Cargo.toml"),
-                        "dependencies": [{"path": str(root / "ui")}],
+                        "dependencies": [{"path": str(root / "crates/sdk/ui-core")}],
                     },
                     {
                         "name": "settings-bin",
@@ -132,7 +132,7 @@ class AppReleaseTests(unittest.TestCase):
             }
             self.assertEqual(
                 app_release.apps_from_changes(
-                    ["ui/src/lib.rs"], catalog, metadata, root
+                    ["crates/sdk/ui-core/src/lib.rs"], catalog, metadata, root
                 ),
                 ["notes"],
             )
