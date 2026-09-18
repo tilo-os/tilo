@@ -37,7 +37,7 @@ serde = { workspace = true, features = ["derive"] }
 
 # Optional decoders — see [features] above.
 pdfium-render = { version = "0.8.37", optional = true }
-media = { path = "../media", optional = true }
+media = { path = "..", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
