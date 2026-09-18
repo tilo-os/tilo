@@ -5414,16 +5414,23 @@ impl ShellOverlayHost {
                 st.set_maximized_group(None);
             }
         }
+        let mut tree = st.tree_mut();
+        let mut changed = false;
         for (_strip_id, group_id, new_value) in changes {
             // Flat scan is correct since group ids are tree-unique.
-            let mut tree = st.tree_mut();
             for ws in &mut tree.workspaces {
                 for strip in &mut ws.strips {
                     if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
-                        g.maximized = new_value;
+                        if g.maximized != new_value {
+                            g.maximized = new_value;
+                            changed = true;
+                        }
                     }
                 }
             }
+        }
+        if changed {
+            tree.flush_to_disk();
         }
     }
 
