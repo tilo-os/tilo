@@ -549,6 +549,9 @@ pub struct TubeModel {
     /// Playlists we've seen (from search results / opened playlist pages).
     #[serde(default)]
     pub playlists: Vec<Playlist>,
+    /// Canonical local channel ids plus normalized YouTube channel URLs pulled
+    /// before this device has fetched that channel's metadata. URL entries are
+    /// intentionally retained so paired-device libraries round-trip safely.
     pub subscriptions: Vec<ChannelId>,
     /// Shared watch-queue membership projected from the document. Queue order is
     /// deliberately not a collaborative presentation concern: keyed membership
@@ -746,7 +749,15 @@ impl TubeModel {
     }
 
     pub fn is_subscribed(&self, id: &str) -> bool {
-        self.subscriptions.iter().any(|c| c == id)
+        self.subscriptions.iter().any(|subscription| {
+            subscription == id
+                || self.channel(id).is_some_and(|channel| {
+                    subscription == &channel.handle
+                        || subscription
+                            .strip_prefix("https://youtube.com/")
+                            .is_some_and(|handle| handle == channel.handle.trim_start_matches('/'))
+                })
+        })
     }
 
     pub fn toggle_subscribe(&mut self, id: &str) {

@@ -88,6 +88,26 @@ impl PeerRecord {
 
 use crate::model::{Settings, VideoId};
 
+/// Normalize public channel URL shapes emitted by YouTube/Grayjay without
+/// accepting arbitrary web URLs into the durable subscription document.
+///
+/// The transport treats channel URLs as opaque package data. The app needs one
+/// stable spelling, however, so `youtube.com`, `www.youtube.com`, and
+/// `m.youtube.com` converge on the same action/resource identifier.
+pub fn normalized_subscription_url(value: &str) -> Option<String> {
+    const PREFIXES: [&str; 3] = [
+        "https://youtube.com/",
+        "https://www.youtube.com/",
+        "https://m.youtube.com/",
+    ];
+    let value = value.trim();
+    let path = PREFIXES
+        .iter()
+        .find_map(|prefix| value.strip_prefix(prefix))?;
+    (!path.is_empty() && path.len() <= 232 && !path.chars().any(char::is_control))
+        .then(|| format!("https://youtube.com/{path}"))
+}
+
 /// One direction of sync state: what we would send to / receive from a paired
 /// Grayjay peer. These map onto Grayjay's own sync "packages" but are
 /// expressed in Tube's own model so the transport is the only thing that
@@ -294,5 +314,25 @@ mod tests {
     fn default_transport_is_the_stub() {
         let t = default_transport();
         assert!(!t.is_available());
+    }
+
+    #[test]
+    fn subscription_urls_converge_without_accepting_other_sites() {
+        assert_eq!(
+            normalized_subscription_url("https://www.youtube.com/@tilo"),
+            Some("https://youtube.com/@tilo".into())
+        );
+        assert_eq!(
+            normalized_subscription_url("https://m.youtube.com/channel/UC123"),
+            Some("https://youtube.com/channel/UC123".into())
+        );
+        assert_eq!(
+            normalized_subscription_url("https://example.com/@tilo"),
+            None
+        );
+        assert_eq!(
+            normalized_subscription_url("https://youtube.com/\nunsafe"),
+            None
+        );
     }
 }
