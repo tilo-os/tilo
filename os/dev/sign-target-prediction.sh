@@ -36,13 +36,13 @@ esac
 scratch_root="${TILO_INSTALLER_SCRATCH:-${TMPDIR:-/var/tmp}}"
 work="$(mktemp -d "$scratch_root/tilo-pcr-prediction.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
-install -d -m 0755 "$work/layer/boot/tilo-target/predictions" \
+install -d -m 0700 "$work/layer/boot/tilo-target/predictions" \
   "$work/layer/boot/EFI/tilo/pcr-predictions"
 
 # Copy through a container so no image mount (and no root storage access) is
 # exposed to this checkout-controlled script.
 podman run --rm -v "$work:/out:Z" --entrypoint /bin/bash "$image" -ceu '
-  install -d -m 0755 /out/live
+  install -d -m 0700 /out/live
   : > /out/live.manifest
   n=0
   while IFS= read -r source; do
@@ -184,6 +184,11 @@ tilo-crypto verify-rsa-sha256 "$work/public.pem" "$work/target.efi" "$prediction
   || die "broker's detached target-UKI signature does not match Tilo's pinned authority"
 install -m 0644 "$prediction" "$prediction.uki.sig" \
   "$work/layer/boot/EFI/tilo/pcr-predictions/"
+
+# Signature output directories are private while signer output is created;
+# the finalized layer contains public-only files with normal directory modes.
+chmod 0755 "$work/layer/boot/tilo-target/predictions" \
+  "$work/layer/boot/EFI/tilo/pcr-predictions"
 
 build_args=(-t "$image" -f - --build-arg "BASE_IMAGE=$image")
 [ -z "${SOURCE_DATE_EPOCH:-}" ] || build_args+=(--source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp)
