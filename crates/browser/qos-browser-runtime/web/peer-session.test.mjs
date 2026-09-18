@@ -6,13 +6,13 @@ const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve
 function fixture({enroll,recoveryClock}={}){
  let next=0,held=0,storageRefs=0,failConnect=false,failClose=false,failCommit=false,pendingWrite=false,attempts=0,gate;
  const mountGates=[],mountSignals=[],mountOptionsSeen=[];
- const peers=new Set(),mounts=new Set(),closed=[],rebound=[],suspended=new Set();let componentOwners=0,durableRecord,statusCallback,publishFailure=false,failMount=false;
+ const peers=new Set(),mounts=new Set(),closed=[],rebound=[],suspended=new Set();let componentOwners=0,durableRecord,statusCallback,commitStatus,publishFailure=false,failMount=false;
  const locks={request:async(_name,_opts,fn)=>{held++;try{return await fn({});}finally{held--;}}};
  const runtime={identity_request:()=>'{public}',identity_complete:()=>'{proof}',bind_identity:()=> 'opaque-key',peer_enrollment:()=>JSON.stringify({profile:'p',device:'d',room:'r'}),refresh_storage_lease(){},
   async connect_peer(_raw,_identity,_bytes,status){statusCallback=status;attempts++;if(gate)await gate.promise;if(failConnect)throw Error('dial failed');const id=++next;peers.add(id);status(JSON.stringify({phase:'ready',records:[{app_id:'dev.qos.word-processor',record_id:'tab:1',heads:['h']}]}));return id;},
   async reconnect_peer(id){attempts++;assert(peers.has(id));if(gate)await gate.promise;if(failConnect)throw Error('dial failed');return id;},
   async close_peer(id){closed.push(id);peers.delete(id);},async disconnect_peer(id){assert(peers.has(id));},
-  peer_pending_writes(id){assert(peers.has(id),'closed peer');return JSON.stringify(pendingWrite?[{revision:1}]:[]);},acknowledge_storage(){pendingWrite=false;},peer_committed(id){assert(peers.has(id));if(publishFailure)throw Error('relay unavailable');},
+  peer_pending_writes(id){assert(peers.has(id),'closed peer');return JSON.stringify(pendingWrite?[{revision:1}]:[]);},acknowledge_storage(){pendingWrite=false;},peer_committed(id){assert(peers.has(id));if(publishFailure)throw Error('relay unavailable');if(commitStatus)statusCallback(JSON.stringify(commitStatus()));},
   suspend_peer(id,value){assert(peers.has(id));value?suspended.add(id):suspended.delete(id);},
   rebind_peer(old,id){rebound.push([old,id]);for(const mount of mounts)mount.id=id;suspended.delete(old);},
  };
@@ -28,7 +28,7 @@ function fixture({enroll,recoveryClock}={}){
   }});
   mounts.add(mount);return mount;
  }});
- return{runtime,storage,connect,peers,mounts,closed,mountSignals,mountOptionsSeen,queueMount:gate=>mountGates.push(gate),rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
+ return{runtime,storage,connect,peers,mounts,closed,mountSignals,mountOptionsSeen,queueMount:gate=>mountGates.push(gate),rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},setCommitStatus:v=>commitStatus=v,status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
 }
 test('failed reconnect retains durable owner; next retry rebinds same mount and disposes',async()=>{
  const f=fixture(),peer=await f.connect();const mount=await peer.mountDesktop({});
@@ -80,6 +80,23 @@ test('health generations increase as decimal integers and storage recovery is co
  const f=fixture(),peer=await f.connect();const seen=[];peer.subscribe(snapshot=>seen.push(snapshot.health.generation));
  f.setFailCommit(true);await assert.rejects(peer.retryPersistence());assert(peer.getSnapshot().health.failures.some(f=>f.scope.kind==='storage'));
  f.setFailCommit(false);const a=peer.recover({kind:'retry-saving'}),b=peer.recover({kind:'retry-saving'});assert.equal(a,b);assert.deepEqual(await a,await b);assert(!peer.getSnapshot().health.failures.some(f=>f.scope.kind==='storage'));assert(seen.every((value,index)=>index===0||BigInt(value)>BigInt(seen[index-1])));await peer.dispose();
+});
+
+test('generation-only runtime reports do not publish a new peer snapshot',async()=>{
+ const f=fixture(),peer=await f.connect(),notifications=[];peer.subscribe(snapshot=>notifications.push(snapshot));
+ const ready=structuredClone(peer.getSnapshot());ready.health.transport.authenticated=true;f.status(ready);await drain();notifications.length=0;
+ const mount=await peer.mountDesktop({});await drain();notifications.length=0;const before=structuredClone(peer.getSnapshot());
+ f.setCommitStatus(()=>{const current=structuredClone(peer.getSnapshot());current.health.generation=String(BigInt(current.health.generation)+1n);return current;});
+ mount.present(1);await drain();
+ assert.equal(notifications.length,0);assert.deepEqual(peer.getSnapshot(),before);
+ await peer.dispose();
+});
+
+test('semantic report dedup still publishes recovery operation settlement',async()=>{
+ const f=fixture(),peer=await f.connect(),states=[];peer.subscribe(snapshot=>states.push(snapshot.health.recoveryOperations.map(operation=>operation.state)));
+ await peer.recover({kind:'review-permissions'});
+ assert.deepEqual(states,[['pending'],['requires-user']]);
+ await peer.dispose();
 });
 
 test('unchanged presented frames keep surface health stable while failure recovery still publishes',async()=>{
