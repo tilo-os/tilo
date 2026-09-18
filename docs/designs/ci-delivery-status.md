@@ -37,6 +37,12 @@ Main and the ongoing hardware bring-up remain untouched.
   sequential competing stale candidate. See `experiments/ci-forgejo/README.md`
   for raw evidence and the initial inconclusive run. Product repository settings
   remain unchanged; independent review and permission isolation are not proven.
+- A live queued-auto-merge probe followed a changed head once that new head was
+  green. A candidate-controlled Actions job also minted the required status using
+  its built-in token. Native context names are insufficient as trusted readiness;
+  a trusted integration boundary remains required. Both probe runs are terminal.
+- Confirmed the user-supplied `claude` identity and its existing web-UI login for
+  the upcoming independent-review probe. No new account or credential was created.
 
 ## Validation of this implementation
 

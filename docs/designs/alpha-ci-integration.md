@@ -90,6 +90,15 @@ from the illustrative packaging queue model.
 
 The pilot is an implementation decision gate: do not build fallback queue infrastructure before testing native orchestration. It must verify fast-forward refusal when main moves, approval invalidation, exact-head rejection, status-context behavior and worker recovery. The API schema alone does not establish these semantics. If Forgejo's built-in auto-merge can satisfy the invariants, use it with a small serial dispatcher. Otherwise use a minimal external queue worker; do not build a speculative batching platform in phase one.
 
+Live pilot update: immediate exact-head fast-forward requests rejected missing
+checks, a wrong head and a sequential stale candidate. Native queued auto-merge
+followed a newly pushed head once that head's required context succeeded, despite
+the queue request naming the previous SHA. Treat native auto-merge as a PR
+subscription, not immutable candidate authorization. It therefore requires
+independent trusted readiness and fresh review on every head. If immutable queue
+authorization is required, use immediate exact-head merging only after readiness.
+See [raw pilot evidence](../../experiments/ci-forgejo/README.md).
+
 Only the integration identity may routinely merge to main. Disable ordinary direct pushes and force pushes once the candidate path is proven. Test permissions using an ordinary agent identity as well as the integration identity; a shared administrator credential defeats this boundary. Do not enable blocking protection until actual required contexts and credentials have been validated.
 
 ## Required check contract

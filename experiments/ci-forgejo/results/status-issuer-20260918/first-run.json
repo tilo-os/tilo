@@ -1,0 +1,9 @@
+{
+  "id": 22547,
+  "status": "cancelled",
+  "commit_sha": "5e3570654a0831d65cea435a38748a63f37dc50e",
+  "created": "2026-09-18T20:39:36Z",
+  "started": "2026-09-18T20:40:58Z",
+  "stopped": "2026-09-18T20:44:00Z",
+  "html_url": "https://code.podesta.ai/qos/ci-workflow-pilot-20260918-9245-repeat/actions/runs/1"
+}

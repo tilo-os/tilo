@@ -1,0 +1,18 @@
+{
+  "repository": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "base": "02d49e600045f5108dbbfb127033fe564d909a9e",
+  "pr": 3,
+  "original_head": "704ba5786efe66c56601ab5881d7a830420e9b2d",
+  "scope": "native auto-merge with fixture status, one admin identity; no independent review",
+  "queue_response": 201,
+  "updated_head": "9077ef57b0818e490a0b64c4f5e187486aa838a2",
+  "last_observation": {
+    "merged": true,
+    "head": "9077ef57b0818e490a0b64c4f5e187486aa838a2",
+    "merge_commit_sha": "9077ef57b0818e490a0b64c4f5e187486aa838a2"
+  },
+  "merged_after_old_head_green": false,
+  "merged_after_new_head_green_without_requeue": true,
+  "cancel_response": 404,
+  "final_main": "9077ef57b0818e490a0b64c4f5e187486aa838a2"
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "context": "pilot/ready",
+    "status": "success",
+    "description": "Candidate-controlled fixture status; not trusted review",
+    "creator_login": null,
+    "created_at": "2026-09-18T20:46:53Z"
+  },
+  {
+    "context": "Isolated candidate status authority probe / issuer (push)",
+    "status": "success",
+    "description": "Successful in 1m16s",
+    "creator_login": null,
+    "created_at": "2026-09-18T20:46:59Z"
+  }
+]

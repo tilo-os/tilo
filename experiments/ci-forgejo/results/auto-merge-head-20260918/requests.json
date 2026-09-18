@@ -1,0 +1,183 @@
+[
+  {
+    "at": "2026-09-18T20:37:40.716137+00:00",
+    "method": "GET",
+    "path": "",
+    "request": null,
+    "http_status": 200,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:37:42.165561+00:00",
+    "method": "GET",
+    "path": "/branches/main",
+    "request": null,
+    "http_status": 200,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:37:44.153715+00:00",
+    "method": "POST",
+    "path": "/branches",
+    "request": {
+      "new_branch_name": "probe-auto-head",
+      "old_ref_name": "02d49e600045f5108dbbfb127033fe564d909a9e"
+    },
+    "http_status": 201,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:37:46.377916+00:00",
+    "method": "POST",
+    "path": "/contents/auto-first.txt",
+    "request": {
+      "branch": "probe-auto-head",
+      "message": "Initial auto-merge fixture",
+      "content": "Zmlyc3QK"
+    },
+    "http_status": 201,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:37:49.180313+00:00",
+    "method": "POST",
+    "path": "/pulls",
+    "request": {
+      "base": "main",
+      "head": "probe-auto-head",
+      "title": "Isolated expected-head auto-merge probe"
+    },
+    "http_status": 201,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:37:50.758980+00:00",
+    "method": "POST",
+    "path": "/statuses/704ba5786efe66c56601ab5881d7a830420e9b2d",
+    "request": {
+      "context": "pilot/ready",
+      "state": "pending",
+      "description": "Synthetic head-identity probe, not a build"
+    },
+    "http_status": 201,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:37:52.063023+00:00",
+    "method": "POST",
+    "path": "/pulls/3/merge",
+    "request": {
+      "Do": "fast-forward-only",
+      "head_commit_id": "704ba5786efe66c56601ab5881d7a830420e9b2d",
+      "force_merge": false,
+      "merge_when_checks_succeed": true
+    },
+    "http_status": 201,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:37:53.652848+00:00",
+    "method": "POST",
+    "path": "/contents/auto-second.txt",
+    "request": {
+      "branch": "probe-auto-head",
+      "message": "New unqueued head fixture",
+      "content": "c2Vjb25kCg=="
+    },
+    "http_status": 201,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:37:54.935173+00:00",
+    "method": "POST",
+    "path": "/statuses/704ba5786efe66c56601ab5881d7a830420e9b2d",
+    "request": {
+      "context": "pilot/ready",
+      "state": "success",
+      "description": "Synthetic head-identity probe, not a build"
+    },
+    "http_status": 201,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:37:56.255899+00:00",
+    "method": "GET",
+    "path": "/pulls/3",
+    "request": null,
+    "http_status": 200,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:38:00.764417+00:00",
+    "method": "GET",
+    "path": "/pulls/3",
+    "request": null,
+    "http_status": 200,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:38:04.873643+00:00",
+    "method": "GET",
+    "path": "/pulls/3",
+    "request": null,
+    "http_status": 200,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:38:09.192598+00:00",
+    "method": "GET",
+    "path": "/pulls/3",
+    "request": null,
+    "http_status": 200,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:38:10.646534+00:00",
+    "method": "POST",
+    "path": "/statuses/9077ef57b0818e490a0b64c4f5e187486aa838a2",
+    "request": {
+      "context": "pilot/ready",
+      "state": "success",
+      "description": "Synthetic head-identity probe, not a build"
+    },
+    "http_status": 201,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:38:11.994109+00:00",
+    "method": "GET",
+    "path": "/pulls/3",
+    "request": null,
+    "http_status": 200,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:38:16.767736+00:00",
+    "method": "GET",
+    "path": "/pulls/3",
+    "request": null,
+    "http_status": 200,
+    "exit_code": 0
+  },
+  {
+    "at": "2026-09-18T20:38:17.845436+00:00",
+    "method": "DELETE",
+    "path": "/pulls/3/merge",
+    "request": null,
+    "http_status": 404,
+    "exit_code": 1,
+    "error": {
+      "message": "The target couldn't be found.",
+      "url": "https://code.podesta.ai/api/swagger",
+      "errors": []
+    }
+  },
+  {
+    "at": "2026-09-18T20:38:18.988894+00:00",
+    "method": "GET",
+    "path": "/branches/main",
+    "request": null,
+    "http_status": 200,
+    "exit_code": 0
+  }
+]

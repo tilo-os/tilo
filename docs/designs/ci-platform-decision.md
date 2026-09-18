@@ -26,6 +26,15 @@ and rejection of a sequential competing stale candidate. This supports continuin
 with native primitives first. It does not qualify concurrent/native auto-merge,
 independent review, status issuers, ordinary-user permissions or runner scheduling.
 
+Subsequent live probes found that queued auto-merge follows a changed head when
+its new required status succeeds, and that candidate workflow code can publish
+that required context using its built-in job token. Native context names alone
+therefore cannot authenticate integration readiness. Prefer a small trusted
+integration worker for exact-head evidence verification and immediate landing;
+keep Forgejo as the CI executor while scheduler qualification continues. This
+finding does not itself justify replacing the CI platform or creating a custom
+build scheduler. See the same pilot report for the positive observations and limits.
+
 Follow-up: [isolated experiment results](ci-build-graph-experiments.md) demonstrate
 affected selection on this workspace and fine-grained caching on a small Linux
 module slice. They do **not** qualify a full toolkit/runtime graph, native Windows,
