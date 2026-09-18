@@ -527,11 +527,11 @@ impl BottomPanel {
             }
             x = x1;
         }
-        // Tab strip baseline.
+        // Tab strip baseline: derived against the raised panel it rules.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &Line::new(
                 Point::new(self.rect.x0, self.rect.y0 + TAB_H),
@@ -646,7 +646,7 @@ impl BottomPanel {
                     scene,
                     &d.message,
                     13.0,
-                    c.neutral[8],
+                    c.text_primary,
                     transform * Affine::translate((self.rect.x0 + 130.0, message_y)),
                     Some((self.rect.width() - 140.0) as f32),
                 );
@@ -779,11 +779,11 @@ impl Widget for BottomPanel {
             None,
             &self.rect,
         );
-        // Top divider.
+        // Top divider: the raised panel's own derived edge against the editor.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &Line::new(
                 Point::new(self.rect.x0, self.rect.y0),

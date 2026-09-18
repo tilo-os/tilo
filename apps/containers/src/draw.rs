@@ -75,6 +75,28 @@ pub fn stroke_round(scene: &mut Scene, rect: Rect, radius: f64, width: f64, colo
     scene.stroke(&Stroke::new(width), base(), color, None, &shape);
 }
 
+/// A card, panel or control face with its derived rest edge (HIG §9.5):
+/// the fill plus a crisp 1 px inset hairline measured against that fill, so
+/// the edge registers on the dark preset where a declared `border_standard`
+/// stroke on a raised surface vanished. Composes onto the per-frame base
+/// transform like every helper here.
+pub fn card(scene: &mut Scene, rect: Rect, radius: f64, fill: Color) {
+    ui::surface::card(scene, base(), rect, radius, fill);
+}
+
+/// The derived hairline for a surface painted in `fill` — what a rule at the
+/// boundary of that surface is painted in.
+#[must_use]
+pub fn edge(fill: Color) -> Color {
+    ui::surface::edge_on(fill)
+}
+
+/// A 1 px rule inside a surface painted in `surface`, from `x0` to `x1`
+/// centred on `y`; derived against that surface rather than declared.
+pub fn separator(scene: &mut Scene, x0: f64, x1: f64, y: f64, surface: Color) {
+    ui::surface::separator(scene, base(), x0, x1, y, 0.0, surface);
+}
+
 /// Draw a single line of text, returning its measured width.
 /// Convert a resolved theme type token (already multiplied by the active text
 /// scale) into the renderer-relative size the legacy `draw_text*` / `measure*`
@@ -205,6 +227,11 @@ pub fn text_clip(
 const PILL_PAD_X: f64 = 10.0;
 const PILL_DOT_R: f64 = 3.5;
 const PILL_DOT_GAP: f64 = 6.0;
+/// Alpha of a semantic tint used as a pill / chip fill.
+const TINT_FILL_ALPHA: u8 = 38;
+/// Alpha of the same hue stroked as the pill / chip edge: strong enough to
+/// close the shape on dark and light grounds, quieter than the label.
+const TINT_EDGE_ALPHA: u8 = 96;
 
 /// A status pill: a filled-dot + label inside a faint rounded chip.
 pub fn status_pill(
@@ -224,7 +251,16 @@ pub fn status_pill(
     let dot_gap = PILL_DOT_GAP;
     let width = pad_x * 2.0 + dot_r * 2.0 + dot_gap + f64::from(tw);
     let rect = Rect::new(origin.x, origin.y, origin.x + width, origin.y + height);
-    fill_round(scene, rect, height / 2.0, with_alpha(color, 38));
+    // A tinted chip is edged in its own hue so it reads as a closed shape on
+    // both themes; a translucent fill alone dissolves into a raised ground.
+    fill_round(scene, rect, height / 2.0, with_alpha(color, TINT_FILL_ALPHA));
+    stroke_round(
+        scene,
+        rect.inset(-0.5),
+        (height / 2.0 - 0.5).max(0.0),
+        1.0,
+        with_alpha(color, TINT_EDGE_ALPHA),
+    );
     let cy = rect.center().y;
     let dot = Circle::new(Point::new(rect.x0 + pad_x + dot_r, cy), dot_r);
     scene.fill(Fill::NonZero, base(), color, None, &dot);
@@ -264,7 +300,8 @@ pub fn chip(
     let pad_x = 8.0;
     let width = pad_x * 2.0 + f64::from(tw);
     let rect = Rect::new(origin.x, origin.y, origin.x + width, origin.y + height);
-    fill_round(scene, rect, 4.0, with_alpha(accent, 30));
+    fill_round(scene, rect, 4.0, with_alpha(accent, TINT_FILL_ALPHA));
+    stroke_round(scene, rect.inset(-0.5), 3.5, 1.0, with_alpha(accent, TINT_EDGE_ALPHA));
     let ty = rect.center().y - f64::from(th) / 2.0;
     text(
         scene,
@@ -280,8 +317,10 @@ pub fn chip(
 
 /// A horizontal progress/usage bar.
 pub fn usage_bar(scene: &mut Scene, theme: &Theme, rect: Rect, fraction: f32, color: Color) {
-    let track = theme.tokens.colors.neutral[3];
-    fill_round(scene, rect, rect.height() / 2.0, with_alpha(track, 120));
+    // The unfilled track is the theme's full lift step: a measured contrast
+    // step against base and raised alike, rather than a ramp slot.
+    let track = theme.tokens.colors.lift(1.0);
+    fill_round(scene, rect, rect.height() / 2.0, track);
     let frac = f64::from(fraction.clamp(0.0, 1.0));
     if frac > 0.0 {
         let filled = Rect::new(rect.x0, rect.y0, rect.x0 + rect.width() * frac, rect.y1);
@@ -591,5 +630,54 @@ mod tests {
         );
         let predicted = status_pill_width(&mut tr, &theme, ContainerStatus::Running.label());
         assert!((painted - predicted).abs() < 0.01);
+    }
+
+    /// HIG §9.5: every surface the manager closes with [`card`] — the base
+    /// log console, raised banners, lifted rows, the Panel ground of its
+    /// dialogs — gets an edge that visibly moves that surface on dark, light
+    /// and high-contrast alike. A declared `border_standard` did not.
+    #[test]
+    fn card_edges_register_on_every_containers_ground() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let c = &theme.tokens.colors;
+            for (name, ground) in [
+                ("base", c.surfaces.base),
+                ("raised", c.surfaces.raised),
+                ("lift 0.35", c.lift(0.35)),
+                ("lift 0.72", c.lift(0.72)),
+                ("panel", ui::chrome::panel_ground(&theme)),
+            ] {
+                let moved = ui::surface::edge_delta(edge(ground), ground);
+                assert!(
+                    moved >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: {name} edge moved only {moved:.4}",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// A tinted status pill / port chip is a closed shape: its edge is the
+    /// same hue as its fill at a higher alpha, so it never dissolves into a
+    /// raised ground the way a translucent fill alone did.
+    #[test]
+    fn tinted_pills_and_chips_are_edged_in_their_own_hue() {
+        assert!(TINT_EDGE_ALPHA > TINT_FILL_ALPHA);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        set_base(Affine::IDENTITY);
+        let mut scene = Scene::new();
+        status_pill(
+            &mut scene,
+            &mut tr,
+            &theme,
+            ContainerStatus::Running,
+            "Running",
+            Point::new(10.0, 10.0),
+            20.0,
+        );
+        // Fill, edge stroke, dot, glyph run: the stroke is the second path.
+        let paths = scene.encoding().n_paths;
+        assert!(paths >= 3, "pill paints a fill, an edge and a dot ({paths} paths)");
     }
 }

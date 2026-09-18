@@ -13,7 +13,7 @@ use ui::history_mode::{
 use ui::{TextRenderer, Theme};
 use vello::{
     Scene,
-    kurbo::{Affine, Rect},
+    kurbo::{Affine, Rect, Stroke},
     peniko::{BlendMode, Fill},
 };
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
@@ -107,14 +107,29 @@ impl HistoryPreview for OutputPreview {
         Ok(())
     }
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        // The preview is a surface of its own inside the history chrome: it
+        // closes with the edge derived from its fill (HIG §7, §9.5).
+        let inset = f64::from(theme.tokens.spacing.s4);
         scene.fill(Fill::NonZero, t, theme.bg_primary, None, &self.bounds);
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            ui::surface::edge_on(theme.bg_primary),
+            None,
+            &ui::surface::edge_outline(self.bounds, 0.0),
+        );
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1., t, &self.bounds);
         if self.view.page.as_deref() == Some("output") && self.recorded {
-            let x = self.bounds.x0 + 16. - self.view.scroll.0;
+            let x = self.bounds.x0 + inset - self.view.scroll.0;
             let (_, h) = tr.measure("M", 14., None);
             let pitch = f64::from(h).max(20.);
+            // Line numbers get a measured gutter (widest number + s3) so the
+            // code column never sits on a fixed 48 px it can outgrow.
+            let count = self.output.lines().count().max(1);
+            let (gutter_w, _) = tr.measure(&count.to_string(), 12., None);
+            let gutter = f64::from(gutter_w) + f64::from(theme.tokens.spacing.s3);
             for (i, line) in self.output.lines().enumerate() {
-                let y = self.bounds.y0 + 16. + i as f64 * pitch - self.view.scroll.1;
+                let y = self.bounds.y0 + inset + i as f64 * pitch - self.view.scroll.1;
                 if y + pitch < self.bounds.y0 {
                     continue;
                 }
@@ -129,7 +144,7 @@ impl HistoryPreview for OutputPreview {
                     t * Affine::translate((x, y)),
                     None,
                 );
-                crate::merge_view::draw_code_segments(scene, t, tr, theme, x + 48., y, line);
+                crate::merge_view::draw_code_segments(scene, t, tr, theme, x + gutter, y, line);
             }
         } else {
             tr.draw_text(
@@ -138,10 +153,10 @@ impl HistoryPreview for OutputPreview {
                 15.,
                 theme.text_dim,
                 t * Affine::translate((
-                    self.bounds.x0 + 16.,
-                    self.bounds.y0 + 16. - self.view.scroll.1,
+                    self.bounds.x0 + inset,
+                    self.bounds.y0 + inset - self.view.scroll.1,
                 )),
-                Some(self.bounds.width() as f32 - 32.),
+                Some((self.bounds.width() - 2.0 * inset) as f32),
             );
         }
         scene.pop_layer();
