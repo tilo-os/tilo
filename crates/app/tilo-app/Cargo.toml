@@ -13,6 +13,7 @@ dmabuf-import = ["ui-core/dmabuf-import"]
 gpu-video = ["ui-core/gpu-video"]
 mpris = ["ui-core/mpris"]
 portal = ["ui-core/portal"]
+notifications = ["ui-core/notifications"]
 
 [dependencies]
 ui-core = { package = "ui", path = "../../../ui" }

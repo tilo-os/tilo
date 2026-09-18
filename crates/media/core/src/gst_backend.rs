@@ -20,7 +20,9 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 
-use crate::dmabuf::{ColorRange, Colorimetry, DmabufImage, DmabufPlane, YuvMatrix};
+use crate::dmabuf::{ColorRange, Colorimetry, YuvMatrix};
+#[cfg(unix)]
+use crate::dmabuf::{DmabufImage, DmabufPlane};
 use crate::event::{MediaEvent, VideoFrame};
 use crate::frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
 use crate::hw::{DecoderEntry, DecoderKind, HwPolicy, HwReport, rank_for};
@@ -34,6 +36,7 @@ use crate::{MediaChapter, MediaTrack};
 // only under `--features decode`, alongside the rest of the GStreamer stack.
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 #[link(name = "gstallocators-1.0")]
 unsafe extern "C" {
     /// Whether `mem` was allocated by the dmabuf allocator.
@@ -132,17 +135,20 @@ pub fn decoders_for(media_type: &str) -> Vec<DecoderEntry> {
 /// sides can satisfy, so a decoder that can export dmabufs will, and one that
 /// cannot falls through to planar system memory without a colour conversion.
 fn sink_caps(acceptance: FrameAcceptance) -> gst::Caps {
+    #[cfg(unix)]
+    const NATIVE_CAPS: &str = "video/x-raw(memory:DMABuf); video/x-raw, format = (string) { NV12, P010_10LE, RGBA, BGRA, BGRx, RGBx }";
+    // Windows decoders can supply real planar or RGB system-memory frames.
+    // DMA-BUF is a Unix fd protocol, not a Windows shared-texture handle.
+    #[cfg(not(unix))]
+    const NATIVE_CAPS: &str =
+        "video/x-raw, format = (string) { NV12, P010_10LE, RGBA, BGRA, BGRx, RGBx }";
     match acceptance {
         // The compatibility surface: system-memory RGBA, exactly what
         // `VideoFrame` has always carried.
         FrameAcceptance::Rgba => gst::Caps::builder("video/x-raw")
             .field("format", "RGBA")
             .build(),
-        FrameAcceptance::Native => gst::Caps::from_str(
-            "video/x-raw(memory:DMABuf); \
-             video/x-raw, format = (string) { NV12, P010_10LE, RGBA, BGRA, BGRx, RGBx }",
-        )
-        .unwrap_or_else(|_| {
+        FrameAcceptance::Native => gst::Caps::from_str(NATIVE_CAPS).unwrap_or_else(|_| {
             // Unreachable: the argument is a string literal. Falling back to
             // the RGBA surface rather than panicking means a parse failure
             // costs the zero-copy path, not the process.
@@ -950,6 +956,7 @@ fn frame_from_sample(sample: &gst::Sample, acceptance: FrameAcceptance) -> Optio
         .is_some_and(|f| f.contains("memory:DMABuf"))
     {
         if acceptance == FrameAcceptance::Native {
+            #[cfg(unix)]
             if let Some(img) = dmabuf_from_sample(sample, caps) {
                 return Some(Frame {
                     width: img.width,
@@ -1130,6 +1137,7 @@ fn colorimetry_from_info(info: &gst_video::VideoInfo) -> Colorimetry {
 /// Describe a `memory:DMABuf` sample: pull the fd out of each `GstMemory` and
 /// read the plane layout from the buffer's `GstVideoMeta` (which the sink's
 /// `propose_allocation` answer is what makes available).
+#[cfg(unix)]
 fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> Option<DmabufImage> {
     let buffer = sample.buffer()?;
     let drm = gst_video::VideoInfoDmaDrm::from_caps(caps).ok()?;
@@ -1313,6 +1321,22 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(unix))]
+    fn native_acceptance_negotiates_real_pixels_without_unix_descriptors() {
+        init();
+        let caps = sink_caps(FrameAcceptance::Native);
+        assert_eq!(caps.size(), 1);
+        assert!(!caps.to_string().contains("DMABuf"));
+        for format in ["NV12", "P010_10LE", "RGBA", "BGRA", "BGRx", "RGBx"] {
+            let decoded = gst::Caps::builder("video/x-raw")
+                .field("format", format)
+                .build();
+            assert!(caps.can_intersect(&decoded), "must accept decoded {format}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn native_acceptance_prefers_dmabuf_and_still_allows_system_memory() {
         init();
         let caps = sink_caps(FrameAcceptance::Native);

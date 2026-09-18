@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
@@ -42,9 +44,7 @@ fn run_session_inner(args: &LaunchArgs) -> Result<()> {
     if let Some(out) = &args.shots {
         let mut driver =
             ui::headless::Driver::new(state, root, args.viewport.unwrap_or((800, 600)));
-        if let Some(scale) = args.text_scale {
-            driver.set_theme(ui::Theme::dark().with_text_scale(scale));
-        }
+        driver.set_theme(ui::launch::shot_theme(args));
         scratchpad::actions::register(driver.action_registry_mut());
         driver.render_png(out);
         println!("Rendered {}", out.display());

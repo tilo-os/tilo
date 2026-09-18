@@ -553,7 +553,8 @@ impl DocStore {
         validate_package_id(package_id)?;
         validate_absolute_directory(directory)?;
         fs::create_dir_all(directory).map_err(|e| io_err("creating canonical directory", e))?;
-        let opened = File::open(directory).map_err(|e| io_err("opening canonical directory", e))?;
+        let opened = open_directory(directory, false)
+            .map_err(|e| io_err("opening canonical directory", e))?;
         let gate = acquire_gate(&directory.join(CANONICAL_GATE), true)?;
         let actor = load_or_create_actor(&directory.join(ACTOR_FILE))?;
         let mut store = Self {
@@ -716,7 +717,12 @@ impl DocStore {
         if let Some(bytes) = loaded.repair_bytes {
             self.write_full(&bytes)?;
         } else {
-            File::open(&self.document)
+            let mut options = OpenOptions::new();
+            options.read(true);
+            #[cfg(windows)]
+            options.write(true);
+            options
+                .open(&self.document)
                 .and_then(|f| f.sync_all())
                 .map_err(|e| io_err("syncing accepted document", e))?;
             self.sync_directory_chain()?;
@@ -746,6 +752,13 @@ impl DocStore {
         self.check_canonical_source()?;
         let physical =
             fs::canonicalize(&self.dir).map_err(|e| io_err("resolving canonical directory", e))?;
+        // Windows owns and provisions the profile root before launching an
+        // app. Our durability obligation includes that root and every child
+        // directory, including ancestors left by an interrupted earlier open.
+        // It does not include creating the OS-owned C:\Users or volume root.
+        // Query the OS known folder, not USERPROFILE supplied by an environment.
+        #[cfg(windows)]
+        let profile_root = dirs::home_dir().and_then(|path| fs::canonicalize(path).ok());
         for path in physical.ancestors() {
             #[cfg(test)]
             {
@@ -761,9 +774,13 @@ impl DocStore {
                     ));
                 }
             }
-            File::open(path)
+            open_directory(path, true)
                 .and_then(|f| f.sync_all())
                 .map_err(|e| io_err(format!("syncing directory {}", path.display()), e))?;
+            #[cfg(windows)]
+            if profile_root.as_deref() == Some(path) {
+                break;
+            }
         }
         self.check_canonical_source()
     }
@@ -1109,6 +1126,18 @@ fn validate_absolute_directory(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+fn open_directory(path: &Path, writable: bool) -> io::Result<File> {
+    #[cfg(not(windows))]
+    let _ = writable;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    // Windows directory handles require BACKUP_SEMANTICS, and
+    // FlushFileBuffers requires a handle opened for writing.
+    #[cfg(windows)]
+    options.write(writable).custom_flags(0x0200_0000);
+    options.open(path)
+}
+
 #[cfg(unix)]
 fn same_file(file: &File, path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
@@ -1118,7 +1147,16 @@ fn same_file(file: &File, path: &Path) -> bool {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn same_file(file: &File, path: &Path) -> bool {
+    let opened = file.try_clone().and_then(same_file::Handle::from_file);
+    match (opened, same_file::Handle::from_path(path)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn same_file(_file: &File, _path: &Path) -> bool {
     false
 }
@@ -1150,7 +1188,30 @@ fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
     Ok(file)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| io_err(format!("opening gate {}", path.display()), e))?;
+    let result = if exclusive {
+        file.try_lock()
+    } else {
+        file.try_lock_shared()
+    };
+    match result {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(StoreError::WriterBusy {
+            path: path.to_path_buf(),
+        }),
+        Err(std::fs::TryLockError::Error(error)) => Err(io_err("acquiring canonical gate", error)),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
     if exclusive {
         return Err(io_err(
@@ -1242,7 +1303,7 @@ fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
     match fs::hard_link(&temp, marker) {
         Ok(()) => {
             let _ = fs::remove_file(&temp);
-            File::open(parent)
+            open_directory(parent, true)
                 .and_then(|directory| directory.sync_all())
                 .map_err(|error| io_err(format!("syncing {}", parent.display()), error))?;
             Ok(true)
@@ -1514,13 +1575,17 @@ mod tests {
         .unwrap();
         assert!(faults.sync_visits.lock().unwrap().contains(&obligation));
         let physical = fs::canonicalize(&path).unwrap();
-        assert_eq!(
-            *faults.sync_visits.lock().unwrap(),
-            physical
-                .ancestors()
-                .map(Path::to_path_buf)
-                .collect::<Vec<_>>()
-        );
+        let expected: Vec<_> = physical.ancestors().map(Path::to_path_buf).collect();
+        #[cfg(windows)]
+        let expected: Vec<_> = {
+            let profile = fs::canonicalize(dirs::home_dir().unwrap()).unwrap();
+            assert!(physical.starts_with(&profile));
+            expected
+                .into_iter()
+                .filter(|path| path.starts_with(&profile))
+                .collect()
+        };
+        assert_eq!(*faults.sync_visits.lock().unwrap(), expected);
         let mut doc = store.new_canonical_document().unwrap();
         doc.put(ROOT, "body", "visible").unwrap();
         *faults.sync_failure.lock().unwrap() = Some(physical);
@@ -1549,6 +1614,25 @@ mod tests {
                 fs::remove_file(path.join(CANONICAL_GATE)).unwrap();
                 fs::write(path.join(CANONICAL_GATE), b"replacement").unwrap();
             } else {
+                #[cfg(windows)]
+                {
+                    // Windows prevents moving a directory with an open child
+                    // handle. Verify that protection and its lifetime, rather
+                    // than assuming the Unix rename operation can succeed.
+                    let moved = tmp.path().join("moved");
+                    let error = fs::rename(&path, &moved).unwrap_err();
+                    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                    assert!(path.is_dir());
+                    assert!(!moved.exists());
+                    store.write_full(b"still owned").unwrap();
+                    assert_eq!(fs::read(path.join(DOCUMENT_FILE)).unwrap(), b"still owned");
+                    drop(store);
+                    fs::rename(&path, &moved).unwrap();
+                    assert!(!path.exists());
+                    assert_eq!(fs::read(moved.join(DOCUMENT_FILE)).unwrap(), b"still owned");
+                    continue;
+                }
+                #[cfg(not(windows))]
                 fs::rename(&path, tmp.path().join("moved")).unwrap();
             }
             assert!(matches!(

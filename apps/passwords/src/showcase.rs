@@ -236,6 +236,7 @@ pub struct PasswordsSurface {
     export_portal: Option<ui::portal::PortalChannel>,
     backup_portal: Option<ui::portal::PortalChannel>,
     restore_portal: Option<ui::portal::OpenFileChannel>,
+    transfer_poll_deadline: std::cell::Cell<Option<std::time::Instant>>,
     backup_password: TextInput,
     backup_confirmation: TextInput,
     backup_focus: usize,
@@ -310,11 +311,13 @@ impl PasswordsSurface {
                 .cloned()
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| item.username.clone()),
-            SecretItemKind::ApiKey => item
-                .username
-                .is_empty()
-                .then_some("API credential".to_string())
-                .unwrap_or_else(|| item.username.clone()),
+            SecretItemKind::ApiKey => {
+                if item.username.is_empty() {
+                    "API credential".into()
+                } else {
+                    item.username.clone()
+                }
+            }
             SecretItemKind::SecureNote => "Note".into(),
             SecretItemKind::Wifi => item
                 .fields
@@ -535,6 +538,7 @@ impl PasswordsSurface {
             export_portal: None,
             backup_portal: None,
             restore_portal: None,
+            transfer_poll_deadline: std::cell::Cell::new(None),
             backup_password: backup_input("Backup password"),
             backup_confirmation: backup_input("Confirm password"),
             backup_focus: 0,
@@ -626,6 +630,7 @@ impl PasswordsSurface {
             export_portal: None,
             backup_portal: None,
             restore_portal: None,
+            transfer_poll_deadline: std::cell::Cell::new(None),
             backup_password: backup_input("Backup password"),
             backup_confirmation: backup_input("Confirm password"),
             backup_focus: 0,
@@ -657,6 +662,9 @@ impl PasswordsSurface {
 
     fn refresh(&mut self) {
         if let Some(model) = &self.model {
+            if model.recovery_error().is_some() {
+                self.status = "Vault unavailable. Restore key or storage access, then restart Passwords before saving.".into();
+            }
             self.health = model.health();
             self.app_grants = model.app_grants();
             self.items = model
@@ -738,8 +746,8 @@ impl PasswordsSurface {
             .unwrap_or_else(|| cached.clone());
         self.editing = Some(item.id.clone());
         self.draft_kind = item.kind;
-        self.draft_title = item.title.clone();
-        self.draft_username = item.username.clone();
+        self.draft_title.clone_from(&item.title);
+        self.draft_username.clone_from(&item.username);
         self.draft_origin = item.origins.iter().cloned().collect::<Vec<_>>().join(", ");
         self.draft_password.clear();
         self.draft_notes = Zeroizing::new(item.notes);
@@ -755,7 +763,7 @@ impl PasswordsSurface {
             .iter()
             .filter(|(label, _)| label.as_str() != "network")
             .collect::<Vec<_>>();
-        custom_fields.sort_by(|(left, _), (right, _)| left.cmp(right));
+        custom_fields.sort_by_key(|(left, _)| *left);
         self.draft_custom_fields = Zeroizing::new(
             custom_fields
                 .into_iter()
@@ -887,17 +895,16 @@ impl PasswordsSurface {
             // custom field we do not own or understand.
             item.fields.remove("network");
         }
-        let origins = self
+        let mut origins = self
             .draft_origin
             .split([',', '\n', ';'])
             .map(str::trim)
-            .filter(|origin| !origin.is_empty())
-            .collect::<Vec<_>>();
+            .filter(|origin| !origin.is_empty());
         let valid_origin = if matches!(
             self.draft_kind,
             SecretItemKind::Login | SecretItemKind::ApiKey
         ) {
-            origins.into_iter().try_for_each(|origin| {
+            origins.try_for_each(|origin| {
                 item.add_origin(origin)
                     .map_err(|_| format!("{origin} is not a full sign-in address"))
             })
@@ -935,9 +942,8 @@ impl PasswordsSurface {
     fn secret_field_label(kind: SecretItemKind) -> &'static str {
         match kind {
             SecretItemKind::ApiKey => "API key",
-            SecretItemKind::Wifi => "Password",
+            SecretItemKind::Wifi | SecretItemKind::Login => "Password",
             SecretItemKind::Other => "Secret",
-            SecretItemKind::Login => "Password",
             SecretItemKind::SecureNote => "Note",
         }
     }
@@ -952,14 +958,14 @@ impl PasswordsSurface {
             let Some((label, value)) = line.split_once('=').or_else(|| line.split_once(':')) else {
                 return Err(format!(
                     "Custom field {} needs a label and value separated by =",
-                    index + 1
+                    index.saturating_add(1)
                 ));
             };
             let label = label.trim();
             if label.is_empty() || label.eq_ignore_ascii_case("network") {
                 return Err(format!(
                     "Choose another label for custom field {}",
-                    index + 1
+                    index.saturating_add(1)
                 ));
             }
             if fields
@@ -1014,7 +1020,7 @@ impl PasswordsSurface {
                 ActiveField::Password,
             ]),
             SecretItemKind::Wifi | SecretItemKind::Other => {
-                fields.extend([ActiveField::Username, ActiveField::Password])
+                fields.extend([ActiveField::Username, ActiveField::Password]);
             }
             SecretItemKind::SecureNote => {}
         }
@@ -1191,7 +1197,7 @@ impl PasswordsSurface {
                             panel.y0 + 114.0 - self.editor_scroll,
                         )
                     } else {
-                        let left = x + f64::from(index - 3) * (second + 8.0);
+                        let left = x + f64::from(index.saturating_sub(3)) * (second + 8.0);
                         Rect::new(
                             left,
                             panel.y0 + 122.0 - self.editor_scroll,
@@ -1210,9 +1216,14 @@ impl PasswordsSurface {
             let save = Rect::new(panel.x1 - 98.0, y, panel.x1 - 24.0, y + 44.0);
             let cancel = Rect::new(save.x0 - 61.0, y, save.x0 - 6.0, y + 44.0);
             (
-                self.editing
-                    .is_some()
-                    .then(|| Rect::new(panel.x0 + 36.0, y, panel.x0 + 124.0, y + 44.0)),
+                self.editing.is_some().then(|| {
+                    Rect::new(
+                        panel.x0 + 24.0,
+                        y,
+                        (panel.x0 + 112.0).min(cancel.x0 - 8.0),
+                        y + 44.0,
+                    )
+                }),
                 cancel,
                 save,
             )
@@ -1244,14 +1255,17 @@ impl PasswordsSurface {
         let Some(model) = &self.model else { return };
         match model.reveal_value(&item.id) {
             Ok(secret) => {
-                ui::text_selection::clipboard_copy(&secret);
+                if !ui::try_clipboard_copy(&secret) {
+                    self.status = "Could not copy to the system clipboard. Try again.".into();
+                    return;
+                }
                 let lease =
                     accounts::ClipboardLease::new(secret, std::time::Duration::from_secs(30));
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(30));
                     let current = ui::text_selection::clipboard_paste();
                     if lease.should_clear(current.as_deref()) {
-                        ui::text_selection::clipboard_copy("");
+                        let _ = ui::try_clipboard_copy("");
                     }
                 });
                 self.status = format!(
@@ -1273,7 +1287,9 @@ impl PasswordsSurface {
                 self.revealed = Some((
                     item.id.clone(),
                     secret,
-                    std::time::Instant::now() + std::time::Duration::from_secs(10),
+                    std::time::Instant::now()
+                        .checked_add(std::time::Duration::from_secs(10))
+                        .unwrap_or_else(std::time::Instant::now),
                 ));
             }
             Err(error) => self.status = error,
@@ -1312,7 +1328,10 @@ impl PasswordsSurface {
         if value.is_empty() {
             return;
         }
-        ui::text_selection::clipboard_copy(value);
+        if !ui::try_clipboard_copy(value) {
+            self.status = "Could not copy to the system clipboard. Try again.".into();
+            return;
+        }
         self.status = match item.kind {
             SecretItemKind::Wifi => "Copied network name".into(),
             SecretItemKind::ApiKey => "Copied account".into(),
@@ -1328,7 +1347,10 @@ impl PasswordsSurface {
             return;
         }
         let origins = item.origins.iter().cloned().collect::<Vec<_>>().join("\n");
-        ui::text_selection::clipboard_copy(&origins);
+        if !ui::try_clipboard_copy(&origins) {
+            self.status = "Could not copy to the system clipboard. Try again.".into();
+            return;
+        }
         self.status = if item.origins.len() == 1 {
             "Copied address".into()
         } else {
@@ -1342,13 +1364,13 @@ impl PasswordsSurface {
         };
         match item.kind {
             SecretItemKind::Login | SecretItemKind::ApiKey | SecretItemKind::Wifi if row == 0 => {
-                self.copy_identity_selected()
+                self.copy_identity_selected();
             }
             SecretItemKind::Login | SecretItemKind::ApiKey | SecretItemKind::Wifi if row == 1 => {
-                self.copy_selected()
+                self.copy_selected();
             }
             SecretItemKind::Login | SecretItemKind::ApiKey if row == 2 => {
-                self.copy_origin_selected()
+                self.copy_origin_selected();
             }
             SecretItemKind::SecureNote | SecretItemKind::Other if row == 0 => self.copy_selected(),
             _ => {}
@@ -1538,10 +1560,10 @@ impl PasswordsSurface {
             Ok(items) => {
                 let count = items.len();
                 let Some(model) = &mut self.model else { return };
-                let mut restored = 0;
+                let mut restored = 0_usize;
                 for mut item in items {
                     if model.update(&mut item).is_ok() {
-                        restored += 1;
+                        restored = restored.saturating_add(1);
                     }
                 }
                 self.refresh();
@@ -1743,7 +1765,7 @@ impl PasswordsSurface {
                     && item.username.eq_ignore_ascii_case(&row.username)
                     && origins_match(item, &row.origin)
             }) {
-                skipped += 1;
+                skipped = skipped.saturating_add(1);
                 continue;
             }
             let mut item = SecretItem::login(
@@ -1753,13 +1775,13 @@ impl PasswordsSurface {
             );
             item.notes = row.notes.to_string();
             if !row.origin.is_empty() && item.add_origin(&row.origin).is_err() {
-                skipped += 1;
+                skipped = skipped.saturating_add(1);
                 continue;
             }
             if model.update(&mut item).is_ok() {
-                imported += 1;
+                imported = imported.saturating_add(1);
             } else {
-                skipped += 1;
+                skipped = skipped.saturating_add(1);
             }
         }
         self.refresh();
@@ -2796,7 +2818,9 @@ impl PasswordsSurface {
         let scroll = self.list_scroll.min(total.saturating_sub(shown.max(1)));
         for (display_index, item_index) in visible.into_iter().skip(scroll).take(shown).enumerate()
         {
-            let item = &self.items[item_index];
+            let Some(item) = self.items.get(item_index) else {
+                continue;
+            };
             let y = tabs_y + 52.0 + display_index as f64 * 76.0;
             let row = Rect::new(rect.x0, y, rect.x1, y + 66.0);
             Self::card(
@@ -2813,7 +2837,7 @@ impl PasswordsSurface {
             let accent = c
                 .accent
                 .stops
-                .get((display_index + 3).min(9))
+                .get(display_index.saturating_add(3).min(9))
                 .copied()
                 .unwrap_or(c.text_primary);
             Self::card(
@@ -3173,7 +3197,7 @@ impl PasswordsSurface {
         let c = &theme.tokens.colors;
         Self::card(scene, transform, c.surfaces.raised, rect, 18.0);
         let x = rect.x0 + 36.0;
-        let title_x = if Self::editor_is_compact(rect) && rect.width() >= 330.0 {
+        let title_x = if self.drawer.is_overlay() {
             rect.x0 + 60.0
         } else {
             x
@@ -3879,6 +3903,7 @@ impl PasswordsSurface {
 
 impl Widget for PasswordsSurface {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+        self.transfer_poll_deadline.set(None);
         self.poll_transfers();
         if self
             .revealed
@@ -4022,19 +4047,19 @@ impl Widget for PasswordsSurface {
                     );
                 }
                 ShowcaseMode::Vault => {
-                    self.draw_list(scene, tr, transform, theme, compact_content, true)
+                    self.draw_list(scene, tr, transform, theme, compact_content, true);
                 }
                 ShowcaseMode::Editor | ShowcaseMode::DeleteConfirm => {
-                    self.draw_editor(scene, tr, transform, theme, compact_content)
+                    self.draw_editor(scene, tr, transform, theme, compact_content);
                 }
                 ShowcaseMode::Health => {
-                    self.draw_health(scene, tr, transform, theme, compact_content)
+                    self.draw_health(scene, tr, transform, theme, compact_content);
                 }
                 ShowcaseMode::AppAccess => {
-                    self.draw_app_access(scene, tr, transform, theme, compact_content)
+                    self.draw_app_access(scene, tr, transform, theme, compact_content);
                 }
                 ShowcaseMode::Import | ShowcaseMode::Export => {
-                    self.draw_list(scene, tr, transform, theme, compact_content, true)
+                    self.draw_list(scene, tr, transform, theme, compact_content, true);
                 }
             }
             if self.drawer.is_open() {
@@ -4067,12 +4092,12 @@ impl Widget for PasswordsSurface {
         match self.mode {
             ShowcaseMode::Vault => self.draw_detail(scene, tr, transform, theme, detail),
             ShowcaseMode::Editor | ShowcaseMode::DeleteConfirm => {
-                self.draw_editor(scene, tr, transform, theme, detail)
+                self.draw_editor(scene, tr, transform, theme, detail);
             }
             ShowcaseMode::Health => self.draw_health(scene, tr, transform, theme, detail),
             ShowcaseMode::AppAccess => self.draw_app_access(scene, tr, transform, theme, detail),
             ShowcaseMode::Import | ShowcaseMode::Export => {
-                self.draw_detail(scene, tr, transform, theme, detail)
+                self.draw_detail(scene, tr, transform, theme, detail);
             }
         }
         self.draw_transfer_dialog(scene, tr, transform, theme, presence);
@@ -4142,7 +4167,7 @@ impl Widget for PasswordsSurface {
                 && key.logical_key == Key::Named(NamedKey::Tab)
                 && !restoring
             {
-                self.backup_focus = 1 - self.backup_focus;
+                self.backup_focus = usize::from(self.backup_focus == 0);
                 self.backup_password.set_focus(self.backup_focus == 0);
                 self.backup_confirmation.set_focus(self.backup_focus == 1);
                 *handled = true;
@@ -4249,7 +4274,7 @@ impl Widget for PasswordsSurface {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_pointer = Point::new(position.x / scale, position.y / scale)
+                self.last_pointer = Point::new(position.x / scale, position.y / scale);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -4365,7 +4390,6 @@ impl Widget for PasswordsSurface {
                     ShowcaseMode::AppAccess => {
                         if self.activate_app_access(panel, self.last_pointer) {
                             *handled = true;
-                            return;
                         }
                     }
                     ShowcaseMode::Vault if self.drawer.is_overlay() && self.mobile_detail => {
@@ -4439,7 +4463,6 @@ impl Widget for PasswordsSurface {
                         {
                             self.activate_detail_row_at(1, self.last_pointer.x, panel.x1);
                             *handled = true;
-                            return;
                         }
                     }
                     ShowcaseMode::Editor => {
@@ -4530,7 +4553,6 @@ impl Widget for PasswordsSurface {
                         if save.contains(self.last_pointer) {
                             self.save_draft();
                             *handled = true;
-                            return;
                         }
                     }
                     _ => {}
@@ -4716,7 +4738,7 @@ impl Widget for PasswordsSurface {
                         Key::Named(NamedKey::Enter) => match self.transfer_dialog {
                             Some(TransferDialog::ImportPreview { .. }) => self.apply_import(),
                             Some(TransferDialog::ExportPlaintext { acknowledged: true }) => {
-                                self.begin_plaintext_export()
+                                self.begin_plaintext_export();
                             }
                             Some(TransferDialog::DeleteConfirm { .. }) => self.confirm_delete(),
                             Some(TransferDialog::Backup) => self.begin_encrypted_backup(),
@@ -4755,7 +4777,10 @@ impl Widget for PasswordsSurface {
                                     if backwards {
                                         index.checked_sub(1).unwrap_or(last)
                                     } else {
-                                        index.saturating_add(1) % fields.len()
+                                        index
+                                            .saturating_add(1)
+                                            .checked_rem(fields.len())
+                                            .unwrap_or(0)
                                     }
                                 },
                             );
@@ -5161,8 +5186,12 @@ impl Widget for PasswordsSurface {
                 TransferDialog::Backup => vec![
                     AccessNode::new(Role::StaticText)
                         .with_name("Encrypted locally; preserves every item and custom field"),
-                    AccessNode::new(Role::TextInput).with_name("Backup password"),
-                    AccessNode::new(Role::TextInput).with_name("Confirm password"),
+                    self.backup_password
+                        .accessibility()?
+                        .with_action_target("passwords.backup.password"),
+                    self.backup_confirmation
+                        .accessibility()?
+                        .with_action_target("passwords.backup.confirmation"),
                     AccessNode::new(Role::Button)
                         .with_name("Cancel backup")
                         .with_action_target("passwords.transfer.cancel"),
@@ -5171,7 +5200,9 @@ impl Widget for PasswordsSurface {
                         .with_action_target("passwords.transfer.backup"),
                 ],
                 TransferDialog::Restore { .. } => vec![
-                    AccessNode::new(Role::TextInput).with_name("Backup password"),
+                    self.backup_password
+                        .accessibility()?
+                        .with_action_target("passwords.backup.password"),
                     AccessNode::new(Role::Button)
                         .with_name("Cancel restore")
                         .with_action_target("passwords.transfer.cancel"),
@@ -5211,6 +5242,9 @@ impl Widget for PasswordsSurface {
             }
         }
 
+        if !self.status.is_empty() {
+            children.push(AccessNode::new(Role::StaticText).with_name(&self.status));
+        }
         let mut root = AccessNode::new(Role::Window)
             .with_name("Passwords")
             .with_children(children);
@@ -5230,22 +5264,22 @@ impl Widget for PasswordsSurface {
             ("passwords.add", Action::Activate) => self.begin_add(),
             ("passwords.filter.all", Action::Activate) => self.select_filter(VaultFilter::All),
             ("passwords.filter.favorites", Action::Activate) => {
-                self.select_filter(VaultFilter::Favorites)
+                self.select_filter(VaultFilter::Favorites);
             }
             ("passwords.filter.logins", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::Login))
+                self.select_filter(VaultFilter::Kind(SecretItemKind::Login));
             }
             ("passwords.filter.api-keys", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::ApiKey))
+                self.select_filter(VaultFilter::Kind(SecretItemKind::ApiKey));
             }
             ("passwords.filter.notes", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::SecureNote))
+                self.select_filter(VaultFilter::Kind(SecretItemKind::SecureNote));
             }
             ("passwords.filter.wifi", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::Wifi))
+                self.select_filter(VaultFilter::Kind(SecretItemKind::Wifi));
             }
             ("passwords.filter.other", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::Other))
+                self.select_filter(VaultFilter::Kind(SecretItemKind::Other));
             }
             (target, Action::Activate) if target.starts_with("passwords.favorite:") => {
                 let Some(index) = target
@@ -5284,6 +5318,29 @@ impl Widget for PasswordsSurface {
             ("passwords.transfer.cancel", Action::Activate) => {
                 self.transfer_dialog = None;
                 self.clear_backup_form();
+            }
+            (
+                "passwords.backup.password" | "passwords.backup.confirmation",
+                Action::SetValue(_) | Action::Focus,
+            ) => {
+                let confirming = target == "passwords.backup.confirmation";
+                if !matches!(self.transfer_dialog, Some(TransferDialog::Backup))
+                    && (confirming
+                        || !matches!(self.transfer_dialog, Some(TransferDialog::Restore { .. })))
+                {
+                    return false;
+                }
+                self.backup_focus = usize::from(confirming);
+                self.backup_password.set_focus(!confirming);
+                self.backup_confirmation.set_focus(confirming);
+                if let Action::SetValue(value) = action {
+                    let field = if confirming {
+                        &mut self.backup_confirmation
+                    } else {
+                        &mut self.backup_password
+                    };
+                    field.set_text(value);
+                }
             }
             ("passwords.transfer.backup", Action::Activate) => self.begin_encrypted_backup(),
             ("passwords.transfer.restore", Action::Activate) => self.apply_encrypted_restore(),
@@ -5419,18 +5476,32 @@ impl Widget for PasswordsSurface {
         true
     }
     fn next_wake_deadline(&self) -> Option<std::time::Instant> {
-        let transfers = (self.import_portal.is_some()
+        let pending = self.import_portal.is_some()
             || self.import_parse.is_some()
-            || self.export_portal.is_some())
-        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(16));
-        match (
-            transfers,
-            self.revealed.as_ref().map(|(_, _, until)| *until),
-        ) {
-            (Some(transfers), Some(reveal)) => Some(transfers.min(reveal)),
-            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
-            (None, None) => None,
-        }
+            || self.export_portal.is_some()
+            || self.backup_portal.is_some()
+            || self.restore_portal.is_some();
+        let transfer = if pending {
+            // Keep the deadline fixed until sync consumes the tick. Returning
+            // now + 16 ms on every query would postpone it indefinitely.
+            let deadline = self.transfer_poll_deadline.get().unwrap_or_else(|| {
+                std::time::Instant::now()
+                    .checked_add(std::time::Duration::from_millis(16))
+                    .unwrap_or_else(std::time::Instant::now)
+            });
+            self.transfer_poll_deadline.set(Some(deadline));
+            Some(deadline)
+        } else {
+            self.transfer_poll_deadline.set(None);
+            None
+        };
+        [
+            transfer,
+            self.revealed.as_ref().map(|(_, _, deadline)| *deadline),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
     fn modal_capture(&self) -> Option<Rect> {
         self.transfer_dialog.as_ref().map(|_| self.transfer_rect())
@@ -5698,6 +5769,17 @@ mod tests {
     }
 
     #[test]
+    fn minimum_width_editor_actions_do_not_overlap() {
+        let app = PasswordsSurface::demo(ShowcaseMode::Editor);
+        let panel = Rect::new(24.0, 24.0, 296.0, 736.0);
+        let (delete, cancel, save) = app.editor_footer_rects(panel);
+        let delete = delete.expect("editing exposes delete");
+        assert!(delete.width() >= 44.0 && cancel.width() >= 44.0 && save.width() >= 44.0);
+        assert!(delete.x1 < cancel.x0 && cancel.x1 < save.x0);
+        assert!(delete.x0 >= panel.x0 && save.x1 <= panel.x1);
+    }
+
+    #[test]
     fn short_phone_editor_scrolls_every_field_behind_a_fixed_action_bar() {
         let mut app = PasswordsSurface::demo(ShowcaseMode::Editor);
         let panel = Rect::new(24.0, 24.0, 366.0, 496.0);
@@ -5757,10 +5839,11 @@ mod tests {
                 |item| item.password.is_empty() || item.password.starts_with("never-rendered-")
             )
         );
-        let visible = items
-            .iter()
-            .map(|item| format!("{} {} {:?}", item.title, item.username, item.origins))
-            .collect::<String>();
+        use std::fmt::Write as _;
+        let visible = items.iter().fold(String::new(), |mut text, item| {
+            write!(text, "{} {} {:?}", item.title, item.username, item.origins).unwrap();
+            text
+        });
         assert!(!visible.contains("never-rendered"));
     }
 
@@ -5812,6 +5895,71 @@ mod tests {
         let json = serde_json::to_string(&Widget::accessibility(&app)).unwrap();
         assert!(!json.contains("never-rendered"));
         assert!(json.contains("Reveal for ten seconds"));
+    }
+
+    // Clipboard transport is injected at the existing host boundary. Keep
+    // these unit tests independent of the desktop and serialize their shared
+    // backend; native integration checks still exercise the Windows clipboard.
+    struct TestClipboard {
+        accepts: bool,
+        text: std::sync::Mutex<Option<String>>,
+    }
+
+    impl ui::clipboard::ClipboardBackend for TestClipboard {
+        fn set_text(&self, _target: ui::clipboard::ClipboardTarget, text: &str) -> bool {
+            if !self.accepts {
+                return false;
+            }
+            *self.text.lock().unwrap() = Some(text.into());
+            true
+        }
+        fn text(&self, _target: ui::clipboard::ClipboardTarget) -> Option<String> {
+            self.text.lock().unwrap().clone()
+        }
+        fn name(&self) -> &'static str {
+            "passwords-test-transport"
+        }
+    }
+
+    fn clipboard_fixture(accepts: bool) -> std::sync::MutexGuard<'static, ()> {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let guard = SERIAL.lock().unwrap();
+        ui::clipboard::install_clipboard_backend(std::sync::Arc::new(TestClipboard {
+            accepts,
+            text: std::sync::Mutex::new(Some("existing clipboard".into())),
+        }));
+        guard
+    }
+
+    #[test]
+    fn failed_copy_reports_error_without_claiming_or_replacing_clipboard_contents() {
+        let _clipboard = clipboard_fixture(false);
+        let root = std::env::temp_dir().join(format!(
+            "tilo-passwords-copy-failure-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let mut model = crate::PasswordsModel::open_in(&root);
+        let mut item = SecretItem::login("Account", "ada", "private-value");
+        item.add_origin("https://example.invalid").unwrap();
+        model.save_item(&mut item).unwrap();
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.model = Some(model);
+        app.refresh();
+        for copy in [
+            PasswordsSurface::copy_selected,
+            PasswordsSurface::copy_identity_selected,
+            PasswordsSurface::copy_origin_selected,
+        ] {
+            copy(&mut app);
+            assert_eq!(
+                app.status,
+                "Could not copy to the system clipboard. Try again."
+            );
+            assert_eq!(ui::clipboard_paste().as_deref(), Some("existing clipboard"));
+            assert!(app.revealed.is_none());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -5895,6 +6043,7 @@ mod tests {
 
     #[test]
     fn polished_surface_saves_searches_and_updates_real_store() {
+        let _clipboard = clipboard_fixture(true);
         let root = std::env::temp_dir().join(format!(
             "tilo-passwords-surface-{}-{:?}",
             std::process::id(),
@@ -5961,6 +6110,7 @@ mod tests {
 
     #[test]
     fn secret_row_has_distinct_copy_and_reveal_targets() {
+        let _clipboard = clipboard_fixture(true);
         let root = std::env::temp_dir().join(format!(
             "tilo-passwords-secret-actions-{}-{:?}",
             std::process::id(),
@@ -5975,6 +6125,7 @@ mod tests {
 
         app.activate_detail_row_at(1, 880.0, 1_000.0);
         assert!(app.status.starts_with("Copied password"));
+        assert_eq!(ui::clipboard_paste().as_deref(), Some("private-value"));
         assert!(
             app.revealed.is_none(),
             "copying must not disclose the value"
@@ -6051,6 +6202,96 @@ mod tests {
         assert_eq!(
             PasswordsSurface::unescape_custom_value(&escaped).unwrap(),
             "first\nsecond\\third"
+        );
+    }
+
+    #[test]
+    fn pending_transfer_keeps_host_polling_and_reveal_has_an_expiry_deadline() {
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.export_portal = Some(rx);
+        let first = app.next_wake_deadline().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_eq!(app.next_wake_deadline(), Some(first));
+        tx.send(ui::portal::PortalOutcome::Cancelled).unwrap();
+        app.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        assert!(app.next_wake_deadline().is_none());
+        let deadline = std::time::Instant::now();
+        app.revealed = Some((
+            SecretId("test".into()),
+            Zeroizing::new("fixture secret".into()),
+            deadline,
+        ));
+        assert_eq!(app.next_wake_deadline(), Some(deadline));
+        app.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        assert!(app.revealed.is_none());
+        assert!(app.next_wake_deadline().is_none());
+    }
+
+    #[test]
+    fn backup_and_restore_fields_share_protected_semantic_entry() {
+        use ui::a11y::Action;
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        let mut doc = AutoCommit::new();
+        for restoring in [false, true] {
+            app.transfer_dialog = Some(if restoring {
+                TransferDialog::Restore {
+                    bytes: Zeroizing::new(Vec::new()),
+                }
+            } else {
+                TransferDialog::Backup
+            });
+            let tree = app.accessibility().unwrap();
+            let controls = &tree.children[0].children;
+            let password = controls
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Backup password"))
+                .unwrap();
+            assert!(password.state.protected);
+            assert_eq!(password.value, None);
+            assert!(app.perform_semantic_action(
+                "passwords.backup.password",
+                &Action::SetValue("Owned fixture password 52!".into()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.backup_password.value(), "Owned fixture password 52!");
+            if !restoring {
+                assert!(app.perform_semantic_action(
+                    "passwords.backup.confirmation",
+                    &Action::SetValue("Owned fixture password 52!".into()),
+                    &mut doc,
+                    &automerge::ROOT,
+                ));
+                assert!(app.backup_form_error(true).is_none());
+            }
+            let tree = app.accessibility().unwrap();
+            assert!(
+                tree.children[0]
+                    .children
+                    .iter()
+                    .filter(|node| node.state.protected)
+                    .all(|node| node.value.is_none())
+            );
+        }
+        app.transfer_dialog = None;
+        assert!(!app.perform_semantic_action(
+            "passwords.backup.password",
+            &Action::SetValue("outside dialog".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+    }
+
+    #[test]
+    fn storage_status_is_available_to_assistive_clients() {
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.status = "Vault unavailable; recovery required".into();
+        let tree = app.accessibility().unwrap();
+        assert!(
+            tree.children
+                .iter()
+                .any(|node| { node.name.as_deref() == Some(app.status.as_str()) })
         );
     }
 

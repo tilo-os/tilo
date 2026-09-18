@@ -1513,8 +1513,8 @@ mod tests {
     #[test]
     fn direct_pair_is_accepted_then_succeeds() {
         let (mut app, mut state) = app_with_state();
-        let left = write_temp("direct-left.txt", "left\n");
-        let right = write_temp("direct-right.txt", "right\n");
+        let left = write_temp("Grün links.txt", "Grün\nshared\n");
+        let right = write_temp("Blau rechts.txt", "Blau\nshared\nadded\n");
         let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::DiffmergeOperation::OpenFiles {
             left: Some(left.display().to_string()),
@@ -1538,6 +1538,10 @@ mod tests {
             app.poll_resource_operation(invocation, false, &state.doc, &state.root),
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
+        let model = app.diff.model();
+        assert_eq!(model.left_lines, 2);
+        assert_eq!(model.right_lines, 3);
+        assert!(model.modified + model.added > 0);
         std::fs::remove_dir_all(left.parent().unwrap()).ok();
         std::fs::remove_dir_all(right.parent().unwrap()).ok();
     }

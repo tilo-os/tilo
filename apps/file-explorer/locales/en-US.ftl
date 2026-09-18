@@ -537,3 +537,7 @@ files-nearby-no-destinations = No approved writable workspace folder is availabl
 files-nearby-destination-count = Choose from { $count } approved destinations.
 files-nearby-save-to-destination = Save to { $destination }
 files-nearby-save-and-remember = Save to { $destination } and use it for this session
+
+files-share-not-available = Share service is not available on this host
+
+files-name-invalid = Enter a valid file or folder name

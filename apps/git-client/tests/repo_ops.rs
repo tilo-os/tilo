@@ -51,6 +51,9 @@ fn init_repo() -> (tempfile::TempDir, PathBuf) {
         let mut cfg = repo.config().expect("config");
         cfg.set_str("user.name", "Test User").unwrap();
         cfg.set_str("user.email", "test@example.com").unwrap();
+        // These fixtures assert exact LF bytes. Do not inherit a host's
+        // checkout policy; CRLF behavior has its own explicit coverage below.
+        cfg.set_bool("core.autocrlf", false).unwrap();
     }
     fs::write(path.join("file.txt"), "line 1\nline 2\nline 3\n").unwrap();
     let sig = Signature::now("Test User", "test@example.com").unwrap();
@@ -155,20 +158,17 @@ fn commit_without_identity_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_path_buf();
     let repo = Repository::init(&path).unwrap();
-    // Deliberately do NOT set user.name/email; clear any inherited config by
-    // pointing at an isolated config and removing the keys if present.
+    // Empty local values shadow any system/global identity. Removing local
+    // keys would expose the host's identity and silently skip the assertion.
     {
         let mut cfg = repo.config().unwrap();
-        let _ = cfg.remove("user.name");
-        let _ = cfg.remove("user.email");
+        cfg.set_str("user.name", "").unwrap();
+        cfg.set_str("user.email", "").unwrap();
     }
     fs::write(path.join("a.txt"), "a\n").unwrap();
     repo::stage_file(&path, "a.txt").unwrap();
-    // If the host has a global identity, signature() may still succeed; only
-    // assert the error path when no identity is resolvable.
-    if open(&path).signature().is_err() {
-        assert!(repo::commit(&path, "msg").is_err());
-    }
+    assert!(open(&path).signature().is_err());
+    assert!(repo::commit(&path, "msg").is_err());
 }
 
 #[test]
@@ -664,6 +664,45 @@ fn discard_hunk_reverts_only_the_selected_worktree_hunk() {
 }
 
 #[test]
+fn discard_hunk_and_file_preserve_configured_crlf_checkout() {
+    let (_dir, path) = init_repo();
+    open(&path)
+        .config()
+        .unwrap()
+        .set_bool("core.autocrlf", true)
+        .unwrap();
+    let committed = numbered_lines();
+    let checkout = committed.replace('\n', "\r\n");
+    fs::write(path.join("multi.txt"), &checkout).unwrap();
+    repo::stage_file(&path, "multi.txt").unwrap();
+    repo::commit(&path, "add CRLF worktree file").unwrap();
+    let changed = checkout
+        .replace("line 2\r\n", "line 2 EDIT\r\n")
+        .replace("line 38\r\n", "line 38 EDIT\r\n");
+    fs::write(path.join("multi.txt"), changed).unwrap();
+
+    repo::discard_hunk(&path, "multi.txt", 0).unwrap();
+    assert_eq!(
+        fs::read_to_string(path.join("multi.txt")).unwrap(),
+        checkout.replace("line 38\r\n", "line 38 EDIT\r\n"),
+        "discarding the first hunk must preserve the second edit and every CRLF"
+    );
+    repo::discard_file(&path, "multi.txt").unwrap();
+    assert_eq!(
+        fs::read_to_string(path.join("multi.txt")).unwrap(),
+        checkout
+    );
+    let repository = open(&path);
+    let tree = repository.head().unwrap().peel_to_tree().unwrap();
+    let entry = tree.get_path(Path::new("multi.txt")).unwrap();
+    assert_eq!(
+        repository.find_blob(entry.id()).unwrap().content(),
+        committed.as_bytes(),
+        "Git storage must remain LF while the checkout follows its CRLF policy"
+    );
+}
+
+#[test]
 fn partially_staged_file_keeps_distinct_staged_and_worktree_diffs() {
     use git_client::model::DiffKey;
     let (_d, path) = init_repo();
@@ -754,6 +793,40 @@ fn app_empty_state_rejects_a_non_repository_path() {
         "a non-repo path leaves the empty state up"
     );
     assert!(app.test_last_error().is_some(), "and surfaces an error");
+}
+
+#[test]
+fn app_opens_unicode_repository_and_commits_exact_unicode_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Grün 🌍");
+    fs::create_dir(&path).unwrap();
+    let repository = Repository::init(&path).unwrap();
+    let mut config = repository.config().unwrap();
+    config.set_str("user.name", "Unicode Test").unwrap();
+    config
+        .set_str("user.email", "unicode@example.invalid")
+        .unwrap();
+    let file = "Grün 🌍.txt";
+    let contents = "Grün 🌍\nSecond line\n";
+    fs::write(path.join(file), contents).unwrap();
+
+    let mut app = GitClientApp::open_empty();
+    app.test_open_path(path.to_str().unwrap());
+    assert!(!app.test_awaiting_repo());
+    app.test_stage_all();
+    assert_eq!(app.test_last_error(), None);
+    app.test_commit("Keep Grün 🌍");
+    assert_eq!(app.test_last_error(), None);
+    assert_eq!(app.test_change_counts(), (0, 0, 0));
+
+    let reopened = Repository::open(&path).unwrap();
+    let head = reopened.head().unwrap().peel_to_commit().unwrap();
+    assert_eq!(head.message(), Ok("Keep Grün 🌍"));
+    let tree = head.tree().unwrap();
+    let entry = tree.get_path(Path::new(file)).unwrap();
+    let blob = reopened.find_blob(entry.id()).unwrap();
+    assert_eq!(blob.content(), contents.as_bytes());
+    assert_eq!(fs::read_to_string(path.join(file)).unwrap(), contents);
 }
 
 // --- helpers ---------------------------------------------------------

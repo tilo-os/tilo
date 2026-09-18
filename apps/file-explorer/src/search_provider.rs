@@ -46,8 +46,7 @@ pub fn place_resource_id(path: &std::path::Path) -> String {
 /// escaping scheme. Keep this shared by folders and entries so every local
 /// Files resource has the same privacy boundary.
 fn path_identity_suffix(path: &std::path::Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
-    let bytes = path.as_os_str().as_bytes();
+    let bytes = path.as_os_str().as_encoded_bytes();
     let mut digest = Sha256::new();
     digest.update(b"tilo.files.local-resource.v1\\0");
     digest.update((bytes.len() as u64).to_be_bytes());

@@ -55,7 +55,6 @@ icu_decimal = "2.3.0"
 icu_locale = "2.3.0"
 # Reads the Tilo FUSE driver's `user.tilo.sync` extended attribute so the file
 # manager can show each workspace file's sync/hydration state.
-xattr = "1.6.1"
 libc.workspace = true
 # Used by `--shots` demo seeds to create sample images and an EPUB cover.
 image = { workspace = true, features = ["png", "jpeg"] }
@@ -80,6 +79,11 @@ taffy.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+xattr = "1.6.1"
+
+[target.'cfg(unix)'.dev-dependencies]
 fs = { path = "../../fs" }
 fuser.workspace = true
 iroh.workspace = true

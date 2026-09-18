@@ -535,6 +535,9 @@ pub fn run_or_exit(spec: &LaunchSpec) {
 /// undeclared `--scenario`), or if the app's root factory, shot factory, or
 /// shot handler returns one.
 pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
+    tilo_startup_metrics::init();
+    let _startup_metrics = tilo_startup_metrics::ScopedDumper;
+    tilo_startup_metrics::mark("app-launch-start");
     let _ = tracing_subscriber::fmt::try_init();
     let args: Vec<String> = std::env::args().collect();
     run_with_args(spec, &args)
@@ -569,8 +572,22 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     });
 
     if spec.definition.is_some() {
+        #[cfg(windows)]
+        let renderer = if args.shots.is_none()
+            && args.responsive_matrix.is_none()
+            && args.headless.is_none()
+            && !args.native_audit
+        {
+            crate::app::prepare_native_renderer()
+        } else {
+            None
+        };
         match dispatch_definition(spec, &args)? {
-            DefinitionDispatch::Native(app) => (*app).run(),
+            DefinitionDispatch::Native(app) => {
+                #[cfg(windows)]
+                let app = Box::new((*app).with_startup_renderer(renderer));
+                (*app).run();
+            }
             DefinitionDispatch::Headless(status) => std::process::exit(status),
             DefinitionDispatch::Rendered(mut driver) => {
                 if let Some(out) = &args.shots {
@@ -796,7 +813,12 @@ fn build_native_app_with_constructor(
 }
 
 fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
-    build_native_app(spec, args)?.run();
+    #[cfg(windows)]
+    let renderer = crate::app::prepare_native_renderer();
+    let app = build_native_app(spec, args)?;
+    #[cfg(windows)]
+    let app = app.with_startup_renderer(renderer);
+    app.run();
     Ok(())
 }
 
@@ -819,7 +841,10 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
     Ok(())
 }
 
-fn shot_theme(args: &LaunchArgs) -> Theme {
+/// Resolve the shared screenshot theme, text scale and motion preference.
+/// Custom shot handlers should use this when constructing their own harness.
+#[must_use]
+pub fn shot_theme(args: &LaunchArgs) -> Theme {
     let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),

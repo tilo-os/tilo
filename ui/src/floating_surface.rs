@@ -371,10 +371,14 @@ impl FloatingSurfaceServiceClient {
         None
     }
 
+    /// # Errors
+    /// Always returns an error because this host has no session-service transport.
     pub fn send(&mut self, _message: &FloatingSurfaceClientMessage) -> Result<(), String> {
         Err("floating-surface service is unavailable on this platform".into())
     }
 
+    /// # Errors
+    /// Always returns an error because this host has no session-service transport.
     pub fn pump(&mut self) -> Result<Vec<FloatingSurfaceHostMessage>, String> {
         Err("floating-surface service is unavailable on this platform".into())
     }

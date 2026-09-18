@@ -1,5 +1,6 @@
 //! Mail — standard Tilo application entry point.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
 // because a fault there can affect the session or every app.
@@ -78,6 +79,9 @@ pub fn main() {
                 "error",
             ])
             .shot_viewport(shot_viewport)
-            .configure_app(|app| mail::actions::register(app.action_registry_mut())),
+            .configure_app(|app| {
+                app.set_window_title(Some("Mail".into()));
+                mail::actions::register(app.action_registry_mut());
+            }),
     );
 }

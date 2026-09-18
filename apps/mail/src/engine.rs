@@ -789,7 +789,9 @@ pub mod live {
             }
             tokens = oauth::refresh_tokens(provider, &client_id, &tokens.refresh_token)?;
             vault.put(&id, &oauth::tokens_to_secret(&tokens));
-            vault.save();
+            vault.try_save().map_err(|error| {
+                format!("could not save refreshed sign-in credentials: {error}")
+            })?;
         }
         Ok(tokens.access_token)
     }
@@ -807,9 +809,7 @@ pub mod live {
             provider,
             &client_id,
             login_hint,
-            |url| {
-                let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-            },
+            |url| ui::widget::try_open_external_url(url).map_err(|error| error.to_string()),
             std::time::Duration::from_secs(300),
         )?;
         let mut vault = SecretVault::open();
@@ -817,8 +817,9 @@ pub mod live {
             &AccountId::from(account_id.to_string()),
             &oauth::tokens_to_secret(&tokens),
         );
-        vault.save();
-        Ok(())
+        vault
+            .try_save()
+            .map_err(|error| format!("could not save sign-in credentials: {error}"))
     }
 
     /// A connected + authenticated IMAP session over rustls.
