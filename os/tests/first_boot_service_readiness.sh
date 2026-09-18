@@ -47,6 +47,11 @@ if grep -Eq '^d[[:space:]]+/var/lib/tilo/device-private[[:space:]]+2750[[:space:
    && exactly_once "$device_key_unit" 'ConditionPathExists=|!/var/lib/tilo/device-private/keypair.bin' \
    && exactly_once "$device_key_unit" 'ConditionPathExists=|/var/lib/tilo/device/keypair.bin' \
    && exactly_once "$device_key_unit" 'ReadWritePaths=/var/lib/tilo/device-private' \
+   && exactly_once "$device_key_unit" 'PrivateNetwork=yes' \
+   && exactly_once "$device_key_unit" 'ProtectProc=invisible' \
+   && exactly_once "$device_key_unit" 'RestrictNamespaces=yes' \
+   && exactly_once "$device_key_unit" 'MemoryDenyWriteExecute=yes' \
+   && exactly_once "$device_key_unit" 'CapabilityBoundingSet=' \
    && containerfile_expanded_rootfs_copy_contract "$containerfile" | \
         awk -F '\t' '$2 == "/out/tilo-device-key-init" && $3 == "/usr/bin/tilo-device-key-init" { found=1 } END { exit !found }' \
    && grep -Fq 'systemctl enable tilo-device-key-init.service' "$containerfile"; then
