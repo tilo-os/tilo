@@ -586,31 +586,17 @@ impl DateIndexedScrollbar {
         }
         let lane = self.preview_lane();
         let active = self.hovered || self.focused || self.bar.is_active();
-        self.paint_track(scene, transform, theme, lane, active);
+        self.paint_track(scene, transform, theme, active);
         let projected = self.project_markers(markers, MAX_PROJECTED_MARKERS);
         self.paint_markers(scene, transform, theme, &projected);
         self.paint_thumb(scene, transform, theme, metrics, active);
         self.paint_preview(scene, transform, text_renderer, theme, lane, &projected);
     }
 
-    fn paint_track(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        lane: Rect,
-        active: bool,
-    ) {
+    fn paint_track(&self, scene: &mut Scene, transform: Affine, theme: &Theme, active: bool) {
         let colors = &theme.tokens.colors;
-        if active {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                colors.surface_white_5,
-                None,
-                &RoundedRect::from_rect(lane, 8.0),
-            );
-        }
+        // The broad lane is an invisible acquisition target. Painting it on
+        // hover turned a scrollbar into an opaque side panel over photos.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
