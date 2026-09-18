@@ -63,6 +63,30 @@ for x in P('/proc').glob('[0-9]*'):
  servers.append({'pid':int(x.name),'argv':a,'root_identity':[root.st_dev,root.st_ino],'export_identity':[export.st_dev,export.st_ino],'socket_bound':(int(x.name)==owner or parent==owner) and sock+'.pid' in links,'socket_owner_pid':owner,'mountinfo':(x/'mountinfo').read_text()})
 assert servers and all(x['socket_bound'] for x in servers),'expected chrooted virtiofs server bound to shared root'
 assert all(x['mountinfo']==servers[0]['mountinfo'] for x in servers),'virtiofs parent/worker mount namespaces differ'
+# LocalStorage in pinned runtime-rs creates directories inside the exported
+# sandbox rootfs. They are not separate host mounts. Observe their real inode
+# identities through all three independently bound views, never infer by name.
+local_volumes=[]
+uid=c['Labels']['io.kubernetes.pod.uid']
+prefix='/var/lib/kubelet/pods/'+uid+'/volumes/kubernetes.io~empty-dir/'
+for m in c['spec']['mounts']:
+ if m.get('type')!='bind' or not m.get('source','').startswith(prefix):continue
+ name=m['source'][len(prefix):]
+ if not name or '/' in name or name in ('.','..'):continue
+ roots=[P('/proc')/str(servers[0]['pid'])/'root'/'passthrough'/sandbox/'rootfs',
+        shims[0]/'root'/shared.lstrip('/')/'passthrough'/sandbox/'rootfs',
+        shims[0]/'root'/'run/containerd/io.containerd.runtime.v2.task/k8s.io'/sandbox/'rootfs']
+ chains=[]
+ for rootfs in roots:
+  chain=[]
+  for path in (rootfs,rootfs/'local',rootfs/'local'/name):
+   try:
+    info=path.lstat();chain.append({'kind':stat.S_IFMT(info.st_mode),'device':info.st_dev,'inode':info.st_ino})
+   except FileNotFoundError:chain.append(None)
+  chains.append(chain)
+ if any(chain[-1] is not None for chain in chains):
+  local_volumes.append({'source':m['source'],'destination':m['destination'],'name':name,'chains':chains})
+
 def digest(path):
  h=hashlib.sha256()
  with open(path,'rb') as f:
@@ -74,7 +98,7 @@ hashes={str(x):digest(x) for x in paths}
 for flag in ('-kernel','-bios'):
  assert argv.count(flag)==1;path=argv[argv.index(flag)+1];hashes[path]=digest(path)
 image='/opt/kata/share/kata-containers/kata-ubuntu-noble.image';hashes[image]=digest(image)
-print(json.dumps({'container':c,'sandbox':s,'pid':int(d.name),'start':(d/'stat').read_text().split()[21],'argv':argv,'fds':fds,'mountinfo':(shims[0]/'mountinfo').read_text(),'virtiofs':servers[0],'hashes':hashes}))
+print(json.dumps({'container':c,'sandbox':s,'pid':int(d.name),'start':(d/'stat').read_text().split()[21],'argv':argv,'fds':fds,'mountinfo':(shims[0]/'mountinfo').read_text(),'virtiofs':servers[0],'local_volumes':local_volumes,'hashes':hashes}))
 '''
 
 GUEST_RUN = r'''
@@ -136,6 +160,64 @@ def inspect_pod(pod, node, expected_uid, guest_image):
     if not re.fullmatch('[0-9a-f]{64}', identity):
         raise ValueError('invalid container identity')
     return identity
+
+
+def inspect_local_volumes(host, pod, sid, missing, mount_rows, server_rows):
+    """Accept runtime-local emptyDirs only with fresh independent host identities."""
+    prefix = '/var/lib/kubelet/pods/'+pod['metadata']['uid']+'/volumes/kubernetes.io~empty-dir/'
+    volumes = {v['name']: v for v in pod['spec']['volumes']}
+    mounts = pod['spec']['containers'][0].get('volumeMounts', [])
+    evidence = host.get('local_volumes', [])
+    if not isinstance(evidence, list):
+        raise ValueError('invalid local volume observation')
+    by_source = {}
+    for row in evidence:
+        if not isinstance(row, dict) or set(row) != {'source','destination','name','chains'} or row['source'] in by_source:
+            raise ValueError('ambiguous local volume observation')
+        name = row['name']
+        volume = volumes.get(name, {})
+        targets = [m for m in mounts if m['name']==name]
+        if (row['source'] != prefix+name or 'emptyDir' not in volume
+                or volume['emptyDir'].get('medium', '') != '' or len(targets)!=1
+                or row['destination'] != targets[0]['mountPath']
+                or any(k in targets[0] for k in ('subPath','subPathExpr'))):
+            raise ValueError('local observation differs from complete Pod emptyDir')
+        by_source[row['source']] = row
+    accepted = set()
+    for source in missing:
+        if not source.startswith(prefix):
+            continue
+        name = source.removeprefix(prefix)
+        volume = volumes.get(name, {})
+        candidates = [m for m in mounts if m['name']==name]
+        if ('emptyDir' not in volume or volume['emptyDir'].get('medium', '') != ''
+                or len(candidates)!=1 or any(k in candidates[0] for k in ('subPath','subPathExpr'))):
+            raise ValueError('local volume must bind one complete disk emptyDir')
+        row = by_source.get(source)
+        if row is None or row['name'] != name or row['destination'] != candidates[0]['mountPath']:
+            raise ValueError('missing exact local volume observation')
+        chains = row['chains']
+        if (not isinstance(chains,list) or len(chains)!=3
+                or any(not isinstance(chain,list) or len(chain)!=3 for chain in chains)):
+            raise ValueError('incomplete local volume identity chains')
+        for chain in chains:
+            for entry in chain:
+                if (not isinstance(entry,dict) or set(entry)!={'kind','device','inode'}
+                        or entry['kind']!=0o40000 or any(type(entry[k]) is not int or entry[k]<=0 for k in ('device','inode'))):
+                    raise ValueError('local volume contains missing or redirected directories')
+            if any(entry['device']!=chain[0]['device'] for entry in chain):
+                raise ValueError('local volume crosses a filesystem boundary')
+        if any(chain != chains[0] for chain in chains[1:]):
+            raise ValueError('local volume views have different directory identities')
+        paths = ['/passthrough/'+sid+'/rootfs/local',
+                 '/run/kata-containers/shared/sandboxes/'+sid+'/ro/passthrough/'+sid+'/rootfs/local',
+                 '/run/kata-containers/shared/sandboxes/'+sid+'/rw/passthrough/'+sid+'/rootfs/local',
+                 '/run/containerd/io.containerd.runtime.v2.task/k8s.io/'+sid+'/rootfs/local']
+        if any(any(fields[4]==path or fields[4].startswith(path+'/') for path in paths)
+               for fields in mount_rows+server_rows):
+            raise ValueError('local volume contains a nested mount')
+        accepted.add(source)
+    return accepted
 
 
 def inspect_host(host, pod, pins):
@@ -231,6 +313,8 @@ def inspect_host(host, pod, pins):
     # must not be confused with ordinary shared host-backed emptyDir exports.
     guest_local = {'/run/containerd/io.containerd.grpc.v1.cri/sandboxes/'+sid+'/shm'}
     guest_local.update(root+'/volumes/kubernetes.io~empty-dir/'+v['name'] for v in pod['spec']['volumes'] if v.get('emptyDir',{}).get('medium')=='Memory')
+    missing = required_sources-guest_local-observed_sources
+    observed_sources.update(inspect_local_volumes(host, pod, sid, missing, mount_rows, server_rows))
     if not (required_sources-guest_local).issubset(observed_sources):
         raise ValueError('missing expected live volume export')
     host_exports = {row[4].removeprefix(shared):row[2:4] for row in mount_rows if row[4].startswith(shared+'/passthrough/')}

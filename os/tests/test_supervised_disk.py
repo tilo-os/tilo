@@ -70,6 +70,48 @@ class ControllerAdmission(unittest.TestCase):
         self.assertEqual(controller.inspect_pod(self.pod,self.node,self.uid,self.image),self.cid)
         self.assertEqual(controller.inspect_host(self.host,self.pod,self.host['hashes'])['sandbox_id'],self.sid)
 
+    def local_fixture(self):
+        # Actual preflight shape: named emptyDirs have no passthrough mounts;
+        # runtime-rs instead creates them in pause-rootfs/local/<volume>.
+        # Identity numbers below are synthetic; live admission needs the new
+        # host collector's fresh three-view lstat observation, not this fixture.
+        self.host['local_volumes'] = []
+        self.pod['spec']['containers'][0].setdefault('volumeMounts', [])
+        for i, (name, destination) in enumerate((('storage','/var/lib/containers'),
+                ('scratch','/var/tmp'),('run','/run'),('tmp','/tmp'))):
+            name='local-'+name
+            self.pod['spec']['volumes'].append({'name':name,'emptyDir':{}})
+            self.pod['spec']['containers'][0]['volumeMounts'].append({'name':name,'mountPath':destination})
+            source='/var/lib/kubelet/pods/'+self.uid+'/volumes/kubernetes.io~empty-dir/'+name
+            self.host['container']['spec']['mounts'].append({'type':'bind','source':source,'destination':destination})
+            chain=[{'kind':0o40000,'device':201,'inode':n} for n in (100,200,300+i)]
+            self.host['local_volumes'].append({'source':source,'destination':destination,'name':name,
+                                              'chains':[copy.deepcopy(chain) for _ in range(3)]})
+
+    def test_local_emptydirs_require_three_matching_fresh_views(self):
+        self.local_fixture()
+        self.assertEqual(controller.inspect_host(self.host,self.pod,self.host['hashes'])['sandbox_id'],self.sid)
+        self.host.pop('local_volumes')
+        with self.assertRaisesRegex(ValueError,'missing exact local'):
+            controller.inspect_host(self.host,self.pod,self.host['hashes'])
+
+    def test_local_substitutions_fail_closed(self):
+        self.local_fixture()
+        original=copy.deepcopy(self.host);pod=copy.deepcopy(self.pod)
+        for change in ('inode','symlink','missing','destination','foreign-source','memory','subpath','nested'):
+            with self.subTest(change=change):
+                self.host=copy.deepcopy(original);self.pod=copy.deepcopy(pod)
+                row=self.host['local_volumes'][0]
+                if change=='inode':row['chains'][1][2]['inode']+=1
+                elif change=='symlink':row['chains'][0][1]['kind']=0o120000
+                elif change=='missing':row['chains'][2][2]=None
+                elif change=='destination':row['destination']='/etc'
+                elif change=='foreign-source':row['source']=row['source'].replace(self.uid,'foreign-pod')
+                elif change=='memory':self.pod['spec']['volumes'][-4]['emptyDir']['medium']='Memory'
+                elif change=='subpath':self.pod['spec']['containers'][0]['volumeMounts'][-4]['subPath']='escape'
+                elif change=='nested':self.host['virtiofs']['mountinfo']+='\n1 2 0:201 / /passthrough/'+self.sid+'/rootfs/local/local-storage rw - tmpfs tmpfs rw'
+                with self.assertRaises(ValueError):controller.inspect_host(self.host,self.pod,self.host['hashes'])
+
     def test_hotplugged_host_disk_rejected_even_absent_from_argv(self):
         self.host['fds'].append({'path':'/dev/nvme1n1','kind':0o60000})
         with self.assertRaisesRegex(ValueError,'block device'):controller.inspect_host(self.host,self.pod,self.host['hashes'])
