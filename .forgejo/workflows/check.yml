@@ -131,19 +131,6 @@ jobs:
 
       - name: Repository layout guard
         run: python3 tools/check_repository_layout.py
-
-      # The image may lag a newly required check tool.
-      - name: Ensure invariant test tooling
-        run: |
-          command -v jq >/dev/null || dnf install -y jq
-          python3 -c 'import PIL' 2>/dev/null || dnf install -y python3-pillow
-
-      # These boundaries are mostly shell, image configuration, and workflow
-      # policy, so Cargo's affected-package graph cannot select them. Keep the
-      # Executable invariants run on every PR instead of waiting for a release.
-      - name: Security boundary invariants
-        run: bash tools/run-security-boundary-invariants.sh
-
       - name: Select and balance affected packages
         id: plan
         shell: bash
@@ -176,10 +163,42 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # Shell, image-configuration, and workflow policy cannot be selected through
+  # Cargo's dependency graph. Keep these checks mandatory, but run them beside
+  # selection so they do not delay the affected-package matrix.
+  security:
+    needs: builder
+    runs-on: runner
+    timeout-minutes: 30
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout security boundary inputs
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      # The image may lag a newly required check tool.
+      - name: Ensure invariant test tooling
+        run: |
+          command -v jq >/dev/null || dnf install -y jq
+          python3 -c 'import PIL' 2>/dev/null || dnf install -y python3-pillow
+
+      - name: Security boundary invariants
+        run: bash tools/run-security-boundary-invariants.sh
+
   affected:
     needs: [builder, select]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    env:
+      # The native ARM runner has enough memory for one of the largest test
+      # links, but not four simultaneously. Most compile work is served by
+      # sccache, so serialize ARM rustc/linker processes without slowing x86.
+      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '4' }}
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -249,22 +268,28 @@ jobs:
           cargo check --locked --all-targets ${{ matrix.packages }}
 
       # Lint the exact same reverse-dependency closure at the selected base and
-      # at HEAD, including opt-in code paths such as the shipped thin-app
-      # wrappers. Historical diagnostics in an otherwise untouched dependant do
+      # at HEAD. Historical diagnostics in an otherwise untouched dependant do
       # not make an unrelated change impossible to merge, while compiler errors
-      # and every newly introduced Clippy site still fail this exact SHA.
+      # and every newly introduced Clippy site still fail this exact SHA. The
+      # release-app workflow separately compiles the shipped thin-app feature;
+      # `--all-features` is deliberately invalid here because it also selects
+      # ui/webview-wpe, whose native SDK exists only in the OS image builder.
+      # Clippy's Rust-level analysis is authoritative once per selected package
+      # set on x86_64; ARM still runs the complete native test and all-target
+      # check paths above, without compiling two more isolated lint graphs.
       #
       # Compilation deliberately stays here rather than in the pre-commit
       # hook: local hooks are bypassable and must remain fast enough to keep
       # their formatting, secret, and staged-diff checks useful. This is the
       # authoritative, base-aware lint gate.
       - name: Clippy shard ${{ matrix.shard }}
+        if: matrix.arch == 'x86_64'
         env:
           XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
           bash tools/ci-measure.sh "clippy shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "Clippy diagnostic diff (affected shard ${{ matrix.shard }})" --
-          tools/clippy-diff.sh '${{ needs.select.outputs.base }}' --all-features ${{ matrix.packages }}
+          tools/clippy-diff.sh '${{ needs.select.outputs.base }}' ${{ matrix.packages }}
 
       - name: Report remote compiler-cache effectiveness
         if: always()
@@ -291,11 +316,12 @@ jobs:
       always() &&
       (github.ref == 'refs/heads/main' ||
        github.ref == 'refs/heads/codex/package-desktop-release')
-    needs: [select, affected]
+    needs: [select, security, affected]
     runs-on: runner
     timeout-minutes: 10
     env:
       SELECT_RESULT: ${{ needs.select.result }}
+      SECURITY_RESULT: ${{ needs.security.result }}
       AFFECTED_RESULT: ${{ needs.affected.result }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -305,4 +331,4 @@ jobs:
       - name: Record an observable CI receipt without touching a branch
         run: >-
           tools/ci-receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"
-          "$SELECT_RESULT" "$AFFECTED_RESULT" origin
+          "$SELECT_RESULT" "$SECURITY_RESULT" "$AFFECTED_RESULT" origin

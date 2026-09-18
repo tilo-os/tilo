@@ -23,6 +23,10 @@ conf=$home/.config/tilo/dev-session
 # else can write, and /tmp is 1777 by definition.
 mkdir -p "$home/.cache"
 scratch=$(mktemp -d "$home/.cache/tilo-dev-session-test.XXXXXX")
+# Minimal packaging containers do not run logind and therefore have no
+# /run/user/<uid>. Use a private per-test runtime directory, matching the
+# writable XDG_RUNTIME_DIR a real login session supplies.
+export XDG_RUNTIME_DIR="$scratch/runtime"
 saved=
 
 cleanup() {
