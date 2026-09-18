@@ -10,8 +10,11 @@ Follow-up evidence: [isolated build-graph experiments](ci-build-graph-experiment
 The small Linux probe informs cache design; full target/platform qualification
 and production workflow activation remain separate steps below.
 
-Status: proposed implementation roadmap. No workflows, credentials or live policy changed.
-Date: 2026-09-18. Repository: qos/qos, inspected at 032ea136f.
+Status: implementation roadmap with [emergency relief already deployed](ci-delivery-status.md).
+Updated: 2026-09-19. Original repository inspection: qos/qos at 032ea136f.
+The [main emergency runbook](../ci-emergency-relief.md) records deployed behavior;
+the remaining build-graph, retention and promotion contracts below are proposals,
+not claims about live configuration.
 Companion: [alpha integration plan](alpha-ci-integration.md).
 
 Platform decision prerequisite: [CI execution and build-graph qualifications](ci-platform-decision.md). Keep Actions provisionally, but decide dependency-graph ownership and qualify scheduling before broad workflow refactoring. Compare current Cargo/component reuse with a representative Bazel/rules_rust slice and appropriate Nix component boundaries; do not implement a custom scheduling/build engine merely to preserve Actions.
@@ -210,7 +213,44 @@ Specific tasks:
 - Separate candidate/untrusted writes from trusted reusable cache writes. Candidates may receive scoped read access to appropriate trusted caches without publication credentials. Release builders do not consume arbitrary branch-written executable caches. Use server-side permissions, not merely environment-variable scrubbing.
 - Keep cache failure a performance degradation with bounded retries/backpressure; do not turn a cache outage into an uncontrolled fleet-wide cold-build storm. Quarantine known corrupt entries and retain the existing bounded recache path rather than wiping all caches.
 - For BuildKit, compare min/max exports and compression with actual transfer/CPU costs; isolate concurrent writer destinations and import appropriate compatible caches. BuildKit supports multiple imported caches and intermediate-stage exports. [Docker cache backends](https://docs.docker.com/build/cache/backends/)
-- Use separate storage policies for disposable caches, debug artifacts, development candidates and immutable release dependencies. Garbage collection must traverse retained release manifests so an old install/update/rollback never loses its referenced runtime or image. Provisional starting budgets: branch caches 7–14 days, unpromoted candidates 30 days, recent trusted caches sized by measured working set; retain supported releases and rollback dependencies for their declared support lifetime.
+- Use separate storage policies for disposable caches, debug artifacts, development candidates and immutable release dependencies. Define measured byte budgets and age limits together; age alone cannot bound a burst of large images. The retention contract below is proposed policy, not an existing deployment.
+
+### Retention and storage availability contract
+
+The full-disk Forgejo outage makes storage availability part of CI correctness:
+registry/cache growth must not consume the space needed for repository, database
+and queue writes. The user has separately directed emergency deletion of images
+older than 14 days. That operational instruction remains in force; this future
+contract neither changes that task nor claims its execution or reclaimed bytes.
+
+- Classify immutable release dependencies, pinned development baselines,
+  diagnostics and reconstructible caches separately. Future collection should
+  resolve reachability from supported release/install/update/rollback manifests,
+  current builder/workflow pins and active requests before proposing deletions.
+  Tags alone are not a complete reachability model. An unavailable pinned image
+  must report a missing input; it must not silently fall back to a mutable tag.
+- Allocate byte budgets plus age limits per storage class, with headroom for
+  uploads, database writes and concurrent jobs. Measure actual backing-volume
+  free bytes/inodes, growth rate and estimated time to exhaustion. Coordinate
+  registry, compiler cache and build scratch budgets when they share that volume.
+- Account for registry manifests/blobs, unfinished uploads, local container
+  stores and filesystem/storage snapshots. Deleting tags or files is not proof
+  that physical blocks were freed. Record collection candidates and exclusions,
+  run the storage system's supported garbage collection, and verify reclaimed
+  bytes and service writes afterward. Snapshot retention needs its own owner.
+- Alert before headroom is exhausted and test bounded create/read/delete writes
+  in a dedicated service-owned probe location. Read-only health endpoints are
+  insufficient for a full disk. Probe failure should identify the affected store
+  and stop admitting optional cache growth before core service writes fail.
+- Optional cache export must have bounded retries and a separate observable
+  result. A valid build must not fail solely because exporting reconstructible
+  cache failed. Required artifact upload, checksum/signature verification and
+  release publication still fail closed; those bytes are deliverables, not cache.
+
+Acceptance requires a pressure/recovery test proving core writes remain usable,
+an actual reclaimed-space measurement including snapshots, and install/recovery
+of a retained supported artifact after collection. No age or budget value in
+this proposal is represented as deployed retention policy.
 
 ## Package once, release without recompiling
 
