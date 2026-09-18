@@ -1388,23 +1388,24 @@ fn apply_generate_toc(dm: &mut DocMut, entries: &[TocTarget]) {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "paste applies one absolute selection target plus its authored fragment"
-)]
 fn apply_paste_fragment(
     dm: &mut DocMut,
     region: Region,
-    start_block: &str,
-    start: usize,
-    end_block: &str,
-    end: usize,
+    selection: &SelectionTarget,
     blocks: &[crate::word_processor::ClipBlock],
     adopt_first_style: bool,
 ) {
-    apply_replace_selection(dm, region, start_block, start, end_block, end, "");
-    let mut current = start_block.to_string();
-    let mut offset = start;
+    apply_replace_selection(
+        dm,
+        region,
+        &selection.start_block,
+        selection.start,
+        &selection.end_block,
+        selection.end,
+        "",
+    );
+    let mut current = selection.start_block.clone();
+    let mut offset = selection.start;
     for (index, fragment) in blocks.iter().enumerate() {
         if index > 0 {
             let text = match region {
@@ -1803,10 +1804,12 @@ impl Action for WordProcessorAction {
             } => apply_paste_fragment(
                 &mut dm,
                 region.to_region(),
-                start_block,
-                *start,
-                end_block,
-                *end,
+                &SelectionTarget {
+                    start_block: start_block.clone(),
+                    start: *start,
+                    end_block: end_block.clone(),
+                    end: *end,
+                },
                 blocks,
                 *adopt_first_style,
             ),
@@ -2140,25 +2143,18 @@ pub fn generate_toc_action(entries: Vec<TocTarget>) -> WordProcessorAction {
     WordProcessorAction::GenerateToc { entries }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "builder mirrors the absolute selection target carried by PasteFragment"
-)]
 pub fn paste_fragment_action(
     region: RegionKind,
-    start_block: &str,
-    start: usize,
-    end_block: &str,
-    end: usize,
+    selection: SelectionTarget,
     blocks: Vec<crate::word_processor::ClipBlock>,
     adopt_first_style: bool,
 ) -> WordProcessorAction {
     WordProcessorAction::PasteFragment {
         region,
-        start_block: start_block.to_string(),
-        start,
-        end_block: end_block.to_string(),
-        end,
+        start_block: selection.start_block,
+        start: selection.start,
+        end_block: selection.end_block,
+        end: selection.end,
         blocks,
         adopt_first_style,
     }
@@ -4294,7 +4290,17 @@ mod tests {
                 page: Some(1),
             }]),
             insert_page_number_action(RegionKind::Body, &body, 0),
-            paste_fragment_action(RegionKind::Body, &body, 1, &body, 1, vec![fragment], false),
+            paste_fragment_action(
+                RegionKind::Body,
+                SelectionTarget {
+                    start_block: body.clone(),
+                    start: 1,
+                    end_block: body.clone(),
+                    end: 1,
+                },
+                vec![fragment],
+                false,
+            ),
             insert_table_action(&body, 2, 2),
         ];
         for action in actions {

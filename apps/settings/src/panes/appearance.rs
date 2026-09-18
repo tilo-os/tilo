@@ -169,9 +169,6 @@ impl AppearancePane {
                 choice_row("Theme", Box::new(theme)),
                 choice_row("UI scale", Box::new(ui_scale)),
                 choice_row("Text size", Box::new(size)),
-                caption(
-                    "These are safe everyday choices. Theme Studio is the advanced editor for custom palettes, typography, spacing, import, and export.",
-                ),
             ]),
         );
 

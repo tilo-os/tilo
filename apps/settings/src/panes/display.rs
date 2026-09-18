@@ -1,3 +1,12 @@
+#![allow(
+    clippy::expect_used,
+    clippy::items_after_statements,
+    clippy::needless_pass_by_value,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    reason = "display transactions and their closed static action bindings stay together so rollback and hardware state remain auditable"
+)]
+
 //! Display pane — real connected-output list, brightness, and the display
 //! comfort preferences.
 //!
@@ -288,7 +297,13 @@ pub struct DisplayPane {
     snapshot_stamp: Option<SystemTime>,
     hardware_probe: Option<std::sync::mpsc::Receiver<(f32, bool)>>,
     brightness_tx: Option<std::sync::mpsc::Sender<f32>>,
+    brightness_result_rx: Option<std::sync::mpsc::Receiver<Result<f32, String>>>,
+    pending_brightness: Option<(f32, f32)>,
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
+    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    local_doc: AutoCommit,
+    isolate_document: bool,
+    require_operation_token: bool,
     needs_seed: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -315,14 +330,16 @@ impl DisplayPane {
             .ok();
         let dispatcher = dispatcher_or_real(None);
         let (brightness_tx, brightness_rx) = std::sync::mpsc::channel::<f32>();
+        let (brightness_result_tx, brightness_result_rx) = std::sync::mpsc::channel();
         let worker_dispatcher = Arc::clone(&dispatcher);
         std::thread::Builder::new()
             .name("settings-brightness-apply".into())
             .spawn(move || {
                 while let Ok(percent) = brightness_rx.recv() {
-                    if let Err(error) = worker_dispatcher.set_brightness(percent) {
-                        tracing::warn!(target: "tilo::settings", op = "set_brightness", %error, "display worker dispatch failed");
-                    }
+                    let result = worker_dispatcher
+                        .set_brightness(percent)
+                        .map(|()| percent / 100.0);
+                    let _ = brightness_result_tx.send(result);
                 }
             })
             .ok();
@@ -342,7 +359,13 @@ impl DisplayPane {
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
             hardware_probe: Some(probe_rx),
             brightness_tx: Some(brightness_tx),
+            brightness_result_rx: Some(brightness_result_rx),
+            pending_brightness: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
+            require_operation_token: false,
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
@@ -395,7 +418,13 @@ impl DisplayPane {
             snapshot_stamp: None,
             hardware_probe: None,
             brightness_tx: None,
+            brightness_result_rx: None,
+            pending_brightness: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
+            require_operation_token: false,
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
@@ -421,7 +450,37 @@ impl DisplayPane {
         status: &ui::LocalState<crate::actions::LocalOperationStatus>,
     ) -> Self {
         self.operation_status = status.clone();
+        self.require_operation_token = true;
         self
+    }
+
+    #[must_use]
+    pub fn with_command_state(
+        mut self,
+        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    ) -> Self {
+        self.command_state = commands.clone();
+        self.isolate_document = true;
+        self
+    }
+
+    fn execute_local_command(
+        &mut self,
+        local: &mut AutoCommit,
+        operation: crate::actions::DisplayOperation,
+    ) {
+        let root = automerge::ROOT;
+        self.prepare_running_operation(local, &root, &operation);
+        self.sync_brightness(local, &root);
+        self.sync_comfort_prefs(local, &root, true);
+        let connected: Vec<_> = self
+            .outputs
+            .iter()
+            .filter(|o| o.connected)
+            .cloned()
+            .collect();
+        self.sync_output_config(local, &root, &connected);
+        self.sync_transaction_controls(local, &root);
     }
 
     fn finish_display_operation(&self, result: Result<String, String>) {
@@ -436,6 +495,123 @@ impl DisplayPane {
             Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
             Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
         });
+    }
+
+    fn running_operation(&self) -> Option<crate::actions::DisplayOperation> {
+        if !self.require_operation_token {
+            return None;
+        }
+        let crate::actions::LocalOperationStatus::Running { token } = self.operation_status.get()
+        else {
+            return None;
+        };
+        let payload =
+            token.strip_prefix(&format!("{}:", crate::actions::DISPLAY_OPERATION_TYPE))?;
+        serde_json::from_str(payload).ok()
+    }
+
+    /// Replace the pane's transient document controls with authoritative
+    /// device state, then project only the operation admitted by the local
+    /// executor. This makes concurrently received CRDT edits inert even while
+    /// a legitimate display operation is in flight.
+    fn prepare_running_operation(
+        &self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        operation: &crate::actions::DisplayOperation,
+    ) {
+        let _ = state.put(root, BRIGHTNESS_KEY, f64::from(self.last_brightness));
+        let _ = state.put(root, AUTO_BRIGHTNESS_KEY, self.last_prefs.auto_brightness);
+        let _ = state.put(root, DISPLAY_SCALE_KEY, scale_label(self.last_prefs.scale));
+        let _ = state.put(root, APPLY_DISPLAY_KEY, false);
+        let _ = state.put(root, KEEP_DISPLAY_KEY, false);
+        let _ = state.put(root, REVERT_DISPLAY_KEY, false);
+        let committed = self.output_config.clone();
+        self.write_output_controls(state, root, &committed);
+
+        use crate::actions::DisplayOperation as Op;
+        match operation {
+            Op::SetBrightness { value } => {
+                let _ = state.put(root, BRIGHTNESS_KEY, *value);
+            }
+            Op::SetAutoBrightness { enabled } => {
+                let _ = state.put(root, AUTO_BRIGHTNESS_KEY, *enabled);
+            }
+            Op::SetNightLight { enabled } => {
+                let _ = state.put(root, NIGHT_LIGHT_KEY, *enabled);
+            }
+            Op::SetNightLightTemperature { label } => {
+                let _ = state.put(root, NIGHT_LIGHT_TEMPERATURE_KEY, label.as_str());
+            }
+            Op::SetScale { label } => {
+                let _ = state.put(root, DISPLAY_SCALE_KEY, label.as_str());
+            }
+            Op::SetEnabled { connector, enabled } => {
+                let _ = state.put(root, output_key(connector, "enabled"), *enabled);
+            }
+            Op::SetPrimary { connector, primary } => {
+                let _ = state.put(root, output_key(connector, "primary"), *primary);
+            }
+            Op::SetOutputScale { connector, label } => {
+                let _ = state.put(root, output_key(connector, "scale"), label.as_str());
+            }
+            Op::SetPosition { connector, label } => {
+                let _ = state.put(root, output_key(connector, "position"), label.as_str());
+            }
+            Op::SetMirror { connector, label } => {
+                let _ = state.put(root, output_key(connector, "mirror"), label.as_str());
+            }
+            Op::SetModeLabel { connector, label } => {
+                let _ = state.put(root, output_key(connector, "mode"), label.as_str());
+            }
+            Op::SetTransformLabel { connector, label } => {
+                let _ = state.put(root, output_key(connector, "transform"), label.as_str());
+            }
+            Op::SetColorProfileLabel { connector, label } => {
+                let _ = state.put(root, output_key(connector, "color_profile"), label.as_str());
+            }
+            Op::SetMode { connector, mode } => {
+                let _ = state.put(root, output_key(connector, "mode"), mode.label());
+            }
+            Op::SetTransform {
+                connector,
+                transform,
+            } => {
+                let _ = state.put(
+                    root,
+                    output_key(connector, "transform"),
+                    transform_label(*transform),
+                );
+            }
+            Op::SetHdr { connector, enabled } => {
+                let _ = state.put(root, output_key(connector, "hdr"), *enabled);
+            }
+            Op::SetVrr { connector, enabled } => {
+                let _ = state.put(root, output_key(connector, "vrr"), *enabled);
+            }
+            Op::SetColorProfile { connector, profile } => {
+                let label = profile.as_ref().map_or_else(
+                    || "System default".to_string(),
+                    |id| {
+                        self.outputs
+                            .iter()
+                            .find(|output| output.connector == *connector)
+                            .and_then(|output| output.color_profile_labels.get(id))
+                            .map_or_else(|| id.clone(), |name| format!("{name} · {id}"))
+                    },
+                );
+                let _ = state.put(root, output_key(connector, "color_profile"), label);
+            }
+            Op::Apply => {
+                let _ = state.put(root, APPLY_DISPLAY_KEY, true);
+            }
+            Op::Confirm => {
+                let _ = state.put(root, KEEP_DISPLAY_KEY, true);
+            }
+            Op::Revert => {
+                let _ = state.put(root, REVERT_DISPLAY_KEY, true);
+            }
+        }
     }
 
     pub fn outputs(&self) -> &[DisplayOutput] {
@@ -503,7 +679,12 @@ impl DisplayPane {
                 "Automatic brightness",
                 Box::new(
                     Toggle::new("settings.display.auto_brightness", AUTO_BRIGHTNESS_KEY)
-                        .with_id("display.auto_brightness"),
+                        .with_id("display.auto_brightness")
+                        .on_action(
+                            crate::actions::display_bool_binding("auto_brightness").expect(
+                                "automatic brightness is part of the static resource contract",
+                            ),
+                        ),
                 ),
             )
         } else {
@@ -516,7 +697,11 @@ impl DisplayPane {
                     "Brightness",
                     Box::new(
                         Slider::new("settings.display.brightness", BRIGHTNESS_KEY)
-                            .with_id("display.brightness"),
+                            .with_id("display.brightness")
+                            .on_action(
+                                crate::actions::display_number_binding("brightness")
+                                    .expect("brightness is part of the static resource contract"),
+                            ),
                     ),
                 ),
                 automatic_brightness,
@@ -524,7 +709,11 @@ impl DisplayPane {
                     "Night light",
                     Box::new(
                         Toggle::new("settings.display.night_light", NIGHT_LIGHT_KEY)
-                            .with_id("display.night_light"),
+                            .with_id("display.night_light")
+                            .on_action(
+                                crate::actions::display_bool_binding("night_light")
+                                    .expect("Night Light is part of the static resource contract"),
+                            ),
                     ),
                 ),
                 choice_row(
@@ -538,6 +727,12 @@ impl DisplayPane {
                             NIGHT_LIGHT_TEMPERATURE_KEY,
                         )
                         .with_id("display.night_light_temperature")
+                        .on_action(
+                            crate::actions::display_choice_binding("night_light_temperature")
+                                .expect(
+                                    "Night Light warmth is part of the static resource contract",
+                                ),
+                        )
                         .with_placeholder(temperature_label(
                             self.initial_prefs.night_light_temperature,
                         )),
@@ -586,6 +781,29 @@ impl DisplayPane {
         let position_key = output_key(&output.connector, "position");
         let mirror_key = output_key(&output.connector, "mirror");
         let toggle_id = format!("settings.display.{}.primary", output.connector);
+        let scale_choices: Vec<String> = DISPLAY_SCALES
+            .iter()
+            .map(|(label, _)| (*label).into())
+            .collect();
+        let position_choices: Vec<String> = std::iter::once("Automatic".into())
+            .chain(
+                connected
+                    .iter()
+                    .filter(|candidate| candidate.connector != output.connector)
+                    .flat_map(|candidate| {
+                        ["Left", "Right", "Above", "Below"]
+                            .map(|side| format!("{side} of {}", candidate.label))
+                    }),
+            )
+            .collect();
+        let mirror_choices: Vec<String> = std::iter::once("Extend workspace".into())
+            .chain(
+                connected
+                    .iter()
+                    .filter(|candidate| candidate.connector != output.connector)
+                    .map(|candidate| format!("Mirror {}", candidate.label)),
+            )
+            .collect();
         let mirror_placeholder = config
             .mirror_of
             .as_ref()
@@ -606,61 +824,76 @@ impl DisplayPane {
                         &format!("settings.display.{}.enabled", output.connector),
                         &enabled_key,
                     )
-                    .with_id(&enabled_key),
+                    .with_id(&enabled_key)
+                    .on_action(
+                        crate::actions::display_output_bool_binding(
+                            "enabled",
+                            output.connector.clone(),
+                        )
+                        .expect("output enabled action is part of the resource contract"),
+                    ),
                 ),
             ),
             setting_row(
                 "Primary display",
-                Box::new(Toggle::new(&toggle_id, &primary_key).with_id(&primary_key)),
+                Box::new(
+                    Toggle::new(&toggle_id, &primary_key)
+                        .with_id(&primary_key)
+                        .on_action(
+                            crate::actions::display_output_bool_binding(
+                                "primary",
+                                output.connector.clone(),
+                            )
+                            .expect("primary output action is part of the resource contract"),
+                        ),
+                ),
             ),
             choice_row(
                 "Scale",
                 Box::new(
-                    Dropdown::new(
-                        DISPLAY_SCALES.iter().map(|(l, _)| (*l).into()).collect(),
-                        &scale_key,
-                    )
-                    .with_id(&scale_key)
-                    .with_placeholder(scale_label(config.scale)),
+                    Dropdown::new(scale_choices.clone(), &scale_key)
+                        .with_id(&scale_key)
+                        .on_action(
+                            crate::actions::display_output_choice_binding(
+                                "scale",
+                                output.connector.clone(),
+                                scale_choices,
+                            )
+                            .expect("output scale action is part of the resource contract"),
+                        )
+                        .with_placeholder(scale_label(config.scale)),
                 ),
             ),
             choice_row(
                 "Position",
                 Box::new(
-                    Dropdown::new(
-                        std::iter::once("Automatic".into())
-                            .chain(
-                                connected
-                                    .iter()
-                                    .filter(|candidate| candidate.connector != output.connector)
-                                    .flat_map(|candidate| {
-                                        ["Left", "Right", "Above", "Below"]
-                                            .map(|side| format!("{side} of {}", candidate.label))
-                                    }),
+                    Dropdown::new(position_choices.clone(), &position_key)
+                        .with_id(&position_key)
+                        .on_action(
+                            crate::actions::display_output_choice_binding(
+                                "position",
+                                output.connector.clone(),
+                                position_choices,
                             )
-                            .collect(),
-                        &position_key,
-                    )
-                    .with_id(&position_key)
-                    .with_placeholder("Automatic"),
+                            .expect("output position action is part of the resource contract"),
+                        )
+                        .with_placeholder("Automatic"),
                 ),
             ),
             choice_row(
                 "Mirroring",
                 Box::new(
-                    Dropdown::new(
-                        std::iter::once("Extend workspace".into())
-                            .chain(
-                                connected
-                                    .iter()
-                                    .filter(|candidate| candidate.connector != output.connector)
-                                    .map(|candidate| format!("Mirror {}", candidate.label)),
+                    Dropdown::new(mirror_choices.clone(), &mirror_key)
+                        .with_id(&mirror_key)
+                        .on_action(
+                            crate::actions::display_output_choice_binding(
+                                "mirror",
+                                output.connector.clone(),
+                                mirror_choices,
                             )
-                            .collect(),
-                        &mirror_key,
-                    )
-                    .with_id(&mirror_key)
-                    .with_placeholder(&mirror_placeholder),
+                            .expect("output mirror action is part of the resource contract"),
+                        )
+                        .with_placeholder(&mirror_placeholder),
                 ),
             ),
         ]
@@ -680,6 +913,12 @@ impl DisplayPane {
                 "Compositor capability data unavailable",
             ));
         } else {
+            let mode_choices: Vec<String> = output
+                .modes
+                .iter()
+                .copied()
+                .map(OutputMode::label)
+                .collect();
             let mode_placeholder = config
                 .mode
                 .or(output.current_mode)
@@ -687,17 +926,17 @@ impl DisplayPane {
             out_rows.push(choice_row(
                 "Resolution & refresh rate",
                 Box::new(
-                    Dropdown::new(
-                        output
-                            .modes
-                            .iter()
-                            .copied()
-                            .map(OutputMode::label)
-                            .collect(),
-                        &mode_key,
-                    )
-                    .with_id(&mode_key)
-                    .with_placeholder(&mode_placeholder),
+                    Dropdown::new(mode_choices.clone(), &mode_key)
+                        .with_id(&mode_key)
+                        .on_action(
+                            crate::actions::display_output_choice_binding(
+                                "mode",
+                                output.connector.clone(),
+                                mode_choices,
+                            )
+                            .expect("output mode action is part of the resource contract"),
+                        )
+                        .with_placeholder(&mode_placeholder),
                 ),
             ));
         }
@@ -712,6 +951,17 @@ impl DisplayPane {
                     &transform_key,
                 )
                 .with_id(&transform_key)
+                .on_action(
+                    crate::actions::display_output_choice_binding(
+                        "transform",
+                        output.connector.clone(),
+                        TRANSFORMS
+                            .iter()
+                            .map(|(label, _)| (*label).into())
+                            .collect(),
+                    )
+                    .expect("output transform action is part of the resource contract"),
+                )
                 .with_placeholder(transform_label(config.transform)),
             ),
         ));
@@ -733,7 +983,14 @@ impl DisplayPane {
                         &format!("settings.display.{}.hdr", output.connector),
                         &hdr_key,
                     )
-                    .with_id(&hdr_key),
+                    .with_id(&hdr_key)
+                    .on_action(
+                        crate::actions::display_output_bool_binding(
+                            "hdr",
+                            output.connector.clone(),
+                        )
+                        .expect("HDR action is part of the resource contract"),
+                    ),
                 ),
             ));
         } else {
@@ -757,7 +1014,14 @@ impl DisplayPane {
                         &format!("settings.display.{}.vrr", output.connector),
                         &vrr_key,
                     )
-                    .with_id(&vrr_key),
+                    .with_id(&vrr_key)
+                    .on_action(
+                        crate::actions::display_output_bool_binding(
+                            "vrr",
+                            output.connector.clone(),
+                        )
+                        .expect("VRR action is part of the resource contract"),
+                    ),
                 ),
             ));
         } else {
@@ -799,8 +1063,16 @@ impl DisplayPane {
             out_rows.push(choice_row(
                 "Colour profile",
                 Box::new(
-                    Dropdown::new(choices, &profile_key)
+                    Dropdown::new(choices.clone(), &profile_key)
                         .with_id(&profile_key)
+                        .on_action(
+                            crate::actions::display_output_choice_binding(
+                                "color-profile",
+                                output.connector.clone(),
+                                choices,
+                            )
+                            .expect("colour profile action is part of the resource contract"),
+                        )
                         .with_placeholder(&placeholder),
                 ),
             ));
@@ -831,19 +1103,22 @@ impl DisplayPane {
                         )),
                         setting_row(
                             "Everything looks correct",
-                            Box::new(Button::new(
-                                "settings.display.keep",
-                                "Keep",
-                                Some(KEEP_DISPLAY_KEY),
-                            )),
+                            Box::new(
+                                Button::new("settings.display.keep", "Keep", None).on_action(
+                                    crate::actions::display_unit_binding("confirm")
+                                        .expect("display confirm action is published"),
+                                ),
+                            ),
                         ),
                         setting_row(
                             "Something is wrong",
-                            Box::new(Button::new(
-                                "settings.display.revert",
-                                "Revert now",
-                                Some(REVERT_DISPLAY_KEY),
-                            )),
+                            Box::new(
+                                Button::new("settings.display.revert", "Revert now", None)
+                                    .on_action(
+                                        crate::actions::display_unit_binding("revert")
+                                            .expect("display revert action is published"),
+                                    ),
+                            ),
                         ),
                     ]),
                 )
@@ -871,11 +1146,12 @@ impl DisplayPane {
                 if self.pending_candidate.is_some() {
                     content.push(setting_row(
                         "Test the newly edited layout",
-                        Box::new(Button::new(
-                            "settings.display.apply",
-                            "Try again",
-                            Some(APPLY_DISPLAY_KEY),
-                        )),
+                        Box::new(
+                            Button::new("settings.display.apply", "Try again", None).on_action(
+                                crate::actions::display_unit_binding("apply")
+                                    .expect("display apply action is published"),
+                            ),
+                        ),
                     ));
                 }
                 card("Display change was not applied", rows(content))
@@ -888,11 +1164,12 @@ impl DisplayPane {
                     ),
                     setting_row(
                         "Test staged layout",
-                        Box::new(Button::new(
-                            "settings.display.apply",
-                            "Apply",
-                            Some(APPLY_DISPLAY_KEY),
-                        )),
+                        Box::new(
+                            Button::new("settings.display.apply", "Apply", None).on_action(
+                                crate::actions::display_unit_binding("apply")
+                                    .expect("display apply action is published"),
+                            ),
+                        ),
                     ),
                 ]),
             ),
@@ -904,12 +1181,13 @@ impl DisplayPane {
     }
 
     /// Load prefs fresh, apply `f` to the display section, persist.
-    fn persist_display(f: impl FnOnce(&mut DisplayPrefs)) {
+    fn persist_display(f: impl FnOnce(&mut DisplayPrefs)) -> Result<(), String> {
         let mut p = SystemPrefs::load();
         f(&mut p.display);
-        if let Err(e) = p.save() {
+        p.save().map(|_| ()).map_err(|e| {
             warn!(target: "tilo::settings", op = "display_prefs_save", error = %e, "failed to persist display prefs");
-        }
+            format!("Display preference could not be saved: {e}")
+        })
     }
 
     fn write_output_controls(&self, state: &mut AutoCommit, root: &ObjId, config: &DisplayConfig) {
@@ -965,14 +1243,43 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for DisplayPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        self.poll_hardware_probe(state, root);
+    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+        let isolated = self.isolate_document;
+        let mut state = if isolated {
+            std::mem::take(&mut self.local_doc)
+        } else {
+            std::mem::take(shared)
+        };
+        let root = automerge::ROOT;
+        self.poll_brightness_result(&mut state, &root);
+        self.poll_hardware_probe(&mut state, &root);
         self.refresh_outputs_if_stale();
         if self.needs_seed {
-            self.seed_state(state, root);
+            self.seed_state(&mut state, &root);
         }
-        self.sync_brightness(state, root);
-        self.sync_comfort_prefs(state, root);
+        if let Some(crate::actions::LocalPaneCommand::Display(operation)) = self.command_state.get()
+        {
+            self.command_state.set(None);
+            self.execute_local_command(&mut state, operation);
+        }
+        let running_operation = self.running_operation();
+        if let Some(operation) = &running_operation {
+            self.prepare_running_operation(&mut state, &root, operation);
+        } else if self.require_operation_token {
+            let committed = self.output_config.clone();
+            self.write_output_controls(&mut state, &root, &committed);
+            let _ = state.put(&root, BRIGHTNESS_KEY, f64::from(self.last_brightness));
+            let _ = state.put(&root, AUTO_BRIGHTNESS_KEY, self.last_prefs.auto_brightness);
+            let _ = state.put(&root, DISPLAY_SCALE_KEY, scale_label(self.last_prefs.scale));
+            let _ = state.put(&root, APPLY_DISPLAY_KEY, false);
+            let _ = state.put(&root, KEEP_DISPLAY_KEY, false);
+            let _ = state.put(&root, REVERT_DISPLAY_KEY, false);
+        }
+        let has_pending_operation = !self.require_operation_token || running_operation.is_some();
+        if has_pending_operation {
+            self.sync_brightness(&mut state, &root);
+        }
+        self.sync_comfort_prefs(&mut state, &root, has_pending_operation);
 
         let connected: Vec<_> = self
             .outputs
@@ -980,11 +1287,18 @@ impl Widget for DisplayPane {
             .filter(|o| o.connected)
             .cloned()
             .collect();
-        self.sync_output_config(state, root, &connected);
-        self.sync_transaction_controls(state, root);
+        if has_pending_operation {
+            self.sync_output_config(&mut state, &root, &connected);
+            self.sync_transaction_controls(&mut state, &root);
+        }
 
         if let Some(c) = &mut self.composed {
-            c.sync(state, root);
+            c.sync(&mut state, &root);
+        }
+        if isolated {
+            self.local_doc = state;
+        } else {
+            *shared = state;
         }
     }
 
@@ -1249,58 +1563,142 @@ impl DisplayPane {
     }
 
     /// Brightness → dispatcher, guarded so we don't shell out every frame.
-    fn sync_brightness(&mut self, state: &AutoCommit, root: &ObjId) {
+    fn sync_brightness(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Ok(Some((val, _))) = state.get(root, BRIGHTNESS_KEY)
             && let Value::Scalar(s) = val
             && let automerge::ScalarValue::F64(f) = s.as_ref()
         {
             let new = *f as f32;
-            if (new - self.last_brightness).abs() > 0.001 {
-                self.last_brightness = new;
+            if (new - self.last_brightness).abs() > 0.001 && self.pending_brightness.is_none() {
                 let percent = new.clamp(0.0, 1.0) * 100.0;
                 if let Some(sender) = &self.brightness_tx {
-                    let _ = sender.send(percent);
-                } else if let Err(e) = self.dispatcher.set_brightness(percent) {
-                    warn!(target: "tilo::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
+                    if sender.send(percent).is_ok() {
+                        self.pending_brightness = Some((self.last_brightness, new));
+                    } else {
+                        let _ = state.put(root, BRIGHTNESS_KEY, f64::from(self.last_brightness));
+                        self.finish_display_operation(Err(
+                            "Brightness worker is unavailable; the display was not changed.".into(),
+                        ));
+                    }
+                } else {
+                    match self.dispatcher.set_brightness(percent) {
+                        Ok(()) => {
+                            self.last_brightness = new;
+                            self.finish_display_operation(Ok(format!(
+                                "Brightness set to {}%.",
+                                percent.round()
+                            )));
+                        }
+                        Err(e) => {
+                            let _ =
+                                state.put(root, BRIGHTNESS_KEY, f64::from(self.last_brightness));
+                            self.finish_display_operation(Err(format!(
+                                "Brightness could not be changed: {e}"
+                            )));
+                            warn!(target: "tilo::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
+                        }
+                    }
                 }
             }
         }
     }
 
+    fn poll_brightness_result(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let Some(receiver) = &self.brightness_result_rx else {
+            return;
+        };
+        let Ok(result) = receiver.try_recv() else {
+            return;
+        };
+        let Some((previous, requested)) = self.pending_brightness.take() else {
+            return;
+        };
+        match result {
+            Ok(applied) => {
+                self.last_brightness = applied;
+                self.finish_display_operation(Ok(format!(
+                    "Brightness set to {}%.",
+                    (applied * 100.0).round()
+                )));
+            }
+            Err(error) => {
+                self.last_brightness = previous;
+                let _ = state.put(root, BRIGHTNESS_KEY, f64::from(previous));
+                self.finish_display_operation(Err(format!(
+                    "Brightness could not be changed: {error}"
+                )));
+                warn!(target: "tilo::settings", op = "set_brightness", %error, requested, "display worker dispatch failed");
+            }
+        }
+    }
+
     /// Comfort preferences → persist to the shared store on change.
-    fn sync_comfort_prefs(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY)
-            && b != self.last_prefs.auto_brightness
+    fn sync_comfort_prefs(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        has_pending_operation: bool,
+    ) {
+        if has_pending_operation
+            && let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY)
+            && b ^ self.last_prefs.auto_brightness
         {
             let effective = b && self.ambient_sensor_available;
-            self.last_prefs.auto_brightness = effective;
-            Self::persist_display(|d| d.auto_brightness = effective);
-            if effective != b {
+            if b && !self.ambient_sensor_available {
                 let _ = state.put(root, AUTO_BRIGHTNESS_KEY, false);
+                self.finish_display_operation(Err(
+                    "Automatic brightness is unavailable because this device has no ambient-light sensor."
+                        .into(),
+                ));
+            } else {
+                match Self::persist_display(|d| d.auto_brightness = effective) {
+                    Ok(()) => {
+                        self.last_prefs.auto_brightness = effective;
+                        self.finish_display_operation(Ok(if effective {
+                            "Automatic brightness enabled.".into()
+                        } else {
+                            "Automatic brightness disabled.".into()
+                        }));
+                    }
+                    Err(error) => {
+                        let _ =
+                            state.put(root, AUTO_BRIGHTNESS_KEY, self.last_prefs.auto_brightness);
+                        self.finish_display_operation(Err(error));
+                    }
+                }
             }
         }
         if let Some(b) = read_bool(state, root, NIGHT_LIGHT_KEY)
-            && b != self.last_prefs.night_light
+            && b ^ self.last_prefs.night_light
         {
             self.last_prefs.night_light = b;
-            Self::persist_display(|d| d.night_light = b);
+            let _ = Self::persist_display(|d| d.night_light = b);
         }
         if let Some(label) = read_str(state, root, NIGHT_LIGHT_TEMPERATURE_KEY)
             && let Some(kelvin) = temperature_from_label(&label)
             && kelvin != self.last_prefs.night_light_temperature
         {
             self.last_prefs.night_light_temperature = kelvin;
-            Self::persist_display(|d| d.night_light_temperature = kelvin);
+            let _ = Self::persist_display(|d| d.night_light_temperature = kelvin);
         }
         // Display scale → persist to the shared store on change. The
         // compositor reads `display.scale` at session start and advertises
         // it as the preferred fractional scale.
-        if let Some(label) = read_str(state, root, DISPLAY_SCALE_KEY)
+        if has_pending_operation
+            && let Some(label) = read_str(state, root, DISPLAY_SCALE_KEY)
             && let Some(v) = scale_factor_of(&label)
             && (v - self.last_prefs.scale).abs() > f64::EPSILON
         {
-            self.last_prefs.scale = v;
-            Self::persist_display(|d| d.scale = v);
+            match Self::persist_display(|d| d.scale = v) {
+                Ok(()) => {
+                    self.last_prefs.scale = v;
+                    self.finish_display_operation(Ok(format!("Display scale set to {label}.")));
+                }
+                Err(error) => {
+                    let _ = state.put(root, DISPLAY_SCALE_KEY, scale_label(self.last_prefs.scale));
+                    self.finish_display_operation(Err(error));
+                }
+            }
         }
     }
 
@@ -1887,6 +2285,28 @@ mod tests {
         pane.sync(&mut doc, &root);
         pane.sync(&mut doc, &root);
         assert_eq!(rec.calls().len(), 1);
+    }
+
+    #[test]
+    fn replicated_display_latches_are_inert_without_an_execution_token() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
+        let commands = ui::LocalState::new(None);
+        let mut pane =
+            DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+                .with_command_state(&commands)
+                .with_operation_status(&status);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let initial_heads = doc.get_heads();
+        pane.sync(&mut doc, &root);
+        assert_eq!(doc.get_heads(), initial_heads);
+        let _ = doc.put(&root, BRIGHTNESS_KEY, 0.9);
+        let _ = doc.put(&root, APPLY_DISPLAY_KEY, true);
+        pane.sync(&mut doc, &root);
+
+        assert!(rec.calls().is_empty());
+        assert!((pane.last_brightness - 0.5).abs() < f32::EPSILON);
     }
 
     #[test]
