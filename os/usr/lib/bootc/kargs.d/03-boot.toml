@@ -6,6 +6,9 @@ kargs = [
   # and that is the point — but /var, /etc and the writable overlay above it need
   # a read-write mount to be assembled at all.
   "rw",
+  # PREEMPT_DYNAMIC permits runtime selection. Pin the interactive model in
+  # the signed UKI rather than relying on a kernel-version-specific default.
+  "preempt=full",
   # A headless boot has to leave a log somewhere a harness can read, which is the
   # only way a boot that never reaches userspace can be diagnosed. tty0 keeps the
   # framebuffer console so a screendump still shows the boot.
