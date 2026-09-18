@@ -57,6 +57,35 @@ class Layout(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'linux' and os.geteuid() == 0, 'root Linux file ownership checks')
 class Reopen(unittest.TestCase):
+    def test_signed_companion_is_selected_and_unsigned_copy_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root, esp, public = root / 'source', root / 'esp', root / 'public'
+            original = source_root / 'usr/lib/systemd/boot/efi/systemd-bootaa64.efi'
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b'unsigned-original')
+            signed = Path(str(original) + '.signed')
+            signed.write_bytes(b'verified-signed-companion')
+            installed = [esp / p for p in ('EFI/systemd/systemd-bootaa64.efi', 'EFI/BOOT/BOOTAA64.EFI')]
+            for path in installed:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(signed.read_bytes())
+            evidence = {'signed_sha256': hashlib.sha256(signed.read_bytes()).hexdigest()}
+            with patch.object(disk.prediction.boot.trust, 'validate', return_value={'identities': {'efi-signing.crt': 'a'*64}}), \
+                    patch.object(disk.prediction.boot.loader, 'verify', return_value=evidence) as verify:
+                self.assertEqual(disk.verify_loaders(source_root, esp, public, 'b'*64, 'aarch64'), evidence)
+                verify.assert_called_once_with(original, signed, public / 'efi-signing.crt', 'a'*64, 'aarch64')
+                installed[1].write_bytes(original.read_bytes())
+                with self.assertRaisesRegex(ValueError, 'signed companion'):
+                    disk.verify_loaders(source_root, esp, public, 'b'*64, 'aarch64')
+
+    def test_command_enforces_output_cap_and_deadline(self):
+        self.assertEqual(disk.command([sys.executable, '-c', 'print("ok")']), b'ok\n')
+        with self.assertRaisesRegex(ValueError, 'output limit'):
+            disk.command([sys.executable, '-c', 'print("x" * 100000)'], output_limit=16)
+        with self.assertRaisesRegex(ValueError, 'deadline'):
+            disk.command([sys.executable, '-c', 'import time; time.sleep(10)'], timeout=0.05)
+
     def test_selected_uki_rejects_alternates_and_overrides(self):
         with tempfile.TemporaryDirectory() as temporary:
             esp = Path(temporary)
@@ -69,6 +98,12 @@ class Reopen(unittest.TestCase):
             entry.write_text(f'title Tilo\nversion 1\nsort-key tilo\nefi /{target}\n')
             (esp / 'loader/loader.conf').write_text('timeout 5\n')
             self.assertEqual(disk.selected_uki(esp, digest), target)
+            # Exact systemd259 bootctl template can precede bootc's own entry.
+            (esp / 'loader/loader.conf').write_text('#timeout 3\n#console-mode keep\ndefault tilo-*\n')
+            self.assertEqual(disk.selected_uki(esp, digest), target)
+            (esp / 'loader/loader.conf').write_text('default @saved\n')
+            with self.assertRaises(ValueError): disk.selected_uki(esp, digest)
+            (esp / 'loader/loader.conf').write_text('default tilo-*\n')
             original = entry.read_text()
             entry.write_text(original + 'options init=/bin/sh\n')
             with self.assertRaises(ValueError): disk.selected_uki(esp, digest)

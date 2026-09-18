@@ -14,9 +14,12 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
+import signal
 import stat
 import subprocess
 import tempfile
+import time
 
 import development_prediction as prediction
 import hardware_profile as hardware
@@ -28,12 +31,46 @@ source = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(source)
 
 
-def command(argv, *, pass_fds=()):
-    result = subprocess.run(argv, capture_output=True, pass_fds=pass_fds,
+def command(argv, *, pass_fds=(), timeout=120, output_limit=4*1024*1024):
+    """Bound output in memory and kill the entire operation on timeout/failure."""
+    process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        pass_fds=pass_fds, start_new_session=True,
         env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
-    if result.returncode:
-        raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
-    return result.stdout
+    deadline = time.monotonic() + timeout
+    output = bytearray()
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError(f'{Path(argv[0]).name} exceeded operation deadline')
+                for key, _ in selector.select(min(remaining, 1)):
+                    chunk = os.read(key.fileobj.fileno(), 65536)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    if len(output) + len(chunk) > output_limit:
+                        raise ValueError(f'{Path(argv[0]).name} exceeded output limit')
+                    output.extend(chunk)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValueError(f'{Path(argv[0]).name} exceeded operation deadline')
+        try:
+            status = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            raise ValueError(f'{Path(argv[0]).name} exceeded operation deadline') from None
+        if status:
+            raise ValueError(f'{Path(argv[0]).name} failed (exit {status})')
+        return bytes(output)
+    finally:
+        # Also terminate descendants holding stdout after their leader exited.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+        process.stdout.close()
 
 
 def read(root, relative, limit=1024*1024):
@@ -123,7 +160,13 @@ def selected_uki(esp, digest):
     if entry.get('efi') != wanted or set(entry) - {'title', 'version', 'sort-key', 'efi'}:
         raise ValueError('selected entry differs or overrides signed UKI')
     loader = config_lines(read(esp, 'loader/loader.conf'))
-    if set(loader) - {'timeout', 'default'} or loader.get('default', names[0].name) != names[0].name:
+    default = loader.get('default', names[0].name)
+    # systemd259 install_loader_config writes `default ENTRY_TOKEN-*`.
+    # bootc installs bootctl first and preserves this existing loader.conf.
+    # A nonmatching token falls back to the sole suitable entry. Never accept
+    # saved/oneshot selectors; firmware variable selection needs the VM test.
+    if (set(loader) - {'timeout', 'default'} or
+            (default != names[0].name and not re.fullmatch(r'[A-Za-z0-9_.-]+-\*', default))):
         raise ValueError('unsupported loader selection override')
     # No extra automatically discovered UKIs, drivers or UKI addons.
     for relative in ('loader/addons', 'EFI/Linux', 'EFI/systemd/drivers'):
@@ -133,6 +176,10 @@ def selected_uki(esp, digest):
             files = [p.relative_to(esp).as_posix() for p in directory.rglob('*') if not p.is_dir()]
             if files != [wanted.lstrip('/')] and files:
                 raise ValueError('unexpected automatically discovered EFI payload')
+    allowed_efi = {wanted.lstrip('/').lower(), 'efi/systemd/systemd-bootaa64.efi', 'efi/boot/bootaa64.efi'}
+    for path in esp.rglob('*'):
+        if path.suffix.lower() == '.efi' and path.relative_to(esp).as_posix().lower() not in allowed_efi:
+            raise ValueError('unexpected alternate EFI application')
     return wanted.lstrip('/')
 
 
@@ -159,6 +206,21 @@ def audit_material(root, esp, uki, digest, architecture):
     etc = hardware.trusted_path(root, Path(f'state/deploy/{digest}/etc'), regular=False)
     var = hardware.trusted_path(root, Path('state/os/default/var'), regular=False)
     return material.audit_installed_material(etc, var, esp, esp / uki, architecture=architecture)
+
+
+def verify_loaders(source_root, esp, public_bundle, manifest_sha256, architecture):
+    """bootctl selects the .efi.signed companion; the original stays unsigned."""
+    relative = Path('usr/lib/systemd/boot/efi/systemd-bootaa64.efi')
+    original = hardware.trusted_path(source_root, relative, regular=True)
+    signed = hardware.trusted_path(source_root, Path(str(relative) + '.signed'), regular=True)
+    metadata = prediction.boot.trust.validate(public_bundle, manifest_sha256)
+    evidence = prediction.boot.loader.verify(original, signed, public_bundle / 'efi-signing.crt',
+        metadata['identities']['efi-signing.crt'], architecture)
+    for installed in ('EFI/systemd/systemd-bootaa64.efi', 'EFI/BOOT/BOOTAA64.EFI'):
+        data = read(esp, installed, 8*1024*1024)
+        if hashlib.sha256(data).hexdigest() != evidence['signed_sha256']:
+            raise ValueError('installed bootloader differs from verified signed companion')
+    return evidence
 
 
 def verify(args):
@@ -200,20 +262,14 @@ def verify(args):
             sections = prediction.boot.uki_sections(data, args.architecture)
             prediction.boot.validate_cmdline(sections['.cmdline'], args.generation, args.composefs_digest)
             command(['/usr/bin/sbverify', '--cert', str(verified.public_bundle / 'efi-signing.crt'), str(esp / uki)])
-            source_loader = read(verified.root, 'usr/lib/systemd/boot/efi/systemd-bootaa64.efi', 8*1024*1024)
-            for installed in ('EFI/systemd/systemd-bootaa64.efi', 'EFI/BOOT/BOOTAA64.EFI'):
-                if read(esp, installed, 8*1024*1024) != source_loader:
-                    raise ValueError('installed bootloader differs from source')
-                listing = command(['/usr/bin/sbverify', '--list', str(esp / installed)]).decode('utf-8', 'replace')
-                if not re.search(r'^signature [1-9][0-9]*\s*$', listing, re.MULTILINE):
-                    raise ValueError('installed loader has no recognized signature')
-                command(['/usr/bin/sbverify', '--cert', str(verified.public_bundle / 'efi-signing.crt'), str(esp / installed)])
+            loader_receipt = verify_loaders(verified.root, esp, verified.public_bundle,
+                                           args.manifest_sha256, args.architecture)
             deploy = f'state/deploy/{args.composefs_digest}'
             origin_identity(read(root, f'{deploy}/{args.composefs_digest}.origin'), args.target,
                             args.source.split('@')[1], sections)
             repo = hardware.trusted_path(root, Path('composefs'), regular=False)
             cfs = ['/usr/bin/bootc', 'internals', 'cfs', '--', '--repo', str(repo), '--hash', 'sha512', '--require-verity', '--no-upgrade']
-            command([*cfs, 'oci', 'fsck', '@' + args.source.split('@')[1]])
+            command([*cfs, 'oci', 'fsck', '@' + args.source.split('@')[1]], timeout=3600)
             manifest = json.loads(command([*cfs, 'oci', 'inspect', '--manifest', '@' + args.source.split('@')[1]]))
             if manifest['config']['digest'] != verified.image_id:
                 raise ValueError('installed OCI config identity differs')
@@ -238,6 +294,7 @@ def verify(args):
                    'installed_origin': True, 'verity_mounted_root': True, 'effective_policy': True,
                    'introduced_private_material_policy': True},
         'material_audit': material_receipt,
+        'loader': loader_receipt,
         'composefs_mount_type': mounted['fstype'], 'installed_bytes_verified': False,
         'remaining': ['independent source OCI layer private-material audit receipt', 'VM boot acceptance'],
         'vm_boot_verified': False, 'installable': False}
