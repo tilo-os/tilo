@@ -48,7 +48,6 @@ pub use catalogue::{
 pub use execute::{
     BwrapExecutor, ExecutionError, ExecutionOutcome, SECCOMP_CHILD_FD, SandboxExecutor,
 };
-pub use translated::run_translated_command;
 pub use installer::{
     InstallerError, InstallerInspection, MAX_INSTALLER_BYTES, PeMachine, inspect_installer,
 };
@@ -78,6 +77,7 @@ pub use store::{
     CAPSULE_SCHEMA_VERSION, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore,
     InstallationRecord, InstallationStatus, InstallerKind, ProgramKind, RegisteredProgram,
 };
+pub use translated::run_translated_command;
 pub use vm_adapter::{
     AudioIsolatedRailLauncher, AudioIsolatedSpiceLauncher, CanonicalRailCapabilityBroker,
     CanonicalRailPortalAuthority, DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority,
