@@ -1,6 +1,7 @@
 //! Handle-relative regular-file primitives. No store receipts, cleanup or public
 //! activation lives here. Relocation evidence is never sealed byte recovery.
 mod lease_process;
+mod witness;
 use super::descriptor as d;
 use crate::setup::connection::endpoint::{self, EndpointError, NativeDirectory, PinnedEndpoint};
 use crate::setup::connection::model::{ConnectionId, EndpointIdentity, NativeName, RelativePath};
@@ -4732,6 +4733,8 @@ mod tests {
         UnknownChild,
         Descriptor,
         DescriptorOversize,
+        SameBytesDescriptor,
+        SameBytesNamespace,
         Stopped,
         Disconnect,
     }
@@ -4746,9 +4749,22 @@ mod tests {
                 RestartDamage::UnknownChild,
                 RestartDamage::Descriptor,
                 RestartDamage::DescriptorOversize,
+                RestartDamage::SameBytesNamespace,
                 RestartDamage::Stopped,
             ] {
                 reopened_addition_case(false, published, damage);
+            }
+        }
+    }
+    #[test]
+    #[ignore = "HOLD: authorized native filesystem/helper; fresh descriptor observations UNRUN"]
+    fn native_fresh_restart_accepts_same_canonical_descriptor_bytes_but_not_payload_or_namespace_substitution()
+     {
+        for reverse in [false, true] {
+            for published in [0, 1, 2] {
+                reopened_addition_case(reverse, published, RestartDamage::SameBytesDescriptor);
+                reopened_addition_case(reverse, published, RestartDamage::SameBytesNamespace);
+                reopened_addition_case(reverse, published, RestartDamage::SameBytesOtherObject);
             }
         }
     }
@@ -5002,6 +5018,33 @@ mod tests {
                 std::fs::rename(private_path.join("intent"), &held).unwrap();
                 std::fs::write(private_path.join("intent"), b"replaced clue").unwrap();
             }
+            RestartDamage::SameBytesDescriptor => {
+                use std::os::unix::fs::PermissionsExt;
+                for name in ["intent", "staged-intent", "outcome"] {
+                    let path = private_path.join(name);
+                    if path.exists() {
+                        let bytes = std::fs::read(&path).unwrap();
+                        std::fs::rename(&path, tree.path().join(format!("retained-{name}")))
+                            .unwrap();
+                        std::fs::write(&path, bytes).unwrap();
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                            .unwrap();
+                    }
+                }
+            }
+            RestartDamage::SameBytesNamespace => {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::rename(&private_path, &held).unwrap();
+                std::fs::create_dir(&private_path).unwrap();
+                std::fs::set_permissions(&private_path, std::fs::Permissions::from_mode(0o700))
+                    .unwrap();
+                for entry in std::fs::read_dir(&held).unwrap() {
+                    let entry = entry.unwrap();
+                    // Move actual payload to preserve its identity: this isolates
+                    // refusal of the replaced namespace generation itself.
+                    std::fs::rename(entry.path(), private_path.join(entry.file_name())).unwrap();
+                }
+            }
             RestartDamage::DescriptorOversize => {
                 std::fs::rename(private_path.join("intent"), &held).unwrap();
                 std::fs::write(private_path.join("intent"), vec![b'x'; 16 * 1024 + 1]).unwrap();
@@ -5050,7 +5093,10 @@ mod tests {
         let inspected = epoch.inspect_regular(&context, &record);
         if !matches!(
             damage,
-            RestartDamage::None | RestartDamage::Stopped | RestartDamage::Disconnect
+            RestartDamage::None
+                | RestartDamage::SameBytesDescriptor
+                | RestartDamage::Stopped
+                | RestartDamage::Disconnect
         ) {
             assert!(inspected.is_err());
             assert!(
@@ -5243,6 +5289,123 @@ mod tests {
         }
     }
     #[test]
+    #[ignore = "HOLD: actual Linux provider/helper; bounded multi-epoch accounting bodies UNRUN"]
+    fn native_missing_k_many_partial_slots_settle_monotonically_across_fresh_epochs() {
+        for partials in [32, 127] {
+            reopened_replacement_with_partials(false, 1, true, partials);
+        }
+    }
+    fn drain_partial_epochs(
+        tree: &std::path::Path,
+        id: OperationId,
+        source: &PinnedEndpoint,
+        target: &PinnedEndpoint,
+        private_name: &str,
+        partials: usize,
+    ) {
+        use crate::setup::connection::store::{ConnectionStore, RecoveryState};
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut previous = 0;
+        let mut finished = false;
+        for attempt in 0..16 {
+            let mut store = ConnectionStore::open_at(&tree.join("store")).unwrap();
+            let current = store.load_connection(id.connection).unwrap();
+            if attempt == 0 {
+                store
+                    .request_disconnect(id.connection, current.revision)
+                    .unwrap();
+            }
+            let current = store.load_connection(id.connection).unwrap();
+            let mut context = store.open_recovery_context(id, current.revision).unwrap();
+            assert!(context.recovery_only());
+            // Another persisted reservation against this same operation budget;
+            // reopening never refunds unused read credit or creates a new operation.
+            store
+                .reserve_recovery_reads(
+                    &mut context,
+                    4 * 1024 * 1024,
+                    Instant::now() + std::time::Duration::from_secs(30),
+                    &cancel,
+                )
+                .unwrap();
+            let record = store
+                .recovery_namespace_records(&context)
+                .unwrap()
+                .into_iter()
+                .find(|row| row.name() == private_name)
+                .unwrap();
+            let epoch = NativeEpoch::begin_recovery(&context, source, target, &cancel).unwrap();
+            let recovered = epoch.inspect_regular(&context, &record).unwrap();
+            let mut proof = recovered.safe_boundary(&context, &cancel).unwrap();
+            let mut reader = proof.drain_reader(&store, &context).unwrap();
+            let drained = store.drain_native_recovery(&mut context, &mut reader, &cancel);
+            drop(reader);
+            if drained.is_ok() {
+                store
+                    .record_boundary(&context, &mut proof, &cancel)
+                    .unwrap();
+                finished = true;
+            }
+            drop((drained, proof, context, store));
+            let reopened = ConnectionStore::open_at(&tree.join("store")).unwrap();
+            let rows = reopened
+                .recovery_page(id.connection, None, 128)
+                .unwrap()
+                .entries;
+            let settled = rows
+                .iter()
+                .filter(|row| row.state == RecoveryState::RetainedIncomplete)
+                .count();
+            assert!(settled >= previous && settled <= partials);
+            if !finished {
+                assert!(
+                    settled > previous,
+                    "each exhausted epoch must make durable monotonic progress"
+                );
+            }
+            previous = settled;
+            assert_eq!(
+                reopened.executor_position(id.connection).unwrap().0,
+                Some(id)
+            );
+            assert!(
+                reopened
+                    .load_baseline(id.connection)
+                    .unwrap()
+                    .entries()
+                    .is_none()
+            );
+            assert_eq!(
+                std::fs::read(tree.join("source/file")).unwrap(),
+                b"new bytes"
+            );
+            assert!(!tree.join("target/file").exists());
+            assert_eq!(
+                std::fs::read(tree.join("target").join(private_name).join("stage")).unwrap(),
+                b"new bytes"
+            );
+            assert_eq!(
+                std::fs::read(tree.join("target").join(private_name).join("displaced")).unwrap(),
+                b"old bytes"
+            );
+            if finished {
+                assert_eq!(settled, partials);
+                assert_eq!(rows.len(), partials + 1);
+                assert_eq!(
+                    rows.iter()
+                        .filter(|row| row.state == RecoveryState::BytesVerified)
+                        .count(),
+                    1
+                );
+                break;
+            }
+        }
+        assert!(
+            finished,
+            "bounded epochs must settle existing partial history without propagation"
+        );
+    }
+    #[test]
     #[ignore = "authorized Linux filesystem/helper required; execution UNRUN"]
     fn native_reopened_replacement_accounts_staged_quarantine_and_publication_after_disconnect() {
         for reverse in [false, true] {
@@ -5251,11 +5414,19 @@ mod tests {
             }
         }
     }
+    fn reopened_replacement_case(reverse: bool, boundary: u8, disconnect: bool) {
+        reopened_replacement_with_partials(reverse, boundary, disconnect, 0);
+    }
     #[expect(
         clippy::too_many_lines,
-        reason = "Keep real-state boundary setup, continuation/refusal and exact retained-byte assertions together."
+        reason = "Preserve the exact native restart states and their durable assertions together."
     )]
-    fn reopened_replacement_case(reverse: bool, boundary: u8, disconnect: bool) {
+    fn reopened_replacement_with_partials(
+        reverse: bool,
+        boundary: u8,
+        disconnect: bool,
+        partials: usize,
+    ) {
         use crate::setup::connection::{
             model::{Decision, EntryState, Side as ModelSide},
             store::{ConnectionPolicy, ConnectionStore, EndpointBinding, OperationIntent},
@@ -5610,6 +5781,19 @@ mod tests {
                 }
             }
         }
+        for _ in 0..partials {
+            let slot = store
+                .reserve_native_recovery(
+                    &mut live,
+                    to,
+                    crate::setup::connection::store::RecoveryReason::DisplacedVersion,
+                )
+                .unwrap();
+            crate::setup::connection::store::partial_native_recovery_for_test(
+                &mut store, &slot, b"old",
+            )
+            .unwrap();
+        }
         let original_nonce = epoch.nonce;
         drop(epoch);
         drop(staged);
@@ -5618,6 +5802,17 @@ mod tests {
         drop(private);
         crash_ready(tree.path(), id, reverse, &format!("replacement-{boundary}"));
         drop(store);
+        if partials > 0 {
+            drain_partial_epochs(
+                tree.path(),
+                id,
+                &source_endpoint,
+                &target_endpoint,
+                &private_name,
+                partials,
+            );
+            return;
+        }
         let mut store = ConnectionStore::open_at(&tree.path().join("store")).unwrap();
         assert!(store.check_native(&live).is_err());
         let current = store.load_connection(id.connection).unwrap();
@@ -8030,6 +8225,9 @@ pub(in crate::setup::connection::transaction) struct Capture {
     executable: bool,
 }
 struct SourceBinding {
+    file: Arc<File>,
+    stamp: Stamp,
+    executable: bool,
     parent: NativeDirectory,
     name: CString,
     actual: ObjectId,
@@ -8074,6 +8272,7 @@ pub(in crate::setup::connection::transaction) struct NativePublication {
     reason = "These are independent observed namespace-presence or epoch hazard facts, not mutually exclusive states."
 )]
 pub(in crate::setup::connection::transaction) struct NativeEpoch<'a> {
+    witness: Option<witness::NamespaceWitness>,
     ancestor_chains: u16,
     ancestors: Option<super::ExistingAncestorProof>,
     cancel_read: Option<&'a std::sync::atomic::AtomicBool>,
@@ -8130,6 +8329,47 @@ fn open_at(parent: &File, name: &CStr, flags: i32) -> io::Result<File> {
     // SAFETY: successful openat returns a new owned descriptor.
     Ok(unsafe { File::from_raw_fd(fd) })
 }
+#[derive(Clone, Copy)]
+enum CreatedMode {
+    Private,
+    Executable,
+}
+impl CreatedMode {
+    fn from_executable(executable: bool) -> Self {
+        if executable {
+            Self::Executable
+        } else {
+            Self::Private
+        }
+    }
+    fn bits(self) -> libc::mode_t {
+        match self {
+            Self::Private => 0o600,
+            Self::Executable => 0o700,
+        }
+    }
+}
+fn create_regular_at(parent: &File, name: &CStr, mode: CreatedMode) -> io::Result<File> {
+    // SAFETY: retained parent, single component, fixed exclusive flags and a closed mode set.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY
+                | libc::O_CREAT
+                | libc::O_EXCL
+                | libc::O_CLOEXEC
+                | libc::O_NOFOLLOW
+                | libc::O_NONBLOCK,
+            mode.bits(),
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: exclusive successful open returned a newly owned writable description.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
 fn rename_noreplace(from: &File, name: &CStr, to: &File, slot: &CStr) -> io::Result<()> {
     // SAFETY: retained same-mount directory fds and validated single components.
     let result = unsafe {
@@ -8179,6 +8419,7 @@ impl<'a> NativeEpoch<'a> {
             }
         })?;
         Ok(Self {
+            witness: None,
             cancel_read: None,
             stop_read: None,
             source,
@@ -8572,27 +8813,26 @@ impl<'a> NativeEpoch<'a> {
     ) -> Result<StagedFile> {
         self.validate_guard(source, true)?;
         self.namespace_check(private)?;
-        let mut file = self.io(open_at(
-            private.directory.file(),
-            c"stage",
-            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
-        ))?;
+        let mode = CreatedMode::from_executable(source.executable);
+        self.witness_create(c"stage")?;
+        let mut file = self.io(create_regular_at(private.directory.file(), c"stage", mode))?;
+        let created = self.ep(object(&file))?;
+        self.ep(endpoint::native_same_mount(private.directory.file(), &file))?;
         self.io(destination_security::check_private_file(&file))?;
         let bytes = self.read_hash(&source.file, Some(&mut file))?;
         self.validate_guard(source, true)?;
-        // Only portable executable semantics; ownership/labels remain local.
-        // SAFETY: exclusive generated stage fd; private host-local permissions.
-        let result = unsafe {
-            libc::fchmod(
-                file.as_raw_fd(),
-                if bytes.executable { 0o700 } else { 0o600 },
-            )
-        };
-        if result != 0 {
-            return Err(self.failure(io::Error::last_os_error().into()));
-        }
         self.io(file.sync_all())?;
-        drop(file); // read lease cannot coexist with our own writable description.
+        self.io(destination_security::check_private_file(&file))?;
+        if self.ep(object(&file))? != created
+            || self.ep(endpoint::native_regular_metadata(&file))? != source.executable
+            || bytes.executable != source.executable
+        {
+            return Err(self.failure(EndpointError::Unstable));
+        }
+        let created_stamp = Stamp::new(&self.io(file.metadata())?);
+        drop(file); // No writable fd survives lease acquisition.
+        #[cfg(test)]
+        witness::test_cut("stage-closed", &private.directory, c"stage");
         let parent = ParentGuard {
             directory: private.directory.clone(),
             name: c"stage".to_owned(),
@@ -8602,6 +8842,14 @@ impl<'a> NativeEpoch<'a> {
             path: None,
         };
         let guard = self.guard_regular(&parent)?;
+        super::witness::created_regular_join(
+            &descriptor_object(&created),
+            &descriptor_stamp(&created_stamp),
+            &descriptor_object(&guard.actual),
+            &descriptor_stamp(&guard.stamp),
+            source.executable,
+        )
+        .map_err(|_| self.failure(EndpointError::IdentityChanged))?;
         let verified = self.capture(&guard)?;
         if bytes.digest != verified.digest
             || bytes.length != verified.length
@@ -8609,12 +8857,43 @@ impl<'a> NativeEpoch<'a> {
         {
             return Err(self.failure(EndpointError::Unstable));
         }
-        let descriptor_bytes = if let Some((header, intent, intent_bytes)) = &private.descriptor {
+        self.witness_checkpoint()?;
+        let descriptor_bytes = self.created_stage_descriptor(source, private, &created, &bytes)?;
+        self.barriers(&private.directory, &private.directory)?;
+        self.boundary = Boundary::PrivateStaged;
+        self.namespace_check(private)?;
+        self.validate_guard(source, true)?;
+        Ok(StagedFile {
+            source: SourceBinding {
+                file: Arc::clone(&source.file),
+                stamp: source.stamp.clone(),
+                executable: source.executable,
+                parent: source.parent.directory.clone(),
+                name: source.parent.name.clone(),
+                actual: source.actual.clone(),
+                side: source.parent.side,
+            },
+            guard,
+            bytes,
+            namespace: private.directory.clone(),
+            intended_parent: private.intended_parent.clone(),
+            intended_name: private.intended_name.clone(),
+            descriptor: descriptor_bytes,
+        })
+    }
+    fn created_stage_descriptor(
+        &mut self,
+        source: &StableFileGuard,
+        private: &PrivateNamespace,
+        created: &ObjectId,
+        bytes: &Capture,
+    ) -> Result<Option<Vec<u8>>> {
+        let encoded = if let Some((header, intent, intent_bytes)) = &private.descriptor {
             let decoded =
                 d::decode(intent_bytes).map_err(|_| self.failure(EndpointError::Unstable))?;
             let body = d::Body::Stage(d::Stage {
                 intent: decoded.digest,
-                object: descriptor_object(&guard.actual),
+                object: descriptor_object(&created),
                 content: descriptor_content(&bytes),
                 source: d::Source::Endpoint {
                     side: intent.direction,
@@ -8623,8 +8902,15 @@ impl<'a> NativeEpoch<'a> {
                     stamp: descriptor_stamp(&source.stamp),
                 },
             });
-            let encoded =
-                d::encode(header, &body).map_err(|_| self.failure(EndpointError::Unstable))?;
+            let encoded = if self.witness.is_some() {
+                let d::Body::Stage(stage) = &body else {
+                    return Err(self.failure(EndpointError::Unverified));
+                };
+                d::encode_created_stage(header, stage)
+            } else {
+                d::encode(header, &body)
+            }
+            .map_err(|_| self.failure(EndpointError::Unstable))?;
             d::decode(&encoded)
                 .and_then(|value| value.joined(&decoded, None, None))
                 .map_err(|_| self.failure(EndpointError::Unstable))?;
@@ -8640,7 +8926,7 @@ impl<'a> NativeEpoch<'a> {
             for value in [
                 b"QNS1".as_slice(),
                 &self.nonce,
-                &guard.actual.generation,
+                &created.generation,
                 &bytes.digest,
                 &bytes.length.to_le_bytes(),
                 &[u8::from(bytes.executable)],
@@ -8651,24 +8937,7 @@ impl<'a> NativeEpoch<'a> {
             self.io(descriptor.sync_all())?;
             None
         };
-        self.barriers(&private.directory, &private.directory)?;
-        self.boundary = Boundary::PrivateStaged;
-        self.namespace_check(private)?;
-        self.validate_guard(source, true)?;
-        Ok(StagedFile {
-            source: SourceBinding {
-                parent: source.parent.directory.clone(),
-                name: source.parent.name.clone(),
-                actual: source.actual.clone(),
-                side: source.parent.side,
-            },
-            guard,
-            bytes,
-            namespace: private.directory.clone(),
-            intended_parent: private.intended_parent.clone(),
-            intended_name: private.intended_name.clone(),
-            descriptor: descriptor_bytes,
-        })
+        Ok(encoded)
     }
     fn relocate_noreplace(
         &mut self,
@@ -8696,6 +8965,7 @@ impl<'a> NativeEpoch<'a> {
         #[cfg(test)]
         tests::run_before_relocate();
         self.boundary = Boundary::Uncertain;
+        self.witness_move(false)?;
         self.io(rename_noreplace(
             target.directory.file(),
             &target.name,
@@ -8730,6 +9000,7 @@ impl<'a> NativeEpoch<'a> {
             return Err(self.failure(EndpointError::IdentityChanged));
         }
         self.boundary = Boundary::DurableQuarantine;
+        self.witness_checkpoint()?;
         // A break does not erase durable actual-object accounting. No success
         // receipt or publish authority follows from this preserved-name result.
         let result = self.leases.check();
@@ -8825,6 +9096,7 @@ impl<'a> NativeEpoch<'a> {
             return Err(self.failure(EndpointError::Unstable));
         }
         self.boundary = Boundary::Uncertain;
+        self.witness_move(true)?;
         self.io(rename_noreplace(
             staged.namespace.file(),
             c"stage",
@@ -8869,6 +9141,7 @@ impl<'a> NativeEpoch<'a> {
         // at the final proof boundary rather than trusting the earlier check.
         self.parent_check(target)?;
         self.boundary = Boundary::Published;
+        self.witness_checkpoint()?;
         // Retain the same leased object; only the proven rename changes its
         // parent/name and ctime snapshot. This acquires no fifth guard.
         staged.guard.stamp = before;
@@ -9129,16 +9402,43 @@ impl<'e> NativeEpoch<'e> {
         if d::decode(bytes).is_err() {
             return Err(self.failure(EndpointError::Unsupported));
         }
+        self.witness_create(name)?;
         let mut file = self.io(open_at(
             directory.file(),
             name,
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
         ))?;
+        let created = self.ep(object(&file))?;
         self.io(destination_security::check_private_file(&file))?;
+        #[cfg(test)]
+        witness::test_cut("descriptor-prewrite", directory, name);
         self.io(file.write_all(bytes))?;
         self.io(file.sync_all())?;
+        let stamp = Stamp::new(&self.io(file.metadata())?);
+        if self.ep(object(&file))? != created {
+            return Err(self.failure(EndpointError::IdentityChanged));
+        }
+        drop(file);
+        #[cfg(test)]
+        witness::test_cut("descriptor-closed", directory, name);
+        if self.witness.is_some() {
+            let evidence = self.descriptor_snapshot(directory, name, bytes)?;
+            if evidence.identity != created || evidence.stamp != stamp {
+                return Err(self.failure(EndpointError::IdentityChanged));
+            }
+            let result = self
+                .witness
+                .as_mut()
+                .ok_or_else(|| Failure {
+                    cause: EndpointError::Unverified,
+                    boundary: self.boundary,
+                    os_error: None,
+                })?
+                .remember_created(name, evidence);
+            self.io(result)?;
+        }
         self.barriers(directory, directory)?;
-        self.check()
+        self.witness_checkpoint()
     }
     fn read_descriptor(
         &mut self,
@@ -9146,6 +9446,29 @@ impl<'e> NativeEpoch<'e> {
         name: &CStr,
         expected: &[u8],
     ) -> Result<()> {
+        if self.witness.is_some() {
+            let current = self.descriptor_snapshot(directory, name, expected)?;
+            let witness = self.witness.as_mut().ok_or_else(|| Failure {
+                cause: EndpointError::Unverified,
+                boundary: self.boundary,
+                os_error: None,
+            })?;
+            if let Some(original) = witness.descriptor(name) {
+                if original.identity != current.identity
+                    || original.stamp != current.stamp
+                    || original.bytes != current.bytes
+                {
+                    return Err(self.failure(EndpointError::IdentityChanged));
+                }
+            } else {
+                if !witness.restarted {
+                    return Err(self.failure(EndpointError::Unverified));
+                }
+                let result = witness.remember_observed(name, current);
+                self.io(result)?;
+            }
+            return self.check();
+        }
         self.check()?;
         let file = self.io(open_at(directory.file(), name, libc::O_RDONLY))?;
         self.io(destination_security::check_private_file(&file))?;
@@ -9274,6 +9597,17 @@ impl<'e> NativeEpoch<'e> {
             self.check_absent(source)?;
             d::State::Absent
         };
+        if source_guard.is_some() {
+            let name = CString::new(reservation.name())
+                .map_err(|_| self.failure(EndpointError::Unsupported))?;
+            let witness = self.io(witness::NamespaceWitness::new(
+                &self.target_root.clone(),
+                target,
+                name,
+                true,
+            ))?;
+            self.witness = Some(witness);
+        }
         let target_state = if let Some(guard) = target_guard {
             if guard.parent.path != target.path || guard.parent.side != Side::Target {
                 return Err(self.failure(EndpointError::Unverified));
@@ -9305,8 +9639,10 @@ impl<'e> NativeEpoch<'e> {
             OsStr::from_bytes(name.to_bytes()),
         ))?;
         let directory = self.ep(root.child(OsStr::from_bytes(name.to_bytes()), true))?;
+        self.witness_watch_namespace(&directory)?;
         self.io(destination_security::check_private_file(directory.file()))?;
         let identity = self.ep(object(directory.file()))?;
+        self.witness_checkpoint()?;
         let mut chains = [Vec::new(), Vec::new()];
         *chains
             .get_mut(direction)
@@ -9418,14 +9754,41 @@ impl super::NativePrepared<'_, '_> {
             let Some(bytes) = &staged.descriptor else {
                 return Err(self.epoch.failure(EndpointError::Unverified));
             };
+            if self
+                .epoch
+                .witness
+                .as_ref()
+                .is_none_or(|witness| !witness.created_preparation())
+                || d::decode(bytes)
+                    .map_err(|_| self.epoch.failure(EndpointError::Unverified))?
+                    .profile
+                    != d::Profile::CreatedRegular
+            {
+                return Err(self.epoch.failure(EndpointError::Unverified));
+            }
             if self.epoch.ep(object(staged.namespace.file()))? != self.namespace.identity {
                 return Err(self.epoch.failure(EndpointError::IdentityChanged));
             }
+            let source = StableFileGuard {
+                parent: ParentGuard {
+                    directory: staged.source.parent.clone(),
+                    name: staged.source.name.clone(),
+                    epoch: self.epoch.nonce,
+                    side: staged.source.side,
+                    chain: Vec::new(),
+                    path: None,
+                },
+                file: Arc::clone(&staged.source.file),
+                actual: staged.source.actual.clone(),
+                stamp: staged.source.stamp.clone(),
+                executable: staged.source.executable,
+            };
+            self.epoch.validate_guard(&source, true)?;
             self.epoch.validate_guard(&staged.guard, true)?;
             self.epoch
                 .read_descriptor(&self.namespace.directory, c"staged-intent", bytes)?;
             self.epoch.namespace_check(self.namespace)?;
-            self.epoch.check()
+            self.epoch.witness_checkpoint()
         })();
         result.map_err(|_| StoreError::RecoveryRequired)
     }
@@ -9654,7 +10017,7 @@ impl<'e> NativeEpoch<'e> {
         )?;
         self.namespace_check(private)?;
         self.ep(displaced.original_parent.validate(true))?;
-        self.check()?;
+        self.witness_checkpoint()?;
         Ok(super::SealedDisplacement {
             displaced,
             guard,
@@ -9664,6 +10027,15 @@ impl<'e> NativeEpoch<'e> {
     }
 }
 impl super::NativeRecoveryReader<'_, '_> {
+    pub(in crate::setup::connection) fn checkpoint(
+        &mut self,
+    ) -> std::result::Result<(), StoreError> {
+        self.validate()?;
+        self.epoch
+            .witness_checkpoint()
+            .map_err(|_| StoreError::RecoveryRequired)
+    }
+
     pub(in crate::setup::connection) fn validate_for(
         &mut self,
         store: &crate::setup::connection::store::ConnectionStore,
@@ -10428,7 +10800,7 @@ impl super::NativeOutcome<'_, '_> {
             self.epoch.parent_check(self.target)?;
             self.epoch.validate_guard(self.source, true)?;
             self.epoch.validate_guard(&self.publication.guard, true)?;
-            self.epoch.check()
+            self.epoch.witness_checkpoint()
         })();
         result.map_err(|_| StoreError::RecoveryRequired)
     }
@@ -11005,6 +11377,9 @@ impl<'e> NativeEpoch<'e> {
         let (d::Body::Intent(body), d::Body::Stage(staged)) = (&intent.body, &stage.body) else {
             return Err(self.failure(EndpointError::Unverified));
         };
+        if stage.profile != d::Profile::CreatedRegular {
+            return Err(self.failure(EndpointError::Unverified));
+        }
         let direction = usize::from(body.direction);
         if !matches!(body.decision, 1 | 2)
             || direction > 1
@@ -11049,6 +11424,15 @@ impl<'e> NativeEpoch<'e> {
         {
             return Err(self.failure(EndpointError::IdentityChanged));
         }
+        let name =
+            CString::new(record.name()).map_err(|_| self.failure(EndpointError::Unsupported))?;
+        let witness = self.io(witness::NamespaceWitness::new(
+            &self.target_root.clone(),
+            &target,
+            name,
+            false,
+        ))?;
+        self.witness = Some(witness);
         let source = self.guard_regular(&source_parent)?;
         if self.state(&source)?
             != *body
@@ -11063,6 +11447,7 @@ impl<'e> NativeEpoch<'e> {
         let directory = self.ep(self
             .target_root
             .child(OsStr::from_bytes(name.to_bytes()), true))?;
+        self.witness_watch_namespace(&directory)?;
         let identity = self.ep(object(directory.file()))?;
         if descriptor_object(&identity) != body.namespace {
             return Err(self.failure(EndpointError::IdentityChanged));
@@ -11080,6 +11465,39 @@ impl<'e> NativeEpoch<'e> {
         self.read_descriptor(&private.directory, c"intent", &intent_bytes)?;
         self.read_descriptor(&private.directory, c"staged-intent", &stage_bytes)?;
         let shape = self.regular_names(&private)?;
+        super::witness::regular_restart(
+            [
+                shape.stage,
+                shape.displaced,
+                shape.displaced_intent,
+                shape.outcome,
+            ],
+            body.expected.get(1 - direction) != Some(&d::State::Absent),
+        )
+        .map_err(|_| self.failure(EndpointError::Unverified))?;
+        let mut inventory = vec![b"intent".as_slice(), b"staged-intent"];
+        if shape.stage {
+            inventory.push(b"stage");
+        }
+        if shape.displaced {
+            inventory.push(b"displaced");
+        }
+        if shape.displaced_intent {
+            inventory.push(b"displaced-intent");
+        }
+        if shape.outcome {
+            inventory.push(b"outcome");
+        }
+        let result = self
+            .witness
+            .as_mut()
+            .ok_or_else(|| Failure {
+                cause: EndpointError::Unverified,
+                boundary: self.boundary,
+                os_error: None,
+            })?
+            .set_inventory(&inventory);
+        self.io(result)?;
         let staged_at_private = shape.stage;
         let (displaced, displaced_descriptor) = if shape.displaced {
             let (displaced, guard) = self.reconstruct_displacement(
@@ -11166,18 +11584,35 @@ impl<'e> NativeEpoch<'e> {
             self.guard_regular(&target)?
         };
         let bytes = self.capture(&guard)?;
-        if descriptor_object(&guard.actual) != staged.object
+        if guard.stamp.mode
+            != (libc::S_IFREG | CreatedMode::from_executable(staged.content.executable).bits())
+            || descriptor_object(&guard.actual) != staged.object
             || descriptor_content(&bytes) != staged.content
         {
             return Err(self.failure(EndpointError::Unstable));
         }
         let binding = SourceBinding {
+            file: Arc::clone(&source.file),
+            stamp: source.stamp.clone(),
+            executable: source.executable,
             parent: source.parent.directory.clone(),
             name: source.parent.name.clone(),
             actual: source.actual.clone(),
             side: Side::Source,
         };
         self.barriers(&private.directory, &target.directory)?;
+        if shape.displaced && !shape.displaced_intent {
+            let (actual, guard) = displaced
+                .as_ref()
+                .ok_or_else(|| self.failure(EndpointError::Unverified))?;
+            let bytes = actual
+                .descriptor
+                .as_ref()
+                .ok_or_else(|| self.failure(EndpointError::Unverified))?;
+            self.witness_checkpoint()?;
+            let permit = self.accounting_repair_permit(context, &private, guard, bytes)?;
+            self.repair_displaced_descriptor(context, &private, guard, bytes, permit)?;
+        }
         self.namespace_created = true;
         let (staged, published) = if staged_at_private {
             (
@@ -11244,8 +11679,12 @@ impl<'e> NativeEpoch<'e> {
         if read as u64 != before.length || Stamp::new(&self.io(file.metadata())?) != before {
             return Err(self.failure(EndpointError::Unstable));
         }
+        drop(file); // The following snapshot may use two transient observation fds.
         bytes.truncate(read);
         d::decode(&bytes).map_err(|_| self.failure(EndpointError::Unverified))?;
+        if self.witness.is_some() {
+            self.read_descriptor(directory, name, &bytes)?;
+        }
         self.check()?;
         Ok(bytes)
     }
@@ -11476,7 +11915,7 @@ impl<'e> super::RecoveredEvidence<'e> {
             self.epoch.validate_guard(&self.source, true)?;
             self.epoch.validate_guard(guard, true)?;
             self.epoch.namespace_check(&self.namespace)?;
-            self.epoch.check()
+            self.epoch.witness_checkpoint()
         })();
         result.map_err(|_| StoreError::RecoveryRequired)
     }
@@ -11615,7 +12054,9 @@ impl NativeEpoch<'_> {
             d::decode(&bytes)
                 .and_then(|value| value.joined(intent, stage, None))
                 .map_err(|_| self.failure(EndpointError::Unverified))?;
-            self.write_descriptor(&private.directory, c"displaced-intent", &bytes)?;
+            if self.witness.is_none() {
+                self.write_descriptor(&private.directory, c"displaced-intent", &bytes)?;
+            }
             bytes
         };
         self.validate_guard(&guard, true)?;
@@ -17137,6 +17578,9 @@ fn execute_pending(
     };
     let current = store.load_connection(id.connection)?;
     let mut context = store.open_recovery_context(id, current.revision)?;
+    if store.legacy_native_pending(id)? {
+        return Err(StoreError::LegacyNativePending);
+    }
     if reserve {
         store.reserve_recovery_reads(
             &mut context,
@@ -17365,7 +17809,7 @@ impl NativeEpoch<'_> {
         if admission.path.components().len() == 1 {
             return Ok(());
         }
-        let binding = self.connected.as_ref().ok_or_else(|| Failure {
+        let binding = self.connected.as_ref().ok_or(Failure {
             cause: EndpointError::Unverified,
             boundary: self.boundary,
             os_error: None,

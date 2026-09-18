@@ -3355,9 +3355,14 @@ fn native_baseline_patches_advance_two_paths_separately_and_reopen() {
                 .entries
                 .is_empty()
         );
+        assert!(
+            !store.legacy_native_pending(live.id()).unwrap(),
+            "completed legacy native history remains readable with a committed baseline"
+        );
         store.checkpoint().unwrap();
         drop(store);
         store = ConnectionStore::open_at(&path).unwrap();
+        assert!(!store.legacy_native_pending(live.id()).unwrap());
         let baseline = store.load_baseline(record.id).unwrap();
         let entries = baseline.entries().unwrap();
         assert_eq!(entries.len(), index + 2);
@@ -6775,6 +6780,16 @@ fn reviewed_restore_case(boundary: u8) {
             store.append(Change::NativePrepared { registration: registration.clone(), expected: live.revision() })
             .expect("selected prepared facts join exact pinned private version independently of observed equality");
             live.revision += 1;
+            assert_eq!(
+                d::decode(registration.stage.as_ref().unwrap())
+                    .unwrap()
+                    .profile,
+                d::Profile::LegacyStage
+            );
+            assert!(
+                !store.legacy_native_pending(live.id()).unwrap(),
+                "selected QNS2 stays on its existing selected route"
+            );
             assert_eq!(
                 store.operation(live.id()).unwrap().stage,
                 if target_absent { 6 } else { 0 },
@@ -10825,5 +10840,93 @@ fn existing_ancestor_preflight_capacity_refuses_without_durable_changes() {
             .unwrap()
             .entries
             .is_empty()
+    );
+}
+
+#[test]
+fn native_legacy_pending_classification_preserves_registered_history_and_baseline() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 991);
+    let session = store.transaction_session(record.id).unwrap();
+    let mut live = store
+        .begin_native_for_test(intent(&record), &session)
+        .unwrap();
+    assert!(!store.legacy_native_pending(live.id()).unwrap());
+    let reservation = store
+        .reserve_native_namespace_with_nonce(&mut live, Side::Destination, [7; 16])
+        .unwrap();
+    let registration = native_prepared_facts(&live, &reservation);
+    let canonical = registration.clone();
+    store
+        .append(Change::NativePrepared {
+            registration,
+            expected: live.revision,
+        })
+        .unwrap();
+    let id = live.id();
+    let before = store.load_baseline(record.id).unwrap().entries().cloned();
+    let revision = store.connection(record.id).unwrap().revision;
+    assert!(store.legacy_native_pending(id).unwrap());
+    assert_eq!(store.connection(record.id).unwrap().revision, revision);
+    drop(store);
+    let reopened = ConnectionStore::open_at(&path).unwrap();
+    assert!(reopened.legacy_native_pending(id).unwrap());
+    assert_eq!(
+        reopened.connection(record.id).unwrap().pending,
+        Some(id.serial)
+    );
+    assert_eq!(
+        reopened
+            .load_baseline(record.id)
+            .unwrap()
+            .entries()
+            .cloned(),
+        before
+    );
+    let Some(Row::NativeRegistration(retained)) = reopened.row(&canonical.key()).unwrap() else {
+        panic!("retained registration");
+    };
+    assert_eq!(retained, canonical);
+}
+
+#[test]
+fn native_created_profile_registration_is_distinct_from_legacy_pending() {
+    use super::super::transaction::native::descriptor as d;
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 992);
+    let session = store.transaction_session(record.id).unwrap();
+    let mut live = store
+        .begin_native_for_test(intent(&record), &session)
+        .unwrap();
+    let reservation = store
+        .reserve_native_namespace_with_nonce(&mut live, Side::Destination, [8; 16])
+        .unwrap();
+    let mut registration = native_prepared_facts(&live, &reservation);
+    let old = d::decode(registration.stage.as_ref().unwrap()).unwrap();
+    let mut bytes = registration.stage.take().unwrap();
+    bytes[..4].copy_from_slice(b"QNS3");
+    let split = bytes.len() - 32;
+    let digest = sha2::Sha256::digest(&bytes[..split]);
+    bytes[split..].copy_from_slice(&digest);
+    let stage = d::decode(&bytes).unwrap();
+    assert_eq!(stage.profile, d::Profile::CreatedRegular);
+    assert_ne!(old.digest, stage.digest);
+    registration.stage = Some(bytes);
+    registration.validate().unwrap();
+    store
+        .append(Change::NativePrepared {
+            registration: registration.clone(),
+            expected: live.revision,
+        })
+        .unwrap();
+    assert!(!store.legacy_native_pending(live.id()).unwrap());
+    drop(store);
+    let reopened = ConnectionStore::open_at(&path).unwrap();
+    assert!(!reopened.legacy_native_pending(live.id()).unwrap());
+    assert_eq!(
+        reopened.row(&registration.key()).unwrap(),
+        Some(Row::NativeRegistration(registration))
     );
 }

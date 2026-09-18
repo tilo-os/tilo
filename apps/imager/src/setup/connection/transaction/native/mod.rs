@@ -2,6 +2,8 @@
 pub(in crate::setup::connection) mod descriptor;
 #[cfg(target_os = "linux")]
 pub(super) mod linux;
+#[cfg(any(target_os = "linux", test))]
+mod witness;
 
 #[cfg(target_os = "linux")]
 pub(in crate::setup::connection) fn namespace_nonce() -> std::io::Result<[u8; 16]> {
