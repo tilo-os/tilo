@@ -14,7 +14,7 @@ use std::process::Command;
 use tempfile::TempDir;
 
 #[test]
-fn provision_identity_does_not_replace_metadata_when_secret_service_is_unavailable() {
+fn provision_identity_fails_closed_without_replacing_metadata_when_secret_service_is_unavailable() {
     let root = TempDir::new().expect("test root");
     let config = root.path().join("config");
     let bin = root.path().join("bin");
@@ -57,8 +57,8 @@ fn provision_identity_does_not_replace_metadata_when_secret_service_is_unavailab
         .output()
         .expect("run production shell binary");
     assert!(
-        status.status.success(),
-        "unavailable Secret Service must defer to trusted recovery, stderr: {}",
+        !status.status.success(),
+        "provision-only mode must fail closed when Secret Service is unavailable, stderr: {}",
         String::from_utf8_lossy(&status.stderr)
     );
     assert_eq!(fs::read(&identity).expect("read metadata"), original);

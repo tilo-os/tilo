@@ -249,21 +249,23 @@ cmd_handoff() {
 cmd_verify() {
     assert_disposable_guest
     # This is proof after the user has completed the normal UI logout/login.
-    # It is read-only: identify the active compositor by executable inode, not
-    # by a log line or the configuration that merely says what should start.
+    # The trusted developer wrapper records the canonical target and its
+    # launch-time digest. This works under Fedora's /proc restrictions and also
+    # detects when a newer binary was atomically deployed after login.
     ssh_base "set -euo pipefail
         wanted=\$(readlink -e \"\$HOME/$vm_root/shell\")
         test -n \"\$wanted\"
         grep -aFq 'tilo-dev-session-build-marker-v1' \"\$wanted\"
-        found=
-        for pid in \$(pgrep -u \"\$(id -u)\" -x shell || true); do
-            actual=\$(readlink -e \"/proc/\$pid/exe\" || true)
-            if test \"\$actual\" = \"\$wanted\"; then
-                printf 'VM developer shell verified: pid=%s exe=%s\\n' \"\$pid\" \"\$actual\"
-                found=1
-            fi
-        done
-        test -n \"\$found\" || { echo 'no running shell has the deployed developer executable' >&2; exit 1; }"
+        attest=\"\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}/tilo-dev-session/active\"
+        test -r \"\$attest\" || { echo 'developer session has no launch attestation' >&2; exit 1; }
+        pid=\$(sed -n 's/^pid=//p' \"\$attest\")
+        actual_path=\$(sed -n 's/^path=//p' \"\$attest\")
+        actual_sha=\$(sed -n 's/^sha256=//p' \"\$attest\")
+        wanted_sha=\$(sha256sum -- \"\$wanted\" | cut -d' ' -f1)
+        test \"\$actual_path\" = \"\$wanted\" || { echo 'active developer session used a different path' >&2; exit 1; }
+        test \"\$actual_sha\" = \"\$wanted_sha\" || { echo 'active developer session is an older deployed build' >&2; exit 1; }
+        kill -0 \"\$pid\" 2>/dev/null || { echo 'attested developer shell is no longer running' >&2; exit 1; }
+        printf 'VM developer shell verified: pid=%s exe=%s sha256=%s\\n' \"\$pid\" \"\$wanted\" \"\$actual_sha\""
 }
 
 cmd_cycle() {
