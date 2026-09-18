@@ -153,7 +153,7 @@ must not be described as runtime-verified macOS behavior on a Windows machine.
 - `ui/src/collaboration.rs`, `crates/runtime/runtime-collab/` and
   `crates/runtime/runtime-portal/`: existing service client and transport boundary.
 - `shell/src/compositor/macos.rs`, `shell/src/compositor/hosted.rs` and
-  `shell/src/shell/overlay_host.rs`: current host implementations and room policy.
+  `shell/src/shell/overlay_host/mod.rs`: current host implementations and room policy.
 - `shell/src/shell/launcher.rs` and `shell/src/shell/collab_broker_capnp.rs`:
   process attestation, service admission and filtered action-directory serving.
 - `shell/src/identity_broker.rs`, `crates/runtime/runtime-identity/src/secure_store.rs`
