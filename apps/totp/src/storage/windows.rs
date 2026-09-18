@@ -104,7 +104,11 @@ pub(super) fn load_or_create_key(dir: &Path) -> io::Result<Zeroizing<[u8; KEY_LE
     lock.lock()?;
     let protected_path = dir.join("vault.key.dpapi");
     match read_private(&protected_path) {
-        Ok(bytes) => return decode_key(&bytes),
+        Ok(bytes) => {
+            let key = decode_key(&bytes)?;
+            finish_legacy_migration(dir, &key)?;
+            return Ok(key);
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
@@ -145,8 +149,36 @@ pub(super) fn load_or_create_key(dir: &Path) -> io::Result<Zeroizing<[u8; KEY_LE
         return Err(io::Error::other("published key differs from the original"));
     }
     if migrating {
-        std::fs::remove_file(legacy_path)?;
-        private_fs::sync_directory(dir)?;
+        finish_legacy_migration(dir, &restored)?;
     }
     Ok(restored)
+}
+
+/// Publication and plaintext removal are separate durable steps. Reopening
+/// must finish an interrupted migration, but never discard conflicting material
+/// that may be needed for recovery. The caller holds the vault-key lock.
+fn finish_legacy_migration(dir: &Path, key: &[u8; KEY_LEN]) -> io::Result<()> {
+    let legacy_path = dir.join("vault.key");
+    let legacy = match read_private(&legacy_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if legacy.as_slice() != key {
+        return Err(io::Error::other(
+            "legacy vault key differs from the protected key",
+        ));
+    }
+    match std::fs::read(dir.join("vault.enc")) {
+        Ok(encrypted) if super::open(key, &encrypted).is_none() => {
+            return Err(io::Error::other(
+                "protected key does not unlock the existing vault",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::fs::remove_file(legacy_path)?;
+    private_fs::sync_directory(dir)
 }
