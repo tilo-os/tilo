@@ -3,6 +3,7 @@
 The old native-builder purpose is deliberately not reused. Consumers require an
 independently pinned reconstruction hash and still verify the complete inventory.
 """
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -85,6 +86,55 @@ def read_thin_cache_evidence(tools, root, approval_sha256):
             runtime['cargo_revalidation_required'] is True and runtime['complete'] is False,
             'actual thin cache restoration evidence differs')
     return raw, runtime
+
+
+@contextmanager
+def checkpointed_payload(native, identity, inputs, reconstruction, work, evidence, run_id, attempt):
+    '''Retain audited public outputs before fallible receipt validation.
+
+    This purpose is rejected by the complete-artifact importer. A later consumer
+    must independently validate and admit the reconstruction.
+    '''
+    t = native.tools
+    require(re.fullmatch(r'[0-9]+', str(run_id)) and re.fullmatch(r'[0-9]+', str(attempt)),
+            'numeric checkpoint producer identity required')
+    require(re.fullmatch(r'sha256:[0-9a-f]{64}|[0-9a-f]{64}', identity), 'immutable local payload required')
+    t.inspect_local(identity, inputs['architecture'], identity)
+    with t.mounted(identity) as root:
+        # inventory skips normal artifact metadata; raw scratch must not carry
+        # an unchecked metadata blob outside the full private-material audit.
+        require(not (root / native.METADATA).exists() and not (root / native.METADATA).is_symlink(),
+                'raw payload unexpectedly contains artifact metadata')
+        inventory = native.inventory(root, inputs)
+        inventory_raw = t.canonical(inventory)
+        require(len(inventory_raw) <= 16 * 1024 * 1024, 'checkpoint inventory exceeds bound')
+        repository = 'code.podesta.ai/qos/tilo-development-unapproved-native-payload-aarch64'
+        require(inputs['architecture'] == 'aarch64', 'checkpoint architecture differs')
+        reconstruction_raw = t.canonical(reconstruction)
+        require(len(reconstruction_raw) <= 65536, 'checkpoint reconstruction evidence exceeds bound')
+        (evidence / 'unapproved-reconstruction.json').write_bytes(reconstruction_raw)
+        digest_file = work / 'unapproved-manifest.digest'
+        t.command('podman', '--remote=false', 'push', '--tls-verify=true', '--digestfile', str(digest_file),
+                  identity, 'docker://' + repository + ':candidate-' + str(run_id) + '-' + str(attempt))
+        manifest = digest_file.read_text().strip()
+        require(re.fullmatch(r'sha256:[0-9a-f]{64}', manifest), 'checkpoint manifest digest differs')
+        reference = repository + '@' + manifest
+        config = t.registry_identity(reference, inputs['architecture'])
+        require(config.removeprefix('sha256:') == identity.removeprefix('sha256:'),
+                'published unapproved payload differs')
+        receipt = {'schema': 1, 'purpose': 'tilo-development-unapproved-native-payload-checkpoint',
+            'inputs': inputs, 'reference': reference, 'config_digest': config,
+            'inventory_sha256': t.sha(inventory_raw), 'inventory_count': len(inventory),
+            'producer_run_id': str(run_id), 'producer_attempt': str(attempt),
+            'reconstruction_evidence_sha256': t.sha(reconstruction_raw),
+            'reconstruction_evidence_digest_format': 'json-sort-keys-compact-no-newline',
+            'complete_native_builder': False, 'installable': False, 'production_signed': False,
+            'consumer_adoption_required': True, 'producer_validation_complete': False}
+        raw = t.canonical(receipt)
+        require(len(raw) <= 65536, 'checkpoint receipt exceeds bound')
+        (evidence / 'unapproved-payload.json').write_bytes(raw)
+        # Original validation exceptions propagate; checkpoint receipt survives.
+        yield root, inventory
 
 
 def derive_driver(original, source_path, derived_recipe_path, seed_image_id):
