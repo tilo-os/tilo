@@ -22,7 +22,8 @@ use crate::actions::{
     PhotoResourceSeed, album_resource_from_fields, folder_resource, folder_resource_id,
     library_root_resource, metadata_label_counts, object_resource, object_resource_id,
     person_resource, person_resource_id, pet_resource, pet_resource_id, photo_resource_from_seed,
-    tag_resource, tag_resource_id,
+    place_counts, place_resource, place_resource_id, places_resource_from_count, tag_resource,
+    tag_resource_id,
 };
 use crate::doc::PhotosDoc;
 
@@ -51,6 +52,9 @@ struct ProviderState {
 #[derive(Clone)]
 enum MaterializationSeed {
     Library,
+    Places {
+        located_count: usize,
+    },
     Photo(Box<PhotoResourceSeed>),
     Album {
         id: String,
@@ -77,12 +81,18 @@ enum MaterializationSeed {
         label: String,
         count: usize,
     },
+    Place {
+        key: String,
+        label: String,
+        count: usize,
+    },
 }
 
 impl MaterializationSeed {
     fn materialize(self) -> Resource {
         match self {
             Self::Library => library_root_resource(),
+            Self::Places { located_count } => places_resource_from_count(located_count),
             Self::Photo(photo) => photo_resource_from_seed(&photo),
             Self::Album {
                 id,
@@ -94,6 +104,7 @@ impl MaterializationSeed {
             Self::Tag { label, count } => tag_resource(&label, count),
             Self::Object { label, count } => object_resource(&label, count),
             Self::Pet { label, count } => pet_resource(&label, count),
+            Self::Place { key, label, count } => place_resource(&key, &label, count),
         }
     }
 }
@@ -213,6 +224,24 @@ impl PhotosSearchProvider {
             root,
             MaterializationSeed::Library,
         );
+        let located_count = library
+            .photos
+            .iter()
+            .filter(|photo| photo.location.is_some())
+            .count();
+        let places = SearchResult::for_action(
+            PHOTO_SEARCH_KIND,
+            "Places",
+            ActionAddress::new("photos.places", "open"),
+        )
+        .with_subtitle(format!("Offline map · {located_count} located photographs"))
+        .with_icon(Icon::Image);
+        insert(
+            "photos.places".to_owned(),
+            format!("Places\0photos.places\0map\0location\0{located_count} photographs\0open"),
+            places,
+            MaterializationSeed::Places { located_count },
+        );
         for photo in &library.photos {
             let result = SearchResult::for_action(
                 PHOTO_SEARCH_KIND,
@@ -227,7 +256,7 @@ impl PhotosSearchProvider {
             // Omit repeated kind/action boilerplate: it creates huge shared
             // postings in a large library without helping find a photograph.
             let searchable = format!(
-                "{}\0{} x {} pixels\0clockwise\0{}\0{}\0{}\0{}\0{}\0{}",
+                "{}\0{} x {} pixels\0clockwise\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
                 photo.image.name,
                 photo.image.width,
                 photo.image.height,
@@ -240,6 +269,10 @@ impl PhotosSearchProvider {
                 photo.people.join(" "),
                 photo.tags.join(" "),
                 photo.captured_at.as_deref().unwrap_or_default(),
+                photo
+                    .location
+                    .as_ref()
+                    .map_or_else(String::new, crate::model::PhotoLocation::display_name),
                 photo
                     .analysis
                     .as_ref()
@@ -277,6 +310,22 @@ impl PhotosSearchProvider {
             );
         }
         let (folders, people, tags, objects, pets) = metadata_label_counts(library);
+        for (key, label, count) in place_counts(library) {
+            let id = place_resource_id(&key);
+            let result = SearchResult::for_action(
+                PHOTO_SEARCH_KIND,
+                &label,
+                ActionAddress::new(&id, "open"),
+            )
+            .with_subtitle(format!("Place · {count} photographs · offline map"))
+            .with_icon(Icon::Image);
+            insert(
+                id.clone(),
+                format!("{label}\0photos.place\0place\0{count} photographs\0map\0open"),
+                result,
+                MaterializationSeed::Place { key, label, count },
+            );
+        }
         for (folder, count) in folders {
             let id = folder_resource_id(&folder);
             let result = SearchResult::for_action(

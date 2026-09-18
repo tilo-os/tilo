@@ -66,12 +66,16 @@ pub mod app;
 pub mod doc;
 pub mod model;
 pub mod pixels;
+/// Offline-capable place grouping and map projection shared by the timeline
+/// surface and resource/action routing. This module deliberately has no tile
+/// client, so opening a Photos location never leaks it to a network provider.
+pub mod places;
 pub mod reference;
 pub mod search;
 pub mod strings;
 
 pub use app::PhotosApp;
-pub use model::{Edits, OpenImage, Rect01};
+pub use model::{Edits, LocationProvenance, OpenImage, PhotoLocation, Rect01};
 
 /// Import a Camera portable-media reference into Photos without ever trusting
 /// a machine-local path.  The content hash is verified in qdoc first; missing

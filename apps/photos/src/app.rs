@@ -2176,6 +2176,14 @@ impl PhotosApp {
             }
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
             crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
+            crate::actions::PhotosOperation::ViewPlaces => {
+                self.show_library();
+                self.notice = Some("Places is available from the Library map view".to_owned());
+            }
+            crate::actions::PhotosOperation::ViewPlace { .. } => {
+                self.show_library();
+                self.notice = Some("Showing shared place in the Library map view".to_owned());
+            }
             crate::actions::PhotosOperation::ViewAlbum { .. }
             | crate::actions::PhotosOperation::ViewFolder { .. }
             | crate::actions::PhotosOperation::ViewPerson { .. }
@@ -6431,6 +6439,14 @@ impl Widget for PhotosApp {
             }
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
             crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
+            crate::actions::PhotosOperation::ViewPlaces => {
+                self.show_library();
+                self.notice = Some("Places is available from the Library map view".to_owned());
+            }
+            crate::actions::PhotosOperation::ViewPlace { .. } => {
+                self.show_library();
+                self.notice = Some("Showing shared place in the Library map view".to_owned());
+            }
             crate::actions::PhotosOperation::ViewAlbum { album_id } => {
                 self.view_album(doc, &album_id)?;
             }
