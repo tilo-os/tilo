@@ -28,6 +28,7 @@ for package in aws-lc-rs aws-lc-sys; do
 done
 
 crypto_source="$repo/crates/system/tilo-crypto/src/lib.rs"
+development_signer="$repo/os/dev/development-signer.py"
 if grep -Eq 'pkcs1v15::SigningKey|SigningKey::<Sha(256|512)>' "$crypto_source"; then
   bad 'Tilo-owned RSA signing regressed from ring to the timing-vulnerable RustCrypto operation'
 elif grep -Fq 'AuthenticodeSignature::new' "$crypto_source"; then
@@ -38,6 +39,11 @@ elif [ "$(grep -c 'sign_rsa_pkcs1_ring(' "$crypto_source")" -lt 4 ]; then
   bad 'not every Tilo-owned rollback/module/EFI-variable RSA signer uses ring'
 else
   ok 'Tilo-owned RSA private operations use ring and expose no Marvin decryption oracle'
+fi
+if grep -Eq "(/usr/bin/(openssl|sbsign)|\['(openssl|sbsign)')" "$development_signer"; then
+  bad 'development private-key operations still invoke OpenSSL or sbsigntools'
+else
+  ok 'development private-key operations use the Rust-native signer'
 fi
 if RUSTC_WRAPPER= cargo tree --manifest-path "$repo/Cargo.toml" -p tilo-crypto -d \
     | grep -Eq '^rsa v'; then
