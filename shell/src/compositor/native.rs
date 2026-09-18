@@ -3365,7 +3365,7 @@ fn install_device_fabric_bridge(
                 return Ok(view.clone());
             }
             match action {
-                DeviceFabricUiAction::Snapshot => {}
+                DeviceFabricUiAction::Snapshot | DeviceFabricUiAction::SnapshotFresh => {}
                 DeviceFabricUiAction::HandoffMedia { session_id, target } => {
                     let _ = crate::shell::device_fabric_runtime::request_media_handoff(
                         &fabric_net,
