@@ -412,3 +412,32 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
         component.close();
     }
 }
+
+
+#[test]
+fn semantic_composer_enter_shift_enter_and_empty_clear_use_the_real_input_path() {
+    let (mut frame, records, checkout) = semantic_component_harness("chat-semantic-enter");
+    let owner = semantic_owner_path(&frame.inspection().root, "chat.composer").unwrap();
+    let before = records.read(&checkout.id, |doc| ChatDoc::top_level_count(doc, "c_general")).unwrap();
+    frame.perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::Focus).unwrap();
+    frame.perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::SetValue("one message".into())).unwrap();
+    frame.perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::SetSelection { anchor: 11, focus: 11 }).unwrap();
+    frame.key("Enter");
+    records.read(&checkout.id, |doc| {
+        assert_eq!(ChatDoc::top_level_count(doc, "c_general"), before + 1);
+        assert_eq!(ChatDoc::draft_text(doc, "c_general"), "");
+        assert_eq!(ChatDoc::list_messages(doc, "c_general").last().unwrap().text, "one message");
+    }).unwrap();
+    frame.perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::SetValue("line".into())).unwrap();
+    frame.perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::SetSelection { anchor: 4, focus: 4 }).unwrap();
+    frame.set_modifiers(&["shift".into()]);
+    frame.key("Enter");
+    frame.set_modifiers(&[]);
+    records.read(&checkout.id, |doc| {
+        assert_eq!(ChatDoc::top_level_count(doc, "c_general"), before + 1);
+        assert_eq!(ChatDoc::draft_text(doc, "c_general"), "line\n");
+    }).unwrap();
+    frame.perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::SetValue(String::new())).unwrap();
+    assert_eq!(records.read(&checkout.id, |doc| ChatDoc::draft_text(doc, "c_general")).unwrap(), "");
+    frame.close_components();
+}

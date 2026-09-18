@@ -301,6 +301,10 @@ pub struct InspectionNode {
 #[derive(Debug, serde::Serialize)]
 pub struct InspectionSnapshot {
     pub viewport: [u32; 2],
+    /// Exact retained owner of the runner's current keyboard focus. Widgets
+    /// in other mounted apps may independently retain local editor focus.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyboard_focus_owner: Option<String>,
     pub root: InspectionNode,
 }
 
@@ -1835,6 +1839,15 @@ impl FrameHarness {
             self.finish_caller_palette(); self.relayout();
             return if handled { Ok(()) } else { Err("palette owns input".into()) };
         }
+        if let Some(target) = semantic_target {
+            // The generic Focus fallback must never resurrect a removed or
+            // forged synthetic child, nor bypass its published edit guards.
+            let access = self.access_node_named(name, Some(target))?;
+            if access.state.disabled || (access.state.read_only
+                && matches!(action, SemanticAction::SetValue(_) | SemanticAction::SetSelection { .. })) {
+                return Err("semantic target is disabled or read-only".into());
+            }
+        }
         let targets = self.named_target_nodes();
         let node = targets
             .get(name)
@@ -2111,14 +2124,19 @@ impl FrameHarness {
     pub fn inspection(&self) -> InspectionSnapshot {
         self.drain_component_wakes();
         let mut sibling_counts = HashMap::new();
-        InspectionSnapshot {
-            viewport: [self.viewport.0, self.viewport.1],
-            root: if let Some(palette) = self.caller_palette_inspection() { palette } else if let Some(history) = &self.history {
-                let mut presentation = collect_inspection(history.as_ref(), "", &mut sibling_counts);
-                if history.live_visible() { presentation.children.push(collect_inspection(self.root.as_ref(), "", &mut sibling_counts)); }
-                presentation
-            } else { collect_inspection(self.root.as_ref(), "", &mut sibling_counts) },
+        let root = if let Some(palette) = self.caller_palette_inspection() { palette } else if let Some(history) = &self.history {
+            let mut presentation = collect_inspection(history.as_ref(), "", &mut sibling_counts);
+            if history.live_visible() { presentation.children.push(collect_inspection(self.root.as_ref(), "", &mut sibling_counts)); }
+            presentation
+        } else { collect_inspection(self.root.as_ref(), "", &mut sibling_counts) };
+        fn owner_path(node: &InspectionNode, targets: &HashMap<String, NodeId>, focused: NodeId) -> Option<String> {
+            if targets.get(&node.path) == Some(&focused) { return Some(node.path.clone()); }
+            node.children.iter().find_map(|child| owner_path(child, targets, focused))
         }
+        // Use the same admitted retained-owner resolution as semantic dispatch,
+        // never a DOM ordering heuristic or a pointer from another component.
+        let keyboard_focus_owner = self.focused.and_then(|focused| owner_path(&root, &self.named_target_nodes(), focused));
+        InspectionSnapshot { viewport: [self.viewport.0, self.viewport.1], keyboard_focus_owner, root }
     }
 
     /// Pretty JSON form used by the standard `--headless-drive` inspector.
@@ -4682,6 +4700,43 @@ mod tests {
     }
 
     #[test]
+    fn inspection_identifies_keyboard_owner_among_locally_focused_editors() {
+        let mut first = TextInput::local().with_id("first").with_accessible_name("First");
+        let mut second = TextInput::local().with_id("second").with_accessible_name("Second");
+        first.set_focus(true);
+        second.set_focus(true);
+        let mut driver = Driver::new_with_controlled_inputs(
+            State::new(), Box::new(Column::new().push(Box::new(first)).push(Box::new(second))),
+            (400, 200), Theme::dark(), crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture-user".into()),
+        );
+        driver.perform_named("second", &crate::a11y::Action::Focus).unwrap();
+        // A mounted app's local restoration can keep its editor focused even
+        // though the shared runner routes the keyboard to another app.
+        let first_node = driver.named_target_nodes()["first"];
+        driver.mutate_node(first_node, |widget| widget.set_focus(true)).unwrap();
+        let snapshot = driver.inspection();
+        assert!(snapshot.root.children[0].semantics.as_ref().unwrap().state.focused,
+            "apps can preserve their own local editor focus");
+        let wire = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(wire["keyboard_focus_owner"].as_str(), Some(snapshot.root.children[1].path.as_str()));
+        driver.perform_named("first", &crate::a11y::Action::Focus).unwrap();
+        let snapshot = driver.inspection();
+        assert_eq!(serde_json::to_value(&snapshot).unwrap()["keyboard_focus_owner"].as_str(), Some(snapshot.root.children[0].path.as_str()));
+    }
+
+    #[test]
+    fn semantic_token_focus_rejects_unpublished_targets() {
+        let mut driver = Driver::new_with_controlled_inputs(
+            State::new(), Box::new(Button::new("save", "Save", None)), (400, 200),
+            Theme::dark(), crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture-user".into()),
+        );
+        assert!(driver.perform_semantic_named("save", Some("forged"), &crate::a11y::Action::Focus).is_err());
+        assert!(driver.focused_access_node().is_none());
+    }
+
+    #[test]
     fn semantic_document_edit_is_immediately_undoable() {
         let input = TextInput::local()
             .with_id("title-input")
@@ -4713,6 +4768,21 @@ mod tests {
             .semantics
             .expect("text input semantics");
         assert_eq!(semantics.value.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn semantic_empty_replacement_clears_bound_text_and_has_one_undo_boundary() {
+        let input = TextInput::local().with_id("draft").with_on_change_path("draft");
+        let mut driver = Driver::new_with_controlled_inputs(
+            State::new(), Box::new(input), (400, 200), Theme::dark(),
+            crate::font_catalog::fixture_renderer(), crate::permissions::UserId("fixture-user".into()),
+        );
+        driver.perform_named("draft", &crate::a11y::Action::SetValue("Draft 🦀".into())).unwrap();
+        driver.perform_named("draft", &crate::a11y::Action::SetValue(String::new())).unwrap();
+        assert_eq!(driver.access_node_named("draft", None).unwrap().value.as_deref(), Some(""));
+        driver.state_mut().undo(None, None).unwrap();
+        driver.relayout();
+        assert_eq!(driver.access_node_named("draft", None).unwrap().value.as_deref(), Some("Draft 🦀"));
     }
 
     #[test]

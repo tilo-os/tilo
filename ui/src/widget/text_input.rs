@@ -4223,7 +4223,13 @@ impl Widget for TextInput {
                 self.selection_anchor = (!self.text.is_empty()).then_some(0);
                 self.cursor_pos = self.text.len();
                 let obj = self.resolve_text_obj(state, root);
-                self.insert_str(&cleaned, state, obj.as_ref());
+                // SetValue replaces the complete value, including an empty
+                // replacement. insert_str intentionally ignores empty typing.
+                if cleaned.is_empty() {
+                    self.delete_selection(state, obj.as_ref());
+                } else {
+                    self.insert_str(&cleaned, state, obj.as_ref());
+                }
                 if obj.is_none() {
                     self.persist_first_path_edit(&previous_text, state, root);
                 }

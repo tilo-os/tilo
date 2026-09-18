@@ -1205,6 +1205,18 @@ impl NotesApp {
     ) -> Result<(), String> {
         self.drain_canonical_editor(doc);
         self.reconcile_canonical(doc)?;
+        // Direct title/create affordances use the current published contract,
+        // just like named actions. Check before any optimistic metadata edit.
+        let resource_action = match &event {
+            OutEvent::Rename { id, .. } => Some((actions::page_resource_id(*id), "rename")),
+            OutEvent::CreateChild { parent: Some(id) } => Some((actions::page_resource_id(*id), "new-child")),
+            OutEvent::CreateChild { parent: None } => Some(("notes.notebook".into(), "new-page")),
+            _ => None,
+        };
+        if let Some((resource_id, action_id)) = resource_action {
+            let resource = self.resource(doc, &resource_id).ok_or("page action resource no longer exists")?;
+            ui::ActionHost::authorize_resource_action(doc, &resource, action_id)?;
+        }
         let before = self.meta_map();
         let tree_move = matches!(event, OutEvent::Move { .. } | OutEvent::Reparent { .. });
         match event {

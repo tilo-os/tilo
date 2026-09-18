@@ -75,7 +75,7 @@ test('modifier transitions include key release and blur reset', () => {
   assert.deepEqual(modifiers({}),[false,false,false,false]);
 });
 
-test('semantic native editors forward only canonical history shortcuts', () => {
+test('semantic native editors preserve native editing outside shared application keys', () => {
   const route=hostCore.semanticKeyboardRoute;
   assert.equal(typeof route,'function');
   assert.equal(route({key:'z',metaKey:true},false,true),'forward');
@@ -97,7 +97,6 @@ test('semantic native editors forward only canonical history shortcuts', () => {
     {key:'x',metaKey:true},
     {key:'r',metaKey:true},
     {key:'Backspace'},
-    {key:'Enter'},
     {key:'é'},
   ])assert.equal(route(event,false,true),'native',event.key);
   assert.equal(route({key:'z',metaKey:true,isComposing:true},true,true),'native');
@@ -166,4 +165,12 @@ test('focused application command K reaches the shared frame palette',()=>{
   assert.equal(hostCore.keyboardRoute({key:'k',ctrlKey:true},false,false),'forward');
   assert.equal(hostCore.keyboardRoute({key:'k',metaKey:true},false,true),'forward');
   assert.equal(hostCore.keyboardRoute({key:'k',ctrlKey:true,altKey:true},false,false),'text');
+});
+
+test('semantic Enter and Shift Enter reach the application while modified and composing Enter remain native',()=>{
+  for(const mac of [false,true]){
+    assert.equal(hostCore.semanticKeyboardRoute({key:'Enter'},false,mac),'forward');
+    assert.equal(hostCore.semanticKeyboardRoute({key:'Enter',shiftKey:true},false,mac),'forward');
+    for(const extra of [{ctrlKey:true},{altKey:true},{metaKey:true},{isComposing:true}])assert.equal(hostCore.semanticKeyboardRoute({key:'Enter',...extra},false,mac),'native');
+  }
 });

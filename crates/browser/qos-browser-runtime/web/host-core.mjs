@@ -50,6 +50,7 @@ export function modifierSnapshot(event) {
 export function semanticKeyboardRoute(event,composing,mac) {
   if(keyboardRoute(event,composing,mac)!=='forward')return 'native';
   const key=String(event.key??'').toLowerCase();
+  if(key==='enter'&&!event.ctrlKey&&!event.altKey&&!event.metaKey)return 'forward';
   if(key==='k')return 'forward';
   if(mac)return key==='z'&&event.metaKey&&!event.ctrlKey&&!event.altKey?'forward':'native';
   if(!event.ctrlKey||event.metaKey||event.altKey)return 'native';
@@ -70,11 +71,13 @@ export function createKeyboardForwarder({route,dispatch,publishModifiers=()=>{},
     clearModifiers();return true;
   }
   return {
-    keydown(owner,event,composing,platformMac=mac) {
+    keydown(owner,event,composing,platformMac=mac,authorize=()=>true) {
       if(currentOwner!==owner){if(currentOwner!==undefined)release(currentOwner);currentOwner=owner;}
       publishModifiers(event);
       if(route(event,composing,platformMac)!=='forward')return false;
-      event.preventDefault();dispatch('keydown',event);forwarded.set(keyOf(event),{owner,event:releaseEvent(event)});report();return true;
+      event.preventDefault();
+      if(!authorize()){release(owner);return false;}
+      dispatch('keydown',event);forwarded.set(keyOf(event),{owner,event:releaseEvent(event)});report();return true;
     },
     keyup(owner,event) {
       const key=keyOf(event);const entry=forwarded.get(key);

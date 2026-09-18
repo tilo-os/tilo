@@ -69,3 +69,6 @@ mod canonical_views;
 
 #[path = "framework_history.rs"]
 mod framework_history;
+
+#[path = "semantic_input.rs"]
+mod semantic_input;

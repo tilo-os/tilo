@@ -1,4 +1,5 @@
 const roles={Window:'group',Group:'group',Generic:'group',Toolbar:'toolbar',TabBar:'tablist',Tab:'tab',TabPanel:'tabpanel',List:'list',ListItem:'listitem',Table:'table',Row:'row',Cell:'cell',Tree:'tree',TreeItem:'treeitem',Menu:'menu',MenuItem:'menuitem',Button:'button',ToggleButton:'button',Checkbox:'checkbox',RadioButton:'radio',Switch:'switch',Slider:'slider',SpinButton:'spinbutton',ComboBox:'combobox',TextInput:'textbox',MultilineTextInput:'textbox',Link:'link',ProgressBar:'progressbar',Spinner:'status',Tooltip:'tooltip',Image:'img',Document:'document',Paragraph:'paragraph',Dialog:'dialog'};
+const keyboardActivatable=new Set(['Tab','TreeItem','MenuItem','ToggleButton','Checkbox','RadioButton','Switch','Link','ListItem']);
 const segments=new Intl.Segmenter(undefined,{granularity:'grapheme'});
 let bridgeSequence=0;
 const graphemeIndex=(value,offset)=>[...segments.segment(value.slice(0,offset))].length;
@@ -141,12 +142,21 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     element.addEventListener('focus',()=>{
       if(!element.qosState.reconcilingFocus&&act(element,'focus'))pendingFocus={key,remainingSnapshots:1};
     });
-    element.addEventListener('click',()=>act(element,'activate'));
+    element.addEventListener('click',event=>{
+      if(event.target!==element)return;
+      event.stopPropagation();act(element,'activate');
+    });
+    if(!editable&&role!=='Button')element.addEventListener('keydown',event=>{
+      if(event.target!==element||document.activeElement!==element||!keyboardActivatable.has(element.qosRole)
+        ||event.isComposing||event.repeat||event.ctrlKey||event.altKey||event.metaKey||event.shiftKey
+        ||!['Enter',' '].includes(event.key))return;
+      event.preventDefault();event.stopPropagation();act(element,'activate');
+    });
     if(editable){
       element.addEventListener('keydown',event=>{
         const state=element.qosState;
         if(!state.active||elements.get(state.key)!==element||!element.route||state.disabled||state.readOnly||document.activeElement!==element)return;
-        shortcuts?.keydown?.(element,event,state.composing);
+        shortcuts?.keydown?.(element,event,state.composing,undefined,()=>act(element,'focus'));
       });
       element.addEventListener('keyup',event=>shortcuts?.keyup?.(element,event));
       element.addEventListener('blur',()=>shortcuts?.blur?.(element));
@@ -186,6 +196,7 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     const ownedBeforeUpdate=new Set(elements.values());
     const activeBeforeUpdate=document.activeElement;
     let canonicalFocus;
+    const focusedCandidates=[];
     // A test ID is a convenient alias only when it names one current widget.
     // Keep DOM identity separate from the route, which changes with layout paths.
     const testIds=new Map(),semanticOwners=new Map();
@@ -196,7 +207,7 @@ export function semanticBridge(root,invoke,report,shortcuts) {
       for(const child of node.children??[])countOwners(child);
     }
     countOwners(snapshot.root);
-    function semantic(node,owner,parent,index,identity){
+    function semantic(node,owner,parent,index,identity,ancestry,ownerPath){
       const key=JSON.stringify([identity,node.semantic_key??node.action_target??index]);live.add(key);
       let element=elements.get(key);
       const editable=['TextInput','MultilineTextInput'].includes(node.role);
@@ -207,11 +218,14 @@ export function semanticBridge(root,invoke,report,shortcuts) {
         element=createElement(editable,key,node.role);elements.set(key,element);
       }
       element.route={owner,target:node.action_target};
+      element.qosRole=node.role;
+      element.qosAncestors=ancestry;
+      element.qosOwnerPath=ownerPath;
       const disabled=Boolean(node.state?.disabled),readOnly=Boolean(node.state?.read_only);
       if(editable&&!element.qosState.disabled&&!element.qosState.readOnly&&(disabled||readOnly))shortcuts?.blur?.(element);
       element.qosState.disabled=disabled;
       element.qosState.readOnly=readOnly;
-      if(node.state?.focused&&!canonicalFocus)canonicalFocus=element;
+      if(node.state?.focused&&!disabled)focusedCandidates.push(element);
       if(element.parentNode!==parent)parent.append(element);
       const role=node.role&&typeof node.role==='object'?(node.role.Heading?'heading':undefined):roles[node.role];
       if(role)element.setAttribute('role',role);else element.removeAttribute('role');
@@ -243,29 +257,44 @@ export function semanticBridge(root,invoke,report,shortcuts) {
         }
       }
       else if(!node.children?.length)element.textContent=value||node.name||'';
-      (node.children??[]).forEach((child,i)=>semantic(child,owner,element,`${index}/${i}`,identity));
+      (node.children??[]).forEach((child,i)=>semantic(child,owner,element,`${index}/${i}`,identity,[...ancestry,key],ownerPath));
     }
-    function walk(node,parent){
+    function walk(node,parent,ancestry=[]){
       if(node.semantics){
         const uniqueTestId=node.test_id&&testIds.get(node.test_id)===1;
         const semanticKey=node.semantics.semantic_key;
         const identity=semanticKey&&semanticOwners.get(semanticKey)===1?['semantic',semanticKey]:uniqueTestId?['test',node.test_id]:['path',node.path];
-        semantic(node.semantics,uniqueTestId?node.test_id:node.path,parent,node.path,identity);
+        semantic(node.semantics,uniqueTestId?node.test_id:node.path,parent,node.path,identity,ancestry,node.path);
+        ancestry=[...ancestry,JSON.stringify([identity,node.semantics.semantic_key??node.semantics.action_target??node.path])];
       }
-      for(const child of node.children??[])walk(child,parent);
+      for(const child of node.children??[])walk(child,parent,ancestry);
     }
     walk(snapshot.root,root);
     for(const [key,element] of elements)if(!live.has(key)){shortcuts?.blur?.(element);element.qosState.active=false;element.route=undefined;element.remove();elements.delete(key);}
     for(const recovery of recoveries.values())syncRecovery(recovery);
-    for(const element of elements.values())element.dataset.qosFocused=String(element===canonicalFocus);
+    // Retained owners and their editable/synthetic children may both report
+    // focus. An explicitly focused descendant is the more precise contract.
+    // Apps retain local editor focus even when another app owns the keyboard.
+    // The runner's exact current inspection path disambiguates those owners.
+    const ownedCandidates=focusedCandidates.filter(element=>element.qosOwnerPath===snapshot.keyboard_focus_owner);
+    const candidates=snapshot.keyboard_focus_owner!==undefined?ownedCandidates:focusedCandidates;
+    canonicalFocus=candidates.find(candidate=>!candidates.some(other=>other.qosAncestors.includes(candidate.qosState.key)));
+
     const active=document.activeElement;
     let awaitingFocus=false;
     if(pendingFocus){
       const target=elements.get(pendingFocus.key);
-      if(canonicalFocus||target!==active||target.qosState.disabled){pendingFocus=undefined;}
-      else if(pendingFocus.remainingSnapshots>0){pendingFocus.remainingSnapshots--;awaitingFocus=true;}
+      if(!target||target!==active||target.qosState.disabled||target.qosState.readOnly){pendingFocus=undefined;}
+      else if(canonicalFocus){
+        // An owner acknowledges focus on its live synthetic leaf without
+        // claiming the leaf's DOM focus. Never extend this across owners.
+        if(target===canonicalFocus||(target.route.owner===canonicalFocus.route.owner&&target.qosAncestors.includes(canonicalFocus.qosState.key))){
+          canonicalFocus=target;pendingFocus.remainingSnapshots=0;
+        }else pendingFocus=undefined;
+      }else if(pendingFocus.remainingSnapshots>0){pendingFocus.remainingSnapshots--;awaitingFocus=true;}
       else pendingFocus=undefined;
     }
+    for(const element of elements.values())element.dataset.qosFocused=String(element===canonicalFocus);
     const focusWasManaged=ownedBeforeUpdate.has(activeBeforeUpdate);
     const focusInMount=Boolean(root.parentNode?.contains?.(active));
     const focusInRecovery=[...recoverySurfaces].some(surface=>surface.contains?.(active));
@@ -274,7 +303,7 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     }else if(canonicalFocus&&active!==canonicalFocus&&(!active||active===document.body||focusWasManaged)){
       clearActiveDescendant();
       canonicalFocus.qosState.reconcilingFocus=true;
-      try{canonicalFocus.focus();}finally{canonicalFocus.qosState.reconcilingFocus=false;}
+      try{canonicalFocus.focus({preventScroll:true});}finally{canonicalFocus.qosState.reconcilingFocus=false;}
     }else{
       clearActiveDescendant();
       if(!canonicalFocus&&!awaitingFocus&&ownedBeforeUpdate.has(active)&&active.qosState.active)active.blur?.();

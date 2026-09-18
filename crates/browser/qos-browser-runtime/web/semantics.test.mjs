@@ -8,16 +8,16 @@ class Element {
   removeAttribute(name){this.attributes.delete(name);}
   getAttribute(name){return this.attributes.get(name)??null;}
   addEventListener(name,listener){const listeners=this.listeners.get(name)??[];listeners.push(listener);this.listeners.set(name,listeners);}
-  dispatchEvent(event){event.target=this;for(const listener of this.listeners.get(event.type)??[])listener(event);return !event.defaultPrevented;}
+  dispatchEvent(event){event.target??=this;event.currentTarget=this;for(const listener of this.listeners.get(event.type)??[])listener(event);if(event.bubbles&&!event.cancelBubble)this.parentNode?.dispatchEvent(event);return !event.defaultPrevented;}
   setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}
   append(...children){for(const child of children){child.remove();this.children.push(child);child.parentNode=this;}}
   contains(node){return node===this||this.children.some(child=>child.contains(node));}
-  focus(){document.activeElement=this;this.dispatchEvent(event('focus'));}
+  focus(options){this.focusOptions=options;if(document.activeElement!==this)document.activeElement?.blur?.();document.activeElement=this;this.dispatchEvent(event('focus'));}
   blur(){if(document.activeElement===this)document.activeElement=document.body;this.dispatchEvent(event('blur'));}
   remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(child=>child!==this);this.parentNode=null;}
   replaceChildren(){for(const child of this.children)child.parentNode=null;this.children=[];}
 }
-const event=(type,extra={})=>({type,defaultPrevented:false,preventDefault(){this.defaultPrevented=true;},...extra});
+const event=(type,extra={})=>({type,bubbles:['click','keydown','keyup','input','select'].includes(type),defaultPrevented:false,cancelBubble:false,preventDefault(){this.defaultPrevented=true;},stopPropagation(){this.cancelBubble=true;},...extra});
 globalThis.document={createElement:tag=>new Element(tag),activeElement:null,body:new Element('body')};
 const snapshot=node=>({root:{path:'chat',semantics:{semantic_key:'topic',...node}}});
 test('stable semantic node removes cleared topic, role, live and focus state',()=>{
@@ -395,4 +395,101 @@ test('caller palette publishes exact result test ID and search path routes and r
   const count=calls.length;row.dispatchEvent(event('click'));
   assert.equal(calls.length,count,'revoked row cannot send a stale target into WASM');
   assert.equal(reports.at(-1).semanticResult,'stale-target');
+});
+
+
+test('synthetic leaf focus survives owner acknowledgements and reorder but obeys clear and replacement',()=>{
+  const root=new Element('div'),calls=[];document.activeElement=document.body;
+  const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{});
+  const view=(order,focused,disabled=false)=>({root:{path:'desktop',children:order.map((id,i)=>({
+    path:`desktop/group[${i}]/tabs`,test_id:'tabs',semantics:{semantic_key:`tabs:${id}`,role:'TabBar',state:{focused:id===focused,focusable:true},children:[
+      {role:'Tab',name:`Notes ${id}`,action_target:`notes:${id}`,state:{focusable:true,disabled}},
+    ]},
+  }))}});
+  bridge.update(view([10,20],undefined));const owner=root.children[0],leaf=owner.children[0];leaf.focus();
+  for(let i=0;i<3;i++)bridge.update(view([10,20],10));
+  assert.equal(document.activeElement,leaf,'focused owner acknowledges its requested synthetic leaf');
+  bridge.update(view([20,10],10));assert.equal(document.activeElement,leaf);
+  leaf.dispatchEvent(event('click'));assert.equal(calls.at(-1)[0],'desktop/group[1]/tabs');
+  bridge.update(view([20,10],20));assert.equal(document.activeElement,root.children.find(e=>e!==owner));
+  leaf.focus();bridge.update(view([20,10],10));bridge.update(view([20,10],undefined));
+  assert.equal(document.activeElement,document.body,'canonical clear retires acknowledged leaf');
+  leaf.focus();bridge.update(view([20,10],10,true));assert.notEqual(document.activeElement,leaf);
+  bridge.close();
+});
+
+test('focused retained child beats focused aggregate and reconciliation prevents scrolling',()=>{
+  const root=new Element('div');document.activeElement=document.body;
+  const bridge=semanticBridge(root,()=>true,()=>{});
+  const view={root:{path:'app',semantics:{role:'Group',state:{focused:true}},children:[{path:'app/editor',semantics:{role:'TextInput',name:'Title',state:{focused:true,focusable:true},value:'draft'}}]}};
+  bridge.update(view);const editor=root.children[1];
+  assert.equal(document.activeElement,editor);assert.deepEqual(editor.focusOptions,{preventScroll:true});
+  const outside=new Element('button');outside.focus();bridge.update(view);assert.equal(document.activeElement,outside);
+  bridge.close();
+});
+
+test('bubbling activation invokes only the target and div roles have guarded keyboard activation',()=>{
+  const root=new Element('div'),calls=[];document.activeElement=document.body;
+  const bridge=semanticBridge(root,(...args)=>{calls.push(args);return args[1]!=='close';},()=>{});
+  bridge.update(snapshot({role:'TabBar',state:{focusable:true},children:[{role:'Tab',action_target:'notes',state:{focusable:true},children:[{role:'Button',action_target:'close',state:{focusable:true}}]}]}));
+  const tab=root.children[0].children[0],close=tab.children[0];
+  close.dispatchEvent(event('click'));assert.deepEqual(calls.map(c=>c[1]),['close'],'rejected child must not activate ancestor');
+  tab.focus();calls.length=0;
+  for(const key of ['Enter',' ']){const down=event('keydown',{key});tab.dispatchEvent(down);assert.equal(down.defaultPrevented,true);}
+  assert.deepEqual(calls.map(c=>c.slice(1,3)),[['notes','activate'],['notes','activate']]);
+  for(const extra of [{isComposing:true},{ctrlKey:true},{altKey:true},{metaKey:true},{shiftKey:true},{repeat:true}])tab.dispatchEvent(event('keydown',{key:'Enter',...extra}));
+  assert.equal(calls.length,2);
+  close.focus();calls.length=0;
+  const nativeEnter=event('keydown',{key:'Enter'});close.dispatchEvent(nativeEnter);
+  assert.equal(nativeEnter.defaultPrevented,false,'native button retains native default click');
+  close.dispatchEvent(event('click'));assert.deepEqual(calls.map(c=>c[1]),['close']);
+  bridge.close();
+});
+
+test('semantic Enter forwards one shared key pair; Shift newline and IME stay single-owner',()=>{
+  const dispatched=[],calls=[];
+  const shortcuts=createKeyboardForwarder({route:semanticKeyboardRoute,dispatch:(type,e)=>dispatched.push([type,e.key,Boolean(e.shiftKey)])});
+  const root=new Element('div');document.activeElement=document.body;
+  const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{},shortcuts);
+  bridge.update(snapshot({role:'MultilineTextInput',action_target:'composer',state:{focusable:true},value:'draft'}));
+  const editor=root.children[0];editor.focus();calls.length=0;
+  for(const shiftKey of [false,true]){
+    const down=event('keydown',{key:'Enter',code:'Enter',shiftKey});editor.dispatchEvent(down);assert.equal(down.defaultPrevented,true);
+    editor.dispatchEvent(event('keyup',{key:'Enter',code:'Enter',shiftKey}));
+  }
+  editor.dispatchEvent(event('compositionstart'));
+  const composing=event('keydown',{key:'Enter',isComposing:true});editor.dispatchEvent(composing);assert.equal(composing.defaultPrevented,false);
+  assert.deepEqual(dispatched,[['keydown','Enter',false],['keyup','Enter',false],['keydown','Enter',true],['keyup','Enter',true]]);
+  assert.equal(calls.filter(c=>c[2]==='value').length,0,'no duplicate DOM insertion');
+  bridge.close();
+});
+
+test('semantic keyboard action revalidates exact focus before forwarding to a mounted app',()=>{
+  const dispatched=[];let accepted=true;
+  const shortcuts=createKeyboardForwarder({route:semanticKeyboardRoute,dispatch:(type,event)=>dispatched.push([type,event.key])});
+  const root=new Element('div');document.activeElement=document.body;
+  const bridge=semanticBridge(root,()=>accepted,()=>{},shortcuts);
+  bridge.update(snapshot({role:'MultilineTextInput',action_target:'composer',state:{focusable:true},value:'draft'}));
+  const editor=root.children[0];editor.focus();accepted=false;
+  const enter=event('keydown',{key:'Enter'});editor.dispatchEvent(enter);
+  assert.equal(enter.defaultPrevented,true,'a rejected application key cannot insert local-only text');
+  assert.deepEqual(dispatched,[],'a revoked focus route cannot send a key to a neighboring application');
+  bridge.close();
+});
+
+test('authoritative retained focus separates independent apps with locally focused editors',()=>{
+  const root=new Element('div');document.activeElement=document.body;
+  const bridge=semanticBridge(root,()=>true,()=>{});
+  const view=owner=>({keyboard_focus_owner:owner,root:{path:'desktop',children:[
+    {path:'desktop/first',semantics:{role:'MultilineTextInput',semantic_key:'first',state:{focusable:true,focused:true},value:'first'}},
+    {path:'desktop/second',semantics:{role:'TextInput',semantic_key:'second',state:{focusable:true,focused:true},value:'second'}},
+  ]}});
+  bridge.update(view('desktop/first'));
+  const [first,second]=root.children;second.focus();
+  for(let i=0;i<3;i++)bridge.update(view('desktop/second'));
+  assert.equal(document.activeElement,second,'other app local focus cannot replace acknowledged native owner');
+  bridge.update(view('desktop/first'));assert.equal(document.activeElement,first,'actual canonical owner change wins');
+  const cleared=view('desktop/first');cleared.root.children[0].semantics.state.focused=false;bridge.update(cleared);
+  assert.equal(document.activeElement,document.body,'an owner with cleared focus must not fall through to another app');
+  bridge.close();
 });
