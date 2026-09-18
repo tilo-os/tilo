@@ -1,0 +1,44 @@
+name: CI / full builder seeded runner pilot
+
+# Isolated normal-repository demand. No special runner label, node selector,
+# prewarm hook, checkout, artifact upload or production publication.
+on:
+  push:
+    branches: ["codex/ci-full-builder-seed-probe"]
+  workflow_dispatch:
+
+concurrency:
+  group: full-builder-seed-pilot
+  cancel-in-progress: true
+
+jobs:
+  native-smoke:
+    if: github.ref == 'refs/heads/codex/ci-full-builder-seed-probe'
+    runs-on: runner
+    timeout-minutes: 10
+    container:
+      image: code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Check native builder tools and compile tiny C and Rust programs
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'PILOT_NATIVE_START=%s\n' "$(date -u +%FT%TZ)"
+          test "$(uname -m)" = x86_64
+          python3 --version
+          rustc --version
+          cargo --version
+          cc --version | head -n 1
+          pkg-config --modversion wayland-client xkbcommon libudev libpipewire-0.3 fuse3
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          printf '#include <stdio.h>\nint main(void) { puts("PILOT_C_OK"); return 0; }\n' > "$work/smoke.c"
+          cc "$work/smoke.c" -o "$work/c-smoke"
+          "$work/c-smoke"
+          printf 'fn main() { println!("PILOT_RUST_OK arch={}", std::env::consts::ARCH); }\n' > "$work/smoke.rs"
+          rustc --edition=2024 "$work/smoke.rs" -o "$work/rust-smoke"
+          "$work/rust-smoke"
+          printf 'PILOT_NATIVE_FINISH=%s\n' "$(date -u +%FT%TZ)"
