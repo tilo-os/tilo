@@ -35,19 +35,21 @@ pub fn recognize_text(open: &OpenImage, language: &str) -> Result<ImageAnalysis,
         .map_err(|error| error.user_message().to_owned())?;
     let mut text = document.plain_text();
     truncate_chars(&mut text, MAX_OCR_CHARS);
+    let provenance = AnalysisProvenance {
+        source: "local-ocr".to_owned(),
+        engine: "tilo-ocr".to_owned(),
+        model_id: String::new(),
+        model_revision: String::new(),
+        language: language.to_owned(),
+        content: open.content.clone().unwrap_or_default(),
+        // This return value is intentionally local. `SetImageAnalysis`
+        // changes it to shared only at the collaborative consent boundary.
+        scope: "local".to_owned(),
+    };
     Ok(ImageAnalysis {
         ocr_text: text,
-        provenance: AnalysisProvenance {
-            source: "local-ocr".to_owned(),
-            engine: "tilo-ocr".to_owned(),
-            model_id: String::new(),
-            model_revision: String::new(),
-            language: language.to_owned(),
-            content: open.content.clone().unwrap_or_default(),
-            // This return value is intentionally local. `SetImageAnalysis`
-            // changes it to shared only at the collaborative consent boundary.
-            scope: "local".to_owned(),
-        },
+        provenance: provenance.clone(),
+        ocr_provenance: Some(provenance),
         ..ImageAnalysis::default()
     })
 }
@@ -142,6 +144,16 @@ fn image_analysis_from_vision_result(
     capability: &tilo_vision::LocalVisionCapability,
     result: tilo_vision::Analysis,
 ) -> ImageAnalysis {
+    let provenance = AnalysisProvenance {
+        source: "local-vision".to_owned(),
+        engine: "tilo-vision".to_owned(),
+        model_id: capability.model_id.clone(),
+        model_revision: capability.revision.clone(),
+        language: String::new(),
+        content: open.content.clone().unwrap_or_default(),
+        scope: "local".to_owned(),
+    };
+    let has_ocr = !result.ocr.is_empty();
     ImageAnalysis {
         ocr_text: result.ocr,
         description: result.description,
@@ -149,15 +161,9 @@ fn image_analysis_from_vision_result(
         // separate. Neither result is ever upgraded into a person identity.
         objects: result.labels,
         pets: result.pets,
-        provenance: AnalysisProvenance {
-            source: "local-vision".to_owned(),
-            engine: "tilo-vision".to_owned(),
-            model_id: capability.model_id.clone(),
-            model_revision: capability.revision.clone(),
-            language: String::new(),
-            content: open.content.clone().unwrap_or_default(),
-            scope: "local".to_owned(),
-        },
+        provenance: provenance.clone(),
+        ocr_provenance: has_ocr.then(|| provenance.clone()),
+        vision_provenance: Some(provenance),
         ..ImageAnalysis::default()
     }
 }
