@@ -594,6 +594,13 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
             kind: SemanticActionKind::Verb(Action::Focus),
         });
     }
+    if s.context_menu && !s.disabled {
+        out.push(SemanticAction {
+            name: "show-context-menu".into(),
+            label: "Show context menu".into(),
+            kind: SemanticActionKind::Verb(Action::ShowContextMenu),
+        });
+    }
     if !s.disabled
         && matches!(
             access.role,
@@ -1200,6 +1207,20 @@ mod tests {
                 .all(|action| action.name != "activate"),
             "the retained semantic tree must agree with AccessKit"
         );
+    }
+
+    #[test]
+    fn declared_context_menu_is_projected_as_a_view_action() {
+        let row = crate::a11y::AccessNode::new(Role::ListItem)
+            .with_state(AccessState::new().focusable(true).context_menu(true));
+        let action = verbs_for(&row)
+            .into_iter()
+            .find(|action| action.name == "show-context-menu")
+            .expect("declared context menus are discoverable");
+        assert!(matches!(
+            action.kind,
+            SemanticActionKind::Verb(Action::ShowContextMenu)
+        ));
     }
 
     #[test]
