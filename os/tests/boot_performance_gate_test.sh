@@ -262,6 +262,19 @@ if grep -Eq 'systemctl --global enable (tilo-models|tilo-model-gateway)\.service
 fi
 grep -Fq 'systemctl --global enable tilo-models.socket' "$repo/os/Containerfile"
 grep -Fq 'systemctl --global enable tilo-model-gateway.socket' "$repo/os/Containerfile"
+session_target="$repo/os/usr/lib/systemd/user/tilo-graphical-session.target"
+if grep -Eq '^Wants=.*tilo-(models|model-gateway|app-host)\.service' "$session_target"; then
+  echo 'socket-activated app/model daemons still start eagerly with the graphical session' >&2
+  exit 1
+fi
+grep -Fqx 'Wants=tilo-ush.service' "$session_target"
+for model_unit in tilo-models.service tilo-model-gateway.service; do
+  if grep -Eq '^(After|Wants)=.*network-online\.target' \
+      "$repo/os/usr/lib/systemd/user/$model_unit"; then
+    echo "$model_unit waits for network readiness before socket activation" >&2
+    exit 1
+  fi
+done
 if grep -Fq 'systemctl --global enable tilo-app-host.service' "$repo/os/Containerfile"; then
   echo 'app-host broker still starts eagerly at every graphical login' >&2
   exit 1
