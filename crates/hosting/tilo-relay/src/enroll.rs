@@ -413,48 +413,32 @@ fn public_identity_record(user: [u8; 32], display_name: &str) -> anyhow::Result<
     )?)
 }
 
-#[allow(dead_code)]
-fn legacy_install_personal_projection(
-    identity_root: &std::path::Path,
-    identity_dir: &std::path::Path,
-    payload: &ResponsePayload,
-) -> anyhow::Result<PathBuf> {
-    #[cfg(unix)]
-    let owner = {
-        use std::os::unix::fs::MetadataExt as _;
-        std::fs::metadata(identity_dir)
-            .or_else(|_| {
-                identity_dir
-                    .parent()
-                    .context("identity directory has no parent")
-                    .and_then(|p| std::fs::metadata(p).map_err(Into::into))
-            })
-            .map(|metadata| (metadata.uid(), metadata.gid()))?
-    };
-    let identity = payload
-        .public_identity_json
-        .as_ref()
-        .context("approval omitted the public identity")?;
-    let fleet = payload
-        .fleet_json
-        .as_ref()
-        .context("approval omitted the fleet")?;
-    let peers = payload
-        .home_peers_json
-        .as_ref()
-        .context("approval omitted home peers")?;
-    let user = payload.cert.user_public_key;
-    let id = hex::encode(user);
-    // Validate every transferred object before publishing any of it.
-    let projected: FleetProjection = serde_json::from_slice(fleet)?;
-    if projected.identity_id != id
-        || projected.schema_version != 1
+struct CheckedPersonalProjection {
+    identity: Vec<u8>,
+    fleet: Vec<u8>,
+    peers: Vec<u8>,
+    registry: Vec<u8>,
+}
+
+fn identity_record_path(identity_dir: &std::path::Path, user: [u8; 32]) -> PathBuf {
+    let prefix = hex::encode(user).chars().take(55).collect::<String>();
+    identity_dir.join(format!("identity-{prefix}.json"))
+}
+
+fn validate_personal_fleet(
+    bytes: &[u8],
+    identity_id: &str,
+    enrolled_device: [u8; 32],
+) -> anyhow::Result<()> {
+    let projected: FleetProjection = serde_json::from_slice(bytes)?;
+    if projected.schema_version != 1
+        || projected.identity_id != identity_id
         || projected.certificates.len() > 256
         || projected.revocations.len() > 256
         || !projected
             .certificates
             .iter()
-            .any(|cert| cert.device_public_key == payload.cert.device_public_key)
+            .any(|cert| cert.device_public_key == enrolled_device)
         || projected
             .certificates
             .iter()
@@ -462,12 +446,16 @@ fn legacy_install_personal_projection(
         || projected
             .revocations
             .iter()
-            .any(|item| verify_revocation_entry(item).is_err())
+            .any(|entry| verify_revocation_entry(entry).is_err())
     {
         bail!("approval returned an invalid device fleet");
     }
-    let identity_value: serde_json::Value = serde_json::from_slice(identity)?;
-    let threshold = identity_value
+    Ok(())
+}
+
+fn validate_public_identity(bytes: &[u8], user: [u8; 32]) -> anyhow::Result<()> {
+    let identity: serde_json::Value = serde_json::from_slice(bytes)?;
+    let threshold = identity
         .get("threshold_identity")
         .and_then(serde_json::Value::as_object)
         .context("approval returned an invalid public identity")?;
@@ -479,80 +467,49 @@ fn legacy_install_personal_projection(
     {
         bail!("approval returned an identity containing private or mismatched key material");
     }
-    let home_entries: Vec<HomePeerRegistration> = serde_json::from_slice(peers)?;
-    if home_entries.len() > 128
-        || home_entries.iter().any(|entry| {
-            entry.user_public_key != id
-                || entry.relay_workspace_ids.len() > 4096
-                || !tilo_relay::valid_home_peer_label(&entry.label)
-                || hex::decode(&entry.relay_service_node_id)
-                    .ok()
-                    .is_none_or(|bytes| bytes.len() != 32)
-                || !valid_relay_endpoint_hint(entry)
-                || entry.device_cert.as_ref().is_none_or(|cert| {
-                    verify_device_cert(cert).is_err()
-                        || cert.user_public_key != user
-                        || hex::encode(cert.device_public_key) != entry.device_node_id
-                })
+    Ok(())
+}
+
+fn valid_home_peer_registration(entry: &HomePeerRegistration) -> bool {
+    entry.schema_version <= HomePeerRegistration::CURRENT_SCHEMA
+        && entry.relay_workspace_ids.len() <= 4096
+        && tilo_relay::valid_home_peer_label(&entry.label)
+        && hex::decode(&entry.device_node_id)
+            .ok()
+            .is_some_and(|key| key.len() == 32)
+        && hex::decode(&entry.relay_service_node_id)
+            .ok()
+            .is_some_and(|key| key.len() == 32)
+        && hex::decode(&entry.user_public_key)
+            .ok()
+            .is_some_and(|key| key.len() == 32)
+        && valid_relay_endpoint_hint(entry)
+        && entry.device_cert.as_ref().is_some_and(|cert| {
+            verify_device_cert(cert).is_ok()
+                && hex::encode(cert.device_public_key) == entry.device_node_id
+                && hex::encode(cert.user_public_key) == entry.user_public_key
         })
-    {
-        bail!("approval returned an invalid home-peer registry");
+}
+
+fn read_bounded_json<T>(path: &std::path::Path, description: &str) -> anyhow::Result<Option<T>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.len() <= 1024 * 1024 => serde_json::from_slice(&bytes)
+            .with_context(|| format!("{description} is invalid"))
+            .map(Some),
+        Ok(_) => bail!("{description} exceeds 1 MiB"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
     }
-    std::fs::create_dir_all(identity_dir)?;
-    let record_path = identity_dir.join(format!("identity-{}.json", &id[..55]));
-    atomic_file::write_with_mode(&record_path, identity, 0o600)?;
-    let registry_path = identity_dir.join("registry.json");
-    let mut registry = std::fs::read(&registry_path)
-        .ok()
-        .filter(|bytes| bytes.len() <= 1024 * 1024)
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .unwrap_or_else(|| {
-            serde_json::json!({
-                "schema_version": 1,
-                "default_identity": id,
-                "identities": {},
-                "workspace_identities": {}
-            })
-        });
-    registry["default_identity"] = serde_json::json!(id);
-    registry["identities"][&id] = serde_json::json!({
-        "id": id,
-        "display_name": "My Tilo identity",
-        "record_path": record_path,
-        "user_public_key": user
-    });
-    atomic_file::write_with_mode(
-        &registry_path,
-        &serde_json::to_vec_pretty(&registry)?,
-        0o600,
-    )?;
-    atomic_file::write_creating_parent(&fleet_path(identity_dir, user), fleet)?;
-    atomic_file::write_with_mode(&identity_root.join("home-peers.json"), peers, 0o644)?;
-    #[cfg(unix)]
-    for path in [
-        identity_dir.to_path_buf(),
-        identity_dir.join("fleets"),
-        record_path.clone(),
-        registry_path,
-        fleet_path(identity_dir, user),
-        identity_root.join("home-peers.json"),
-    ] {
-        use std::os::unix::ffi::OsStrExt as _;
-        let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
-        // SAFETY: `path` is a live NUL-terminated string and uid/gid came
-        // from the user's pre-existing identity directory (or its parent).
-        if unsafe { libc::chown(path.as_ptr(), owner.0, owner.1) } != 0 {
-            return Err(std::io::Error::last_os_error()).context("restore identity file ownership");
-        }
-    }
-    Ok(record_path)
 }
 
 fn checked_personal_projection(
     identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
     payload: &ResponsePayload,
-) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
+) -> anyhow::Result<CheckedPersonalProjection> {
     let identity = payload
         .public_identity_json
         .as_ref()
@@ -566,127 +523,77 @@ fn checked_personal_projection(
         .as_ref()
         .context("approval omitted home peers")?;
     let user = payload.cert.user_public_key;
-    let id = hex::encode(user);
-    let projected: FleetProjection = serde_json::from_slice(fleet)?;
-    if projected.schema_version != 1
-        || projected.identity_id != id
-        || projected.certificates.len() > 256
-        || projected.revocations.len() > 256
-        || !projected
-            .certificates
-            .iter()
-            .any(|cert| cert.device_public_key == payload.cert.device_public_key)
-        || projected
-            .certificates
-            .iter()
-            .any(|cert| verify_device_cert(cert).is_err())
-        || projected
-            .revocations
-            .iter()
-            .any(|entry| verify_revocation_entry(entry).is_err())
-    {
-        bail!("approval returned an invalid device fleet");
-    }
-    let identity_value: serde_json::Value = serde_json::from_slice(identity)?;
-    let threshold = identity_value
-        .get("threshold_identity")
-        .and_then(serde_json::Value::as_object)
-        .context("approval returned an invalid public identity")?;
-    if threshold.get("group_public_key") != Some(&serde_json::json!(user))
-        || threshold
-            .get("secret_bytes")
-            .is_some_and(|secret| secret != &serde_json::json!([]))
-        || threshold.get("single_device") != Some(&serde_json::json!(false))
-    {
-        bail!("approval returned an identity containing private or mismatched key material");
-    }
+    let identity_id = hex::encode(user);
+
+    validate_personal_fleet(fleet, &identity_id, payload.cert.device_public_key)?;
+    validate_public_identity(identity, user)?;
+
     let incoming: Vec<HomePeerRegistration> = serde_json::from_slice(transferred_peers)?;
     if incoming.len() > 128
         || incoming.iter().any(|entry| {
-            entry.user_public_key != id
-                || entry.relay_workspace_ids.len() > 4096
-                || !tilo_relay::valid_home_peer_label(&entry.label)
-                || hex::decode(&entry.device_node_id)
-                    .ok()
-                    .is_none_or(|key| key.len() != 32)
-                || hex::decode(&entry.relay_service_node_id)
-                    .ok()
-                    .is_none_or(|key| key.len() != 32)
-                || !valid_relay_endpoint_hint(entry)
-                || entry.device_cert.as_ref().is_none_or(|cert| {
-                    verify_device_cert(cert).is_err()
-                        || cert.user_public_key != user
-                        || hex::encode(cert.device_public_key) != entry.device_node_id
-                })
+            entry.user_public_key != identity_id || !valid_home_peer_registration(entry)
         })
     {
         bail!("approval returned an invalid home-peer registry");
     }
+
     let registry_path = identity_dir.join("registry.json");
-    let mut registry = match std::fs::read(&registry_path) {
-        Ok(bytes) if bytes.len() <= 1024 * 1024 => {
-            serde_json::from_slice::<serde_json::Value>(&bytes)
-                .context("existing identity registry is invalid")?
-        }
-        Ok(_) => bail!("existing identity registry exceeds 1 MiB"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({
-            "schema_version": 1,
-            "default_identity": id,
-            "identities": {},
-            "workspace_identities": {}
-        }),
-        Err(error) => return Err(error.into()),
-    };
-    if !registry.is_object()
-        || !registry["identities"].is_object()
-        || !registry["workspace_identities"].is_object()
-    {
+    let mut registry: serde_json::Value =
+        read_bounded_json(&registry_path, "existing identity registry")?.unwrap_or_else(|| {
+            serde_json::json!({
+                "schema_version": 1,
+                "default_identity": identity_id,
+                "identities": {},
+                "workspace_identities": {}
+            })
+        });
+    let valid_registry = registry.as_object().is_some_and(|root| {
+        root.get("identities")
+            .is_some_and(serde_json::Value::is_object)
+            && root
+                .get("workspace_identities")
+                .is_some_and(serde_json::Value::is_object)
+    });
+    if !valid_registry {
         bail!("existing identity registry has an invalid schema");
     }
-    let record_path = identity_dir.join(format!("identity-{}.json", &id[..55]));
-    registry["default_identity"] = serde_json::json!(id);
-    registry["identities"][&id] = serde_json::json!({
-        "id": id,
-        "display_name": "My Tilo identity",
-        "record_path": record_path,
-        "user_public_key": user
-    });
+
+    let record_path = identity_record_path(identity_dir, user);
+    let registry_root = registry
+        .as_object_mut()
+        .context("existing identity registry has an invalid schema")?;
+    registry_root.insert(
+        "default_identity".into(),
+        serde_json::Value::String(identity_id.clone()),
+    );
+    registry_root
+        .get_mut("identities")
+        .and_then(serde_json::Value::as_object_mut)
+        .context("existing identity registry has an invalid identities map")?
+        .insert(
+            identity_id.clone(),
+            serde_json::json!({
+                "id": identity_id,
+                "display_name": "My Tilo identity",
+                "record_path": record_path,
+                "user_public_key": user
+            }),
+        );
+
     let peers_path = identity_root.join("home-peers.json");
-    let mut existing: Vec<HomePeerRegistration> = match std::fs::read(&peers_path) {
-        Ok(bytes) if bytes.len() <= 1024 * 1024 => {
-            serde_json::from_slice(&bytes).context("existing home-peer registry is invalid")?
-        }
-        Ok(_) => bail!("existing home-peer registry exceeds 1 MiB"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error.into()),
-    };
+    let mut existing: Vec<HomePeerRegistration> =
+        read_bounded_json(&peers_path, "existing home-peer registry")?.unwrap_or_default();
     if existing.len() > 128
-        || existing.iter().any(|entry| {
-            entry.schema_version > HomePeerRegistration::CURRENT_SCHEMA
-                || entry.relay_workspace_ids.len() > 4096
-                || !tilo_relay::valid_home_peer_label(&entry.label)
-                || hex::decode(&entry.device_node_id)
-                    .ok()
-                    .is_none_or(|key| key.len() != 32)
-                || hex::decode(&entry.relay_service_node_id)
-                    .ok()
-                    .is_none_or(|key| key.len() != 32)
-                || hex::decode(&entry.user_public_key)
-                    .ok()
-                    .is_none_or(|key| key.len() != 32)
-                || !valid_relay_endpoint_hint(entry)
-                || entry.device_cert.as_ref().is_none_or(|cert| {
-                    verify_device_cert(cert).is_err()
-                        || hex::encode(cert.device_public_key) != entry.device_node_id
-                        || hex::encode(cert.user_public_key) != entry.user_public_key
-                })
-        })
+        || existing
+            .iter()
+            .any(|entry| !valid_home_peer_registration(entry))
     {
         bail!("existing home-peer registry violates its bounded verified schema");
     }
+
     // A response projects routes for one identity. Do not use it as a global
     // snapshot and erase other identities' independently verified routes.
-    existing.retain(|entry| entry.user_public_key != id);
+    existing.retain(|entry| entry.user_public_key != identity_id);
     existing.extend(incoming);
     if existing.len() > 128 {
         bail!("merged home-peer registry is full");
@@ -696,12 +603,13 @@ fn checked_personal_projection(
             .cmp(&right.user_public_key)
             .then_with(|| left.device_node_id.cmp(&right.device_node_id))
     });
-    Ok((
-        identity.clone(),
-        fleet.clone(),
-        serde_json::to_vec_pretty(&existing)?,
-        serde_json::to_vec_pretty(&registry)?,
-    ))
+
+    Ok(CheckedPersonalProjection {
+        identity: identity.clone(),
+        fleet: fleet.clone(),
+        peers: serde_json::to_vec_pretty(&existing)?,
+        registry: serde_json::to_vec_pretty(&registry)?,
+    })
 }
 
 fn stage_personal_enrollment(
@@ -711,8 +619,7 @@ fn stage_personal_enrollment(
     payload: &ResponsePayload,
     requester_lease: Option<tilo_relay::ProcessLease>,
 ) -> anyhow::Result<(PathBuf, PersonalEnrollmentMarker)> {
-    let (identity, fleet, peers, registry) =
-        checked_personal_projection(identity_root, identity_dir, payload)?;
+    let projection = checked_personal_projection(identity_root, identity_dir, payload)?;
     let stage_name = format!(
         "personal-{}-{}",
         hex::encode(payload.nonce),
@@ -721,10 +628,22 @@ fn stage_personal_enrollment(
     let stage_dir = enrollment_stage_dir(identity_root).join(&stage_name);
     std::fs::create_dir_all(&stage_dir)?;
     let cert = tilo_user_identity::canonical::canonical_bytes(&payload.cert)?;
-    atomic_file::write_with_mode(&staged(&stage_dir, "record.json"), &identity, 0o600)?;
-    atomic_file::write_with_mode(&staged(&stage_dir, "registry.json"), &registry, 0o600)?;
-    atomic_file::write(&staged(&stage_dir, "fleet.json"), &fleet)?;
-    atomic_file::write_with_mode(&staged(&stage_dir, "home-peers.json"), &peers, 0o644)?;
+    atomic_file::write_with_mode(
+        &staged(&stage_dir, "record.json"),
+        &projection.identity,
+        0o600,
+    )?;
+    atomic_file::write_with_mode(
+        &staged(&stage_dir, "registry.json"),
+        &projection.registry,
+        0o600,
+    )?;
+    atomic_file::write(&staged(&stage_dir, "fleet.json"), &projection.fleet)?;
+    atomic_file::write_with_mode(
+        &staged(&stage_dir, "home-peers.json"),
+        &projection.peers,
+        0o644,
+    )?;
     atomic_file::write(
         &staged(&stage_dir, "user-pubkey.bin"),
         &payload.cert.user_public_key,
@@ -800,10 +719,7 @@ fn commit_staged_personal_enrollment(
     // that died while approval was in flight causes no publication mutation.
     checkpoint(PersonalCommitCheckpoint::Record)?;
     std::fs::create_dir_all(&marker.identity_dir)?;
-    let record = marker.identity_dir.join(format!(
-        "identity-{}.json",
-        &hex::encode(marker.user_public_key)[..55]
-    ));
+    let record = identity_record_path(&marker.identity_dir, marker.user_public_key);
     let fleet = fleet_path(&marker.identity_dir, marker.user_public_key);
     atomic_file::write_with_mode(
         &record,
@@ -896,7 +812,7 @@ fn recover_personal_enrollments(
     Ok(())
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn install_personal_projection(
     identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
@@ -2626,6 +2542,40 @@ mod tests {
     }
 
     #[test]
+    fn home_peer_projection_rejects_future_schemas_and_forged_device_ids() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Verified home peer".into(),
+            capabilities: DeviceCapabilities::host(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        let mut registration = HomePeerRegistration {
+            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
+            device_node_id: hex::encode(cert.device_public_key),
+            relay_service_node_id: hex::encode([83; 32]),
+            relay_endpoint: None,
+            label: cert.device_label.clone(),
+            user_public_key: hex::encode(cert.user_public_key),
+            device_cert: Some(cert),
+            relay_workspace_ids: vec![7],
+        };
+        assert!(valid_home_peer_registration(&registration));
+
+        registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA.saturating_add(1);
+        assert!(!valid_home_peer_registration(&registration));
+
+        registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA;
+        registration.device_node_id = hex::encode([84; 32]);
+        assert!(!valid_home_peer_registration(&registration));
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)]
     fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         let approver_root = tempfile::tempdir().unwrap();
@@ -2740,10 +2690,7 @@ mod tests {
         assert!(peers[0].relay_workspace_ids.contains(
             &tilo_relay::personal_continuity_workspace_id(&root.verifying_key().to_bytes())
         ));
-        let record = new_identities.path().join(format!(
-            "identity-{}.json",
-            &hex::encode(root.verifying_key().to_bytes())[..55]
-        ));
+        let record = identity_record_path(new_identities.path(), root.verifying_key().to_bytes());
         let identity = runtime_identity::load_from_path(record).unwrap();
         assert!(
             identity
