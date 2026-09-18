@@ -1,12 +1,41 @@
 """Execute the real check workflow's aggregate, including intentional skips."""
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
-from test_ci_workflow_tiers import section, step_script
+
+def section(text, name, indent):
+    """Read a uniquely named mapping at a known indentation; reject ambiguity."""
+    matches = list(re.finditer(rf"(?m)^{' ' * indent}{re.escape(name)}:\s*\n", text))
+    if len(matches) != 1:
+        raise AssertionError(f"expected one {name} mapping, got {len(matches)}")
+    result = []
+    for line in text[matches[0].end():].splitlines():
+        if line.strip() and not line.lstrip().startswith("#") and len(line) - len(line.lstrip()) <= indent:
+            break
+        result.append(line)
+    return "\n".join(result)
+
+
+def step_script(text, step_id):
+    """Extract the production block script, failing on unsupported layouts."""
+    marker = f"        id: {step_id}\n"
+    if text.count(marker) != 1:
+        raise AssertionError(f"expected one step {step_id}")
+    block = text.split(marker)[1].split("\n      - ")[0]
+    if "        run: |\n" not in block:
+        raise AssertionError(f"step {step_id} must use a block script")
+    script = []
+    for line in block.split("        run: |\n", 1)[1].splitlines():
+        if line.strip() and not line.startswith("          "):
+            break
+        script.append(line)
+    return textwrap.dedent("\n".join(script)).rstrip() + "\n"
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -73,7 +102,6 @@ class CheckAggregateTests(unittest.TestCase):
         script = step_script(self.workflow, "plan")
         # Execute the production pipeline with failing selector and benign git.
         # This catches a missing pipefail even when tee exits successfully.
-        import re
         script = re.sub(r"\$\{\{.*?\}\}", "", script)
         prefix = "git() { echo fixture-base; }; python3() { return 37; }; export -f git python3;\n"
         with tempfile.TemporaryDirectory() as directory:
