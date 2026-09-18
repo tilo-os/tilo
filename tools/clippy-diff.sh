@@ -74,29 +74,16 @@ while [ "$index" -lt "${#head_args[@]}" ]; do
     index=$((index + 1))
 done
 
-target_dir=${CARGO_TARGET_DIR:-$root/target}
-base_target_dir="$target_dir/clippy-diff/$base/base"
-head_target_dir="$target_dir/clippy-diff/$base/head"
-
-cleanup_builds() {
-    # A comparison compiles two complete dependency graphs.  Keeping both
-    # graphs until process exit doubles peak disk use, and leaked graphs from
-    # interrupted CI runs eventually make an otherwise clean Clippy compile
-    # fail without a diagnostic.  Each graph is disposable once its JSON has
-    # been captured.
-    rm -rf "$base_target_dir" "$head_target_dir"
-}
-
-# Clean the scratch worktree and build directories. Paths are rooted below
-# Cargo's target directory and include the exact comparison revision.
-trap 'cleanup_builds; cleanup' EXIT
+# Each checkout owns Cargo's default target directory. An explicit
+# CARGO_TARGET_DIR changes sccache keys even when it names the default path.
+# Never share artifact graphs between the detached base and the working tree.
+unset CARGO_TARGET_DIR
 
 run_clippy() {
     local tree=$1
     local output=$2
     local errors=$3
-    local build_dir=$4
-    shift 4
+    shift 3
     (
         cd "$tree" || exit 2
         # Cargo package IDs do not encode a checkout's source revision. Sharing
@@ -105,7 +92,7 @@ run_clippy() {
         # producing bogus missing-item compiler errors instead of a lint diff.
         # Keep artifact graphs separate; sccache still reuses identical compiler
         # work across the two directories.
-        CARGO_TARGET_DIR="$build_dir" cargo clippy --locked --all-targets "$@" \
+        cargo clippy --locked --all-targets "$@" \
             --message-format=json -- --cap-lints warn >"$output" 2>"$errors"
     )
 }
@@ -146,37 +133,33 @@ raise SystemExit(1)
 PY
 }
 
-if ! run_clippy "$root" "$head_json" "$head_stderr" "$head_target_dir" "${head_args[@]}"; then
+if ! run_clippy "$root" "$head_json" "$head_stderr" "${head_args[@]}"; then
     if has_compiler_errors "$head_json"; then
         echo "HEAD did not compile under Clippy." >&2
         print_compiler_errors "$head_json"
         tail -160 "$head_stderr" >&2
         exit 1
     fi
-    echo "HEAD Clippy exited without a compiler diagnostic; rebuilding its disposable graph once without compiler-cache hits." >&2
+    echo "HEAD Clippy exited without a compiler diagnostic; retrying failed compilation once without compiler-cache hits." >&2
     tail -80 "$head_stderr" >&2
-    rm -rf "$head_target_dir"
-    if ! SCCACHE_RECACHE=1 run_clippy "$root" "$head_json" "$head_stderr" "$head_target_dir" "${head_args[@]}"; then
+    if ! SCCACHE_RECACHE=1 run_clippy "$root" "$head_json" "$head_stderr" "${head_args[@]}"; then
         echo "HEAD did not compile under Clippy after the cache-bypassing retry." >&2
         print_compiler_errors "$head_json"
         tail -160 "$head_stderr" >&2
         exit 1
     fi
 fi
-# The captured JSON is the only HEAD artifact needed for comparison.
-rm -rf "$head_target_dir"
+# Preserve the working tree target for subsequent checks and local development.
 
 base_compiled=true
 if [ "$base_package_count" -gt 0 ]; then
-    if ! run_clippy "$base_tree" "$base_json" "$base_stderr" "$base_target_dir" "${base_args[@]}"; then
+    if ! run_clippy "$base_tree" "$base_json" "$base_stderr" "${base_args[@]}"; then
         base_compiled=false
         echo "Clippy comparison base did not compile; using its partial diagnostic baseline." >&2
         print_compiler_errors "$base_json"
         sed -n '1,160p' "$base_stderr" >&2
     fi
-    # Both diagnostic sets are self-contained JSON. Reclaim the remaining base
-    # graph before comparing them; the HEAD graph was already removed above.
-    rm -rf "$base_target_dir"
+    # The EXIT trap removes only the disposable base worktree and its target.
 else
     : >"$base_json"
 fi
