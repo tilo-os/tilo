@@ -322,6 +322,7 @@ fn compile(
             required_accelerator_mib: model.required_accelerator_mib,
             context_window: model.context_window,
             vision: model.vision,
+            face_recognition: model.face_recognition,
         };
         release
             .artifact

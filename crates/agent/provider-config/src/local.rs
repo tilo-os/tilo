@@ -138,6 +138,10 @@ pub struct LocalModelRelease {
     /// this based on a model id or a manual label.
     #[serde(default)]
     pub vision: bool,
+    /// Signed declaration for the dedicated local Photos face protocol.
+    /// Generic vision labels/descriptions never imply this capability.
+    #[serde(default)]
+    pub face_recognition: bool,
 }
 
 /// Catalogs are supplied by a signed/pinned desktop update channel. They are

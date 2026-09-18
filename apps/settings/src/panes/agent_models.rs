@@ -473,6 +473,7 @@ fn synced_local_profile(
             context_window: None,
             revision: Some(model.package.revision.clone()),
             vision: model.package.vision,
+            face_recognition: model.package.face_recognition,
             tool_calling: true,
         })
         .collect();

@@ -36,6 +36,52 @@ pub struct LocalVisionCapability {
     pub revision: String,
 }
 
+/// A separately signed capability for face detection, embedding and local
+/// clustering. It is never inferred from [`LocalVisionCapability`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalFaceCapability {
+    pub profile_id: String,
+    pub model_id: String,
+    pub model_label: String,
+    pub revision: String,
+}
+
+/// Fixed Photos-only gateway request. The preview is bounded by
+/// [`PreparedImage`]; embeddings/geometry stay in the loopback runtime and
+/// are returned only as opaque local cluster membership there.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaceClusterRequest {
+    pub operation: String,
+    pub source_content_hash: String,
+}
+
+/// Discover only an explicitly declared, revision-pinned, loopback face
+/// model. A generic vision model cannot enter this path.
+#[must_use]
+pub fn discover_local_face_capability(config: &ProviderConfig) -> Option<LocalFaceCapability> {
+    let profile = config.active_profile()?;
+    if !profile.enabled
+        || profile.location != EndpointLocation::ThisDevice
+        || profile.protocol != ProviderProtocol::OpenAiCompatible
+        || !loopback_endpoint(&profile.endpoint)
+    {
+        return None;
+    }
+    let model_id = profile.default_model.as_ref()?;
+    let model = profile.models.iter().find(|model| &model.id == model_id)?;
+    let revision = model.revision.as_ref()?.trim();
+    if !model.face_recognition || !pinned_revision(revision) {
+        return None;
+    }
+    Some(LocalFaceCapability {
+        profile_id: profile.id.clone(),
+        model_id: model.id.clone(),
+        model_label: model.display_label().to_owned(),
+        revision: revision.to_owned(),
+    })
+}
+
 /// A downscaled JPEG ready for the authenticated model-gateway boundary.
 /// `source_content_hash` always identifies the original source bytes, never
 /// the temporary preview.
@@ -314,6 +360,7 @@ mod tests {
             context_window: Some(8_192),
             revision: Some("a".repeat(40)),
             vision,
+            face_recognition: false,
             tool_calling: false,
         }];
         ProviderConfig {
