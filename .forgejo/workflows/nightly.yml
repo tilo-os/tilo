@@ -65,6 +65,7 @@ jobs:
 
       - name: Prepare runtime and cache metrics
         run: |
+          command -v openssl >/dev/null || dnf install -y openssl
           test -r "$VK_DRIVER_FILES"
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
