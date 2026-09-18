@@ -38,8 +38,12 @@ def trusted(path, *, private=False, directory=False):
 
 def run(argv, *, pass_fds=()):
     # Never expose private-key contents or potentially sensitive tool diagnostics.
-    result = subprocess.run(argv, pass_fds=pass_fds, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, env={'PATH': '/usr/bin:/bin', 'LANG': 'C'})
+    try:
+        result = subprocess.run(argv, pass_fds=pass_fds, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=120,
+                                env={'PATH': '/usr/bin:/bin', 'LANG': 'C'})
+    except subprocess.TimeoutExpired:
+        raise ValueError('trusted signing tool timed out') from None
     if result.returncode:
         raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
     return result.stdout
@@ -100,7 +104,10 @@ def sign(home, operation, source, destination):
             if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 1024 * 1024 * 1024:
                 raise ValueError('signing input must be a bounded nonempty regular file')
             source_fd = f'/proc/self/fd/{descriptor}'
-            with tempfile.TemporaryDirectory(prefix='operation-', dir=home) as temporary:
+            # Private keys can stay on a read-only mount. The already-root caller
+            # supplies the trusted system temporary parent; no key is copied here.
+            scratch_parent = trusted(Path('/var/lib'), directory=True)
+            with tempfile.TemporaryDirectory(prefix='tilo-signing-', dir=scratch_parent) as temporary:
                 signed = Path(temporary) / 'signed'
                 if operation == 'sign-efi':
                     key = trusted(home / 'efi-signing.key', private=True)
