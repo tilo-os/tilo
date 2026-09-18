@@ -340,6 +340,19 @@ cargo test --locked -p git-client --all-targets
 ./tools/install-windows-apps.ps1 -Apps git-client
 ```
 
+Feeds runs natively on Windows with asynchronous feed fetching, persisted
+subscriptions and article state, and the native OPML import picker. Article links
+use the Windows default application through ShellExecute; local file and script
+URLs are rejected. The shared subscription dialog exposes its real text input and
+footer actions to Windows accessibility. OPML export currently writes
+`feeds-subscriptions.opml` in the temporary directory shown by its confirmation,
+rather than presenting a save picker.
+
+```powershell
+cargo test --locked -p feeds --all-targets
+./tools/install-windows-apps.ps1 -Apps feeds
+```
+
 Unchanged shared fonts are preserved during installation, so a running Tilo app
 does not prevent installing another app. If font contents change, close running
 Tilo apps before installing the update.

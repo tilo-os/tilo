@@ -1,0 +1,3 @@
+feeds-open-link-invalid = Dieser Artikellink kann nicht geöffnet werden. Nur Web-, Gemini- und E-Mail-Links werden unterstützt.
+feeds-open-link-started = Link wird in der Standard-App geöffnet…
+feeds-open-link-failed = Der Link konnte nicht geöffnet werden
