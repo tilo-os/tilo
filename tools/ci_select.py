@@ -20,6 +20,16 @@ from typing import Iterable
 
 
 ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc"}
+# Audited developer/CI prose, not compiled documentation or runtime contracts.
+# Keep this explicit: ui/CHARTS.md is included by Rust, docs/app-development.md
+# is inspected by tilo-dev, and docs/packaging.md is a packaging contract input.
+# Security, layout and workflow policy checks remain mandatory outside Rust.
+NON_COMPILING_DOCS = {
+    "AGENTS.md",
+    "DEVELOPMENT.md",
+    "docs/ci-performance.md",
+    "docs/ci-emergency-relief.md",
+}
 NATIVE_RUNNERS = {"x86_64": "runner", "aarch64": "runner-arm64"}
 GLOBAL_FILES = {
     "Cargo.toml",
@@ -182,15 +192,16 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, 
         path.startswith(workspace_source_roots) and owner_for(path, by_dir) is None
         for path in changes
     )
-    # Only design prose is explicitly non-compiling. Other docs can contain
+    # Only audited developer/CI and design prose is non-compiling. Other docs can contain
     # generated contracts, fixtures or embedded Rust inputs and retain coverage.
-    design_only = bool(changes) and all(
-        path.startswith("docs/designs/") and path.endswith(".md")
-        and ".." not in Path(path).parts for path in changes
+    prose_only = bool(changes) and all(
+        path in NON_COMPILING_DOCS or (
+            path.startswith("docs/designs/") and path.endswith(".md")
+            and ".." not in Path(path).parts) for path in changes
     )
-    if design_only and not force_full:
+    if prose_only and not force_full:
         selected = set()
-        reason = "design prose only; Rust checks not applicable"
+        reason = "audited developer/CI or design prose only; Rust checks not applicable"
         full = False
     elif force_full or global_change or unmapped_workspace_change:
         selected = set(packages)
