@@ -1719,6 +1719,7 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
             NamedKeyTag::PageUp => NamedKey::PageUp,
             NamedKeyTag::PageDown => NamedKey::PageDown,
             NamedKeyTag::F1 => NamedKey::F1,
+            NamedKeyTag::F4 => NamedKey::F4,
             NamedKeyTag::PrintScreen => NamedKey::PrintScreen,
             NamedKeyTag::Space => NamedKey::Space,
             NamedKeyTag::Shift => NamedKey::Shift,

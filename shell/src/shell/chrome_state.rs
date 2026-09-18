@@ -415,6 +415,15 @@ impl QuickSettingsState {
         self.nav_stack.push(level);
     }
 
+    /// Replace stale drill-in history with one authoritative destination.
+    pub fn show_level(&mut self, level: QsLevel) {
+        self.nav_stack.clear();
+        self.nav_stack.push(QsLevel::Root);
+        if level != QsLevel::Root {
+            self.nav_stack.push(level);
+        }
+    }
+
     /// No-op when only `Root` remains so the popover can't be emptied.
     pub fn pop_level(&mut self) {
         if self.nav_stack.len() > 1 {
@@ -963,8 +972,15 @@ impl ChromeState {
     /// Reveal Quick Settings without toggle semantics, for deep links such as
     /// media use and command search.
     pub fn open_quick_settings(&mut self) {
+        self.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Root);
+    }
+
+    /// Reveal one Quick Settings destination without retaining an unrelated
+    /// prior drill-in stack.
+    pub fn open_quick_settings_level(&mut self, level: crate::shell::quick_settings::QsLevel) {
         self.overlays.quick_settings = true;
         self.overlays.ws_settings = false;
+        self.quick_settings.show_level(level);
         self.bump();
     }
 
@@ -1908,6 +1924,25 @@ mod panel_exclusion_tests {
         state.toggle_workspace_settings();
         assert!(state.overlays.ws_settings);
         assert!(!state.overlays.quick_settings);
+    }
+
+    #[test]
+    fn quick_settings_deep_link_replaces_stale_navigation_history() {
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let mut state = chrome.borrow_mut();
+        state.quick_settings.push_level(QsLevel::Wifi);
+        state
+            .quick_settings
+            .push_level(QsLevel::WifiDetails("Cafe".into()));
+
+        state.open_quick_settings_level(QsLevel::Devices);
+
+        assert_eq!(
+            state.quick_settings.nav_stack,
+            vec![QsLevel::Root, QsLevel::Devices]
+        );
+        assert!(state.overlays.quick_settings);
+        assert!(!state.overlays.ws_settings);
     }
 }
 
