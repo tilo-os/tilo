@@ -36,6 +36,7 @@ pub mod favorites;
 pub mod fileops;
 pub mod files_app;
 pub mod history_control;
+mod history_panel;
 pub mod i18n;
 pub mod identity_directory;
 mod metadata_refresh;
