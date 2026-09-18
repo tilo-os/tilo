@@ -5,7 +5,7 @@ Rust library names and imports use underscores (`code_editor`).
 
 
 Every app here is a native Tilo application built on the public
-[`tilo-app`](../crates/app/tilo-app) SDK (normally renamed to `ui` in Cargo).
+[`tilo-app`](../crates/sdk/tilo-app) SDK (normally renamed to `ui` in Cargo).
 `tilo-app` re-exports the complete retained-widget, layout, canvas,
 custom-painting, native-view and GPU API. The internal [`ui-core`](../ui) package
 is a dependency of the shell and SDK; apps use `tilo-app`.
@@ -227,6 +227,6 @@ cargo run -p notes -- --shots out.png        # headless offscreen frame
 ```
 
 Each app depends on the public SDK under the concise source name
-`ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }`. Direct
+`ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }`. Direct
 dependencies on the internal `ui` package are reserved for framework code and
 are rejected at the app boundary.
