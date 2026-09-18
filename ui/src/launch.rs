@@ -588,7 +588,12 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
                 let app = Box::new((*app).with_startup_renderer(renderer));
                 (*app).run();
             }
-            DefinitionDispatch::Headless(status) => std::process::exit(status),
+            DefinitionDispatch::Headless(status) => {
+                // process::exit skips the ScopedDumper in run().
+                tilo_startup_metrics::mark("headless-exit");
+                tilo_startup_metrics::dump();
+                std::process::exit(status);
+            }
             DefinitionDispatch::Rendered(mut driver) => {
                 if let Some(out) = &args.shots {
                     driver.prepare_component_output();
@@ -662,7 +667,11 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     }
 
     if let Some(headless) = &args.headless {
-        std::process::exit(headless::run(headless, spec.live_root(&args)?, spec.app_id));
+        let status = headless::run(headless, spec.live_root(&args)?, spec.app_id);
+        // process::exit skips the ScopedDumper in run().
+        tilo_startup_metrics::mark("headless-exit");
+        tilo_startup_metrics::dump();
+        std::process::exit(status);
     }
 
     if args.native_audit {
@@ -1580,6 +1589,123 @@ mod prepared_launch_tests {
             runner_inputs: runner_inputs(),
         })
     }
+    fn run_metrics_exit_child(case: &str) -> ! {
+        let root = PathBuf::from(std::env::var_os("TILO_METRICS_EXIT_TEST_ROOT").unwrap());
+        let prepared = case.starts_with("prepared");
+        let failing = case.ends_with("failure");
+        let spec = if prepared {
+            LaunchSpec::from_definition(runner_probe_definition())
+                .component_host(prepare)
+                .allowed_live_options(&["--fixture-root"])
+        } else {
+            LaunchSpec::new("dev.tilo.metrics-fixture", || {
+                Box::new(crate::widget::Button::new(
+                    "metrics-button",
+                    "Metrics",
+                    None,
+                ))
+            })
+        };
+        let actions = if failing {
+            serde_json::json!([{ "click_named": "missing-metrics-target" }])
+        } else {
+            serde_json::json!([])
+        };
+        let payload = serde_json::json!({
+            "actions": actions,
+            "dump": root.join("document.json"),
+        });
+        let mut args = vec!["app".into(), "--headless-drive".into(), payload.to_string()];
+        if prepared {
+            args.extend([
+                "--fixture-root".into(),
+                root.join("records").to_string_lossy().into_owned(),
+            ]);
+        }
+        // Same collector and guard as run(); libtest owns process arguments,
+        // so pass the fixture's CLI arguments to the real dispatch directly.
+        tilo_startup_metrics::init();
+        let _metrics = tilo_startup_metrics::ScopedDumper;
+        tilo_startup_metrics::mark("app-launch-start");
+        let returned = run_with_args(&spec, &args);
+        panic!("headless dispatch must exit instead of returning: {returned:?}");
+    }
+
+    #[test]
+    fn headless_exit_writes_startup_metrics_in_subprocesses() {
+        const CHILD_CASE: &str = "TILO_METRICS_EXIT_TEST_CASE";
+        const CHILD_ROOT: &str = "TILO_METRICS_EXIT_TEST_ROOT";
+        if let Ok(case) = std::env::var(CHILD_CASE) {
+            run_metrics_exit_child(&case);
+        }
+
+        for case in [
+            "legacy-success",
+            "legacy-failure",
+            "prepared-success",
+            "prepared-failure",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let metrics_path = temp.path().join("metrics.json");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "launch::prepared_launch_tests::headless_exit_writes_startup_metrics_in_subprocesses", "--nocapture"])
+                .env(CHILD_CASE, case)
+                .env(CHILD_ROOT, temp.path())
+                .env("TILO_STARTUP_METRICS_PATH", &metrics_path)
+                .env("TILO_PACKAGE_ID", "dev.tilo.metrics-fixture")
+                .env("XDG_DATA_HOME", temp.path().join("legacy-data"))
+                .output()
+                .unwrap();
+            let expected_code = i32::from(case.ends_with("failure"));
+            assert_eq!(
+                output.status.code(),
+                Some(expected_code),
+                "{case}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let bytes = std::fs::read(&metrics_path).unwrap_or_else(|error| {
+                panic!("{case} must flush metrics before process::exit: {error}")
+            });
+            let metrics: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(metrics["origin_epoch_ms"].as_u64().unwrap() > 0);
+            let events = metrics["events"].as_array().unwrap();
+            let phases = [
+                "app-launch-start",
+                "headless-setup-start",
+                "headless-setup-ready",
+                "headless-actions-start",
+                "headless-actions-done",
+                "headless-output-done",
+                "headless-durability-start",
+                "headless-durability-done",
+                "headless-exit",
+            ];
+            let mut previous = 0;
+            for phase in phases {
+                let event = events
+                    .iter()
+                    .find(|event| event["name"] == phase)
+                    .unwrap_or_else(|| panic!("{case} omitted actual phase {phase}: {metrics}"));
+                let time = event["ns"].as_u64().unwrap();
+                assert!(time >= previous, "{case}: phase {phase} is out of order");
+                previous = time;
+            }
+            assert_eq!(
+                events
+                    .iter()
+                    .any(|event| event["name"] == "headless-action-failed"),
+                case.ends_with("failure")
+            );
+            let document: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(temp.path().join("document.json")).unwrap())
+                    .unwrap();
+            assert!(
+                document.is_object(),
+                "the measured output phase wrote a real document dump"
+            );
+        }
+    }
+
     fn parsed(spec: &LaunchSpec, values: &[String]) -> LaunchArgs {
         let args = parse_args_extended(
             values,

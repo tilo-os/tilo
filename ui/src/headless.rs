@@ -3292,8 +3292,11 @@ fn drive_spec_actions(
     driver: &mut Driver,
     mut persist: impl FnMut(&mut Driver),
 ) -> Option<String> {
+    tilo_startup_metrics::mark("headless-actions-start");
     for (index, action) in spec.actions.iter().enumerate() {
         if let Err(error) = driver.perform(action) {
+            tilo_startup_metrics::mark("headless-action-failed");
+            tilo_startup_metrics::mark("headless-actions-done");
             return Some(format!(
                 "action {} of {} ({}): {error}",
                 index.saturating_add(1),
@@ -3303,6 +3306,7 @@ fn drive_spec_actions(
         }
         persist(driver);
     }
+    tilo_startup_metrics::mark("headless-actions-done");
     None
 }
 
@@ -3368,6 +3372,7 @@ pub fn run_component(
     component: crate::application::AppComponent,
     inputs: crate::application::ComponentRunnerInputs,
 ) -> i32 {
+    tilo_startup_metrics::mark("headless-setup-start");
     let records = component.callback_binding().records;
     let mut driver = match Driver::from_component(
         component,
@@ -3376,10 +3381,12 @@ pub fn run_component(
     ) {
         Ok(driver) => driver,
         Err(error) => {
+            tilo_startup_metrics::mark("headless-setup-failed");
             eprintln!("headless: component setup failed: {error}");
             return 3;
         }
     };
+    tilo_startup_metrics::mark("headless-setup-ready");
     let mut failure = drive_spec_actions(spec, &mut driver, |driver| {
         driver.persist_tick();
     });
@@ -3387,8 +3394,12 @@ pub fn run_component(
     if let Err(error) =
         audit_spec(spec, &driver, &mut failure).and_then(|()| write_spec_outputs(spec, &mut driver))
     {
+        tilo_startup_metrics::mark("headless-output-failed");
         failure = Some(error);
+    } else {
+        tilo_startup_metrics::mark("headless-output-done");
     }
+    tilo_startup_metrics::mark("headless-durability-start");
     driver.close_components();
     let reports = driver.component_close_reports();
     if reports.iter().any(|report| {
@@ -3396,13 +3407,16 @@ pub fn run_component(
             || report.record_error.is_some()
             || report.teardown_error.is_some()
     }) {
+        tilo_startup_metrics::mark("headless-durability-failed");
         eprintln!("headless: component close could not persist all state");
         return 3;
     }
     if let Err(error) = records.try_flush() {
+        tilo_startup_metrics::mark("headless-durability-failed");
         eprintln!("headless: state write failed: {error}");
         return 3;
     }
+    tilo_startup_metrics::mark("headless-durability-done");
     match failure {
         Some(error) => {
             eprintln!("headless: {error}");
@@ -3420,8 +3434,10 @@ pub fn run_component(
 /// `3` when persistence itself was unavailable, which a sweep must not
 /// mistake for "nothing changed".
 pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
+    tilo_startup_metrics::mark("headless-setup-start");
     let (state, mut autosave) = crate::persist::open(manifest_id);
     if !autosave.is_enabled() {
+        tilo_startup_metrics::mark("headless-setup-failed");
         eprintln!(
             "headless: persistence unavailable: {}",
             autosave.last_error().unwrap_or_default()
@@ -3439,27 +3455,35 @@ pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
         );
     }
 
+    tilo_startup_metrics::mark("headless-setup-ready");
     let mut failure = drive_spec_actions(spec, &mut driver, |driver| {
         if !driver.persist_tick() {
             autosave.request(&mut driver.state_mut().doc);
         }
     });
+    tilo_startup_metrics::mark("headless-record-flush-start");
     driver.persist_flush();
+    tilo_startup_metrics::mark("headless-record-flush-done");
 
     if let Err(error) =
         audit_spec(spec, &driver, &mut failure).and_then(|()| write_spec_outputs(spec, &mut driver))
     {
+        tilo_startup_metrics::mark("headless-output-failed");
         eprintln!("headless: {error}");
         return 1;
     }
 
+    tilo_startup_metrics::mark("headless-output-done");
+    tilo_startup_metrics::mark("headless-durability-start");
     // The same two calls `App::exiting` makes, for the same reason.
     autosave.request(&mut driver.state_mut().doc);
     autosave.flush();
     if let Some(e) = autosave.last_error() {
+        tilo_startup_metrics::mark("headless-durability-failed");
         eprintln!("headless: state write failed: {e}");
         return 3;
     }
+    tilo_startup_metrics::mark("headless-durability-done");
     match failure {
         Some(e) => {
             eprintln!("headless: {e}");
