@@ -35,3 +35,20 @@ the checks actually performed, retains material-audit coverage/limitations,
 and explicitly leaves independent source OCI-layer private-material evidence
 and VM boot acceptance outstanding. Unit fixtures do not prove an actual
 installed filesystem, loop mount, fsverity, systemd boot, or physical hardware.
+
+Loader selection follows the actual bootc1.16.4 call order: `install_systemd_boot`
+runs before `setup_composefs_uki_boot`; the latter preserves existing
+`loader/loader.conf`. systemd v259 `install_loader_config` writes a commented
+timeout/console template and optionally `default ENTRY_TOKEN-*`. With exactly
+one suitable installed entry and no alternate EFI applications, a matching
+token selects it and a nonmatching token falls back to it (`config_select_default_entry`).
+Firmware variable overrides remain outside static disk proof and require VM
+boot verification. Sources: bootc `bootc_composefs/boot.rs`, systemd v259
+`src/bootctl/bootctl-install.c` and `src/boot/boot.c`.
+
+Loader verification uses the authenticated source's `.efi.signed` companion,
+the original unsigned loader, and the independently pinned certificate with
+the existing Authenticode-envelope verifier. Both installed copies must match
+the resulting signed-byte digest. Local disk-tool commands have a 120-second
+deadline (one hour for installed repository fsck), a 4-MiB stdout bound, and
+process-group cleanup. Errors do not expose tool stderr or credential contents.
