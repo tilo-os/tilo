@@ -730,12 +730,8 @@ def main(argv=None):
     identity_env = os.environ.copy()
     identity_env['COSIGN_PASSWORD'] = ''
     run('cosign', 'generate-key-pair', '--output-key-prefix', str(PRIVATE / 'cosign'), env=identity_env)
-    run('openssl', 'genpkey', '-algorithm', 'ED25519', '-out', str(PRIVATE / 'owner.key'))
-    der = subprocess.run(['openssl', 'pkey', '-in', str(PRIVATE / 'owner.key'), '-pubout', '-outform', 'DER'],
-                         check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
-    if len(der) != 44 or der[:12] != bytes.fromhex('302a300506032b6570032100'):
-        raise ValueError('unexpected Ed25519 public key encoding')
-    (PRIVATE / 'owner.pub').write_text(der[12:].hex() + '\n')
+    run('/usr/local/bin/tilo-crypto', 'generate-ed25519-key',
+        str(PRIVATE / 'owner.key'), str(PRIVATE / 'owner.pub'))
     trust = json.loads(run('python3', 'os/dev/development-trust.py', 'create',
         '--cosign-public', str(PRIVATE / 'cosign.pub'), '--pcr-public', signer['pcr_public'],
         '--efi-certificate', signer['efi_certificate'], '--registry-owner', str(PRIVATE / 'owner.pub'),
