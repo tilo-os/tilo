@@ -536,3 +536,7 @@ files-nearby-no-destinations = Kein freigegebener beschreibbarer Arbeitsbereichs
 files-nearby-destination-count = Wählen Sie aus { $count } freigegebenen Speicherorten.
 files-nearby-save-to-destination = In { $destination } speichern
 files-nearby-save-and-remember = In { $destination } speichern und für diese Sitzung merken
+
+files-share-not-available = Freigabedienst ist auf diesem Gerät nicht verfügbar
+
+files-name-invalid = Gib einen gültigen Datei- oder Ordnernamen ein

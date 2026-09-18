@@ -11,10 +11,10 @@
 //! * **Branches & Remotes** — cards for branches, tags, stashes and
 //!   remotes, with fetch / pull / push actions and ahead/behind tracking.
 //!
-//! The live binary reads a repository through [`repo`] (libgit2 via
-//! `git2`). When no repository is reachable — notably the headless
-//! `--shots` renderer — it falls back to a bundled [`sample`] so the screenshot
-//! shows a populated state offline. All rendering
+//! The live binary reads a real repository through [`repo`] (libgit2 via
+//! `git2`). When no repository is reachable it opens an empty repository
+//! picker. The explicit `--shots` renderer uses a bundled [`sample`]
+//! so the screenshot shows a fully populated state offline. All rendering
 //! is theme-driven; durable UI preferences live in the CRDT via
 //! [`settings`].
 //!
@@ -58,11 +58,14 @@ pub mod diffview;
 pub mod draw;
 pub mod graph;
 pub mod history;
+mod http_transport;
 pub mod model;
 pub mod panels;
 pub mod repo;
 pub mod sample;
 pub mod settings;
+mod ssh_transport;
+mod transport;
 
 pub use app::GitClientApp;
 

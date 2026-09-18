@@ -30,6 +30,7 @@ automerge.workspace = true
 blake3.workspace = true
 serde.workspace = true
 hex.workspace = true
+url.workspace = true
 
 # Decode diagnostics: which decoder was plugged, why a hardware path was
 # refused, what `TILO_MEDIA_HWDEC` / `TILO_MEDIA_HWENC` were read as. Same pin the
@@ -40,7 +41,7 @@ tracing.workspace = true
 # PipeWire/WirePlumber node graph (devices + per-application streams). Same pin
 # the rest of the workspace resolves, so no second copy links.
 serde_json.workspace = true
-url.workspace = true
+
 
 # Decode stack — only linked under `--features decode`. Same pins as
 # `apps/tube` / `apps/camera` so no second gstreamer copy resolves.

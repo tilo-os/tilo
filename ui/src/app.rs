@@ -691,6 +691,8 @@ pub struct ActionUiRoute {
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
 )]
 pub struct App {
+    #[cfg(windows)]
+    startup_renderer: Option<RendererPreparation>,
     wake_scope: Option<crate::wake::WakeScope>,
     state: State,
     root_widget: Box<dyn Widget>,
@@ -1338,6 +1340,8 @@ impl App {
         );
         let configured_theme = inputs.configured_theme.resolve();
         let mut app = Self {
+            #[cfg(windows)]
+            startup_renderer: None,
             wake_scope,
             state,
             root_widget,
@@ -7073,6 +7077,12 @@ impl App {
         self.run_with_setup(|_| {});
     }
 
+    #[cfg(windows)]
+    pub(crate) fn with_startup_renderer(mut self, renderer: Option<RendererPreparation>) -> Self {
+        self.startup_renderer = renderer;
+        self
+    }
+
     /// Like [`App::run`] but exposes the winit [`EventLoopProxy`] before the
     /// loop starts, so callers can spawn threads that inject [`UserEvent`]s.
     ///
@@ -7338,7 +7348,13 @@ fn resolve_title_from(
         }
     }
     if let Some(bin) = binary.and_then(non_blank) {
-        let human = humanize_ident(&bin);
+        let bin = bin.as_str();
+        #[cfg(windows)]
+        let bin = bin
+            .rsplit_once('.')
+            .filter(|(_, extension)| extension.eq_ignore_ascii_case("exe"))
+            .map_or(bin, |(name, _)| name);
+        let human = humanize_ident(bin);
         if !human.is_empty() {
             return human;
         }
@@ -7789,8 +7805,71 @@ fn create_window_render(
     window: &Arc<Window>,
     transparent: bool,
 ) -> Result<RenderThreadHandle, String> {
+    create_window_render_prepared(window, transparent, None)
+}
+
+pub(crate) struct PreparedRenderer {
+    context: RenderContext,
+    device_id: usize,
+    renderer: Renderer,
+}
+
+#[cfg(windows)]
+pub(crate) type RendererPreparation = mpsc::Receiver<Result<PreparedRenderer, String>>;
+
+/// Start only for a real native launch, before loading app state and fonts.
+/// This owns no window/surface and can safely finish if construction fails:
+/// dropping the receiving end drops the prepared GPU resources at send.
+#[cfg(windows)]
+pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
+    if std::env::var_os("TILO_SERIAL_RENDER_INIT").is_some() {
+        return None;
+    }
+    let (sender, receiver) = mpsc::channel();
+    match std::thread::Builder::new()
+        .name("native-render-prepare".into())
+        .spawn(move || {
+            let prepare = || {
+                tilo_startup_metrics::mark("native-render-prepare-start");
+                let mut context = RenderContext::new();
+                let device_id = pollster::block_on(context.device(None))
+                    .ok_or_else(|| "could not prepare a drawing device".to_string())?;
+                let device = context
+                    .devices
+                    .get(device_id)
+                    .ok_or_else(|| "prepared drawing device index out of range".to_string())?;
+                let renderer = create_native_renderer(device)?;
+                tilo_startup_metrics::mark("native-render-prepare-done");
+                Ok(PreparedRenderer {
+                    context,
+                    device_id,
+                    renderer,
+                })
+            };
+            let _ = sender.send(prepare());
+        }) {
+        Ok(_) => Some(receiver),
+        Err(error) => {
+            tracing::warn!(%error, "could not prepare renderer in parallel");
+            None
+        }
+    }
+}
+
+fn create_window_render_prepared(
+    window: &Arc<Window>,
+    transparent: bool,
+    prepared: Option<PreparedRenderer>,
+) -> Result<RenderThreadHandle, String> {
+    tilo_startup_metrics::mark("window-render-context-start");
     let size = window.inner_size();
-    let mut render_cx = RenderContext::new();
+    let (mut render_cx, prepared_renderer) = match prepared {
+        Some(prepared) => (
+            prepared.context,
+            Some((prepared.device_id, prepared.renderer)),
+        ),
+        None => (RenderContext::new(), None),
+    };
     let mut surface = pollster::block_on(render_cx.create_surface(
         window.clone(),
         size.width.max(1),
@@ -7814,17 +7893,36 @@ fn create_window_render(
     // `Result`, so guard it like the worker's reconfigures do
     // (`render_thread::configure_surface_checked`) — an already-lost
     // surface would otherwise hit wgpu's panicking default handler.
+    tilo_startup_metrics::mark("window-surface-validation-scope-start");
     let configure_scope = device_handle
         .device
         .push_error_scope(vello::wgpu::ErrorFilter::Validation);
+    tilo_startup_metrics::mark("window-surface-checked-configure-start");
     surface
         .surface
         .configure(&device_handle.device, &surface.config);
+    tilo_startup_metrics::mark("window-surface-checked-configure-done");
     if let Some(err) = pollster::block_on(configure_scope.pop()) {
         return Err(format!("could not configure the drawing surface: {err}"));
     }
+    tilo_startup_metrics::mark("window-surface-validation-scope-done");
+    // create_surface checks presentation support and selects another device
+    // if necessary. Never use pipelines built for a different device.
+    let renderer = match prepared_renderer {
+        Some((device_id, renderer)) if device_id == surface.dev_id => renderer,
+        _ => create_native_renderer(device_handle)?,
+    };
+    // After this, every GPU call happens on its render worker.
+    let render = spawn_render_thread(render_cx, surface, renderer)?;
+    tilo_startup_metrics::mark("window-render-context-done");
+    Ok(render)
+}
+
+fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Renderer, String> {
+    let device = &device_handle.device;
+    tilo_startup_metrics::mark("window-vello-init-start");
     let renderer = Renderer::new(
-        &device_handle.device,
+        device,
         RendererOptions {
             // Diagnostic/low-end fallback: CPU coarse stages with the same
             // GPU fine raster. Kept opt-in until the benchmark proves it is
@@ -7840,8 +7938,10 @@ fn create_window_render(
         },
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;
-    // After this, every GPU call happens on its render worker.
-    spawn_render_thread(render_cx, surface, renderer)
+    tilo_startup_metrics::mark("window-vello-init-done");
+    #[cfg(windows)]
+    device_handle.finish_shader_cache();
+    Ok(renderer)
 }
 
 fn begin_window_render_init(
@@ -7867,11 +7967,30 @@ fn begin_window_render_init(
 }
 
 impl AppHandler {
-    /// Called from the first `RedrawRequested` rather than inline in
-    /// `resumed`, so the blocking GPU init doesn't starve the loop's first
-    /// events. `Err` is returned, not panicked, since every step here can
+    /// Called before showing the window on Windows, and from the first
+    /// `RedrawRequested` elsewhere so GPU init doesn't starve Wayland's
+    /// initial focus events. `Err` is returned, not panicked, since every step here can
     /// fail when the compositor exits mid-open.
     fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
+        #[cfg(windows)]
+        if let Some(preparation) = self.app.startup_renderer.take() {
+            match preparation.recv() {
+                Ok(Ok(prepared)) => {
+                    self.render = Some(create_window_render_prepared(
+                        window,
+                        false,
+                        Some(prepared),
+                    )?);
+                    return Ok(());
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "renderer preparation failed; selecting device for the actual surface")
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "renderer preparation disconnected; selecting device for the actual surface")
+                }
+            }
+        }
         self.render = Some(create_window_render(window, false)?);
         Ok(())
     }
@@ -8520,6 +8639,16 @@ impl AppHandler {
         reason = "the frame handshake shares render state, timing locals, and early exits"
     )]
     fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
+        // Capture only the initial frame attempts, not steady-state redraws.
+        // An early return leaves its final marker absent rather than inventing
+        // a completed stage. A later successful submission ends capture.
+        let first_primary_frame = self.primary_frames_sent == 0;
+        let mark_first_frame = |name| {
+            if first_primary_frame {
+                tilo_startup_metrics::mark(name);
+            }
+        };
+        mark_first_frame("first-frame-redraw-start");
         let _entry = self.app.enter_wake_scope();
         if self.render.is_none() {
             tilo_startup_metrics::mark("first-redraw-init-render-start");
@@ -8530,8 +8659,6 @@ impl AppHandler {
                 return;
             }
             tilo_startup_metrics::mark("first-redraw-init-render-done");
-        } else {
-            tilo_startup_metrics::mark("first-paint");
         }
         let Some(render) = self.render.as_mut() else {
             return;
@@ -8636,7 +8763,9 @@ impl AppHandler {
         // Records first: if the root widget opened a different
         // record, sync against that record's document, not the
         // outgoing one's.
+        mark_first_frame("first-frame-record-start");
         let record_changed = app.record_tick();
+        mark_first_frame("first-frame-record-done");
         floating_content_changed |= record_changed;
         full_redraw_required |= record_changed;
 
@@ -8644,6 +8773,7 @@ impl AppHandler {
         // Drain model notifications and advance update-driven widgets before
         // synchronization. A worker's `Wake` event reaches this pass without
         // requiring the app to own a proxy or poll inside its model.
+        mark_first_frame("first-frame-update-start");
         if app.root_widget.update(&mut app.state.doc, &app.state.root) {
             floating_content_changed = true;
             full_redraw_required = true;
@@ -8651,6 +8781,8 @@ impl AppHandler {
             app.needs_sync = true;
             app.layout_dirty = true;
         }
+        mark_first_frame("first-frame-update-done");
+        mark_first_frame("first-frame-sync-start");
         if app.needs_sync {
             floating_content_changed = true;
             full_redraw_required = true;
@@ -8658,15 +8790,19 @@ impl AppHandler {
             app.invalidate_widget_resource_cache();
             app.needs_sync = false;
         }
+        mark_first_frame("first-frame-sync-done");
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);
         }
 
+        mark_first_frame("first-frame-live-regions-start");
         app.scan_live_regions();
+        mark_first_frame("first-frame-live-regions-done");
 
         // E.g. a tab split inserting a new WindowGroup: rebuild the
         // taffy tree from scratch so new widgets get node ids the
         // layout pass below can see.
+        mark_first_frame("first-frame-build-layout-start");
         app.structure_dirty |= app.root_widget.take_structure_dirty();
         // Captured BEFORE `rebuild_structure` clears it — a fresh
         // taffy tree always needs a full solve regardless of the
@@ -8681,6 +8817,8 @@ impl AppHandler {
             p.record_since(crate::profiling::Pass::BuildLayout, __prof_build);
         }
 
+        mark_first_frame("first-frame-build-layout-done");
+
         let perf = perf_enabled();
         let t_frame_start = if perf {
             Some(std::time::Instant::now())
@@ -8691,6 +8829,7 @@ impl AppHandler {
             tracing::error!("root_node unset during a redraw; skipping frame");
             return;
         };
+        mark_first_frame("first-frame-layout-start");
         let Some((t_relayout_branch, t_compute_us, t_apply_us)) = run_layout_pass(
             app,
             root_node,
@@ -8702,6 +8841,7 @@ impl AppHandler {
         ) else {
             return;
         };
+        mark_first_frame("first-frame-layout-done");
         full_redraw_required |= structure_rebuilt || t_relayout_branch;
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
@@ -8857,7 +8997,9 @@ impl AppHandler {
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             let app_ref: &mut App = app;
             let scale = f64::from(scale_factor);
-            adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale));
+            adapter.update_if_active(|| {
+                crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale))
+            });
         }
 
         // Painted last, after the frame timing was committed above,
@@ -8892,6 +9034,7 @@ impl AppHandler {
             event_loop.exit();
             return;
         }
+        mark_first_frame("first-frame-submitted");
         self.primary_frames_sent = self.primary_frames_sent.saturating_add(1);
         let submitted = self.primary_frames_sent;
         for required in self.floating_source_clear_frames.values_mut() {
@@ -9613,7 +9756,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         if let Some(adapter) = self.a11y_adapter.as_mut() {
                             let scale = window.scale_factor();
                             let app_ref: &mut App = &mut self.app;
-                            adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale));
+                            adapter.update_if_active(|| {
+                                crate::accesskit_bridge::native_tree_update(
+                                    app_ref.build_a11y_tree_update(scale),
+                                )
+                            });
                         }
                         window.request_redraw();
                     }
@@ -9702,6 +9849,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
         )]
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        tilo_startup_metrics::mark("primary-window-created");
         // Some backends only honour the icon post-creation; a no-op on
         // Wayland compositors that source it from the app_id instead.
         window.set_window_icon(icon);
@@ -9718,16 +9866,29 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 &window,
                 self.app.platform,
             ));
+        // Windows otherwise exposes an empty white client area while GPU
+        // pipelines compile. Prepare those before revealing the window; the
+        // normal visible-window redraw path still submits its first frame.
+        #[cfg(target_os = "windows")]
+        if let Err(reason) = self.init_render(&window) {
+            crate::diag!("tilo: {reason}");
+            event_loop.exit();
+            return;
+        }
+        tilo_startup_metrics::mark("primary-window-show-start");
         window.set_visible(true);
+        tilo_startup_metrics::mark("primary-window-show-done");
 
         self.app.layout_dirty = true;
-        // GPU init deferred to first `RedrawRequested` (`init_render`): the
+        // On Wayland GPU init is deferred to first `RedrawRequested`: the
         // ~50ms surface+device init here would block `resumed`'s seat
         // wiring — on mutter that intermittently left the toplevel
         // unfocused with dead input on first launch.
         window.request_redraw();
+        tilo_startup_metrics::mark("primary-window-redraw-requested");
         crate::dnd::set_drag_window(&window);
         self.window = Some(window);
+        tilo_startup_metrics::mark("primary-window-resumed-done");
     }
 
     /// BEFORE the `Window` arc is dropped — the worker's
@@ -12834,10 +12995,14 @@ mod view_presence_tests {
     /// sink) and the frame the receiver applies.
     #[test]
     fn view_subset_broadcasts_through_real_presence_path() {
+        #[cfg(windows)]
+        let file_record = r"file:C:\report.md";
+        #[cfg(not(windows))]
+        let file_record = "file:/report.md";
         let mut sender = app_with_root(ViewRoot {
             scroll: vec![10.0, 20.0],
             mode: Some("grid".into()),
-            resource: Some("file:/report.md".into()),
+            resource: Some(file_record.into()),
             rect: KurboRect::ZERO,
         });
         sender.last_frame_size = Some(winit::dpi::PhysicalSize::new(1024, 768));
@@ -12860,7 +13025,7 @@ mod view_presence_tests {
         assert_eq!(sent.scroll, vec![10.0, 20.0], "scroll rode the frame");
         assert_eq!(
             sent.open_resource.as_deref(),
-            Some("file:/report.md"),
+            Some(file_record),
             "the open resource rode the frame"
         );
         assert_eq!(
@@ -13996,6 +14161,54 @@ mod semantic_tree_app_tests {
             .collect::<Vec<_>>();
         assert_eq!(rows.len(), 1, "collapsing removes the child row");
         assert!(rows[0].1.supports_action(accesskit::Action::Expand));
+    }
+
+    #[test]
+    fn nav_shell_accessible_autocomplete_edits_and_selects_through_host_dispatch() {
+        let search = crate::widget::Autocomplete::new()
+            .with_id("city-search")
+            .with_placeholder("Search city")
+            .with_suggester(|query| {
+                if query == "Ber" {
+                    vec![crate::widget::Suggestion::new("Berlin")]
+                } else {
+                    Vec::new()
+                }
+            });
+        let nav =
+            crate::widget::NavShell::new(Box::new(search), Box::new(crate::widget::Column::new()));
+        let mut app = App::new(State::new(), Box::new(nav));
+        app.init_layout();
+        let update = app.build_a11y_tree_update(1.0);
+        let field = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Search city"))
+            .unwrap()
+            .0;
+        app.dispatch_a11y_action(field, &crate::a11y::Action::SetValue("Ber".into()));
+        let update = app.build_a11y_tree_update(1.0);
+        let result = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Berlin"))
+            .expect("native edit must publish a result")
+            .0;
+        app.dispatch_a11y_action(result, &crate::a11y::Action::Activate);
+        let update = app.build_a11y_tree_update(1.0);
+        let field = &update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Search city"))
+            .unwrap()
+            .1;
+        assert_eq!(field.value(), Some("Berlin"));
+        assert!(
+            !update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Berlin"))
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+#[cfg(not(windows))]
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -9,8 +10,35 @@ use sha2::{Digest, Sha256};
 mod fallback;
 #[cfg(test)]
 mod tests;
+#[cfg(windows)]
+mod windows;
 
 const MANIFEST: &str = include_str!("../assets/fonts/manifest.toml");
+
+/// Share verified font data across native Windows renderers. Each renderer
+/// keeps its own shaping caches while font bytes and discovery are reused.
+#[cfg(windows)]
+pub(crate) fn windows_font_system(locale: String) -> Option<FontSystem> {
+    static DATABASE: std::sync::OnceLock<Option<fontdb::Database>> = std::sync::OnceLock::new();
+    let database = DATABASE.get_or_init(|| {
+        let installed = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("fonts")))
+            .filter(|root| root.is_dir());
+        let root =
+            installed.unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"));
+        match FontCatalog::product(root, locale.clone()).load() {
+            Ok(font_system) => Some(font_system.into_locale_and_db().1),
+            Err(error) => {
+                tracing::error!(%error, "Windows font catalog unavailable");
+                None
+            }
+        }
+    });
+    database.as_ref().map(|db| {
+        FontSystem::new_with_locale_and_db_and_fallback(locale, db.clone(), fallback::QosFallback)
+    })
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -271,6 +299,15 @@ impl FontCatalog {
     }
 }
 
+#[cfg(windows)]
+fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
+    let file = std::fs::File::open(path).map_err(|error| FontCatalogError::at(path, error))?;
+    windows::digest(file)
+        .map(hex::encode)
+        .map_err(|error| FontCatalogError::at(path, error))
+}
+
+#[cfg(not(windows))]
 #[allow(clippy::large_stack_arrays)]
 fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
     let mut file = std::fs::File::open(path).map_err(|e| FontCatalogError::at(path, e))?;

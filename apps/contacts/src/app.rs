@@ -6268,6 +6268,7 @@ impl Widget for ContactsApp {
             }
         }
 
+        #[cfg(unix)]
         crate::priority_contacts::publish_if_changed(&self.store);
 
         if self.search_heads != self.model_heads {

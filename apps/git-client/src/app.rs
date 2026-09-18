@@ -8,6 +8,7 @@
 //! hit-testing the regions each screen emits.
 
 use std::collections::HashMap;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
@@ -106,6 +107,15 @@ const NARROW_BREAKPOINT: f64 = 760.0;
 /// the docked changes column so the list looks identical in both layouts.
 const FLAP_W: f64 = CHANGES_COL_W;
 
+/// One owned repository operation. Completion stays available until its action
+/// invocation consumes it, even when a normal UI sync receives it first.
+struct RemoteJob {
+    receiver: Receiver<Result<(), String>>,
+    result: Option<Result<(), String>>,
+    invocation: Option<tilo_actions::InvocationId>,
+    progress_sent: bool,
+}
+
 pub struct GitClientApp {
     model: RepoModel,
     diffs: DiffMap,
@@ -143,6 +153,7 @@ pub struct GitClientApp {
     repo_path: Option<std::path::PathBuf>,
     /// Last action error, surfaced in the UI (e.g. "no identity set").
     last_error: Option<String>,
+    remote_job: Option<RemoteJob>,
 
     settings: Settings,
     /// Set once after the first sync seeds the settings into the doc.
@@ -155,6 +166,9 @@ pub struct GitClientApp {
     /// Cached hit rects for the app-bar settings controls, set during draw.
     settings_seg: Rect,
     settings_syn: Rect,
+    /// Last painted subtitle, shared with the native live text node.
+    status_rect: Rect,
+    status_text: String,
 
     screen: Screen,
     rect: Rect,
@@ -216,7 +230,7 @@ impl Default for GitClientApp {
 
 impl GitClientApp {
     /// Build the app, loading the repository discovered from the current
-    /// directory (or `GIT_CLIENT_REPO`). Falls back to the bundled sample
+    /// directory (or `GIT_CLIENT_REPO`). Opens the empty repository picker
     /// when no repository is reachable.
     ///
     /// Setting `GIT_CLIENT_SAMPLE=1` forces the bundled fixture regardless
@@ -331,11 +345,14 @@ impl GitClientApp {
             open_button_rect: Rect::ZERO,
             repo_path: None,
             last_error: None,
+            remote_job: None,
             settings,
             settings_seeded: false,
             settings_forced: split_forced,
             settings_seg: Rect::ZERO,
             settings_syn: Rect::ZERO,
+            status_rect: Rect::ZERO,
+            status_text: String::new(),
             screen,
             rect: Rect::ZERO,
             selected_change,
@@ -515,6 +532,71 @@ impl GitClientApp {
         self.repo_path.clone()
     }
 
+    fn repository_busy(&mut self) -> bool {
+        if self.remote_job.is_some() {
+            self.last_error = Some(ui::i18n!("git-remote-busy"));
+            return true;
+        }
+        false
+    }
+
+    fn start_remote(
+        &mut self,
+        action: RemoteAction,
+        remote: Option<String>,
+        invocation: Option<tilo_actions::InvocationId>,
+    ) -> Result<(), String> {
+        if self.remote_job.is_some() {
+            return Err(ui::i18n!("git-remote-busy"));
+        }
+        let path = self
+            .repo()
+            .ok_or_else(|| "remote operation requires a repository".to_string())?;
+        let (sender, receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("git-remote".into())
+            .spawn(move || {
+                let result = match action {
+                    RemoteAction::Fetch => crate::repo::fetch(&path, remote.as_deref()).map(|_| ()),
+                    RemoteAction::Pull => crate::repo::pull(&path, remote.as_deref()),
+                    RemoteAction::Push => crate::repo::push(&path, remote.as_deref()),
+                }
+                .map_err(|error| format!("{error:#}"));
+                let _ = sender.send(result);
+            })
+            .map_err(|error| error.to_string())?;
+        self.last_error = None;
+        self.remote_job = Some(RemoteJob {
+            receiver,
+            result: None,
+            invocation,
+            progress_sent: false,
+        });
+        Ok(())
+    }
+
+    fn drain_remote(&mut self) {
+        let Some(job) = self.remote_job.as_mut() else {
+            return;
+        };
+        if job.result.is_some() {
+            return;
+        }
+        let result = match job.receiver.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err(ui::i18n!("git-remote-worker-stopped")),
+        };
+        self.last_error = result.as_ref().err().cloned();
+        job.result = Some(result);
+        if job.invocation.is_none() {
+            self.remote_job = None;
+        }
+        // A failed transfer can still have fetched objects/refs. Refresh from
+        // disk on either outcome; never infer rollback from an error.
+        self.reload();
+    }
+
     // --- Responsive layout -------------------------------------------
 
     /// Resolve the sidebar layout from the app's allocated width. The active
@@ -526,6 +608,16 @@ impl GitClientApp {
             return SplitLayout::Docked;
         }
         SplitLayout::from_width(self.rect.width(), NARROW_BREAKPOINT)
+    }
+
+    fn appbar_height(&self) -> f64 {
+        if self.rect.width() >= NARROW_BREAKPOINT {
+            APPBAR_H
+        } else if self.rect.width() >= 420.0 {
+            APPBAR_H * 2.0
+        } else {
+            APPBAR_H * 3.0
+        }
     }
 
     /// Whether the primary list column is currently a revealed/open overlay.
@@ -572,6 +664,9 @@ impl GitClientApp {
     /// list reflects the actual index. For the sample it falls back to the
     /// in-memory move so the offscreen capture still demonstrates the flow.
     fn toggle_stage(&mut self, area: ChangeArea, idx: usize) {
+        if self.repository_busy() {
+            return;
+        }
         if let Some(path) = self.repo() {
             let list = match area {
                 ChangeArea::Staged => &self.model.staged,
@@ -623,6 +718,9 @@ impl GitClientApp {
     }
 
     fn stage_all(&mut self) {
+        if self.repository_busy() {
+            return;
+        }
         if let Some(path) = self.repo() {
             let res = crate::repo::stage_all(&path);
             self.run_action(res);
@@ -643,6 +741,9 @@ impl GitClientApp {
     }
 
     fn unstage_all(&mut self) {
+        if self.repository_busy() {
+            return;
+        }
         if let Some(path) = self.repo() {
             let res = crate::repo::unstage_all(&path);
             self.run_action(res);
@@ -658,6 +759,9 @@ impl GitClientApp {
     }
 
     fn do_commit(&mut self) {
+        if self.repository_busy() {
+            return;
+        }
         if self.model.staged.is_empty() || self.commit_input.value().trim().is_empty() {
             return;
         }
@@ -730,6 +834,9 @@ impl GitClientApp {
     /// untracked file). Two-click armed: the first click on a discard
     /// affordance arms the row; only a second confirming click reaches here.
     fn discard_file(&mut self, area: ChangeArea, idx: usize) {
+        if self.repository_busy() {
+            return;
+        }
         self.armed_discard = None;
         let Some(path) = self.repo() else { return };
         let list = match area {
@@ -746,6 +853,9 @@ impl GitClientApp {
 
     /// Discard a single hunk of the selected (unstaged) file's worktree change.
     fn discard_hunk(&mut self, hunk: usize) {
+        if self.repository_busy() {
+            return;
+        }
         let Some((area, _)) = self.selected_change else {
             return;
         };
@@ -762,6 +872,9 @@ impl GitClientApp {
 
     /// Open the repository at the empty-state path field, binding it if valid.
     fn open_repo_from_input(&mut self) {
+        if self.repository_busy() {
+            return;
+        }
         let raw = self.open_input.value().trim().to_string();
         if raw.is_empty() {
             return;
@@ -857,7 +970,7 @@ impl GitClientApp {
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + APPBAR_H,
+            self.rect.y0 + self.appbar_height(),
         );
         draw::fill_rect(scene, t, bar, c.surfaces.raised);
         draw::hline(scene, t, bar.y1, bar.x0, bar.x1, c.border_standard);
@@ -883,29 +996,53 @@ impl GitClientApp {
         // shipped shot, which made a presentation preference look like a
         // truncated status label.
         let settings_w = 230.0;
-        let (widths, total) = Self::measure_appbar_tabs(tr);
-        let tx_start = bar.x1 - settings_w - total - 20.0;
+        let wrapped = bar.width() < NARROW_BREAKPOINT;
+        let separate_settings_row = bar.width() < 420.0;
+        let (widths, total) = Self::measure_appbar_tabs(tr, separate_settings_row);
+        let tx_start = if wrapped {
+            bar.x0 + (bar.width() - total) / 2.0
+        } else {
+            bar.x1 - settings_w - total - 20.0
+        };
         let tab_group_left = tx_start - 6.0;
 
         // Repo name + branch. Clamp the title so it ellipsises before the tab
         // group rather than colliding with it when the bar is tight.
         let title_x = bar.x0 + 20.0 + left_pad;
-        self.draw_appbar_title(scene, tr, t, theme, bar, title_x, tab_group_left);
+        let title_right = if separate_settings_row {
+            bar.x1 - 12.0
+        } else if wrapped {
+            bar.x1 - settings_w
+        } else {
+            tab_group_left
+        };
+        self.draw_appbar_title(scene, tr, t, theme, bar, title_x, title_right);
 
-        self.draw_appbar_tab_group(scene, tr, t, theme, bar, &widths, total, tx_start);
+        let tabs_bar = if wrapped {
+            Rect::new(bar.x0, bar.y0 + APPBAR_H, bar.x1, bar.y0 + APPBAR_H * 2.0)
+        } else {
+            bar
+        };
+        self.draw_appbar_tab_group(scene, tr, t, theme, tabs_bar, &widths, total, tx_start);
 
         // Settings cluster on the far right: diff layout toggle + flags.
-        self.draw_settings_cluster(scene, tr, t, theme, bar, settings_w);
+        let settings_bar = if separate_settings_row {
+            Rect::new(bar.x0, bar.y0 + APPBAR_H * 2.0, bar.x1, bar.y1)
+        } else {
+            bar
+        };
+        self.draw_settings_cluster(scene, tr, t, theme, settings_bar, settings_w);
     }
 
     /// Each tab's pixel width and their combined width (including the 6px
     /// gaps between them) — needed both to clamp the title and to lay out
     /// the tab group's pill background.
-    fn measure_appbar_tabs(tr: &mut TextRenderer) -> (Vec<f64>, f64) {
+    fn measure_appbar_tabs(tr: &mut TextRenderer, compact: bool) -> (Vec<f64>, f64) {
         let widths: Vec<f64> = TABS
             .iter()
             .map(|(_, label)| {
-                f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0) + 28.0
+                f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0)
+                    + if compact { 20.0 } else { 28.0 }
             })
             .collect();
         let total = widths.iter().sum::<f64>() + (TABS.len() as f64 - 1.0) * 6.0;
@@ -919,7 +1056,7 @@ impl GitClientApp {
         reason = "internal draw-step split of an over-length function"
     )]
     fn draw_appbar_title(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,
@@ -949,7 +1086,11 @@ impl GitClientApp {
         .min(f64::from(title_max));
         let pill_x = title_x + 8.0 + nw;
         // Only paint the branch pill if it still fits left of the tab group.
-        if pill_x + 40.0 < tab_group_left {
+        let pill_width = f64::from(
+            tr.measure_weighted(&self.model.head, 14.0, None, TextWeight::Medium)
+                .0,
+        ) + 12.0;
+        if pill_x + pill_width + 8.0 <= tab_group_left {
             draw::pill(
                 scene,
                 tr,
@@ -964,21 +1105,32 @@ impl GitClientApp {
             );
         }
         // change count subtitle — or the last action error when present.
-        let (sub, sub_color) = match &self.last_error {
-            Some(err) => (err.clone(), c.semantic.danger),
-            None => (
-                format!(
-                    "{} pending change{}",
-                    self.model.change_count(),
-                    if self.model.change_count() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
+        let (sub, sub_color) = if self.remote_job.is_some() {
+            (ui::i18n!("git-remote-running"), c.text_dim)
+        } else {
+            match &self.last_error {
+                Some(err) => (err.clone(), c.semantic.danger),
+                None => (
+                    format!(
+                        "{} pending change{}",
+                        self.model.change_count(),
+                        if self.model.change_count() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ),
+                    c.text_dim,
                 ),
-                c.text_dim,
-            ),
+            }
         };
+        self.status_rect = Rect::new(
+            title_x,
+            bar.y0 + 30.0,
+            title_x + f64::from(title_max),
+            bar.y0 + 46.0,
+        );
+        self.status_text.clone_from(&sub);
         draw::text(
             scene,
             tr,
@@ -1634,6 +1786,9 @@ impl GitClientApp {
     }
 
     fn create_new_branch(&mut self) {
+        if self.repository_busy() {
+            return;
+        }
         let name = self.branch_input.value().trim().to_string();
         if name.is_empty() {
             return;
@@ -1835,7 +1990,7 @@ impl GitClientApp {
                 Screen::History => FLAP_W,
                 _ => CHANGES_COL_W,
             };
-            if pos.y < self.rect.y0 + APPBAR_H {
+            if pos.y < self.rect.y0 + self.appbar_height() {
                 return;
             }
             if pos.x > self.rect.x0 + col_w {
@@ -1940,6 +2095,9 @@ impl GitClientApp {
     /// an unstaged/untracked file shows the index→workdir diff (so a hunk
     /// action *stages*). That matches `apply_hunk`'s ordering exactly.
     fn stage_hunk(&mut self, hunk: usize) {
+        if self.repository_busy() {
+            return;
+        }
         let Some((area, _)) = self.selected_change else {
             return;
         };
@@ -2004,13 +2162,10 @@ impl GitClientApp {
     /// the real tracking state. For the sample, reconcile the counters so the
     /// offscreen capture shows the effect.
     fn apply_remote_action(&mut self, action: RemoteAction) {
-        if let Some(path) = self.repo() {
-            let res = match action {
-                RemoteAction::Fetch => crate::repo::fetch(&path, None).map(|_| ()),
-                RemoteAction::Pull => crate::repo::pull(&path, None),
-                RemoteAction::Push => crate::repo::push(&path, None),
-            };
-            self.run_action(res);
+        if self.repo().is_some() {
+            if let Err(error) = self.start_remote(action, None, None) {
+                self.last_error = Some(error);
+            }
             return;
         }
         if let Some(b) = self.model.branches.iter_mut().find(|b| b.is_head) {
@@ -2026,6 +2181,9 @@ impl GitClientApp {
     /// against the live repo, then re-read. Sample-backed apps ignore these
     /// (the panels' branch buttons only appear for real repos).
     fn apply_branch_action(&mut self, action: BranchAction) {
+        if self.repository_busy() {
+            return;
+        }
         let Some(path) = self.repo() else { return };
         let res = match action {
             BranchAction::Checkout(name) => crate::repo::checkout_branch(&path, &name),
@@ -2050,7 +2208,7 @@ impl GitClientApp {
                     self.changes_scroll = (self.changes_scroll - dy).max(0.0);
                 } else {
                     let max = self.current_diff().map_or(0.0, DiffView::content_height)
-                        - (self.rect.height() - APPBAR_H - 36.0);
+                        - (self.rect.height() - self.appbar_height() - 36.0);
                     self.diff_scroll = (self.diff_scroll - dy).clamp(0.0, max.max(0.0));
                 }
             }
@@ -2062,8 +2220,8 @@ impl GitClientApp {
                 };
                 let over_list = pos.x < self.rect.x0 + list_w && self.flap_open();
                 if over_list {
-                    let max =
-                        HistoryView::content_height(&self.model) - (self.rect.height() - APPBAR_H);
+                    let max = HistoryView::content_height(&self.model)
+                        - (self.rect.height() - self.appbar_height());
                     self.history_scroll = (self.history_scroll - dy).clamp(0.0, max.max(0.0));
                 } else {
                     self.detail_scroll = (self.detail_scroll - dy).max(0.0);
@@ -2131,6 +2289,17 @@ impl GitClientApp {
         // scrim, pointer routing, keyboard routing and semantic tree must all
         // agree that obscured detail/app-bar controls are temporarily inert.
         let overlay_modal = self.layout_mode() == SplitLayout::Overlay && self.flap_open();
+        if !overlay_modal && self.status_rect.area() > 0.0 {
+            targets.push((
+                "git.status".into(),
+                self.status_rect,
+                AccessNode::new(Role::StaticText)
+                    .with_name(&self.status_text)
+                    .with_value(&self.status_text)
+                    .with_live(ui::a11y::Politeness::Polite)
+                    .with_bounds(self.status_rect),
+            ));
+        }
         if !overlay_modal {
             targets.extend(self.tab_rects.iter().map(|(screen, rect)| {
                 let label = TABS
@@ -2374,6 +2543,7 @@ impl Widget for GitClientApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        self.drain_remote();
         if self.settings_seeded {
             // Adopt document changes: remote collaborators, and this app's own
             // preference actions, which the framework `ActionHost` applies
@@ -2467,7 +2637,7 @@ impl Widget for GitClientApp {
 
         let body = Rect::new(
             self.rect.x0,
-            self.rect.y0 + APPBAR_H,
+            self.rect.y0 + self.appbar_height(),
             self.rect.x1,
             self.rect.y1,
         );
@@ -2593,10 +2763,12 @@ impl Widget for GitClientApp {
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Group)
                 .with_name("Git Client")
-                .with_description(if self.awaiting_repo {
-                    "Open a repository"
+                .with_description(if self.remote_job.is_some() {
+                    ui::i18n!("git-remote-running")
+                } else if self.awaiting_repo {
+                    "Open a repository".to_string()
                 } else {
-                    "Repository changes, history, branches and remotes"
+                    "Repository changes, history, branches and remotes".to_string()
                 })
                 .with_children(children),
         )
@@ -2616,7 +2788,7 @@ impl Widget for GitClientApp {
         target: &str,
         action: &ui::a11y::Action,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
     ) -> bool {
         use ui::a11y::Action;
 
@@ -2631,10 +2803,19 @@ impl Widget for GitClientApp {
                 self.set_focus(Some(field));
                 return true;
             }
-            return false;
+            let input = match field {
+                Field::Open => &mut self.open_input,
+                Field::Commit => &mut self.commit_input,
+                Field::Branch => &mut self.branch_input,
+            };
+            return input.perform_action(action, state, path);
         }
         if !matches!(action, Action::Activate | Action::ToggleCheck) {
             return false;
+        }
+        if target == "git.open-repository" && self.awaiting_repo {
+            self.open_repo_from_input();
+            return true;
         }
         let Some(rect) = self
             .accessibility_targets()
@@ -2661,6 +2842,93 @@ impl Widget for GitClientApp {
         self.actions.take_committed()
     }
 
+    fn start_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        use crate::actions::GitClientOperation;
+        if type_id != crate::actions::GIT_CLIENT_OPERATION_TYPE {
+            return Ok(None);
+        }
+        let operation: crate::actions::GitClientOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let remote = match (kind, operation) {
+            (tilo_actions::OperationKind::Effect, GitClientOperation::Fetch { remote }) => {
+                Some((RemoteAction::Fetch, remote))
+            }
+            (tilo_actions::OperationKind::Effect, GitClientOperation::Pull { remote }) => {
+                Some((RemoteAction::Pull, remote))
+            }
+            (tilo_actions::OperationKind::Effect, GitClientOperation::Push { remote }) => {
+                Some((RemoteAction::Push, remote))
+            }
+            _ => None,
+        };
+        if let Some((action, remote)) = remote {
+            self.start_remote(action, Some(remote), Some(invocation))?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        self.invoke_resource_operation(kind, type_id, payload, doc, path)
+            .map(|handled| {
+                handled.then(|| {
+                    ui::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput::default(),
+                    )
+                })
+            })
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if self.remote_job.as_ref()?.invocation != Some(invocation) {
+            return None;
+        }
+        // libgit2 operations are currently non-cancellable. In particular,
+        // never report a cancelled push when the server may have accepted it.
+        self.drain_remote();
+        let job = self.remote_job.as_mut()?;
+        if let Some(result) = job.result.take() {
+            self.remote_job = None;
+            return Some(match result {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "git.remote_failed".into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+        }
+        if !job.progress_sent {
+            job.progress_sent = true;
+            return Some(tilo_actions::InvocationUpdate::Progress {
+                invocation,
+                sequence: 1,
+                phase: "git.remote".into(),
+                completed: None,
+                total: None,
+                message: Some(ui::i18n!("git-remote-running")),
+            });
+        }
+        None
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one exhaustive typed protocol match keeps publication-to-handler coverage auditable"
@@ -2675,6 +2943,9 @@ impl Widget for GitClientApp {
     ) -> Result<bool, String> {
         if type_id != crate::actions::GIT_CLIENT_OPERATION_TYPE {
             return Ok(false);
+        }
+        if kind == tilo_actions::OperationKind::Effect && self.repository_busy() {
+            return Err(ui::i18n!("git-remote-busy"));
         }
         let operation: crate::actions::GitClientOperation =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -2849,40 +3120,15 @@ impl Widget for GitClientApp {
             }
             (
                 tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::Fetch { remote },
-            ) => {
-                let path = self
-                    .repo()
-                    .ok_or_else(|| "fetch requires a real repository".to_string())?;
-                crate::repo::fetch(&path, Some(&remote)).map_err(|error| error.to_string())?;
-                self.last_error = None;
-                self.reload();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::Pull { remote },
-            ) => {
-                let path = self
-                    .repo()
-                    .ok_or_else(|| "pull requires a real repository".to_string())?;
-                crate::repo::pull(&path, Some(&remote)).map_err(|error| error.to_string())?;
-                self.last_error = None;
-                self.reload();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::Push { remote },
-            ) => {
-                let path = self
-                    .repo()
-                    .ok_or_else(|| "push requires a real repository".to_string())?;
-                crate::repo::push(&path, Some(&remote)).map_err(|error| error.to_string())?;
-                self.last_error = None;
-                self.reload();
-            }
+                crate::actions::GitClientOperation::Fetch { .. }
+                | crate::actions::GitClientOperation::Pull { .. }
+                | crate::actions::GitClientOperation::Push { .. },
+            ) => return Err("remote operations require lifecycle-aware action dispatch".into()),
             _ => return Err("operation kind does not match Git operation".into()),
         }
-        if let Some(error) = &self.last_error {
+        if kind == tilo_actions::OperationKind::Effect
+            && let Some(error) = &self.last_error
+        {
             return Err(error.clone());
         }
         Ok(true)
@@ -2892,6 +3138,10 @@ impl Widget for GitClientApp {
         // Redraw while the flap animates, and while any embedded text field is
         // focused so its caret keeps blinking.
         self.flap.is_animating(self.layout_mode())
+            || self
+                .remote_job
+                .as_ref()
+                .is_some_and(|job| job.result.is_none())
             || self.commit_input.needs_animation_frame()
             || self.branch_input.needs_animation_frame()
             || self.open_input.needs_animation_frame()
@@ -3381,6 +3631,83 @@ mod tests {
             dispatched, &palette_action,
             "the app-bar control and the Ctrl+K entry build one and the same action"
         );
+    }
+
+    #[test]
+    fn appbar_controls_stay_visible_and_separate_at_narrow_widths() {
+        let mut text = TextRenderer::new();
+        for width in [320.0, 460.0, 680.0, 1280.0] {
+            for screen in [Screen::Changes, Screen::History, Screen::Panels] {
+                let mut app = app_at(width, screen);
+                let mut scene = Scene::new();
+                app.draw_appbar(&mut scene, &mut text, Affine::IDENTITY, &Theme::dark());
+                let mut controls: Vec<Rect> = app.tab_rects.iter().map(|(_, rect)| *rect).collect();
+                controls.extend([app.settings_seg, app.settings_syn]);
+                if app.hamburger_rect.area() > 0.0 {
+                    controls.push(app.hamburger_rect);
+                }
+                for (index, rect) in controls.iter().enumerate() {
+                    assert!(
+                        rect.x0 >= 0.0
+                            && rect.x1 <= width
+                            && rect.y0 >= 0.0
+                            && rect.y1 <= app.appbar_height(),
+                        "control {index} is outside the {width}px window: {rect:?}"
+                    );
+                    for other in controls.iter().skip(index + 1) {
+                        assert!(
+                            !(rect.x0 < other.x1
+                                && rect.x1 > other.x0
+                                && rect.y0 < other.y1
+                                && rect.y1 > other.y0),
+                            "controls overlap at {width}px: {rect:?} and {other:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn semantic_open_repository_binds_the_entered_repository() {
+        let directory = tempfile::tempdir().unwrap();
+        let _repository = git2::Repository::init(directory.path()).unwrap();
+        let mut app = GitClientApp::open_empty();
+        app.open_input.set_text(directory.path().to_str().unwrap());
+        app.open_button_rect = Rect::new(20.0, 20.0, 180.0, 60.0);
+        let mut doc = automerge::AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "git.open-repository",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(!app.test_awaiting_repo());
+        assert_eq!(app.test_last_error(), None);
+    }
+
+    #[test]
+    fn semantic_text_edits_reach_embedded_repository_commit_and_branch_inputs() {
+        let mut app = GitClientApp::open_empty();
+        let mut doc = automerge::AutoCommit::new();
+        for (target, text) in [
+            ("git.open-path", r"C:\Work\Grün 🌍"),
+            ("git.commit-message", "Keep Unicode: Grün 🌍"),
+            ("git.new-branch-name", "feature/grün"),
+        ] {
+            assert!(Widget::perform_semantic_action(
+                &mut app,
+                target,
+                &ui::a11y::Action::SetValue(text.into()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+        }
+        assert_eq!(app.open_input.value(), r"C:\Work\Grün 🌍");
+        assert_eq!(app.commit_input.value(), "Keep Unicode: Grün 🌍");
+        assert_eq!(app.branch_input.value(), "feature/grün");
+        assert!(app.test_awaiting_repo(), "editing a path must not open it");
     }
 
     #[test]
