@@ -945,3 +945,45 @@ fn impossible_nonreset_epoch_refuses_recovery_before_any_tail_trim() {
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn bootstrap_hint_checks_selection_size_and_leaf_without_minting_ownership() {
+    use super::checkpoint::Record;
+    let selected = selected();
+    let dir = tempfile::tempdir().unwrap();
+    let (provider, mut file) = DiskProvider::new(dir.path());
+    let own = provider.ownership();
+    let mut session = Session::new(&selected, 0, 1, provider).unwrap();
+    drop(
+        session
+            .prepare(&selected, &mut file, &AtomicBool::new(false))
+            .unwrap(),
+    );
+    let bytes = fs::read(dir.path().join("journal/record-1")).unwrap();
+    let record = Record::decode(&bytes).unwrap();
+    let hint = record.hint_for(&selected, 0).unwrap();
+    assert_eq!(hint.leaf, own.leaf);
+    assert_eq!(hint.parent_digest, &own.parent);
+    assert_eq!(hint.file_digest, &own.file);
+    assert_eq!(hint.generation, 1);
+    assert!(record.hint_for(&selected, 1).is_err());
+    assert!(record.hint_for(&selected, 2).is_err());
+    for case in 0..3 {
+        let mut bad = bytes.clone();
+        match case {
+            0 => bad[9] ^= 1,
+            1 => bad[171..179].copy_from_slice(&4095u64.to_le_bytes()),
+            2 => bad[105] = b'/',
+            _ => unreachable!(),
+        }
+        rewrite_checksum(&mut bad);
+        assert!(
+            Record::decode(&bad)
+                .unwrap()
+                .hint_for(&selected, 0)
+                .is_err(),
+            "case {case}"
+        );
+    }
+}
