@@ -82,6 +82,17 @@ Main and the ongoing hardware bring-up remain untouched.
 
 ## Still required for the full goal
 
+The affected-package selector now treats moves as deletion plus addition and
+reads NUL-delimited Git paths. A real Git regression fixture proved that the old
+reader omitted the source package and quoted Unicode filenames; all 12 selector
+tests pass with the fix. Cargo metadata now uses `--locked`.
+An actual metadata probe on the current 141-package workspace selected 4 packages
+for `apps/calculator/src/main.rs` (2 native matrix jobs), 68 for `ui/src/lib.rs`
+(4 jobs), and 3 contract packages for `docs/architecture.md` (2 jobs). These are
+selection counts, not build-time measurements. Docs-only Rust work remains a
+feedback-cost opportunity; changing that policy requires explicit empty-selection
+and required-gate behavior rather than silently skipping checks.
+
 The imager workflow now explicitly disables the retained macOS build and cask
 test jobs. Linux/Windows publication no longer waits for macOS assets; Linux
 Homebrew publication leaves the retained cask publisher disabled through
