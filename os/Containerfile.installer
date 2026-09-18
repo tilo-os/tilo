@@ -63,11 +63,13 @@ RUN test -x /usr/bin/tilo-installer \
     && /usr/libexec/tilo-uki-cmdline remove tilo.luks /boot/tilo-target/tilo-target.efi \
     && /usr/libexec/tilo-uki-cmdline remove tilo.unlock /boot/tilo-target/tilo-target.efi \
     && /usr/libexec/tilo-uki-cmdline remove tilo.install /boot/tilo-target/tilo-target.efi \
-    && /usr/libexec/tilo-uki-cmdline append root=tilo-auto /boot/tilo-target/tilo-target.efi \
-    && /usr/libexec/tilo-uki-cmdline append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/tilo-target/tilo-target.efi \
+    # The base UKI already seals these keys. Require one exact inherited token
+    # each; missing, duplicate, bare or conflicting values must fail the build.
+    && target_cmdline="$(/usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi)" \
+    && test "$(printf '%s\n' "$target_cmdline" | tr '[:space:]' '\n' | grep -E '^root(=|$)')" = root=tilo-auto \
+    && test "$(printf '%s\n' "$target_cmdline" | tr '[:space:]' '\n' | grep -E '^rd[.]luks[.]options(=|$)')" = rd.luks.options=tpm2-device=auto,fido2-device=auto \
     && /usr/libexec/tilo-uki-cmdline show | grep -qw tilo.mode=normal \
     && /usr/libexec/tilo-uki-cmdline show | grep -qw tilo.install \
-    && /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw root=tilo-auto \
     && ! /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw tilo.install \
     && systemctl enable tilo-firstboot-user.service tilo-installer-setup.service tilo-live-recovery.service \
     && if [ "$TILO_INSTALLER_DEV_SSH" = 1 ]; then \
