@@ -1344,19 +1344,7 @@ impl MusicApp {
             ..Default::default()
         };
         if id == "music.player:player" {
-            ctx.tracks = self
-                .lib
-                .tracks
-                .values()
-                .map(|track| crate::actions::CatalogTrackResource {
-                    id: track.id.clone(),
-                    label: self.track_label(&track.id),
-                    album_id: track.album_id.clone(),
-                    artist_id: track.artist_id.clone(),
-                    offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
-                    liked: self.lib.is_liked(&track.id),
-                })
-                .collect();
+            ctx.tracks = self.catalog_track_resources();
             return Some(ctx);
         }
         if id == crate::actions::QUEUE_RESOURCE_ID {
@@ -1431,8 +1419,17 @@ impl MusicApp {
         // `add-track` needs a current target set to refuse stale resource
         // arguments; retain only ids/labels once this playlist is directly
         // requested, never while the palette merely opens.
-        ctx.tracks = self
-            .lib
+        ctx.tracks = self.catalog_track_resources();
+        ctx.playlists.push(crate::actions::PlaylistResource {
+            id: playlist.id.clone(),
+            name: playlist.name.clone(),
+            tracks: Vec::new(),
+        });
+        Some(ctx)
+    }
+
+    fn catalog_track_resources(&self) -> Vec<crate::actions::CatalogTrackResource> {
+        self.lib
             .tracks
             .values()
             .map(|track| crate::actions::CatalogTrackResource {
@@ -1443,13 +1440,7 @@ impl MusicApp {
                 offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
                 liked: self.lib.is_liked(&track.id),
             })
-            .collect();
-        ctx.playlists.push(crate::actions::PlaylistResource {
-            id: playlist.id.clone(),
-            name: playlist.name.clone(),
-            tracks: Vec::new(),
-        });
-        Some(ctx)
+            .collect()
     }
 
     /// A one-line "Title — Artist" label for a track id, for the palette.
@@ -1603,7 +1594,10 @@ impl MusicApp {
             has_video: false,
             // A handoff is acknowledged only after this device actually has
             // a decoder source. Merely resolving the synced id is not enough.
-            audible: self.pb.volume > 0 && self.audio.has_stream(),
+            audible: self.pb.volume > 0
+                && self.audio.has_stream()
+                && self.audio.frames_rendered() > 0
+                && !self.audio.needs_poll(),
             controller_bus_name: Some(crate::mpris::BUS_NAME),
         });
     }
@@ -1763,7 +1757,7 @@ impl MusicApp {
         let now = Instant::now();
         self.last_tick = now;
         self.expire_resource_stream_if_due(now);
-        if !self.pb.playing || self.pb.current.is_none() {
+        if (!self.pb.playing || self.pb.current.is_none()) && !self.audio.needs_poll() {
             return;
         }
         // Drive the playhead exclusively from a real pipeline. Before the
@@ -1771,7 +1765,7 @@ impl MusicApp {
         // position instead of running a decorative timer while a stream is
         // resolving/buffering. In particular, a build without an audio backend
         // must never claim a sample or unavailable source is progressing.
-        if self.audio.has_stream() {
+        if self.audio.has_stream() || self.audio.needs_poll() {
             // Service the pipeline bus so a failed fetch/decode is detected (and
             // the message backlog drained) before we trust the transport state.
             let errored = self.audio.pump();
@@ -1796,6 +1790,9 @@ impl MusicApp {
                     None,
                     true,
                 );
+                return;
+            }
+            if !self.pb.playing || self.pb.current.is_none() {
                 return;
             }
             #[cfg(feature = "audio")]
@@ -4778,7 +4775,10 @@ fn fill_rrect(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color) 
 // The params are independent geometry/style values a caller picks per call
 // (position, size, color, weight, wrap width); a struct would just relocate
 // them across 90+ call sites in `app/render.rs` without reducing complexity.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "text rendering forwards independent geometry and style values across existing call sites"
+)]
 fn draw_text(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -5259,6 +5259,78 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         assert!(app.pb.current.is_none());
         assert!(app.pending_media_handoff.is_some());
+    }
+
+    #[test]
+    #[cfg(feature = "audio")]
+    fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
+        let (mut app, _) = app_with_doc();
+        let title = format!("handoff-init-{}", uuid::Uuid::new_v4());
+        app.lib
+            .tracks
+            .get_mut("tk_g1")
+            .unwrap()
+            .title
+            .clone_from(&title);
+        app.pb.current = Some("tk_g1".into());
+        app.pb.playing = false;
+        app.pb.volume = 50;
+        // A real, silent PCM file avoids both network access and audible noise.
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("paused.wav");
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&16036u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&8000u32.to_le_bytes());
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.resize(16044, 0);
+        std::fs::write(&path, wav).unwrap();
+        app.audio
+            .load(&media::source::path_to_file_uri(&path).unwrap());
+        app.audio.pause();
+        app.publish_handoff();
+        assert!(
+            media::handoff::playback_sessions()
+                .iter()
+                .all(|session| session.title != title)
+        );
+        assert!(
+            app.needs_animation_frame(),
+            "paused initialization needs ticks"
+        );
+
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while app.audio.frames_rendered() == 0 || app.audio.needs_poll() {
+            app.tick();
+            assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
+            assert!(
+                Instant::now() < deadline,
+                "paused decoder failed to preroll"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!app.audio.is_playing_real());
+        app.publish_handoff();
+        let session = media::handoff::playback_sessions()
+            .into_iter()
+            .find(|session| session.title == title)
+            .expect("a decoded paused source can acknowledge handoff");
+        assert!(!session.playing);
+        app.audio.stop();
+        app.publish_handoff();
+        assert!(
+            media::handoff::playback_sessions()
+                .iter()
+                .all(|session| session.title != title)
+        );
     }
 
     #[test]
@@ -7474,7 +7546,10 @@ mod tests {
     // 'test(full_track_streams_whole_file_or_reports_the_source_truncation)'`
     // when changing the stream resolver; that is when it has something to say.
     #[ignore = "streams a real track over the network; opt in with --run-ignored"]
-    #[allow(clippy::too_many_lines)] // One end-to-end proof with two source outcomes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end proof covers complete playback and explicit source truncation"
+    )]
     fn full_track_streams_whole_file_or_reports_the_source_truncation() {
         use std::time::Duration;
         if !audio_server_present() || !decode_plugins_present() {
