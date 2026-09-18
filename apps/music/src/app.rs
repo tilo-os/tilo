@@ -7220,30 +7220,11 @@ mod tests {
         have_base && have_aac
     }
 
-    /// Whether the `yt-dlp` full-stream resolver is available (mirrors
-    /// [`crate::backend::ytdlp`]'s binary selection). The full-track proof skips
-    /// honestly when it isn't — without yt-dlp the resolver can only fall back to
-    /// the SABR-truncated direct URL, which genuinely cannot play past ~1 minute.
-    #[cfg(all(feature = "live", feature = "audio"))]
-    fn ytdlp_present() -> bool {
-        let bin = std::env::var("TILO_MUSIC_YTDLP")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "yt-dlp".to_string());
-        std::process::Command::new(bin)
-            .arg("--version")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    }
-
-    /// **Full-track proof** (`--features live,audio`; needs `yt-dlp` on the host):
+    /// **Full-track proof** (`--features live,audio`; requires network access):
     /// resolve a real `YouTube` track, stage it, and prove what the staged bytes
     /// actually support.
     ///
-    /// The resolver asks `yt-dlp` for an `android_vr` URL because that client is
+    /// The Rust-native resolver asks InnerTube for an `ANDROID_VR` URL because that client is
     /// meant to serve arbitrary byte ranges over the whole file, where
     /// rustypipe's iOS/TV URL is SABR-gated to its first ~1 minute. Whether the
     /// source honours that on the day is the source's decision, and the two
@@ -7266,12 +7247,12 @@ mod tests {
     /// duration comes from the MP4 header, so a ~1-minute stub satisfied both and
     /// the proof passed on exactly the stream it existed to rule out. It then
     /// failed 15 s later at the seek, blaming the seek. Skips honestly only when
-    /// `yt-dlp` / an audio server / decode plugins are absent (never a fakesink,
-    /// never a weakened assertion).
+    /// an audio server or decode plugins are absent (never a fakesink, never a
+    /// weakened assertion).
     #[cfg(all(feature = "live", feature = "audio"))]
     #[test]
     // Both branches above still need the track to arrive: this streams a real
-    // one end to end through yt-dlp and a live audio server, so it depends on a
+    // one end to end through InnerTube and a live audio server, so it depends on a
     // third party being reachable and on that video still existing. It
     // self-skips when the tools are missing, which made it pass on CI and fail
     // on a developer machine that has them but cannot reach the network — the
@@ -7284,10 +7265,6 @@ mod tests {
     #[allow(clippy::too_many_lines)] // One end-to-end proof with two source outcomes.
     fn full_track_streams_whole_file_or_reports_the_source_truncation() {
         use std::time::Duration;
-        if !ytdlp_present() {
-            eprintln!("[full-track] skipped — yt-dlp not installed (no full-stream resolver)");
-            return;
-        }
         if !audio_server_present() || !decode_plugins_present() {
             eprintln!("[full-track] skipped — no audio server / decode plugins");
             return;

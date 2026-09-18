@@ -27,7 +27,7 @@ pub enum Source {
     /// bytes are **not** assumed local until a read succeeds.
     Workspace(PathBuf),
     /// A directly-playable stream URL — an `http(s)://` progressive file, or a
-    /// yt-dlp-resolved googlevideo URL. Streamed by the decode backend (its
+    /// InnerTube-resolved googlevideo URL. Streamed by the decode backend (its
     /// HTTP source element); the prefetch reader does not fetch it itself.
     Remote { url: String },
 }
