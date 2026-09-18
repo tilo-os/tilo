@@ -190,14 +190,13 @@ def main():
             env['TILO_BUILD_ARGS'] += ' --build-context ' + shlex.quote('tilo-thin-cache=' + str(thin_context))
         build_bounded(script, env, args.timeout_seconds)
         identity = iid.read_text().strip()
-        t.inspect_local(identity, 'aarch64', identity)
-        with t.mounted(identity) as root:
+        with resume.checkpointed_payload(native, identity, inputs, reconstruction, work, args.evidence,
+                                         args.run_id, args.attempt) as (root, inventory):
             if thin_provenance is not None:
                 runtime_raw, runtime = resume.read_thin_cache_evidence(t, root, args.thin_cache_approval[1])
                 reconstruction['thin_cache']['runtime_evidence'] = runtime
                 reconstruction['thin_cache']['runtime_evidence_sha256'] = t.sha(runtime_raw)
                 (args.evidence / 'thin-cache-restoration.json').write_bytes(runtime_raw)
-            inventory = native.inventory(root, inputs)
             for name, record in union.items():
                 location = 'out/optional/browser' if name == 'browser' else 'out/' + name
                 resume.require(all(inventory[location][key] == value for key,value in record.items()), 'retained executable was replaced')
