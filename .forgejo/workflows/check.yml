@@ -299,11 +299,6 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
       - name: Record an observable CI receipt without touching a branch
-        run: |
-          git config user.name 'Tilo Forgejo CI'
-          git config user.email 'tilo@noreply.code.sandbox.example'
-          git fetch origin refs/notes/tilo-check-ci:refs/notes/tilo-check-ci || true
-          git notes --ref=tilo-check-ci add -f \
-            -m "select=$SELECT_RESULT affected=$AFFECTED_RESULT run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
-            "$GITHUB_SHA"
-          git push origin refs/notes/tilo-check-ci
+        run: >-
+          tools/ci-receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"
+          "$SELECT_RESULT" "$AFFECTED_RESULT" origin
