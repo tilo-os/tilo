@@ -145,7 +145,7 @@ pub fn load_workspace_share_issuer(
     if !credentials.cert.capabilities.can_own_workspaces {
         return Ok(None);
     }
-    let issuer = match tilo_user_identity::persist::read_signing_key(&paths.user_privkey) {
+    let issuer = match tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey) {
         Ok(issuer) => issuer,
         Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(None);
