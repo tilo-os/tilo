@@ -4499,12 +4499,17 @@ impl Widget for PdfApp {
             return true;
         }
         if let Some(tab) = target.strip_prefix("pdf.tab:") {
-            self.sidebar_tab = match tab {
+            let next = match tab {
                 "comments" => SidebarTab::Comments,
                 "contents" => SidebarTab::Outline,
                 "signatures" => SidebarTab::Signatures,
                 _ => return false,
             };
+            if self.sidebar_tab != next {
+                self.sidebar_scroll = 0.0;
+                self.sidebar_reveal = None;
+            }
+            self.sidebar_tab = next;
             self.show_sidebar = true;
             self.reflow();
             return true;
@@ -6138,6 +6143,49 @@ mod tests {
         // Very narrow: the toggles still fit and nothing overlaps.
         app.search_rect = Rect::new(0.0, 56.0, 380.0, 56.0 + 46.0);
         check(&app, &mut tr, 380.0);
+    }
+
+    /// A long bookmark tree must remain navigable rather than being silently
+    /// clipped after the first sidebar viewport.  This exercises the same
+    /// measured list used by paint and the wheel handler, at maximum text size
+    /// where fixed-height rows used to collide.
+    #[test]
+    fn contents_sidebar_scrolls_and_scales_all_outline_entries() {
+        let (mut app, _st) = app_with_state();
+        app.sidebar_tab = SidebarTab::Outline;
+        app.text_scale = 2.0;
+        app.doc.outline = (0..80)
+            .map(|index| model::OutlineItem {
+                title: format!("Section {index}: an intentionally descriptive heading"),
+                page: index % app.doc.page_count() + 1,
+                level: u8::from(index % 3 != 0),
+            })
+            .collect();
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+
+        let (items, content_h) = app.sidebar_item_layout(&mut tr);
+        assert_eq!(items.len(), 80, "every bookmark participates in scrolling");
+        assert!(
+            items[1].1 - items[0].1 >= 64.0 - f64::EPSILON,
+            "outline rows scale from 30px to a touch-friendly 60px at 200% text"
+        );
+
+        app.sidebar_scroll = f64::MAX;
+        app.prepare_sidebar_scroll(&mut tr);
+        let body = app.sidebar_body();
+        let origin = body.y0 + 38.0 * 2.0;
+        let max_scroll = (content_h - (body.y1 - origin)).max(0.0);
+        assert!(max_scroll > 0.0, "the test outline exceeds the viewport");
+        assert!(
+            (app.sidebar_scroll - max_scroll).abs() < 0.1,
+            "wheel state clamps to the final bookmark instead of resetting"
+        );
+        let (_, last_top, last_h) = items.last().expect("last bookmark");
+        assert!(
+            last_top + last_h - app.sidebar_scroll <= body.y1 + 0.1,
+            "the final bookmark can be brought fully into view"
+        );
     }
 
     /// The floating page bubble draws (and captures its nav hit-rects) only
