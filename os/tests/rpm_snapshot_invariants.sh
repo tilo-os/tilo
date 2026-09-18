@@ -104,11 +104,13 @@ aws_config="$(COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/e
   AWS_SIGNING_ROLE_ARN='arn:aws:iam::123456789012:role/release' \
   ACTIONS_ID_TOKEN_REQUEST_URL="file://$oidc_fixture/token" \
   ACTIONS_ID_TOKEN_REQUEST_TOKEN=request-token RUNNER_TEMP="$oidc_fixture" \
-  sh -c '. "$1"; printf "%s:%s:%s:%s:" "$AWS_REGION" "$AWS_DEFAULT_REGION" \
-    "$AWS_ROLE_ARN" "$(stat -c %a "$AWS_WEB_IDENTITY_TOKEN_FILE")"; \
+  AWS_ACCESS_KEY_ID=ambient-cache-user \
+  sh -c '. "$1"; printf "%s:%s:%s:%s:%s:" "$AWS_REGION" "$AWS_DEFAULT_REGION" \
+    "$AWS_ROLE_ARN" "${AWS_ACCESS_KEY_ID-unset}" \
+    "$(stat -c %a "$AWS_WEB_IDENTITY_TOKEN_FILE")"; \
     cat "$AWS_WEB_IDENTITY_TOKEN_FILE"' fixture "$repo/os/dev/configure-cosign-kms.sh")"
 rm -rf -- "$oidc_fixture"
-[ "$aws_config" = 'eu-west-2:eu-west-2:arn:aws:iam::123456789012:role/release:600:signed-for-test' ] \
+[ "$aws_config" = 'eu-west-2:eu-west-2:arn:aws:iam::123456789012:role/release:unset:600:signed-for-test' ] \
   && ok 'AWS KMS setup derives the region and installs least-exposure web identity' \
   || bad 'AWS KMS setup does not configure Forgejo web identity safely'
 if COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/example' \
