@@ -160,7 +160,7 @@ def is_ui_core_dependency(alias: str, specification: object) -> bool:
         return True
     if isinstance(specification, dict):
         path = specification.get("path")
-        return isinstance(path, str) and Path(path).name == "ui"
+        return isinstance(path, str) and Path(path).name in {"ui", "ui-core"}
     return False
 
 
@@ -471,9 +471,9 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
     violations: list[Violation] = []
     # This is a Tilo framework invariant, not a requirement on the isolated
     # miniature app repositories used below and by third-party SDK consumers.
-    # Only the authoritative workspace owns ui/src/app.rs.
+    # Only the authoritative workspace owns crates/sdk/ui-core/src/app.rs.
     if root.resolve() == ROOT.resolve():
-        app_host_path = root / "ui" / "src" / "app.rs"
+        app_host_path = root / "crates" / "sdk" / "ui-core" / "src" / "app.rs"
         app_host = rust_code_only(app_host_path.read_text(encoding="utf-8"))
         if not FRAMEWORK_RESOURCE_SEARCH_BUILD.search(
             app_host

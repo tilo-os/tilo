@@ -217,7 +217,7 @@ mod tests {
     /// fresh-XDG CI never exercises, so this test creates the directory
     /// up front and drives two opens against it.
     #[test]
-    #[serial_test::serial(state_dir_env)]
+    #[serial_test::serial(process_env)]
     fn open_keeps_autosave_enabled_when_the_state_dir_already_exists() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let pkg = "dev.tilo.persist-open-twice";
@@ -225,7 +225,7 @@ mod tests {
         // Directory present before the first open, as on every later launch.
         let dir = tmp.path().join(pkg);
         std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: serialised on `app_state_dir`; no other thread reads the var
+        // SAFETY: serialised on `process_env`; no other thread reads the var
         // between the set here and the removal at the end.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
@@ -263,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(state_dir_env)]
+    #[serial_test::serial(process_env)]
     fn legacy_record_index_is_imported_by_one_room_only() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let package = "dev.tilo.legacy-room-index";
@@ -295,7 +295,7 @@ mod tests {
     /// persistence enabled, not swallow the `EEXIST` and fall back to the
     /// disabled in-memory store.
     #[test]
-    #[serial_test::serial(state_dir_env)]
+    #[serial_test::serial(process_env)]
     fn open_recovers_when_the_state_path_is_a_stale_file() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let pkg = "dev.tilo.stale-file-open";
@@ -304,7 +304,7 @@ mod tests {
         let path = tmp.path().join(pkg);
         std::fs::write(&path, b"").unwrap();
         assert!(path.is_file(), "the leftover is a file, not a directory");
-        // SAFETY: serialised on `app_state_dir`.
+        // SAFETY: serialised on `process_env`.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
             std::env::remove_var("TILO_PACKAGE_ID");
