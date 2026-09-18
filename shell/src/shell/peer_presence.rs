@@ -586,7 +586,7 @@ pub fn room_roster(
             let id = format!("peer@{handle}");
             let name = labels.get(&handle).cloned().unwrap_or_else(|| id.clone());
             let role = ws.role_of(&name);
-            let who = crate::shell::state::Collaborator::new(id, name);
+            let who = crate::shell::state::Collaborator::new(id, name).with_session(handle);
             let who = match role {
                 Some(role) => who.with_role(crate::shell::state::role_label(role)),
                 None => who,
@@ -1641,6 +1641,11 @@ mod two_sessions {
             vec![("bob".to_string(), None, false)],
             "the host's roster must name the person who joined it, as \
              somebody who is here rather than somebody who was asked",
+        );
+        assert_eq!(
+            host_handle.read().active_workspace().unwrap().collaborators[0].session,
+            Some(handle_of(&guest_peer)),
+            "trusted screen-sharing disclosure joins viewers through the authenticated session",
         );
 
         assert!(

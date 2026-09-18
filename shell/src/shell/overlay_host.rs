@@ -2812,6 +2812,77 @@ struct CollaborationPreferences {
     manual_status: Option<String>,
 }
 
+/// Human-readable projection of the compositor's screen-share authority for
+/// the People popover. Unlike room presence, every clause names the exact
+/// surface a participant or agent can presently see or control.
+fn collaborators_screen_exposure(
+    state: &crate::shell::chrome_state::ChromeState,
+) -> Option<String> {
+    let tree = state.tree();
+    let clauses = state
+        .active_exposures()
+        .iter()
+        .map(|exposure| {
+            let participant = tree.workspaces.iter().find_map(|workspace| {
+                workspace
+                    .collaborators
+                    .iter()
+                    .find(|person| person.session == Some(exposure.peer))
+                    .map(|person| (workspace, person))
+            });
+            let (name, kind) = participant.map_or_else(
+                || {
+                    (
+                        crate::shell::state::session_handle(exposure.peer),
+                        "unidentified session",
+                    )
+                },
+                |(workspace, person)| {
+                    let agent = workspace.agent_members().iter().any(|(agent, _)| {
+                        agent.eq_ignore_ascii_case(&person.id)
+                            || agent.eq_ignore_ascii_case(&person.name)
+                    });
+                    (person.name.clone(), if agent { "agent" } else { "person" })
+                },
+            );
+            let target = tree
+                .workspaces
+                .iter()
+                .find_map(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .find(|tab| {
+                            matches!(
+                                &tab.tile,
+                                crate::shell::state::TileContent::Foreign { surface_id, .. }
+                                    if *surface_id == exposure.surface
+                            )
+                        })
+                        .map(|tab| {
+                            if workspace.id == tree.active {
+                                tab.title.clone()
+                            } else {
+                                format!("{} › {}", workspace.name, tab.title)
+                            }
+                        })
+                })
+                .unwrap_or_else(|| format!("surface {}", exposure.surface));
+            format!(
+                "{name} ({kind}) {} {target}",
+                if exposure.can_control {
+                    "controls"
+                } else {
+                    "views"
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+    (!clauses.is_empty()).then(|| clauses.join("; "))
+}
+
 impl CollaborationPreferences {
     fn from_values(values: &serde_json::Map<String, serde_json::Value>) -> Self {
         let sharing = match values
@@ -3203,9 +3274,18 @@ impl ShellOverlayHost {
         // first Win+K query. A persisted metadata snapshot makes search
         // useful immediately; this refresh quietly makes it current.
         let _ = crate::shell::catalogue::available_apps();
-        let mut search_registry = crate::shell::search::SearchRegistry::new();
+        let search_preferences = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::shell::search::SearchPreferences::load(),
+        ));
+        let mut search_registry = crate::shell::search::SearchRegistry::with_preferences_handle(
+            std::rc::Rc::clone(&search_preferences),
+        );
+        let provider_catalog = search_registry.provider_catalog_handle();
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ActionsProvider::new(),
+            crate::shell::search::providers::ActionsProvider::with_preferences_and_catalog(
+                search_preferences,
+                provider_catalog,
+            ),
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
@@ -4232,6 +4312,17 @@ impl ShellOverlayHost {
     /// Whether peer-sync palette entries are registered.
     pub fn peer_sync_enabled(&self) -> bool {
         self.peer_sync_enabled
+    }
+
+    /// Session-local presence controls as shown in trusted chrome. Used by
+    /// semantic inspection so an agent can verify what it is publishing and
+    /// whether this view is attached to somebody else.
+    pub(crate) fn presence_snapshot(&self) -> (ui::StatusSharing, Option<String>, Option<String>) {
+        (
+            self.status_sharing,
+            self.local_status.clone(),
+            self.followed_peer.clone(),
+        )
     }
 
     /// Install the closure that carries out [`PeerSyncRequest`]s. Without
@@ -5773,6 +5864,7 @@ impl ShellOverlayHost {
             // search boundary. Machine-wide search belongs to Super+K; a
             // local "+" must not silently reach into other workspaces.
             st.search_scope = crate::shell::chrome_state::SearchScope::Workspace;
+            st.search_resource_scope = None;
             st.bump();
         }
         // Narrowed to kinds that can *be* a tab, so results aren't buried
@@ -5804,6 +5896,9 @@ impl ShellOverlayHost {
             return;
         };
         let mut st = chrome.borrow_mut();
+        if st.search_resource_scope.take().is_some() {
+            st.bump();
+        }
         if st.open_target != crate::shell::chrome_state::OpenTarget::Beside {
             st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
             st.bump();
@@ -7126,6 +7221,7 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.clone() {
             let mut st = chrome.borrow_mut();
             st.search_scope = effective;
+            st.search_resource_scope = None;
             st.bump();
         }
         if !self.palette_visible {
@@ -7296,6 +7392,9 @@ impl ShellOverlayHost {
                     .icon(icon_for_kind(&r.kind));
                 if let Some(sub) = &r.subtitle {
                     e = e.description(sub.clone());
+                }
+                if let Some(badge) = &r.badge {
+                    e = e.badge(badge.clone());
                 }
                 if r.id == "room.activity.open" {
                     e = e.keybinding("Super+H");
@@ -7689,11 +7788,27 @@ impl ShellOverlayHost {
                 } else {
                     (result.on_open)(doc, root, &chrome, &args)
                 };
+                let entered_resource_scope =
+                    outcome.is_ok() && result.id.starts_with("directory-resource\u{1f}");
                 if let Err(err) = outcome {
                     chrome.borrow_mut().push_warning_notification(
                         format!("Can't run “{}”", result.title),
                         err.to_string(),
                     );
+                }
+                if entered_resource_scope {
+                    let label = chrome
+                        .borrow()
+                        .search_resource_scope
+                        .as_ref()
+                        .map_or("resource", |scope| scope.label.as_str())
+                        .to_string();
+                    self.palette.set_query("");
+                    self.palette
+                        .set_query_placeholder(format!("Search in {label}…"));
+                    self.last_search_query = "\0resource-scope-enter\0".into();
+                    self.palette_visible = true;
+                    return;
                 }
             }
             self.palette_visible = false;
@@ -9213,6 +9328,29 @@ impl ShellOverlayHost {
     ) -> String {
         use crate::shell::chrome_state::SearchScope;
         const MAX_APP_PILL_CHARS: usize = 14;
+        if let Some(resource_label) = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            (state.search_scope == scope)
+                .then(|| {
+                    state
+                        .search_resource_scope
+                        .as_ref()
+                        .map(|resource| resource.label.clone())
+                })
+                .flatten()
+        }) {
+            const MAX_RESOURCE_PILL_CHARS: usize = 18;
+            let label = if resource_label.chars().count() > MAX_RESOURCE_PILL_CHARS {
+                let head: String = resource_label
+                    .chars()
+                    .take(MAX_RESOURCE_PILL_CHARS)
+                    .collect();
+                format!("{head}…")
+            } else {
+                resource_label
+            };
+            return format!("‹ {label}");
+        }
         match scope {
             SearchScope::ActiveApp => {
                 let Some(raw) = self
@@ -11103,6 +11241,18 @@ impl ShellOverlayHost {
     /// overview > ws settings > quick settings.
     fn handle_shell_escape_chord(&mut self, handled: &mut bool) -> bool {
         if self.palette_visible {
+            if let Some(chrome) = self.chrome.clone() {
+                let mut state = chrome.borrow_mut();
+                if state.search_resource_scope.take().is_some() {
+                    state.bump();
+                    drop(state);
+                    self.palette.set_query("");
+                    self.palette.set_query_placeholder("Search…");
+                    self.last_search_query = "\0resource-scope-back\0".into();
+                    *handled = true;
+                    return true;
+                }
+            }
             self.palette_visible = false;
             *handled = true;
             return true;
@@ -11575,7 +11725,14 @@ impl ShellOverlayHost {
                 if let Some(chrome) = self.chrome.clone() {
                     let mut state = chrome.borrow_mut();
                     state.search_scope = *scope;
+                    let left_resource = state.search_resource_scope.take().is_some();
                     state.bump();
+                    drop(state);
+                    if left_resource {
+                        self.palette.set_query("");
+                        self.palette.set_query_placeholder("Search…");
+                        self.last_search_query = "\0resource-scope-pill-back\0".into();
+                    }
                 }
                 return true;
             }
@@ -11705,20 +11862,7 @@ impl ShellOverlayHost {
                 return;
             }
             CollaboratorsHit::SetStatusSharing(mode) => {
-                self.status_sharing = mode;
-                if mode != ui::StatusSharing::Automatic
-                    && matches!(self.local_status_origin, ui::StatusOrigin::Inferred { .. })
-                {
-                    self.local_status = None;
-                    self.local_status_origin = ui::StatusOrigin::Manual;
-                    self.status_narrative_request = None;
-                }
-                if mode == ui::StatusSharing::Off {
-                    self.publish_local_status(None);
-                } else {
-                    self.publish_local_status(self.local_status.clone());
-                }
-                self.persist_collaboration_preferences();
+                self.set_status_sharing(mode);
                 *handled = true;
                 return;
             }
@@ -11796,6 +11940,62 @@ impl ShellOverlayHost {
             updated_at: std::time::SystemTime::now(),
         });
         bridge(room, status);
+    }
+
+    fn set_status_sharing(&mut self, mode: ui::StatusSharing) {
+        self.status_sharing = mode;
+        if mode != ui::StatusSharing::Automatic
+            && matches!(self.local_status_origin, ui::StatusOrigin::Inferred { .. })
+        {
+            self.local_status = None;
+            self.local_status_origin = ui::StatusOrigin::Manual;
+            self.status_narrative_request = None;
+        }
+        if mode == ui::StatusSharing::Off {
+            self.publish_local_status(None);
+        } else {
+            self.publish_local_status(self.local_status.clone());
+        }
+        self.persist_collaboration_preferences();
+    }
+
+    /// Apply semantic presence requests queued by the shared action provider.
+    /// This is the same local state and publisher used by pointer/keyboard UI,
+    /// so agents do not get a parallel or less truthful collaboration path.
+    fn pump_presence_requests(&mut self) -> bool {
+        let requests = self
+            .chrome
+            .as_ref()
+            .map(|chrome| chrome.borrow_mut().take_presence_requests())
+            .unwrap_or_default();
+        if requests.is_empty() {
+            return false;
+        }
+        for request in requests {
+            match request {
+                crate::shell::chrome_state::PresenceRequest::Follow(id) => {
+                    self.set_followed_peer(Some(id));
+                }
+                crate::shell::chrome_state::PresenceRequest::StopFollowing => {
+                    self.set_followed_peer(None);
+                }
+                crate::shell::chrome_state::PresenceRequest::SetManualStatus(status) => {
+                    self.local_status = status;
+                    self.local_status_origin = ui::StatusOrigin::Manual;
+                    self.status_narrative_request = None;
+                    if self.status_sharing == ui::StatusSharing::Off {
+                        self.publish_local_status(None);
+                    } else {
+                        self.publish_local_status(self.local_status.clone());
+                    }
+                    self.persist_collaboration_preferences();
+                }
+                crate::shell::chrome_state::PresenceRequest::SetStatusSharing(mode) => {
+                    self.set_status_sharing(mode);
+                }
+            }
+        }
+        true
     }
 
     fn persist_collaboration_preferences(&self) {
@@ -14045,6 +14245,7 @@ impl Widget for ShellOverlayHost {
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
         self.harvest_active_tab_writeback();
+        let presence_dirty = self.pump_presence_requests();
         let follow_dirty = self.reconcile_followed_peer();
         // Both edge-triggered on `active_group`, so they run after the
         // writeback above reflects this frame's focus change.
@@ -14092,6 +14293,7 @@ impl Widget for ShellOverlayHost {
             || picker_dirty
             || dialog_dirty
             || mirror_dirty
+            || presence_dirty
             || follow_dirty
     }
 
@@ -16649,13 +16851,14 @@ impl ShellOverlayHost {
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
         if flags.collaborators {
-            let (mut rows, unavailable) = self.chrome.as_ref().map_or_else(
-                || (Vec::new(), None),
+            let (mut rows, unavailable, screen_exposure) = self.chrome.as_ref().map_or_else(
+                || (Vec::new(), None, None),
                 |chrome| {
                     let state = chrome.borrow();
                     (
                         collaborator_roster_rows(&state.tree()),
                         state.collab_unavailable.clone(),
+                        collaborators_screen_exposure(&state),
                     )
                 },
             );
@@ -16748,6 +16951,7 @@ impl ShellOverlayHost {
                     ),
                     status_sharing: self.status_sharing,
                     status_editing: self.status_editing,
+                    screen_exposure: screen_exposure.as_deref(),
                 },
                 self.last_cursor,
             );
@@ -22462,6 +22666,52 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
+    fn semantic_status_requests_use_the_live_presence_publisher_and_privacy_state() {
+        let settings = tempfile::tempdir().expect("isolated settings directory");
+        let old_config = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: the process_env serial group excludes concurrent env users.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", settings.path()) };
+        let (mut host, chrome) = host_with_chrome();
+        let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let capture = std::rc::Rc::clone(&published);
+        host.set_status_presence_bridge(std::rc::Rc::new(move |_room, status| {
+            capture.borrow_mut().push(status.map(|status| status.text));
+        }));
+        {
+            let mut state = chrome.borrow_mut();
+            state.push_presence_request(
+                crate::shell::chrome_state::PresenceRequest::SetManualStatus(Some(
+                    "Reviewing the release".into(),
+                )),
+            );
+            state.push_presence_request(
+                crate::shell::chrome_state::PresenceRequest::SetStatusSharing(
+                    ui::StatusSharing::Off,
+                ),
+            );
+        }
+
+        assert!(host.pump_presence_requests());
+
+        assert_eq!(host.local_status.as_deref(), Some("Reviewing the release"));
+        assert_eq!(host.status_sharing, ui::StatusSharing::Off);
+        assert_eq!(
+            published.borrow().as_slice(),
+            &[Some("Reviewing the release".into()), None],
+            "the same publisher first receives the manual status and then its privacy revocation"
+        );
+        assert!(chrome.borrow_mut().take_presence_requests().is_empty());
+        // SAFETY: restore the serialised process environment.
+        unsafe {
+            match old_config {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    #[test]
     fn editing_an_inferred_status_starts_a_fresh_manual_sentence() {
         let (mut host, _) = host_with_chrome();
         host.local_status = Some("Summarizing recent file changes".into());
@@ -22772,6 +23022,31 @@ mod palette_dispatch_tests {
             !chrome.borrow().overlays.quick_settings,
             "Escape on the root page closes Quick Settings"
         );
+    }
+
+    #[test]
+    fn escape_leaves_resource_search_scope_before_closing_palette() {
+        let (mut host, chrome) = host_with_chrome();
+        host.palette_visible = true;
+        chrome.borrow_mut().search_resource_scope =
+            Some(crate::shell::chrome_state::SearchResourceScope {
+                peer_id: 9,
+                cluster_id: "room".into(),
+                app_id: "dev.tilo.reader".into(),
+                resource: "book:42".into(),
+                label: "Book of Tilo".into(),
+            });
+
+        let mut handled = false;
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(handled);
+        assert!(host.palette_visible, "Back keeps search open");
+        assert!(chrome.borrow().search_resource_scope.is_none());
+
+        handled = false;
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(handled);
+        assert!(!host.palette_visible, "Escape at the root closes search");
     }
 
     #[test]
@@ -24292,6 +24567,7 @@ mod overlay_event_absorb_tests {
                 id: "directory\u{1f}7\u{1f}r1\u{1f}code.project\u{1f}open".into(),
                 title: "Open project workspace".into(),
                 subtitle: Some("Example project · Code Editor".into()),
+                badge: None,
                 score: 100,
                 params: Vec::new(),
                 contract: Some(tilo_actions::ActionContract::view()),
@@ -24971,6 +25247,32 @@ mod overlay_event_absorb_tests {
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
         h.chrome.borrow_mut().search_scope = SearchScope::Workspace;
+        h.chrome.borrow_mut().search_resource_scope =
+            Some(crate::shell::chrome_state::SearchResourceScope {
+                peer_id: 7,
+                cluster_id: "room:test".into(),
+                app_id: "dev.tilo.reader".into(),
+                resource: "book:42".into(),
+                label: "Book of Tilo".into(),
+            });
+        assert_eq!(
+            h.host.search_scope_pill_label(SearchScope::Workspace),
+            "‹ Book of Tilo",
+            "the selected place pill doubles as a visible resource breadcrumb"
+        );
+
+        paint_then_click(&mut h, |host| {
+            let workspace = host
+                .search_scope_list()
+                .iter()
+                .position(|scope| *scope == SearchScope::Workspace)
+                .expect("workspace scope segment");
+            host.search_scope_pill_rect(workspace).center()
+        });
+        assert!(
+            h.chrome.borrow().search_resource_scope.is_none(),
+            "clicking the visible breadcrumb leaves the nested resource scope"
+        );
 
         // The last segment is All (the scope list is
         // [ActiveApp?, Workspace, All]).
@@ -24984,6 +25286,10 @@ mod overlay_event_absorb_tests {
             h.chrome.borrow().search_scope,
             SearchScope::All,
             "clicking the trailing segment must select the All scope"
+        );
+        assert!(
+            h.chrome.borrow().search_resource_scope.is_none(),
+            "choosing a place leaves the nested resource scope"
         );
     }
 
@@ -25569,6 +25875,24 @@ mod tests {
     use super::*;
     use crate::shell::chrome_state::{ChromeState, WsTab};
     use crate::shell::state::WorkspaceTree;
+
+    #[test]
+    fn screen_exposure_summary_never_hides_an_unknown_viewer_or_target() {
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        chrome.borrow_mut().set_active_exposures(vec![
+            crate::shell::chrome_state::ActiveExposure {
+                peer: 7,
+                surface: 42,
+                can_control: false,
+            },
+        ]);
+
+        let state = chrome.borrow();
+        let summary = collaborators_screen_exposure(&state).expect("live disclosure");
+        assert!(summary.contains(&crate::shell::state::session_handle(7)));
+        assert!(summary.contains("unidentified session"));
+        assert!(summary.contains("views surface 42"));
+    }
 
     #[test]
     fn unseen_activity_reveals_catch_up_only_on_workspace_entry() {

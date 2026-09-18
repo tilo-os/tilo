@@ -196,6 +196,7 @@ struct CacheFingerprint {
     collaborator_initials: Vec<char>,
     collaborator_names: Vec<String>,
     collaborator_overflow: usize,
+    sharing: (usize, usize, usize),
     center_widget: CenterWidget,
     activity_headline: Option<String>,
     activity_unread: usize,
@@ -464,6 +465,8 @@ pub struct TopBarChrome {
     clock_control_focus: Option<u8>,
     /// Click toggles `overlays.collaborators`.
     avatar_stack_rect: Rect,
+    /// Persistent trusted-chrome disclosure of active screen viewers.
+    sharing_indicator_rect: Rect,
     /// Scroll over `center_rect` cycles it, dots jump directly.
     center_widget: CenterWidget,
     activity_headline: Option<String>,
@@ -687,6 +690,7 @@ impl TopBarChrome {
             clock_touch_control: None,
             clock_control_focus: None,
             avatar_stack_rect: Rect::ZERO,
+            sharing_indicator_rect: Rect::ZERO,
             center_widget: CenterWidget::Clock,
             activity_headline: None,
             activity_unread: 0,
@@ -738,6 +742,7 @@ impl TopBarChrome {
             collaborator_initials: self.collaborator_initials.clone(),
             collaborator_names: self.collaborator_names.clone(),
             collaborator_overflow: self.collaborator_overflow,
+            sharing: self.sharing_summary(),
             center_widget: self.center_widget,
             activity_headline: self.activity_headline.clone(),
             activity_unread: self.activity_unread,
@@ -920,7 +925,182 @@ impl TopBarChrome {
     const CONTROL_MEDIA: &'static str = "topbar:media";
 
     fn collaborators_visible(&self) -> bool {
-        !self.collaborator_initials.is_empty() || self.collaborator_overflow > 0
+        !self.collaborator_initials.is_empty()
+            || self.collaborator_overflow > 0
+            || self.sharing_summary().0 > 0
+    }
+
+    /// `(viewers, controllers, surfaces)` from the compositor authority.
+    fn sharing_summary(&self) -> (usize, usize, usize) {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return (0, 0, 0);
+        };
+        let state = chrome.borrow();
+        let mut peers = state
+            .active_exposures()
+            .iter()
+            .map(|row| row.peer)
+            .collect::<Vec<_>>();
+        peers.sort_unstable();
+        peers.dedup();
+        let mut controllers = state
+            .active_exposures()
+            .iter()
+            .filter(|row| row.can_control)
+            .map(|row| row.peer)
+            .collect::<Vec<_>>();
+        controllers.sort_unstable();
+        controllers.dedup();
+        let mut surfaces = state
+            .active_exposures()
+            .iter()
+            .map(|row| row.surface)
+            .collect::<Vec<_>>();
+        surfaces.sort_unstable();
+        surfaces.dedup();
+        (peers.len(), controllers.len(), surfaces.len())
+    }
+
+    /// Named viewers for disclosure prose. Transport ids are joined to the
+    /// active room's live roster through `Collaborator::session`; an unknown
+    /// session remains visible under its deterministic peer handle.
+    fn sharing_viewers(&self) -> Vec<(u64, String, Option<bool>, bool)> {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return Vec::new();
+        };
+        let state = chrome.borrow();
+        let mut authority = Vec::<(u64, bool)>::new();
+        for row in state.active_exposures() {
+            if let Some((_, can_control)) = authority.iter_mut().find(|(peer, _)| *peer == row.peer)
+            {
+                *can_control |= row.can_control;
+            } else {
+                authority.push((row.peer, row.can_control));
+            }
+        }
+        authority.sort_unstable_by_key(|(peer, _)| *peer);
+        let tree = state.tree();
+        let mut viewers = Vec::new();
+        for (peer, can_control) in authority {
+            if let Some((workspace, participant)) = tree.workspaces.iter().find_map(|workspace| {
+                workspace
+                    .collaborators
+                    .iter()
+                    .find(|person| person.session == Some(peer))
+                    .map(|participant| (workspace, participant))
+            }) {
+                let is_agent = workspace.agent_members().iter().any(|(id, _)| {
+                    id.eq_ignore_ascii_case(&participant.id)
+                        || id.eq_ignore_ascii_case(&participant.name)
+                });
+                viewers.push((peer, participant.name.clone(), Some(is_agent), can_control));
+            } else {
+                viewers.push((
+                    peer,
+                    crate::shell::state::session_handle(peer),
+                    None,
+                    can_control,
+                ));
+            }
+        }
+        viewers
+    }
+
+    fn sharing_targets_for_peer(&self, peer: u64) -> (Vec<String>, Vec<String>) {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return (Vec::new(), Vec::new());
+        };
+        let state = chrome.borrow();
+        let mut authority = Vec::<(u64, bool)>::new();
+        for row in state
+            .active_exposures()
+            .iter()
+            .filter(|row| row.peer == peer)
+        {
+            if let Some((_, can_control)) = authority
+                .iter_mut()
+                .find(|(surface, _)| *surface == row.surface)
+            {
+                *can_control |= row.can_control;
+            } else {
+                authority.push((row.surface, row.can_control));
+            }
+        }
+        authority.sort_unstable_by_key(|(surface, _)| *surface);
+        let tree = state.tree();
+        let controlled = authority
+            .iter()
+            .filter(|(_, can_control)| *can_control)
+            .map(|(surface, _)| *surface)
+            .collect();
+        let view_only = authority
+            .iter()
+            .filter(|(_, can_control)| !*can_control)
+            .map(|(surface, _)| *surface)
+            .collect();
+        (
+            Self::sharing_target_labels(&tree, view_only),
+            Self::sharing_target_labels(&tree, controlled),
+        )
+    }
+
+    /// Glance text puts the privacy state before identity so elision can
+    /// shorten a long display name without ever hiding "controls"/"viewing"
+    /// or whether the participant is an agent.
+    fn sharing_label(&self) -> Option<String> {
+        let (viewers, controllers, _) = self.sharing_summary();
+        if viewers == 0 {
+            return None;
+        }
+        let named = self.sharing_viewers();
+        Some(match named.as_slice() {
+            [(_, name, Some(true), true)] => format!("AGENT CONTROLS · {name}"),
+            [(_, name, Some(true), false)] => format!("AGENT VIEWING · {name}"),
+            [(_, name, Some(false), true)] => format!("CONTROLS · {name}"),
+            [(_, name, Some(false), false)] => format!("VIEWING · {name}"),
+            [(_, name, None, true)] => format!("SESSION CONTROLS · {name}"),
+            [(_, name, None, false)] => format!("SESSION VIEWING · {name}"),
+            _ if controllers > 0 => format!("{controllers} CONTROL · {viewers} VIEWING"),
+            _ => format!("{viewers} VIEWING"),
+        })
+    }
+
+    fn sharing_target_labels(
+        tree: &crate::shell::state::WorkspaceTree,
+        surfaces: Vec<u64>,
+    ) -> Vec<String> {
+        surfaces
+            .into_iter()
+            .map(|surface| {
+                tree.workspaces
+                    .iter()
+                    .find_map(|workspace| {
+                        workspace
+                            .strips
+                            .iter()
+                            .flat_map(|strip| &strip.window_groups)
+                            .flat_map(|group| &group.tabs)
+                            .find(|tab| {
+                                matches!(
+                                    &tab.tile,
+                                    crate::shell::state::TileContent::Foreign { surface_id, .. }
+                                        if *surface_id == surface
+                                )
+                            })
+                            .map(|tab| (workspace, tab))
+                    })
+                    .map_or_else(
+                        || format!("surface {surface}"),
+                        |(workspace, tab)| {
+                            if workspace.id == tree.active {
+                                tab.title.clone()
+                            } else {
+                                format!("{} › {}", workspace.name, tab.title)
+                            }
+                        },
+                    )
+            })
+            .collect()
     }
 
     /// The same ordered list drives keyboard cycling, synthetic semantics,
@@ -966,7 +1146,15 @@ impl TopBarChrome {
                     .unwrap_or(Rect::ZERO)
             }
             Self::CONTROL_QUICK_SETTINGS => self.tray_pill_rect,
-            Self::CONTROL_COLLABORATORS => self.avatar_stack_rect,
+            Self::CONTROL_COLLABORATORS => {
+                if self.avatar_stack_rect.is_zero_area() {
+                    self.sharing_indicator_rect
+                } else if self.sharing_indicator_rect.is_zero_area() {
+                    self.avatar_stack_rect
+                } else {
+                    self.avatar_stack_rect.union(self.sharing_indicator_rect)
+                }
+            }
             Self::CONTROL_MEDIA => self.media_indicator_rect,
             _ => Rect::ZERO,
         }
@@ -984,7 +1172,34 @@ impl TopBarChrome {
             Self::CONTROL_CENTER_MONITOR => "Show system monitor".into(),
             Self::CONTROL_CENTER_CALENDAR => "Show calendar".into(),
             Self::CONTROL_QUICK_SETTINGS => "Open quick settings".into(),
-            Self::CONTROL_COLLABORATORS => "Show collaborators".into(),
+            Self::CONTROL_COLLABORATORS => {
+                let named = self.sharing_viewers();
+                if named.is_empty() {
+                    "Show collaborators".into()
+                } else {
+                    let viewers = named
+                        .iter()
+                        .map(|(peer, name, is_agent, _)| {
+                            let kind = match is_agent {
+                                Some(true) => "agent",
+                                Some(false) => "person",
+                                None => "unidentified session",
+                            };
+                            let (view_only, controlled) = self.sharing_targets_for_peer(*peer);
+                            let mut access = Vec::new();
+                            if !controlled.is_empty() {
+                                access.push(format!("can control {}", controlled.join(", ")));
+                            }
+                            if !view_only.is_empty() {
+                                access.push(format!("view only {}", view_only.join(", ")));
+                            }
+                            format!("{name} ({kind}): {}", access.join("; "))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    format!("Screen visible to {viewers}. Show collaborators")
+                }
+            }
             Self::CONTROL_MEDIA => "Privacy settings for active capture".into(),
             _ => "Top bar control".into(),
         }
@@ -2306,6 +2521,88 @@ impl TopBarChrome {
             .saturating_add(usize::from(self.collaborator_overflow > 0))
     }
 
+    /// Paint an explicit, persistent disclosure beside the roster. An eye
+    /// plus a count is retained even for view-only shares; control changes
+    /// the colour and adds a pointer count instead of replacing visibility.
+    fn draw_sharing_indicator(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        right_x: f64,
+    ) -> f64 {
+        let (viewers, controllers, _) = self.sharing_summary();
+        if viewers == 0 {
+            self.sharing_indicator_rect = Rect::ZERO;
+            return right_x;
+        }
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let color = if controllers > 0 {
+            colors.semantic.warning
+        } else {
+            colors.accent[5]
+        };
+        let label = self
+            .sharing_label()
+            .expect("a non-empty sharing summary has glance text");
+        let size = tokens.typography.scale.xs;
+        let available = (right_x - self.center_rect.x1 - 48.0).clamp(28.0, 180.0);
+        let label = text_renderer.elide_to_width_weighted(
+            &label,
+            size,
+            ui::num::f32_of_f64(available),
+            TextWeight::Semibold,
+        );
+        let (label_w, label_h) =
+            text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
+        let width = f64::from(label_w) + 31.0;
+        self.sharing_indicator_rect =
+            Rect::new(right_x - width, center_y - 11.0, right_x, center_y + 11.0);
+        let pill = RoundedRect::from_rect(
+            self.sharing_indicator_rect,
+            ui::chrome::ChromeRole::Selector.radius(theme, 22.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            color.with_alpha_factor(0.18),
+            None,
+            &pill,
+        );
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(
+                self.sharing_indicator_rect.x0 + 7.0,
+                center_y - 6.0,
+                self.sharing_indicator_rect.x0 + 19.0,
+                center_y + 6.0,
+            ),
+            ui::icons::Icon::Eye,
+            color,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &label,
+            size,
+            colors.text_primary,
+            at(
+                transform,
+                (
+                    self.sharing_indicator_rect.x0 + 23.0,
+                    center_y - f64::from(label_h) / 2.0,
+                ),
+            ),
+            None,
+            TextWeight::Semibold,
+        );
+        self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
+    }
+
     /// Sets [`Self::avatar_stack_rect`] to the drawn chip stack's bounds.
     /// An untouched solo workspace deliberately has no collaborator control
     /// in the resting bar; inviting the first person starts in the contextual
@@ -2405,7 +2702,7 @@ impl TopBarChrome {
             *handled = true;
             return;
         }
-        if self.avatar_stack_rect.contains(p) {
+        if self.avatar_stack_rect.contains(p) || self.sharing_indicator_rect.contains(p) {
             state.overlays.collaborators = !state.overlays.collaborators;
             if state.overlays.collaborators {
                 state.overlays.room_activity = false;
@@ -3315,6 +3612,14 @@ impl Widget for TopBarChrome {
             stack_right_x,
         );
 
+        let stack_right_x = self.draw_sharing_indicator(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
         let slot_count = self.draw_avatar_chips(
             scene,
             transform,
@@ -3508,6 +3813,10 @@ impl Widget for TopBarChrome {
                 self.media_indicator_rect,
             ),
             ("topbar_avatar_stack".to_string(), self.avatar_stack_rect),
+            (
+                "topbar_sharing_indicator".to_string(),
+                self.sharing_indicator_rect,
+            ),
             ("topbar_center_clock".to_string(), self.center_dot_rects[0]),
             (
                 "topbar_center_system_monitor".to_string(),
@@ -3752,7 +4061,10 @@ mod calendar_strip_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+    use crate::shell::state::{
+        CapOverride, Strip, Subject, Tab, TileContent, Verb, WindowGroup, WindowWidth, Workspace,
+        WorkspaceId, WorkspaceTree,
+    };
 
     #[test]
     fn desktop_topbar_uses_scaled_tokens_once_and_contains_workspace_text() {
@@ -4338,6 +4650,182 @@ mod tests {
             !chrome.borrow().overlays.room_activity,
             "a presence face represents People; activity has its own explicit route"
         );
+    }
+
+    #[test]
+    fn live_share_is_persistent_visible_named_and_accessible() {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        tree.workspaces[0]
+            .collaborators
+            .push(crate::shell::state::Collaborator::new("ada", "Ada").with_session(7));
+        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+        chrome.borrow_mut().set_active_exposures(vec![
+            crate::shell::chrome_state::ActiveExposure {
+                peer: 7,
+                surface: 42,
+                can_control: true,
+            },
+        ]);
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+        lay_out_and_draw(&mut bar, 1600.0);
+
+        assert!(
+            !bar.sharing_indicator_rect.is_zero_area(),
+            "an active exposure must paint trusted chrome"
+        );
+        let node = bar.accessibility().expect("topbar semantics");
+        assert!(node.children.iter().any(|child| {
+            child.action_target.as_deref() == Some(TopBarChrome::CONTROL_COLLABORATORS)
+                && child.name.as_deref().is_some_and(|name| {
+                    name.contains("visible to Ada (person): can control surface 42")
+                })
+        }));
+    }
+
+    #[test]
+    fn disclosure_attributes_each_surface_to_its_actual_viewer() {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        tree.workspaces[0].collaborators.extend([
+            crate::shell::state::Collaborator::new("ada", "Ada").with_session(7),
+            crate::shell::state::Collaborator::new("lin", "Lin").with_session(9),
+        ]);
+        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+        chrome.borrow_mut().set_active_exposures(vec![
+            crate::shell::chrome_state::ActiveExposure {
+                peer: 7,
+                surface: 42,
+                can_control: false,
+            },
+            crate::shell::chrome_state::ActiveExposure {
+                peer: 9,
+                surface: 43,
+                can_control: true,
+            },
+            crate::shell::chrome_state::ActiveExposure {
+                peer: 7,
+                surface: 44,
+                can_control: true,
+            },
+        ]);
+        let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+        let disclosure = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
+        assert!(
+            disclosure.contains("Ada (person): can control surface 44; view only surface 42"),
+            "{disclosure}"
+        );
+        assert!(
+            disclosure.contains("Lin (person): can control surface 43"),
+            "{disclosure}"
+        );
+        assert!(!disclosure.contains("Ada (person): can control surface 43"));
+        assert!(!disclosure.contains("Lin (person): can control surface 42"));
+    }
+
+    #[test]
+    fn agent_viewer_is_never_described_as_a_person() {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        let workspace = &mut tree.workspaces[0];
+        workspace.owner = Some("owner".to_string());
+        let room = workspace.id.raw().to_string();
+        workspace
+            .grant_as(
+                &"owner".to_string(),
+                CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
+            )
+            .expect("owner admits agent");
+        workspace.collaborators.push(
+            crate::shell::state::Collaborator::new("scribe", "Release Notes Agent").with_session(9),
+        );
+        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+        chrome.borrow_mut().set_active_exposures(vec![
+            crate::shell::chrome_state::ActiveExposure {
+                peer: 9,
+                surface: 42,
+                can_control: false,
+            },
+        ]);
+        let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+
+        let name = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
+        assert!(
+            name.contains("Release Notes Agent (agent): view only surface 42"),
+            "{name}"
+        );
+        assert!(!name.contains("Release Notes Agent (person"), "{name}");
+        assert_eq!(
+            bar.sharing_label().as_deref(),
+            Some("AGENT VIEWING · Release Notes Agent"),
+            "critical privacy state must precede the elidable display name"
+        );
+    }
+
+    #[test]
+    fn disclosure_keeps_identity_and_target_when_user_switches_workspaces() {
+        let mut tree = two_workspace_tree();
+        let shared = &mut tree.workspaces[1];
+        shared.name = "Private".into();
+        shared.owner = Some("owner".into());
+        let room = shared.id.raw().to_string();
+        shared
+            .grant_as(
+                &"owner".to_string(),
+                CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
+            )
+            .unwrap();
+        shared
+            .collaborators
+            .push(crate::shell::state::Collaborator::new("scribe", "scribe").with_session(9));
+        let mut strip = Strip::new(crate::shell::state::StripId::new(), "Main");
+        let tab_id = crate::shell::state::next_id();
+        strip.window_groups.push(WindowGroup {
+            id: crate::shell::state::next_id(),
+            tabs: vec![Tab {
+                id: tab_id,
+                title: "Draft".into(),
+                tile: TileContent::Foreign {
+                    app_id: "dev.tilo.editor".into(),
+                    surface_id: 42,
+                },
+            }],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        shared.strips.push(strip);
+
+        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+        chrome.borrow_mut().set_active_exposures(vec![
+            crate::shell::chrome_state::ActiveExposure {
+                peer: 9,
+                surface: 42,
+                can_control: true,
+            },
+        ]);
+        let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+        let name = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
+        assert!(
+            name.contains("scribe (agent): can control Private › Draft"),
+            "{name}"
+        );
+        assert!(!name.contains("unidentified session"), "{name}");
     }
 
     /// Asserts the colours differ AND move with the theme, which a
