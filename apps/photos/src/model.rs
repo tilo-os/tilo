@@ -36,6 +36,15 @@ pub struct ImageAnalysis {
     /// decide whether to trust or refresh it without leaking local paths.
     #[serde(default)]
     pub provenance: AnalysisProvenance,
+    /// Provenance for the text currently stored in `ocr_text`. Kept separate
+    /// from visual analysis so a later OCR or vision job cannot erase the
+    /// other component's audit trail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_provenance: Option<AnalysisProvenance>,
+    /// Provenance for `description`, `objects`, and `pets`. Older records use
+    /// `provenance`; newly produced records populate this field explicitly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_provenance: Option<AnalysisProvenance>,
 }
 
 /// The bounded provenance attached to an analysis result.
@@ -115,6 +124,35 @@ impl ImageAnalysis {
             && self.objects.is_empty()
             && self.pets.is_empty()
             && self.people.is_empty()
+    }
+
+    /// The vision component that belongs to `content`, if one has been
+    /// completed. Empty model output still counts: completion provenance is
+    /// what prevents a whole-library scan from retrying a blank scene forever.
+    #[must_use]
+    pub fn vision_provenance_for_content(
+        &self,
+        content: Option<&str>,
+    ) -> Option<&AnalysisProvenance> {
+        let provenance = self.vision_provenance.as_ref().or_else(|| {
+            matches!(
+                self.provenance.source.as_str(),
+                "local-vision" | "local-description"
+            )
+            .then_some(&self.provenance)
+        })?;
+        match content {
+            Some(content) => (provenance.content == content).then_some(provenance),
+            None => provenance.content.is_empty().then_some(provenance),
+        }
+    }
+
+    /// Whether the current bytes have already been processed by this exact
+    /// signed model revision.
+    #[must_use]
+    pub fn has_vision_component(&self, content: Option<&str>, model_revision: &str) -> bool {
+        self.vision_provenance_for_content(content)
+            .is_some_and(|provenance| provenance.model_revision == model_revision)
     }
 }
 
@@ -634,6 +672,38 @@ mod tests {
             ..ImageAnalysis::default()
         };
         assert_eq!(analysis.searchable_text(), "MARKET sign");
+    }
+
+    #[test]
+    fn vision_eligibility_requires_matching_content_and_model_revision() {
+        let analysis = ImageAnalysis {
+            ocr_text: "receipt".into(),
+            provenance: AnalysisProvenance {
+                source: "local-ocr".into(),
+                content: "a".repeat(64),
+                ..Default::default()
+            },
+            ocr_provenance: Some(AnalysisProvenance {
+                source: "local-ocr".into(),
+                content: "a".repeat(64),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!analysis.has_vision_component(Some(&"a".repeat(64)), &"b".repeat(64)));
+
+        let analysis = ImageAnalysis {
+            vision_provenance: Some(AnalysisProvenance {
+                source: "local-vision".into(),
+                model_revision: "b".repeat(64),
+                content: "a".repeat(64),
+                ..Default::default()
+            }),
+            ..analysis
+        };
+        assert!(analysis.has_vision_component(Some(&"a".repeat(64)), &"b".repeat(64)));
+        assert!(!analysis.has_vision_component(Some(&"c".repeat(64)), &"b".repeat(64)));
+        assert!(!analysis.has_vision_component(Some(&"a".repeat(64)), &"d".repeat(64)));
     }
 
     #[test]

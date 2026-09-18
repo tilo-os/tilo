@@ -77,6 +77,7 @@ pub mod places;
 pub mod reference;
 pub mod search;
 pub mod strings;
+mod timeline_projection;
 
 pub use app::PhotosApp;
 pub use model::{Edits, LocationProvenance, OpenImage, PhotoLocation, Rect01};
@@ -383,11 +384,22 @@ pub fn seed_scenario(
             .enumerate()
             {
                 let sample_path = dir.join(format!("{name}.png"));
-                let fixture = shots_pattern_variant(1200, 800, variant as u8);
+                // Exercise the real justified chronology with the landscape,
+                // portrait, square and panoramic shapes a photo library
+                // actually contains. Keeping acceptance fixtures all 3:2
+                // made serious row-packing regressions visually invisible.
+                let (width, height) = match variant % 5 {
+                    0 => (900, 600),
+                    1 => (600, 900),
+                    2 => (800, 800),
+                    3 => (1_200, 675),
+                    _ => (720, 960),
+                };
+                let fixture = shots_pattern_variant(width, height, variant as u8);
                 if let Some(bytes) = pixels::encode_png(&fixture) {
                     let _ = std::fs::write(&sample_path, bytes);
                 }
-                let image = OpenImage::from_path(&sample_path.to_string_lossy(), 1200, 800);
+                let image = OpenImage::from_path(&sample_path.to_string_lossy(), width, height);
                 let mut photo = crate::model::LibraryPhoto::from_image(image);
                 photo.favorite =
                     matches!(name, "Summer trail" | "Dog at the lake" | "Sunset ferry");
