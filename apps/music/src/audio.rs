@@ -1,9 +1,9 @@
 //! Audio output engine.
 //!
 //! Real playback uses a `GStreamer` `playbin` (gated behind the `audio` cargo
-//! feature). The default build compiles a silent stub with the same public
-//! surface, so the UI, the offline `--shots` screenshot and CI stay free of a
-//! system `GStreamer` dependency.
+//! feature, enabled by default). Builds without `audio` use a silent stub
+//! with the same public surface; those builds can render screenshots without
+//! a system `GStreamer` dependency.
 //!
 //! ## Real audio out — an explicit sink chain, never a `fakesink`
 //!
@@ -11,7 +11,7 @@
 //! `audioconvert ! audioresample ! autoaudiosink` — so decoded PCM is
 //! converted to whatever the system sink wants and handed to `autoaudiosink`,
 //! which auto-plugs the real desktop sink (`pipewiresink` / `pulsesink` /
-//! `alsasink`). A buffer pad-probe on the sink's input counts every decoded
+//! `alsasink` on Linux, WASAPI on Windows). A buffer pad-probe on the sink's input counts every decoded
 //! PCM buffer that actually reaches it ([`AudioEngine::frames_rendered`]), and
 //! [`AudioEngine::actual_audio_sink_name`] reports which concrete sink
 //! `autoaudiosink` selected, so a test can assert real audio is flowing to a
@@ -34,7 +34,8 @@
 //!
 //! ## System dependency (host + OS image)
 //!
-//! Audible output needs, in the runtime environment:
+//! Audible output needs the host GStreamer runtime, including an audio sink
+//! (WASAPI on Windows) and AAC/Opus decoders. On Fedora, install:
 //! - a `GStreamer` **audio sink** plugin — `gstreamer1-plugin-pipewire`
 //!   (`pipewiresink`) and/or `gstreamer1-plugins-good` (`pulsesink`), plus a
 //!   running PipeWire/Pulse server. Without one, `autoaudiosink` silently
@@ -562,7 +563,21 @@ impl AudioEngine {
                 if let Some((path, want)) = staged {
                     let has_bytes = std::fs::metadata(&path).is_ok_and(|m| m.len() > 0);
                     if has_bytes {
-                        let uri = format!("file://{}", path.display());
+                        let uri = match media::source::path_to_file_uri(&path) {
+                            Ok(uri) => uri,
+                            Err(error) => {
+                                self.inner
+                                    .errored
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                                if let Ok(mut message) = self.inner.error_msg.lock() {
+                                    *message = Some(format!("cannot open staged audio: {error}"));
+                                }
+                                if let Some(pending) = &mut self.inner.pending {
+                                    pending.started = true;
+                                }
+                                return true;
+                            }
+                        };
                         let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
                         tracing::info!(target: "music::audio", %uri, bytes, want_play = want, "staged file ready — switching playbin to local file and rolling");
                         let _ = self.inner.playbin.set_state(gstreamer::State::Null);
@@ -1223,7 +1238,8 @@ mod tests {
             listener.accept(),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
         ));
-        let _ = std::fs::remove_file(path);
+        drop(file);
+        std::fs::remove_file(path).expect("release download fixture");
     }
 
     #[cfg(all(feature = "audio", feature = "live"))]
@@ -1265,7 +1281,61 @@ mod tests {
         );
         server.join().expect("server");
         assert!(std::fs::metadata(&path).expect("partial metadata").len() <= 1_048_576);
-        let _ = std::fs::remove_file(path);
+        drop(file);
+        std::fs::remove_file(path).expect("release download fixture");
+    }
+
+    #[cfg(all(feature = "audio", feature = "live"))]
+    #[test]
+    fn staged_file_pump_uses_native_uri_and_renders_audio() {
+        use gstreamer::prelude::*;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+
+        let path = std::env::temp_dir().join(format!(
+            "tilo-music-staged-音 # %-{}.wav",
+            std::process::id()
+        ));
+        let wav = sine_wav(1, 44_100);
+        std::fs::write(&path, &wav).expect("staged audio bytes");
+        let mut engine = AudioEngine::new();
+        engine.set_volume(0.05);
+        // The transfer has completed; drive the same pending-file transition
+        // that the download worker exposes to the production pump.
+        engine.inner.pending = Some(Pending {
+            path: path.clone(),
+            ready: Arc::new(AtomicBool::new(true)),
+            done: Arc::new(AtomicBool::new(true)),
+            fetched: Arc::new(AtomicU64::new(wav.len() as u64)),
+            expected: Arc::new(AtomicU64::new(wav.len() as u64)),
+            want_play: true,
+            started: false,
+        });
+        assert!(!engine.pump(), "staged audio did not report an error");
+        assert!(engine.wait_until_playing(std::time::Duration::from_secs(5)));
+        let uri = engine
+            .inner
+            .playbin
+            .property::<Option<String>>("current-uri")
+            .expect("playbin committed the staged URI after entering PLAYING");
+        assert_eq!(url::Url::parse(&uri).unwrap().to_file_path().unwrap(), path);
+        for _ in 0..80 {
+            if engine.frames_rendered() > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            engine.frames_rendered() > 0,
+            "staged PCM reached the native sink"
+        );
+        assert_eq!(engine.audio_sink_is_real(), Some(true));
+        engine.stop();
+        engine.clear_pending();
+        assert!(
+            !path.exists(),
+            "stopped staged audio releases its temporary file"
+        );
     }
 
     #[test]
@@ -1282,17 +1352,6 @@ mod tests {
         assert_eq!(AudioEngine::is_live(), cfg!(feature = "audio"));
     }
 
-    /// Whether a running PipeWire/Pulse audio server is reachable, so the real
-    /// sink can actually open a device. Without one, `autoaudiosink` can't reach
-    /// `PLAYING` — the test then skips honestly rather than pretending, and
-    /// never substitutes a `fakesink` to force a green.
-    #[cfg(feature = "audio")]
-    fn have_audio_server() -> bool {
-        let run = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
-        run.is_some_and(|d| d.join("pipewire-0").exists() || d.join("pulse/native").exists())
-            || std::env::var_os("PULSE_SERVER").is_some()
-    }
-
     /// **Real audible-output proof** (under `--features audio`): a locally
     /// generated WAV is decoded by `playbin` and rendered through the real
     /// `autoaudiosink` sink chain — NOT a `fakesink`. Asserts:
@@ -1302,9 +1361,8 @@ mod tests {
     ///   * the concrete sink `autoaudiosink` plugged is a **real** audio sink
     ///     (`pulsesink`/`pipewiresink`/`alsasink`), never a `fakesink`.
     ///
-    /// Skips honestly if the environment lacks the WAV decode plugins or a
-    /// running audio server (no sound card in CI) — it never falls back to a
-    /// `fakesink` to manufacture a pass.
+    /// Requires WAV decode plugins and a real platform audio endpoint. Missing
+    /// prerequisites fail this proof; a fake sink cannot establish playback.
     #[cfg(feature = "audio")]
     #[test]
     fn real_sink_renders_audio_and_is_not_fakesink() {
@@ -1317,23 +1375,19 @@ mod tests {
             "audioresample",
             "autoaudiosink",
         ];
-        let have_plugins = need
-            .iter()
-            .all(|n| gstreamer::ElementFactory::find(n).is_some());
-        if !have_plugins {
-            eprintln!("[audio test] skipped — missing decode/sink plugins {need:?}");
-            return;
-        }
-        if !have_audio_server() {
-            eprintln!("[audio test] skipped — no PipeWire/Pulse server (no sound card here)");
-            return;
-        }
+        assert!(
+            need.iter()
+                .all(|name| gstreamer::ElementFactory::find(name).is_some()),
+            "real audio proof requires decode/sink plugins {need:?}"
+        );
 
         // Write ~1s of quiet 16-bit-mono PCM sine (44.1 kHz) as a real WAV.
-        let path =
-            std::env::temp_dir().join(format!("tilo-music-audio-{}.wav", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "tilo-music-audio-音 # %-{}.wav",
+            std::process::id()
+        ));
         std::fs::write(&path, sine_wav(1, 44_100)).expect("write test wav");
-        let uri = format!("file://{}", path.display());
+        let uri = media::source::path_to_file_uri(&path).expect("native audio file URI");
 
         let mut engine = AudioEngine::new();
         engine.set_volume(0.05); // audible path, but keep the test quiet
@@ -1388,7 +1442,7 @@ mod tests {
     /// was the reported "can't seek while playing" bug. Uses a fully-seekable
     /// local file so this exercises the real `seek_simple` path.
     ///
-    /// Skips honestly when the decode/sink plugins or an audio server are absent.
+    /// Requires decode/sink plugins and a real platform audio endpoint.
     #[cfg(feature = "audio")]
     #[test]
     fn seek_while_playing_repositions_and_keeps_playing() {
@@ -1400,22 +1454,17 @@ mod tests {
             "audioresample",
             "autoaudiosink",
         ];
-        if !need
-            .iter()
-            .all(|n| gstreamer::ElementFactory::find(n).is_some())
-        {
-            eprintln!("[seek test] skipped — missing decode/sink plugins {need:?}");
-            return;
-        }
-        if !have_audio_server() {
-            eprintln!("[seek test] skipped — no PipeWire/Pulse server");
-            return;
-        }
+        assert!(
+            need.iter()
+                .all(|name| gstreamer::ElementFactory::find(name).is_some()),
+            "real seek proof requires decode/sink plugins {need:?}"
+        );
 
         // ~6 s of audio so a 50% seek lands at a clear ~3 s offset.
-        let path = std::env::temp_dir().join(format!("tilo-music-seek-{}.wav", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("tilo-music-seek-音 # %-{}.wav", std::process::id()));
         std::fs::write(&path, sine_wav(6, 44_100)).expect("write test wav");
-        let uri = format!("file://{}", path.display());
+        let uri = media::source::path_to_file_uri(&path).expect("native audio file URI");
 
         let mut engine = AudioEngine::new();
         engine.set_volume(0.05);

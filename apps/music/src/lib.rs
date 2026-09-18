@@ -15,7 +15,7 @@
 //! - [`audio`] — `GStreamer` `playbin` output + live position query (`audio`
 //!   feature).
 //! - [`lyrics`] — LRC parsing + a bundled sample library, plus a feature-gated
-//!   async lrclib fetch worker (`lyrics` feature).
+//!   async lrclib fetch worker (`live` or `lyrics` feature).
 //! - the platform app document + action host — canonical shared library state,
 //!   collaboration, history, and peer replication. Audio transport/cache stay
 //!   device-local.
@@ -23,8 +23,8 @@
 //! - [`art`] / [`icon`] — procedural cover art + vector chrome glyphs.
 //! - [`app`] — the root [`MusicApp`] widget that draws the whole UI.
 //!
-//! `app_root()` is the single integration point used by both the live event
-//! loop and the `--shots` offscreen renderer.
+//! Live launches use `app_root_with_args()`; hermetic screenshots use
+//! `app_root_for_shot()` without loading a personal profile.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -87,7 +87,8 @@ pub fn searchable_types() -> Vec<SearchableType> {
 ///
 /// This is the live-binary entry (not `--shots`/tests), so it also brings up
 /// the MPRIS D-Bus service (media keys + the desktop media controls). MPRIS
-/// degrades to a no-op stub without the `audio` feature or a session bus, so
+/// degrades to a no-op stub on unsupported hosts, without the `audio` feature,
+/// or without a session bus, so
 /// this never fails.
 pub fn app_root() -> Box<dyn Widget> {
     let mut app = MusicApp::new();
