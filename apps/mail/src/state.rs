@@ -136,6 +136,9 @@ pub enum Intent {
     Engine(EngineRequest),
     /// Surface a transient status toast.
     Toast(String),
+    /// Ask the app-owned modal layer to confirm an all-Trash bulk purge. The
+    /// selection remains local; no purge action is authored until confirmed.
+    ConfirmBulkPurge,
 }
 
 /// The whole app's mutable state, minus the transient overlays (composer,

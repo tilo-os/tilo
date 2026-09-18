@@ -832,6 +832,10 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
 /// same action the on-screen affordance dispatches.
 /// Stable mailbox root. Accounts, folders and messages are dynamic children
 /// served through Mail's retained provider rather than root browse pages.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the mailbox resource catalogue is intentionally kept together so its typed action surface can be audited as one unit"
+)]
 pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
     let mut root = Resource::new("mail.mailbox", "mail.mailbox", ctx.mailbox_label.clone());
 
@@ -1374,7 +1378,7 @@ mod tests {
         let resources = Widget::resources(&app, &state.doc);
         let id = app.mail_resource_ctx(&state.doc).messages[0].id.clone();
         let address = tilo_actions::ActionAddress::new("mail.mailbox", "archive-messages");
-        let args = serde_json::json!({"ids": [id.clone(), id.clone()]});
+        let args = serde_json::json!({"ids": [id.clone(), id]});
         let encoded = tilo_actions::door::encode_json(
             &resources,
             &address,

@@ -69,6 +69,8 @@ pub fn main() {
                 "search",
                 "preview",
                 "bulk",
+                "bulk_purge_confirmation",
+                "reply",
                 "loading",
                 "empty",
                 "offline",
