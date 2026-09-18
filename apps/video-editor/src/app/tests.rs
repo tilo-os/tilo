@@ -743,9 +743,11 @@ fn write_real_png(w: u32, h: u32) -> std::path::PathBuf {
     png.extend_from_slice(&h.to_be_bytes());
     png.extend_from_slice(&[8, 2, 0, 0, 0]);
     let f = std::env::temp_dir().join(format!(
-        "tilo-ve-import-app-{}-{}.png",
+        "tilo-ve-import-app-{}-{}-{}x{}.png",
         std::process::id(),
-        w
+        Uuid::new_v4(),
+        w,
+        h,
     ));
     std::fs::write(&f, &png).unwrap();
     f
@@ -756,9 +758,8 @@ fn write_real_png(w: u32, h: u32) -> std::path::PathBuf {
 /// disclosure that stand-in is indistinguishable from the real footage.
 #[test]
 fn media_whose_bytes_are_absent_is_disclosed_in_the_bin() {
-    // Its own file: `write_real_png` keys its temp name on the width, and
-    // this test deletes the file, which would pull it out from under any
-    // sibling test that happened to pick the same size.
+    // Its own path: this test deliberately deletes the source after copying
+    // it, so a shared fixture would pull bytes out from under a sibling test.
     let src = write_real_png(640, 360);
     let f = std::env::temp_dir().join(format!("tilo-ve-absent-{}.png", std::process::id()));
     std::fs::copy(&src, &f).unwrap();
