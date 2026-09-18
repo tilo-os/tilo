@@ -13,7 +13,12 @@ source_epoch=${SOURCE_DATE_EPOCH:-0}
     printf 'SOURCE_DATE_EPOCH must be a non-negative integer\n' >&2
     exit 2
 }
-max_qpkg_bytes=${MAX_QPKG_BYTES:-10000000}
+policy_max_qpkg_bytes=5242880
+max_qpkg_bytes=${MAX_QPKG_BYTES:-$policy_max_qpkg_bytes}
+[[ $max_qpkg_bytes =~ ^[0-9]+$ ]] \
+    || { printf 'MAX_QPKG_BYTES must be an integer\n' >&2; exit 1; }
+(( max_qpkg_bytes <= policy_max_qpkg_bytes )) \
+    || { printf 'MAX_QPKG_BYTES cannot exceed the 5 MiB app policy\n' >&2; exit 1; }
 target_dir=$(realpath -m "${CARGO_TARGET_DIR:-$repo_root/target}")
 release_dir=$target_dir/release
 thin_app_dir=$target_dir/thin-app
@@ -94,7 +99,7 @@ while IFS=$'\t' read -r name package binary id version manifest; do
         --identity "$identity" --output "$qpkg"
     "$release_dir/tilo-pkg" verify --trusted-key "$pubkey" "$qpkg"
     qpkg_bytes=$(stat -c %s "$qpkg")
-    (( qpkg_bytes < max_qpkg_bytes )) || {
+    (( qpkg_bytes <= max_qpkg_bytes )) || {
         printf '%s is %s bytes (limit %s); shared-runtime packaging regressed\n' \
             "$qpkg" "$qpkg_bytes" "$max_qpkg_bytes" >&2
         exit 1

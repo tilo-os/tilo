@@ -7,6 +7,7 @@
 //! balanced-group (well-formedness) guarantee.
 
 use super::*;
+use qdoc::MarkSpan;
 use qdoc::document::MarkValue;
 use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
 use std::collections::BTreeMap;
