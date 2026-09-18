@@ -12,8 +12,8 @@
 //!   remotes, with fetch / pull / push actions and ahead/behind tracking.
 //!
 //! The live binary reads a real repository through [`repo`] (libgit2 via
-//! `git2`). When no repository is reachable — notably the headless
-//! `--shots` renderer — it falls back to a bundled, realistic [`sample`]
+//! `git2`). When no repository is reachable it opens an empty repository
+//! picker. The explicit `--shots` renderer uses a bundled [`sample`]
 //! so the screenshot shows a fully populated state offline. All rendering
 //! is theme-driven; durable UI preferences live in the CRDT via
 //! [`settings`].

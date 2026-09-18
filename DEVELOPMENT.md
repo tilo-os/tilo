@@ -63,8 +63,8 @@ Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
 Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
-Photos, Hex Editor, Code Editor, API Tester, Diff and Merge, Snippets and Database
-Client have been built and run on Windows.
+Photos, Hex Editor, Code Editor, API Tester, Diff and Merge, Snippets, Database
+Client and Git Client have been built and run on Windows.
 Other apps are still being ported; a workspace-wide build currently includes
 Linux services and is not a Windows
 application build command.
@@ -314,6 +314,18 @@ cargo test --locked -p db-client --lib
 The live database tests require the server flags and connection settings described
 in `apps/db-client/tests/live_roundtrip.rs`. An ordinary test run without those
 flags does not verify PostgreSQL or MySQL connectivity.
+
+Git Client opens local repositories, including Unicode Windows paths, and supports
+staging, commits, history, branches and local filesystem remotes. Text fields and
+repository opening work through native Windows accessibility. Its toolbar wraps
+to retain every control in narrow windows. Discard operations respect the
+repository's LF/CRLF checkout policy. HTTPS and SSH transports are not yet enabled
+in the current Git dependency configuration.
+
+```powershell
+cargo test --locked -p git-client --all-targets
+./tools/install-windows-apps.ps1 -Apps git-client
+```
 
 Unchanged shared fonts are preserved during installation, so a running Tilo app
 does not prevent installing another app. If font contents change, close running
