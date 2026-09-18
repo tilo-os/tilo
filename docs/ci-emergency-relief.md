@@ -166,12 +166,14 @@ Normal main revision `6d221fd9` supplied these actual workflow observations:
 | Request | Pinned image | Received to container creation | Observed result |
 | --- | --- | --- | --- |
 | Check 22761, builder job 83565, task 75054 | `ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5` | 22:55:12.230 to 22:55:12.766 UTC: 535.6 ms | Job succeeded at 22:55:27.021, about 14.8 seconds after receipt |
-| Lint 22762, job 83571, task 75056 | `ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a` | 22:55:20.276 to 22:55:20.620 UTC: 343.9 ms | Policy completed by 22:56:12; dependency-usage analysis still running at that observation |
+| [Lint 22762](https://code.podesta.ai/qos/qos/actions/runs/9318), job 83571, task 75056 | `ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a` | 22:55:20.276 to 22:55:20.620 UTC: 343.9 ms | Succeeded at 22:57:28.187: 127.911 seconds from task receipt through policy, cargo-deny and cargo-machete |
 
 Neither log contained a Docker pull event. These intervals are **task receipt to
 container creation**, not pull-to-create or isolated network timings. They prove
-warm startup for these normal pinned control/quality jobs, not success of the
-entire check or lint run. Cloud/ARM cold startup remains outside this proof.
+warm startup for these normal pinned control/quality jobs. The complete lint run
+is now successful; the complete check run is not claimed green. The linked UI run
+9318 corresponds to API run ID 22762 and exact main SHA
+`6d221fd91261761bfbadbc36b3ff30f901857a9c`. Cloud/ARM cold startup remains outside this proof.
 The separate generic full-builder pilot 22744 measured a **236.876-second cold
 pull**; do not represent these two lean-image hits as eliminating that path.
 
