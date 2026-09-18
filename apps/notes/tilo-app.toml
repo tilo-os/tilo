@@ -41,5 +41,5 @@ splash-segments = ["bin/notes[0x0:0x400000]"]
 splash-budget   = 250
 
 [providers]
-mime = []
-ext  = []
+mime = ["text/markdown", "text/x-markdown"]
+ext  = ["md", "markdown"]

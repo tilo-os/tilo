@@ -222,7 +222,11 @@ impl SearchProvider for NoteSearchProvider {
             .iter()
             .find(|page| crate::actions::open_page_address(page.id) == *address)
         {
-            return Some(crate::actions::page_resource(page, &snapshot.pages));
+            return Some(crate::actions::page_resource(
+                page,
+                &snapshot.pages,
+                &automerge::AutoCommit::new(),
+            ));
         }
         snapshot.blocks.iter().find_map(|(page, blocks)| {
             blocks
