@@ -436,11 +436,7 @@ impl PdfApp {
         if let Some((page, pt)) = self.hit_page(p)
             && let Some(target) = self.delete_target_at(page, pt)
         {
-            self.context_menu = Some(ContextMenu {
-                at: p,
-                target,
-                item_rect: Rect::ZERO,
-            });
+            self.context_menu = Some(ContextMenu::delete(target, p, self.rect));
             self.dirty = true;
             return true;
         }
@@ -732,17 +728,6 @@ impl PdfApp {
                 return true;
             }
             self.commit_edit(state);
-        }
-        // An open context menu intercepts the next click.
-        if let Some(menu) = self.context_menu.clone() {
-            if menu.item_rect.contains(p) {
-                self.delete_target(&menu.target, state);
-            } else {
-                self.context_menu = None;
-                self.dirty = true;
-            }
-            *handled = true;
-            return true;
         }
         if let Some(hit) = self.toolbar_hit(p) {
             self.apply_toolbar(&hit, state);
@@ -2414,22 +2399,18 @@ mod event_tests {
     }
 
     #[test]
-    fn context_menu_delete_item_rect_is_captured_on_draw() {
+    fn context_menu_delete_item_rect_comes_from_shared_widget() {
         let (mut app, _st) = app();
-        let theme = ui::theme::Theme::dark();
-        let mut tr = ui::text_render::TextRenderer::new();
         let target = DeleteTarget::Annotation("anno".into());
-        app.context_menu = Some(ContextMenu {
-            at: Point::new(400.0, 400.0),
+        app.context_menu = Some(ContextMenu::delete(
             target,
-            item_rect: Rect::ZERO,
-        });
-        let mut scene = vello::Scene::new();
-        app.draw_context_menu(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            Point::new(400.0, 400.0),
+            app.rect,
+        ));
         let menu = app.context_menu.as_ref().unwrap();
         assert!(
-            menu.item_rect.area() > 1.0,
-            "the Delete item rect is captured for hit-testing"
+            menu.widget.item_rect(0).is_some_and(|rect| rect.area() > 1.0),
+            "the shared Delete row reports exact hit geometry"
         );
     }
 
@@ -2519,13 +2500,26 @@ mod event_tests {
 
         let note_id = right_click_seeded_note(&mut app, &mut st, &taffy, node, mods, dev);
 
-        // A draw pass captures the Delete item rect (exactly as it does live).
-        let theme = ui::theme::Theme::dark();
-        let mut tr = ui::text_render::TextRenderer::new();
-        let mut scene = vello::Scene::new();
-        app.draw_context_menu(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        let item = app.context_menu.as_ref().unwrap().item_rect;
-        assert!(item.area() > 1.0, "the Delete item rect is captured");
+        let semantics = Widget::accessibility(&app).expect("PDF semantic root");
+        let menu = semantics
+            .children
+            .iter()
+            .find(|node| node.role == ui::a11y::Role::Menu)
+            .expect("open shared menu is exposed");
+        assert_eq!(menu.children[0].name.as_deref(), Some("Delete"));
+        assert!(
+            !menu.children[0].state.focused,
+            "destructive-only menus require an explicit choice"
+        );
+        assert!(Widget::traps_focus(&app));
+        assert!(Widget::modal_capture(&app).is_some());
+
+        let item = app
+            .context_menu
+            .as_ref()
+            .and_then(|menu| menu.widget.item_rect(0))
+            .unwrap();
+        assert!(item.area() > 1.0, "the shared Delete row has hit bounds");
 
         // Left-click the Delete item removes the annotation from the doc.
         let before = app.annotations.len();
@@ -2576,6 +2570,51 @@ mod event_tests {
                 .any(|a| a.id == note_id),
             "and it is gone from the shared document"
         );
+    }
+
+    #[test]
+    fn context_menu_enter_deletes_through_shared_keyboard_route() {
+        let mut app = PdfApp::sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        app.go_to_page(1);
+
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let note_id = right_click_seeded_note(
+            &mut app,
+            &mut st,
+            &taffy,
+            node,
+            mods,
+            dummy_device_id(),
+        );
+
+        feed_event(
+            &mut app,
+            &mut st,
+            &taffy,
+            node,
+            mods,
+            &key_event(Key::Named(NamedKey::ArrowDown)),
+        );
+        feed_event(
+            &mut app,
+            &mut st,
+            &taffy,
+            node,
+            mods,
+            &key_event(Key::Named(NamedKey::Enter)),
+        );
+        assert!(app.context_menu.is_none());
+        assert!(!app.annotations.iter().any(|annotation| annotation.id == note_id));
+        assert!(!PdfDoc::list_annotations(&st.doc)
+            .iter()
+            .any(|annotation| annotation.id == note_id));
     }
 
     /// A Select-tool press-move-release past `PAN_SLOP` pans the canvas and

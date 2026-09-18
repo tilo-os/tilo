@@ -1411,13 +1411,13 @@ impl Clip {
         let Some(index) = self.effect_index(id) else {
             return false;
         };
-        self.effects.remove(index);
+        self.remove_effect(index);
         true
     }
 
     /// Move the named effect instance one slot toward the beginning/end of
-    /// the stack. The identity moves with the effect; animation remains
-    /// positional for compatibility with existing projects.
+    /// the stack. The identity and its positional animation curve move
+    /// together.
     pub fn move_effect_id(&mut self, id: Uuid, up: bool) -> bool {
         let Some(index) = self.effect_index(id) else {
             return false;
@@ -1431,12 +1431,14 @@ impl Clip {
             return false;
         };
         self.effects.swap(index, target);
+        self.anim.swap_effect_slots(index as u32, target as u32);
         true
     }
     /// Remove the effect at `idx` (no-op if out of range).
     pub fn remove_effect(&mut self, idx: usize) {
         if idx < self.effects.len() {
             self.effects.remove(idx);
+            self.anim.remove_effect_slot(idx as u32);
         }
     }
     /// Move the effect at `idx` one slot earlier (toward the start of the
@@ -1444,13 +1446,22 @@ impl Clip {
     pub fn move_effect_up(&mut self, idx: usize) {
         if idx > 0 && idx < self.effects.len() {
             self.effects.swap(idx, idx - 1);
+            self.anim.swap_effect_slots(idx as u32, (idx - 1) as u32);
         }
     }
     /// Move the effect at `idx` one slot later. No-op at the bottom / out of range.
     pub fn move_effect_down(&mut self, idx: usize) {
         if idx + 1 < self.effects.len() {
             self.effects.swap(idx, idx + 1);
+            self.anim.swap_effect_slots(idx as u32, (idx + 1) as u32);
         }
+    }
+
+    /// Clear the stack and every animation curve belonging to it, preserving
+    /// unrelated clip animation.
+    pub fn clear_effects(&mut self) {
+        self.effects.clear();
+        self.anim.clear_effect_slots();
     }
 
     /// Envelope gain in 0..1 from the fade-in / fade-out ramps at timeline

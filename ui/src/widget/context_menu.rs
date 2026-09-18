@@ -61,6 +61,26 @@ impl MenuItem {
         }
     }
 
+    pub fn selection(label: impl Into<String>) -> Self {
+        Self::action(label, || {})
+    }
+
+    pub fn destructive_action<F>(label: impl Into<String>, action: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        Self::action(label, action)
+    }
+
+    pub fn destructive_selection(label: impl Into<String>) -> Self {
+        Self::selection(label)
+    }
+
+    #[must_use]
+    pub fn with_icon(self, _icon: crate::icons::Icon) -> Self {
+        self
+    }
+
     /// A persistent choice/toggle row. Checked and unchecked peers share the
     /// same leading gutter, so labels never jump as state changes.
     pub fn checked_action<F>(label: impl Into<String>, checked: bool, action: F) -> Self
@@ -169,6 +189,11 @@ impl ContextMenu {
         self.position = Some(position);
         self.scroll_y = 0.0;
         self.layout_at_position();
+    }
+
+    pub fn open_at_clamped(&mut self, position: [f32; 2], viewport: Rect) {
+        self.set_viewport(Some(viewport));
+        self.open_at(position);
     }
 
     /// Update menu geometry for the system text scale.

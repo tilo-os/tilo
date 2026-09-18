@@ -522,10 +522,21 @@ impl PdfApp {
             self.search_hits.clear();
         }
         self.draw_page_bubble(scene, base, tr, theme);
+        if self.shots_context_menu && self.context_menu.is_none()
+            && let Some(annotation) = self.annotations.first()
+        {
+            let target = DeleteTarget::Annotation(annotation.id.clone());
+            let at = Point::new(self.canvas_rect.x0 + 76.0, self.canvas_rect.y0 + 190.0);
+            self.context_menu = Some(ContextMenu::delete(target, at, self.rect));
+            self.shots_context_menu = false;
+        }
         // Context menu + tooltip composite above everything else. File
         // open/save is the host desktop's portal picker (HIG §5), so there is
         // no in-app dialog to draw here.
-        self.draw_context_menu(scene, base, tr, theme);
+        if let Some(menu) = self.context_menu.as_mut() {
+            menu.widget
+                .draw(scene, base, tr, theme, &PresenceCtx::empty());
+        }
         self.draw_tooltip(scene, base, tr, theme);
         // A transient toast (save confirmation, copy confirmation) on top.
         self.draw_toast(scene, base, tr, theme);
@@ -822,88 +833,6 @@ impl PdfApp {
             &label,
             self.rect,
         );
-    }
-
-    fn draw_context_menu(
-        &mut self,
-        scene: &mut Scene,
-        base: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(menu) = self.context_menu.clone() else {
-            return;
-        };
-        let c = &theme.tokens.colors;
-        let menu_w = 150.0;
-        let item_h = 30.0;
-        let menu_h = item_h + 8.0;
-        let mut x = menu.at.x;
-        let mut y = menu.at.y;
-        x = x.clamp(self.rect.x0 + 2.0, self.rect.x1 - menu_w - 2.0);
-        y = y.clamp(self.rect.y0 + 2.0, self.rect.y1 - menu_h - 2.0);
-        let panel = Rect::new(x, y, x + menu_w, y + menu_h);
-        let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.md));
-        // Soft shadow (a slightly-offset translucent slab behind the panel).
-        let sh = RoundedRect::new(
-            panel.x0,
-            panel.y0 + 3.0,
-            panel.x1,
-            panel.y1 + 3.0,
-            f64::from(theme.tokens.radii.md),
-        );
-        scene.fill(
-            Fill::NonZero,
-            base,
-            Color::from_rgba8(0, 0, 0, 60),
-            None,
-            &sh,
-        );
-        scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &shape);
-        scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &shape);
-
-        let item = Rect::new(
-            panel.x0 + 4.0,
-            panel.y0 + 4.0,
-            panel.x1 - 4.0,
-            panel.y0 + 4.0 + item_h,
-        );
-        if item.contains(self.last_mouse) {
-            scene.fill(
-                Fill::NonZero,
-                base,
-                c.lift(0.72),
-                None,
-                &RoundedRect::from_rect(item, f64::from(theme.tokens.radii.sm)),
-            );
-        }
-        // Trash glyph + label.
-        let gx = item.x0 + 14.0;
-        let gy = f64::midpoint(item.y0, item.y1);
-        let lid = Line::new((gx - 5.0, gy - 5.0), (gx + 5.0, gy - 5.0));
-        scene.stroke(&Stroke::new(1.4), base, c.semantic.danger, None, &lid);
-        let body = Rect::new(gx - 4.0, gy - 4.0, gx + 4.0, gy + 6.0);
-        scene.stroke(
-            &Stroke::new(1.4),
-            base,
-            c.semantic.danger,
-            None,
-            &RoundedRect::from_rect(body, 1.5),
-        );
-        tr.draw_text_weighted(
-            scene,
-            "Delete",
-            12.0,
-            c.semantic.danger,
-            base * Affine::translate((gx + 16.0, vcenter(item, 12.0))),
-            None,
-            TextWeight::Semibold,
-        );
-        // Stash the live item rect so the click handler can hit it.
-        self.context_menu = Some(ContextMenu {
-            item_rect: item,
-            ..menu
-        });
     }
 
     // ---- canvas -----------------------------------------------------

@@ -2751,8 +2751,13 @@ impl WordProcessor {
         let range = self.edit_core.range();
         let start = range.start;
         let end = range.end;
-        let s = text[..start].chars().count();
-        let e = text[..end].chars().count();
+        let char_at = |byte: usize| {
+            text.char_indices()
+                .take_while(|(index, _)| *index < byte)
+                .count()
+        };
+        let s = char_at(start);
+        let e = char_at(end);
         if s == e {
             return; // caret is on whitespace
         }
@@ -2780,7 +2785,11 @@ impl WordProcessor {
 
     fn sync_state_from_edit_core(&mut self, text: &str) {
         let selection = self.edit_core.selection();
-        let char_at = |byte: usize| text[..byte.min(text.len())].chars().count();
+        let char_at = |byte: usize| {
+            text.char_indices()
+                .take_while(|(index, _)| *index < byte.min(text.len()))
+                .count()
+        };
         let anchor = char_at(selection.anchor);
         let cursor = char_at(selection.cursor);
         self.caret.offset = cursor;
@@ -2790,14 +2799,19 @@ impl WordProcessor {
         });
     }
 
-    fn apply_edit_core(&mut self, state: &mut AutoCommit, text: &str, edit: Edit) -> bool {
+    fn apply_edit_core(&mut self, state: &mut AutoCommit, text: &str, edit: &Edit) -> bool {
         if edit.is_noop() {
             return false;
         }
-        let start = text[..edit.at].chars().count();
-        let removed = text[edit.at..edit.at.saturating_add(edit.removed)]
-            .chars()
-            .count();
+        let end = edit.at.saturating_add(edit.removed);
+        let Some(prefix) = text.get(..edit.at) else {
+            return false;
+        };
+        let Some(removed_text) = text.get(edit.at..end) else {
+            return false;
+        };
+        let start = prefix.chars().count();
+        let removed = removed_text.chars().count();
         let block = self.caret.block.clone();
         self.region_splice(
             state,
@@ -2807,10 +2821,7 @@ impl WordProcessor {
             &edit.inserted,
         );
         let mut updated = text.to_owned();
-        updated.replace_range(
-            edit.at..edit.at.saturating_add(edit.removed),
-            &edit.inserted,
-        );
+        updated.replace_range(edit.at..end, &edit.inserted);
         self.sync_state_from_edit_core(&updated);
         true
     }
@@ -2847,7 +2858,7 @@ impl WordProcessor {
             let text = self.current_text(state);
             self.sync_edit_core_from_state(&text);
             let edit = self.edit_core.insert(s);
-            if self.apply_edit_core(state, &text, edit) {
+            if self.apply_edit_core(state, &text, &edit) {
                 return;
             }
         }
@@ -2923,7 +2934,7 @@ impl WordProcessor {
             let text = self.current_text(state);
             self.sync_edit_core_from_state(&text);
             let edit = self.edit_core.delete_backward(&text, false);
-            if self.apply_edit_core(state, &text, edit) {
+            if self.apply_edit_core(state, &text, &edit) {
                 return;
             }
         }
@@ -2982,7 +2993,7 @@ impl WordProcessor {
             let text = self.current_text(state);
             self.sync_edit_core_from_state(&text);
             let edit = self.edit_core.delete_forward(&text, false);
-            if self.apply_edit_core(state, &text, edit) {
+            if self.apply_edit_core(state, &text, &edit) {
                 return;
             }
         }
