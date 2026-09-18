@@ -4,6 +4,21 @@
 
 files-time-unknown = unknown time
 
+## Keyboard shortcuts
+files-shortcuts-title = Keyboard shortcuts
+files-shortcuts-summary = Files controls that work with the current desktop keyboard convention
+files-shortcuts-primary = Primary modifier: Ctrl on most desktops, Command on macOS
+files-shortcuts-navigate = Move selection: ↑ / ↓ · select a range: Shift + ↑ / ↓
+files-shortcuts-grid = Grid navigation: ← / → move across; ↑ / ↓ move by visual row
+files-shortcuts-open = Open selected: Enter · rename: F2 · move to Trash: Delete
+files-shortcuts-location = Edit location: Primary + L · refresh: F5
+files-shortcuts-new-folder = New folder: Primary + Shift + N
+files-shortcuts-edit = Copy, cut, paste, select all: Primary + C / X / V / A
+files-shortcuts-hidden = Show or hide hidden files: Primary + H
+files-shortcuts-size = Change item size: Primary + + / − · reset size: Primary + 0
+files-shortcuts-context = Context menu: Menu key or right-click
+files-shortcuts-close = Show this reference: ? or F1 · close sheets and menus: Escape
+
 ## Availability actions and status
 files-keep-offline = Keep Offline
 files-use-automatic-storage = Use Automatic Storage
