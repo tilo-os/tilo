@@ -732,11 +732,7 @@ pub fn history_context(action: &ContactsAction) -> tilo_actions::ActionContext {
             id.as_str(),
             "Contact".into(),
         ),
-        ContactsAction::MergeContacts {
-            survivor_id,
-            source_id: _,
-            ..
-        } => (
+        ContactsAction::MergeContacts { survivor_id, .. } => (
             "Merge duplicate contacts",
             survivor_id.as_str(),
             "Contact".into(),
@@ -1239,11 +1235,11 @@ fn same_address(left: &Address, right: &Address) -> bool {
     .all(|(left, right)| normalize_text(left.trim()) == normalize_text(right.trim()))
 }
 
-fn merged_scalar(
+fn merged_scalar<S: std::hash::BuildHasher>(
     survivor: &str,
     source: &str,
     field: MergeField,
-    choices: &HashSet<MergeField>,
+    choices: &HashSet<MergeField, S>,
 ) -> String {
     if survivor.trim().is_empty() || choices.contains(&field) {
         source.to_string()
@@ -1257,10 +1253,10 @@ fn merged_scalar(
 /// the review selects `MergeField`.  Repeated rows are a lossless union —
 /// the source rows retain their stable UUIDs, so the generated sparse patch
 /// uses normal add operations instead of replacing an entire list.
-pub fn reviewed_merge_contact(
+pub fn reviewed_merge_contact<S: std::hash::BuildHasher>(
     survivor: &Contact,
     source: &Contact,
-    choices: &HashSet<MergeField>,
+    choices: &HashSet<MergeField, S>,
 ) -> Contact {
     let mut merged = survivor.clone();
     merged.first = merged_scalar(&survivor.first, &source.first, MergeField::First, choices);
@@ -1327,10 +1323,10 @@ pub fn reviewed_merge_contact(
 /// Canonical destructive action produced after the review screen's explicit
 /// field choices.  It carries only a sparse survivor patch, so unrelated peer
 /// edits remain convergent and normal action history provides recovery.
-pub fn merge_contacts_action(
+pub fn merge_contacts_action<S: std::hash::BuildHasher>(
     survivor: &Contact,
     source: &Contact,
-    choices: &HashSet<MergeField>,
+    choices: &HashSet<MergeField, S>,
 ) -> ContactsAction {
     ContactsAction::MergeContacts {
         survivor_id: survivor.id.to_string(),
@@ -1983,7 +1979,15 @@ mod tests {
         };
 
         let page = provide_resources(&ctx, &AutoCommit::new());
-        assert_eq!(page[0].children.len(), MAX_CONTEXT_CONTACT_RESOURCES);
+        assert_eq!(
+            page[0]
+                .children
+                .iter()
+                .filter(|resource| resource.kind == "contacts.contact")
+                .count(),
+            MAX_CONTEXT_CONTACT_RESOURCES,
+            "the permanent Favorites collection does not consume the bounded contact page"
+        );
 
         let target = contacts.last().expect("fixture is populated");
         let address = open_contact_address(target.id);
