@@ -17,21 +17,22 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 # The default app includes live search, stream resolution, and audio output.
 # The bundled sample library and runtime offline switch keep shots and tests
-# hermetic; `lyrics` remains opt-in.
+# hermetic. Live builds also support network lyrics.
 default = ["audio", "live"]
-# Desktop audio output/control and the XDG file chooser for playlist covers.
-audio = ["dep:gstreamer", "dep:zbus", "dep:tokio", "ui/portal"]
+# Desktop audio output/control and the host file chooser for playlist covers.
+audio = ["dep:gstreamer", "dep:tokio", "ui/portal", "ui/mpris"]
 # YouTube Music search and stream resolution through the pure-Rust `rustypipe`
-# InnerTube client. Off by default so shots/tests stay hermetic; `reqwest`
+# InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.
-live = ["dep:rustypipe", "dep:tokio", "dep:reqwest"]
-# Synced lyrics from lrclib.net over HTTP; off by default.
+live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:rquickjs"]
+# Enable network lyrics without the full live backend; live already enables them.
 lyrics = ["dep:reqwest"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
+dirs.workspace = true
 ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
 # The Tilo action model: document-mutating library edits (playlist create/rename/
 # delete, add/remove/reorder track, like/save/follow) are replayable actions the
@@ -58,20 +59,21 @@ taffy.workspace = true
 # copies resolve (tokio mirrors the `chat` app + `fs` submodule pins).
 reqwest = { workspace = true, optional = true, features = ["blocking", "json", "rustls-tls"] }
 gstreamer = { workspace = true, optional = true }
-# MPRIS D-Bus media control. The version matches `apps/chat` and `ashpd` to
-# keep one zbus copy; zbus's own `p2p` capability supports socket-pair tests.
-zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
-# Native XDG file-chooser portal for playlist covers; `url` maps returned URIs.
-# Kept non-optional so URI mapping and its tests build in the default
-# configuration.
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 # Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream
 # resolution. Embeds `rquickjs` for signature deobfuscation — no external
 # interpreter, downloader, or JS runtime binary. Gated behind `live`.
 rustypipe = { workspace = true, optional = true, features = ["rustls-tls-webpki-roots"] }
 
+[target.'cfg(all(windows, target_arch = "aarch64"))'.dependencies]
+# QuickJS does not ship Windows ARM64 bindings; generate the actual target ABI.
+rquickjs = { workspace = true, optional = true, features = ["bindgen"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 bounded-command = { path = "../../crates/system/bounded-command" }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

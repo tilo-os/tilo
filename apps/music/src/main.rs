@@ -15,6 +15,7 @@
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
 // because a fault there can affect the session or every app.
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -453,7 +454,7 @@ fn probe_decode(_url: &str) {
 fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(
         "music --probe needs the `live` feature (real YouTube-Music backend).\n\
-         Rebuild with:  tilo-build run -p music --features live -- --probe \"aurora runaway\""
+         Rebuild with:  cargo run -p music --features live -- --probe \"aurora runaway\""
     );
     std::process::exit(2);
 }

@@ -375,9 +375,6 @@ pub struct MusicApp {
     /// A no-op stub until [`Self::enable_mpris`] brings it up on the live
     /// binary; inert in `--shots`/tests and without the `audio` feature.
     mpris: MprisHandle,
-    /// Last player state published to MPRIS, so `publish_mpris` only pushes real
-    /// changes (the handle itself also dedups).
-    mpris_last: Option<PlayerSnapshot>,
     /// App-native playback identity advertised privately to the shell. Music
     /// hands over a stable track resource, never its signed decoder URL.
     handoff: media::handoff::AppPlaybackHandle,
@@ -599,6 +596,9 @@ pub struct MusicApp {
     /// test can prove a button and the Ctrl+K
     /// [`ActionSpec`](tilo_actions::ActionSpec) build the byte-identical action.
     actions: ui::ActionHost,
+    // Drop after the audio engine/downloads so test-owned files are no longer open.
+    #[cfg(test)]
+    _test_cache_dir: tempfile::TempDir,
 }
 
 /// A deferred `--shots` staging action (see [`MusicApp::app_root_for_shot`]).
@@ -690,6 +690,11 @@ impl MusicApp {
         let media_cache = persist_device_profile
             .then(crate::storage::load_media_cache)
             .unwrap_or_default();
+        #[cfg(test)]
+        let test_cache_dir = tempfile::tempdir().expect("test-owned Music cache");
+        #[cfg(test)]
+        let media_cache_root = test_cache_dir.path().to_path_buf();
+        #[cfg(not(test))]
         let media_cache_root = crate::storage::media_cache_dir();
         let device_cache = media_cache
             .entries
@@ -732,7 +737,6 @@ impl MusicApp {
             search_error: None,
             playback_error: None,
             mpris: MprisHandle::disabled(),
-            mpris_last: None,
             handoff: media::handoff::AppPlaybackHandle::new(),
             pending_media_handoff: None,
             cover_pick: None,
@@ -815,6 +819,8 @@ impl MusicApp {
             offline_results: Vec::new(),
             offline_errors: HashMap::new(),
             actions: ui::ActionHost::new(),
+            #[cfg(test)]
+            _test_cache_dir: test_cache_dir,
         }
     }
 
@@ -1507,12 +1513,12 @@ impl MusicApp {
 
     /// Bring up the MPRIS D-Bus service (media keys + the desktop media
     /// controls). Called only from the live-binary entry (`app_root`). Safe
-    /// everywhere: without the `audio` feature or a session bus it installs the
+    /// everywhere: on unsupported hosts, without `audio`, or without a session bus
+    /// it installs the
     /// inert stub, so no code path branches on whether MPRIS is present.
     pub fn enable_mpris(&mut self) {
         let snap = self.mpris_snapshot();
-        self.mpris = MprisHandle::spawn(&snap);
-        self.mpris_last = Some(snap);
+        self.mpris = MprisHandle::spawn(crate::mpris::config(), snap);
     }
 
     /// Stage an authenticated shell handoff. It is applied after the shared
@@ -1575,7 +1581,7 @@ impl MusicApp {
             return;
         }
         let snap = self.mpris_snapshot();
-        self.mpris.publish(&snap);
+        self.mpris.publish(snap);
     }
 
     fn publish_handoff(&self) {
@@ -2486,8 +2492,8 @@ impl MusicApp {
     }
 
     fn on_pick_playlist_cover(&mut self, playlist_id: String) {
-        // Route through the host's XDG file-chooser portal (never an
-        // in-app picker). The pick is async; the frame loop drains the
+        // Route through the toolkit's native host file chooser.
+        // The pick is async; the frame loop drains the
         // outcome and applies the cover.
         self.cover_pick_for = Some(playlist_id);
         self.cover_pick = Some(cover_request().send());
@@ -2780,7 +2786,13 @@ impl MusicApp {
         let Ok(Some(path)) = self.media_cache.touch(&self.media_cache_root, track_id) else {
             return false;
         };
-        let uri = format!("file://{}", path.display());
+        let uri = match media::source::path_to_file_uri(&path) {
+            Ok(uri) => uri,
+            Err(error) => {
+                tracing::warn!(%error, "cached audio path cannot be represented as a file URI");
+                return false;
+            }
+        };
         self.audio.load(&uri);
         if self.pb.playing {
             self.audio.play();
@@ -5098,6 +5110,19 @@ mod tests {
     }
 
     #[test]
+    fn test_instances_keep_cache_mutations_in_separate_owned_directories() {
+        let first = MusicApp::new();
+        let second = MusicApp::new();
+        assert_ne!(first.media_cache_root, second.media_cache_root);
+        assert!(!first.persist_device_profile);
+        let root = first.media_cache_root.clone();
+        std::fs::write(root.join("test-owned-media"), b"media").unwrap();
+        assert!(!second.media_cache_root.join("test-owned-media").exists());
+        drop(first);
+        assert!(!root.exists());
+    }
+
+    #[test]
     fn shot_constructor_never_reads_tilo_music_profile() {
         let _lock = PROFILE_ENV_LOCK
             .get_or_init(|| Mutex::new(()))
@@ -5885,7 +5910,7 @@ mod tests {
     fn verified_media_cache_reopens_after_restart_without_a_resolver() {
         let (mut app, _doc) = app_with_doc();
         let root = std::env::temp_dir().join(format!(
-            "tilo-music-offline-playback-{}",
+            "tilo-music-offline-playback-音 # %-{}",
             std::process::id()
         ));
         app.media_cache_root = root.clone();
@@ -5910,7 +5935,18 @@ mod tests {
                 .is_some_and(|uri| uri.starts_with("file://")),
             "the audio engine reads the durable local object"
         );
-        let _ = std::fs::remove_dir_all(root);
+        let file_path = url::Url::parse(app.audio.current_uri().expect("cached URI"))
+            .expect("valid URL")
+            .to_file_path()
+            .expect("native file path");
+        assert!(file_path.starts_with(&root));
+        assert_eq!(
+            std::fs::read(file_path).expect("cached bytes"),
+            b"durable media bytes"
+        );
+        app.audio.stop();
+        drop(app);
+        std::fs::remove_dir_all(root).expect("release cached audio files");
     }
 
     #[test]
