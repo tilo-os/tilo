@@ -124,7 +124,11 @@ fn response_status_line_center(row: Rect) -> f64 {
 
 /// Outcome of the background send worker.
 enum SendOutcome {
-    Ok(ResponseData),
+    Ok {
+        response: ResponseData,
+        method: HttpMethod,
+        url: String,
+    },
     Err(String),
 }
 
@@ -323,6 +327,7 @@ pub struct ApiTesterApp {
     rx: Receiver<SendOutcome>,
     resource_send_invocation: Option<tilo_actions::InvocationId>,
     resource_send_result: Option<tilo_actions::InvocationUpdate>,
+    pending_history: Vec<HistoryEntry>,
 
     // --- Adaptive chrome: the shared collapsible sidebar/drawer controller
     // (docked-vs-overlay decision, eased reveal, and dimming scrim). ---
@@ -527,6 +532,7 @@ impl ApiTesterApp {
             tx,
             rx,
             resource_send_invocation: None,
+            pending_history: Vec::new(),
             resource_send_result: None,
             rail: SidebarDrawer::new()
                 .left()
@@ -805,13 +811,18 @@ impl ApiTesterApp {
             return;
         }
         let out = self.outgoing();
+        let method = self.request.method;
         self.sending = true;
         self.error = None;
         self.dirty = true;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let outcome = match http::send_blocking(&out) {
-                Ok(r) => SendOutcome::Ok(r),
+                Ok(response) => SendOutcome::Ok {
+                    response,
+                    method,
+                    url: out.url,
+                },
                 Err(e) => SendOutcome::Err(e),
             };
             let _ = tx.send(outcome);
@@ -824,7 +835,11 @@ impl ApiTesterApp {
             self.sending = false;
             self.dirty = true;
             match outcome {
-                SendOutcome::Ok(resp) => {
+                SendOutcome::Ok {
+                    response: resp,
+                    method,
+                    url,
+                } => {
                     if let Some(invocation) = self.resource_send_invocation.take() {
                         self.resource_send_result =
                             Some(tilo_actions::InvocationUpdate::Succeeded {
@@ -832,19 +847,21 @@ impl ApiTesterApp {
                                 output: tilo_actions::ActionOutput::default(),
                             });
                     }
-                    let out = self.outgoing();
                     self.history.insert(
                         0,
                         HistoryEntry {
                             id: uuid::Uuid::new_v4(),
-                            method: self.request.method,
-                            url: out.url.clone(),
+                            method,
+                            url,
                             status: resp.status,
                             duration_ms: resp.duration_ms,
                             when: "just now".into(),
                         },
                     );
                     self.history.truncate(50);
+                    if let Some(entry) = self.history.first() {
+                        self.pending_history.push(entry.clone());
+                    }
                     self.response = Some(resp);
                     self.response_view = ResponseView::Pretty;
                     self.response_view_toggle.set_selected(0);
@@ -2956,6 +2973,15 @@ impl Widget for ApiTesterApp {
         self.reconcile_pickers(state, path);
 
         // Keep the widgets in step with app state the app itself drives.
+        self.poll_worker();
+        if !self.pending_history.is_empty() {
+            for entry in std::mem::take(&mut self.pending_history) {
+                self.perform(state, path, &ApiTesterAction::RecordHistory { entry });
+            }
+            self.history = ApiDoc::history(state, path);
+            self.rebuild_nav();
+            self.refresh_search();
+        }
         self.send_button.set_enabled(!self.sending);
         self.request_tabs.set_selected(self.tab_index());
         self.response_view_toggle.set_selected(
@@ -3030,7 +3056,6 @@ impl Widget for ApiTesterApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.poll_worker();
         self.sync_adaptive_metrics(theme);
         // Advance the drawer's eased reveal (it self-ticks off wall-clock and
         // honours reduce-motion), then recompute geometry so the controls sit
@@ -3367,7 +3392,7 @@ impl Widget for ApiTesterApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.sending || !self.adopted
+        self.sending || !self.pending_history.is_empty() || !self.adopted
     }
 }
 
@@ -3766,11 +3791,148 @@ mod tests {
     }
 
     #[test]
+    fn resource_send_performs_a_real_http_round_trip() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let started = Instant::now();
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            started.elapsed() < Duration::from_secs(10),
+                            "request never arrived"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept request: {error}"),
+                }
+            };
+            // Windows inherits the listener's nonblocking mode on accept.
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 8192, "unbounded request headers");
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(
+                request.starts_with("GET /probe?name=Gr%C3%BCn HTTP/1.1\r\n"),
+                "{request}"
+            );
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("x-tilo-probe: native\r\n"),
+                "{request}"
+            );
+            let body = "{\"result\":\"Grün\"}";
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+
+        let mut app = ApiTesterApp::new();
+        app.url_input.set_text(&format!("http://{address}/probe"));
+        app.request.params.push(KeyValue::new("name", "Grün"));
+        app.request
+            .headers
+            .push(KeyValue::new("X-Tilo-Probe", "native"));
+        let invocation = tilo_actions::InvocationId::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(ApiDoc::history(&doc, &automerge::ROOT).is_empty());
+        let payload =
+            serde_json::to_vec(&crate::actions::ApiTesterOperation::SendActiveRequest).unwrap();
+        assert!(matches!(
+            app.start_resource_operation(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::API_TESTER_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        ));
+        // The builder remains editable while a request is in flight. History
+        // must describe the request sent, not these later edits.
+        app.url_input.set_text("http://127.0.0.1/edited-after-send");
+        app.request.method = HttpMethod::Post;
+        let started = Instant::now();
+        loop {
+            if let Some(update) =
+                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+            {
+                assert!(matches!(
+                    update,
+                    tilo_actions::InvocationUpdate::Succeeded { .. }
+                ));
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "HTTP worker never completed"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        server.join().unwrap();
+        let response = app.response.as_ref().expect("the response is displayed");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, "{\"result\":\"Grün\"}");
+        assert_eq!(app.history.len(), 1);
+        assert_eq!(app.history[0].status, 200);
+        assert_eq!(app.history[0].method, HttpMethod::Get);
+        assert_eq!(
+            app.history[0].url,
+            format!("http://{address}/probe?name=Gr%C3%BCn")
+        );
+        assert!(!app.sending);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(ApiDoc::history(&doc, &automerge::ROOT), app.history);
+        let mut restarted = ApiTesterApp::new();
+        restarted.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            restarted.history, app.history,
+            "completed requests survive restart"
+        );
+        let entry = app.history[0].clone();
+        app.perform(
+            &mut doc,
+            &automerge::ROOT,
+            &ApiTesterAction::RecordHistory { entry },
+        );
+        assert_eq!(
+            ApiDoc::history(&doc, &automerge::ROOT).len(),
+            1,
+            "replay does not duplicate history"
+        );
+    }
+
+    #[test]
     fn resource_send_reports_worker_completion_instead_of_queue_success() {
         let mut a = app();
         let invocation = tilo_actions::InvocationId::new();
         a.resource_send_invocation = Some(invocation);
-        a.tx.send(SendOutcome::Ok(http::sample_response())).unwrap();
+        a.tx.send(SendOutcome::Ok {
+            response: http::sample_response(),
+            method: HttpMethod::Get,
+            url: "http://localhost/test".into(),
+        })
+        .unwrap();
         let doc = AutoCommit::new();
         assert!(matches!(
             a.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),

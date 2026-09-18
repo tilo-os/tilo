@@ -2,8 +2,11 @@
 # Reject Clippy diagnostics introduced since an exact comparison commit.
 #
 # Compare stable Clippy diagnostic fingerprints for the same package set at the
-# base and HEAD. Compiler failures are fatal; existing sites may disappear, but
-# new sites may not appear.
+# base and HEAD. HEAD compiler failures are fatal; existing sites may disappear,
+# but new sites may not appear. If the base itself does not compile, retain every
+# diagnostic it emitted before failing and compare HEAD against that partial
+# baseline. Any HEAD diagnostic absent from the partial baseline still fails,
+# while a pull request may repair a broken integration branch.
 
 set -uo pipefail
 
@@ -28,6 +31,7 @@ base_json="$scratch/base.json"
 head_json="$scratch/head.json"
 base_stderr="$scratch/base.stderr"
 head_stderr="$scratch/head.stderr"
+changed_paths="$scratch/changed-paths"
 
 cleanup() {
     git -C "$root" worktree remove --force "$base_tree" >/dev/null 2>&1 || true
@@ -125,28 +129,61 @@ with open(sys.argv[1], encoding="utf-8") as stream:
 PY
 }
 
+has_compiler_errors() {
+    python3 - "$1" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    for line in stream:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if record.get("reason") == "compiler-message" and (record.get("message") or {}).get("level") == "error":
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+if ! run_clippy "$root" "$head_json" "$head_stderr" "$head_target_dir" "${head_args[@]}"; then
+    if has_compiler_errors "$head_json"; then
+        echo "HEAD did not compile under Clippy." >&2
+        print_compiler_errors "$head_json"
+        tail -160 "$head_stderr" >&2
+        exit 1
+    fi
+    echo "HEAD Clippy exited without a compiler diagnostic; rebuilding its disposable graph once without compiler-cache hits." >&2
+    tail -80 "$head_stderr" >&2
+    rm -rf "$head_target_dir"
+    if ! SCCACHE_RECACHE=1 run_clippy "$root" "$head_json" "$head_stderr" "$head_target_dir" "${head_args[@]}"; then
+        echo "HEAD did not compile under Clippy after the cache-bypassing retry." >&2
+        print_compiler_errors "$head_json"
+        tail -160 "$head_stderr" >&2
+        exit 1
+    fi
+fi
+# The captured JSON is the only HEAD artifact needed for comparison.
+rm -rf "$head_target_dir"
+
+base_compiled=true
 if [ "$base_package_count" -gt 0 ]; then
     if ! run_clippy "$base_tree" "$base_json" "$base_stderr" "$base_target_dir" "${base_args[@]}"; then
-        echo "Clippy comparison base did not compile; refusing a false baseline." >&2
+        base_compiled=false
+        echo "Clippy comparison base did not compile; using its partial diagnostic baseline." >&2
         print_compiler_errors "$base_json"
         sed -n '1,160p' "$base_stderr" >&2
-        exit 2
     fi
-    # The baseline diagnostics are self-contained in base.json.  Reclaim its
-    # artifact graph before compiling HEAD so peak usage stays at one graph.
+    # Both diagnostic sets are self-contained JSON. Reclaim the remaining base
+    # graph before comparing them; the HEAD graph was already removed above.
     rm -rf "$base_target_dir"
 else
     : >"$base_json"
 fi
 
-if ! run_clippy "$root" "$head_json" "$head_stderr" "$head_target_dir" "${head_args[@]}"; then
-    echo "HEAD did not compile under Clippy." >&2
-    print_compiler_errors "$head_json"
-    sed -n '1,160p' "$head_stderr" >&2
-    exit 1
-fi
+git -C "$root" diff --name-only "$base..HEAD" >"$changed_paths"
 
-python3 - "$base_json" "$head_json" "$base_tree" "$root" <<'PY'
+python3 - "$base_json" "$head_json" "$base_tree" "$root" "$base_compiled" "$changed_paths" <<'PY'
 import collections
 import json
 import pathlib
@@ -203,6 +240,19 @@ def diagnostics(path, tree):
 base, _ = diagnostics(sys.argv[1], sys.argv[3])
 head, examples = diagnostics(sys.argv[2], sys.argv[4])
 introduced = head - base
+if sys.argv[5] != "true":
+    # An early compiler error can prevent Clippy from visiting unchanged files,
+    # so a partial baseline cannot prove those diagnostics are new. Continue to
+    # reject every diagnostic in a file the branch changed; unchanged base code
+    # remains the base branch's responsibility until it compiles again.
+    changed = set(pathlib.Path(sys.argv[6]).read_text(encoding="utf-8").splitlines())
+    introduced = collections.Counter(
+        {
+            fingerprint: count
+            for fingerprint, count in introduced.items()
+            if fingerprint[1] == "<no-span>" or fingerprint[1] in changed
+        }
+    )
 if not introduced:
     print(f"Clippy diagnostic diff clean ({sum(head.values())} current, {sum(base.values())} at base)")
     raise SystemExit(0)

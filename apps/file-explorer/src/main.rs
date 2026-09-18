@@ -1,6 +1,8 @@
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
 // because a fault there can affect the session or every app.
+
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -30,6 +32,7 @@
     )
 )]
 
+use file_explorer::filesystem_metadata as xattr;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 
@@ -114,6 +117,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(out) = parse_shots_arg(&args) {
         let viewport = parse_size_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let scenario = parse_scenario_arg(&args);
+        #[cfg(not(unix))]
+        if matches!(
+            scenario.as_deref(),
+            Some("sync" | "thumbnails-fs" | "history")
+        ) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "this scenario requires the Tilo filesystem projection",
+            )
+            .into());
+        }
         let text_scale = parse_text_scale_arg(&args).unwrap_or(1.0);
         // Some scenarios seed a demo directory that must exist BEFORE the widget
         // is built (so the sidebar / workspace roots pick it up), so seed here.

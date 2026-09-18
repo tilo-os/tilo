@@ -51,6 +51,10 @@ fn main() {
 
     let mut engine = media::MediaEngine::with_config(config);
     println!("  real decode: {}", engine.is_real_decode());
+    if !engine.is_real_decode() {
+        eprintln!("real decoder unavailable; a synthesized frame cannot verify decoding");
+        std::process::exit(1);
+    }
     engine.open(media::Source::LocalFile(path.into()));
 
     let started = std::time::Instant::now();

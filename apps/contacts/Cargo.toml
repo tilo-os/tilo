@@ -34,7 +34,6 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 tracing.workspace = true
-zbus.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -52,6 +51,10 @@ unicode-normalization = "0.1.25"
 # call runs off the UI thread on its own small Tokio runtime and the chosen
 # paths come back over a shared `ui::portal` channel. All three are already
 # resolved in the shared workspace lockfile, so this adds no registry fetch.
+
+[target.'cfg(unix)'.dependencies]
+# Launcher-authenticated priority projection to the Tilo shell notification service.
+zbus.workspace = true
 
 [dev-dependencies]
 # Serialises the tests that construct scratch files / drive the portal

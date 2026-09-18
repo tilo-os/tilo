@@ -169,8 +169,28 @@ impl DiffView {
                 continue; // cull off-screen rows
             }
             let row = Rect::new(x0, y, ctx.viewport.x1, y + ROW_H);
+            let previous_buttons = buttons.len();
             Self::draw_unified_row_background(ctx, row, line, &mut last_hunk, &mut buttons);
+            // Header text must not paint over the action buttons. Use their
+            // actual measured bounds, including the wider armed-discard label.
+            let text_right = buttons
+                .get(previous_buttons..)
+                .unwrap_or_default()
+                .iter()
+                .fold(row.x1, |right, button| right.min(button.rect.x0 - 8.0));
+            if line.kind == DiffLineKind::Hunk {
+                ctx.scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    ctx.transform,
+                    &Rect::new(row.x0, row.y0, text_right.max(row.x0), row.y1),
+                );
+            }
             Self::draw_unified_row_content(ctx, line, x0, y);
+            if line.kind == DiffLineKind::Hunk {
+                ctx.scene.pop_layer();
+            }
         }
         buttons
     }
@@ -276,7 +296,7 @@ impl DiffView {
                     &line.content,
                     FONT,
                     c.semantic.info,
-                    content_x,
+                    x0 + 8.0,
                     y + 2.0,
                 );
             }

@@ -221,12 +221,11 @@ mod tests {
     fn paths_round_trip_only_in_private_settings() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
+        let books = directory.path().join("books");
+        let book = books.join("a.epub");
         let mut registry = LocalLibrary::default();
-        registry.remember_book(
-            "book:0123456789abcdef0123456789abcdef",
-            Path::new("/books/a.epub"),
-        );
-        registry.toggle_watch(Path::new("/books"));
+        registry.remember_book("book:0123456789abcdef0123456789abcdef", &book);
+        registry.toggle_watch(&books);
         assert_eq!(registry.books.len(), 1);
         registry.save_at(&path).unwrap();
 
@@ -235,33 +234,37 @@ mod tests {
         let restored = LocalLibrary::from_path(&path);
         assert_eq!(
             restored.books.get("book:0123456789abcdef0123456789abcdef"),
-            Some(&PathBuf::from("/books/a.epub"))
+            Some(&book)
         );
-        assert_eq!(restored.watched_folders, vec![PathBuf::from("/books")]);
+        assert_eq!(restored.watched_folders, vec![books]);
     }
 
     #[test]
     fn hostile_paths_and_ids_fail_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let safe = directory.path().join("safe");
         let section = serde_json::json!({
             BOOKS: {
                 "book:not-an-id": "/books/nope.epub",
                 "book:0123456789abcdef0123456789abcdef": "relative.epub"
             },
-            WATCHED: ["../private", "/safe", "/safe"]
+            WATCHED: [PathBuf::from("../private"), safe.clone(), safe.clone()]
         });
         let registry = LocalLibrary::from_section(section.as_object().unwrap());
         assert!(registry.books.is_empty());
-        assert_eq!(registry.watched_folders, vec![PathBuf::from("/safe")]);
+        assert_eq!(registry.watched_folders, vec![safe]);
     }
 
     #[test]
     fn shortcuts_are_local_validated_and_do_not_require_book_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let safe = directory.path().join("safe");
         let section = serde_json::json!({
             SHORTCUTS: { "next-page": "J", "bookmark": "\n", "other": "j" },
-            WATCHED: ["/safe"]
+            WATCHED: [safe.clone()]
         });
         let mut registry = LocalLibrary::from_section(section.as_object().unwrap());
-        assert_eq!(registry.watched_folders, vec![PathBuf::from("/safe")]);
+        assert_eq!(registry.watched_folders, vec![safe]);
         assert_eq!(registry.shortcut("next-page", "."), "j");
         assert_eq!(registry.shortcut("bookmark", "b"), "b");
         assert!(!registry.set_shortcut("bookmark", "j"));

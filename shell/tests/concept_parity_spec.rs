@@ -37,7 +37,7 @@ use vello::peniko::Color;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::chrome_state::{Chrome, WsTab};
-use shell::shell::quick_settings::{QsLevel, QuickSettings};
+use shell::shell::quick_settings::QsLevel;
 use shell::shell::state::WorkspaceTree;
 use shell::shell::topbar_chrome::{CenterWidget, TopBarChrome};
 
@@ -879,26 +879,14 @@ fn quick_settings_slider_fill_is_white_not_indigo() {
 /// drilled-to-Wifi render differs from Root.
 #[test]
 fn quick_settings_supports_wifi_drill_in_render() {
-    let mut qs_root = QuickSettings::new();
-    let mut qs_wifi = QuickSettings::new();
-    qs_wifi.push_level(QsLevel::Wifi);
-    assert_eq!(qs_root.current_level(), &QsLevel::Root);
-    assert_eq!(qs_wifi.current_level(), &QsLevel::Wifi);
-
-    // `QuickSettingsState::nav_stack` is the dispatch source `draw_quick_settings`
-    // reads; pushing a level here and propagating it into the chrome lights
-    // the WiFi branch.
+    // `QuickSettingsState::nav_stack` is the production dispatch source read
+    // by the renderer; deep-link the authoritative chrome state directly.
     let tree = WorkspaceTree::bootstrap_demo();
 
-    qs_root.set_brightness(50.0);
     let (root_fills, _) = render_quick_settings_open(&tree, |_| {});
 
-    let target_level = qs_wifi.current_level().clone();
     let (wifi_fills, _) = render_quick_settings_open(&tree, |chrome| {
-        chrome
-            .borrow_mut()
-            .quick_settings
-            .push_level(target_level.clone());
+        chrome.borrow_mut().open_quick_settings_level(QsLevel::Wifi);
     });
 
     // EXPECTED: root_fills != wifi_fills. CURRENT: equal (drill-in unwired).
@@ -907,8 +895,7 @@ fn quick_settings_supports_wifi_drill_in_render() {
         "QuickSettings drill-in into Wifi level must produce a different
          render than Root level (concept TSX QuickSettings.tsx:108-128, \
          101-162). Currently both render identically because \
-         `draw_quick_settings` ignores `QuickSettings::nav_stack` (the \
-         chrome state only carries flat `wifi: bool`). Audit row \
+         `draw_quick_settings` ignores the production navigation stack. Audit row \
          `concept-coverage.md:22,148`: 'nav_stack is dead state'."
     );
 }

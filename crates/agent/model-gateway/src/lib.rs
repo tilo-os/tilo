@@ -4,13 +4,17 @@
 //! Settings' CRDT/settings payload or an agent process. Sandboxed callers use
 //! one launcher-passed connected Unix descriptor (`TILO_SVC_MODEL_GATEWAY_FD`).
 
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::fd::{FromRawFd, RawFd};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+#[cfg(unix)]
 use zeroize::Zeroizing;
 
 pub const SERVICE_NAME: &str = "model-gateway";
@@ -113,11 +117,19 @@ pub enum ClientError {
 /// Whether this process has the launcher-issued service descriptor. This does
 /// not probe or connect to a pathname socket, so the sandbox cannot substitute
 /// a different same-UID service.
+#[cfg(unix)]
 pub fn available() -> bool {
     std::env::var(SERVICE_FD_ENV)
         .ok()
         .and_then(|value| value.parse::<RawFd>().ok())
         .is_some_and(|fd| fd >= 3 && unsafe { libc::fcntl(fd, libc::F_GETFD) } != -1)
+}
+
+/// No launcher-issued gateway transport is implemented on this platform.
+/// Environment variables cannot manufacture a supported capability.
+#[cfg(not(unix))]
+pub fn available() -> bool {
+    false
 }
 
 /// Send a request over the launcher-provided service fd. The fd is duplicated
@@ -128,6 +140,7 @@ pub fn available() -> bool {
 /// Returns [`ClientError::Unavailable`] when the launcher service descriptor or
 /// gateway connection is unavailable, [`ClientError::Protocol`] for malformed
 /// frames, and [`ClientError::Rejected`] when the gateway refuses the request.
+#[cfg(unix)]
 pub fn request(request: Request) -> Result<Response, ClientError> {
     let fd = std::env::var(SERVICE_FD_ENV)
         .ok()
@@ -158,6 +171,17 @@ pub fn request(request: Request) -> Result<Response, ClientError> {
                 .unwrap_or_else(|| "request rejected".to_string()),
         ))
     }
+}
+
+/// Refuse gateway operations when the launcher capability transport is absent.
+///
+/// # Errors
+///
+/// Always returns [`ClientError::Unavailable`]. There is no direct-network or
+/// pathname-socket fallback for an unsupported host.
+#[cfg(not(unix))]
+pub fn request(_request: Request) -> Result<Response, ClientError> {
+    Err(ClientError::Unavailable)
 }
 
 /// Ask the isolated model gateway to plan against one configured provider.
@@ -276,6 +300,7 @@ pub fn remove_api_key(profile_id: &str) -> Result<(), ClientError> {
 ///
 /// Returns [`ClientError::Protocol`] when serialization fails or the frame is
 /// too large, and [`ClientError::Unavailable`] when writing fails.
+#[cfg(unix)]
 pub fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), ClientError> {
     let body = Zeroizing::new(
         serde_json::to_vec(value).map_err(|error| ClientError::Protocol(error.to_string()))?,
@@ -302,6 +327,7 @@ pub fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(
 ///
 /// Returns [`ClientError::Unavailable`] when reading fails and
 /// [`ClientError::Protocol`] for an invalid length or payload.
+#[cfg(unix)]
 pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result<T, ClientError> {
     let mut length = [0_u8; 4];
     stream
@@ -318,4 +344,51 @@ pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result
         .map_err(|_| ClientError::Unavailable)?;
     serde_json::from_slice(&body)
         .map_err(|_| ClientError::Protocol("invalid gateway response".into()))
+}
+
+#[cfg(all(test, not(unix)))]
+mod unsupported_platform_tests {
+    use super::*;
+
+    #[test]
+    fn photos_and_secret_operations_require_a_supported_gateway_capability() {
+        assert!(!available());
+        assert!(matches!(
+            analyze_image(
+                "local",
+                "vision",
+                VisionImage {
+                    media_type: "image/png".into(),
+                    data_base64: String::new(),
+                    source_content_hash: String::new(),
+                }
+            ),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            cluster_faces("local", "faces", Vec::new()),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            plan(
+                "hosted",
+                "model",
+                serde_json::Value::Null,
+                Duration::from_secs(1)
+            ),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            secret_configured("hosted"),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            set_api_key("hosted", "owned fixture".into()),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            remove_api_key("hosted"),
+            Err(ClientError::Unavailable)
+        ));
+    }
 }

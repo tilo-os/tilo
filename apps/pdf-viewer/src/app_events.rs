@@ -2409,7 +2409,9 @@ mod event_tests {
         ));
         let menu = app.context_menu.as_ref().unwrap();
         assert!(
-            menu.widget.item_rect(0).is_some_and(|rect| rect.area() > 1.0),
+            menu.widget
+                .item_rect(0)
+                .is_some_and(|rect| rect.area() > 1.0),
             "the shared Delete row reports exact hit geometry"
         );
     }
@@ -2585,14 +2587,8 @@ mod event_tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mods = winit::event::Modifiers::default();
-        let note_id = right_click_seeded_note(
-            &mut app,
-            &mut st,
-            &taffy,
-            node,
-            mods,
-            dummy_device_id(),
-        );
+        let note_id =
+            right_click_seeded_note(&mut app, &mut st, &taffy, node, mods, dummy_device_id());
 
         feed_event(
             &mut app,
@@ -2611,10 +2607,16 @@ mod event_tests {
             &key_event(Key::Named(NamedKey::Enter)),
         );
         assert!(app.context_menu.is_none());
-        assert!(!app.annotations.iter().any(|annotation| annotation.id == note_id));
-        assert!(!PdfDoc::list_annotations(&st.doc)
-            .iter()
-            .any(|annotation| annotation.id == note_id));
+        assert!(
+            !app.annotations
+                .iter()
+                .any(|annotation| annotation.id == note_id)
+        );
+        assert!(
+            !PdfDoc::list_annotations(&st.doc)
+                .iter()
+                .any(|annotation| annotation.id == note_id)
+        );
     }
 
     /// A Select-tool press-move-release past `PAN_SLOP` pans the canvas and

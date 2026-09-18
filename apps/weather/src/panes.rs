@@ -183,9 +183,18 @@ impl Widget for OverviewPane {
         &mut self,
         action: &Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AutoCommit,
+        path: &ObjId,
     ) -> bool {
+        let search_key = ui::a11y::hash_key(&"weather.city_search");
+        if let Some(index) = key_path.iter().position(|key| *key == search_key) {
+            return self.core.borrow_mut().perform_search_action(
+                action,
+                &key_path[index..],
+                state,
+                path,
+            );
+        }
         if !matches!(action, Action::Activate) {
             return false;
         }

@@ -1628,6 +1628,14 @@ pub trait Widget {
         false
     }
 
+    /// Work already requested by this view whose completion will replace a
+    /// placeholder. Unlike animations, this can be awaited by still captures.
+    fn has_pending_visual_work(&self) -> bool {
+        let mut pending = false;
+        self.for_each_child(&mut |child| pending |= child.has_pending_visual_work());
+        pending
+    }
+
     /// Default `true` (dirty every frame). Opt into incremental redraw by
     /// tracking a `dirty: bool`, setting it in `handle_event`/`sync`, and
     /// clearing it in `mark_drawn()`. Containers MUST forward: dirty iff any
@@ -1818,7 +1826,7 @@ pub use document_view::ModelView;
 mod divider;
 pub use divider::{Divider, DividerAxis};
 mod link;
-pub use link::Link;
+pub use link::{Link, os_open as open_external_url, try_os_open as try_open_external_url};
 mod nav_split;
 pub use nav_split::{
     DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH, FlapState, NavSplit, PushPane, SplitLayout,

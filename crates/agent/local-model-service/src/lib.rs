@@ -944,6 +944,7 @@ mod tests {
             required_accelerator_mib: 0,
             context_window: 1,
             vision: false,
+            face_recognition: false,
         }
     }
 
@@ -987,7 +988,11 @@ mod tests {
             destination: &mut File,
         ) -> Result<u64, ServiceError> {
             self.starts.push(start);
-            let tail = &self.bytes[start as usize..];
+            let start = usize::try_from(start).map_err(|_| ServiceError::PartialTooLarge)?;
+            let tail = self
+                .bytes
+                .get(start..)
+                .ok_or(ServiceError::PartialTooLarge)?;
             destination.write_all(tail)?;
             progress(tail.len() as u64);
             Ok(tail.len() as u64)
@@ -1005,7 +1010,11 @@ mod tests {
             progress: &mut dyn FnMut(u64),
             destination: &mut File,
         ) -> Result<u64, ServiceError> {
-            let tail = &self.bytes[start as usize..];
+            let start = usize::try_from(start).map_err(|_| ServiceError::PartialTooLarge)?;
+            let tail = self
+                .bytes
+                .get(start..)
+                .ok_or(ServiceError::PartialTooLarge)?;
             let split = tail.len().min(2);
             destination.write_all(&tail[..split])?;
             progress(split as u64);
@@ -1106,7 +1115,7 @@ mod tests {
         let mut service = LocalModelService::open(
             dir.path(),
             Transport {
-                bytes: bytes.clone(),
+                bytes,
                 starts: vec![],
             },
             Supervisor {

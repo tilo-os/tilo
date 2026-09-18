@@ -35,6 +35,8 @@ pub struct DeviceHandle {
     pub device: Device,
     pub queue: Queue,
     loss: DeviceLossMonitor,
+    #[cfg(windows)]
+    shader_cache: Option<crate::dx12_shader_cache::CacheSession>,
 }
 
 /// Shared, read-only observation of the context-owned device loss callback.
@@ -52,6 +54,14 @@ impl DeviceLossMonitor {
 }
 
 impl DeviceHandle {
+    #[cfg(windows)]
+    pub(crate) fn finish_shader_cache(&self) {
+        crate::dx12_shader_cache::report(&self.device);
+        if let Some(cache) = &self.shader_cache {
+            cache.finish(&self.device);
+        }
+    }
+
     /// Observe loss without replacing the context-owned callback.
     pub fn loss_monitor(&self) -> DeviceLossMonitor {
         self.loss.clone()
@@ -68,6 +78,8 @@ impl DeviceHandle {
 pub struct RenderContext {
     pub instance: Instance,
     pub devices: Vec<DeviceHandle>,
+    #[cfg(windows)]
+    compiler_identity: Option<Arc<crate::dx12_shader_cache::CompilerIdentity>>,
 }
 
 impl Default for RenderContext {
@@ -102,18 +114,60 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
 
 impl RenderContext {
     pub fn new() -> Self {
+        let backend_options = wgpu::BackendOptions::from_env_or_default();
+        #[cfg(windows)]
+        let backend_options = {
+            let mut options = backend_options;
+            // Prefer the pinned app-local compiler, independent of the
+            // working directory or ambient SDK/PATH. Keep an explicit
+            // diagnostic compiler override and unbundled wgpu fallback.
+            if wgpu::Dx12Compiler::from_env().is_none()
+                && let Some(compiler) = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().map(|path| path.join("dxcompiler.dll")))
+                    .filter(|path| path.is_file())
+            {
+                options.dx12.shader_compiler = wgpu::Dx12Compiler::DynamicDxc {
+                    dxc_path: compiler.to_string_lossy().into_owned(),
+                };
+            }
+            options
+        };
         // Every field spelled out: `InstanceDescriptor` has no `Default`, and
         // these are the values vello would have used.
+        #[cfg(windows)]
+        let compiler_identity =
+            crate::dx12_shader_cache::CompilerIdentity::open(&backend_options.dx12.shader_compiler);
+        #[cfg(windows)]
+        let backend_options = {
+            let mut options = backend_options;
+            if let Some(compiler) = &compiler_identity {
+                options.dx12.shader_compiler = compiler.compiler();
+            }
+            options
+        };
         let instance = Instance::new(wgpu::InstanceDescriptor {
             display: None,
-            backends: wgpu::Backends::from_env().unwrap_or_default(),
+            // Use the host's native graphics API on Windows. Probing every
+            // backend can enter optional Vulkan translation-layer drivers
+            // before a working DX12 adapter is selected. Keep WGPU_BACKEND
+            // available for explicit diagnostics and alternate drivers.
+            backends: wgpu::Backends::from_env().unwrap_or_else(|| {
+                if cfg!(target_os = "windows") {
+                    wgpu::Backends::DX12
+                } else {
+                    wgpu::Backends::default()
+                }
+            }),
             flags: wgpu::InstanceFlags::from_build_config().with_env(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            backend_options: wgpu::BackendOptions::from_env_or_default(),
+            backend_options,
         });
         Self {
             instance,
             devices: Vec::new(),
+            #[cfg(windows)]
+            compiler_identity,
         }
     }
 
@@ -210,11 +264,16 @@ impl RenderContext {
                 *recorded = Some(format!("{reason:?}: {message}"));
             }
         });
+        #[cfg(windows)]
+        let shader_cache =
+            crate::dx12_shader_cache::CacheSession::load(&device, self.compiler_identity.clone());
         self.devices.push(DeviceHandle {
             adapter,
             device,
             queue,
             loss,
+            #[cfg(windows)]
+            shader_cache,
         });
         Some(self.devices.len().saturating_sub(1))
     }
@@ -233,24 +292,30 @@ impl RenderContext {
         height: u32,
         present_mode: wgpu::PresentMode,
     ) -> Result<RenderSurface<'w>, CreateSurfaceError> {
+        tilo_startup_metrics::mark("surface-native-create-start");
         let surface = self
             .instance
             .create_surface(window.into())
             .map_err(|_| CreateSurfaceError::Surface)?;
+        tilo_startup_metrics::mark("surface-native-create-done");
+        tilo_startup_metrics::mark("surface-device-select-start");
         let dev_id = self
             .device(Some(&surface))
             .await
             .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
+        tilo_startup_metrics::mark("surface-device-select-done");
         let handle = self
             .devices
             .get(dev_id)
             .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
+        tilo_startup_metrics::mark("surface-capabilities-start");
         let capabilities = surface.get_capabilities(&handle.adapter);
         let format = capabilities
             .formats
             .into_iter()
             .find(|it| matches!(it, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm))
             .ok_or(CreateSurfaceError::UnsupportedSurfaceFormat)?;
+        tilo_startup_metrics::mark("surface-capabilities-done");
 
         let config = SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -262,7 +327,12 @@ impl RenderContext {
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
         };
+        tilo_startup_metrics::mark("surface-targets-create-start");
         let (target_texture, target_view) = create_targets(width, height, &handle.device);
+        tilo_startup_metrics::mark("surface-targets-create-done");
+        tilo_startup_metrics::mark("surface-blitter-create-start");
+        let blitter = TextureBlitter::new(&handle.device, format);
+        tilo_startup_metrics::mark("surface-blitter-create-done");
         let surface = RenderSurface {
             surface,
             config,
@@ -270,9 +340,11 @@ impl RenderContext {
             format,
             target_texture,
             target_view,
-            blitter: TextureBlitter::new(&handle.device, format),
+            blitter,
         };
+        tilo_startup_metrics::mark("surface-initial-configure-start");
         self.configure_surface(&surface);
+        tilo_startup_metrics::mark("surface-initial-configure-done");
         Ok(surface)
     }
 

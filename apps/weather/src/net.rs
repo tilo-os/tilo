@@ -69,11 +69,28 @@ pub struct WeatherService {
     rx: Receiver<Response>,
 }
 
+struct ResponseSender {
+    sender: Sender<Response>,
+    wake: ui::wake::WakeHandle,
+}
+
+impl ResponseSender {
+    fn send(&self, response: Response) -> Result<(), std::sync::mpsc::SendError<Response>> {
+        self.sender.send(response)?;
+        self.wake.wake();
+        Ok(())
+    }
+}
+
 impl WeatherService {
     /// Spawn the worker thread + its Tokio runtime and reqwest client.
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = channel::<Request>();
         let (res_tx, res_rx) = channel::<Response>();
+        let res_tx = ResponseSender {
+            sender: res_tx,
+            wake: ui::wake::WakeHandle::new(),
+        };
 
         let _ = thread::Builder::new()
             .name("weather-net".to_string())
@@ -101,7 +118,7 @@ impl WeatherService {
     }
 }
 
-fn worker(req_rx: &Receiver<Request>, res_tx: &Sender<Response>) {
+fn worker(req_rx: &Receiver<Request>, res_tx: &ResponseSender) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -218,4 +235,43 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_worker_response_wakes_its_owning_app_without_animation() {
+        let (events, received) = channel();
+        let mut scope = ui::wake::WakeScope::new();
+        scope
+            .bind(move |event| {
+                events.send(event).unwrap();
+            })
+            .unwrap();
+        let _entry = scope.enter();
+        let (sender, responses) = channel();
+        let sender = ResponseSender {
+            sender,
+            wake: ui::wake::WakeHandle::new(),
+        };
+        std::thread::spawn(move || {
+            sender
+                .send(Response::Geocode {
+                    seq: 7,
+                    results: Vec::new(),
+                })
+                .unwrap()
+        })
+        .join()
+        .unwrap();
+        received
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("worker must wake the app");
+        assert!(matches!(
+            responses.try_recv().unwrap(),
+            Response::Geocode { seq: 7, .. }
+        ));
+    }
 }

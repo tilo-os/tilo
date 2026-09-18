@@ -30,12 +30,15 @@
 #[cfg(unix)]
 use std::ffi::CString;
 use std::fs;
-use std::io::{self, Read, Write};
+#[cfg(not(windows))]
+use std::io::Write;
+use std::io::{self, Read};
 #[cfg(target_os = "linux")]
 use std::os::fd::FromRawFd as _;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+#[cfg(not(windows))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::SigningKey;
@@ -122,6 +125,7 @@ fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
 /// Sequence for same-directory temporary device-key claim files. Final
 /// ownership comes from the no-clobber rename, not this name; `create_new`
 /// only makes a stale temporary file impossible to overwrite.
+#[cfg(not(windows))]
 static DEVICE_KEY_CLAIM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Canonical layout of identity paths under a chosen root.
@@ -166,9 +170,15 @@ impl IdentityPaths {
     /// Returns an error if either subdirectory cannot be created.
     pub fn ensure_directories(&self) -> io::Result<()> {
         if let Some(parent) = self.user_pubkey.parent() {
+            #[cfg(windows)]
+            private_fs::directory(parent)?;
+            #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
         if let Some(parent) = self.device_privkey.parent() {
+            #[cfg(windows)]
+            private_fs::directory(parent)?;
+            #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
         if let Some(parent) = self.device_cert.parent() {
@@ -300,9 +310,8 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
 /// Read a 32-byte Ed25519 signing key from disk, enforcing 0600
 /// permissions.
 ///
-/// On non-Unix targets the permission check is a no-op (still
-/// checks length); Tilo runs only on Linux, so this is the
-/// production path everywhere the compositor ships.
+/// Windows validates ownership and a user-only DACL on the opened handle,
+/// refusing reparse points rather than following a substituted secret path.
 ///
 /// # Errors
 ///
@@ -340,7 +349,12 @@ fn signing_key_from_file(
     // Inspect and read the same opened inode while rejecting symlinks in every
     // component. A leaf-only O_NOFOLLOW check still permits an exchanged
     // parent directory to redirect an otherwise trusted key path.
+    #[cfg(windows)]
+    let file = private_fs::read(path)?;
+    #[cfg(not(windows))]
     let file = open_regular_without_symlinks(path)?;
+    #[cfg(not(unix))]
+    let _ = (forbidden_mode, owner_policy);
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(PersistError::Io(io::Error::new(
@@ -421,6 +435,9 @@ pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     let seed = Zeroizing::new(sk.to_bytes());
+    #[cfg(windows)]
+    return private_fs::write_atomic(path, seed.as_ref());
+    #[cfg(not(windows))]
     atomic_file::write_with_mode(path, seed.as_ref(), 0o600)
 }
 
@@ -477,6 +494,9 @@ pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     let seed = Zeroizing::new(sk.to_bytes());
+    #[cfg(windows)]
+    return private_fs::write_atomic(path, seed.as_ref());
+    #[cfg(not(windows))]
     atomic_file::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
 }
 
@@ -551,6 +571,7 @@ pub fn load_or_create_device_key(
 /// the final name only if it is still absent. Unlike a hard-link claim, the
 /// private key is never briefly reachable through two names. A caller that
 /// loses returns `Ok(false)` and must load the winner from disk.
+#[cfg(not(windows))]
 fn publish_device_key_no_clobber(path: &Path, key: &SigningKey) -> Result<bool, PersistError> {
     protect_secret_process()?;
     let parent = path.parent().ok_or_else(|| {
@@ -601,7 +622,7 @@ fn publish_device_key_no_clobber(path: &Path, key: &SigningKey) -> Result<bool, 
             // The key contents reached storage before the directory entry was
             // published.  Sync the parent as well, so a successful first boot
             // survives a power loss after the no-clobber rename.
-            fs::File::open(parent)?.sync_all()?;
+            atomic_file::sync_directory(parent)?;
             Ok(true)
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
@@ -609,9 +630,17 @@ fn publish_device_key_no_clobber(path: &Path, key: &SigningKey) -> Result<bool, 
     }
 }
 
+/// Publish a Windows key through the private ACL-validated no-clobber path.
+#[cfg(windows)]
+fn publish_device_key_no_clobber(path: &Path, key: &SigningKey) -> Result<bool, PersistError> {
+    protect_secret_process()?;
+    let seed = Zeroizing::new(key.to_bytes());
+    Ok(private_fs::create_atomic(path, seed.as_ref())?)
+}
+
 /// Create a private, complete temporary candidate beside the final device-key
-/// path.  The mode is applied before this file is ever linked into the
-/// shared identity tree, so it cannot briefly become publicly visible.
+/// path. The mode is applied before publication into the shared identity tree.
+#[cfg(not(windows))]
 fn create_device_key_claim_temp(
     parent: &Path,
     bytes: &[u8; 32],
@@ -622,14 +651,17 @@ fn create_device_key_claim_temp(
             ".tilo-device-key-claim-{}-{sequence}",
             std::process::id()
         ));
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(DEVICE_KEY_MODE);
-        }
-        match options.open(&temp) {
+        let candidate = {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(DEVICE_KEY_MODE);
+            }
+            options.open(&temp)
+        };
+        match candidate {
             Ok(mut file) => {
                 #[cfg(unix)]
                 {
@@ -767,6 +799,56 @@ mod tests {
         protect_secret_process().expect("disable identity core dumps");
         // SAFETY: PR_GET_DUMPABLE consumes scalar arguments only.
         assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
+    }
+
+    #[test]
+    fn replacing_a_signing_key_preserves_private_readability() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("signing.bin");
+        let first = SigningKey::from_bytes(&[17; 32]);
+        let second = SigningKey::from_bytes(&[29; 32]);
+        write_signing_key(&path, &first).unwrap();
+        assert_eq!(
+            read_signing_key(&path).unwrap().to_bytes(),
+            first.to_bytes()
+        );
+        write_signing_key(&path, &second).unwrap();
+        assert_eq!(
+            read_signing_key(&path).unwrap().to_bytes(),
+            second.to_bytes()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn public_windows_key_is_neither_read_nor_silently_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(root.path());
+        let (original, _) = load_or_create_device_key(&paths).unwrap();
+        let result = std::process::Command::new("icacls.exe")
+            .arg(&paths.device_privkey)
+            .args(["/grant", "*S-1-1-0:(R)"])
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        for result in [
+            read_signing_key(&paths.device_privkey),
+            read_device_key(&paths.device_privkey),
+            load_or_create_device_key(&paths).map(|(key, _)| key),
+        ] {
+            assert!(matches!(result, Err(PersistError::Io(error))
+                if error.kind() == io::ErrorKind::PermissionDenied));
+        }
+        assert_eq!(
+            write_device_key(&paths.device_privkey, &SigningKey::from_bytes(&[9; 32]))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied,
+        );
+        assert_eq!(
+            fs::read(&paths.device_privkey).unwrap(),
+            original.to_bytes()
+        );
     }
 
     #[test]

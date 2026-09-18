@@ -17,7 +17,7 @@ jobs:
     runs-on: runner
     timeout-minutes: 240
     container:
-      image: code.podesta.ai/qos/qos-builder:latest
+      image: code.podesta.ai/qos/tilo-builder:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}

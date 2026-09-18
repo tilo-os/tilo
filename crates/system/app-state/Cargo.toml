@@ -26,6 +26,11 @@ tracing.workspace = true
 # `flock(2)` for the single-writer guard around the actor sidecar.
 libc.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+dirs.workspace = true
+# Compare volume/file identities through live Windows handles.
+same-file = "1.0.6"
+
 [dev-dependencies]
 tempfile.workspace = true
 serial_test.workspace = true

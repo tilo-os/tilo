@@ -7,7 +7,7 @@ class FailureCheckpoint(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);base=Path(self.tmp.name);self.root=base/'kernel';self.root.mkdir();self.out=base/'cache';self.out.mkdir();self.cp=base/'checkpoint';self.cp.mkdir();self.srpm=base/'source.rpm';self.srpm.write_bytes(b'fixture-srpm')
   (self.cp/'toolchain.json').write_text('{"toolchain":{}}');(self.cp/'approval.json').write_text('{"source_revision":"'+m.SOURCE+'"}')
-  (self.root/'.config').write_text('CONFIG_DEBUG_FS=n\n');(self.root/'driver.o').write_bytes(b'compiled object');(self.root/'built-in.a').write_bytes(b'aggregate');(self.root/'certs').mkdir();(self.root/'certs/signing_key.pem').write_bytes(b'-----BEGIN PRIVATE KEY-----\nPRIVATE')
+  (self.root/'.config').write_text('CONFIG_DEBUG_FS=n\n');(self.root/'driver.o').write_bytes(b'compiled object');(self.root/'built-in.a').write_bytes(b'aggregate');(self.root/'certs').mkdir();(self.root/'certs/signing_key.pem').write_bytes(b'-----BEGIN PRIVATE KEY-----\nplaceholder private bytes')
  def capture(self):
   with patch.object(m.subprocess,'check_output',return_value=b'fixture tool 1\n'):
    return m.capture(self.root,self.out,'42','1',23,self.cp,reserve=0,srpm=self.srpm)
@@ -17,7 +17,7 @@ class FailureCheckpoint(unittest.TestCase):
    names=archive.getnames();self.assertIn('driver.o',names);self.assertNotIn('built-in.a',names);self.assertNotIn('certs/signing_key.pem',names)
   scan=json.loads((self.out/'scan.json').read_text());self.assertEqual(scan['file_sha256']['driver.o'],hashlib.sha256(b'compiled object').hexdigest());self.assertEqual(scan['entries'],len(names));self.assertEqual((self.out/'ready').read_text(),m.SOURCE+':42:1\n')
  def test_unexpected_private_marker_prevents_export(self):
-  (self.root/'unexpected').write_bytes(b'-----BEGIN PRIVATE KEY-----\nprivate bytes')
+  (self.root/'unexpected').write_bytes(b'-----BEGIN PRIVATE KEY-----\nplaceholder private bytes')
   with self.assertRaises(ValueError):self.capture()
   self.assertFalse((self.out/'ready').exists());self.assertEqual(list(self.out.iterdir()),[])
  def test_escaping_symlink_and_insufficient_reserve_fail_closed(self):

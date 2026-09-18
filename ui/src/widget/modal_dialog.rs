@@ -745,15 +745,73 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // hidden from the tree.
         let title = crate::i18n!(&self.title);
         let name = (!title.is_empty()).then_some(title);
+        let mut buttons = Vec::new();
+        if self.open {
+            for (key, target, action, rect) in [
+                (
+                    1,
+                    "modal.primary",
+                    self.primary_action.as_ref(),
+                    self.primary_rect,
+                ),
+                (
+                    2,
+                    "modal.secondary",
+                    self.secondary_action.as_ref(),
+                    self.secondary_rect,
+                ),
+            ] {
+                if let Some(action) = action {
+                    buttons.push(
+                        AccessNode::new(Role::Button)
+                            .with_key(key)
+                            .with_name(crate::i18n!(&action.label))
+                            .with_action_target(target)
+                            .with_state(AccessState::new().focusable(true))
+                            .with_bounds(rect),
+                    );
+                }
+            }
+        }
         Some(
             AccessNode::new(Role::Dialog)
                 .with_optional_name(name)
+                .with_children(buttons)
                 .with_state(AccessState {
                     modal: true,
                     hidden: !self.open,
                     ..Default::default()
                 }),
         )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else { return None };
+        self.accessibility()?
+            .children
+            .get(*index)?
+            .bounds
+            .map(|bounds| bounds.to_rect())
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !self.open || !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        let action = match target {
+            "modal.primary" => self.primary_action.as_mut(),
+            "modal.secondary" => self.secondary_action.as_mut(),
+            _ => None,
+        };
+        let Some(action) = action else { return false };
+        (action.on_click)();
+        true
     }
 }
 
@@ -1255,6 +1313,44 @@ mod tests {
             draw_data(false),
             draw_data(true),
             "a destructive primary must paint a different colour than the accent primary",
+        );
+    }
+
+    #[test]
+    fn accessibility_footer_actions_reach_the_real_callbacks() {
+        use crate::a11y::Action;
+        let clicked = Rc::new(Cell::new(0));
+        let observed = clicked.clone();
+        let mut dialog = ModalDialog::new("Confirm", TestContent)
+            .open(true)
+            .primary_action("Apply", move || observed.set(observed.get() + 1))
+            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+        let node = dialog.accessibility().unwrap();
+        assert!(
+            node.children
+                .iter()
+                .any(|child| child.name.as_deref() == Some("Apply")),
+            "the painted primary action must be accessible"
+        );
+        let mut doc = AutoCommit::new();
+        assert!(dialog.perform_semantic_action(
+            "modal.primary",
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert_eq!(clicked.get(), 1);
+        dialog.set_open(false);
+        assert!(!dialog.perform_semantic_action(
+            "modal.primary",
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert_eq!(
+            clicked.get(),
+            1,
+            "closed controls cannot activate stale callbacks"
         );
     }
 

@@ -2485,8 +2485,8 @@ impl PresenceHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
+    /// Returns [`NotAvailable`] when the broker rejects the request or its
+    /// connection fails during the call.
     pub async fn publish_status(
         &self,
         key_bytes: &[u8],

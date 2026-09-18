@@ -92,6 +92,8 @@ has "$workflow" 'needs: signing-preflight' \
   'expensive native snapshot builds wait for signing-authority preflight'
 has "$workflow" 'python3 os/dev/promote-native-index.py' \
   'snapshot promotion verifies signed native children'
+has "$workflow" 'git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"' \
+  'snapshot promotion rejects source-input changes during native builds'
 has "$workflow" 'driver = "vfs"' \
   'snapshot promotion isolates Podman storage from the runner overlay'
 has "$workflow" 'rm -f -- "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' \
@@ -146,6 +148,8 @@ has "$workflow" 'https://tilo.dev/buildtypes/frozen-rpm-index/v1' \
   'snapshot provenance binds the package-set build type'
 has "$workflow" 'cosign attest --yes --key "$COSIGN_KEY_REF" --type slsaprovenance1' \
   'snapshot publishes signed SLSA provenance'
+has "$workflow" 'if type == "array" then .[] else . end' \
+  'snapshot verification accepts current object and legacy array Cosign output'
 has "$image_workflow" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
   'OS CI verifies exact RPM snapshot provenance'
 has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \

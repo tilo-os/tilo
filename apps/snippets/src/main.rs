@@ -1,5 +1,6 @@
 //! Snippets — standard Tilo application entry point.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -39,11 +40,46 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+fn install_locales() -> Result<(), ui::i18n::I18nError> {
+    ui::i18n::I18nManager::install_system(
+        "en-US",
+        &[
+            ("en-US", include_str!("../locales/en-US.ftl")),
+            ("de-DE", include_str!("../locales/de-DE.ftl")),
+        ],
+    )
+}
+
+/// Run the native Snippets application.
+///
+/// # Panics
+/// Panics if the embedded locale catalogs are invalid (covered by a startup test).
+#[allow(
+    clippy::expect_used,
+    reason = "the embedded locale catalogs are validated by the startup catalog test"
+)]
 pub fn main() {
+    install_locales().expect("valid bundled Snippets locales");
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.tilo.snippets", snippets::app_root)
             .shot_root(shot_root)
             .scenarios(&["narrow", "detail", "empty"])
             .configure_app(|app| snippets::actions::register(app.action_registry_mut())),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn startup_installs_the_body_editor_and_action_labels() {
+        super::install_locales().unwrap();
+        let locale = ui::i18n::I18nManager::current_locale();
+        let expected = if locale.starts_with("de") {
+            ("Snippet-Inhalt", "Inhalt bearbeiten")
+        } else {
+            ("Snippet body", "Edit body")
+        };
+        assert_eq!(ui::i18n!("snippets-body-placeholder"), expected.0);
+        assert_eq!(ui::i18n!("snippets-edit-body"), expected.1);
+    }
 }

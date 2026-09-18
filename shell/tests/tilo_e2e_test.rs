@@ -508,65 +508,6 @@ fn an_editor_body_has_no_peer_caret_without_peers() {
 }
 
 #[test]
-fn shell_file_drop_appends_tab_to_active_workspace() {
-    // Dropping a .ts file appends a tab to the active workspace's first group
-    // via `Shell::handle_file_drop`.
-    use shell::shell::Shell;
-
-    let mut shell = Shell::new_for_test();
-    let before_titles: Vec<String> = shell.workspace_tree().workspaces[0].strips[0].window_groups
-        [0]
-    .tabs
-    .iter()
-    .map(|t| t.title.clone())
-    .collect();
-
-    // The file need not exist: `DraggedItem::from_path` takes the
-    // non-directory branch whenever `is_dir()` is false.
-    let path = std::path::PathBuf::from("/tmp/main.ts");
-    let tab_id = shell.simulate_file_drop(&path).expect("tab_id");
-
-    let ws = &shell.workspace_tree().workspaces[0];
-    let group = &ws.strips[0].window_groups[0];
-    assert_eq!(group.active_tab, tab_id);
-    assert_eq!(
-        group.tabs.len(),
-        before_titles.len() + 1,
-        "exactly one new tab should be appended"
-    );
-    assert_eq!(group.tabs.last().unwrap().title, "main.ts");
-    // The drop must not replace or reorder earlier tabs.
-    for t in &before_titles {
-        assert!(
-            group.tabs.iter().any(|x| &x.title == t),
-            "tab `{t}` went missing after drop"
-        );
-    }
-}
-
-#[test]
-fn shell_folder_drop_labels_the_tab_with_files_prefix() {
-    use shell::shell::Shell;
-
-    let mut shell = Shell::new_for_test();
-    // `is_dir()` is false on /no/such/path, exercising the non-filesystem
-    // classification branch; a real temp dir exercises the folder branch.
-    let dir = std::env::temp_dir().join("tilo-drop-folder-test");
-    let _ = std::fs::create_dir_all(&dir);
-
-    let tab_id = shell.simulate_file_drop(&dir).expect("tab_id");
-    let group = &shell.workspace_tree().workspaces[0].strips[0].window_groups[0];
-    assert_eq!(group.active_tab, tab_id);
-    let new_title = &group.tabs.last().unwrap().title;
-    assert!(
-        new_title.starts_with("Files — "),
-        "folder drop should prefix the tab label with `Files — `, got: {new_title}"
-    );
-
-    let _ = std::fs::remove_dir(&dir);
-}
-
-#[test]
 fn chrome_file_drop_appends_tab_and_bumps_revision() {
     // Production-path counterpart: `ChromeState::handle_file_drop` (invoked on
     // `WindowEvent::DroppedFile`) and `apply_workspace_drop_from_path`.

@@ -1,5 +1,5 @@
-//! Host-native file choosing via the **XDG Desktop Portal**
-//! (`org.freedesktop.portal.FileChooser`, through [`ashpd`]).
+//! Host-native file choosing via the XDG Desktop Portal on Unix and Windows
+//! Common Item Dialogs on Windows.
 //!
 //! # Why this is shared
 //!
@@ -7,7 +7,8 @@
 //! open/save off an environment variable**: it goes through the portal so the
 //! *host desktop* provides the chooser — on GNOME the user sees GNOME's file
 //! dialog; on Tilo the compositor implements the portal backend and renders
-//! Tilo's picker. That picker is also where the per-workspace sandbox
+//! Tilo's picker. Windows uses the host's Open, Save, and folder dialogs.
+//! On Tilo, the picker is also where the per-workspace sandbox
 //! file-access prompt lives, which makes this module **the file-access
 //! security boundary**. A per-app copy of it is not merely duplicated code: it
 //! is a second, independently-drifting definition of which URIs are allowed to
@@ -17,14 +18,14 @@
 //! instead of [`url::Url::to_file_path`] turns `file://evil-host/etc/passwd`
 //! into the **relative** path `evil-host/etc/passwd` — silently resolved
 //! against the process's working directory, from a URI that explicitly named
-//! a *remote host*. This module converges on `Url::to_file_path`, which
-//! rejects a foreign host outright; see `rejects_a_uri_that_names_a_remote_host`.
+//! a *remote host*. This module validates the host explicitly before converting
+//! the URL; see `rejects_a_uri_that_names_a_remote_host`.
 //!
 //! # Threading contract
 //!
 //! The portal round-trip is asynchronous and opens a real host window, so it
 //! must **never** run on the UI thread. [`PickRequest::send`] spawns a worker
-//! thread with its own small Tokio runtime, runs the D-Bus round-trip there,
+//! thread with a Tokio runtime on Unix or a COM apartment on Windows,
 //! and hands the outcome back over an [`std::sync::mpsc`] channel. The app
 //! drains that channel once per frame; the UI thread never blocks.
 //!
@@ -36,6 +37,9 @@
 //! types, and [`inject_for_test`] compile unconditionally, so the security
 //! rule stays under test in every configuration and `--open PATH` style flags
 //! work without a portal.
+
+#[cfg(all(feature = "portal", windows))]
+mod windows;
 
 use std::fs::File;
 #[cfg(any(feature = "portal", test))]
@@ -372,6 +376,10 @@ impl PickRequest {
     /// or multi-select requests reports a normal failed outcome.
     pub fn send_open_file(self) -> OpenFileChannel {
         let (tx, rx) = std::sync::mpsc::channel();
+        if suppressed() {
+            let _ = tx.send(OpenFileOutcome::Cancelled);
+            return rx;
+        }
         let name = self.thread_name.clone();
         spawn_worker(&name, move || {
             let _ = tx.send(single_open_file(self));
@@ -454,7 +462,21 @@ fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
 pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
     use std::path::Component;
 
+    // Windows URL conversion also accepts UNC hosts. A remote share is not
+    // a local selection and must not silently cross this boundary.
+    if !matches!(uri.host_str(), None | Some("" | "localhost")) {
+        return None;
+    }
     let path = uri.to_file_path().ok()?;
+    if !path.is_absolute() {
+        return None;
+    }
+    #[cfg(windows)]
+    if !matches!(path.components().next(), Some(Component::Prefix(prefix))
+        if matches!(prefix.kind(), std::path::Prefix::Disk(_)))
+    {
+        return None;
+    }
 
     // No parent/current-directory hops: the portal returns resolved picks, so
     // one appearing here came from an escape in a file name.
@@ -472,6 +494,9 @@ pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
         .components()
         .filter(|c| matches!(c, Component::Normal(_)))
         .count();
+    // A Windows drive is a URI segment but a Prefix, not a Normal component.
+    #[cfg(windows)]
+    let components = components.checked_add(1)?;
     if components != segments {
         return None;
     }
@@ -561,13 +586,20 @@ fn open_regular_file(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
-/// Tilo targets Unix, where `O_NOFOLLOW` is available. Keep non-Unix builds
-/// compiling with the same descriptor type check; platform-specific safe-open
-/// flags belong in their platform implementation when one is supported.
-#[cfg(all(any(feature = "portal", test), not(unix)))]
+/// Bind the type and reparse checks to the opened Windows handle, so a link
+/// cannot be substituted between validation and opening the selected file.
+#[cfg(all(any(feature = "portal", test), windows))]
 fn open_regular_file(path: &Path) -> std::io::Result<File> {
-    let file = File::open(path)?;
-    if !file.metadata()?.file_type().is_file() {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "selected path is not a regular file",
@@ -632,55 +664,57 @@ impl PortalOutcome {
 
 #[cfg(feature = "portal")]
 fn single(req: PickRequest) -> PortalOutcome {
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => return PortalOutcome::Failed(format!("portal runtime: {e}")),
-    };
-    rt.block_on(async move {
-        match run(req).await {
-            Ok(uris) => map_uri(&uris),
-            Err(e) => e.into_single(),
-        }
-    })
+    match run_picker(req) {
+        Ok(uris) => map_uri(&uris),
+        Err(error) => error.into_single(),
+    }
 }
 
 #[cfg(feature = "portal")]
 fn single_open_file(req: PickRequest) -> OpenFileOutcome {
+    if suppressed() {
+        return OpenFileOutcome::Cancelled;
+    }
     if !matches!(req.kind, PickKind::Open { multiple: false }) {
         return OpenFileOutcome::Failed(
             "an already-open file request must be a single-file Open chooser".to_string(),
         );
     }
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => return OpenFileOutcome::Failed(format!("portal runtime: {e}")),
-    };
-    rt.block_on(async move {
-        match run(req).await {
-            Ok(uris) => match uris.first() {
-                Some(uri) => open_uri(uri),
-                None => OpenFileOutcome::Cancelled,
-            },
-            Err(e) => e.into_open_file(),
-        }
-    })
+    match run_picker(req) {
+        Ok(uris) => match uris.first() {
+            Some(uri) => open_uri(uri),
+            None => OpenFileOutcome::Cancelled,
+        },
+        Err(error) => error.into_open_file(),
+    }
 }
 
 #[cfg(feature = "portal")]
 fn multiple(req: PickRequest) -> MultiOutcome {
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(e) => return MultiOutcome::Failed(format!("portal runtime: {e}")),
-    };
-    rt.block_on(async move {
-        match run(req).await {
-            Ok(uris) => map_uris(&uris),
-            Err(e) => e.into_multi(),
-        }
-    })
+    match run_picker(req) {
+        Ok(uris) => map_uris(&uris),
+        Err(error) => error.into_multi(),
+    }
 }
 
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", unix))]
+fn run_picker(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|error| PortalFailure::Failed(format!("portal runtime: {error}")))?;
+    runtime.block_on(run(req))
+}
+
+#[cfg(all(feature = "portal", windows))]
+fn run_picker(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
+    windows::pick(req)
+}
+
+#[cfg(all(feature = "portal", windows))]
+fn launch(req: LaunchRequest) -> LaunchOutcome {
+    windows::launch(req)
+}
+
+#[cfg(all(feature = "portal", unix))]
 fn launch(req: LaunchRequest) -> LaunchOutcome {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -733,11 +767,6 @@ fn open_directory(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
-#[cfg(all(feature = "portal", not(unix)))]
-fn open_directory(path: &Path) -> std::io::Result<File> {
-    File::open(path)
-}
-
 /// A portal round-trip that did not return URIs.
 #[cfg(feature = "portal")]
 enum PortalFailure {
@@ -769,7 +798,7 @@ impl PortalFailure {
     }
 }
 
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", unix))]
 async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
     use ashpd::desktop::file_chooser::SelectedFiles;
 
@@ -855,7 +884,18 @@ mod tests {
     use super::*;
 
     fn u(s: &str) -> url::Url {
-        url::Url::parse(s).unwrap()
+        #[cfg(windows)]
+        let s = s
+            .replace("file:///", "file:///C:/")
+            .replace("file://localhost/", "file://localhost/C:/");
+        url::Url::parse(&s).unwrap()
+    }
+
+    fn local_path(s: &str) -> PathBuf {
+        #[cfg(windows)]
+        return PathBuf::from(format!("C:{s}"));
+        #[cfg(not(windows))]
+        PathBuf::from(s)
     }
 
     #[test]
@@ -887,6 +927,28 @@ mod tests {
         assert!(matches!(map_uris(&[uri]), MultiOutcome::Failed(_)));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_paths_roundtrip_without_accepting_unc_or_escaped_separators() {
+        let uri = url::Url::parse("file:///C:/Users/Alice/My%20notes.txt").unwrap();
+        assert_eq!(
+            to_local_path(&uri),
+            Some(PathBuf::from("C:/Users/Alice/My notes.txt"))
+        );
+        for rejected in [
+            "file://server/share/notes.txt",
+            "file:///C:/Users/Alice/a%5Cb.txt",
+            "file:///C:/Users/Alice/a%2Fb.txt",
+            "file:///Users/Alice/notes.txt",
+        ] {
+            assert_eq!(
+                to_local_path(&url::Url::parse(rejected).unwrap()),
+                None,
+                "{rejected}"
+            );
+        }
+    }
+
     #[test]
     fn a_rejected_host_never_yields_a_relative_path() {
         // Independent of the enum: whatever we hand back must never be a path
@@ -911,7 +973,7 @@ mod tests {
         // is equivalent to an empty host.
         assert_eq!(
             map_uri(&[u("file://localhost/home/alice/a.mkv")]),
-            PortalOutcome::Opened(PathBuf::from("/home/alice/a.mkv"))
+            PortalOutcome::Opened(local_path("/home/alice/a.mkv"))
         );
     }
 
@@ -921,16 +983,16 @@ mod tests {
     fn percent_escapes_in_filenames_are_decoded() {
         assert_eq!(
             map_uri(&[u("file:///home/alice/My%20Clip.mp4")]),
-            PortalOutcome::Opened(PathBuf::from("/home/alice/My Clip.mp4"))
+            PortalOutcome::Opened(local_path("/home/alice/My Clip.mp4"))
         );
         // Multi-byte UTF-8 escapes must survive too.
         assert_eq!(
             map_uri(&[u("file:///home/alice/%C3%A9t%C3%A9%20caf%C3%A9.mp3")]),
-            PortalOutcome::Opened(PathBuf::from("/home/alice/été café.mp3"))
+            PortalOutcome::Opened(local_path("/home/alice/été café.mp3"))
         );
         assert_eq!(
             map_uri(&[u("file:///home/alice/a%23b%3Fc%25d.txt")]),
-            PortalOutcome::Opened(PathBuf::from("/home/alice/a#b?c%d.txt"))
+            PortalOutcome::Opened(local_path("/home/alice/a#b?c%d.txt"))
         );
     }
 
@@ -939,7 +1001,7 @@ mod tests {
         // `+` means space only in query strings, not in a path component.
         assert_eq!(
             map_uri(&[u("file:///home/alice/my+song.mp3")]),
-            PortalOutcome::Opened(PathBuf::from("/home/alice/my+song.mp3"))
+            PortalOutcome::Opened(local_path("/home/alice/my+song.mp3"))
         );
     }
 
@@ -978,8 +1040,12 @@ mod tests {
         // path is already `/etc/shadow`. Whether the app may read it is the
         // sandbox's question, not this module's.
         let uri = u("file:///home/alice/%2E%2E/%2E%2E/etc/shadow");
-        assert_eq!(uri.path(), "/etc/shadow", "the URI normalises on parse");
-        assert_eq!(to_local_path(&uri), Some(PathBuf::from("/etc/shadow")));
+        assert_eq!(
+            to_local_path(&uri),
+            Some(local_path("/etc/shadow")),
+            "the URI normalises on parse"
+        );
+        assert_eq!(to_local_path(&uri), Some(local_path("/etc/shadow")));
     }
 
     #[test]
@@ -1002,7 +1068,7 @@ mod tests {
         ] {
             assert_eq!(
                 to_local_path(&u(uri)),
-                Some(PathBuf::from(want)),
+                Some(local_path(want)),
                 "{uri} must resolve normally"
             );
         }
@@ -1024,7 +1090,7 @@ mod tests {
         ];
         assert_eq!(
             map_uri(&uris),
-            PortalOutcome::Opened(PathBuf::from("/home/alice/photo.png"))
+            PortalOutcome::Opened(local_path("/home/alice/photo.png"))
         );
     }
 
@@ -1037,8 +1103,8 @@ mod tests {
         assert_eq!(
             map_uris(&uris),
             MultiOutcome::Selected(vec![
-                PathBuf::from("/home/alice/work.vcf"),
-                PathBuf::from("/home/alice/family.vcard"),
+                local_path("/home/alice/work.vcf"),
+                local_path("/home/alice/family.vcard"),
             ])
         );
     }
@@ -1051,7 +1117,7 @@ mod tests {
         ];
         assert_eq!(
             map_uris(&uris),
-            MultiOutcome::Selected(vec![PathBuf::from("/home/alice/local.vcf")]),
+            MultiOutcome::Selected(vec![local_path("/home/alice/local.vcf")]),
             "a mixed multi-selection keeps the files the user can actually read"
         );
     }
@@ -1071,7 +1137,7 @@ mod tests {
     fn workspace_paths_resolve_through_the_fuse_mount() {
         assert_eq!(
             map_uri(&[u("file:///var/workspace/media/a.mkv")]),
-            PortalOutcome::Opened(PathBuf::from("/var/workspace/media/a.mkv"))
+            PortalOutcome::Opened(local_path("/var/workspace/media/a.mkv"))
         );
     }
 
@@ -1096,6 +1162,12 @@ mod tests {
 
         let many = PickRequest::open_multiple("Import", "Import").send_multiple();
         assert_eq!(many.try_recv(), Ok(MultiOutcome::Cancelled));
+
+        let descriptor = PickRequest::open("Open", "Open").send_open_file();
+        assert!(matches!(
+            descriptor.try_recv(),
+            Ok(OpenFileOutcome::Cancelled)
+        ));
 
         // The switch is process-wide, so leaving it set would change what a
         // sibling test observes — exactly the kind of cross-test leakage that

@@ -10,7 +10,6 @@
 //! to the wrapped content, and an open palette gets first crack at every
 //! event so typing and Enter work without the desktop stealing focus.
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
 
@@ -26,8 +25,29 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+mod history;
+mod shortcuts;
+
 #[cfg(test)]
-#[path = "../../tests/support/offscreen.rs"]
+use history::notification_severity_label;
+use history::{
+    HistoryTargetAddress, clipboard_history_matches_query, clipboard_history_relative_time,
+    clipboard_history_source_label, history_target_address,
+    notification_history_accessible_description, notification_history_relative_time, unix_time_ms,
+};
+#[cfg(test)]
+use shortcuts::configured_shortcut_matches;
+pub(crate) use shortcuts::shortcut_chord_matches;
+use shortcuts::{
+    configured_shortcut_action, shortcut_action_label, shortcut_chord_from_event,
+    shortcut_guide_chord, shortcut_reference_columns, shortcut_reference_group_height,
+    shortcut_reference_rows, shortcut_reference_step,
+};
+#[cfg(test)]
+use std::path::PathBuf;
+
+#[cfg(test)]
+#[path = "../../../tests/support/offscreen.rs"]
 mod overlay_test_offscreen;
 
 use ui::ColorCompat;
@@ -53,7 +73,7 @@ use crate::shell::collaborators_overlay::{
 pub use crate::shell::collaborators_overlay::{RosterRow, collaborator_roster_rows};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
-use crate::shell::notification::{Notification, NotificationSeverity, NotificationStack};
+use crate::shell::notification::NotificationStack;
 use crate::shell::peer_sync_overlay::{
     EventOutcome as PeerSyncEventOutcome, InviteContext, PeerSyncOverlay,
 };
@@ -77,11 +97,10 @@ use crate::shell::workspace_settings_overlay::{
     EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum HistoryTargetAddress {
-    File(PathBuf),
-    Uri(String),
-    App,
+#[derive(Debug)]
+struct SessionActionResult {
+    action: os_actions::SessionAction,
+    result: Result<(), String>,
 }
 
 #[cfg(test)]
@@ -126,7 +145,9 @@ mod clipboard_manager_tests {
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         host.set_clipboard_manager_bridge(bridge(store.clone()));
 
-        host.apply_quick_settings_root_action(RootAction::OpenClipboard, &chrome);
+        chrome
+            .borrow_mut()
+            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
         assert_eq!(
             chrome.borrow().quick_settings.current_level(),
             &crate::shell::quick_settings::QsLevel::Clipboard
@@ -166,7 +187,9 @@ mod clipboard_manager_tests {
         let mut host =
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         host.set_clipboard_manager_bridge(bridge(store.clone()));
-        host.apply_quick_settings_root_action(RootAction::OpenClipboard, &chrome);
+        chrome
+            .borrow_mut()
+            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
 
         assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::ArrowDown), false));
         assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
@@ -203,7 +226,9 @@ mod clipboard_manager_tests {
         let mut host =
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         host.set_clipboard_manager_bridge(bridge(store.clone()));
-        host.apply_quick_settings_root_action(RootAction::OpenClipboard, &chrome);
+        chrome
+            .borrow_mut()
+            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
 
         assert!(host.handle_qs_clipboard_keyboard(&Key::Character("alpha".into()), false));
         let matches = host.filtered_clipboard_history();
@@ -428,7 +453,9 @@ mod device_fabric_ui_tests {
             recorded.borrow_mut().push(action);
             Ok(bridge_view.clone())
         }));
-        host.apply_quick_settings_root_action(RootAction::OpenDevices, &chrome);
+        chrome
+            .borrow_mut()
+            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Devices);
         assert_eq!(
             chrome.borrow().quick_settings.current_level(),
             &crate::shell::quick_settings::QsLevel::Devices
@@ -1083,7 +1110,9 @@ mod device_fabric_ui_tests {
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
-        host.apply_quick_settings_root_action(RootAction::OpenDevices, &chrome);
+        chrome
+            .borrow_mut()
+            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Devices);
         assert!(host.handle_qs_device_fabric_keyboard(&Key::Named(NamedKey::End)));
         assert!(
             host.qs_device_fabric_start > 0,
@@ -1129,111 +1158,6 @@ mod idle_io_animation_tests {
         );
         release_tx.send(()).expect("release test worker");
     }
-}
-
-fn notification_history_relative_time(notification: &Notification, now: Instant) -> String {
-    let seconds = now
-        .saturating_duration_since(notification.created_at)
-        .as_secs();
-    ui::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX))
-}
-
-fn clipboard_history_relative_time(created_unix_ms: u64, now_unix_ms: u64) -> String {
-    let seconds = now_unix_ms.saturating_sub(created_unix_ms) / 1_000;
-    ui::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX))
-}
-
-fn clipboard_history_source_label(
-    item: &crate::compositor::selection::ClipboardHistorySnapshot,
-    fabric: Option<&DeviceFabricView>,
-) -> String {
-    let Some(source) = item.source_device.as_ref() else {
-        return "This device".to_string();
-    };
-    fabric
-        .and_then(|fabric| fabric.devices.iter().find(|device| &device.id == source))
-        .map_or_else(
-            || source.as_str().to_string(),
-            |device| device.label.clone(),
-        )
-}
-
-fn clipboard_history_matches_query(
-    item: &crate::compositor::selection::ClipboardHistorySnapshot,
-    query: &str,
-    fabric: Option<&DeviceFabricView>,
-) -> bool {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return true;
-    }
-    let source = clipboard_history_source_label(item, fabric);
-    let mut searchable = source.to_lowercase();
-    for mime in &item.mime_types {
-        searchable.push(' ');
-        searchable.push_str(&mime.to_lowercase());
-    }
-    if let Some(preview) = item.text_preview.as_deref() {
-        searchable.push(' ');
-        searchable.push_str(&preview.to_lowercase());
-    }
-    query
-        .split_whitespace()
-        .all(|term| searchable.contains(term))
-}
-
-fn unix_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
-fn notification_severity_label(severity: NotificationSeverity) -> &'static str {
-    match severity {
-        NotificationSeverity::Info => "Information",
-        NotificationSeverity::Warning => "Warning",
-        NotificationSeverity::Error => "Error",
-    }
-}
-
-/// Screen-reader description for one retained notification card. Kept beside
-/// the visual card's source/age helpers so both presentations expose the same
-/// hierarchy even when a busy compositor crosses a relative-time boundary.
-fn notification_history_accessible_description(
-    notification: &Notification,
-    now: Instant,
-) -> String {
-    let source = notification
-        .app_name
-        .as_deref()
-        .or(notification.app_id.as_deref())
-        .unwrap_or("System");
-    let severity = notification_severity_label(notification.severity);
-    let relative_time = notification_history_relative_time(notification, now);
-    if notification.body.is_empty() {
-        format!("{severity}. From {source}. {relative_time}")
-    } else {
-        format!(
-            "{severity}. From {source}. {relative_time}. {}",
-            notification.body
-        )
-    }
-}
-
-/// Resolve only addresses the action explicitly declared. Semantic resource
-/// ids such as `notes.page:abc` are labels within an app, not record ids or
-/// URIs; treating them as either would make History's Open control navigate
-/// somewhere other than the selected action.
-fn history_target_address(target: &ui::HistoryResourceTarget) -> HistoryTargetAddress {
-    if let Some(path) = target.id.strip_prefix("file:") {
-        return HistoryTargetAddress::File(PathBuf::from(path));
-    }
-    if target.id.contains("://") && crate::shell::uri_open::resource_for_uri(&target.id).is_ok() {
-        return HistoryTargetAddress::Uri(target.id.clone());
-    }
-    HistoryTargetAddress::App
 }
 
 /// Draw a relationship line with a visible head at the followed person. This
@@ -2017,6 +1941,12 @@ pub struct ShellOverlayHost {
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
+    /// Results from session helpers run off the frame thread. Failures must
+    /// return to chrome instead of disappearing into the journal.
+    session_action_channel: (
+        std::sync::mpsc::Sender<SessionActionResult>,
+        std::sync::mpsc::Receiver<SessionActionResult>,
+    ),
     /// Portal session-operation inhibitors shared with the backend serving
     /// `org.freedesktop.portal.Inhibit`. A logout/user switch must consult
     /// this exact registry before any irreversible OS action is spawned.
@@ -3309,6 +3239,7 @@ impl ShellOverlayHost {
             qs_selected_remote_capture: None,
             qs_selected_display_mirror: false,
             power_menu: PowerMenu::default(),
+            session_action_channel: std::sync::mpsc::channel(),
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
@@ -6188,6 +6119,43 @@ impl ShellOverlayHost {
                     .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
             );
             st.bump();
+            posted = true;
+        }
+        posted
+    }
+
+    fn drain_session_action_results(&mut self) -> bool {
+        let mut posted = false;
+        while let Ok(outcome) = self.session_action_channel.1.try_recv() {
+            let Err(error) = outcome.result else {
+                continue;
+            };
+            tracing::warn!(
+                target: "tilo::os_actions",
+                action = ?outcome.action,
+                error = %error,
+                "session action failed"
+            );
+            let Some(chrome) = self.chrome.as_ref() else {
+                continue;
+            };
+            let label = match outcome.action {
+                os_actions::SessionAction::Lock => "lock the session",
+                os_actions::SessionAction::Logout => "log out",
+                os_actions::SessionAction::SwitchUser => "switch users",
+                os_actions::SessionAction::Suspend => "suspend",
+                os_actions::SessionAction::Restart => "restart",
+                os_actions::SessionAction::ShutDown => "shut down",
+            };
+            chrome.borrow_mut().push_notification_full(
+                crate::shell::notification::Notification::new(
+                    "Session action failed",
+                    format!("Couldn’t {label}. Check the session log and try again."),
+                )
+                .with_severity(crate::shell::notification::NotificationSeverity::Error)
+                .with_app_name("System")
+                .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
+            );
             posted = true;
         }
         posted
@@ -11842,11 +11810,10 @@ impl ShellOverlayHost {
                     }
                     return true;
                 }
+                let results = self.session_action_channel.0.clone();
                 std::thread::spawn(move || {
-                    os_actions::log_result(
-                        "session_action",
-                        os_actions::perform_session_action(action),
-                    );
+                    let result = os_actions::perform_session_action(action);
+                    let _ = results.send(SessionActionResult { action, result });
                 });
                 true
             }
@@ -13204,30 +13171,6 @@ impl ShellOverlayHost {
                 self.qs_notification_history_start = 0;
                 self.qs_notification_wheel_remainder = 0.0;
             }
-            RootAction::OpenClipboard => {
-                let mut st = chrome.borrow_mut();
-                st.quick_settings
-                    .push_level(crate::shell::quick_settings::QsLevel::Clipboard);
-                st.bump();
-                drop(st);
-                self.qs_clipboard_history_start = 0;
-                self.qs_clipboard_wheel_remainder = 0.0;
-                self.qs_clipboard_query.clear();
-                self.qs_selected_clipboard = self
-                    .filtered_clipboard_history()
-                    .first()
-                    .map(|item| item.id);
-            }
-            RootAction::OpenDevices => {
-                let mut st = chrome.borrow_mut();
-                st.quick_settings
-                    .push_level(crate::shell::quick_settings::QsLevel::Devices);
-                st.bump();
-                drop(st);
-                self.qs_selected_media = None;
-                self.qs_device_fabric_start = 0;
-                self.qs_device_fabric_wheel_remainder = 0.0;
-            }
             RootAction::Changed(pending) => {
                 chrome.borrow_mut().bump();
                 self.dispatch_quick_settings_toggle_actions(
@@ -13965,238 +13908,6 @@ const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
 /// clipped row reads as "there is more" rather than unfinished.
 const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
 
-/// Match a persisted shortcut against a live winit key event.
-///
-/// The native compositor uses this for session-owned bindings too. Keeping
-/// that path on the same key-name translation as the shortcut editor avoids
-/// claiming a configured named key before a client sees it and then failing
-/// to perform its action.
-pub(crate) fn shortcut_chord_matches(
-    logical_key: &Key,
-    modifiers: winit::event::Modifiers,
-    chord: &settings_store::hardware::KeyChord,
-) -> bool {
-    let state = modifiers.state();
-    let key_matches = shortcut_key_name(logical_key).is_some_and(|key| {
-        chord.key.eq_ignore_ascii_case(&key)
-            || state.shift_key()
-                && unshifted_shortcut_key(&key)
-                    .is_some_and(|base| chord.key.eq_ignore_ascii_case(base))
-    });
-    key_matches
-        && chord.modifiers.contains("Super") == state.super_key()
-        && chord.modifiers.contains("Ctrl") == state.control_key()
-        && chord.modifiers.contains("Alt") == state.alt_key()
-        && chord.modifiers.contains("Shift") == state.shift_key()
-}
-
-/// Winit reports the logical character produced by Shift, while shortcut
-/// configuration stores the physical punctuation printed on the key. Keep
-/// those two representations equivalent without weakening modifier matching.
-fn unshifted_shortcut_key(key: &str) -> Option<&'static str> {
-    Some(match key {
-        "?" => "/",
-        ":" => ";",
-        "\"" => "'",
-        "<" => ",",
-        ">" => ".",
-        "_" => "-",
-        "+" => "=",
-        "{" => "[",
-        "}" => "]",
-        "|" => "\\",
-        "~" => "`",
-        "!" => "1",
-        "@" => "2",
-        "#" => "3",
-        "$" => "4",
-        "%" => "5",
-        "^" => "6",
-        "&" => "7",
-        "*" => "8",
-        "(" => "9",
-        ")" => "0",
-        _ => return None,
-    })
-}
-
-/// The sole configurable shortcut resolver.  The input pre-router owns a
-/// press exactly when this returns an action; the shell dispatcher performs
-/// that same action from the same result.
-fn configured_shortcut_action(
-    shortcuts: &settings_store::hardware::ShortcutConfig,
-    logical_key: &Key,
-    modifiers: winit::event::Modifiers,
-) -> Option<settings_store::hardware::ShortcutAction> {
-    shortcuts.bindings.iter().find_map(|(action, chord)| {
-        shortcut_chord_matches(logical_key, modifiers, chord).then_some(*action)
-    })
-}
-
-#[cfg(test)]
-fn configured_shortcut_matches(
-    shortcuts: &settings_store::hardware::ShortcutConfig,
-    logical_key: &Key,
-    modifiers: winit::event::Modifiers,
-) -> bool {
-    configured_shortcut_action(shortcuts, logical_key, modifiers).is_some()
-}
-
-fn shortcut_key_name(logical_key: &Key) -> Option<String> {
-    let name = match logical_key {
-        Key::Character(key) if key.as_str() == " " => "space".to_string(),
-        Key::Character(key) if key.chars().count() == 1 => key.to_ascii_lowercase(),
-        Key::Named(named) => match named {
-            NamedKey::ArrowLeft => "left",
-            NamedKey::ArrowRight => "right",
-            NamedKey::ArrowUp => "up",
-            NamedKey::ArrowDown => "down",
-            NamedKey::Tab => "tab",
-            NamedKey::Enter => "enter",
-            NamedKey::Space => "space",
-            NamedKey::Home => "home",
-            NamedKey::End => "end",
-            NamedKey::PageUp => "pageup",
-            NamedKey::PageDown => "pagedown",
-            NamedKey::Backspace => "backspace",
-            NamedKey::Delete => "delete",
-            NamedKey::Insert => "insert",
-            NamedKey::PrintScreen => "printscreen",
-            NamedKey::F1 => "f1",
-            NamedKey::F2 => "f2",
-            NamedKey::F3 => "f3",
-            NamedKey::F4 => "f4",
-            NamedKey::F5 => "f5",
-            NamedKey::F6 => "f6",
-            NamedKey::F7 => "f7",
-            NamedKey::F8 => "f8",
-            NamedKey::F9 => "f9",
-            NamedKey::F10 => "f10",
-            NamedKey::F11 => "f11",
-            NamedKey::F12 => "f12",
-            _ => return None,
-        }
-        .to_string(),
-        _ => return None,
-    };
-    Some(name)
-}
-
-fn shortcut_chord_from_event(
-    logical_key: &Key,
-    modifiers: winit::event::Modifiers,
-) -> Option<settings_store::hardware::KeyChord> {
-    let key = shortcut_key_name(logical_key)?;
-    let state = modifiers.state();
-    let mut names = std::collections::BTreeSet::new();
-    if state.super_key() {
-        names.insert("Super".to_string());
-    }
-    if state.control_key() {
-        names.insert("Ctrl".to_string());
-    }
-    if state.alt_key() {
-        names.insert("Alt".to_string());
-    }
-    if state.shift_key() {
-        names.insert("Shift".to_string());
-    }
-    Some(settings_store::hardware::KeyChord {
-        modifiers: names,
-        key,
-    })
-}
-
-fn shortcut_action_label(action: settings_store::hardware::ShortcutAction) -> &'static str {
-    use settings_store::hardware::ShortcutAction;
-    match action {
-        ShortcutAction::Search => "open search",
-        ShortcutAction::WorkspaceOverview => "open the workspace overview",
-        ShortcutAction::Lock => "lock the screen",
-        ShortcutAction::QuickSettings => "open Quick Settings",
-        ShortcutAction::ShortcutHelp => "open this guide",
-        ShortcutAction::FocusPreviousWindow => "focus the previous window",
-        ShortcutAction::FocusNextWindow => "focus the next window",
-        ShortcutAction::PreviousTab => "select the previous tab",
-        ShortcutAction::NextTab => "select the next tab",
-        ShortcutAction::PreviousStrip => "select the previous strip",
-        ShortcutAction::NextStrip => "select the next strip",
-        ShortcutAction::PreviousWorkspace => "select the previous workspace",
-        ShortcutAction::NextWorkspace => "select the next workspace",
-        ShortcutAction::MoveGroupLeft => "move the group left",
-        ShortcutAction::MoveGroupRight => "move the group right",
-        ShortcutAction::ResizeNarrower => "make the window narrower",
-        ShortcutAction::ResizeWider => "make the window wider",
-    }
-}
-
-/// Compact, non-editable reference shown below the configurable navigation
-/// pairs. Configurable global actions use their live chord so the guide never
-/// promises a default the user has rebound; the remaining entries correspond
-/// directly to unconditional branches in the production shell dispatcher.
-/// The guide itself is intentionally omitted: the title and opening copy
-/// already explain how to reopen this surface, so repeating F1 in the action
-/// wall adds noise rather than a new affordance.
-fn shortcut_reference_rows(
-    shortcuts: &settings_store::hardware::ShortcutConfig,
-) -> Vec<(&'static str, String)> {
-    use settings_store::hardware::ShortcutAction;
-    let chord = |action| {
-        shortcuts
-            .bindings
-            .get(&action)
-            .map_or_else(|| "Unassigned".into(), shortcut_guide_chord)
-    };
-    vec![
-        ("Switch windows", "Alt+Tab".into()),
-        ("Close tab", "Alt+F4  /  Super+W".into()),
-        ("Change workspace", "Super+Page Up / Down".into()),
-        ("New window", "Super+N".into()),
-        ("Add tab here", "Super+T".into()),
-        ("Duplicate tab", "Super+D".into()),
-        ("Global search", chord(ShortcutAction::Search)),
-        ("Global search", "Super+Space".into()),
-        ("Overview", chord(ShortcutAction::WorkspaceOverview)),
-        ("Quick Settings", chord(ShortcutAction::QuickSettings)),
-        ("Workspace wheel", "Super+S".into()),
-        ("Lock", chord(ShortcutAction::Lock)),
-        ("Screenshot", "Print Screen".into()),
-        ("Wireless display", "Super+P".into()),
-        ("Capture screenshot", "Super+Shift+S".into()),
-        ("Open terminal", "Super+Enter".into()),
-        ("Picture in picture", "Super+Shift+P".into()),
-        ("Save recent replay", "Super+Shift+R".into()),
-    ]
-}
-
-/// The reference is deliberately split into three semantic columns. That
-/// keeps the complete desktop vocabulary scannable without turning the lower
-/// half of the guide into a grid of equally loud buttons.
-fn shortcut_reference_columns(body_width: f64) -> usize {
-    let _ = body_width;
-    3
-}
-
-fn shortcut_reference_step(compact: bool) -> f64 {
-    if compact { 31.0 } else { 34.0 }
-}
-
-fn shortcut_reference_group_height(compact: bool) -> f64 {
-    if compact { 221.0 } else { 238.0 }
-}
-
-fn shortcut_guide_chord(chord: &settings_store::hardware::KeyChord) -> String {
-    let display = chord.display();
-    let Some((modifiers, key)) = display.rsplit_once('+') else {
-        return display;
-    };
-    if key.chars().count() == 1 {
-        format!("{modifiers}+{}", key.to_uppercase())
-    } else {
-        display
-    }
-}
-
 impl Widget for ShellOverlayHost {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
@@ -14367,6 +14078,7 @@ impl Widget for ShellOverlayHost {
         let dialog_dirty = self.pump_portal_dialogs();
         self.pump_permission_prompt();
         let launch_dirty = self.drain_launch_events() | self.retire_notices_for_opened_windows();
+        let session_action_dirty = self.drain_session_action_results();
         // Also driven by the widget's own `update`, but routed here too so
         // chrome stays consistent for tests that never call the widget.
         let notifications_dropped = if let Some(chrome) = self.chrome.as_ref() {
@@ -14388,6 +14100,7 @@ impl Widget for ShellOverlayHost {
             || sidebar_dirty
             || notifications_dropped
             || launch_dirty
+            || session_action_dirty
             || chrome_dirty
             || portal_dirty
             || picker_dirty
@@ -23230,6 +22943,25 @@ mod palette_dispatch_tests {
         // reaches the real narrow OS wrapper. The registry assertion proves
         // the scope separation without invoking a host session action.
         assert!(chrome.borrow().notifications().is_empty());
+    }
+
+    #[test]
+    fn failed_session_action_is_reported_in_chrome() {
+        let (mut host, chrome) = host_with_chrome();
+        host.session_action_channel
+            .0
+            .send(SessionActionResult {
+                action: os_actions::SessionAction::Suspend,
+                result: Err("logind refused suspend".into()),
+            })
+            .unwrap();
+
+        assert!(host.drain_session_action_results());
+        let notifications = chrome.borrow().notifications().to_vec();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].title, "Session action failed");
+        assert!(notifications[0].body.contains("suspend"));
+        assert!(!notifications[0].body.contains("logind"));
     }
 
     #[test]

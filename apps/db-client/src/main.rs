@@ -1,5 +1,6 @@
 //! Database client — standard Tilo application entry point.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -47,6 +48,9 @@ pub fn main() {
         &LaunchSpec::new("dev.tilo.db-client", db_client::app_root)
             .shot_root(shot_root)
             .allowed_flags(&["--empty", "--status"])
-            .configure_app(|app| db_client::actions::register(app.action_registry_mut())),
+            .configure_app(|app| {
+                db_client::actions::register(app.action_registry_mut());
+                app.set_window_title(Some("Database Client".into()));
+            }),
     );
 }

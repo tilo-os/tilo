@@ -10,13 +10,13 @@ name = "accounts"
 path = "src/lib.rs"
 
 [dependencies]
+private-fs = { path = "../private-fs" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
 bounded-command = { path = "../../../crates/system/bounded-command" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-libc.workspace = true
 # Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
 # Settings app does, so every app agrees on one directory.
 dirs.workspace = true
@@ -35,6 +35,9 @@ getrandom.workspace = true
 zeroize.workspace = true
 uuid.workspace = true
 url.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [lints]
 workspace = true

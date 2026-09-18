@@ -46,9 +46,7 @@ This paragraph references #undefined_value, which the compiler cannot resolve.
 The heading above is fine; only the font and the variable are wrong.
 "#;
 
-/// The starter document a fresh install opens with when the user has no saved
-/// `.typ` files yet. Deliberately short and neutral — a blank page to edit,
-/// not a brochure.
+/// An optional tutorial sample. The live editor starts with empty source.
 pub const STARTER: &str = r"#set page(width: 16cm, height: auto, margin: 1.6cm)
 #set text(size: 11pt)
 

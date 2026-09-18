@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 //! Slides — standard Tilo application entry point.
 
 #![allow(

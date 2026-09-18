@@ -1,3 +1,4 @@
+use crate::filesystem_metadata as xattr;
 use std::path::Path;
 
 use crate::i18n::{arg, t, t_args};
@@ -66,11 +67,12 @@ pub fn resolve_conflict(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
     fn restore_request_is_versioned_bounded_and_exact() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("record");
@@ -94,6 +96,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn conflict_request_names_the_exact_member_for_every_supported_strategy() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("record");

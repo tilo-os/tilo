@@ -505,13 +505,17 @@ mod tests {
     /// silently dropped by capture.
     #[test]
     fn freeze_thaw_round_trips_doc_and_view() {
+        #[cfg(windows)]
+        let file_record = r"file:C:\report.md";
+        #[cfg(not(windows))]
+        let file_record = "file:/report.md";
         // App 1: a document with real text, and a root carrying a non-default
         // presentation (scroll / caret / mode / open resource).
         let mut root = DocRoot::new();
         root.caret = "caret=42".into();
         root.scroll = vec![10.0, 20.0];
         root.mode = Some("grid".into());
-        root.resource = "file:/report.md".into();
+        root.resource = file_record.into();
 
         let mut state = State::new();
         let body = state.doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
@@ -520,7 +524,7 @@ mod tests {
         // it after thaw is readable from the restored document.
         crate::record::init(
             &mut state.doc,
-            &RecordId::parse("file:/report.md").unwrap(),
+            &RecordId::parse(file_record).unwrap(),
             &RecordKind::new("document"),
             "home-room",
         );
@@ -532,7 +536,7 @@ mod tests {
         let v1 = app1.capture_view();
         assert_eq!(v1.scroll, vec![10.0, 20.0]);
         assert_eq!(v1.view_mode.as_deref(), Some("grid"));
-        assert_eq!(v1.open_resource.as_deref(), Some("file:/report.md"));
+        assert_eq!(v1.open_resource.as_deref(), Some(file_record));
         assert_eq!(v1.focus.as_ref().unwrap().ordinal, 0);
         assert_eq!(v1.focus.as_ref().unwrap().ephemeral, "caret=42");
 
@@ -563,7 +567,7 @@ mod tests {
         // `open_resource` named — the resource is reopened.
         assert_eq!(
             crate::record::identity(&doc2).map(|c| c.id.as_str().to_string()),
-            Some("file:/report.md".to_string()),
+            Some(file_record.to_string()),
             "thaw reopened the resource the View named — its document is live"
         );
 

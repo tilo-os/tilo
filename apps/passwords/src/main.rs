@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
 fn shot(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
@@ -29,6 +31,7 @@ fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.tilo.passwords", passwords::app_root)
             .shot_root(shot)
-            .allowed_options(&["--screen"]),
+            .allowed_options(&["--screen"])
+            .configure_app(|app| app.set_window_title(Some("Passwords".into()))),
     );
 }

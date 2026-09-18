@@ -741,13 +741,16 @@ mod tests {
     /// The default Linux convention puts the primary action at the trailing
     /// edge while preserving authored indices for event dispatch.
     #[test]
-    fn actions_are_left_to_right_with_the_last_at_the_right_edge() {
+    fn linux_actions_are_left_to_right_with_the_last_at_the_right_edge() {
         let actions = [
             ModalAction::secondary("Cancel"),
             ModalAction::primary("Create invite"),
         ];
         let spec = ModalSpec::new("Workspace invite")
             .actions(&actions)
+            .platform_conventions(crate::platform::PlatformConventions::new(
+                crate::platform::Platform::Linux,
+            ))
             .body_height(100.0);
         let l = lay(&spec, &Theme::dark());
         assert_eq!(l.actions.len(), 2);

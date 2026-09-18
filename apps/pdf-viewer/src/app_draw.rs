@@ -522,7 +522,8 @@ impl PdfApp {
             self.search_hits.clear();
         }
         self.draw_page_bubble(scene, base, tr, theme);
-        if self.shots_context_menu && self.context_menu.is_none()
+        if self.shots_context_menu
+            && self.context_menu.is_none()
             && let Some(annotation) = self.annotations.first()
         {
             let target = DeleteTarget::Annotation(annotation.id.clone());
@@ -561,6 +562,7 @@ impl PdfApp {
     ) {
         let mut page_imgs = std::collections::HashMap::new();
         let mut thumb_imgs = std::collections::HashMap::new();
+        self.pending_visuals = false;
         if !self.raster_active() {
             return (page_imgs, thumb_imgs);
         }
@@ -604,6 +606,15 @@ impl PdfApp {
         #[cfg(test)]
         let mut rendered_new = false;
         if let Some(document) = self.raster_document.as_ref() {
+            self.pending_visuals = want_pages.iter().any(|i| {
+                !self
+                    .raster_images
+                    .contains_key(&(*i, crate::source::Rasterizer::bucket_for(page_bucket)))
+            }) || want_thumbs.iter().any(|(i, width)| {
+                !self
+                    .raster_images
+                    .contains_key(&(*i, crate::source::Rasterizer::bucket_for(*width)))
+            });
             // Worker mode: never ask PDFium to rasterise from the draw pass.
             // A cache miss becomes bounded owner work and this frame simply
             // paints the existing placeholder; the result wakes a later frame.

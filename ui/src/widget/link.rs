@@ -21,10 +21,26 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Best-effort — a launch failure is logged, not surfaced.
-fn os_open(url: &str) {
-    if let Err(e) = open::that(url) {
+pub fn os_open(url: &str) {
+    if let Err(e) = try_os_open(url) {
         tracing::warn!("Link: failed to open {url:?}: {e}");
     }
+}
+
+/// Hand a URL to the desktop's registered handler. On Windows this uses
+/// ShellExecute rather than interpreting the URL as a command line.
+///
+/// # Errors
+/// Returns a launch error when the OS rejects the request, or invalid input
+/// for an embedded NUL (which native APIs would otherwise silently truncate).
+pub fn try_os_open(url: &str) -> std::io::Result<()> {
+    if url.contains('\0') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "URL contains NUL",
+        ));
+    }
+    open::that_detached(url)
 }
 
 /// Test/host hook overriding [`os_open`] on activation; see `opener` below.
@@ -387,6 +403,12 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::{DeviceId, ElementState, MouseButton};
+
+    #[test]
+    fn native_opener_rejects_nul_without_truncating_the_url() {
+        let error = try_os_open("https://example.invalid/\0unexpected").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
 
     /// Lay the link out at a known rect so it has a non-zero hit box.
     fn laid_out(link: &mut Link) -> (TaffyTree<()>, NodeId) {

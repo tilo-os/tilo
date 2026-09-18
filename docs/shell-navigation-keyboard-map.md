@@ -3,7 +3,7 @@
 Status: implemented contract, 2026-09-01. This is the compact product map for
 shell navigation. The executable chord ownership table remains in
 `shell/src/compositor/client_input.rs`; overlay-specific behavior lives in
-`shell/src/shell/overlay_host.rs`.
+`shell/src/shell/overlay_host/mod.rs`.
 
 ## Containment and focus
 

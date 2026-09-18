@@ -5,6 +5,7 @@
 // unwrap_used, expect_used, panic — because a panicking app is a bad app
 // whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
 // full set: a fault there takes the session, or every app with it.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -123,7 +124,17 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let scenario = args.scenario.as_deref();
     let mut widget = match scenario {
         Some("shell" | "shell-select") | None => TerminalWidget::spawn_default(),
-        Some("ended") => TerminalWidget::spawn_command(terminal::CommandBuilder::new("/bin/true")),
+        Some("ended") => {
+            #[cfg(unix)]
+            let command = terminal::CommandBuilder::new("/bin/true");
+            #[cfg(windows)]
+            let command = {
+                let mut command = terminal::CommandBuilder::new("cmd.exe");
+                command.args(["/d", "/c", "exit /b 0"]);
+                command
+            };
+            TerminalWidget::spawn_command(command)
+        }
         Some(_) => TerminalWidget::spawn_headless(),
     }
     .map_err(|error| LaunchError::Operation(error.to_string()))?;
@@ -220,7 +231,7 @@ fn render_shot_to_png(
     // scenario drives the real PTY instead of feeding canned bytes.
     if let Some(name) = scenario {
         if name == "shell" || name == "shell-select" {
-            drive_live_shell(widget, &mut state.doc, &state.root);
+            drive_live_shell(widget, &mut state.doc, &state.root)?;
         } else {
             run_scenario(widget, &mut state.doc, &state.root, name);
         }
@@ -259,7 +270,7 @@ fn drive_live_shell(
     widget: &mut TerminalWidget,
     doc: &mut automerge::AutoCommit,
     root: &automerge::ObjId,
-) {
+) -> Result<(), &'static str> {
     use std::time::Duration;
     // Let the shell reach its first prompt.
     for _ in 0..8 {
@@ -268,15 +279,24 @@ fn drive_live_shell(
     }
     // A short demo: identify the shell, print some content, and end with a
     // green "done" so the shot shows real SGR-coloured output.
+    #[cfg(unix)]
     widget.write_input(
         b"clear; printf 'Tilo terminal - live PTY session\\n'; \
           printf 'primes below 20: 2 3 5 7 11 13 17 19\\n'; \
           printf '\\033[1;32mdone\\033[0m\\n'\r",
     );
-    for _ in 0..30 {
+    #[cfg(windows)]
+    widget.write_input(
+        b"@echo off\r\ncls\r\necho Tilo terminal - live PTY session\r\necho primes below 20: 2 3 5 7 11 13 17 19\r\necho \x1b[1;32mdone\x1b[0m\r\n",
+    );
+    for _ in 0..150 {
         widget.sync(doc, root);
+        if widget.grid_text().lines().any(|line| line.trim() == "done") {
+            return Ok(());
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
+    Err("the live shell did not execute the screenshot command")
 }
 
 /// Highlight a line (and a word) of the live shell output so the `shell-select`

@@ -1432,9 +1432,7 @@ impl SheetsApp {
                         file.sync_all().map_err(|error| error.to_string())?;
                         drop(file);
                         std::fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
-                        std::fs::File::open(parent)
-                            .and_then(|dir| dir.sync_all())
-                            .map_err(|error| error.to_string())
+                        atomic_file::sync_directory(parent).map_err(|error| error.to_string())
                     })();
                     if write_result.is_err() {
                         let _ = std::fs::remove_file(&temporary);
@@ -2663,7 +2661,9 @@ impl SheetsApp {
             let _ = std::fs::remove_file(&temporary);
             return Err(error);
         }
-        std::fs::File::open(&temporary)
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&temporary)
             .and_then(|file| file.sync_all())
             .map_err(|error| {
                 let _ = std::fs::remove_file(&temporary);
@@ -2713,9 +2713,7 @@ impl SheetsApp {
             .parent()
             .ok_or_else(|| "export destination has no parent directory".to_string())?;
         std::fs::rename(temporary, destination).map_err(|error| error.to_string())?;
-        std::fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| error.to_string())
+        atomic_file::sync_directory(parent).map_err(|error| error.to_string())
     }
 
     fn publish_or_discard_export_temp(

@@ -198,6 +198,7 @@ impl ImportWorker {
         ));
         let (result_tx, results) = mpsc::sync_channel(1);
         let worker_mailbox = Arc::clone(&mailbox);
+        let ui_wake = ui::wake::WakeHandle::new();
         thread::Builder::new()
             .name("ebook-import-worker".into())
             .spawn(move || {
@@ -253,6 +254,7 @@ impl ImportWorker {
                     {
                         return;
                     }
+                    ui_wake.wake();
                 }
             })
             .map_err(|error| format!("couldn't start the book importer: {error}"))?;
@@ -5650,6 +5652,10 @@ impl Widget for BooksApp {
             .rev()
             .any(|hit| self.semantic_target(&hit.action).is_some() && hit.rect.contains(point))
             .then_some(winit::window::CursorIcon::Pointer)
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        self.import_loading.is_some()
     }
 
     fn needs_redraw(&self) -> bool {

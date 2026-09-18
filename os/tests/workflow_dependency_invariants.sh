@@ -60,10 +60,13 @@ else
   fail=1
 fi
 
-if grep -Fq 'group: snapshot-rpms-${{ github.ref }}' "$rpm_snapshot_workflow" \
-   && grep -Fq 'cancel-in-progress: false' "$rpm_snapshot_workflow" \
-   && grep -Fq 'test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"' \
-     "$rpm_snapshot_workflow"; then
+if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' && 'publication' || github.ref }}" "$rpm_snapshot_workflow" \
+   && grep -Fq "cancel-in-progress: \${{ github.event_name != 'workflow_dispatch' }}" "$rpm_snapshot_workflow" \
+   && grep -Fq 'git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"' \
+     "$rpm_snapshot_workflow" \
+   && grep -Fq 'git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"' \
+     "$rpm_snapshot_workflow" \
+   && grep -Fq 'git checkout --detach FETCH_HEAD' "$rpm_snapshot_workflow"; then
   printf 'ok    RPM snapshot refreshes cannot starve and stale runs cannot publish\n'
 else
   printf 'RPM snapshot refreshes may be cancelled indefinitely or publish stale pins\n' >&2
@@ -111,11 +114,11 @@ else
 fi
 
 nightly_visual_image="$({
-  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/tilo-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
     "$nightly_workflow"
 } | head -n 1)"
 refresh_visual_image="$({
-  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/tilo-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
     "$visual_refresh_workflow"
 } | head -n 1)"
 if [[ "$nightly_visual_image" =~ @sha256:[0-9a-f]{64}$ ]] \

@@ -52,6 +52,10 @@ chacha20poly1305.workspace = true
 getrandom.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+private-fs = { path = "../../crates/system/private-fs" }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
 [dev-dependencies]
 # Render otpauth QR codes in tests to exercise the rqrr decode path.
 qrcode.workspace = true

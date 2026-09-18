@@ -5,16 +5,16 @@
 use chrono::{DateTime, Datelike, Local, NaiveTime, TimeZone, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::PathBuf;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
 
 pub mod actions;
 pub mod app;
+#[cfg(windows)]
+mod native_timers;
 pub use app::ClocksApp;
 
 #[must_use]
@@ -43,6 +43,19 @@ pub struct Alarm {
     pub enabled: bool,
     /// Prevents duplicate delivery when wall time moves backwards.
     pub last_fired_local_date: Option<chrono::NaiveDate>,
+    /// Persist the occurrence, not just its time of day: reopening after
+    /// midnight must still complete the alarm that was armed yesterday.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_due_utc: Option<DateTime<Utc>>,
+}
+
+impl Alarm {
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        // A newly enabled alarm is armed at the next tick. Never revive an
+        // expired deadline left over from before the user disabled it.
+        self.next_due_utc = None;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -78,6 +91,10 @@ pub struct Timer {
     pub ends_at_utc: Option<DateTime<Utc>>,
     pub paused_remaining_ms: Option<u64>,
     pub pinned_overlay: bool,
+    /// The native host accepted responsibility for this exact deadline.
+    /// Kept across restarts so a delivered alert is not submitted again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_scheduled_end: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,13 +110,25 @@ pub struct ClockState {
     pub world_clocks: Vec<WorldClock>,
     pub alarms: Vec<Alarm>,
     pub timers: Vec<Timer>,
+    /// Native schedules owned by this profile, retained until cancellation or
+    /// delivery is confirmed even when the corresponding timer was deleted.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub native_timer_owners: BTreeSet<Uuid>,
     pub stopwatch: Stopwatch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DueEvent {
-    Alarm { id: Uuid, label: String },
-    Timer { id: Uuid, label: String },
+    Alarm {
+        id: Uuid,
+        label: String,
+        scheduled_for: DateTime<Utc>,
+    },
+    Timer {
+        id: Uuid,
+        label: String,
+        native_scheduled: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -213,6 +242,7 @@ impl Timer {
             ends_at_utc: None,
             paused_remaining_ms: Some(ms),
             pinned_overlay: false,
+            native_scheduled_end: None,
         }
     }
     pub fn start(&mut self, now: DateTime<Utc>) {
@@ -272,13 +302,20 @@ impl Stopwatch {
 }
 
 fn state_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|p| p.join(".local/state"))
-        })
+    state_path_with(|key| std::env::var_os(key))
+}
+
+fn state_path_with(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let absolute = |key| env(key).map(PathBuf::from).filter(|p| p.is_absolute());
+    #[cfg(windows)]
+    let native = || {
+        absolute("LOCALAPPDATA")
+            .or_else(|| absolute("USERPROFILE").map(|p| p.join("AppData/Local")))
+    };
+    #[cfg(not(windows))]
+    let native = || absolute("HOME").map(|p| p.join(".local/state"));
+    absolute("XDG_STATE_HOME")
+        .or_else(native)
         .map(|p| p.join("tilo/clocks.json"))
 }
 
@@ -338,30 +375,28 @@ impl ClockState {
 
     #[must_use]
     pub fn load() -> Self {
-        state_path()
-            .and_then(|p| fs::read(p).ok())
+        state_path().map(|p| Self::load_at(&p)).unwrap_or_default()
+    }
+
+    fn load_at(path: &Path) -> Self {
+        fs::read(path)
+            .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default()
     }
+
     pub fn save(&self) -> io::Result<()> {
         let path = state_path()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no state directory"))?;
+        self.save_at(&path)
+    }
+
+    fn save_at(&self, path: &Path) -> io::Result<()> {
         let dir = path
             .parent()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid state path"))?;
-        fs::create_dir_all(dir)?;
-        #[cfg(unix)]
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-        let tmp = path.with_extension("json.new");
-        let mut options = OpenOptions::new();
-        options.create(true).truncate(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options.open(&tmp)?;
-        serde_json::to_writer_pretty(&mut file, self)?;
-        file.flush()?;
-        file.sync_all()?;
-        fs::rename(tmp, path)
+        private_fs::directory(dir)?;
+        atomic_file::write_with_mode(path, &serde_json::to_vec_pretty(self)?, 0o600)
     }
 }
 
@@ -370,31 +405,45 @@ impl ClockState {
     pub fn tick(&mut self, now_utc: DateTime<Utc>, now_local: DateTime<Local>) -> Vec<DueEvent> {
         let mut due = Vec::new();
         for alarm in &mut self.alarms {
-            let today = now_local.date_naive();
-            let repeats_today =
-                alarm.weekdays.is_empty() || alarm.weekdays.contains(&now_local.weekday().into());
-            if alarm.enabled
-                && repeats_today
-                && alarm.last_fired_local_date != Some(today)
-                && now_local.time() >= alarm.local_time
-            {
+            if !alarm.enabled {
+                alarm.next_due_utc = None;
+                continue;
+            }
+            if alarm.next_due_utc.is_none_or(|deadline| deadline > now_utc) {
+                // Resolve in local time, so future deadlines follow timezone
+                // changes. An elapsed persisted deadline remains due, even
+                // when the application was closed for several days.
+                alarm.next_due_utc =
+                    next_alarm_local(alarm, now_local).map(|deadline| deadline.with_timezone(&Utc));
+            }
+            if let Some(deadline) = alarm.next_due_utc.filter(|deadline| *deadline <= now_utc) {
                 due.push(DueEvent::Alarm {
                     id: alarm.id,
                     label: alarm.label.clone(),
+                    scheduled_for: deadline,
                 });
-                alarm.last_fired_local_date = Some(today);
+                alarm.last_fired_local_date = Some(deadline.with_timezone(&Local).date_naive());
+                alarm.next_due_utc = None;
                 if alarm.weekdays.is_empty() {
                     alarm.enabled = false;
+                } else {
+                    // Catch up once after suspend/exit, then arm the next
+                    // future occurrence instead of replaying missed days.
+                    alarm.next_due_utc = next_alarm_local(alarm, now_local)
+                        .map(|deadline| deadline.with_timezone(&Utc));
                 }
             }
         }
         for timer in &mut self.timers {
             if timer.ends_at_utc.is_some_and(|end| end <= now_utc) {
+                let native_scheduled = timer.native_scheduled_end == timer.ends_at_utc;
                 timer.ends_at_utc = None;
+                timer.native_scheduled_end = None;
                 timer.paused_remaining_ms = Some(0);
                 due.push(DueEvent::Timer {
                     id: timer.id,
                     label: timer.label.clone(),
+                    native_scheduled,
                 });
             }
         }
@@ -441,6 +490,13 @@ impl ClockState {
 /// times advance minute-by-minute; ambiguous autumn times select the first.
 #[must_use]
 pub fn next_alarm_local(alarm: &Alarm, after: DateTime<Local>) -> Option<DateTime<Local>> {
+    next_alarm_in_timezone(alarm, after)
+}
+
+fn next_alarm_in_timezone<Tz: TimeZone>(
+    alarm: &Alarm,
+    after: DateTime<Tz>,
+) -> Option<DateTime<Tz>> {
     if !alarm.enabled {
         return None;
     }
@@ -448,15 +504,20 @@ pub fn next_alarm_local(alarm: &Alarm, after: DateTime<Local>) -> Option<DateTim
         let date = after
             .date_naive()
             .checked_add_signed(chrono::Duration::days(day))?;
-        if !alarm.weekdays.is_empty() && !alarm.weekdays.contains(&date.weekday().into()) {
+        if alarm.last_fired_local_date == Some(date)
+            || (!alarm.weekdays.is_empty() && !alarm.weekdays.contains(&date.weekday().into()))
+        {
             continue;
         }
         let mut naive = date.and_time(alarm.local_time);
         for _ in 0..180 {
-            if let Some(candidate) = Local.from_local_datetime(&naive).earliest() {
+            if let Some(candidate) = after.timezone().from_local_datetime(&naive).earliest() {
                 if candidate > after {
                     return Some(candidate);
                 }
+                // A valid occurrence that has passed belongs to another day.
+                // Only nonexistent spring-forward times advance by a minute.
+                break;
             }
             naive = naive.checked_add_signed(chrono::Duration::minutes(1))?;
         }
@@ -467,6 +528,361 @@ pub fn next_alarm_local(alarm: &Alarm, after: DateTime<Local>) -> Option<DateTim
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_alarm_for_a_past_time_waits_until_tomorrow() {
+        let now = Local.with_ymd_and_hms(2026, 1, 15, 12, 1, 0).unwrap();
+        let mut state = ClockState::default();
+        state.alarms.push(Alarm {
+            id: Uuid::new_v4(),
+            label: "Lunch".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::new(),
+            enabled: true,
+            last_fired_local_date: None,
+            next_due_utc: None,
+        });
+        assert!(state.tick(now.with_timezone(&Utc), now).is_empty());
+        let before = Local.with_ymd_and_hms(2026, 1, 16, 11, 59, 59).unwrap();
+        assert!(state.tick(before.with_timezone(&Utc), before).is_empty());
+        let deadline = Local.with_ymd_and_hms(2026, 1, 16, 12, 0, 0).unwrap();
+        assert!(
+            matches!(state.tick(deadline.with_timezone(&Utc), deadline).as_slice(), [DueEvent::Alarm { label, .. }] if label == "Lunch")
+        );
+        assert!(!state.alarms[0].enabled);
+        assert!(
+            state
+                .tick(deadline.with_timezone(&Utc), deadline)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn pending_alarm_survives_restart_on_another_day() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clocks.json");
+        let now = Local.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
+        let mut state = ClockState::default();
+        state.alarms.push(Alarm {
+            id: Uuid::new_v4(),
+            label: "Lunch".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::new(),
+            enabled: true,
+            last_fired_local_date: None,
+            next_due_utc: None,
+        });
+        assert!(state.tick(now.with_timezone(&Utc), now).is_empty());
+        state.save_at(&path).unwrap();
+        let mut restored = ClockState::load_at(&path);
+        let reopened = Local.with_ymd_and_hms(2026, 1, 16, 8, 0, 0).unwrap();
+        assert!(
+            matches!(restored.tick(reopened.with_timezone(&Utc), reopened).as_slice(), [DueEvent::Alarm { label, .. }] if label == "Lunch")
+        );
+        assert!(!restored.alarms[0].enabled);
+        assert_eq!(
+            restored.alarms[0].last_fired_local_date,
+            Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap())
+        );
+    }
+
+    #[test]
+    fn recurring_alarm_catches_up_once_and_persists_the_next_weekday() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clocks.json");
+        let now = Local.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
+        let mut state = ClockState::default();
+        state.alarms.push(Alarm {
+            id: Uuid::new_v4(),
+            label: "Lunch".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::from([WeekdayKey::Thu]),
+            enabled: true,
+            last_fired_local_date: None,
+            next_due_utc: None,
+        });
+        assert!(state.tick(now.with_timezone(&Utc), now).is_empty());
+        let reopened = Local.with_ymd_and_hms(2026, 1, 23, 8, 0, 0).unwrap();
+        let events = state.tick(reopened.with_timezone(&Utc), reopened);
+        assert!(
+            matches!(events.as_slice(), [DueEvent::Alarm { scheduled_for, .. }]
+            if *scheduled_for == Local.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap().with_timezone(&Utc))
+        );
+        assert_eq!(
+            state.alarms[0].next_due_utc,
+            Some(
+                Local
+                    .with_ymd_and_hms(2026, 1, 29, 12, 0, 0)
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        state.save_at(&path).unwrap();
+        let mut restored = ClockState::load_at(&path);
+        assert!(
+            restored
+                .tick(reopened.with_timezone(&Utc), reopened)
+                .is_empty()
+        );
+        let next = Local.with_ymd_and_hms(2026, 1, 29, 12, 0, 0).unwrap();
+        assert_eq!(restored.tick(next.with_timezone(&Utc), next).len(), 1);
+        assert!(restored.tick(next.with_timezone(&Utc), next).is_empty());
+    }
+
+    #[test]
+    fn disabling_and_reenabling_an_alarm_discards_the_old_deadline() {
+        let now = Local.with_ymd_and_hms(2026, 1, 15, 12, 1, 0).unwrap();
+        let mut state = ClockState::default();
+        state.alarms.push(Alarm {
+            id: Uuid::new_v4(),
+            label: "Lunch".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::new(),
+            enabled: true,
+            last_fired_local_date: None,
+            next_due_utc: Some(
+                Local
+                    .with_ymd_and_hms(2026, 1, 15, 12, 0, 0)
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+        });
+        state.alarms[0].set_enabled(false);
+        assert!(state.tick(now.with_timezone(&Utc), now).is_empty());
+        state.alarms[0].set_enabled(true);
+        assert!(state.tick(now.with_timezone(&Utc), now).is_empty());
+        assert_eq!(
+            state.alarms[0].next_due_utc,
+            Some(
+                Local
+                    .with_ymd_and_hms(2026, 1, 16, 12, 0, 0)
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+    }
+
+    #[test]
+    fn legacy_alarm_state_arms_without_losing_its_settings() {
+        let serialized = r#"{"id":"f33f2200-0e21-44b8-a337-fc7ec3e5f625","label":"Lunch","local_time":"12:00:00","weekdays":["Thu"],"enabled":true,"last_fired_local_date":null}"#;
+        let alarm: Alarm = serde_json::from_str(serialized).unwrap();
+        let mut state = ClockState {
+            alarms: vec![alarm],
+            ..ClockState::default()
+        };
+        let now = Local.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
+        assert!(state.tick(now.with_timezone(&Utc), now).is_empty());
+        assert_eq!(
+            state.alarms[0].next_due_utc,
+            Some(
+                Local
+                    .with_ymd_and_hms(2026, 1, 15, 12, 0, 0)
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        assert_eq!(state.alarms[0].label, "Lunch");
+        assert_eq!(state.alarms[0].weekdays, BTreeSet::from([WeekdayKey::Thu]));
+    }
+
+    #[test]
+    fn next_alarm_keeps_the_requested_time_after_todays_occurrence() {
+        let after = Local.with_ymd_and_hms(2026, 1, 15, 12, 1, 0).unwrap();
+        let alarm = Alarm {
+            id: Uuid::new_v4(),
+            label: "Lunch".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::new(),
+            enabled: true,
+            last_fired_local_date: None,
+            next_due_utc: None,
+        };
+        assert_eq!(
+            next_alarm_local(&alarm, after),
+            Some(Local.with_ymd_and_hms(2026, 1, 16, 12, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn next_alarm_does_not_repeat_a_delivered_date_after_clock_rollback() {
+        let after = Local.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
+        let alarm = Alarm {
+            id: Uuid::new_v4(),
+            label: "Lunch".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::from([WeekdayKey::Thu]),
+            enabled: true,
+            last_fired_local_date: Some(after.date_naive()),
+            next_due_utc: None,
+        };
+        assert_eq!(
+            next_alarm_local(&alarm, after),
+            Some(Local.with_ymd_and_hms(2026, 1, 22, 12, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn next_alarm_resolves_dst_gaps_and_never_repeats_the_autumn_hour() {
+        let zone = chrono_tz::Europe::Berlin;
+        let alarm = Alarm {
+            id: Uuid::new_v4(),
+            label: "Wake".into(),
+            local_time: NaiveTime::from_hms_opt(2, 30, 0).unwrap(),
+            weekdays: BTreeSet::new(),
+            enabled: true,
+            last_fired_local_date: None,
+            next_due_utc: None,
+        };
+        let spring = zone.with_ymd_and_hms(2026, 3, 29, 1, 0, 0).unwrap();
+        assert_eq!(
+            next_alarm_in_timezone(&alarm, spring),
+            Some(zone.with_ymd_and_hms(2026, 3, 29, 3, 0, 0).unwrap())
+        );
+        let autumn = zone.with_ymd_and_hms(2026, 10, 25, 1, 0, 0).unwrap();
+        let first = next_alarm_in_timezone(&alarm, autumn).unwrap();
+        assert_eq!(
+            first.with_timezone(&Utc),
+            Utc.with_ymd_and_hms(2026, 10, 25, 0, 30, 0).unwrap()
+        );
+        assert_eq!(
+            next_alarm_in_timezone(&alarm, first),
+            Some(zone.with_ymd_and_hms(2026, 10, 26, 2, 30, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn next_alarm_honors_disabled_and_weekday_settings() {
+        let after = Utc.with_ymd_and_hms(2026, 1, 15, 11, 0, 0).unwrap();
+        let mut alarm = Alarm {
+            id: Uuid::new_v4(),
+            label: "Weekend".into(),
+            local_time: NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+            weekdays: BTreeSet::from([WeekdayKey::Sat]),
+            enabled: false,
+            last_fired_local_date: None,
+            next_due_utc: None,
+        };
+        assert_eq!(next_alarm_in_timezone(&alarm, after), None);
+        alarm.enabled = true;
+        assert_eq!(
+            next_alarm_in_timezone(&alarm, after),
+            Some(Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn native_timer_handoff_survives_restart_and_matches_only_its_deadline() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clocks.json");
+        let now = Utc::now();
+        let mut timer = Timer::new("Tea", Duration::from_secs(30));
+        timer.start(now);
+        timer.native_scheduled_end = timer.ends_at_utc;
+        let mut state = ClockState::default();
+        state.timers.push(timer);
+        state.save_at(&path).unwrap();
+        let mut restored = ClockState::load_at(&path);
+        let later = now + chrono::Duration::seconds(31);
+        assert!(matches!(
+            restored.tick(later, later.with_timezone(&Local)).as_slice(),
+            [DueEvent::Timer {
+                native_scheduled: true,
+                ..
+            }]
+        ));
+        assert_eq!(restored.timers[0].native_scheduled_end, None);
+        assert!(restored.tick(later, later.with_timezone(&Local)).is_empty());
+
+        let mut changed = ClockState::load_at(&path);
+        changed.timers[0].pause(now + chrono::Duration::seconds(1));
+        changed.timers[0].start(now + chrono::Duration::seconds(20));
+        let later = now + chrono::Duration::seconds(60);
+        assert!(matches!(
+            changed.tick(later, later.with_timezone(&Local)).as_slice(),
+            [DueEvent::Timer {
+                native_scheduled: false,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn saved_timer_survives_replacement_and_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private/clocks.json");
+        let now = Utc::now();
+        let mut state = ClockState::default();
+        let mut timer = Timer::new("Tea — Grün", Duration::from_secs(60));
+        timer.start(now);
+        state.timers.push(timer);
+        state.save_at(&path).unwrap();
+        assert_eq!(ClockState::load_at(&path), state);
+
+        state.timers[0].label = "Updated tea timer".into();
+        state.save_at(&path).unwrap();
+        let mut reopened = ClockState::load_at(&path);
+        assert_eq!(
+            reopened, state,
+            "replacing the saved file preserves the complete state"
+        );
+        let later = now + chrono::Duration::seconds(61);
+        assert_eq!(reopened.tick(later, later.with_timezone(&Local)).len(), 1);
+        reopened.save_at(&path).unwrap();
+        let mut after_delivery = ClockState::load_at(&path);
+        assert!(
+            after_delivery
+                .tick(later, later.with_timezone(&Local))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn save_failure_is_reported_without_overwriting_a_blocker() {
+        let directory = tempfile::tempdir().unwrap();
+        let blocker = directory.path().join("not-a-directory");
+        fs::write(&blocker, b"keep me").unwrap();
+        assert!(
+            ClockState::default()
+                .save_at(&blocker.join("clocks.json"))
+                .is_err()
+        );
+        assert_eq!(fs::read(blocker).unwrap(), b"keep me");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_state_path_ignores_relative_overrides() {
+        let env = |key: &str| match key {
+            "XDG_STATE_HOME" => Some("relative".into()),
+            "LOCALAPPDATA" => Some(r"C:\Users\Reader\AppData\Local".into()),
+            _ => None,
+        };
+        assert_eq!(
+            state_path_with(env),
+            Some(PathBuf::from(
+                r"C:\Users\Reader\AppData\Local\tilo\clocks.json"
+            ))
+        );
+        assert_eq!(
+            state_path_with(|key| (key == "USERPROFILE").then(|| r"C:\Users\Reader".into())),
+            state_path_with(env)
+        );
+        assert!(state_path_with(|_| None).is_none());
+    }
+
+    #[test]
+    fn absolute_state_override_is_used_for_the_real_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = state_path_with(|key| {
+            (key == "XDG_STATE_HOME").then(|| directory.path().as_os_str().to_owned())
+        })
+        .unwrap();
+        let state = ClockState::default();
+        state.save_at(&path).unwrap();
+        assert_eq!(path, directory.path().join("tilo/clocks.json"));
+        assert_eq!(ClockState::load_at(&path), state);
+    }
+
     #[test]
     fn timer_survives_suspend_by_deadline() {
         let now = Utc::now();

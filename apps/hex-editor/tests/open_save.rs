@@ -50,6 +50,56 @@ fn tmp(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn executable_opens_a_unicode_path_edits_and_saves_without_replicating_bytes() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!("hex_cli_{}_{nonce}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let path = directory.join("Bytes Grün with spaces.bin");
+    let dump = directory.join("document.json");
+    std::fs::write(&path, [0x00u8, 0x11, 0x22, 0x33]).unwrap();
+    let spec = serde_json::json!({
+        "actions": [
+            {"perform": {"target": "hex_view", "action": "focus"}},
+            {"type": "ab"},
+            {"modifiers": ["Ctrl"]},
+            {"key": "s"},
+            {"modifiers": []}
+        ],
+        "dump": dump,
+    });
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_hex-editor"));
+    command
+        .args(["--headless-drive", &spec.to_string()])
+        .arg(&path)
+        .env("XDG_STATE_HOME", directory.join("state"))
+        .env("XDG_CONFIG_HOME", directory.join("config"))
+        .env("XDG_DATA_HOME", directory.join("data"));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), [0xAB, 0x11, 0x22, 0x33]);
+    let document = std::fs::read_to_string(&dump).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&document).unwrap();
+    assert!(value.get("bytes").is_none());
+    assert!(
+        !document.contains("Grün"),
+        "the file path must stay device-local"
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
 fn open_via_portal_loads_real_bytes_through_the_drain_path() {
     let path = tmp("portal_open");
     std::fs::write(&path, b"HELLO-HEX").unwrap();

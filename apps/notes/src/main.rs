@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 //! Thin binary entry point. All logic lives in the library.
 //!
 //! Collaboration: launched from the shell, the compositor's broker is

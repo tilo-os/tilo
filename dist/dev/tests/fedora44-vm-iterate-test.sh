@@ -109,6 +109,8 @@ env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
 grep -Fq -- "-i $work/test_vm_key" "$log"
 grep -Fq 'Tilo *developer* session entry point.' "$log"
 grep -Fq 'sudo install -m 0755 "$wrapper" /usr/libexec/tilo-session-dev' "$log"
+grep -Fq 'tilo-session-runner' "$log"
+grep -Fq '/usr/libexec/tilo-session-runner' "$log"
 
 : >"$log"
 env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \

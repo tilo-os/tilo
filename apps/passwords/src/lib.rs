@@ -1,6 +1,6 @@
 //! Passwords — the user-facing view of Tilo credential custody.
 //!
-//! The live view never contains sample entries and never reveals a password.
+//! The live view starts without sample entries and reveals secrets only on request.
 //! Apps obtain credentials through `accounts::CredentialBroker`; this process
 //! is for organizing, reviewing and revoking them.
 
@@ -34,7 +34,8 @@ pub(crate) fn analyze_health(items: &[SecretItem]) -> VaultHealth {
         .collect();
     let mut frequencies = HashMap::<&str, usize>::new();
     for password in candidates.iter().map(|item| item.password.as_str()) {
-        *frequencies.entry(password).or_default() += 1;
+        let count = frequencies.entry(password).or_default();
+        *count = count.saturating_add(1);
     }
     let reused = candidates
         .iter()
@@ -82,6 +83,9 @@ impl PasswordsModel {
             store: SecretStore::open_in(root),
         }
     }
+    pub fn recovery_error(&self) -> Option<&str> {
+        self.store.recovery_error()
+    }
     pub fn items(&self) -> Vec<SecretItem> {
         self.store.list()
     }
@@ -96,12 +100,18 @@ impl PasswordsModel {
         self.store.custody()
     }
     /// Revoke one exact app/account/origin relationship.
+    ///
+    /// # Errors
+    /// Returns an error if the vault cannot durably store the revocation.
     pub fn revoke_app_grant(&mut self, grant: &CredentialGrant) -> Result<bool, String> {
         self.store
             .revoke_grant(grant)
             .map_err(|error| format!("could not revoke app access: {error:?}"))
     }
     /// Revoke all durable vault access for an application.
+    ///
+    /// # Errors
+    /// Returns an error if the vault cannot durably store the revocations.
     pub fn revoke_all_app_grants(&mut self, app_id: &str) -> Result<usize, String> {
         self.store
             .revoke_app_grants(app_id)
@@ -172,6 +182,9 @@ impl PasswordsModel {
         Ok(id)
     }
     /// Persist any supported secret item.
+    ///
+    /// # Errors
+    /// Returns an error when serialization or durable credential storage fails.
     pub fn save_item(&mut self, item: &mut SecretItem) -> Result<SecretId, String> {
         let id = item.id.clone();
         self.store
@@ -210,6 +223,9 @@ impl PasswordsModel {
             .map_err(|error| format!("could not reveal login: {error:?}"))
     }
     /// Return the primary copyable value for the item's type.
+    ///
+    /// # Errors
+    /// Returns an error if the item no longer exists.
     pub fn reveal_value(&self, id: &SecretId) -> Result<zeroize::Zeroizing<String>, String> {
         let item = self
             .store

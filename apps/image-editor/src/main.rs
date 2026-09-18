@@ -1,3 +1,4 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::cast_precision_loss,
     reason = "the renderer API accepts f32 logical dimensions; launch already bounds viewport inputs"

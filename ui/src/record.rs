@@ -1912,12 +1912,21 @@ mod tests {
 
     #[test]
     fn a_file_record_is_identified_by_its_path() {
-        let id = RecordId::for_file("/work/report.odt");
-        assert_eq!(id.as_str(), "file:/work/report.odt");
-        assert_eq!(id.file_path().unwrap(), PathBuf::from("/work/report.odt"));
-        // Same file, same record — that is the whole point of path identity.
-        assert_eq!(id, RecordId::for_file("/work/./report.odt"));
-        assert_eq!(id, RecordId::for_file("/work/drafts/../report.odt"));
+        #[cfg(windows)]
+        let (root, expected) = ("C:/work", r"file:C:\work\report.odt");
+        #[cfg(not(windows))]
+        let (root, expected) = ("/work", "file:/work/report.odt");
+        let path = Path::new(root).join("report.odt");
+        let id = RecordId::for_file(&path);
+        assert_eq!(id.as_str(), expected);
+        assert_eq!(id.file_path().unwrap(), path);
+        assert_eq!(RecordId::parse(expected), Some(id.clone()));
+        // Same file, same record, including lexical path aliases.
+        assert_eq!(id, RecordId::for_file(Path::new(root).join("./report.odt")));
+        assert_eq!(
+            id,
+            RecordId::for_file(Path::new(root).join("drafts/../report.odt"))
+        );
     }
 
     #[test]

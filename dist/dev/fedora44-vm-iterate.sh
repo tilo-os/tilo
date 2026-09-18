@@ -231,7 +231,9 @@ deploy_one() {
         # The packaged developer wrapper intentionally accepts only an absolute,
         # private path carrying this marker.  Set up precisely that contract.
         wrapper=$repo_root/dist/session/tilo-session-dev
+        runner=$repo_root/dist/session/tilo-session-runner
         [[ -x $wrapper ]] || die "developer session wrapper is missing: $wrapper"
+        [[ -x $runner ]] || die "session lifecycle runner is missing: $runner"
         ssh_base "set -eu
             shell_path=\"\$HOME/$vm_root/shell\"
             grep -aFq 'tilo-dev-session-build-marker-v1' \"\$shell_path\"
@@ -244,6 +246,8 @@ deploy_one() {
             chmod 700 \"\$incoming\"
             mv -f \"\$incoming\" \"\$wrapper\"
             sudo install -m 0755 \"\$wrapper\" /usr/libexec/tilo-session-dev" <"$wrapper"
+        remote_install "$runner" tilo-session-runner
+        ssh_base "sudo install -m 0755 \"\$HOME/$vm_root/tilo-session-runner\" /usr/libexec/tilo-session-runner"
     fi
 }
 

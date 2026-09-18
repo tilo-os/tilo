@@ -4,6 +4,7 @@
 //! `add`, `add-advanced`, `add-picker`, or `empty`; the default is the account
 //! list. `--viewport WxH` controls the screenshot size.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop. Crash-producing lints remain denied.
 #![allow(
@@ -64,6 +65,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 }
 
 fn configure(app: &mut ui::App) {
+    app.set_window_title(Some("Authenticator".into()));
     totp::actions::register(app.action_registry_mut());
 }
 

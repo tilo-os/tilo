@@ -2,16 +2,22 @@
 //! list/content screens, all in ONE process so the expensive vello shader
 //! compilation is paid once. Usage: `cargo run -p settings --example dump_panes -- <outdir>`.
 
+#[cfg(not(feature = "thin"))]
 use settings::SettingsApp;
+#[cfg(not(feature = "thin"))]
 use settings::categories::Category;
+#[cfg(not(feature = "thin"))]
 use settings::shots::build_widget_scene;
+#[cfg(not(feature = "thin"))]
 use ui::offscreen::OffscreenRenderer;
+#[cfg(not(feature = "thin"))]
 use vello::peniko::Color;
 
 #[allow(
     clippy::cast_precision_loss,
     reason = "wide/narrow are small hardcoded example dimensions, nowhere near f32's 24-bit mantissa limit"
 )]
+#[cfg(not(feature = "thin"))]
 fn main() -> std::io::Result<()> {
     let out = std::env::args()
         .nth(1)
@@ -65,4 +71,9 @@ fn main() -> std::io::Result<()> {
         println!("wrote {path}");
     }
     Ok(())
+}
+
+#[cfg(feature = "thin")]
+fn main() {
+    eprintln!("dump_panes is unavailable with the thin-app feature");
 }

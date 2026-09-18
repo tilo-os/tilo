@@ -901,6 +901,7 @@ pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
         let refresh = refresh.with_contract(ActionContract {
             retry: RetryPolicy::Idempotent,
             execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
             tags: vec!["network".into(), "mail".into(), "refresh".into()],
             ..ActionContract::default()
         });
@@ -1294,6 +1295,13 @@ mod tests {
     fn ctrl_k_publishes_the_mailbox_tree() {
         let (app, state) = seeded_app();
         let resources = Widget::resources(&app, &state.doc);
+        let handlers: std::collections::HashSet<String> = app
+            .local_resource_operation_handlers()
+            .iter()
+            .map(|handler| (*handler).to_string())
+            .collect();
+        let violations = tilo_actions::validate_surface(&resources, &registry(), &handlers);
+        assert!(violations.is_empty(), "{violations:?}");
         assert_eq!(resources.len(), 1, "one mailbox root");
         let mailbox = &resources[0];
         assert_eq!(mailbox.kind, "mail.mailbox");
@@ -1315,7 +1323,14 @@ mod tests {
             refresh.contract.execution,
             tilo_actions::ExecutionMode::Background { cancellable: false }
         );
-        assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::None);
+        assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::Job);
+        assert!(
+            refresh
+                .contract
+                .result
+                .validate(&tilo_actions::ActionOutput::default())
+                .is_ok()
+        );
 
         let folder = mailbox
             .children

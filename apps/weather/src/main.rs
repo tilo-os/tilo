@@ -9,6 +9,7 @@
 //!   * `--scenario NAME` — seed a staged state (`detail`, `drag`, `scrolled`); see [`weather::app_root_for_shot`].
 //!   * `--viewport WxH` — render at a custom size (e.g. `--viewport 560x720` for the narrow full-screen city list, or pair with `--scenario detail` for the pushed forecast).
 
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
 // overflow is a tax a third-party app author would pay too. The lints that

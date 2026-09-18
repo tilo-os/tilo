@@ -47,15 +47,18 @@ mpris = ["dep:zbus", "zbus/tokio"]
 # parts always compile, so headless tests drive the exact per-frame drain path
 # with no portal, and a feature-less build degrades to a clean
 # `PortalOutcome::Failed` rather than failing to link.
-portal = ["dep:ashpd"]
+portal = ["dep:ashpd", "dep:windows", "dep:mime_guess"]
+notifications = ["dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
 
 [dependencies]
+private-fs = { path = "../crates/system/private-fs" }
 tilo-ui-graph = { path = "../crates/dev/ui-graph" }
 atomic-file = { path = "../crates/system/atomic-file" }
 settings-store = { path = "../crates/system/settings-store" }
-ashpd = { workspace = true, optional = true }
-# Required without `portal` so every build can test rejection of remote-host
-# file URIs in `portal::to_local_path`.
+# Parses the portal's returned file URIs. Non-optional:
+# `portal::to_local_path` is the file-access rule — a URI naming a remote
+# host must not resolve to a local path — and must be testable in every
+# build configuration.
 url.workspace = true
 # The two halves of `uri`: RFC 3986 percent-decoding and the
 # x-www-form-urlencoded dialect that also reads `+` as a space.
@@ -143,7 +146,7 @@ arboard = { workspace = true, features = ["image-data"] }
 # the desktop portal on Linux) when activated. Same crate + pin the file
 # explorer already uses to open files with the desktop default; already
 # resolved in the workspace lockfile, so this adds no registry fetch.
-open.workspace = true
+open = { workspace = true, features = ["shellexecute-on-windows"] }
 # Shared collaboration types used by the history/conflict/channel widgets and
 # by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
@@ -184,6 +187,8 @@ base32.workspace = true
 # pre-shared long-term key. SHA-512 is already a transitive via
 # `tilo-threshold-identity`, so direct pin keeps the lock single-copy.
 sha2.workspace = true
+# SIMD compiler fingerprinting and integrity for the private DX12 cache.
+blake3.workspace = true
 toml.workspace = true
 unicode-script = "=0.5.8"
 # Pairing-channel authentication. HMAC binds the round-1 broadcast to
@@ -230,9 +235,15 @@ smithay-clipboard = "0.7"
 smithay-client-toolkit = { version = "0.20.0", features = ["calloop"] }
 
 [target.'cfg(unix)'.dependencies]
+ashpd = { workspace = true, optional = true }
 # Launcher-provided identity capabilities use inherited Unix socket file
 # descriptors. Native Windows apps run without that optional Tilo service.
 runtime-identity = { path = "../crates/runtime/runtime-identity" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
+mime_guess = { version = "2.0.5", optional = true }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [build-dependencies]
 # Locates the WPE WebKit stack when the `webview-wpe` feature is on
@@ -272,6 +283,16 @@ path = "examples/ui_shots.rs"
 [[example]]
 name = "ui-perf"
 path = "examples/ui_perf.rs"
+
+[[example]]
+name = "native-file-picker"
+path = "examples/native_file_picker.rs"
+required-features = ["portal"]
+
+[[example]]
+name = "windows-host"
+path = "examples/windows_host.rs"
+required-features = ["notifications"]
 
 [[example]]
 name = "ui-wpe"

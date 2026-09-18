@@ -20,7 +20,7 @@ jobs:
     runs-on: runner
     timeout-minutes: 30
     container:
-      image: code.podesta.ai/qos/qos-builder:latest
+      image: code.podesta.ai/qos/tilo-builder:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -36,6 +36,12 @@ jobs:
         shell: bash
         run: >-
           bash tools/check-changed-rustfmt.sh
+          '${{ github.event.pull_request.base.sha }}'
+          '${{ github.event.before }}'
+
+      - name: Require reasons for new Rust lint exceptions
+        run: >-
+          python3 tools/check_changed_rust_allows.py
           '${{ github.event.pull_request.base.sha }}'
           '${{ github.event.before }}'
 
@@ -60,6 +66,14 @@ jobs:
           name: installer-contract-results
           path: ${{ runner.temp }}/tilo-installer-contracts/run.json
           if-no-files-found: warn
+      - name: RPM snapshot scheduling contract
+        run: |
+          workflow=.forgejo/workflows/snapshot-rpms.yml
+          grep -Fq "github.event_name == 'workflow_dispatch' && 'publication'" "$workflow"
+          grep -Fq 'cancel-in-progress:' "$workflow"
+          grep -Fq "github.event_name != 'workflow_dispatch'" "$workflow"
+          grep -Fq 'git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"' "$workflow"
+          grep -Fq 'for attempt in 1 2 3 4 5; do' "$workflow"
 
       - name: Codex CI watcher unit tests
         run: |

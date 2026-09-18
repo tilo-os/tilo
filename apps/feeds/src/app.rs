@@ -62,6 +62,13 @@ fn opml_import_request() -> PickRequest {
         )
         .all_files()
 }
+
+fn opml_export_request() -> PickRequest {
+    PickRequest::save("Export OPML", "Export", "feeds-subscriptions.opml")
+        .thread_name("feeds-portal-export")
+        .filter(FileFilter::new("OPML").glob("*.opml"))
+        .all_files()
+}
 use crate::{opml, sample};
 
 const SIDEBAR_W: f64 = 256.0;
@@ -404,12 +411,16 @@ pub struct FeedsApp {
 
     last_mouse: Point,
     modal: Option<FeedsModal>,
+    modal_structure_dirty: bool,
     toast: Option<(String, Instant)>,
 
     // --- OPML import (XDG portal) ---------------------------------------
     /// In-flight import file-chooser: the portal worker's receiver, drained
     /// once per frame in `sync`. `None` when no picker is open.
     import_rx: Option<PortalChannel>,
+    /// Save chooser and the subscription snapshot captured when export began.
+    export_rx: Option<(PortalChannel, String)>,
+    background_poll_deadline: Cell<Option<Instant>>,
 
     // --- per-feed context menu ------------------------------------------
     /// Right-click menu over a sidebar feed. Uses the shared `ui` primitive so
@@ -541,8 +552,11 @@ impl FeedsApp {
             new_folder_rect: Rect::ZERO,
             last_mouse: Point::ZERO,
             modal: None,
+            modal_structure_dirty: false,
             toast: None,
             import_rx: None,
+            export_rx: None,
+            background_poll_deadline: Cell::new(None),
             feed_menu: ContextMenu::new(),
             feed_menu_target: None,
             feed_menu_actions: Vec::new(),
@@ -958,6 +972,7 @@ impl FeedsApp {
         };
         self.show_reader_settings = false;
         self.modal = Some(FeedsModal::edit_tags(article.id, &article.tags));
+        self.modal_structure_dirty = true;
     }
 
     fn mark_all_read(&mut self, doc: &mut AutoCommit) {
@@ -1306,11 +1321,35 @@ impl FeedsApp {
     }
 
     fn export_opml(&mut self) {
+        if self.import_rx.is_some() || self.export_rx.is_some() {
+            return;
+        }
         let xml = opml::export(&self.store);
-        let path = std::env::temp_dir().join("feeds-subscriptions.opml");
-        match std::fs::write(&path, xml) {
-            Ok(()) => self.set_toast(format!("Exported OPML → {}", path.display())),
-            Err(e) => self.set_toast(format!("Export failed: {e}")),
+        self.export_rx = Some((opml_export_request().send(), xml));
+        self.set_toast("Choose where to save subscriptions…");
+    }
+
+    fn drain_export(&mut self) {
+        let Some((rx, _)) = &self.export_rx else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                PortalOutcome::Failed("file chooser closed without a result".into())
+            }
+        };
+        let Some((_, xml)) = self.export_rx.take() else {
+            return;
+        };
+        match outcome {
+            PortalOutcome::Opened(path) => match std::fs::write(&path, xml) {
+                Ok(()) => self.set_toast(format!("Exported OPML → {}", path.display())),
+                Err(error) => self.set_toast(format!("Export failed: {error}")),
+            },
+            PortalOutcome::Cancelled => self.set_toast("Export cancelled"),
+            PortalOutcome::Failed(reason) => self.set_toast(format!("Export failed: {reason}")),
         }
     }
 
@@ -1321,7 +1360,7 @@ impl FeedsApp {
     /// arrives over a channel drained by [`Self::drain_import`]. An in-flight
     /// request is not re-opened.
     fn request_import(&mut self) {
-        if self.import_rx.is_some() {
+        if self.import_rx.is_some() || self.export_rx.is_some() {
             return;
         }
         self.import_rx = Some(opml_import_request().send());
@@ -1487,6 +1526,7 @@ impl FeedsApp {
                     .map(|f| f.title.clone())
                     .unwrap_or_default();
                 self.modal = Some(FeedsModal::rename(feed_id, &title));
+                self.modal_structure_dirty = true;
             }
             // Unsubscribe is destructive, so confirm it through the shared modal
             // rather than removing the feed on the spot.
@@ -1497,6 +1537,7 @@ impl FeedsApp {
     /// Open the "Add subscription" dialog (real modal + real URL field).
     fn open_add_subscription(&mut self) {
         self.modal = Some(FeedsModal::add_subscription());
+        self.modal_structure_dirty = true;
     }
 
     /// Open the unsubscribe confirmation for `feed_id`.
@@ -1507,6 +1548,7 @@ impl FeedsApp {
             .map(|f| f.title.clone())
             .unwrap_or_default();
         self.modal = Some(FeedsModal::unsubscribe(feed_id, &title));
+        self.modal_structure_dirty = true;
     }
 
     // --- modal lifecycle (drive the shared ModalDialog) ------------------
@@ -1545,19 +1587,27 @@ impl FeedsApp {
             *handled = true;
             return;
         }
-        let (submit, cancel) = {
+        {
             let Some(m) = self.modal.as_mut() else { return };
             *handled = m
                 .dialog
                 .handle_detached(event, scale_factor, modifiers, state, path);
-            (m.submit.replace(false), m.cancel.replace(false))
+        }
+        self.drain_modal_actions(state);
+        *handled = true;
+    }
+
+    fn drain_modal_actions(&mut self, state: &mut AutoCommit) {
+        let Some(modal) = self.modal.as_ref() else {
+            return;
         };
+        let (submit, cancel) = (modal.submit.replace(false), modal.cancel.replace(false));
         if submit {
             self.submit_modal(state);
         } else if cancel {
             self.modal = None;
+            self.modal_structure_dirty = true;
         }
-        *handled = true;
     }
 
     /// Apply the open dialog's primary action against the real store +
@@ -1572,6 +1622,7 @@ impl FeedsApp {
             return;
         }
         self.modal = None;
+        self.modal_structure_dirty = true;
         match intent {
             ModalIntent::AddSubscription => self.subscribe(&value, doc),
             ModalIntent::AddFolder => self.add_folder(&value, doc),
@@ -2247,6 +2298,12 @@ impl FeedsApp {
                 title: &list_title,
                 count: self.store.count_for(self.filter),
                 header_inset: list_inset,
+                header_text_end: self
+                    .toolbar_buttons
+                    .iter()
+                    .filter(|button| button.rect.intersect(self.list_rect).area() > 0.0)
+                    .map(|button| button.rect.x0 - 10.0)
+                    .fold(self.list_rect.x1 - 18.0, f64::min),
                 refresh: &self.refresh,
                 header_h,
             },
@@ -2955,9 +3012,23 @@ impl FeedsApp {
     }
 
     fn open_url(&mut self, url: &str) {
-        // Best-effort hand-off to the desktop; never block or panic.
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-        self.set_toast(format!("Opening {url}"));
+        let Some(url) = reqwest::Url::parse(url.trim())
+            .ok()
+            .filter(|url| match url.scheme() {
+                "http" | "https" | "gemini" => url.host_str().is_some(),
+                "mailto" => !url.path().is_empty(),
+                _ => false,
+            })
+        else {
+            self.set_toast(ui::i18n!("feeds-open-link-invalid"));
+            return;
+        };
+        match ui::widget::try_open_external_url(url.as_str()) {
+            Ok(()) => self.set_toast(ui::i18n!("feeds-open-link-started")),
+            Err(error) => {
+                self.set_toast(format!("{}: {error}", ui::i18n!("feeds-open-link-failed")));
+            }
+        }
     }
 }
 
@@ -2986,6 +3057,7 @@ struct ListView<'a> {
     title: &'a str,
     count: usize,
     header_inset: f64,
+    header_text_end: f64,
     refresh: &'a RefreshState,
     header_h: f64,
 }
@@ -3385,6 +3457,7 @@ fn draw_list(paint: PaintContext<'_>, view: &ListView<'_>) {
         title,
         count,
         header_inset,
+        header_text_end,
         refresh,
         header_h,
     } = *view;
@@ -3392,28 +3465,43 @@ fn draw_list(paint: PaintContext<'_>, view: &ListView<'_>) {
     // Header. `header_inset` shifts the title right of the hamburger toggle
     // when the list is the narrow master pane.
     let title_x = rect.x0 + 18.0 + header_inset;
-    tr.draw_text_weighted(
-        scene,
-        title,
-        17.0,
-        c.text_primary,
-        t * Affine::translate((title_x, rect.y0 + 16.0)),
-        None,
-        TextWeight::Bold,
-    );
-    let count_label = format!("{count}");
-    let title_w0 = measure_w(tr, title, 17.0);
-    tr.draw_text(
-        scene,
-        &count_label,
-        13.0,
-        c.text_dim,
-        // `measure_w` can be a little tighter than the painted glyph bounds
-        // at high text contrast / fallback-font settings. Keep a generous,
-        // stable gap so “All Articles” and its count never read as one word.
-        t * Affine::translate((title_x + title_w0 + 18.0, rect.y0 + 19.0)),
-        None,
-    );
+    // At phone widths the action buttons occupy the header. The selected
+    // filter remains available in the subscriptions pane; do not paint its
+    // redundant title underneath those controls.
+    let header_width = header_text_end - title_x;
+    if header_width >= 64.0 {
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &Rect::new(title_x, rect.y0, header_text_end, rect.y0 + header_h),
+        );
+        let visible_title = elide(tr, title, 17.0, (header_width - 8.0) as f32);
+        tr.draw_text_weighted(
+            scene,
+            &visible_title,
+            17.0,
+            c.text_primary,
+            t * Affine::translate((title_x, rect.y0 + 16.0)),
+            None,
+            TextWeight::Bold,
+        );
+        let count_label = format!("{count}");
+        let title_w0 = measure_w(tr, title, 17.0);
+        tr.draw_text(
+            scene,
+            &count_label,
+            13.0,
+            c.text_dim,
+            // `measure_w` can be a little tighter than the painted glyph bounds
+            // at high text contrast / fallback-font settings. Keep a generous,
+            // stable gap so “All Articles” and its count never read as one word.
+            t * Affine::translate((title_x + title_w0 + 18.0, rect.y0 + 19.0)),
+            None,
+        );
+        scene.pop_layer();
+    }
     let header_bottom = rect.y0 + header_h;
     hline(
         scene,
@@ -4335,6 +4423,7 @@ impl Widget for FeedsApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        self.background_poll_deadline.set(None);
         self.now = chrono::Utc::now().timestamp();
         if !self.synced {
             if FeedsDoc::is_empty(state) {
@@ -4360,6 +4449,7 @@ impl Widget for FeedsApp {
             self.synced = true;
             self.store_heads = state.get_heads();
         }
+        self.drain_modal_actions(state);
         // Persist anything the live (doc-less) drain queued, then drain again
         // here so an input-driven sync also picks up fresh results promptly.
         self.flush_doc_writes(state);
@@ -4371,6 +4461,7 @@ impl Widget for FeedsApp {
         // Drain an in-flight OPML import portal request (holds the doc so the
         // parsed subscriptions persist the moment the user picks a file).
         self.drain_import(state);
+        self.drain_export();
         // A Ctrl+K palette action (or any other out-of-band write) mutates the
         // document directly, not this widget's mirrored store. Once the fetch
         // backlog is drained — so the store isn't leading the document with
@@ -4415,6 +4506,12 @@ impl Widget for FeedsApp {
             return Ok(false);
         };
         match (kind, operation) {
+            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ImportOpml) => {
+                self.request_import();
+            }
+            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ExportOpml) => {
+                self.export_opml();
+            }
             (tilo_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
                 if self.store.feeds.is_empty() {
                     return Err("there are no subscriptions to refresh".into());
@@ -4541,14 +4638,23 @@ impl Widget for FeedsApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
+        let children: Vec<_> = self
+            .modal
+            .as_mut()
+            .map(|modal| modal.dialog.build_layout(taffy, theme, node_map))
+            .into_iter()
+            .collect();
         let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            })
+                &children,
+            )
             .unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
@@ -4693,6 +4799,26 @@ impl Widget for FeedsApp {
         "FeedsApp"
     }
 
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.modal
+            .as_ref()
+            .map(|modal| &modal.dialog as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.modal_structure_dirty)
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.modal
+            .as_mut()
+            .map(|modal| &mut modal.dialog as &mut dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -4735,8 +4861,8 @@ impl Widget for FeedsApp {
         reason = "one semantic mirror covers the custom-painted toolbar, subscription tree, article list and reader document"
     )]
     fn accessibility(&self) -> Option<AccessNode> {
-        if let Some(modal) = self.modal.as_ref() {
-            return modal.dialog.accessibility();
+        if self.modal.is_some() {
+            return None;
         }
         if self.feed_menu.is_open() {
             return self.feed_menu.accessibility();
@@ -5012,6 +5138,15 @@ impl Widget for FeedsApp {
                     .with_live(Politeness::Polite),
             );
         }
+        if let Some((message, since)) = &self.toast
+            && since.elapsed().as_secs_f32() < 4.0
+        {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(message.clone())
+                    .with_live(Politeness::Polite),
+            );
+        }
         Some(
             AccessNode::new(Role::Window)
                 .with_name("Feeds")
@@ -5190,6 +5325,26 @@ impl Widget for FeedsApp {
         true
     }
 
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        if self.import_rx.is_none()
+            && self.export_rx.is_none()
+            && !self
+                .worker
+                .as_ref()
+                .is_some_and(|worker| worker.pending() > 0)
+            && self.pending_doc_writes.is_empty()
+        {
+            return None;
+        }
+        let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
+            Instant::now()
+                .checked_add(std::time::Duration::from_millis(16))
+                .unwrap_or_else(Instant::now)
+        });
+        self.background_poll_deadline.set(Some(deadline));
+        Some(deadline)
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // Keep frames flowing while the sidebar flap is mid-slide, while
         // network fetches are outstanding (so the per-frame `draw` drain keeps
@@ -5203,6 +5358,7 @@ impl Widget for FeedsApp {
             // Keep frames flowing while a file-chooser portal is open so its
             // outcome is drained (in `sync`) the moment the user picks a file.
             || self.import_rx.is_some()
+            || self.export_rx.is_some()
             || self
                 .toast
                 .as_ref()
@@ -5770,6 +5926,10 @@ mod tests {
         a.refresh_all();
         let total = a.refresh.total;
         assert_eq!(total, a.store.feeds.len());
+        let deadline = a
+            .next_wake_deadline()
+            .expect("network results must wake without animation");
+        assert_eq!(a.next_wake_deadline(), Some(deadline));
 
         // Every feed reports back (alternating success / failure).
         for (i, f) in a.store.feeds.clone().iter().enumerate() {
@@ -5794,6 +5954,11 @@ mod tests {
         assert!(a.refresh.finished_at.is_some(), "completion timestamped");
         // The completion summary lingers briefly, then frames can stop.
         assert!(a.refresh.visible());
+        a.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            a.next_wake_deadline().is_none(),
+            "completed work stops polling"
+        );
     }
 
     /// Changing a reading setting applies it (and persists), proving the
@@ -6701,6 +6866,97 @@ mod tests {
     }
 
     #[test]
+    fn portal_export_writes_the_snapshot_to_the_selected_unicode_path() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let directory = std::env::temp_dir().join(format!("feeds-export-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("Subscriptions Grün 🌍.opml");
+        let xml = opml::export(&a.store);
+        a.export_rx = Some((
+            ui::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
+            xml.clone(),
+        ));
+        let deadline = a
+            .next_wake_deadline()
+            .expect("export must wake without animation");
+        assert_eq!(a.next_wake_deadline(), Some(deadline));
+        assert!(!path.exists());
+        a.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), xml);
+        assert_eq!(opml::parse(&xml).len(), a.store.feeds.len());
+        assert!(a.export_rx.is_none());
+        assert!(a.next_wake_deadline().is_none());
+        assert!(a.toast.as_ref().unwrap().0.starts_with("Exported OPML"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn portal_export_cancel_and_failure_never_report_success() {
+        for outcome in [
+            PortalOutcome::Cancelled,
+            PortalOutcome::Failed("test denial".into()),
+        ] {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            a.export_rx = Some((
+                ui::portal::inject_for_test(outcome.clone()),
+                opml::export(&a.store),
+            ));
+            a.sync(&mut doc, &automerge::ROOT);
+            assert!(a.export_rx.is_none());
+            let message = &a.toast.as_ref().unwrap().0;
+            assert!(
+                a.accessibility().unwrap().children.iter().any(|node| {
+                    node.name.as_deref() == Some(message.as_str())
+                        && node.live == Some(Politeness::Polite)
+                }),
+                "native accessibility must expose the transfer outcome"
+            );
+            match outcome {
+                PortalOutcome::Cancelled => assert_eq!(message, "Export cancelled"),
+                PortalOutcome::Failed(reason) => {
+                    assert_eq!(message, &format!("Export failed: {reason}"))
+                }
+                PortalOutcome::Opened(_) => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn portal_export_write_failure_is_visible() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        // A directory cannot be replaced by the export's file write on either host.
+        a.export_rx = Some((
+            ui::portal::inject_for_test(PortalOutcome::Opened(std::env::temp_dir())),
+            opml::export(&a.store),
+        ));
+        a.sync(&mut doc, &automerge::ROOT);
+        assert!(a.export_rx.is_none());
+        assert!(a.toast.as_ref().unwrap().0.starts_with("Export failed:"));
+    }
+
+    #[test]
+    fn portal_import_completion_has_a_fixed_non_animation_deadline() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        assert!(a.next_wake_deadline().is_none());
+        a.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
+        let deadline = a
+            .next_wake_deadline()
+            .expect("file completion must wake even with reduced motion");
+        assert_eq!(a.next_wake_deadline(), Some(deadline));
+        a.sync(&mut doc, &automerge::ROOT);
+        assert!(a.import_rx.is_none());
+        assert!(a.next_wake_deadline().is_none());
+    }
+
+    #[test]
     fn portal_import_drain_reads_file_and_subscribes() {
         let mut a = app();
         let mut doc = AutoCommit::new();
@@ -6975,6 +7231,107 @@ mod tests {
         );
     }
 
+    #[test]
+    fn native_accessibility_dispatch_edits_the_modal_field() {
+        let mut reader = FeedsApp::new();
+        reader.open_add_subscription();
+        lay_out(&mut reader, 800.0, 600.0);
+        let mut app = ui::App::new(ui::State::new(), Box::new(reader));
+        app.init_layout();
+        let field = app
+            .build_a11y_tree_update(1.0)
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Feed URL"))
+            .map(|(id, _)| *id)
+            .expect("native field must be exported");
+        assert!(
+            field.0 < (1_u64 << 48),
+            "field has no retained layout id: {field:?}"
+        );
+        app.dispatch_a11y_action(
+            field,
+            &A11yAction::SetValue("https://example.invalid/rss.xml".into()),
+        );
+        let after = app.build_a11y_tree_update(1.0);
+        let field = after
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Feed URL"))
+            .unwrap();
+        assert_eq!(field.1.value(), Some("https://example.invalid/rss.xml"));
+    }
+
+    #[test]
+    fn accessibility_modal_field_and_footer_submit_a_real_subscription() {
+        let mut reader = FeedsApp::new();
+        let mut doc = AutoCommit::new();
+        reader.sync(&mut doc, &automerge::ROOT);
+        let _sender = reader.install_test_worker();
+        reader.open_add_subscription();
+        assert!(
+            reader.take_structure_dirty(),
+            "opening must rebuild the native input tree"
+        );
+        assert!(
+            !reader.take_structure_dirty(),
+            "the unchanged tree must remain stable"
+        );
+        lay_out(&mut reader, 800.0, 600.0);
+        let url = "https://example.invalid/feeds.xml";
+        {
+            let mut dialogs = reader.children_mut();
+            let dialog = dialogs
+                .first_mut()
+                .expect("open dialog must be in the widget tree");
+            {
+                let mut bodies = dialog.children_mut();
+                let body = bodies.first_mut().unwrap();
+                let mut fields = body.children_mut();
+                let field = fields
+                    .first_mut()
+                    .expect("real TextInput must be reachable");
+                assert_eq!(
+                    field.accessibility().unwrap().name.as_deref(),
+                    Some("Feed URL")
+                );
+                assert!(field.perform_action(
+                    &A11yAction::SetValue(url.into()),
+                    &mut doc,
+                    &automerge::ROOT
+                ));
+            }
+            assert!(dialog.perform_semantic_action(
+                "modal.primary",
+                &A11yAction::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+        }
+        reader.sync(&mut doc, &automerge::ROOT);
+        assert!(reader.modal.is_none());
+        assert!(
+            reader.take_structure_dirty(),
+            "closing must remove stale input targets"
+        );
+        assert!(
+            FeedsDoc::load(&doc)
+                .feeds
+                .iter()
+                .any(|feed| feed.url == url)
+        );
+    }
+
+    #[test]
+    fn external_article_links_reject_local_files() {
+        let mut reader = FeedsApp::new();
+        reader.open_url("file:///does-not-exist-tilo-link-proof");
+        assert_eq!(
+            reader.toast.as_ref().map(|(text, _)| text.as_str()),
+            Some(ui::i18n!("feeds-open-link-invalid").as_str())
+        );
+    }
+
     // --- add-subscription dialog (real ModalDialog + real TextInput) -------
 
     /// Verifies Ctrl+V reaches the add-subscription field and submission uses
@@ -6983,6 +7340,35 @@ mod tests {
     fn add_subscription_modal_pastes_url_and_subscribes() {
         use winit::event::Modifiers;
         use winit::keyboard::ModifiersState;
+
+        // Exercise the host clipboard boundary and the real TextInput paste
+        // handler without touching the user's clipboard or requiring a desktop
+        // clipboard grant. Successful OS transport requires separate native verification.
+        #[derive(Default)]
+        struct TestClipboard(std::sync::Mutex<(Option<String>, Option<String>)>);
+        impl ui::clipboard::ClipboardBackend for TestClipboard {
+            fn set_text(&self, target: ui::clipboard::ClipboardTarget, text: &str) -> bool {
+                let mut values = self.0.lock().unwrap();
+                match target {
+                    ui::clipboard::ClipboardTarget::Clipboard => values.0 = Some(text.into()),
+                    ui::clipboard::ClipboardTarget::Primary => values.1 = Some(text.into()),
+                }
+                true
+            }
+
+            fn text(&self, target: ui::clipboard::ClipboardTarget) -> Option<String> {
+                let values = self.0.lock().unwrap();
+                match target {
+                    ui::clipboard::ClipboardTarget::Clipboard => values.0.clone(),
+                    ui::clipboard::ClipboardTarget::Primary => values.1.clone(),
+                }
+            }
+
+            fn name(&self) -> &'static str {
+                "feeds-test-clipboard"
+            }
+        }
+        ui::clipboard::install_clipboard_backend(std::sync::Arc::new(TestClipboard::default()));
 
         let mut a = app();
         let mut doc = AutoCommit::new();

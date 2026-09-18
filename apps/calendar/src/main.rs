@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 //! Calendar — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:

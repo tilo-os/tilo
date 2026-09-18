@@ -18,6 +18,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use futures_lite::StreamExt;
 use iroh_blobs::api::Store;
+#[cfg(feature = "filesystem")]
 use iroh_blobs::api::blobs::BlobStatus;
 use iroh_blobs::provider::events::EventSender;
 use iroh_blobs::store::fs::FsStore;
@@ -26,14 +27,19 @@ use iroh_blobs::store::{GcConfig, ProtectOutcome};
 use iroh_blobs::{BlobFormat, BlobsProtocol, Hash};
 use moka::sync::Cache;
 
+#[cfg(feature = "filesystem")]
 use crate::availability::{AvailabilityRegistry, EvictionRequirements};
+#[cfg(feature = "filesystem")]
 use crate::eviction::{
     BackendGcAuthorizationError, BlobExtent, EvictionCatalog, EvictionObservation, EvictionPlan,
     EvictionQueue, EvictionRequestId, ObservedBlobState, VersionPayload,
 };
+#[cfg(feature = "filesystem")]
 use crate::namespace::{LiveRecordBlobRoots, LiveRecordBlobScanError, Namespace};
 
+#[cfg(feature = "filesystem")]
 pub const MAX_BLOB_LOOKUP_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+#[cfg(feature = "filesystem")]
 pub const MAX_BLOB_LOOKUP_CHUNKS_PER_RECORD: usize = 100_000;
 
 const OWNED_BLOB_TAG_PREFIX: &str = "tilo/blob/v1/";
@@ -46,12 +52,14 @@ const OWNED_TAG_MIGRATION_MARKER_CONTENTS: &[u8] = b"tilo-owned-blob-tags-v1\n";
 pub const DEFAULT_BLOB_GC_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "filesystem")]
 pub struct BlobRecordLookupLimits {
     pub max_live_records: usize,
     pub max_manifest_bytes: usize,
     pub max_chunks_per_record: usize,
 }
 
+#[cfg(feature = "filesystem")]
 impl Default for BlobRecordLookupLimits {
     fn default() -> Self {
         Self {
@@ -63,6 +71,7 @@ impl Default for BlobRecordLookupLimits {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[cfg(feature = "filesystem")]
 pub enum BlobRecordLookupError {
     #[error("invalid bounded blob-record lookup limits")]
     InvalidLimits,
@@ -92,6 +101,7 @@ pub enum BlobRecordLookupError {
 /// Explicit reclamation errors. iroh-blobs intentionally exposes deletion
 /// only through GC, so an unqueued plan remains insufficient authority.
 #[derive(Debug, thiserror::Error)]
+#[cfg(feature = "filesystem")]
 pub enum StoreEvictionError {
     #[error(
         "a dry-run plan cannot delete blobs; enqueue it and use the freshly authorized GC bridge"
@@ -112,6 +122,7 @@ pub enum StoreEvictionError {
 /// Durable handoff from the eviction queue to the configured background GC.
 /// This is deliberately not a deletion receipt.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(feature = "filesystem")]
 pub struct BackendGcRelease {
     pub id: EvictionRequestId,
     pub authorized_hashes: Vec<Hash>,
@@ -218,7 +229,7 @@ impl ContentStore {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "filesystem"))]
     fn memory_with_gc_interval(gc_interval: Duration) -> Self {
         Self {
             backend: Backend::Mem(MemStore::new_with_opts(iroh_blobs::store::mem::Options {
@@ -462,6 +473,7 @@ impl ContentStore {
     ///
     /// Returns an error for invalid limits or an incomplete/malformed bounded
     /// live record graph.
+    #[cfg(feature = "filesystem")]
     pub async fn live_record_ids_for_blob(
         &self,
         namespace: &Namespace,
@@ -482,6 +494,7 @@ impl ContentStore {
 
     /// Variant for async protocol handlers: snapshot the minimal roots under
     /// the namespace lock, release it, then perform backend reads here.
+    #[cfg(feature = "filesystem")]
     pub(crate) async fn live_record_ids_for_blob_roots(
         &self,
         roots: Vec<LiveRecordBlobRoots>,
@@ -546,6 +559,7 @@ impl ContentStore {
     ///
     /// Returns an error when the manifest or backend status cannot be read or
     /// decoded.
+    #[cfg(feature = "filesystem")]
     pub async fn inspect_version_payload(
         &self,
         record_id: collab_types::FileRecordId,
@@ -591,6 +605,7 @@ impl ContentStore {
     ///
     /// Returns an error when the revision is invalid or any declared payload is
     /// missing, partial, malformed, or has the wrong length.
+    #[cfg(feature = "filesystem")]
     pub async fn verify_durable_revision(
         &self,
         revision: &collab_types::ContentRevisionV1,
@@ -648,6 +663,7 @@ impl ContentStore {
     /// # Errors
     ///
     /// Always returns [`StoreEvictionError::ExplicitDeletionUnsupported`].
+    #[cfg(feature = "filesystem")]
     pub fn execute_eviction(
         &self,
         _plan: &EvictionPlan,
@@ -668,6 +684,7 @@ impl ContentStore {
     ///
     /// Returns an error when fresh authorization, tag release, backend GC, or
     /// durable observation fails.
+    #[cfg(feature = "filesystem")]
     pub async fn release_eviction_to_backend_gc(
         &self,
         queue: &EvictionQueue,
@@ -757,6 +774,7 @@ impl ContentStore {
     ///
     /// Returns an error when the request is unknown or backend status/queue
     /// persistence fails.
+    #[cfg(feature = "filesystem")]
     pub async fn observe_eviction_request(
         &self,
         queue: &mut EvictionQueue,
@@ -920,6 +938,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persistent_selective_eviction_preserves_other_content_after_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        // Exceed the backend's inline threshold so this also exercises native
+        // blob files, not just rows inside its metadata database.
+        let kept_bytes = Bytes::from(vec![0x61; 1_048_576]);
+        let (kept, selected) = {
+            let store = ContentStore::open(directory.path()).await.unwrap();
+            let kept = store.ingest(kept_bytes.clone()).await.unwrap();
+            let selected = store
+                .ingest(Bytes::from(vec![0x62; 1_048_576]))
+                .await
+                .unwrap();
+            assert_eq!(
+                store.evict_blobs(&HashSet::from([selected])).await.unwrap(),
+                1
+            );
+            assert_eq!(store.local(kept).await, Some(kept_bytes.clone()));
+            assert!(store.local(selected).await.is_none());
+            store.store().shutdown().await.unwrap();
+            (kept, selected)
+        };
+        let reopened = ContentStore::open(directory.path()).await.unwrap();
+        assert_eq!(reopened.local(kept).await, Some(kept_bytes));
+        assert!(reopened.local(selected).await.is_none());
+        reopened.store().shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn ingest_and_fetch_use_only_deterministic_owned_tags() {
         let store = ContentStore::memory();
         let first = store.ingest(Bytes::from_static(b"ingested")).await.unwrap();
@@ -1038,6 +1084,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "filesystem")]
     async fn version_inspection_uses_backend_residency_and_exact_manifest() {
         let store = ContentStore::memory();
         let data = vec![7u8; 100_000];
@@ -1069,6 +1116,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "filesystem")]
     async fn durable_revision_rejects_a_complete_manifest_with_any_missing_chunk() {
         let store = ContentStore::memory();
         let missing = iroh_blobs::Hash::new(b"not persisted");
@@ -1094,6 +1142,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "filesystem")]
     async fn unsupported_execution_never_claims_to_delete() {
         use crate::eviction::{EvictionMode, EvictionPlan};
 
@@ -1127,6 +1176,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "filesystem")]
     async fn eviction_observation_completes_only_for_backend_absence() {
         use crate::eviction::{EvictionMode, EvictionPlan, EvictionQueue, EvictionRequestState};
 
@@ -1177,6 +1227,7 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::too_many_lines)] // Multi-phase backend eviction lifecycle scenario.
+    #[cfg(feature = "filesystem")]
     async fn queued_eviction_releases_only_owned_target_tags_and_gc_completion_is_observed() {
         use crate::availability::{RecordAvailability, RecordKind, Residency};
         use crate::eviction::{
@@ -1333,6 +1384,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "filesystem")]
     async fn backend_handoff_refuses_stale_shared_root_without_releasing_tag() {
         use crate::availability::{RecordAvailability, RecordKind, Residency};
         use crate::eviction::{
@@ -1423,6 +1475,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "filesystem")]
     async fn eviction_never_releases_foreign_tags_or_claims_their_blob_was_deleted() {
         use crate::availability::{RecordAvailability, RecordKind, Residency};
         use crate::eviction::{
@@ -1521,6 +1574,7 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::too_many_lines)] // Every reverse-lookup source is one matrix.
+    #[cfg(feature = "filesystem")]
     async fn blob_reverse_lookup_covers_roots_chunks_thumbnails_and_live_records_only() {
         let store = ContentStore::memory();
         let shared_chunk = store.ingest(Bytes::from_static(b"shared")).await.unwrap();
@@ -1635,6 +1689,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "filesystem")]
     async fn blob_reverse_lookup_is_bounded_and_fails_closed_on_missing_manifest() {
         let store = ContentStore::memory();
         let missing = Hash::from([66; 32]);

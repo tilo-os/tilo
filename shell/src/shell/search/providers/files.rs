@@ -226,9 +226,9 @@ pub struct FilesProvider {
     ranked_query_epoch: AtomicU64,
     rank_mailbox: Arc<Mutex<Option<RankRequest>>>,
     rank_notify: mpsc::SyncSender<()>,
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     active_rank_workers: Arc<AtomicUsize>,
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     peak_rank_workers: Arc<AtomicUsize>,
 }
 
@@ -260,12 +260,14 @@ struct RankedQueryCache {
     pending: Option<PendingRankedQuery>,
 }
 
-type RankWorker = (
-    Arc<Mutex<Option<RankRequest>>>,
-    mpsc::SyncSender<()>,
-    Arc<AtomicUsize>,
-    Arc<AtomicUsize>,
-);
+struct RankWorker {
+    mailbox: Arc<Mutex<Option<RankRequest>>>,
+    notify: mpsc::SyncSender<()>,
+    #[cfg(test)]
+    active: Arc<AtomicUsize>,
+    #[cfg(test)]
+    peak: Arc<AtomicUsize>,
+}
 
 impl FilesProvider {
     fn rank_worker() -> RankWorker {
@@ -278,10 +280,14 @@ impl FilesProvider {
         // pile-up while keeping the compositor entirely non-blocking.
         let mailbox = Arc::new(Mutex::new(None::<RankRequest>));
         let (notify, wake) = mpsc::sync_channel(1);
-        let active = Arc::new(AtomicUsize::new(0));
-        let peak = Arc::new(AtomicUsize::new(0));
         let worker_mailbox = Arc::clone(&mailbox);
+        #[cfg(test)]
+        let active = Arc::new(AtomicUsize::new(0));
+        #[cfg(test)]
+        let peak = Arc::new(AtomicUsize::new(0));
+        #[cfg(test)]
         let worker_active = Arc::clone(&active);
+        #[cfg(test)]
         let worker_peak = Arc::clone(&peak);
         let spawned = thread::Builder::new()
             .name("tilo-search-files-rank".into())
@@ -291,12 +297,15 @@ impl FilesProvider {
                     let Some(request) = request else {
                         continue;
                     };
-                    #[allow(
-                        clippy::arithmetic_side_effects,
-                        reason = "the sole rank worker increments from zero once per dequeued request and decrements before it receives another"
-                    )]
-                    let current = worker_active.fetch_add(1, Ordering::Relaxed) + 1;
-                    worker_peak.fetch_max(current, Ordering::Relaxed);
+                    #[cfg(test)]
+                    {
+                        #[allow(
+                            clippy::arithmetic_side_effects,
+                            reason = "the sole rank worker increments from zero once per dequeued request and decrements before it receives another"
+                        )]
+                        let current = worker_active.fetch_add(1, Ordering::Relaxed) + 1;
+                        worker_peak.fetch_max(current, Ordering::Relaxed);
+                    }
                     let mut positions = Vec::new();
                     for (ordinal, position) in request.candidates.iter().copied().enumerate() {
                         if ordinal.is_multiple_of(512) && request.cancelled.load(Ordering::Relaxed)
@@ -334,6 +343,7 @@ impl FilesProvider {
                             positions,
                         });
                     }
+                    #[cfg(test)]
                     worker_active.fetch_sub(1, Ordering::Relaxed);
                 }
             });
@@ -342,7 +352,14 @@ impl FilesProvider {
             // expose a bounded pending state instead of falling back to a
             // corpus scan. This is exceptionally rare but remains safe.
         }
-        (mailbox, notify, active, peak)
+        RankWorker {
+            mailbox,
+            notify,
+            #[cfg(test)]
+            active,
+            #[cfg(test)]
+            peak,
+        }
     }
 
     /// Kicks off the background name-index walk and returns immediately.
@@ -362,8 +379,7 @@ impl FilesProvider {
                 .ok();
         }
         let tantivy = crate::shell::search::files_index::FilesIndex::open_or_create(&home).ok();
-        let (rank_mailbox, rank_notify, active_rank_workers, peak_rank_workers) =
-            Self::rank_worker();
+        let rank_worker = Self::rank_worker();
         Self {
             home,
             name_index,
@@ -371,10 +387,12 @@ impl FilesProvider {
             last_scanned: AtomicUsize::new(0),
             ranked_queries: Mutex::new(RankedQueryCache::default()),
             ranked_query_epoch: AtomicU64::new(0),
-            rank_mailbox,
-            rank_notify,
-            active_rank_workers,
-            peak_rank_workers,
+            rank_mailbox: rank_worker.mailbox,
+            rank_notify: rank_worker.notify,
+            #[cfg(test)]
+            active_rank_workers: rank_worker.active,
+            #[cfg(test)]
+            peak_rank_workers: rank_worker.peak,
         }
     }
 
@@ -1813,8 +1831,7 @@ mod tests {
 
     fn provider_from_entries(entries: Vec<NameEntry>) -> FilesProvider {
         let home = PathBuf::from("/home/tester");
-        let (rank_mailbox, rank_notify, active_rank_workers, peak_rank_workers) =
-            FilesProvider::rank_worker();
+        let rank_worker = FilesProvider::rank_worker();
         FilesProvider {
             home,
             name_index: Arc::new(Mutex::new(Arc::new(NameIndex::from_entries(entries, 1)))),
@@ -1822,10 +1839,10 @@ mod tests {
             last_scanned: AtomicUsize::new(0),
             ranked_queries: Mutex::new(RankedQueryCache::default()),
             ranked_query_epoch: AtomicU64::new(0),
-            rank_mailbox,
-            rank_notify,
-            active_rank_workers,
-            peak_rank_workers,
+            rank_mailbox: rank_worker.mailbox,
+            rank_notify: rank_worker.notify,
+            active_rank_workers: rank_worker.active,
+            peak_rank_workers: rank_worker.peak,
         }
     }
 

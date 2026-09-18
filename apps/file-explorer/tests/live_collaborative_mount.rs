@@ -5,6 +5,8 @@
 //! runner. It exercises the production Files model and command path, not a
 //! fabricated xattr fixture.
 
+#![cfg(unix)]
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 

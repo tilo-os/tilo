@@ -11,7 +11,8 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-fs = { path = "../../fs" }
+# Persistent blob storage is portable; the app does not mount filesystems.
+fs = { path = "../../fs", default-features = false }
 tilo-actions = { path = "../../crates/collab/actions" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 anyhow.workspace = true

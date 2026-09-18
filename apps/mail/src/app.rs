@@ -25,6 +25,7 @@
 //! account shows an empty state. The bundled sample corpus is used only by the
 //! hermetic `--shots` / test constructors.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
@@ -250,6 +251,34 @@ struct LocalPreferences {
     compose_format: String,
 }
 
+struct PendingSetupValidation {
+    config: AccountConfig,
+    editing: Option<usize>,
+    receiver: std::sync::mpsc::Receiver<crate::validate::ValidationState>,
+    cancellation: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct PendingSetupDiscovery {
+    config: AccountConfig,
+    editing: Option<usize>,
+    receiver: std::sync::mpsc::Receiver<Option<crate::autoconfig::Autoconfig>>,
+    cancellation: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for PendingSetupDiscovery {
+    fn drop(&mut self) {
+        self.cancellation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Drop for PendingSetupValidation {
+    fn drop(&mut self) {
+        self.cancellation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "the bools split across three unrelated concerns (shell layout flags, the setup-sheet's own transient UI state, and engine-request bookkeeping); grouping them would need a real design pass (e.g. a SetupSheetState sub-struct), left for a follow-up rather than forced here"
@@ -291,6 +320,8 @@ pub struct MailApp {
     /// The most recent validation message from a save attempt (shown inline in
     /// the sheet); cleared when the sheet is (re)opened.
     setup_error: Option<String>,
+    setup_validation: Option<PendingSetupValidation>,
+    setup_discovery: Option<PendingSetupDiscovery>,
 
     engine: Option<EngineHandle>,
     pending_send: Option<PendingSend>,
@@ -314,6 +345,7 @@ pub struct MailApp {
     /// can emit several events, while successful IMAP writes emit none besides
     /// their terminal worker acknowledgement.
     awaiting_engine: bool,
+    background_poll_deadline: Cell<Option<std::time::Instant>>,
     pending_engine_requests: HashMap<EngineRequestId, EngineRequestKind>,
     /// The one refresh invocation currently owned by the resource-operation
     /// host.  It remains occupied until the host has polled its terminal
@@ -441,6 +473,8 @@ impl MailApp {
             setup_auth: cfg.auth,
             setup_provider: None,
             setup_error: None,
+            setup_validation: None,
+            setup_discovery: None,
             engine,
             pending_send: None,
             accounts_persist,
@@ -448,6 +482,7 @@ impl MailApp {
             persisted_compose_format: compose_format,
             connect_requested: false,
             awaiting_engine: false,
+            background_poll_deadline: Cell::new(None),
             pending_engine_requests: HashMap::new(),
             resource_refresh_invocation: None,
             resource_refresh_result: None,
@@ -1330,6 +1365,8 @@ impl MailApp {
     // ---- account-setup sheet ---------------------------------------------
 
     fn open_setup_edit(&mut self, idx: Option<usize>) {
+        self.setup_validation = None;
+        self.setup_discovery = None;
         let cfg = match idx {
             Some(i) => self
                 .shared
@@ -1358,6 +1395,8 @@ impl MailApp {
     }
 
     fn close_setup(&mut self) {
+        self.setup_validation = None;
+        self.setup_discovery = None;
         self.setup_open = false;
         self.setup_error = None;
         self.focus_setup(None);
@@ -1540,6 +1579,13 @@ impl MailApp {
             .setup_input(1)
             .map(|inp| inp.value().trim().to_string())
             .unwrap_or_default();
+        if self
+            .setup_discovery
+            .as_ref()
+            .is_some_and(|pending| pending.config.email.trim() != email)
+        {
+            self.setup_discovery = None;
+        }
         if !email.contains('@') {
             return;
         }
@@ -1561,6 +1607,7 @@ impl MailApp {
             .setup_input(6)
             .is_none_or(|inp| inp.value().trim().is_empty());
         if !imap_blank && !smtp_blank {
+            self.setup_discovery = None;
             self.dirty = true;
             return;
         }
@@ -1583,14 +1630,12 @@ impl MailApp {
         if let Some(ac) = crate::autoconfig::builtin_autoconfig(&domain) {
             ac.apply_to(&mut cfg);
         } else if network {
-            match autoconfig_lookup(&email) {
-                Some(ac) => ac.apply_to(&mut cfg),
-                None => {
-                    cfg.autofill_from_email();
-                }
-            }
+            self.start_setup_discovery();
+            return;
         } else {
-            cfg.autofill_from_email();
+            // Unknown domains need discovery when focus leaves the address.
+            // A premature guessed host would suppress that lookup.
+            return;
         }
         // The provider table fills only the connection fields; default the
         // identity fields from the address (username = the email, display name =
@@ -1631,8 +1676,173 @@ impl MailApp {
         self.dirty = true;
     }
 
-    fn save_setup(&mut self, doc: &mut AutoCommit) {
-        self.save_setup_with(doc, &default_probe());
+    fn start_setup_discovery(&mut self) {
+        if self.setup_discovery.is_some() {
+            return;
+        }
+        let config = self.read_setup_config();
+        let email = config.email.trim().to_string();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancellation = Arc::clone(&cancellation);
+        if let Err(error) = std::thread::Builder::new()
+            .name("mail-provider-discovery".into())
+            .spawn(move || {
+                let result = autoconfig_lookup(&email, &worker_cancellation);
+                let _ = sender.send(result);
+            })
+        {
+            self.setup_error = Some(format!("Couldn’t start provider discovery: {error}"));
+            self.dirty = true;
+            return;
+        }
+        self.setup_discovery = Some(PendingSetupDiscovery {
+            config,
+            editing: self.setup_editing,
+            receiver,
+            cancellation,
+        });
+        self.dirty = true;
+    }
+
+    fn drain_setup_discovery(&mut self) {
+        let Some(pending) = self.setup_discovery.as_ref() else {
+            return;
+        };
+        let result = match pending.receiver.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                self.setup_discovery = None;
+                self.setup_error = Some(
+                    "Provider discovery ended without a result; enter server details manually"
+                        .into(),
+                );
+                self.dirty = true;
+                return;
+            }
+        };
+        let Some(pending) = self.setup_discovery.take() else {
+            return;
+        };
+        self.dirty = true;
+        let current = self.read_setup_config();
+        if !self.setup_open
+            || self.setup_editing != pending.editing
+            || current.email != pending.config.email
+        {
+            return;
+        }
+        let mut discovered = pending.config.clone();
+        if let Some(result) = result {
+            result.apply_to(&mut discovered);
+        } else {
+            discovered.autofill_from_email();
+        }
+        // Preserve manual edits made while discovery was in flight. Each
+        // server's host/port/TLS form one setting and are applied together.
+        if current.imap_host.trim().is_empty()
+            && current.imap_port == pending.config.imap_port
+            && current.imap_tls == pending.config.imap_tls
+        {
+            self.set_setup_input(4, &discovered.imap_host);
+            self.set_setup_input(5, &discovered.imap_port.to_string());
+            self.setup_imap_tls = discovered.imap_tls;
+        }
+        if current.smtp_host.trim().is_empty()
+            && current.smtp_port == pending.config.smtp_port
+            && current.smtp_tls == pending.config.smtp_tls
+        {
+            self.set_setup_input(6, &discovered.smtp_host);
+            self.set_setup_input(7, &discovered.smtp_port.to_string());
+            self.setup_smtp_tls = discovered.smtp_tls;
+        }
+        if current.username.trim().is_empty() {
+            self.set_setup_input(2, &current.email);
+        }
+        if current.display_name.trim().is_empty() {
+            let name = if discovered.display_name.is_empty() {
+                current.email.split_once('@').map_or("", |(local, _)| local)
+            } else {
+                &discovered.display_name
+            };
+            self.set_setup_input(0, name);
+        }
+        if current.auth == pending.config.auth {
+            self.setup_auth = discovered.auth;
+        }
+        self.dirty = true;
+    }
+
+    fn save_setup(&mut self, _doc: &mut AutoCommit) {
+        if self.setup_validation.is_some() {
+            return;
+        }
+        self.maybe_autofill();
+        if self.setup_discovery.is_some() {
+            self.dirty = true;
+            return;
+        }
+        let config = self.read_setup_config();
+        if let Some((_, message)) = config.validate().into_iter().next() {
+            self.finish_setup_validation(
+                config,
+                crate::validate::ValidationState::Invalid(message),
+            );
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancellation = Arc::clone(&cancellation);
+        let worker_config = config.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("mail-account-validation".into())
+            .spawn(move || {
+                let outcome = crate::validate::validate_account_cancellable(
+                    &worker_config,
+                    &worker_cancellation,
+                );
+                let _ = sender.send(outcome);
+            })
+        {
+            self.setup_error = Some(format!("Couldn’t start account verification: {error}"));
+            self.dirty = true;
+            return;
+        }
+        self.setup_validation = Some(PendingSetupValidation {
+            config,
+            editing: self.setup_editing,
+            receiver,
+            cancellation,
+        });
+        self.setup_error = None;
+        self.dirty = true;
+    }
+
+    fn drain_setup_validation(&mut self) {
+        let Some(pending) = self.setup_validation.as_ref() else {
+            return;
+        };
+        let outcome = match pending.receiver.try_recv() {
+            Ok(outcome) => outcome,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => crate::validate::ValidationState::Failed(
+                "Account verification ended without a result".into(),
+            ),
+        };
+        let Some(pending) = self.setup_validation.take() else {
+            return;
+        };
+        if !self.setup_open {
+            return;
+        }
+        if self.setup_editing != pending.editing || self.read_setup_config() != pending.config {
+            self.setup_error =
+                Some("Account settings changed; verify them again before saving".into());
+            self.dirty = true;
+            return;
+        }
+        self.finish_setup_validation(pending.config.clone(), outcome);
     }
 
     /// Save the account, but only after its credentials pass a live IMAP login
@@ -1640,6 +1850,7 @@ impl MailApp {
     /// a specific error; on success the account is persisted and connected. The
     /// `probe` seam makes the persist-on-success / keep-on-failure behaviour
     /// unit-testable without a network.
+    #[cfg(test)]
     fn save_setup_with(
         &mut self,
         _doc: &mut AutoCommit,
@@ -1648,6 +1859,14 @@ impl MailApp {
         self.maybe_autofill();
         let cfg = self.read_setup_config();
         let outcome = crate::validate::validate_account(&cfg, probe);
+        self.finish_setup_validation(cfg, outcome);
+    }
+
+    fn finish_setup_validation(
+        &mut self,
+        cfg: AccountConfig,
+        outcome: crate::validate::ValidationState,
+    ) {
         if !outcome.persisted() {
             let msg = outcome.message();
             self.setup_error = Some(msg.clone());
@@ -1671,14 +1890,20 @@ impl MailApp {
             } else {
                 cfg.email.clone()
             };
-            st.accounts.upsert(account);
+            let mut updated = st.accounts.clone();
+            updated.upsert(account);
             // Persist to the shared on-disk store + vault so the account (and
             // its password) survive a restart. Routed through `accounts_persist`
             // so sample / shots / test builds never touch the real store.
-            match self.accounts_persist.persist(&st.accounts) {
-                Ok(()) => st.status = Some("Account saved".into()),
-                Err(e) => st.status = Some(format!("Saved, but could not write to disk: {e}")),
+            if let Err(error) = self.accounts_persist.persist(&updated) {
+                let message = format!("Couldn’t save account: {error}");
+                self.setup_error = Some(message.clone());
+                st.status = Some(message);
+                self.dirty = true;
+                return;
             }
+            st.accounts = updated;
+            st.status = Some("Account saved".into());
             self.persisted_active_account = st
                 .accounts
                 .active_account()
@@ -1702,11 +1927,17 @@ impl MailApp {
             let Some(id) = st.accounts.accounts.get(idx).map(|a| a.id.clone()) else {
                 return;
             };
-            st.accounts.remove(&id);
-            match self.accounts_persist.persist(&st.accounts) {
-                Ok(()) => st.status = Some("Account removed".into()),
-                Err(e) => st.status = Some(format!("Removed, but could not write to disk: {e}")),
+            let mut updated = st.accounts.clone();
+            updated.remove(&id);
+            if let Err(error) = self.accounts_persist.persist(&updated) {
+                let message = format!("Couldn’t remove account: {error}");
+                self.setup_error = Some(message.clone());
+                st.status = Some(message);
+                self.dirty = true;
+                return;
             }
+            st.accounts = updated;
+            st.status = Some("Account removed".into());
             // The removed account's mailbox is no longer relevant; clear it so a
             // stale inbox doesn't linger. A fresh connect repopulates from the
             // new active account.
@@ -3103,7 +3334,13 @@ impl MailApp {
                         9.0,
                         if hov { c.accent[4] } else { c.accent[5] },
                     );
-                    let label = "Save & verify";
+                    let label = if self.setup_validation.is_some() {
+                        "Verifying…"
+                    } else if self.setup_discovery.is_some() {
+                        "Finding provider…"
+                    } else {
+                        "Save & verify"
+                    };
                     let (w, _) = tr.measure_weighted(label, 13.5, None, TextWeight::Semibold);
                     tr.draw_text_weighted(
                         scene,
@@ -3423,27 +3660,20 @@ fn avatar_fetcher() -> ui::Fetcher {
     noop_avatar_fetcher()
 }
 
-/// The account-verification probe used on save. A real IMAP login + SMTP
-/// handshake under `--features live`; a no-op offline probe otherwise, so
-/// `--shots` and headless tests still persist an account after the config-level
-/// checks pass.
-#[cfg(feature = "live")]
-fn default_probe() -> crate::validate::LiveProbe {
-    crate::validate::LiveProbe
-}
-#[cfg(not(feature = "live"))]
-fn default_probe() -> crate::validate::OfflineProbe {
-    crate::validate::OfflineProbe
-}
-
 /// Mozilla autoconfig discovery for a typed email. Real HTTP under
 /// `--features live`; `None` offline (the caller falls back to the heuristic).
 #[cfg(feature = "live")]
-fn autoconfig_lookup(email: &str) -> Option<crate::autoconfig::Autoconfig> {
-    crate::autoconfig::discover(email)
+fn autoconfig_lookup(
+    email: &str,
+    cancellation: &std::sync::atomic::AtomicBool,
+) -> Option<crate::autoconfig::Autoconfig> {
+    crate::autoconfig::discover_cancellable(email, cancellation)
 }
 #[cfg(not(feature = "live"))]
-fn autoconfig_lookup(_email: &str) -> Option<crate::autoconfig::Autoconfig> {
+fn autoconfig_lookup(
+    _email: &str,
+    _cancellation: &std::sync::atomic::AtomicBool,
+) -> Option<crate::autoconfig::Autoconfig> {
     None
 }
 
@@ -3954,7 +4184,12 @@ impl MailApp {
             AccessNode::new(Role::Button)
                 .with_name("Save and verify")
                 .with_action_target("mail.setup:save")
-                .with_state(AccessState::new().focusable(true)),
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .busy(self.setup_validation.is_some() || self.setup_discovery.is_some())
+                        .disabled(self.setup_validation.is_some()),
+                ),
             AccessNode::new(Role::Button)
                 .with_name("Cancel")
                 .with_action_target("mail.setup:cancel")
@@ -3966,6 +4201,13 @@ impl MailApp {
                     .with_name("Remove account")
                     .with_action_target("mail.setup:remove")
                     .with_state(AccessState::new().focusable(true)),
+            );
+        }
+        if let Some(message) = &self.setup_error {
+            controls.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(message.clone())
+                    .with_live(ui::a11y::Politeness::Polite),
             );
         }
         AccessNode::new(Role::Dialog)
@@ -4273,12 +4515,15 @@ impl Widget for MailApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.background_poll_deadline.set(None);
         if self.first_run.take_action() {
             self.open_setup_edit(None);
         }
         // Drain any engine results first so freshly-fetched messages are present
         // before layout/draw.
         self.drain_engine(state);
+        self.drain_setup_validation();
+        self.drain_setup_discovery();
         // The host Save dialog runs off-thread; its outcome is applied here
         // so attachment export never blocks the frame loop or claims success
         // before the chosen file is actually written.
@@ -4933,6 +5178,24 @@ impl Widget for MailApp {
             || self.compose.needs_redraw()
             || self.shortcuts.needs_redraw()
             || self.setup_inputs.iter().any(ui::Widget::needs_redraw)
+    }
+
+    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+        // Worker and native-picker completions are not animation. Keep their
+        // deadline fixed until sync consumes a tick, even with reduced motion.
+        let pending = self.awaiting_engine
+            || self.setup_validation.is_some()
+            || self.setup_discovery.is_some()
+            || self.attachment_save_rx.is_some()
+            || self.compose_attachment_rx.is_some();
+        let background = pending.then(|| {
+            let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
+                std::time::Instant::now() + std::time::Duration::from_millis(16)
+            });
+            self.background_poll_deadline.set(Some(deadline));
+            deadline
+        });
+        background.into_iter().chain(self.toast_deadline).min()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -6562,6 +6825,11 @@ mod tests {
     )]
     fn interleaved_engine_events_only_settle_their_own_request() {
         let mut fixture = InterleavedEngineFixture::new();
+        let deadline = fixture
+            .app
+            .next_wake_deadline()
+            .expect("worker results wake independently of animation");
+        assert_eq!(fixture.app.next_wake_deadline(), Some(deadline));
 
         fixture.send(EngineEvent::Error {
             request_id: fixture.unrelated_id,
@@ -6667,6 +6935,7 @@ mod tests {
         fixture.drain();
         assert!(fixture.app.pending_send.is_none());
         assert!(!fixture.app.awaiting_engine);
+        assert_eq!(fixture.app.next_wake_deadline(), fixture.app.toast_deadline);
     }
 
     #[test]
@@ -7629,6 +7898,7 @@ mod tests {
             "toast shows immediately"
         );
         assert!(app.toast_pending(), "a dismiss deadline is armed");
+        assert_eq!(app.next_wake_deadline(), Some(t0 + TOAST_TTL));
         app.expire_toast_at(t0 + std::time::Duration::from_secs(1));
         assert!(
             app.shared.borrow().status.is_some(),
@@ -7640,6 +7910,44 @@ mod tests {
             "toast auto-dismissed past its deadline"
         );
         assert!(!app.toast_pending(), "the deadline cleared once dismissed");
+        assert!(app.next_wake_deadline().is_none());
+    }
+
+    #[test]
+    fn compose_picker_completion_wakes_without_animation_and_stops_polling() {
+        for (outcome, expected) in [
+            (
+                Some(OpenFileOutcome::Cancelled),
+                "Attachment selection cancelled",
+            ),
+            (
+                Some(OpenFileOutcome::Failed("fixture denial".into())),
+                "Couldn’t open attachment picker: fixture denial",
+            ),
+            (
+                None,
+                "Attachment picker disconnected before selecting a file",
+            ),
+        ] {
+            let (mut app, mut doc) = app();
+            app.compose.open_blank();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            if let Some(outcome) = outcome {
+                sender.send(outcome).unwrap();
+            }
+            drop(sender);
+            app.compose_attachment_rx = Some(receiver);
+            let deadline = app
+                .next_wake_deadline()
+                .expect("picker completion must wake");
+            assert_eq!(app.next_wake_deadline(), Some(deadline));
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(app.compose_attachment_rx.is_none());
+            assert_eq!(app.shared.borrow().status.as_deref(), Some(expected));
+            assert_eq!(app.next_wake_deadline(), app.toast_deadline);
+            app.expire_toast_at(app.toast_deadline.unwrap());
+            assert!(app.next_wake_deadline().is_none());
+        }
     }
 
     #[test]
@@ -7707,7 +8015,7 @@ mod tests {
 
     #[test]
     fn attachment_save_cancellation_and_direct_path_bypass_are_truthful() {
-        let (mut app, doc) = app();
+        let (mut app, mut doc) = app();
         let (message_id, index) = {
             let state = app.shared.borrow();
             state
@@ -7745,7 +8053,13 @@ mod tests {
         app.begin_attachment_save(message_id, index).unwrap();
         app.resource_attachment_save_invocation = Some(invocation);
         app.attachment_save_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
-        app.drain_attachment_save();
+        let deadline = app
+            .next_wake_deadline()
+            .expect("native picker results wake independently of animation");
+        assert_eq!(app.next_wake_deadline(), Some(deadline));
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.attachment_save_rx.is_none());
+        assert_eq!(app.next_wake_deadline(), app.toast_deadline);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
             Some(tilo_actions::InvocationUpdate::Cancelled { .. })
@@ -7835,6 +8149,112 @@ mod tests {
 
     // ---- test-before-save state machine (persist on success only) --------
 
+    #[test]
+    fn closing_setup_cancels_pending_verification_and_discards_late_results() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(None);
+        let accounts_before = app.shared.borrow().accounts.accounts.len();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        app.setup_validation = Some(PendingSetupValidation {
+            config: app.read_setup_config(),
+            editing: None,
+            receiver,
+            cancellation: Arc::clone(&cancellation),
+        });
+        let deadline = app.next_wake_deadline().unwrap();
+        assert_eq!(app.next_wake_deadline(), Some(deadline));
+        app.close_setup();
+        assert!(cancellation.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(sender.send(crate::validate::ValidationState::Ok).is_err());
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.shared.borrow().accounts.accounts.len(), accounts_before);
+        assert!(app.setup_validation.is_none());
+        assert_eq!(app.next_wake_deadline(), app.toast_deadline);
+    }
+
+    #[test]
+    fn edited_setup_cannot_persist_an_earlier_successful_verification() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(Some(0));
+        let original = app.shared.borrow().accounts.accounts[0].config.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.setup_validation = Some(PendingSetupValidation {
+            config: app.read_setup_config(),
+            editing: Some(0),
+            receiver,
+            cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        app.set_setup_input(4, "changed-after-verification.example");
+        sender.send(crate::validate::ValidationState::Ok).unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.setup_open);
+        assert!(
+            app.setup_error
+                .as_deref()
+                .unwrap()
+                .contains("settings changed")
+        );
+        assert_eq!(app.shared.borrow().accounts.accounts[0].config, original);
+        assert!(app.setup_validation.is_none());
+    }
+
+    #[test]
+    fn disconnected_setup_worker_keeps_the_sheet_open_without_saving() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(Some(0));
+        let original = app.shared.borrow().accounts.accounts[0].config.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.setup_validation = Some(PendingSetupValidation {
+            config: app.read_setup_config(),
+            editing: Some(0),
+            receiver,
+            cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        drop(sender);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.setup_open);
+        assert!(
+            app.setup_error
+                .as_deref()
+                .unwrap()
+                .contains("without a result")
+        );
+        assert_eq!(app.shared.borrow().accounts.accounts[0].config, original);
+        assert!(app.setup_validation.is_none());
+    }
+
+    #[test]
+    fn successful_setup_worker_persists_only_its_verified_snapshot() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(Some(0));
+        app.set_setup_input(0, "Verified fixture account");
+        let verified = app.read_setup_config();
+        let root = app.accounts_persist_root().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.setup_validation = Some(PendingSetupValidation {
+            config: verified.clone(),
+            editing: Some(0),
+            receiver,
+            cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        sender.send(crate::validate::ValidationState::Ok).unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(!app.setup_open);
+        assert!(app.setup_validation.is_none());
+        assert!(app.setup_error.is_none());
+        let restored = AccountStore::load_in(&root);
+        assert_eq!(
+            restored
+                .accounts
+                .iter()
+                .find(|account| account.id == verified.email)
+                .unwrap()
+                .config,
+            verified,
+        );
+    }
+
     struct FixedProbe {
         imap_ok: bool,
     }
@@ -7886,5 +8306,141 @@ mod tests {
         );
         assert!(!app.setup_open, "the sheet closes on success");
         assert!(app.setup_error.is_none());
+    }
+
+    #[test]
+    fn setup_verification_failure_is_exposed_to_assistive_technology() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(None);
+        app.set_setup_input(1, "new@host.example");
+        app.set_setup_input(2, "new@host.example");
+        app.set_setup_input(4, "imap.host.example");
+        app.set_setup_input(6, "smtp.host.example");
+        app.save_setup_with(&mut doc, &FixedProbe { imap_ok: false });
+        let dialog = app.accessibility().expect("setup dialog stays available");
+        assert!(
+            dialog.children.iter().any(|node| {
+                node.name.as_deref() == Some("IMAP login failed: 535 auth rejected")
+                    && node.live == Some(ui::a11y::Politeness::Polite)
+            }),
+            "a visible verification error must also be announced in the setup dialog"
+        );
+    }
+
+    fn pending_discovery(
+        app: &mut MailApp,
+    ) -> (
+        std::sync::mpsc::Sender<Option<crate::autoconfig::Autoconfig>>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        app.setup_discovery = Some(PendingSetupDiscovery {
+            config: app.read_setup_config(),
+            editing: app.setup_editing,
+            receiver,
+            cancellation: Arc::clone(&cancellation),
+        });
+        (sender, cancellation)
+    }
+
+    #[test]
+    fn discovery_applies_through_sync_without_overwriting_manual_server_edits() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(None);
+        app.set_setup_input(1, "fixture@custom.invalid");
+        let (sender, _) = pending_discovery(&mut app);
+        let deadline = app.next_wake_deadline().unwrap();
+        assert_eq!(app.next_wake_deadline(), Some(deadline));
+        app.set_setup_input(4, "manual.imap.invalid");
+        app.set_setup_input(5, "1993");
+        app.set_setup_input(3, "user-entered-secret");
+        let discovered = crate::autoconfig::builtin_autoconfig("fastmail.com").unwrap();
+        sender.send(Some(discovered.clone())).unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.setup_inputs[4].value(), "manual.imap.invalid");
+        assert_eq!(app.setup_inputs[5].value(), "1993");
+        assert_eq!(app.setup_inputs[3].value(), "user-entered-secret");
+        assert_eq!(app.setup_inputs[6].value(), discovered.smtp_host);
+        assert!(app.setup_discovery.is_none());
+        assert_eq!(app.next_wake_deadline(), app.toast_deadline);
+    }
+
+    #[test]
+    fn discovery_for_a_previous_address_cannot_fill_the_current_sheet() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(None);
+        app.set_setup_input(1, "old@custom.invalid");
+        let (sender, _) = pending_discovery(&mut app);
+        app.set_setup_input(1, "new@other.invalid");
+        sender
+            .send(crate::autoconfig::builtin_autoconfig("fastmail.com"))
+            .unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.setup_inputs[4].value().is_empty());
+        assert!(app.setup_inputs[6].value().is_empty());
+        assert_eq!(app.setup_inputs[1].value(), "new@other.invalid");
+    }
+
+    #[test]
+    fn closing_discovery_cancels_worker_and_reopening_rejects_its_result() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(None);
+        app.set_setup_input(1, "fixture@custom.invalid");
+        let (sender, cancellation) = pending_discovery(&mut app);
+        app.close_setup();
+        assert!(cancellation.load(std::sync::atomic::Ordering::Relaxed));
+        app.open_setup_edit(None);
+        assert!(
+            sender
+                .send(crate::autoconfig::builtin_autoconfig("fastmail.com"))
+                .is_err()
+        );
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.setup_inputs[4].value().is_empty());
+        assert!(app.setup_discovery.is_none());
+    }
+
+    #[test]
+    fn account_custody_failure_keeps_setup_open_and_live_accounts_unchanged() {
+        let (mut app, mut doc) = app();
+        let root = app
+            .accounts_persist_root()
+            .expect("isolated account fixture");
+        let before = app.shared.borrow().accounts.clone();
+        before.persist_in(&root).unwrap();
+        let metadata_path = accounts::store_path_in(&root);
+        let original_metadata = std::fs::read(&metadata_path).unwrap();
+        let vault_path = accounts::vault_dir_in(&root).join("vault.enc");
+        std::fs::write(&vault_path, b"damaged fixture vault").unwrap();
+
+        app.open_setup_edit(None);
+        app.setup_inputs[1].set_text("new@host.example");
+        app.setup_inputs[2].set_text("new@host.example");
+        app.setup_inputs[4].set_text("imap.host.example");
+        app.setup_inputs[6].set_text("smtp.host.example");
+        app.save_setup_with(&mut doc, &FixedProbe { imap_ok: true });
+        assert!(app.setup_open);
+        assert!(
+            app.setup_error
+                .as_deref()
+                .unwrap()
+                .contains("Couldn’t save account")
+        );
+        assert_eq!(app.shared.borrow().accounts, before);
+        assert!(app.pending_engine_requests.is_empty());
+
+        app.open_setup_edit(Some(0));
+        app.remove_editing_account(&mut doc);
+        assert!(app.setup_open);
+        assert!(
+            app.setup_error
+                .as_deref()
+                .unwrap()
+                .contains("Couldn’t remove account")
+        );
+        assert_eq!(app.shared.borrow().accounts, before);
+        assert_eq!(std::fs::read(metadata_path).unwrap(), original_metadata);
+        assert_eq!(std::fs::read(vault_path).unwrap(), b"damaged fixture vault");
     }
 }

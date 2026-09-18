@@ -88,6 +88,11 @@ on:
         description: Independently approved SHA256 of exact source compatibility admission
         required: false
         type: string
+      assembly_layer_epoch_anchor:
+        description: Optional exact ancestor commit for verified raw assembly layer timestamps
+        required: false
+        type: string
+        default: ''
       wpe_candidate:
         description: 'Full-build only: reviewed matching native tilo-wpe-buildroot@sha256 candidate'
         required: false
@@ -143,6 +148,7 @@ jobs:
           APPROVED_RECONSTRUCTION_SHA256: ${{ inputs.approved_reconstruction_sha256 }}
           NATIVE_SOURCE_COMPATIBILITY: ${{ inputs.native_source_compatibility }}
           NATIVE_SOURCE_COMPATIBILITY_SHA256: ${{ inputs.native_source_compatibility_sha256 }}
+          ASSEMBLY_LAYER_EPOCH_ANCHOR: ${{ inputs.assembly_layer_epoch_anchor }}
           COMPILE_MODE: ${{ inputs.mode }}
           WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
           TEST_GENERATION: ${{ inputs.generation }}
@@ -179,6 +185,11 @@ jobs:
               raise ValueError('helper selection requires independent source and helper commits')
           if e['RECONSTRUCTED_NATIVE_RECEIPT'] and not e['HELPERS_REVISION']:
               raise ValueError('reconstructed frozen-source assembly requires explicitly reviewed compatible helpers')
+          anchor = e['ASSEMBLY_LAYER_EPOCH_ANCHOR']
+          if anchor and (not re.fullmatch('[0-9a-f]{40}', anchor)
+                  or e['COMPILE_MODE'] != 'full-build' or not e['RECONSTRUCTED_NATIVE_RECEIPT']
+                  or not e['WPE_ADOPTION_RECEIPT'] or not e['NATIVE_SOURCE_COMPATIBILITY']):
+              raise ValueError('layer epoch anchor requires exact commit and reconstructed-native/adopted-WPE full assembly')
           s = importlib.util.spec_from_file_location('compile', 'os/dev/compile-development-os.py')
           m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
           m.validate_inputs(e['WPE_CANDIDATE'], e['TEST_GENERATION'], revision, e['GITHUB_REF'],
@@ -211,10 +222,34 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: application-source
-          fetch-depth: 5 # Frozen source plus reviewed provider, recipe, policy, and optional acceptance corrections.
+          # Anchor ancestry needs commit history, not historical file contents.
+          fetch-depth: ${{ inputs.assembly_layer_epoch_anchor != '' && '0' || '5' }}
+          filter: ${{ inputs.assembly_layer_epoch_anchor != '' && 'blob:none' || '' }}
           ref: ${{ inputs.source_revision }}
           token: ${{ secrets.REGISTRY_TOKEN }}
           persist-credentials: false
+      - name: Hydrate reviewed historical source blobs
+        if: inputs.assembly_layer_epoch_anchor != ''
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          NATIVE_SOURCE_COMPATIBILITY: ${{ inputs.native_source_compatibility }}
+          NATIVE_SOURCE_COMPATIBILITY_SHA256: ${{ inputs.native_source_compatibility_sha256 }}
+          TILO_HISTORY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          TILO_HISTORY_USER: ${{ github.actor }}
+        run: python3 os/dev/hydrate-assembly-history.py --repo ../application-source
+      - name: Validate layer timestamp anchor before building tools
+        if: inputs.assembly_layer_epoch_anchor != ''
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          ASSEMBLY_LAYER_EPOCH_ANCHOR: ${{ inputs.assembly_layer_epoch_anchor }}
+        run: |
+          set -euo pipefail
+          test "$(git -C ../application-source rev-parse HEAD)" = "$SOURCE_REVISION"
+          git -C ../application-source merge-base --is-ancestor "$ASSEMBLY_LAYER_EPOCH_ANCHOR" "$SOURCE_REVISION"
+          source_epoch=$(git -C ../application-source show -s --format=%ct "$SOURCE_REVISION")
+          layer_epoch=$(git -C ../application-source show -s --format=%ct "$ASSEMBLY_LAYER_EPOCH_ANCHOR")
+          test "$layer_epoch" -ge 0
+          test "$layer_epoch" -le "$source_epoch"
       # The workflow checkout remains the orchestrator. Only the independently
       # selected controller enters /work/repo and executes application helpers.
       - name: Checkout independently pinned compatible helpers
@@ -242,6 +277,7 @@ jobs:
           APPROVED_RECONSTRUCTION_SHA256: ${{ inputs.approved_reconstruction_sha256 }}
           NATIVE_SOURCE_COMPATIBILITY: ${{ inputs.native_source_compatibility }}
           NATIVE_SOURCE_COMPATIBILITY_SHA256: ${{ inputs.native_source_compatibility_sha256 }}
+          ASSEMBLY_LAYER_EPOCH_ANCHOR: ${{ inputs.assembly_layer_epoch_anchor }}
           COMPILE_MODE: ${{ inputs.mode }}
           WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
           TEST_GENERATION: ${{ inputs.generation }}
@@ -323,7 +359,7 @@ jobs:
             execution_revision="$HELPERS_REVISION"
           fi
           if [ -n "$NATIVE_SOURCE_COMPATIBILITY" ]; then
-            python3 - "$execution_controller" "$context/native-source-compatibility.json" "$evidence/native-source-compatibility-preflight.json" <<'PY'
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.allow GIT_CONFIG_VALUE_0=never python3 - "$execution_controller" "$context/native-source-compatibility.json" "$evidence/native-source-compatibility-preflight.json" <<'PY'
           import importlib.util, json, os, pathlib, sys
           path = pathlib.Path(sys.argv[1]) / 'os/dev/native_source_compatibility.py'
           spec = importlib.util.spec_from_file_location('compatibility', path)
@@ -360,6 +396,10 @@ jobs:
           native_receipt_args=()
           source_args=()
           compatibility_args=()
+          layer_epoch_args=()
+          if [ -n "$ASSEMBLY_LAYER_EPOCH_ANCHOR" ]; then
+            layer_epoch_args=(--assembly-layer-epoch-anchor "$ASSEMBLY_LAYER_EPOCH_ANCHOR")
+          fi
           if [ -n "$NATIVE_SOURCE_COMPATIBILITY" ]; then
             compatibility_args=(--native-source-compatibility /work/native-source-compatibility.json --native-source-compatibility-sha256 "$NATIVE_SOURCE_COMPATIBILITY_SHA256")
           fi
@@ -402,6 +442,7 @@ jobs:
               "${native_receipt_args[@]}" \
               "${source_args[@]}" \
               "${compatibility_args[@]}" \
+              "${layer_epoch_args[@]}" \
               --revision "$application_revision" --branch "$GITHUB_REF"
           docker cp "$execution_controller/." "$name:/work/repo"
           if [ -n "$SOURCE_REVISION" ]; then docker cp ../application-source "$name:/work/source"; fi

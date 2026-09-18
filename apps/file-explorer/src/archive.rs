@@ -505,6 +505,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn folders_are_recursive_and_symlinks_are_not_followed() {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path().join("Folder");

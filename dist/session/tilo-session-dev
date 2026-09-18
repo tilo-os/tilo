@@ -142,6 +142,13 @@ echo "tilo-session-dev: starting $TARGET_REAL" >&2
 RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$ME}
 ATTEST_DIR="$RUNTIME_DIR/tilo-dev-session"
 install -d -m 700 -- "$ATTEST_DIR" || die "cannot prepare developer-session runtime state"
+# Developer builds already contain the gated test-control transport. Publish a
+# private, predictable endpoint beside the attestation so the disposable VM
+# loop can drive named controls and take screenshots without brittle pointer
+# coordinates. Production shells ignore this variable entirely.
+TILO_TEST_CONTROL="$ATTEST_DIR/control.sock"
+rm -f -- "$TILO_TEST_CONTROL"
+export TILO_TEST_CONTROL
 ATTEST_TMP="$ATTEST_DIR/active.$$"
 TARGET_SHA256=$(sha256sum -- "$TARGET_REAL" | cut -d' ' -f1)
 {

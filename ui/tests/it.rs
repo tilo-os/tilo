@@ -17,6 +17,7 @@
 #[path = "support/mod.rs"]
 mod support;
 
+#[cfg(unix)]
 #[path = "agent_edit_is_its_own_undo_boundary.rs"]
 mod agent_edit_is_its_own_undo_boundary;
 #[path = "animation_test.rs"]
@@ -27,6 +28,7 @@ mod app_widget;
 mod block_editor_markdown;
 #[path = "block_editor_slash_menu_integration.rs"]
 mod block_editor_slash_menu_integration;
+#[cfg(unix)]
 #[path = "coedit_keystone.rs"]
 mod coedit_keystone;
 #[path = "colorpicker_hex_input.rs"]
@@ -37,12 +39,14 @@ mod command_palette_test;
 mod container_update_forwarding;
 #[path = "context_menu_test.rs"]
 mod context_menu_test;
+#[cfg(unix)]
 #[path = "cross_process_presence_pump.rs"]
 mod cross_process_presence_pump;
 #[path = "data_table_test.rs"]
 mod data_table_test;
 #[path = "design_token_audit.rs"]
 mod design_token_audit;
+#[cfg(unix)]
 #[path = "diagnostics_outlive_a_closed_log_pipe.rs"]
 mod diagnostics_outlive_a_closed_log_pipe;
 #[path = "dnd_test.rs"]
@@ -61,10 +65,12 @@ mod group_row_visual_journey;
 mod icon_grid_test;
 #[path = "incremental_render_regressions.rs"]
 mod incremental_render_regressions;
+#[cfg(unix)]
 #[path = "large_frame_reassembly.rs"]
 mod large_frame_reassembly;
 #[path = "link_popover_renders.rs"]
 mod link_popover_renders;
+#[cfg(unix)]
 #[path = "live_text_sync.rs"]
 mod live_text_sync;
 #[path = "local_identity_is_a_person.rs"]
@@ -83,8 +89,10 @@ mod presence_experience_test;
 mod presence_remote_cursors_test;
 #[path = "profiling.rs"]
 mod profiling;
+#[cfg(unix)]
 #[path = "real_socket_n_peer.rs"]
 mod real_socket_n_peer;
+#[cfg(unix)]
 #[path = "real_socket_two_peer.rs"]
 mod real_socket_two_peer;
 #[path = "remote_cursor_presence.rs"]

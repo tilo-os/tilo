@@ -71,7 +71,9 @@ const LABEL_SIZE: f32 = 12.0;
 pub struct ModalBody {
     caption: String,
     label: String,
-    input: Option<TextInput>,
+    // Keep a distinct retained-widget address. An inline field can alias its
+    // container and lose its native accessibility layout identity.
+    input: Option<Box<TextInput>>,
     rect: Rect,
     field_rect: Rect,
 }
@@ -79,19 +81,20 @@ pub struct ModalBody {
 impl ModalBody {
     /// A body with a labelled, focused text field.
     pub fn input(caption: &str, label: &str, initial: &str, placeholder: &str) -> Self {
-        let mut input = TextInput::local().with_placeholder(placeholder);
+        let mut input = TextInput::local()
+            .with_placeholder(placeholder)
+            .with_accessible_name(label);
         if !initial.is_empty() {
             input = input.with_initial_value(initial);
             input.select_all();
         }
-        // The field is the only focusable thing in the dialog, and the host
-        // drives the modal outside the App's focus machinery, so seed focus so
-        // the caret is live and the first keystroke lands immediately.
+        // Seed focus for immediate input while the host rebuilds the retained
+        // modal tree and installs its focus trap.
         input.set_focus(true);
         Self {
             caption: caption.to_string(),
             label: label.to_string(),
-            input: Some(input),
+            input: Some(Box::new(input)),
             rect: Rect::ZERO,
             field_rect: Rect::ZERO,
         }
@@ -111,7 +114,7 @@ impl ModalBody {
     /// The current field value (trimmed by the caller). `""` when this body has
     /// no input (a confirmation).
     pub fn value(&self) -> &str {
-        self.input.as_ref().map_or("", TextInput::value)
+        self.input.as_deref().map_or("", TextInput::value)
     }
 
     /// Seed the field text (used to stage a typed URL for a `--shots` capture).
@@ -149,22 +152,31 @@ impl Widget for ModalBody {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let children: Vec<_> = self
+            .input
+            .as_mut()
+            .map(|input| input.build_layout(taffy, theme, node_map))
+            .into_iter()
+            .collect();
         #[allow(
             clippy::unwrap_used,
-            reason = "a fresh leaf on a live taffy tree cannot fail short of OOM, and \
+            reason = "fresh children on the same live taffy tree cannot fail short of OOM, and \
                       `Widget::build_layout` returns `NodeId` directly with no fallible path"
         )]
         let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            })
+                &children,
+            )
             .unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -264,25 +276,27 @@ impl Widget for ModalBody {
         }
     }
 
-    fn is_focusable(&self) -> bool {
-        self.input.as_ref().is_some_and(TextInput::is_focusable)
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        if let Some(input) = &mut self.input {
-            input.set_focus(focused);
-        }
-    }
-
-    fn is_focused(&self) -> bool {
-        self.input.as_ref().is_some_and(TextInput::is_focused)
-    }
-
     fn name(&self) -> &'static str {
         "ModalBody"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.input
+            .as_ref()
+            .map(|input| input.as_ref() as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.input
+            .as_mut()
+            .map(|input| input.as_mut() as &mut dyn Widget)
+            .into_iter()
+            .collect()
     }
 }

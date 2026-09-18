@@ -20,6 +20,8 @@
 //! [`FileCommand`]s. Ephemeral per-frame state (hover) is recomputed from the
 //! cursor, so nothing is lost across a rebuild.
 
+#[cfg(all(test, unix))]
+use crate::filesystem_metadata as xattr;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -2251,6 +2253,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_host_preview_is_adopted_rather_than_the_file_re_decoded() {
         // When the metadata channel does answer, that answer is what gets
         // painted: the file manager never re-decodes what the host already

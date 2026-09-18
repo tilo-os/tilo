@@ -71,6 +71,8 @@ pub mod diag;
 pub mod dmabuf_import;
 pub mod dnd;
 pub mod doc;
+#[cfg(any(windows, test))]
+mod dx12_shader_cache;
 pub mod floating_surface;
 pub mod font_catalog;
 pub mod format;
@@ -84,6 +86,8 @@ pub mod gpu_video;
 pub mod graph_editor;
 pub mod headless;
 pub mod history_source;
+#[cfg(all(windows, feature = "notifications"))]
+pub mod host_notifications;
 pub mod i18n;
 pub mod icons;
 pub mod image_store;
@@ -305,7 +309,7 @@ pub use text_selection::{
     clipboard_copy_primary, clipboard_paste, clipboard_paste_primary, extend_span_drag,
     grapheme_boundary_at_or_before, line_boundaries, next_char_boundary, next_word_boundary,
     next_word_boundary_chars, prev_char_boundary, prev_word_boundary, prev_word_boundary_chars,
-    word_boundaries, word_boundaries_chars,
+    try_clipboard_copy, word_boundaries, word_boundaries_chars,
 };
 pub use widget::conflict_banner::ConflictBanner;
 pub use widget::conflict_picker::{ConflictPicker, PickerOutcome};

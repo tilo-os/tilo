@@ -1230,6 +1230,19 @@ impl FrameHarness {
         false
     }
 
+    /// Run the normal frame pipeline until requested visual work completes.
+    ///
+    /// # Errors
+    /// Returns an error instead of capturing an unfinished placeholder when
+    /// the work does not complete within `timeout`.
+    pub fn wait_for_visuals(&mut self, timeout: std::time::Duration) -> Result<(), String> {
+        if self.wait_until(timeout, |driver| !driver.root.has_pending_visual_work()) {
+            Ok(())
+        } else {
+            Err("Timed out waiting for visual work to finish".into())
+        }
+    }
+
     /// Wait until a retained widget with `name` is present in the live layout.
     ///
     /// # Errors

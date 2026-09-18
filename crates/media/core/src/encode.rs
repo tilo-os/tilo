@@ -1003,11 +1003,10 @@ mod tests {
             let desc = format!(
                 "videotestsrc pattern=ball num-buffers={frames} \
                  ! video/x-raw,width=640,height=360,framerate=30/1 \
-                 ! videoconvert ! {el} {arg} ! av1parse ! matroskamux ! filesink location={out}",
+                 ! videoconvert ! {el} {arg} ! av1parse ! matroskamux ! filesink name=probe_output",
                 frames = seconds * 30,
                 el = spec.element,
                 arg = spec.bitrate_arg(bps),
-                out = out.display(),
             );
             let pipeline = match gstreamer::parse::launch(&desc) {
                 Ok(p) => p.downcast::<gstreamer::Pipeline>().expect("a pipeline"),
@@ -1016,6 +1015,10 @@ mod tests {
                     return;
                 }
             };
+            pipeline
+                .by_name("probe_output")
+                .expect("output sink")
+                .set_property("location", out.to_str().expect("UTF-8 scratch path"));
             if pipeline.set_state(gstreamer::State::Playing).is_err() {
                 eprintln!("encode: vaav1enc would not start; proof not run");
                 let _ = pipeline.set_state(gstreamer::State::Null);
@@ -1162,11 +1165,10 @@ mod tests {
             let desc = format!(
                 "videotestsrc pattern=snow num-buffers={frames} \
                  ! video/x-raw,width=640,height=360,framerate=30/1 \
-                 ! videoconvert ! {el} {arg} ! {mux} ! filesink location={out}",
+                 ! videoconvert ! {el} {arg} ! {mux} ! filesink name=probe_output",
                 frames = seconds * 30,
                 el = spec.element,
                 arg = spec.bitrate_arg(asked_bps),
-                out = out.display(),
             );
             let Ok(pipeline) = gstreamer::parse::launch(&desc) else {
                 panic!(
@@ -1177,6 +1179,10 @@ mod tests {
             let pipeline = pipeline
                 .downcast::<gstreamer::Pipeline>()
                 .expect("a pipeline");
+            pipeline
+                .by_name("probe_output")
+                .expect("output sink")
+                .set_property("location", out.to_str().expect("UTF-8 scratch path"));
             pipeline
                 .set_state(gstreamer::State::Playing)
                 .unwrap_or_else(|e| panic!("{} is installed, so it must run: {e}", spec.element));

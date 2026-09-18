@@ -30,7 +30,8 @@ use crate::xhtml::parse_xhtml;
 /// onto the live shelf.
 pub(crate) const SAMPLE_EPUB: &[u8] = include_bytes!("../assets/sample.epub");
 
-/// Environment override (`:`-separated absolute paths) for extra folders to
+/// Environment override (platform-separated absolute paths: `;` on Windows,
+/// `:` on Unix) for extra folders to
 /// watch. Lets the OS point the reader at a synced library (e.g. a
 /// `/var/workspace` share) and lets tests pin a fixture directory.
 const LIBRARY_DIR_ENV: &str = "EBOOK_LIBRARY_DIR";
@@ -63,8 +64,22 @@ pub fn workspace_books_dir() -> PathBuf {
     workspace_root().join("Books")
 }
 
+fn workspace_configured() -> bool {
+    #[cfg(windows)]
+    {
+        std::env::var_os(WORKSPACE_DIR_ENV).is_some_and(|root| PathBuf::from(root).is_absolute())
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 /// Whether a path lives on the collaborative workspace (shared with peers).
 pub fn is_shared(path: &Path) -> bool {
+    if !workspace_configured() {
+        return false;
+    }
     let root = normalise_lexically(&workspace_root());
     let path = normalise_lexically(path);
     // An empty/degenerate root must never make every path look "shared".
@@ -221,6 +236,9 @@ pub fn share_to_workspace(doc: &mut AutoCommit, src: &Path) -> Option<(Book, Pat
 /// Never overwrites an extant object: a conflicting file is reported instead
 /// of risking another reader's bytes.
 fn write_shared_copy(bytes: &[u8], id: &str) -> Result<PathBuf, String> {
+    if !workspace_configured() {
+        return Err("No collaborative workspace is configured on this device".into());
+    }
     let dir = workspace_books_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|_| "the shared Books folder could not be created".to_string())?;
@@ -308,7 +326,7 @@ pub fn load_library<S: BuildHasher>(
     let mut out: Vec<LoadedBook> = Vec::new();
     for entry in BooksDoc::read_library_entries(doc) {
         let canonical_shared = workspace_book_path(&entry.id);
-        let path = if canonical_shared.is_file() {
+        let path = if workspace_configured() && canonical_shared.is_file() {
             canonical_shared
         } else if !entry.shared {
             let Some(path) = local_books
@@ -400,8 +418,8 @@ pub fn watched_epub_paths(watched_folders: &[PathBuf]) -> Vec<PathBuf> {
 /// `EBOOK_LIBRARY_DIR` override, walked shallowly for `.epub` files.
 fn scan_watched(watched_folders: &[PathBuf]) -> Vec<PathBuf> {
     let mut roots = watched_folders.to_vec();
-    if let Ok(v) = std::env::var(LIBRARY_DIR_ENV) {
-        roots.extend(v.split(':').filter(|s| !s.is_empty()).map(PathBuf::from));
+    if let Some(v) = std::env::var_os(LIBRARY_DIR_ENV) {
+        roots.extend(std::env::split_paths(&v).filter(|path| path.is_absolute()));
     }
     let mut paths = BTreeSet::new();
     for root in roots {
@@ -624,6 +642,46 @@ mod tests {
         let lib = load_library(&mut doc, &[], &HashMap::new());
         unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
         assert!(lib.is_empty(), "no epubs anywhere -> an empty shelf");
+    }
+
+    #[test]
+    #[serial]
+    fn watched_path_list_preserves_native_paths() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let a = first.path().join("Bücher eins.epub");
+        let b = second.path().join("second.epub");
+        std::fs::write(&a, SAMPLE_EPUB).unwrap();
+        std::fs::write(&b, SAMPLE_EPUB).unwrap();
+        let previous = std::env::var_os(LIBRARY_DIR_ENV);
+        unsafe {
+            std::env::set_var(
+                LIBRARY_DIR_ENV,
+                std::env::join_paths([first.path(), second.path()]).unwrap(),
+            )
+        };
+        let paths = watched_epub_paths(&[]);
+        match previous {
+            Some(value) => unsafe { std::env::set_var(LIBRARY_DIR_ENV, value) },
+            None => unsafe { std::env::remove_var(LIBRARY_DIR_ENV) },
+        }
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&a));
+        assert!(paths.contains(&b));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[serial]
+    fn unconfigured_windows_workspace_keeps_import_local() {
+        let _workspace = WorkspaceEnvGuard::set(Path::new(""));
+        let local = tempfile::tempdir().unwrap();
+        let path = local.path().join("local.epub");
+        std::fs::write(&path, SAMPLE_EPUB).unwrap();
+        let (_, destination) = parse_shared_path_detailed(&path).unwrap();
+        assert_eq!(destination, path);
+        assert!(!is_shared(&destination));
+        assert!(share_to_workspace(&mut AutoCommit::new(), &path).is_none());
     }
 
     #[test]

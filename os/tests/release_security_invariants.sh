@@ -80,6 +80,33 @@ else
   ok 'release signatures and attestations require transparency-log evidence'
 fi
 
+attestation_consumers=(
+  "$repo/.forgejo/workflows/build-image.yml"
+  "$repo/.forgejo/workflows/build-kernel.yml"
+  "$repo/.forgejo/workflows/snapshot-rpms.yml"
+  "$repo/os/dev/build-image.sh"
+)
+attestation_shape_safe=1
+for consumer in "${attestation_consumers[@]}"; do
+  grep -Fq '[(if type == "array" then .[] else . end) | .payload' "$consumer" \
+    || attestation_shape_safe=0
+  grep -Fq '[.[].payload' "$consumer" && attestation_shape_safe=0
+done
+encoded_predicate="$(printf '%s' '{"predicate":{"shapeSafe":true}}' | base64 -w0)"
+for envelope in \
+  "{\"payload\":\"$encoded_predicate\"}" \
+  "[{\"payload\":\"$encoded_predicate\"}]"; do
+  printf '%s' "$envelope" | jq -e '
+    [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
+    == [{"shapeSafe":true}]
+  ' >/dev/null || attestation_shape_safe=0
+done
+if [ "$attestation_shape_safe" = 1 ]; then
+  ok 'Cosign provenance accepts one verified envelope or an envelope array'
+else
+  bad 'Cosign provenance assumes only one verify-attestation JSON root shape'
+fi
+
 if grep -Fq "key='\${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'" "$workflow" \
    && grep -Fq 'TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}' "$workflow" \
    && grep -Fq "if [[ '\${{ steps.release-mode.outputs.publish }}' == true ]]" "$workflow" \
