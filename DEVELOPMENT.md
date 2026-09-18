@@ -144,6 +144,12 @@ shared Accounts vault records failed loads and refuses writes until access is
 restored and the vault reopened. It also revalidates existing ciphertext before
 saving and refuses to generate a replacement key for an existing vault. The
 Passwords UI exposes recovery errors to both sighted and assistive users.
+Passwords explicitly enables the shared native file-picker feature. Backup and
+restore passphrase fields use protected semantic input, and transfer polling
+keeps a stable wake deadline until the next sync. File-dialog completion and
+revealed-password expiry therefore do not need another input event. Native
+transfer verification covers Unicode paths, acknowledged CSV export/import,
+encrypted backup, wrong-passphrase rejection, and fresh-profile restoration.
 
 ```powershell
 cargo test --locked -p private-fs -p tilo-user-identity -p accounts --lib
