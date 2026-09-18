@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use automerge::{AutoCommit, ChangeHash};
 use collab_types::ArtifactKind;
-use ui::history_source::{AuthorDirectory, HistorySource};
+use ui::history_source::{AuthorDirectory, HistorySource, committed_heads};
 use ui::record::{RecordCheckout, RecordId, RecordKind, RecordStore, home};
 use ui::widget::{HistoryEntry, HistoryEntryId};
 
@@ -379,12 +379,13 @@ impl WorkspaceHistoryIndex {
                 if !tree.doc.get_missing_deps(&heads).is_empty() {
                     continue;
                 }
-                tree.doc.get_changes(&heads)
+                committed_snapshot(&tree.doc).get_changes(&heads)
             } else {
                 let Some(record) = origin.strip_prefix("record:").and_then(RecordId::parse) else {
                     continue;
                 };
-                let changes = records.with(&record, |doc| {
+                let changes = records.read(&record, |doc| {
+                    let mut doc = committed_snapshot(doc);
                     doc.get_missing_deps(&heads)
                         .is_empty()
                         .then(|| doc.get_changes(&heads))
@@ -394,6 +395,7 @@ impl WorkspaceHistoryIndex {
                     Some(None) => None,
                     None => local.and_then(|source| {
                         let mut doc = source.load_record(&record)?;
+                        doc.rollback();
                         doc.get_missing_deps(&heads)
                             .is_empty()
                             .then(|| doc.get_changes(&heads))
@@ -500,7 +502,7 @@ impl WorkspaceHistoryIndex {
             supplied,
             &indexed.referenced,
             &indexed.included,
-            &mut indexed.cold,
+            &indexed.cold,
         );
         if self.fingerprint.as_ref() == Some(&fingerprint) {
             return false;
@@ -558,8 +560,8 @@ impl WorkspaceHistoryIndex {
                 included.push(checkout);
             } else if let Some(mut doc) = local.and_then(|source| source.load_record(&checkout.id))
             {
-                // Force pending observer state before capturing heads below.
-                let _ = doc.get_heads();
+                // A persisted source contributes committed changes only.
+                doc.rollback();
                 cold.insert(checkout.id.clone(), doc);
                 included.push(checkout);
             }
@@ -596,19 +598,19 @@ impl WorkspaceHistoryIndex {
     }
 
     fn build_fingerprint(
-        tree: &mut WorkspaceTree,
+        tree: &WorkspaceTree,
         records: &RecordStore,
         query: &WorkspaceHistoryQuery,
         supplied: Option<&[HistoryEntry]>,
         referenced: &[RecordCheckout],
         included: &[RecordCheckout],
-        cold: &mut BTreeMap<RecordId, AutoCommit>,
+        cold: &BTreeMap<RecordId, AutoCommit>,
     ) -> Fingerprint {
-        let mut documents = vec![("workspace-tree".to_string(), tree.doc.get_heads())];
+        let mut documents = vec![("workspace-tree".to_string(), committed_heads(&tree.doc))];
         for record in included {
             if let Some(heads) = records
-                .with(&record.id, AutoCommit::get_heads)
-                .or_else(|| cold.get_mut(&record.id).map(AutoCommit::get_heads))
+                .read(&record.id, committed_heads)
+                .or_else(|| cold.get(&record.id).map(committed_heads))
             {
                 documents.push((format!("record:{}", record.id), heads));
             }
@@ -655,12 +657,13 @@ impl WorkspaceHistoryIndex {
                 kind: record.kind.clone(),
             };
             let authors = self.authors.clone();
-            let inserted_live = records.with(&record.id, |doc| {
+            let inserted_live = records.read(&record.id, |doc| {
+                let mut doc = committed_snapshot(doc);
                 let rows = HistorySource::new()
                     .with_authors(authors)
                     .with_artifact_kind(kind)
                     .with_max_entries(limit)
-                    .entries(doc);
+                    .entries(&mut doc);
                 insert_rows(&mut by_id, &origin, rows);
             });
             if inserted_live.is_none()
@@ -721,6 +724,14 @@ impl WorkspaceHistoryIndex {
         self.fingerprint = Some(fingerprint);
         self.generation = self.generation.wrapping_add(1);
     }
+}
+
+/// RecordStore's mutable access finishes pending component actions. History
+/// instead takes a private committed view and leaves the live action owner alone.
+fn committed_snapshot(doc: &AutoCommit) -> AutoCommit {
+    let mut snapshot = doc.clone();
+    snapshot.rollback();
+    snapshot
 }
 
 fn insert_rows(
@@ -891,6 +902,87 @@ mod tests {
             row.id.origin == HistoryOrigin::WorkspaceTree
                 && row.timeline_entry().id == row.id.change
         }));
+    }
+
+    #[test]
+    fn history_observation_preserves_pending_record_action_and_attribution() {
+        let (mut tree, room) = tree_and_room();
+        let records = RecordStore::in_memory();
+        let record = action_record(&records, RecordId::for_tab(72), room, 20);
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.id.to_string(), record.kind.to_string());
+        let query = WorkspaceHistoryQuery::for_room(room);
+        let mut index = WorkspaceHistoryIndex::new();
+        assert!(index.refresh(&mut tree, &records, query.clone()));
+        let committed_entries = index.entries().to_vec();
+        let mut frontier = WorkspaceSeenFrontier::default();
+        frontier.mark_seen(&index);
+        let before_heads = records.read(&record.id, AutoCommit::base_heads).unwrap();
+
+        // This is an explicit legacy action rather than an internal component
+        // ActionFrame; its owner commits the whole edit with provenance below.
+        records.with(&record.id, |doc| {
+            doc.put(ROOT, "body", "An unfinished edit").unwrap();
+        });
+        let pending = records.read(&record.id, Transactable::pending_ops).unwrap();
+        assert!(pending > 0);
+        tree.doc.put(ROOT, "status", "unfinished").unwrap();
+        let pending_tree = tree.doc.pending_ops();
+        assert!(!index.refresh(&mut tree, &records, query.clone()));
+        // Also force projection, rather than only exercising the cache hit.
+        index.authors_mut();
+        // A reader may hold the live document while history projects it. Any
+        // mutable RecordStore loan here would finish a component action and
+        // also conflict with this deliberately retained immutable loan.
+        records
+            .read(&record.id, |_| {
+                assert!(index.refresh(&mut tree, &records, query.clone()));
+                assert!(index.unseen(&frontier, &mut tree, &records).is_empty());
+            })
+            .unwrap();
+        assert_eq!(index.entries(), committed_entries);
+        assert!(index.unseen(&frontier, &mut tree, &records).is_empty());
+        assert_eq!(tree.doc.pending_ops(), pending_tree);
+        assert_eq!(
+            records.read(&record.id, |doc| (doc.base_heads(), doc.pending_ops())),
+            Some((before_heads.clone(), pending)),
+        );
+
+        let context = ActionContext::for_resource(
+            "Complete edit",
+            record.id.as_str(),
+            "note",
+            "Decision log",
+        )
+        .with_purpose("Finished the whole edit");
+        let message = context.change_message().unwrap();
+        let committed = records
+            .with(&record.id, |doc| {
+                doc.put(ROOT, "body", "The completed edit").unwrap();
+                doc.commit_with(CommitOptions::default().with_time(40).with_message(message))
+                    .unwrap()
+            })
+            .unwrap();
+        assert!(index.refresh(&mut tree, &records, query));
+        let unseen = index.unseen(&frontier, &mut tree, &records);
+        assert_eq!(unseen.len(), 1);
+        assert_eq!(
+            unseen[0].id.change,
+            ui::history_source::entry_id_from_hash(&committed.to_string())
+        );
+        assert_eq!(
+            unseen[0].entry.context.as_ref().unwrap().purpose.as_deref(),
+            Some("Finished the whole edit")
+        );
+        records
+            .read(&record.id, |doc| {
+                let changes = committed_snapshot(doc).get_changes(&before_heads);
+                assert_eq!(changes.len(), 1, "observation must not split the action");
+                assert_eq!(changes[0].hash(), committed);
+            })
+            .unwrap();
     }
 
     #[test]

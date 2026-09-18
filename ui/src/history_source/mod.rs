@@ -24,6 +24,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, PatchAction, ReadDoc};
 use collab_types::{ArtifactKind, OpClass};
 use qdoc::snapshot::DocSnapshot;
@@ -79,6 +80,41 @@ pub const DEFAULT_MAX_ENTRIES: usize = 200;
 /// Deliberately not a guess.
 pub const NO_VISIBLE_CHANGE: &str = "no visible change";
 
+/// Automerge's history readers close an open transaction. Inspect a committed
+/// copy only while an edit is pending, so browsing never steals the app's action
+/// boundary or publishes a temporary, unstamped change as a stable history ID.
+/// Idle documents are read without cloning.
+fn with_committed_history<R>(doc: &mut AutoCommit, read: impl FnOnce(&mut AutoCommit) -> R) -> R {
+    if doc.pending_ops() == 0 {
+        return read(doc);
+    }
+    let mut committed = doc.clone();
+    committed.rollback();
+    read(&mut committed)
+}
+
+/// The committed frontier for history cache invalidation. Unlike
+/// `AutoCommit::get_heads`, observing it never commits a pending app action.
+pub fn committed_heads(doc: &AutoCommit) -> Vec<ChangeHash> {
+    doc.base_heads()
+}
+
+/// Materialize a committed qdoc history entry without committing live edits.
+/// An ID from another document returns `Ok(None)`.
+///
+/// # Errors
+/// Returns the qdoc error if the selected version cannot be materialized.
+pub fn materialize_entry(
+    doc: &mut AutoCommit,
+    id: &HistoryEntryId,
+) -> Result<Option<DocSnapshot>, qdoc::DocError> {
+    with_committed_history(doc, |doc| {
+        version_index_for_entry(doc, id)
+            .map(|version| qdoc::history::materialize_at(doc, version))
+            .transpose()
+    })
+}
+
 /// Construct one, hand it an [`AuthorDirectory`] so actor ids resolve to
 /// people, and call [`HistorySource::entries`] whenever the document changes.
 pub struct HistorySource {
@@ -133,8 +169,13 @@ impl HistorySource {
 
     /// Widgets sort for display differently (timeline newest-first,
     /// scrubber left-to-right), so this returns the document's own causal
-    /// order and lets them decide.
+    /// order and lets them decide. Only committed changes are listed; pending
+    /// edits stay in the live document until the app commits its action.
     pub fn entries(&self, doc: &mut AutoCommit) -> Vec<HistoryEntry> {
+        with_committed_history(doc, |doc| self.committed_entries(doc))
+    }
+
+    fn committed_entries(&self, doc: &mut AutoCommit) -> Vec<HistoryEntry> {
         let versions = qdoc::history::versions(doc);
         if versions.is_empty() {
             return Vec::new();
@@ -223,15 +264,19 @@ impl HistorySource {
 /// state for the [`HistoryEntryId`] a widget hands back. `None` when the id
 /// names no change in this document — mixed ids from two artifacts.
 pub fn heads_for_entry(doc: &mut AutoCommit, id: &HistoryEntryId) -> Option<Vec<ChangeHash>> {
-    let index = version_index_for_entry(doc, id)?;
-    Some(qdoc::history::prefix_heads(doc, index))
+    with_committed_history(doc, |doc| {
+        let index = version_index_for_entry(doc, id)?;
+        Some(qdoc::history::prefix_heads(doc, index))
+    })
 }
 
 pub fn version_index_for_entry(doc: &mut AutoCommit, id: &HistoryEntryId) -> Option<usize> {
-    qdoc::history::versions(doc)
-        .into_iter()
-        .find(|v| entry_id_from_hash(&v.change_hash) == *id)
-        .map(|v| v.index)
+    with_committed_history(doc, |doc| {
+        qdoc::history::versions(doc)
+            .into_iter()
+            .find(|v| entry_id_from_hash(&v.change_hash) == *id)
+            .map(|v| v.index)
+    })
 }
 
 /// The hash is the document's own content address, so two peers
