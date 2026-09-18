@@ -18,7 +18,7 @@ use std::time::Duration;
 use format_provider_wit::CodecError;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
-use wasmtime_wasi::{ResourceTableError, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 /// Maximum guest memory per call.
 pub const MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
@@ -232,11 +232,6 @@ pub fn spawn_epoch_ticker(engine: Engine) {
         }
     });
 }
-
-// `ResourceTableError` lives in the wasi-side bindings; pull it through so
-// the `WasiHostState` impl above compiles cleanly with the resource table.
-#[allow(dead_code)]
-type _ResourceTableUnused = ResourceTableError;
 
 #[cfg(test)]
 mod tests {
