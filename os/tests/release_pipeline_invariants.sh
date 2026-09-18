@@ -129,8 +129,10 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && ok 'desktop, app and OS component tags are disjoint' \
   || bad 'a component tag can accidentally release another component'
 
-grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
-  && [ "$(grep -c '      - "shell/\*\*"' "$desktop")" -eq 2 ] \
+! sed -n '/^  push:/,/^  workflow_dispatch:/p' "$desktop" | grep -q '^    branches:' \
+  && [ "$(grep -c '      - "shell/\*\*"' "$desktop")" -eq 1 ] \
+  && grep -Fq "if: github.event_name != 'pull_request'" "$desktop" \
+  && grep -Fq '  schedule:' "$desktop" \
   && grep -Fq 'TILO_DESKTOP_ARM64_RELEASES: "1"' "$desktop" \
   && grep -Fq '[[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' "$desktop" \
   && grep -Fq 'arm64_runner=runner-large-arm64' "$desktop" \
@@ -138,12 +140,13 @@ grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
   && grep -Fq 'release_arches: ${{ steps.lanes.outputs.release_arches }}' "$desktop" \
   && grep -Fq 'RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}' "$desktop" \
   && grep -Fq 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' "$desktop" \
-  && ok 'desktop push and pull-request triggers are path-scoped' \
+  && ok 'desktop PRs keep preflight while native packaging is scheduled or explicit' \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
 grep -Fq 'publish-os-payload:' "$desktop" \
   && grep -Fq 'TILO_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
-  && grep -Fq '"with_browser":"1","publish":"true"' "$desktop" \
+  && grep -Fq 'CONTINUOUS_OS_RELEASE: "0"' "$desktop" \
+  && grep -Fq "if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'" "$desktop" \
   && grep -Fq 'TILO_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
   && grep -Fq 'TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}' "$os" \
   && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$repo/os/Containerfile" \
@@ -157,7 +160,7 @@ grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
-  && grep -Fq 'CONTINUOUS_RELEASE: ${{ vars.TILO_CONTINUOUS_OS_RELEASE }}' "$os" \
+  && grep -Fq 'CONTINUOUS_RELEASE: "0"' "$os" \
   && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
   && ! grep -Fq 'fetch-depth: 0' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
@@ -166,11 +169,10 @@ grep -Fq 'with_browser=0' "$os" \
   && ok 'ordinary OS integration checks omit the release-only browser engine' \
   || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'
 
-if [ "$(grep -Fc '      - "shell/**"' "$os")" -eq 2 ] \
-  && [ "$(grep -Fc '      - "ui/**"' "$os")" -eq 2 ] \
-  && [ "$(grep -Fc '      - "apps/file-explorer/tests/atspi_smoke.sh"' "$os")" -eq 2 ] \
-  && [ "$(grep -Fc '      - "tools/atspi_external_client.py"' "$os")" -eq 2 ] \
-  && [ "$(grep -Fc '      - "tools/check_atspi_endpoint_contract.py"' "$os")" -eq 2 ] \
+if ! grep -q '^  pull_request:' "$os" \
+  && ! sed -n '/^  push:/,/^  workflow_dispatch:/p' "$os" | grep -q '^    branches:' \
+  && grep -Fq '  schedule:' "$os" \
+  && grep -Fq '  workflow_dispatch:' "$os" \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
   && grep -Fq 'installed-atspi-apps.sh' "$os" \
   && grep -Fq 'org.a11y.atspi.Action.GetActions' "$repo/shell/tests/native_atspi_smoke.sh" \

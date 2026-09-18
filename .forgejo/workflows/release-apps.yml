@@ -1,7 +1,8 @@
 name: Release / apps
 
-# Builds changed apps for validation and publishes immutable qpkg collections
-# for tagged or manual releases.
+# Capacity relief: PRs select affected apps without release-mode packaging.
+# Tagged and manual releases retain the complete immutable qpkg pipeline.
+# Restore continuous main packaging after latest-only scheduling is qualified.
 on:
   pull_request:
     branches: [main]
@@ -21,7 +22,8 @@ on:
       - "dist/apps/assemble-collection.sh"
       - ".forgejo/workflows/release-apps.yml"
   push:
-    branches: [main]
+    # Paused during capacity relief; preserve for continuous packaging rollout.
+    # branches: [main]
     tags: ["apps-v*", "app-*-v*"]
     paths:
       - "apps/**"
@@ -160,7 +162,9 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   build:
-    if: needs.plan.outputs.count != '0'
+    # PR compilation belongs to the focused CI lane. Packaging remains available
+    # through workflow_dispatch (publish=false) before requesting publication.
+    if: github.event_name != 'pull_request' && needs.plan.outputs.count != '0'
     needs: plan
     name: apps / ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
