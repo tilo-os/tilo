@@ -14,6 +14,7 @@ blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true
 libc.workspace = true
+rand.workspace = true
 tokio = { workspace = true, features = ["full"] }
 iroh.workspace = true
 iroh-base.workspace = true

@@ -5,3 +5,7 @@ pub mod owner;
 mod seed;
 pub mod store;
 pub use owner::{CommitReceipt, PendingOperation, SessionOwner, Status};
+
+pub mod recovery;
+pub mod enrollment;
+pub mod enrollment_http;

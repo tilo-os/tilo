@@ -11,10 +11,7 @@ use qos_relay::{
 use qos_user_identity::RevocationList;
 use serde_json::json;
 use std::{net::Ipv4Addr, path::Path, time::Duration};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-};
+use tokio::{io::AsyncBufReadExt, net::TcpListener};
 
 pub struct NativeSubscription {
     session: RelayCoeditSession,
@@ -244,32 +241,6 @@ pub fn publish(owner: &SessionOwner, session: &NativeSubscription) -> Result<()>
     }
     Ok(())
 }
-async fn serve_status(mut socket: TcpStream, status: serde_json::Value) -> Result<()> {
-    let mut request = Vec::new();
-    let mut chunk = [0u8; 2048];
-    while !request.windows(4).any(|part| part == b"\r\n\r\n") {
-        let count = tokio::time::timeout(Duration::from_secs(5), socket.read(&mut chunk)).await??;
-        if count == 0 {
-            return Ok(());
-        }
-        request.extend_from_slice(&chunk[..count]);
-        if request.len() > 8192 {
-            bail!("status request too large");
-        }
-    }
-    let request = std::str::from_utf8(&request)?;
-    let first = request.lines().next().unwrap_or_default();
-    let (code, body) = if first == "GET /status HTTP/1.1" {
-        (200, status)
-    } else {
-        (404, json!({"error":"route unavailable"}))
-    };
-    let bytes = serde_json::to_vec(&body)?;
-    socket.write_all(format!("HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", bytes.len()).as_bytes()).await?;
-    socket.write_all(&bytes).await?;
-    socket.shutdown().await?;
-    Ok(())
-}
 fn public_status(
     owner: &SessionOwner,
     connected: bool,
@@ -297,13 +268,20 @@ fn public_status(
 pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     let host = LocalHost::start(&owner).await?;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let authorization = std::sync::Arc::new(crate::enrollment_http::Authorization::local(
+        owner.root(),
+        listener.local_addr()?.to_string(),
+    )?);
+    let (enrollment_commands, mut enrollments) =
+        tokio::sync::mpsc::channel::<crate::enrollment_http::EnrollmentCommand>(64);
+    let mut enrollment = crate::enrollment::EnrollmentAuthority::default();
     let mut session: Option<NativeSubscription> = None;
     let mut error = None;
     let mut reconnect: Option<Reconnect> = None;
     let mut delay = Duration::ZERO;
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut stdin_open = true;
-    let metadata = json!({"version":1,"pid":std::process::id(),"platform":std::env::consts::OS,"fixture_origin":format!("http://{}",listener.local_addr()?),"status_path":"/status","packet_relay":host.packet_url,"relay_address":host.address,"room":owner.peer().room(),"workspace_id":qos_relay::room_workspace_id(owner.peer().room())?.to_string(),"state_root":owner.root(),"records":owner.peer().rows(),"enrollments":[]});
+    let metadata = json!({"version":2,"enrollment_version":2,"challenge_path":"/enrollment/challenge","complete_path":"/enrollment/complete","pid":std::process::id(),"platform":std::env::consts::OS,"fixture_origin":format!("http://{}",listener.local_addr()?),"status_path":"/status","packet_relay":host.packet_url,"relay_address":host.address,"room":owner.peer().room(),"workspace_id":qos_relay::room_workspace_id(owner.peer().room())?.to_string(),"state_root":owner.root(),"records":owner.peer().rows()});
     atomic_file::write_with_mode(ready_path, &serde_json::to_vec_pretty(&metadata)?, 0o600)?;
     crate::store::sync_dir(
         ready_path
@@ -353,9 +331,34 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     None => { error=Some("native subscription disconnected; reconnecting with durable state".into()); if let Some(old)=session.take(){old.into_client().close().await;} }
                 }
             }
+            command = enrollments.recv() => {
+                if let Some(command)=command {
+                    let result=if !session.as_ref().is_some_and(|current|current.is_ready()) {
+                        Err(crate::enrollment::EnrollmentError::new(503,"native peer is reconnecting; retry enrollment with the same identity"))
+                    } else {
+                        match command.request {
+                            crate::enrollment_http::EnrollmentRequest::Challenge(request)=>enrollment.challenge(&owner,request,qos_relay::clock::now_ns()).and_then(|response|serde_json::to_vec(&response).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))),
+                            crate::enrollment_http::EnrollmentRequest::Complete(request)=>{
+                                match enrollment.complete(&mut owner,request,qos_relay::clock::now_ns()) {
+                                    Err(error)=>Err(error),
+                                    Ok(certificate)=>match host.update_membership(&owner).await {
+                                        Err(error)=>Err(crate::enrollment::EnrollmentError::new(503,format!("committed enrollment awaits relay membership reconciliation: {error}"))),
+                                        Ok(())=>{
+                                            let published=session.as_ref().ok_or_else(||anyhow::anyhow!("native subscription unavailable")).and_then(|current|publish(&owner,current));
+                                            published.map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string())).and_then(|()|crate::enrollment::public_bootstrap(&owner,&certificate,serde_json::to_value(&host.address).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))?,&host.packet_url.to_string(),qos_relay::clock::now_ns())).and_then(|value|serde_json::to_vec(&value).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string())))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    let _=command.reply.send(result);
+                }
+            }
             result = listener.accept() => {
                 let (socket,_)=result?; let status=public_status(&owner,session.as_ref().is_some_and(|current|current.is_ready()),&error);
-                tokio::spawn(async move { let _=serve_status(socket,status).await; });
+                let authorization=authorization.clone();let commands=enrollment_commands.clone();
+                tokio::spawn(async move { let _=crate::enrollment_http::serve(socket,authorization,commands,status).await; });
             }
             line = stdin.next_line(), if stdin_open => {
                 match line? {
