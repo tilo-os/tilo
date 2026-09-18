@@ -28,7 +28,6 @@ serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 ed25519-dalek.workspace = true
-tar.workspace = true
 blake3.workspace = true
 semver.workspace = true
 # `update` resolves a newer version through the signed registry index
@@ -39,6 +38,7 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]
 rand.workspace = true
+tar.workspace = true
 tempfile.workspace = true
 
 [[test]]
