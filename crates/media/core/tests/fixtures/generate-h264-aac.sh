@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate the tracked real-decode fixture used by crates/media's integration
+# Regenerate the tracked real-decode fixture used by crates/media/core's integration
 # tests. The checked-in MP4 is authoritative for CI; this script documents and
 # reproduces its codec, timeline, and GOP contract without private assets.
 set -euo pipefail
