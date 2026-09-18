@@ -275,6 +275,32 @@ impl Widget for HistoryHost {
         }
         children
     }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if let Some(panel) = &mut self.review {
+            return vec![&mut panel.dialog];
+        }
+        let show_timeline = self.open
+            && (self.width >= 600.0 || self.selected.is_empty() || self.activity_page);
+        let timeline_available = self.controller.is_some() || self.files.is_some();
+        let show_preview = !self.selected.is_empty() && !self.activity_page;
+        let side = self.side;
+        let mut children: Vec<&mut dyn Widget> = vec![&mut self.toolbar];
+        if show_timeline {
+            if timeline_available {
+                children.push(&mut self.timeline);
+            } else {
+                children.push(&mut self.unavailable);
+            }
+        }
+        if show_preview {
+            children.push(if side == PreviewSide::Before {
+                &mut self.before
+            } else {
+                &mut self.after
+            });
+        }
+        children
+    }
     fn get_rect(&self) -> Rect {
         self.rect
     }

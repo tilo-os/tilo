@@ -1982,6 +1982,12 @@ impl Widget for WindowGroup {
         let active_switched = self.built_active != Some(self.bar.active_id());
         bar || hosts || style || active_switched
     }
+    fn needs_redraw(&self) -> bool {
+        // Redraw follows the presentation tree. Retained inactive hosts still
+        // participate in resources, lifecycle, components and ownership, but
+        // they are not drawn or marked drawn until selected.
+        self.children().into_iter().any(Widget::needs_redraw)
+    }
     fn needs_animation_frame(&self) -> bool {
         // Include group and inactive closing-host animations beyond the active presentation.
         let spawn_in_flight = self

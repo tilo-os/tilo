@@ -743,7 +743,9 @@ impl Widget for DesktopRoot {
 mod tests {
     use automerge::transaction::Transactable;
     use super::*;
-    fn fixture() -> (DesktopRoot, DesktopHandle, PortableStorage) {
+    fn fixture_with_topology(
+        configure: impl FnOnce(&mut WorkspaceTree),
+    ) -> (DesktopRoot, DesktopHandle, PortableStorage) {
         let cache = PortableStorage::new("desktop-host-test", "device").unwrap();
         let mut owners = RecordOwners::portable(cache.clone());
         let mut tree = WorkspaceTree::default();
@@ -809,6 +811,7 @@ mod tests {
         }];
         tree.active = workspace.id;
         tree.workspaces.push(workspace);
+        configure(&mut tree);
         let permissions = ui::permissions::PermissionContext::from_capabilities(
             ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "author"),
             vec![],
@@ -839,6 +842,207 @@ mod tests {
             handle.errors.borrow()
         );
         (root, handle, cache)
+    }
+
+    fn fixture() -> (DesktopRoot, DesktopHandle, PortableStorage) {
+        fixture_with_topology(|_| {})
+    }
+
+    fn assert_external_frame_idle(frame: &mut ui::headless::FrameHarness, context: &str) {
+        let output = frame.frame_output();
+        assert!(
+            !output.needs_redraw,
+            "{context}: settled presentation stayed dirty"
+        );
+        assert!(
+            !output.needs_animation_frame,
+            "{context}: settled presentation kept animating"
+        );
+        assert!(
+            output
+                .next_wake_deadline
+                .is_none_or(|deadline| deadline > ui::clock::Instant::now()),
+            "{context}: settled presentation retained a due wake deadline"
+        );
+        assert!(
+            !frame.poll_frame().unwrap(),
+            "{context}: idle poll produced another scene"
+        );
+    }
+
+    fn settle_external_navigation(
+        root: *mut DesktopRoot,
+        frame: &mut ui::headless::FrameHarness,
+    ) {
+        // Initial group framing is a legitimate finite animation. Advance its
+        // real clock seam, then run the ordinary frame pipeline once more.
+        let settled_at = ui::clock::Instant::now() + ui::clock::Duration::from_secs(1);
+        // SAFETY: `frame` retains this boxed root and no harness method runs
+        // while the temporary exclusive references are alive.
+        unsafe {
+            let strips = (&*root).surface.strip_ids();
+            for strip in strips {
+                (&mut *root)
+                    .surface
+                    .row_mut(strip)
+                    .unwrap()
+                    .tick_snap_at(settled_at);
+            }
+        }
+        frame.relayout();
+    }
+
+    fn settle_notes_status_bubble(frame: &mut ui::headless::FrameHarness) {
+        assert!(
+            frame.frame_output().needs_animation_frame,
+            "selecting Notes must preserve its finite visible status animation"
+        );
+        std::thread::sleep(
+            ui::status_bubble::DEFAULT_LINGER + ui::clock::Duration::from_millis(10),
+        );
+        frame.relayout();
+    }
+
+    #[test]
+    fn external_ordinary_inactive_notes_renders_when_selected_without_redraw_loop() {
+        let (root, handle, _) = fixture_with_topology(|topology| {
+            let groups = &mut topology.workspaces[0].strips[0].window_groups;
+            let chat = groups[0].tabs.remove(1);
+            let calculator = groups[0].tabs.pop().unwrap();
+            assert_eq!(calculator.id, (5 << 48) | 13);
+            groups.push(WindowGroup {
+                id: 4,
+                active_tab: chat.id,
+                tabs: vec![chat],
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+            topology.active_strip.insert(topology.active, StripId(2));
+            topology.active_group.insert(StripId(2), 3);
+        });
+        let routes = root.resolver.host.routes.clone();
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            root,
+            (1280, 720),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        settle_external_navigation(root_ptr, &mut frame);
+
+        let initial = frame.inspection_json().unwrap();
+        assert!(initial.contains("WordProcessor"), "Writer must be presented");
+        assert!(initial.contains("ChatApp"), "Chat must be presented");
+        assert!(
+            !initial.contains("NotesApp"),
+            "inactive Notes must stay retained off-screen"
+        );
+        assert!(
+            frame
+                .resources()
+                .iter()
+                .any(|resource| resource.kind == "notes.notebook"),
+            "inactive Notes must retain its resource owner"
+        );
+        assert_external_frame_idle(&mut frame, "Writer/Chat with inactive Notes");
+
+        *handle.navigation_command.borrow_mut() = Some(crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(),
+            route: crate::desktop_navigation::Route {
+                workspace: "1".into(),
+                strip: "2".into(),
+                group: "3".into(),
+                tab: ((5_u64 << 48) | 12).to_string(),
+            },
+        });
+        frame.relayout();
+        settle_external_navigation(root_ptr, &mut frame);
+        assert!(handle.navigation_result.borrow_mut().take().unwrap().is_ok());
+        assert!(
+            frame.inspection_json().unwrap().contains("NotesApp"),
+            "selecting retained Notes must present its real checked widget"
+        );
+        settle_notes_status_bubble(&mut frame);
+        assert_external_frame_idle(&mut frame, "selected Notes");
+
+        let refreshed = handle.tree.borrow().clone();
+        *handle.inbox.borrow_mut() = Some((
+            Admission {
+                source_heads: vec![[8; 32]],
+                tree: refreshed,
+                routes,
+                required: vec![],
+                missing: vec![],
+                unsupported: vec![],
+                pending: 0,
+            },
+            handle.permissions.borrow().clone(),
+        ));
+        assert!(
+            frame.frame_output().needs_redraw,
+            "an admitted remote snapshot must still wake the real root"
+        );
+        assert!(
+            frame.poll_frame().unwrap(),
+            "remote admission must produce a frame"
+        );
+        assert_external_frame_idle(&mut frame, "reconciled remote snapshot");
+    }
+
+    #[test]
+    fn external_hidden_notes_strip_renders_when_selected_without_redraw_loop() {
+        let (root, handle, _) = fixture_with_topology(|topology| {
+            let notes = topology.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .remove(2);
+            topology.workspaces[0].strips.push(Strip {
+                id: StripId(9),
+                name: "Notes strip".into(),
+                window_groups: vec![WindowGroup {
+                    id: 90,
+                    active_tab: notes.id,
+                    tabs: vec![notes],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                }],
+            });
+            topology.active_strip.insert(topology.active, StripId(2));
+        });
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            root,
+            (1280, 720),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        settle_external_navigation(root_ptr, &mut frame);
+
+        assert!(
+            !frame.inspection_json().unwrap().contains("NotesApp"),
+            "the retained hidden strip must not be in the presentation tree"
+        );
+        assert_external_frame_idle(&mut frame, "hidden Notes strip");
+
+        *handle.navigation_command.borrow_mut() = Some(crate::desktop_navigation::Command::Strip {
+            generation: handle.generation.clone(),
+            workspace: "1".into(),
+            strip: "9".into(),
+        });
+        frame.relayout();
+        settle_external_navigation(root_ptr, &mut frame);
+        assert!(handle.navigation_result.borrow_mut().take().unwrap().is_ok());
+        assert!(
+            frame.inspection_json().unwrap().contains("NotesApp"),
+            "selecting the retained strip must present its real checked widget"
+        );
+        settle_notes_status_bubble(&mut frame);
+        assert_external_frame_idle(&mut frame, "selected Notes strip");
     }
 
     #[test]

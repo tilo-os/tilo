@@ -1907,6 +1907,9 @@ impl Widget for GroupRow {
     }
 
     fn needs_redraw(&self) -> bool {
+        if self.hidden {
+            return false;
+        }
         // A wheel-pan changes `scroll_x` without touching the row's rect
         // or any child's dirty bit, so without this the parent's cached
         // scene would keep painting pre-scroll positions.
@@ -1918,6 +1921,9 @@ impl Widget for GroupRow {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        if self.hidden {
+            return false;
+        }
         // The row owns drag animations outside its presentation children;
         // propagate them alongside child animation requests.
         self.snap_in_flight()
