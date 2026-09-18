@@ -84,7 +84,7 @@ tempfile.workspace = true
 xattr = "1.6.1"
 
 [target.'cfg(unix)'.dev-dependencies]
-fs = { path = "../../fs" }
+fs = { path = "../../crates/system/fs" }
 fuser.workspace = true
 iroh.workspace = true
 
