@@ -7,13 +7,13 @@
 //! [`COMMIT_BATCH`] docs or [`COMMIT_INTERVAL_SECS`] seconds, whichever is
 //! first. Files over [`MAX_FILE_BYTES`] are indexed by header only.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
@@ -62,9 +62,6 @@ const QUERY_CACHE_CAPACITY: usize = 32;
 /// Cap on docs per segment — without one, tantivy's default merge policy
 /// eventually reads the whole index into memory. Caps a segment's text at ~32 MB.
 const MAX_DOCS_BEFORE_MERGE: usize = 2_000;
-/// Minimum gap between reader-reload calls — reload does disk I/O, and
-/// per-keystroke reloads produced visible palette jitter.
-const READER_RELOAD_INTERVAL_MS: u64 = 500;
 /// Tantivy writer heap for the single indexing thread; smaller means
 /// smaller segments and merges. Comfortably fits a [`COMMIT_BATCH`] batch.
 const WRITER_HEAP_BYTES: usize = 15_000_000;
@@ -126,8 +123,6 @@ pub struct FilesIndex {
     reader: IndexReader,
     query_parser: QueryParser,
     cache: Arc<Mutex<QueryCache>>,
-    /// Rate-limited to one reload per [`READER_RELOAD_INTERVAL_MS`].
-    last_reload: Arc<Mutex<Option<Instant>>>,
     /// Kept alive so the writer thread doesn't drop while in use.
     _writer_handle: Arc<RwLock<Option<thread::JoinHandle<()>>>>,
 }
@@ -179,6 +174,7 @@ impl FilesIndex {
         {
             let writer_handle = Arc::clone(&writer_handle);
             let cache = Arc::clone(&cache);
+            let worker_reader = reader.clone();
             let index = index;
             let home = home.to_owned();
             let stem = fields.stem;
@@ -209,6 +205,10 @@ impl FilesIndex {
                         },
                     );
                     let _ = writer.commit();
+                    // Publish the reconciled generation from the indexing
+                    // worker. `reload()` may touch disk and must never move
+                    // back onto the compositor's per-keystroke query path.
+                    let _ = worker_reader.reload();
                     if let Ok(mut c) = cache.lock() {
                         c.invalidate();
                     }
@@ -223,7 +223,6 @@ impl FilesIndex {
             reader,
             query_parser,
             cache,
-            last_reload: Arc::new(Mutex::new(None)),
             _writer_handle: writer_handle,
         })
     }
@@ -238,24 +237,9 @@ impl FilesIndex {
         {
             return hit;
         }
-        // Throttled reader-reload — see READER_RELOAD_INTERVAL_MS.
-        {
-            let now = Instant::now();
-            let mut should_reload = true;
-            if let Ok(mut slot) = self.last_reload.lock() {
-                if let Some(prev) = *slot
-                    && now.duration_since(prev) < Duration::from_millis(READER_RELOAD_INTERVAL_MS)
-                {
-                    should_reload = false;
-                }
-                if should_reload {
-                    *slot = Some(now);
-                }
-            }
-            if should_reload {
-                let _ = self.reader.reload();
-            }
-        }
+        // `OnCommitWithDelay` refreshes the reader outside this call. Never
+        // perform a disk-backed reader reload on the compositor's keystroke
+        // path; a just-committed generation can appear on the next poll.
         let Ok(query) = self.query_parser.parse_query(needle) else {
             return Vec::new();
         };
@@ -317,8 +301,11 @@ fn load_mtime_snapshot(
 ) -> Result<HashMap<PathBuf, u64>, tantivy::error::TantivyError> {
     let reader = index
         .reader_builder()
-        .reload_policy(ReloadPolicy::OnCommitWithDelay)
+        .reload_policy(ReloadPolicy::Manual)
         .try_into()?;
+    // A newly-created reader may otherwise begin at generation zero and make
+    // an existing persistent index look empty to deletion reconciliation.
+    reader.reload()?;
     let searcher = reader.searcher();
     let mut out = HashMap::new();
     for segment_reader in searcher.segment_readers() {
@@ -362,7 +349,8 @@ fn walk_and_index(
     writer: &mut IndexWriter,
     fields: Fields,
 ) {
-    let mut count = 0usize;
+    let mut seen = HashSet::new();
+    let mut reached_limit = false;
     let mut since_commit = 0usize;
     let mut last_commit = SystemTime::now();
     for entry in WalkDir::new(home)
@@ -381,6 +369,11 @@ fn walk_and_index(
         if is_binary(path) {
             continue;
         }
+        if seen.len() >= MAX_ENTRIES {
+            reached_limit = true;
+            break;
+        }
+        seen.insert(path.to_owned());
         let Ok(meta) = entry.metadata() else {
             continue;
         };
@@ -411,7 +404,6 @@ fn walk_and_index(
         doc.add_u64(fields.mtime, mtime);
         writer.add_document(doc).ok();
 
-        count = count.saturating_add(1);
         since_commit = since_commit.saturating_add(1);
         if since_commit >= COMMIT_BATCH
             || last_commit.elapsed().map_or(0, |d| d.as_secs()) >= COMMIT_INTERVAL_SECS
@@ -420,8 +412,14 @@ fn walk_and_index(
             since_commit = 0;
             last_commit = SystemTime::now();
         }
-        if count >= MAX_ENTRIES {
-            break;
+    }
+
+    // A complete scan is also the deletion journal. Never reconcile after a
+    // capped walk: paths beyond the bound were not observed and deleting them
+    // would turn a performance ceiling into silent index data loss.
+    if !reached_limit {
+        for stale in existing.keys().filter(|path| !seen.contains(*path)) {
+            writer.delete_term(Term::from_field_text(fields.path, &stale.to_string_lossy()));
         }
     }
 }
@@ -730,6 +728,55 @@ mod content_index_integration {
         assert!(
             ready,
             "second-pass reader must see previously-committed docs"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn complete_incremental_scan_removes_deleted_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let cache_dir = tmp.path().join(".cache/tilo/files-index");
+        fs::create_dir_all(&cache_dir).ok();
+        unsafe {
+            std::env::set_var("TILO_FILES_INDEX_DIR", &cache_dir);
+        }
+
+        let deleted_path = home.join("retired.md");
+        fs::write(&deleted_path, "uniquely retired search content").unwrap();
+        {
+            let index = FilesIndex::open_or_create(home).unwrap();
+            assert!(
+                wait_for(
+                    || !index.query("uniquely retired", 10).is_empty(),
+                    Duration::from_secs(15),
+                ),
+                "first scan did not index the fixture"
+            );
+            assert!(
+                wait_for(
+                    || {
+                        index
+                            ._writer_handle
+                            .read()
+                            .ok()
+                            .and_then(|handle| handle.as_ref().map(thread::JoinHandle::is_finished))
+                            .unwrap_or(false)
+                    },
+                    Duration::from_secs(15),
+                ),
+                "first scan's writer did not finish"
+            );
+        }
+
+        fs::remove_file(&deleted_path).unwrap();
+        let index = FilesIndex::open_or_create(home).unwrap();
+        assert!(
+            wait_for(
+                || index.query("uniquely retired", 10).is_empty(),
+                Duration::from_secs(15),
+            ),
+            "a deleted file remained searchable after a complete reconciliation"
         );
     }
 }

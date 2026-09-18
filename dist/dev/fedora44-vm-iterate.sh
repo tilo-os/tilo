@@ -10,6 +10,7 @@
 #   dist/dev/fedora44-vm-iterate.sh bootstrap
 #   dist/dev/fedora44-vm-iterate.sh build [shell|host|PACKAGE ...]
 #   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh deploy [shell|PACKAGE ...]
+#   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh deploy-apps RELEASE_STAGE
 #   dist/dev/fedora44-vm-iterate.sh handoff
 #   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh verify
 #   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh cycle [shell|PACKAGE ...]
@@ -130,6 +131,9 @@ build_one() {
         # across host and /run/host paths can corrupt a later host build.
         export SCCACHE_SERVER_PORT='$sccache_port'
         export SCCACHE_DIR=\"\$HOME/.cache/$sccache_cache_name\"
+        # Generated libspa C wrappers require the compiler's own preprocessor;
+        # sccache direct mode can omit PipeWire inline declarations on Fedora.
+        export SCCACHE_DIRECT=false
         mkdir -p '$target_rel'
         # This is a persistent, disposable build cache rather than source. The
         # standard tag keeps backup/indexing tools from treating it as project
@@ -140,7 +144,10 @@ build_one() {
             '# For information about cache directory tags, see:' \\
             '#       http://www.brynosaurus.com/cachedir/' > '$target_rel/CACHEDIR.TAG'
         fi
-        exec flock '$target_rel/.build.lock' env \\
+        # flock stays behind as the lock owner while Cargo runs. Its --close
+        # mode prevents Cargo, rustc, and sccache's long-lived server from
+        # inheriting the lock descriptor and wedging every later build.
+        exec flock --close '$target_rel/.build.lock' env \\
           CARGO_TARGET_DIR='$target_rel' \\
           RUSTC_WRAPPER=sccache \\
           cargo build --locked$quoted"
@@ -159,6 +166,10 @@ cmd_build() {
         else
             note "debug-building $package only"
             build_one "$package"
+            # The compositor resolves the sandbox launcher beside itself.
+            # Keep that host boundary matched automatically; otherwise a new
+            # shell can silently exercise an old installed launcher.
+            [[ $package != shell ]] || build_one tilo-launcher
         fi
     done
 }
@@ -216,14 +227,23 @@ deploy_one() {
     safe_name "$binary"
     remote_install "$repo_root/$target_rel/debug/$binary" "$binary"
     if [[ $package == shell ]]; then
+        remote_install "$repo_root/$target_rel/debug/tilo-launcher" tilo-launcher
         # The packaged developer wrapper intentionally accepts only an absolute,
         # private path carrying this marker.  Set up precisely that contract.
+        wrapper=$repo_root/dist/session/tilo-session-dev
+        [[ -x $wrapper ]] || die "developer session wrapper is missing: $wrapper"
         ssh_base "set -eu
             shell_path=\"\$HOME/$vm_root/shell\"
             grep -aFq 'tilo-dev-session-build-marker-v1' \"\$shell_path\"
             install -d -m 700 \"\$HOME/.config/tilo\"
             printf '%s\\n' \"\$shell_path\" > \"\$HOME/.config/tilo/dev-session\"
-            chmod 600 \"\$HOME/.config/tilo/dev-session\""
+            chmod 600 \"\$HOME/.config/tilo/dev-session\"
+            wrapper=\"\$HOME/$vm_root/tilo-session-dev\"
+            incoming=\"\$HOME/$vm_root/incoming/tilo-session-dev.\$\$\"
+            cat > \"\$incoming\"
+            chmod 700 \"\$incoming\"
+            mv -f \"\$incoming\" \"\$wrapper\"
+            sudo install -m 0755 \"\$wrapper\" /usr/libexec/tilo-session-dev" <"$wrapper"
     fi
 }
 
@@ -235,6 +255,43 @@ cmd_deploy() {
         note "deploying $package into the disposable VM"
         deploy_one "$package"
     done
+}
+
+cmd_deploy_apps() {
+    (($# == 1)) || die 'deploy-apps takes one staged app-store directory'
+    local stage=$1
+    [[ -f $stage/usr/share/tilo-apps/registry.toml ]] || die "missing staged registry: $stage"
+    [[ -d $stage/usr/lib/tilo-apps && -d $stage/usr/lib/tilo-runtime ]] \
+        || die "missing staged payload/runtime: $stage"
+    assert_disposable_guest
+    local archive
+    archive=$(mktemp "${TMPDIR:-/tmp}/tilo-vm-apps.XXXXXX.tar")
+    trap 'rm -f "$archive"' RETURN
+    tar -C "$stage" -cf "$archive" usr/share/tilo-apps usr/lib/tilo-apps usr/lib/tilo-runtime
+    ssh_base "set -euo pipefail
+        root=\"\$HOME/$vm_root/apps\"
+        incoming=\"\$HOME/$vm_root/apps.incoming.\$\$\"
+        old=\"\$HOME/$vm_root/apps.old.\$\$\"
+        umask 077
+        mkdir -p \"\$incoming\"
+        tar -xf - -C \"\$incoming\"
+        if [ -e \"\$root\" ]; then mv \"\$root\" \"\$old\"; fi
+        mv \"\$incoming\" \"\$root\"
+        rm -rf -- \"\$old\"
+        cp \"\$HOME/$vm_root/apps/usr/lib/tilo-runtime/2026.07/bundle.toml\" /dev/null
+        publisher=\$(sed -n 's/^publisher_hex = \"\\([0-9a-fA-F]\\{64\\}\\)\"$/\\1/p' \
+          \"\$root/usr/lib/tilo-runtime/2026.07/bundle.toml\")
+        test \"\${#publisher}\" -eq 64
+        printf '%s\\n' \"\$publisher\" > \"\$root/usr/lib/tilo-runtime/trusted-publishers.txt\"
+        chmod 600 \"\$root/usr/lib/tilo-runtime/trusted-publishers.txt\"
+        install -d -m 700 \"\$HOME/.config/tilo\"
+        printf '%s\\n%s\\n%s\\n' \\
+          \"\$root/usr/share/tilo-apps\" \\
+          \"\$root/usr/lib/tilo-apps\" \\
+          \"\$root/usr/lib/tilo-runtime\" \\
+          > \"\$HOME/.config/tilo/dev-app-environment\"
+        chmod 600 \"\$HOME/.config/tilo/dev-app-environment\"" <"$archive"
+    note 'developer app/runtime overlay staged; it becomes active after a normal VM UI logout/login'
 }
 
 cmd_handoff() {
@@ -280,6 +337,7 @@ Usage:
   dist/dev/fedora44-vm-iterate.sh bootstrap
   dist/dev/fedora44-vm-iterate.sh build [shell|host|PACKAGE ...]
   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh deploy [shell|PACKAGE ...]
+  TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh deploy-apps RELEASE_STAGE
   dist/dev/fedora44-vm-iterate.sh handoff
   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh verify
   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh cycle [shell|PACKAGE ...]
@@ -298,6 +356,7 @@ case "${1:-}" in
     bootstrap) shift; (($# == 0)) || die 'bootstrap takes no arguments'; cmd_bootstrap ;;
     build) shift; cmd_build "$@" ;;
     deploy) shift; cmd_deploy "$@" ;;
+    deploy-apps) shift; cmd_deploy_apps "$@" ;;
     handoff) shift; (($# == 0)) || die 'handoff takes no arguments'; cmd_handoff ;;
     verify) shift; (($# == 0)) || die 'verify takes no arguments'; cmd_verify ;;
     restart) die 'automatic session termination is intentionally disabled; run handoff and log out in the VM UI' ;;

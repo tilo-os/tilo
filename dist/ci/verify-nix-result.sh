@@ -7,7 +7,8 @@ result=$(realpath "$1")
 arch=$2
 case "$arch" in amd64|arm64) ;; *) exit 2 ;; esac
 
-for file in bin/tilo-shell bin/tilo-launcher libexec/tilo-unlock-helper libexec/tilo-session; do
+for file in bin/tilo-shell bin/tilo-launcher libexec/tilo-unlock-helper \
+            libexec/tilo-session libexec/tilo-session-runner; do
     [[ -x $result/$file ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
 for file in etc/pam.d/tilo-unlock share/wayland-sessions/tilo.desktop \
@@ -21,16 +22,18 @@ done
 entry=$result/share/wayland-sessions/tilo.desktop
 portal=$result/share/xdg-desktop-portal/portals/tilo.portal
 wrapper=$result/libexec/tilo-session
+runner=$result/libexec/tilo-session-runner
 grep -Fqx "Exec=$result/libexec/tilo-session" "$entry"
 grep -Fqx "TryExec=$result/bin/tilo-shell" "$entry"
 grep -q '^DesktopNames=tilo$' "$entry"
 grep -q '^UseIn=tilo$' "$portal"
 grep -q '^default=tilo$' "$result/share/xdg-desktop-portal/tilo-portals.conf"
 grep -Fqx "TILO_SHELL=$result/bin/tilo-shell" "$wrapper"
-grep -Eq '^SYSTEMD_CAT=/nix/store/.+/bin/systemd-cat$' "$wrapper"
-grep -Eq '^DBUS_UPDATE=/nix/store/.+/bin/dbus-update-activation-environment$' "$wrapper"
-grep -Fq -- '--identifier=tilo-session --level-prefix=false' "$wrapper"
-grep -q -- '--firstboot' "$wrapper"
+grep -Fqx "SESSION_RUNNER=$result/libexec/tilo-session-runner" "$wrapper"
+grep -Eq '^SYSTEMD_CAT=/nix/store/.+/bin/systemd-cat$' "$runner"
+grep -Eq '^DBUS_UPDATE=/nix/store/.+/bin/dbus-update-activation-environment$' "$runner"
+grep -Fq -- '--identifier=tilo-session --level-prefix=false' "$runner"
+grep -q -- '--firstboot' "$runner"
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' \
     "$result/share/systemd/user/tilo-graphical-session.target"
 

@@ -42,6 +42,7 @@ die() {
 HOMEDIR=$(getent passwd "$ME" | cut -d: -f6)
 [ -n "${HOMEDIR:-}" ] || die "no home directory in the passwd database for uid $ME"
 CONF="$HOMEDIR/.config/tilo/dev-session"
+APP_ENV_CONF="$HOMEDIR/.config/tilo/dev-app-environment"
 
 # Owned by this user or by root, and writable by neither group nor other.
 # `stat -L` so a symlink is judged by what it points at; the chain walk below
@@ -93,6 +94,38 @@ LC_ALL=C grep -q -a -F -e "$MARKER" -- "$TARGET_REAL" || die \
     cargo build -p shell --features dev-session
   (a --release build never carries the marker, by design)"
 
+# Optional developer app/runtime overlay.  The file is intentionally a tiny
+# data format instead of shell: three absolute paths, one per line, with the
+# same ownership and directory-chain checks as the compositor target.  This
+# keeps the fast VM loop matched — thin app + signed runtime + registry —
+# without letting arbitrary session environment or commands ride along.
+if [ -f "$APP_ENV_CONF" ]; then
+    APP_ENV_REAL=$(realpath -e -- "$APP_ENV_CONF") || die "cannot resolve $APP_ENV_CONF"
+    path_is_trusted "$APP_ENV_REAL" || die "$APP_ENV_REAL must be owned by you and not writable by anyone else"
+    chain_is_trusted "$(dirname -- "$APP_ENV_REAL")" || die "the directories above $APP_ENV_REAL are writable by others"
+    # Paths are line-oriented rather than shell words. Reject whitespace in a
+    # path explicitly: POSIX sh has no arrays, and allowing it here would make
+    # `set -- $(...)` silently change the three-field security boundary.
+    set -- $(sed -e 's/#.*//' -e 's/[[:space:]]*$//' -- "$APP_ENV_REAL" | grep -v '^[[:space:]]*$' || true)
+    [ "$#" -eq 3 ] || die "$APP_ENV_REAL must name exactly registry, payload, and runtime directories"
+    DEV_REGISTRY=$(realpath -e -- "$1") || die "cannot resolve developer app registry root"
+    DEV_PAYLOAD=$(realpath -e -- "$2") || die "cannot resolve developer app payload root"
+    DEV_RUNTIME=$(realpath -e -- "$3") || die "cannot resolve developer runtime root"
+    for _d in "$DEV_REGISTRY" "$DEV_PAYLOAD" "$DEV_RUNTIME"; do
+        [ -d "$_d" ] || die "developer app path is not a directory: $_d"
+        path_is_trusted "$_d" || die "developer app path is untrusted: $_d"
+        chain_is_trusted "$_d" || die "the directories above developer app path are writable by others: $_d"
+    done
+    [ -f "$DEV_REGISTRY/registry.toml" ] || die "$DEV_REGISTRY has no registry.toml"
+    TILO_APPS_SYSTEM_DIR=$DEV_REGISTRY
+    TILO_APPS_SYSTEM_PAYLOAD_DIR=$DEV_PAYLOAD
+    TILO_RUNTIME_BUNDLE_DIR=$DEV_RUNTIME
+    TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$DEV_RUNTIME/trusted-publishers.txt
+    [ -f "$TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE" ] || die "developer runtime has no trusted-publishers.txt"
+    export TILO_APPS_SYSTEM_DIR TILO_APPS_SYSTEM_PAYLOAD_DIR TILO_RUNTIME_BUNDLE_DIR \
+        TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE
+fi
+
 XDG_CURRENT_DESKTOP=tilo
 XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
@@ -118,7 +151,13 @@ TARGET_SHA256=$(sha256sum -- "$TARGET_REAL" | cut -d' ' -f1)
 } >"$ATTEST_TMP" || die "cannot record developer-session attestation"
 chmod 600 -- "$ATTEST_TMP" || die "cannot protect developer-session attestation"
 mv -f -- "$ATTEST_TMP" "$ATTEST_DIR/active" || die "cannot publish developer-session attestation"
-# --firstboot for the same reason as the production wrapper: a host has no
-# unit that prepares the user's config directories. Identity creation remains
-# an interactive compositor-owned step.
-exec "$TARGET_REAL" --host-desktop-session --firstboot --backend drm "$@"
+
+# From this point on the developer session has the exact same lifecycle as the
+# installed session: graphical targets and services, activation environment,
+# logout request channel, signal forwarding, journaling, and cleanup. The
+# package-owned runner accepts the canonical path only after this wrapper has
+# completed every developer-build security check above.
+SELF_REAL=$(realpath -e -- "$0") || die "cannot resolve developer-session wrapper"
+SESSION_RUNNER=$(dirname -- "$SELF_REAL")/tilo-session-runner
+[ -x "$SESSION_RUNNER" ] || die "the package-owned lifecycle runner is missing"
+exec "$SESSION_RUNNER" "$TARGET_REAL" "$@"

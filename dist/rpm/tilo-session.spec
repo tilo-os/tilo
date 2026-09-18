@@ -46,6 +46,16 @@ License:        AGPL-3.0-only
 URL:            https://code.podesta.ai/qos/tilo
 Source0:        %{name}-%{version}.tar.gz
 
+# qOS was renamed to Tilo at 0.1.9.  Keep this as an ordinary RPM rename so a
+# package-manager update replaces the old package instead of installing a
+# second login session beside it.  The bounded Obsoletes deliberately leaves
+# any hypothetical post-rename qOS fork alone; the versioned Provides lets
+# dependencies on the former package name remain satisfiable during the
+# transition.  Conflicts would prevent the solver from performing the rename,
+# so none belongs here.
+Provides:       qos-session = %{version}-%{release}
+Obsoletes:      qos-session < 0.1.9
+
 # The payload contains native ELF binaries. CI builds it on each enabled
 # native release architecture; rpmbuild rejects every other architecture.
 ExclusiveArch:  x86_64 aarch64
@@ -133,6 +143,8 @@ Summary:        %{tilo_summary} — immutable Tilo application store
 Requires:       %{name} = %{version}-%{release}
 Requires:       bubblewrap
 Requires:       systemd
+Provides:       qos-session-apps = %{version}-%{release}
+Obsoletes:      qos-session-apps < 0.1.9
 
 %description apps
 The Tilo applications and signed shared runtime used by the Tilo host session.
@@ -144,6 +156,8 @@ applications and their state are never overwritten by an RPM update.
 %package devel
 Summary:        %{tilo_summary} — developer session entry
 Requires:       %{name} = %{version}-%{release}
+Provides:       qos-session-devel = %{version}-%{release}
+Obsoletes:      qos-session-devel < 0.1.9
 # Every check the entry makes is a stat, a realpath or a grep.
 Requires:       coreutils
 Requires:       grep
@@ -173,6 +187,7 @@ install -Dpm 0755 bin/tilo-launcher          %{buildroot}%{_bindir}/tilo-launche
 # it anywhere else means a session that can be locked and never unlocked.
 install -Dpm 0755 libexec/tilo-unlock-helper %{buildroot}%{_libexecdir}/tilo-unlock-helper
 install -Dpm 0755 libexec/tilo-session       %{buildroot}%{_libexecdir}/tilo-session
+install -Dpm 0755 libexec/tilo-session-runner %{buildroot}%{_libexecdir}/tilo-session-runner
 install -Dpm 0644 pam/tilo-unlock            %{buildroot}%{_sysconfdir}/pam.d/tilo-unlock
 install -Dpm 0644 wayland-sessions/tilo.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/tilo.desktop
@@ -234,17 +249,11 @@ done
 test -x %{buildroot}%{_libexecdir}/tilo-unlock-helper
 # And the production session wrapper must not be redirectable.
 grep -q '^TILO_SHELL=/usr/bin/tilo-shell$' %{buildroot}%{_libexecdir}/tilo-session
-# A host has no unit that runs the one-time setup, so the wrappers have to.
-for wrapper in tilo-session tilo-session-dev; do
-    grep -q -- '--firstboot' "%{buildroot}%{_libexecdir}/$wrapper" || {
-        echo "$wrapper does not pass --firstboot; the identity would never be provisioned" >&2
-        exit 1
-    }
-    grep -q -- '--host-desktop-session' "%{buildroot}%{_libexecdir}/$wrapper" || {
-        echo "$wrapper does not identify itself as a host desktop session" >&2
-        exit 1
-    }
-done
+grep -q '^SESSION_RUNNER=/usr/libexec/tilo-session-runner$' %{buildroot}%{_libexecdir}/tilo-session
+# A host has no unit that runs the one-time setup, so the shared lifecycle has
+# to supply both declarations regardless of which entry wrapper selected it.
+grep -q -- '--firstboot' %{buildroot}%{_libexecdir}/tilo-session-runner
+grep -q -- '--host-desktop-session' %{buildroot}%{_libexecdir}/tilo-session-runner
 # The portal backend is only reachable if something claims the session's name.
 grep -q '^UseIn=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/portals/tilo.portal
 grep -q '^default=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/tilo-portals.conf
@@ -278,6 +287,7 @@ done
 %{_bindir}/tilo-launcher
 %{_libexecdir}/tilo-unlock-helper
 %{_libexecdir}/tilo-session
+%{_libexecdir}/tilo-session-runner
 %config(noreplace) %{_sysconfdir}/pam.d/tilo-unlock
 %{_datadir}/wayland-sessions/tilo.desktop
 %{_datadir}/xdg-desktop-portal/portals/tilo.portal

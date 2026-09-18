@@ -40,6 +40,15 @@ pub enum QsReading {
     Firmware(Option<Vec<qs::FirmwareUpdate>>),
     WifiNetworks(Option<Vec<qs::WifiNetworkInfo>>),
     BtDevices(Option<Vec<qs::BtDeviceInfo>>),
+    WifiJoin(WifiJoinResult),
+}
+
+#[derive(Debug)]
+pub struct WifiJoinResult {
+    pub ssid: String,
+    pub password: Option<String>,
+    pub shared_credential: bool,
+    pub result: Result<(), String>,
 }
 
 /// Tracked so a second open while a read is running doesn't pile up
@@ -50,6 +59,7 @@ enum Tier {
     Wifi,
     Bt,
     Firmware,
+    WifiJoin,
 }
 
 pub struct QsRefresh {
@@ -163,6 +173,26 @@ impl QsRefresh {
         });
     }
 
+    /// Join without ever waiting on NetworkManager from the compositor/input
+    /// thread. Only one join is admitted at a time; the visible prompt/row is
+    /// already marked busy before this method returns.
+    pub fn kick_wifi_join(
+        &mut self,
+        ssid: String,
+        password: Option<String>,
+        shared_credential: bool,
+    ) {
+        self.spawn(Tier::WifiJoin, move || {
+            let result = qs::connect_wifi(&ssid, password.as_deref());
+            QsReading::WifiJoin(WifiJoinResult {
+                ssid,
+                password,
+                shared_credential,
+                result,
+            })
+        });
+    }
+
     /// Every reading arrived since the last call. Never blocks.
     pub fn drain(&mut self) -> Vec<QsReading> {
         let mut out = Vec::new();
@@ -172,6 +202,7 @@ impl QsRefresh {
                 QsReading::WifiNetworks(_) => Tier::Wifi,
                 QsReading::BtDevices(_) => Tier::Bt,
                 QsReading::Firmware(_) => Tier::Firmware,
+                QsReading::WifiJoin(_) => Tier::WifiJoin,
             };
             self.in_flight.remove(&tier);
             out.push(reading);
@@ -187,6 +218,27 @@ impl QsRefresh {
         F: FnOnce() -> QsReading + Send + 'static,
     {
         self.spawn(Tier::Fast, work);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn kick_wifi_join_with<F>(
+        &mut self,
+        ssid: String,
+        password: Option<String>,
+        shared_credential: bool,
+        work: F,
+    ) where
+        F: FnOnce(&str, Option<&str>) -> Result<(), String> + Send + 'static,
+    {
+        self.spawn(Tier::WifiJoin, move || {
+            let result = work(&ssid, password.as_deref());
+            QsReading::WifiJoin(WifiJoinResult {
+                ssid,
+                password,
+                shared_credential,
+                result,
+            })
+        });
     }
 
     pub fn os_reads_enabled(&self) -> bool {
@@ -234,6 +286,43 @@ mod tests {
             r.drain().is_empty(),
             "no reading can have landed yet — draining must not block waiting for one"
         );
+    }
+
+    #[test]
+    fn dispatching_a_slow_wifi_join_does_not_block_and_delivers_its_result() {
+        use std::sync::mpsc;
+
+        let mut refresh = QsRefresh::without_os_reads();
+        // Explicit test work must remain enabled even though ambient host
+        // reads are disabled for this deterministic fixture.
+        refresh.enabled = true;
+        let (release_tx, release_rx) = mpsc::channel();
+        let started = std::time::Instant::now();
+        refresh.kick_wifi_join_with("Cafe".into(), Some("secret".into()), false, move |_, _| {
+            let _ = release_rx.recv();
+            Ok(())
+        });
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        assert!(refresh.is_in_flight());
+        assert!(refresh.drain().is_empty());
+        release_tx.send(()).expect("release wifi worker");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            let readings = refresh.drain();
+            if let Some(QsReading::WifiJoin(result)) = readings.into_iter().next() {
+                assert_eq!(result.ssid, "Cafe");
+                assert_eq!(result.password.as_deref(), Some("secret"));
+                assert!(result.result.is_ok());
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "wifi result timed out"
+            );
+            std::thread::yield_now();
+        }
+        assert!(!refresh.is_in_flight());
     }
 
     #[test]

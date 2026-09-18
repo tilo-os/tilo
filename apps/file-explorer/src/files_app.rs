@@ -9,7 +9,11 @@
 //! frame. See [`crate::command`].
 
 use crate::command::{CommandSink, FileCommand, new_sink};
+use crate::history_panel::{
+    HistoryPanel, format_timestamp, read_current_text_preview, text_diff_lines,
+};
 use crate::i18n::{arg, t, t_args};
+use crate::metadata_refresh;
 use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sync, sort_entries};
 use crate::places_sidebar::{self, FavStore, PlacesSidebar};
 use crate::views::file_view::ThumbCtx;
@@ -45,29 +49,11 @@ const BODY_BREAKPOINT_PX: f64 = 640.0;
 /// Space kept clear at the bottom of the file viewport for the transient
 /// item/status pill. The pill includes its hover shadow, so this is larger
 /// than its measured text capsule: no file label or target may sit beneath it.
-const STATUS_BUBBLE_SAFE_INSET: f32 = 64.0;
+pub const STATUS_BUBBLE_SAFE_INSET_PX: f32 = 64.0;
 /// Long absolute paths clip at narrow widths and obscure the recovery action.
 /// Preserve the recognisable tail here; the full location stays in the path bar
 /// and the root accessibility description.
 const STATE_SURFACE_LOCATION_CHARS: usize = 36;
-/// Keep small folders feeling live without repeatedly walking a large folder
-/// on the UI thread.  Rendering is virtualised, but the filesystem has no
-/// change subscription yet, so the metadata refresh still has to read a
-/// complete directory snapshot.  A fixed sub-second poll turned a 100k-item
-/// folder into a permanent metadata/xattr storm.  Back off deliberately as
-/// the observed directory grows; an explicit Refresh and every Files
-/// operation remain immediate, while collaborative metadata still converges
-/// at a bounded cadence.
-const LIVE_METADATA_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
-const MEDIUM_DIRECTORY_METADATA_REFRESH_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(3);
-const LARGE_DIRECTORY_METADATA_REFRESH_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(12);
-const HUGE_DIRECTORY_METADATA_REFRESH_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(30);
-const MEDIUM_DIRECTORY_ENTRY_COUNT: usize = 512;
-const LARGE_DIRECTORY_ENTRY_COUNT: usize = 4_096;
-const HUGE_DIRECTORY_ENTRY_COUNT: usize = 20_000;
 /// The resource catalogue is shared with search, activity, automation, and
 /// assistive clients. Keep its eagerly enumerated current-folder projection
 /// deliberately small; an exact item is materialised from the live snapshot
@@ -116,23 +102,6 @@ fn format_duration(duration_ms: u64) -> String {
         format!("{hours}:{minutes:02}:{seconds:02}")
     } else {
         format!("{minutes}:{seconds:02}")
-    }
-}
-
-/// Choose the low-priority metadata refresh cadence from the last completed
-/// directory snapshot.  This is intentionally pure so the cost policy is
-/// regression-tested without making a real large directory or sleeping in a
-/// test.  It is a *poll* budget only: direct navigation, explicit refresh,
-/// and mutation paths never wait for this interval.
-const fn metadata_refresh_interval(entry_count: usize) -> std::time::Duration {
-    if entry_count >= HUGE_DIRECTORY_ENTRY_COUNT {
-        HUGE_DIRECTORY_METADATA_REFRESH_INTERVAL
-    } else if entry_count >= LARGE_DIRECTORY_ENTRY_COUNT {
-        LARGE_DIRECTORY_METADATA_REFRESH_INTERVAL
-    } else if entry_count >= MEDIUM_DIRECTORY_ENTRY_COUNT {
-        MEDIUM_DIRECTORY_METADATA_REFRESH_INTERVAL
-    } else {
-        LIVE_METADATA_REFRESH_INTERVAL
     }
 }
 
@@ -195,38 +164,6 @@ struct CollabPanel {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct HistoryPanel {
-    record_id: String,
-    path: PathBuf,
-    /// Newest first. The filesystem projection is bounded, so this remains
-    /// cheap to paint and safe to expose to accessibility clients.
-    versions: Vec<crate::model::HistoryVersion>,
-    heads: Vec<String>,
-    selected: usize,
-    compare: bool,
-    selected_preview: Option<String>,
-    current_preview: Option<String>,
-    preview_loading: bool,
-}
-
-impl HistoryPanel {
-    fn selected_version(&self) -> Option<&crate::model::HistoryVersion> {
-        self.versions.get(self.selected)
-    }
-
-    fn current_version(&self) -> Option<&crate::model::HistoryVersion> {
-        self.versions
-            .iter()
-            .find(|version| self.heads.contains(&version.id))
-    }
-
-    fn selected_is_current(&self) -> bool {
-        self.selected_version()
-            .is_some_and(|version| self.heads.contains(&version.id))
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 enum CollabPanelAction {
     DestructiveEviction(Vec<PathBuf>),
     PermanentDelete(Vec<PathBuf>),
@@ -283,104 +220,6 @@ fn short_fingerprint(key: &[u8; 32]) -> String {
 fn short_uuid(id: uuid::Uuid) -> String {
     let simple = id.simple().to_string();
     simple.get(..8).unwrap_or(&simple).to_string()
-}
-
-fn format_timestamp(timestamp_ms: u64) -> String {
-    i64::try_from(timestamp_ms)
-        .ok()
-        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
-        .map_or_else(
-            || t("files-time-unknown"),
-            |timestamp| crate::i18n::format_datetime(timestamp.with_timezone(&chrono::Local)),
-        )
-}
-
-fn read_current_text_preview(path: &Path) -> Option<String> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if metadata.len() > collab_types::MAX_HISTORY_PREVIEW_BYTES as u64 {
-        return None;
-    }
-    let text = std::fs::read_to_string(path).ok()?;
-    (!text.chars().any(|character| character == '\0')).then_some(text)
-}
-
-#[allow(
-    clippy::indexing_slicing,
-    reason = "the dynamic-programming table is sized one sentinel row/column larger and every index is guarded by the corresponding source length"
-)]
-fn text_diff_lines(before: &str, after: &str) -> Vec<(char, String)> {
-    let before: Vec<&str> = before.lines().take(120).collect();
-    let after: Vec<&str> = after.lines().take(120).collect();
-    let mut lengths =
-        vec![vec![0_usize; after.len().saturating_add(1)]; before.len().saturating_add(1)];
-    for left in (0..before.len()).rev() {
-        for right in (0..after.len()).rev() {
-            lengths[left][right] = if before[left] == after[right] {
-                lengths[left + 1][right + 1].saturating_add(1)
-            } else {
-                lengths[left + 1][right].max(lengths[left][right + 1])
-            };
-        }
-    }
-    let (mut left, mut right) = (0, 0);
-    let mut output = Vec::new();
-    while left < before.len() || right < after.len() {
-        if left < before.len() && right < after.len() && before[left] == after[right] {
-            output.push((' ', before[left].to_string()));
-            left += 1;
-            right += 1;
-        } else if right < after.len()
-            && (left == before.len() || lengths[left][right + 1] > lengths[left + 1][right])
-        {
-            output.push(('+', after[right].to_string()));
-            right += 1;
-        } else if left < before.len() {
-            output.push(('-', before[left].to_string()));
-            left += 1;
-        }
-    }
-    output
-}
-
-#[cfg(test)]
-mod history_diff_tests {
-    use super::{
-        HUGE_DIRECTORY_ENTRY_COUNT, HUGE_DIRECTORY_METADATA_REFRESH_INTERVAL,
-        LARGE_DIRECTORY_ENTRY_COUNT, LARGE_DIRECTORY_METADATA_REFRESH_INTERVAL,
-        LIVE_METADATA_REFRESH_INTERVAL, MEDIUM_DIRECTORY_ENTRY_COUNT,
-        MEDIUM_DIRECTORY_METADATA_REFRESH_INTERVAL, metadata_refresh_interval, text_diff_lines,
-    };
-
-    #[test]
-    fn replacements_read_as_removed_then_added() {
-        assert_eq!(
-            text_diff_lines("Ship: Friday\n", "Ship: Monday\n"),
-            vec![
-                ('-', "Ship: Friday".to_string()),
-                ('+', "Ship: Monday".to_string())
-            ]
-        );
-    }
-
-    #[test]
-    fn large_directory_metadata_polling_backs_off_without_losing_refreshes() {
-        assert_eq!(
-            metadata_refresh_interval(MEDIUM_DIRECTORY_ENTRY_COUNT - 1),
-            LIVE_METADATA_REFRESH_INTERVAL
-        );
-        assert_eq!(
-            metadata_refresh_interval(MEDIUM_DIRECTORY_ENTRY_COUNT),
-            MEDIUM_DIRECTORY_METADATA_REFRESH_INTERVAL
-        );
-        assert_eq!(
-            metadata_refresh_interval(LARGE_DIRECTORY_ENTRY_COUNT),
-            LARGE_DIRECTORY_METADATA_REFRESH_INTERVAL
-        );
-        assert_eq!(
-            metadata_refresh_interval(HUGE_DIRECTORY_ENTRY_COUNT),
-            HUGE_DIRECTORY_METADATA_REFRESH_INTERVAL
-        );
-    }
 }
 
 fn certified_device_detail(device: &crate::identity_directory::TrustedDevice) -> String {
@@ -526,6 +365,11 @@ pub struct FileExplorerWidget {
     /// Clipboard for cut/copy → paste. `true` = cut (move on paste).
     clipboard: Vec<PathBuf>,
     clipboard_cut: bool,
+    /// The exact Trash entries created by the last local delete, captured only
+    /// when the host exposed an unambiguous before/after snapshot. It is
+    /// process-local because a filesystem mutation cannot be honestly replayed
+    /// through collaborative history.
+    last_trash_undo: Option<Vec<PathBuf>>,
     /// Transient status line (operation results), shown in the footer.
     status: Option<String>,
     /// Filesystem/xattr changes have no winit event of their own. The widget
@@ -919,8 +763,9 @@ impl FileExplorerWidget {
             forward: Vec::new(),
             clipboard: Vec::new(),
             clipboard_cut: false,
+            last_trash_undo: None,
             status: None,
-            next_metadata_refresh: Instant::now() + LIVE_METADATA_REFRESH_INTERVAL,
+            next_metadata_refresh: Instant::now() + metadata_refresh::LIVE_INTERVAL,
             renaming: None,
             rename_buffer: String::new(),
             rename_seed_pending: false,
@@ -1235,7 +1080,7 @@ impl FileExplorerWidget {
                 // interactive viewport. Besides making the count easy to
                 // scan, that means it cannot obscure a file name, target, or
                 // keyboard focus ring at the bottom of a compact grid.
-                .with_bottom_content_inset(STATUS_BUBBLE_SAFE_INSET)
+                .with_bottom_content_inset(STATUS_BUBBLE_SAFE_INSET_PX)
                 .with_child(view_child),
         ));
         Box::new(view_col)
@@ -1403,6 +1248,35 @@ impl FileExplorerWidget {
         self.merge_preflight_pending = None;
         self.collab_panel = None;
         self.collab_panel_focused = false;
+    }
+
+    /// Surface the complete built-in keyboard vocabulary in the same modal
+    /// shell used for Properties, sharing and recovery.  The rows describe
+    /// semantic primary-modifier bindings (Ctrl on most desktops, Command on
+    /// macOS), rather than hard-coding a physical keyboard layout.
+    fn show_keyboard_shortcuts_panel(&mut self) {
+        self.show_collab_panel(CollabPanel {
+            title: t("files-shortcuts-title"),
+            summary: t("files-shortcuts-summary"),
+            lines: [
+                "files-shortcuts-primary",
+                "files-shortcuts-navigate",
+                "files-shortcuts-grid",
+                "files-shortcuts-open",
+                "files-shortcuts-location",
+                "files-shortcuts-new-folder",
+                "files-shortcuts-edit",
+                "files-shortcuts-hidden",
+                "files-shortcuts-size",
+                "files-shortcuts-context",
+                "files-shortcuts-close",
+            ]
+            .into_iter()
+            .map(t)
+            .collect(),
+            action: None,
+            history: None,
+        });
     }
 
     fn collab_panel_action_command(&self) -> Option<FileCommand> {
@@ -1800,7 +1674,7 @@ impl FileExplorerWidget {
         }
         // Set the next deadline before doing any I/O.  A transient read error
         // must not accidentally turn a very large directory into a busy loop.
-        self.next_metadata_refresh = now + metadata_refresh_interval(self.entries.len());
+        self.next_metadata_refresh = now + metadata_refresh::interval(self.entries.len());
         let catalog_changed = self
             .collaborative_record_pager
             .borrow_mut()
@@ -2001,6 +1875,14 @@ impl FileExplorerWidget {
             FileCommand::Click { index, ctrl, shift } => self.apply_click(index, ctrl, shift),
             FileCommand::ContextSelect(target) => self.apply_context_select(target),
             FileCommand::Activate(index) => self.apply_activate(index),
+            FileCommand::MoveSelection { index, extend } => {
+                if index < self.displayed_entries().len() {
+                    self.selection.move_to(index, extend);
+                    true
+                } else {
+                    false
+                }
+            }
             FileCommand::SortColumn(col) => self.apply_sort_column(col),
             policy @ (FileCommand::KeepOffline | FileCommand::RemoveOfflinePin) => {
                 let keep_offline = matches!(policy, FileCommand::KeepOffline);
@@ -2962,6 +2844,10 @@ impl FileExplorerWidget {
                 self.toggle_sort_order();
                 true
             }
+            FileCommand::ShowKeyboardShortcuts => {
+                self.show_keyboard_shortcuts_panel();
+                true
+            }
             FileCommand::SelectAll => {
                 self.selection.select_all(self.displayed_entries().len());
                 true
@@ -2984,6 +2870,7 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::Delete => self.apply_delete(),
+            FileCommand::UndoLastTrash => self.apply_undo_last_trash(),
             FileCommand::RestoreFromTrash => self.apply_restore_from_trash(),
             FileCommand::EmptyTrash => self.request_empty_trash_confirmation(),
             FileCommand::Copy => self.apply_copy(),
@@ -3161,8 +3048,21 @@ impl FileExplorerWidget {
                     history: None,
                 });
             } else {
+                // Trash implementations may choose a mount-local store or
+                // rename on collision. Snapshot the concrete entries before
+                // and after so Undo is offered only for an exact set Files can
+                // still revalidate; never guess a path from the source name.
+                let before = fileops::trash_entries_snapshot();
                 match fileops::delete_to_trash(&paths) {
                     Ok(()) => {
+                        self.last_trash_undo = before.and_then(|before| {
+                            let after = fileops::trash_entries_snapshot()?;
+                            let created: Vec<_> = after
+                                .into_iter()
+                                .filter(|entry| !before.contains(entry))
+                                .collect();
+                            (created.len() == paths.len()).then_some(created)
+                        });
                         self.refresh();
                         self.status = Some(t_args(
                             "files-moved-to-trash",
@@ -3178,8 +3078,45 @@ impl FileExplorerWidget {
         true
     }
 
+    /// Restore the last precisely observed local Trash operation. Recheck that
+    /// every captured entry still exists before asking the platform to restore:
+    /// another process may have emptied Trash or changed an entry since Files
+    /// offered the affordance.
+    fn apply_undo_last_trash(&mut self) -> bool {
+        let Some(entries) = self.last_trash_undo.clone() else {
+            self.status = Some(t("files-undo-trash-unavailable"));
+            return true;
+        };
+        let still_present = fileops::trash_entries_snapshot()
+            .is_some_and(|current| entries.iter().all(|entry| current.contains(entry)));
+        if !still_present {
+            self.last_trash_undo = None;
+            self.status = Some(t("files-undo-trash-unavailable"));
+            return true;
+        }
+        match fileops::restore_entries(&entries) {
+            Ok(restored) if restored == entries.len() => {
+                self.last_trash_undo = None;
+                self.refresh();
+                self.status = Some(t_args(
+                    "files-undo-trash-restored",
+                    &[arg("count", fluent_count(restored))],
+                ));
+            }
+            Ok(_) => {
+                self.last_trash_undo = None;
+                self.status = Some(t("files-undo-trash-unavailable"));
+            }
+            Err(error) => {
+                self.status = Some(t_args("files-undo-trash-failed", &[arg("error", error)]));
+            }
+        }
+        true
+    }
+
     /// Carry out a previously confirmed permanent deletion from Trash.
     fn apply_permanent_delete(&mut self, paths: &[PathBuf]) -> bool {
+        self.last_trash_undo = None;
         match fileops::purge_entries(paths) {
             Ok(n) => {
                 self.refresh();
@@ -3198,6 +3135,7 @@ impl FileExplorerWidget {
     /// `FileCommand::RestoreFromTrash` — restore the selection to its
     /// original location.
     fn apply_restore_from_trash(&mut self) -> bool {
+        self.last_trash_undo = None;
         let paths = self.selected_paths();
         if !paths.is_empty() {
             match fileops::restore_entries(&paths) {
@@ -3236,6 +3174,7 @@ impl FileExplorerWidget {
 
     /// Carry out a previously confirmed request to empty the Trash.
     fn perform_empty_trash(&mut self) -> bool {
+        self.last_trash_undo = None;
         match fileops::empty_trash() {
             Ok(n) => {
                 self.refresh();
@@ -3634,6 +3573,14 @@ impl FileExplorerWidget {
     #[doc(hidden)]
     pub fn debug_open_view_menu(&mut self) {
         self.open_view_menu();
+    }
+
+    /// Seed the local-only Trash Undo affordance for an offscreen review. The
+    /// sentinel is deliberately not a real path, so headless rendering never
+    /// mutates a user's Trash.
+    #[doc(hidden)]
+    pub fn debug_arm_trash_undo(&mut self) {
+        self.last_trash_undo = Some(vec![PathBuf::from("/shot-only-trash-entry")]);
     }
 
     /// Open the context menu *and* its "New File" flyout (headless shots demo).
@@ -5755,7 +5702,7 @@ impl FileExplorerWidget {
     fn open_context_menu(&mut self, at: Point) {
         self.submenu.close();
         let spec = self.context_menu_spec(&self.available_templates());
-        let mut menu = ContextMenu::new();
+        let mut menu = self.new_overlay_menu();
         let mut cmds = Vec::with_capacity(spec.len());
         for (label, cmd) in spec {
             if cmd.is_none() && label.is_empty() {
@@ -5785,7 +5732,7 @@ impl FileExplorerWidget {
             self.submenu_commands.clear();
             return;
         }
-        let mut menu = ContextMenu::new();
+        let mut menu = self.new_overlay_menu();
         let mut cmds = Vec::with_capacity(tpls.len());
         for t in tpls {
             menu.push(MenuItem::action(templates::menu_label(&t), || {}));
@@ -5807,7 +5754,7 @@ impl FileExplorerWidget {
             return;
         }
         self.submenu.close();
-        let mut menu = ContextMenu::new();
+        let mut menu = self.new_overlay_menu();
         let mut commands = Vec::with_capacity(online.len());
         for target in online {
             menu.push(MenuItem::action(
@@ -5838,7 +5785,7 @@ impl FileExplorerWidget {
             return;
         }
         self.submenu.close();
-        let mut menu = ContextMenu::new();
+        let mut menu = self.new_overlay_menu();
         let mut commands = Vec::with_capacity(destinations.len().saturating_mul(2));
         for destination in destinations {
             menu.push(MenuItem::action(
@@ -5887,7 +5834,7 @@ impl FileExplorerWidget {
         flip_y: f64,
     ) {
         self.submenu.close();
-        let mut menu = ContextMenu::new();
+        let mut menu = self.new_overlay_menu();
         let mut cmds = Vec::with_capacity(spec.len());
         for (label, cmd, checked) in spec {
             if cmd.is_none() && label.is_empty() {
@@ -5921,6 +5868,16 @@ impl FileExplorerWidget {
         self.context_menu = menu;
         self.menu_commands = cmds;
         layout_menu_widget(&mut self.context_menu);
+    }
+
+    /// Construct a menu constrained to Files' live window rect. Overlay menus
+    /// are outside the app's normal layout tree, so this is what keeps a
+    /// 200%-text menu fully reachable rather than letting it grow off a right
+    /// or bottom edge after its trigger was measured at normal text size.
+    fn new_overlay_menu(&self) -> ContextMenu {
+        let mut menu = ContextMenu::new();
+        menu.set_viewport(Some(self.rect));
+        menu
     }
 
     /// The labelled "View options" overflow menu (the ⋯ button): new folder /
@@ -5976,6 +5933,14 @@ impl FileExplorerWidget {
                 None,
             ));
         }
+        if self.last_trash_undo.is_some() {
+            spec.push((String::new(), None, None));
+            spec.push((
+                t("files-undo-move-trash"),
+                Some(FileCommand::UndoLastTrash),
+                None,
+            ));
+        }
         spec.push((String::new(), None, None));
         spec.push((
             t("files-menu-show-hidden"),
@@ -5994,6 +5959,12 @@ impl FileExplorerWidget {
         spec.push((
             t("files-menu-open-terminal"),
             Some(FileCommand::OpenTerminal),
+            None,
+        ));
+        spec.push((String::new(), None, None));
+        spec.push((
+            t("files-shortcuts-title"),
+            Some(FileCommand::ShowKeyboardShortcuts),
             None,
         ));
         self.open_menu_right_aligned(spec, anchor, flip_y);
@@ -6061,7 +6032,7 @@ impl FileExplorerWidget {
         // A favourite menu opens at the cursor (left-anchored is fine — the
         // sidebar sits at the window's left edge).
         self.submenu.close();
-        let mut menu = ContextMenu::new();
+        let mut menu = self.new_overlay_menu();
         let mut cmds = Vec::with_capacity(spec.len());
         for (label, cmd) in spec {
             if cmd.is_none() && label.is_empty() {
@@ -6591,6 +6562,10 @@ impl FileExplorerWidget {
 
     /// App-level keyboard navigation, applied when a key isn't consumed by
     /// a focused child (search field, etc.). Returns whether it acted.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the complete keyboard command map stays auditable in one match so every shortcut has a single routing point"
+    )]
     fn handle_app_key(
         &mut self,
         ke: &winit::event::KeyEvent,
@@ -6616,6 +6591,21 @@ impl FileExplorerWidget {
             // consumes keys before this method is reached.
             Key::Character(s) if (s == "l" || s == "L") && ctrl => {
                 self.toolbar.begin_path_edit();
+                true
+            }
+            // Help is intentionally a regular view command, not an invisible
+            // one-off keypath: the same reference is reachable from View
+            // options and the current-folder action resource.
+            Key::Named(NamedKey::F1) => {
+                self.apply_command(FileCommand::ShowKeyboardShortcuts);
+                true
+            }
+            Key::Character(s) if s == "?" => {
+                self.apply_command(FileCommand::ShowKeyboardShortcuts);
+                true
+            }
+            Key::Named(NamedKey::F5) => {
+                self.apply_command(FileCommand::Refresh);
                 true
             }
             Key::Named(NamedKey::ContextMenu) if !self.selection.is_empty() => {
@@ -6680,6 +6670,22 @@ impl FileExplorerWidget {
             }
             Key::Character(s) if (s == "v" || s == "V") && ctrl => {
                 self.apply_command(FileCommand::Paste);
+                true
+            }
+            Key::Character(s) if (s == "z" || s == "Z") && ctrl => {
+                self.apply_command(FileCommand::UndoLastTrash);
+                true
+            }
+            Key::Character(s) if (s == "n" || s == "N") && ctrl && shift => {
+                self.apply_command(FileCommand::NewFolder);
+                true
+            }
+            Key::Character(s) if (s == "h" || s == "H") && ctrl => {
+                self.apply_command(FileCommand::ToggleHidden);
+                true
+            }
+            Key::Character(s) if s == "0" && ctrl => {
+                self.set_zoom(0);
                 true
             }
             // Ctrl + / Ctrl - zoom the icon/row size (both "+" and "=" cover
@@ -7029,114 +7035,136 @@ impl FileExplorerWidget {
         folder
     }
 
+    fn append_nearby_receiver_resources(&self, folder: &mut Resource) {
+        for transfer in self.nearby_send.transfers() {
+            if let Some(resource) = self.nearby_receiver_resource(transfer) {
+                folder.children.push(resource);
+            }
+        }
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "nearby payloads contain only fixed tuples of serializable opaque handles"
     )]
-    fn append_nearby_receiver_resources(&self, folder: &mut Resource) {
+    fn nearby_receiver_resource(
+        &self,
+        transfer: &ui::collaboration::NearbyTransferStatus,
+    ) -> Option<Resource> {
+        use ui::collaboration::NearbyTransferPhase;
+
+        let mut resource = Resource::new(
+            format!(
+                "nearby-transfer:{}",
+                nearby_action_locator("transfer", transfer.handle.as_bytes())
+            ),
+            "files.nearby-transfer",
+            transfer.name.clone(),
+        );
+        self.append_nearby_decision_actions(&mut resource, transfer);
+        if transfer.phase == NearbyTransferPhase::Failed {
+            resource.actions.push(
+                ActionSpec::operation(
+                    "retry",
+                    t("files-nearby-retry"),
+                    OperationKind::Effect,
+                    "files.nearby-retry",
+                    &transfer.handle,
+                )
+                .expect("nearby retry payload is serializable")
+                .with_contract(ActionContract {
+                    permission: PermissionRequirement::Read,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                }),
+            );
+        }
+        if matches!(
+            transfer.phase,
+            NearbyTransferPhase::Queued | NearbyTransferPhase::Transferring
+        ) {
+            resource.actions.push(
+                ActionSpec::operation(
+                    "cancel",
+                    t("files-nearby-cancelled"),
+                    OperationKind::Effect,
+                    "files.nearby-cancel",
+                    &transfer.handle,
+                )
+                .expect("nearby cancel payload is serializable")
+                .with_contract(ActionContract {
+                    permission: PermissionRequirement::Write,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                }),
+            );
+        }
+        (!resource.actions.is_empty()).then_some(resource)
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "nearby payloads contain only fixed tuples of serializable opaque handles"
+    )]
+    fn append_nearby_decision_actions(
+        &self,
+        resource: &mut Resource,
+        transfer: &ui::collaboration::NearbyTransferStatus,
+    ) {
         use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase};
 
-        for transfer in self.nearby_send.transfers() {
-            let mut resource = Resource::new(
-                format!(
-                    "nearby-transfer:{}",
-                    nearby_action_locator("transfer", transfer.handle.as_bytes())
-                ),
-                "files.nearby-transfer",
-                transfer.name.clone(),
-            );
-            if transfer.direction == NearbyTransferDirection::Receiving
-                && matches!(
-                    transfer.phase,
-                    NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
-                )
-            {
-                for destination in self.nearby_send.destinations() {
-                    resource.actions.push(
-                        ActionSpec::operation(
-                            format!(
-                                "accept-{}",
-                                nearby_action_locator("destination", destination.handle.as_bytes())
-                            ),
-                            t_args(
-                                "files-nearby-save-to-destination",
-                                &[arg("destination", destination.label.clone())],
-                            ),
-                            OperationKind::Effect,
-                            "files.nearby-decide",
-                            &(transfer.handle, Some(destination.handle), false),
-                        )
-                        .expect("nearby accept payload is serializable")
-                        .with_contract(ActionContract {
-                            permission: PermissionRequirement::Write,
-                            risk: RiskLevel::Privileged,
-                            confirmation: ConfirmationPolicy::Confirm,
-                            retry: RetryPolicy::AtMostOnce,
-                            ..ActionContract::default()
-                        }),
-                    );
-                }
-                resource.actions.push(
-                    ActionSpec::operation(
-                        "decline",
-                        t("files-nearby-declined"),
-                        OperationKind::Effect,
-                        "files.nearby-decide",
-                        &(
-                            transfer.handle,
-                            None::<ui::collaboration::NearbyDestinationHandle>,
-                            false,
-                        ),
-                    )
-                    .expect("nearby decline payload is serializable")
-                    .with_contract(ActionContract {
-                        permission: PermissionRequirement::Write,
-                        retry: RetryPolicy::AtMostOnce,
-                        ..ActionContract::default()
-                    }),
-                );
-            }
-            if transfer.phase == NearbyTransferPhase::Failed {
-                resource.actions.push(
-                    ActionSpec::operation(
-                        "retry",
-                        t("files-nearby-retry"),
-                        OperationKind::Effect,
-                        "files.nearby-retry",
-                        &transfer.handle,
-                    )
-                    .expect("nearby retry payload is serializable")
-                    .with_contract(ActionContract {
-                        permission: PermissionRequirement::Read,
-                        retry: RetryPolicy::AtMostOnce,
-                        ..ActionContract::default()
-                    }),
-                );
-            }
-            if matches!(
+        if transfer.direction != NearbyTransferDirection::Receiving
+            || !matches!(
                 transfer.phase,
-                NearbyTransferPhase::Queued | NearbyTransferPhase::Transferring
-            ) {
-                resource.actions.push(
-                    ActionSpec::operation(
-                        "cancel",
-                        t("files-nearby-cancelled"),
-                        OperationKind::Effect,
-                        "files.nearby-cancel",
-                        &transfer.handle,
-                    )
-                    .expect("nearby cancel payload is serializable")
-                    .with_contract(ActionContract {
-                        permission: PermissionRequirement::Write,
-                        retry: RetryPolicy::AtMostOnce,
-                        ..ActionContract::default()
-                    }),
-                );
-            }
-            if !resource.actions.is_empty() {
-                folder.children.push(resource);
-            }
+                NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
+            )
+        {
+            return;
         }
+        for destination in self.nearby_send.destinations() {
+            resource.actions.push(
+                ActionSpec::operation(
+                    format!(
+                        "accept-{}",
+                        nearby_action_locator("destination", destination.handle.as_bytes())
+                    ),
+                    t_args(
+                        "files-nearby-save-to-destination",
+                        &[arg("destination", destination.label.clone())],
+                    ),
+                    OperationKind::Effect,
+                    "files.nearby-decide",
+                    &(transfer.handle, Some(destination.handle), false),
+                )
+                .expect("nearby accept payload is serializable")
+                .with_contract(ActionContract {
+                    permission: PermissionRequirement::Write,
+                    risk: RiskLevel::Privileged,
+                    confirmation: ConfirmationPolicy::Confirm,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                }),
+            );
+        }
+        resource.actions.push(
+            ActionSpec::operation(
+                "decline",
+                t("files-nearby-declined"),
+                OperationKind::Effect,
+                "files.nearby-decide",
+                &(
+                    transfer.handle,
+                    None::<ui::collaboration::NearbyDestinationHandle>,
+                    false,
+                ),
+            )
+            .expect("nearby decline payload is serializable")
+            .with_contract(ActionContract {
+                permission: PermissionRequirement::Write,
+                retry: RetryPolicy::AtMostOnce,
+                ..ActionContract::default()
+            }),
+        );
     }
 
     fn folder_resource_base(&self) -> Resource {
@@ -7238,6 +7266,12 @@ impl FileExplorerWidget {
                 "zoom-out",
                 "Decrease item size",
                 "zoom-out",
+                OperationKind::View,
+            ),
+            (
+                "keyboard-shortcuts",
+                "Keyboard shortcuts",
+                "shortcuts",
                 OperationKind::View,
             ),
         ] {
@@ -7350,6 +7384,23 @@ impl FileExplorerWidget {
                     ..ActionContract::default()
                 }),
         );
+        if self.last_trash_undo.is_some() {
+            folder.actions.push(
+                ActionSpec::operation(
+                    "undo-trash",
+                    t("files-undo-move-trash"),
+                    OperationKind::Effect,
+                    "files.folder-command",
+                    &"undo-trash",
+                )
+                .expect("undo-trash payload is serializable")
+                .with_contract(ActionContract {
+                    permission: PermissionRequirement::Write,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                }),
+            );
+        }
         if self.is_trash_view() {
             folder.actions.push(
                 ActionSpec::operation(
@@ -8416,10 +8467,9 @@ impl Widget for FileExplorerWidget {
                 let expected_kind = match verb.as_str() {
                     "up" | "back" | "forward" | "list" | "grid" | "sort-name" | "sort-size"
                     | "sort-type" | "sort-modified" | "sort-ascending" | "sort-descending"
-                    | "zoom-in" | "zoom-out" | "hidden" => OperationKind::View,
-                    "add-favorite" | "remove-favorite" | "empty-trash" | "terminal" => {
-                        OperationKind::Effect
-                    }
+                    | "zoom-in" | "zoom-out" | "hidden" | "shortcuts" => OperationKind::View,
+                    "add-favorite" | "remove-favorite" | "empty-trash" | "terminal"
+                    | "undo-trash" => OperationKind::Effect,
                     _ => return Ok(false),
                 };
                 if kind != expected_kind {
@@ -8443,6 +8493,7 @@ impl Widget for FileExplorerWidget {
                     }
                     "zoom-in" => self.set_zoom(self.zoom_level.saturating_add(1)),
                     "zoom-out" => self.set_zoom(self.zoom_level.saturating_sub(1)),
+                    "shortcuts" => self.show_keyboard_shortcuts_panel(),
                     "hidden" => {
                         self.apply_command(FileCommand::ToggleHidden);
                     }
@@ -8460,6 +8511,9 @@ impl Widget for FileExplorerWidget {
                         // resource broker; do not make an agent traverse an
                         // inaccessible second UI-only confirmation sheet.
                         self.perform_empty_trash();
+                    }
+                    "undo-trash" => {
+                        self.apply_undo_last_trash();
                     }
                     "terminal" => self
                         .open_terminal(&mut SystemRunner)
@@ -8502,8 +8556,7 @@ impl Widget for FileExplorerWidget {
                     if self.is_trash_view() {
                         return Err("Use the separately confirmed permanent-delete action for items already in Trash".into());
                     }
-                    fileops::delete_to_trash(&[target])?;
-                    self.refresh();
+                    self.apply_delete();
                     self.structure_dirty = true;
                     return Ok(true);
                 }
@@ -9969,6 +10022,37 @@ mod command_path_tests {
     }
 
     #[test]
+    fn shortcut_reference_is_a_keyboard_and_command_reachable_view() {
+        let mut widget = FileExplorerWidget::new();
+        use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+
+        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Named(NamedKey::F1);
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = winit::event::ElementState::Pressed;
+        event.repeat = false;
+        assert!(widget.handle_app_key(&event, winit::event::Modifiers::default()));
+        let panel = widget
+            .collab_panel
+            .as_ref()
+            .expect("shortcut reference opens");
+        assert_eq!(panel.title, "Keyboard shortcuts");
+        assert!(
+            panel
+                .lines
+                .iter()
+                .any(|line| line.contains("Grid navigation"))
+        );
+        assert!(
+            panel
+                .lines
+                .iter()
+                .any(|line| line.contains("Primary modifier"))
+        );
+    }
+
+    #[test]
     fn trash_view_menu_offers_restore_and_empty_not_move_to_trash() {
         let Some(trash) = crate::fileops::trash_dir() else {
             return;
@@ -10034,6 +10118,7 @@ mod command_path_tests {
             "sort-descending",
             "zoom-in",
             "zoom-out",
+            "keyboard-shortcuts",
             "add-favorite",
         ] {
             assert!(
@@ -10043,11 +10128,15 @@ mod command_path_tests {
         }
         assert!(Widget::local_resource_operation_handlers(&w).contains(&"files.remote-dav"));
 
-        for command in ["grid", "sort-size", "zoom-in", "add-favorite"] {
+        for command in ["grid", "sort-size", "zoom-in", "shortcuts", "add-favorite"] {
             assert!(
                 Widget::invoke_resource_operation(
                     &mut w,
-                    if command == "grid" || command == "sort-size" || command == "zoom-in" {
+                    if command == "grid"
+                        || command == "sort-size"
+                        || command == "zoom-in"
+                        || command == "shortcuts"
+                    {
                         OperationKind::View
                     } else {
                         OperationKind::Effect
@@ -10064,7 +10153,80 @@ mod command_path_tests {
         assert_eq!(w.view_mode(), ViewMode::Grid);
         assert_eq!(w.sort_by(), SortBy::Size);
         assert!(w.zoom_level() > initial_zoom);
+        assert_eq!(
+            w.collab_panel.as_ref().map(|panel| panel.title.as_str()),
+            Some("Keyboard shortcuts"),
+            "the resource action opens the same reference as the menu and keyboard"
+        );
         assert!(w.favorites().iter().any(|favorite| favorite.path == folder));
+    }
+
+    #[test]
+    fn locally_verified_trash_undo_is_a_canonical_nonreplayable_folder_action() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let home_dir = tempfile::tempdir().unwrap();
+        let mut w = FileExplorerWidget::with_persistence(
+            Some(state_dir.path().to_path_buf()),
+            Some(home_dir.path().to_path_buf()),
+        );
+        // This is intentionally a synthetic, non-existent Trash path. The
+        // resource contract is testable without touching a developer's real
+        // Trash; runtime revalidation is covered by the command itself.
+        w.last_trash_undo = Some(vec![PathBuf::from("/not-a-real-trash-entry")]);
+        let doc = automerge::AutoCommit::new();
+        let folder = Widget::resources(&w, &doc)
+            .into_iter()
+            .next()
+            .expect("current folder resource");
+        let undo = folder
+            .actions
+            .iter()
+            .find(|action| action.id == "undo-trash")
+            .expect("verified local undo is exported through the folder resource");
+        assert_eq!(undo.kind, OperationKind::Effect);
+        assert_eq!(undo.operation_type.as_deref(), Some("files.folder-command"));
+        assert_eq!(undo.contract.permission, PermissionRequirement::Write);
+        assert_eq!(undo.contract.retry, RetryPolicy::AtMostOnce);
+        assert!(
+            !undo.contract.reversible,
+            "filesystem restore is not replayable history"
+        );
+
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut w,
+                OperationKind::Effect,
+                "files.folder-command",
+                &serde_json::to_vec("undo-trash").unwrap(),
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert!(
+            w.last_trash_undo.is_none(),
+            "a stale external Trash state clears the ephemeral local affordance"
+        );
+    }
+
+    #[test]
+    fn large_text_view_menu_clamps_undo_inside_the_live_window() {
+        let mut w = FileExplorerWidget::new();
+        w.rect = vello::kurbo::Rect::new(0.0, 0.0, 1440.0, 900.0);
+        let mut menu = w.new_overlay_menu();
+        menu.push(MenuItem::action(t("files-undo-move-trash"), || {}));
+        // Model a top-right toolbar trigger before the menu paints at 200%
+        // text. The overlay must use the window as its viewport, not the
+        // normal-scale trigger's original right-edge position.
+        menu.open_at([1428.0, 52.0]);
+        menu.set_text_scale(2.0);
+        let menu = menu.get_rect();
+        assert!(menu.x0 >= w.rect.x0 && menu.x1 <= w.rect.x1, "{menu:?}");
+        assert!(menu.y0 >= w.rect.y0 && menu.y1 <= w.rect.y1, "{menu:?}");
+        assert!(
+            menu.width() >= 400.0,
+            "the scaled menu keeps enough width for the Undo label: {menu:?}"
+        );
     }
 
     #[test]
@@ -12991,7 +13153,7 @@ mod responsive_body_tests {
 
         assert!(
             scrollable.y1 - content_viewport.y1
-                >= f64::from(STATUS_BUBBLE_SAFE_INSET) - f64::EPSILON,
+                >= f64::from(STATUS_BUBBLE_SAFE_INSET_PX) - f64::EPSILON,
             "the item/status pill has a dedicated bottom lane rather than overlaying files: \
              scrollable={scrollable:?} viewport={content_viewport:?}"
         );
@@ -13644,7 +13806,7 @@ mod injected_startup_tests {
         ui::widget::Widget::sync(&mut widget, &mut document, &automerge::ROOT);
         widget.refresh_external_search_catalogs();
         assert!(!widget.refresh_trusted_identities(None));
-        widget.refresh_metadata_if_due(Instant::now() + LIVE_METADATA_REFRESH_INTERVAL);
+        widget.refresh_metadata_if_due(Instant::now() + metadata_refresh::LIVE_INTERVAL);
         widget.refresh();
         assert_eq!(widget.current_path, child);
         assert!(widget.workspace_roots.is_empty());

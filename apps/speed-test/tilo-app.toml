@@ -24,7 +24,10 @@ seccomp = "tilo-default"
 landlock = "strict"
 
 [sandbox.net]
-mode = "internet"
+# Measurements use Cloudflare's fixed download and upload endpoints; the app
+# does not need unrestricted host networking.
+mode = "allowlist"
+hosts = ["speed.cloudflare.com"]
 
 [sandbox.services]
 collab = "optional@1"

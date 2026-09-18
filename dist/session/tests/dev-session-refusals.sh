@@ -98,16 +98,47 @@ echo "$unmarked" >"$conf"
 refuse "target carries no dev-session build marker"
 
 # And the accepting case, so the refusals above are known to be about the
-# thing being tested rather than the wrapper refusing everything.
+# thing being tested rather than the wrapper refusing everything. Install a
+# sibling lifecycle fixture: the real developer wrapper must hand the verified
+# binary to the package-owned session lifecycle instead of bypassing it.
 echo "$marked" >"$conf"
 err=$scratch/accept.err
-out=$("$wrapper" 2>"$err"); rc=$?
-if (( rc == 0 )) && [[ $out == "started --host-desktop-session --firstboot --backend drm" ]]; then
-    echo "ok: a marked, privately-owned build starts, with host-session identity setup"
+wrapper_copy=$scratch/tilo-session-dev
+lifecycle=$scratch/tilo-session-runner
+test_runtime=$scratch/runtime
+cp "$wrapper" "$wrapper_copy"
+mkdir -m 0700 "$test_runtime"
+cat >"$lifecycle" <<'SH'
+#!/bin/sh
+case "${1:-}" in /*) ;; *) exit 73 ;; esac
+test -x "$1" || exit 74
+printf 'managed %s ::' "$1"
+shift
+if (( $# )); then
+    printf ' %s' "$@"
+fi
+printf '\n'
+SH
+chmod 0755 "$wrapper_copy" "$lifecycle"
+out=$(XDG_RUNTIME_DIR="$test_runtime" "$wrapper_copy" 2>"$err"); rc=$?
+expected="managed $(realpath -e "$marked") ::"
+if (( rc == 0 )) && [[ $out == "$expected" ]]; then
+    echo "ok: a marked, privately-owned build enters the package session lifecycle"
     pass=$((pass + 1))
 else
-    echo "FAIL: expected the marked build to start; rc=$rc out=<$out>"
+    echo "FAIL: expected the marked build to enter the lifecycle; rc=$rc out=<$out>"
     sed 's/^/    /' "$err"
+    fails=$((fails + 1))
+fi
+
+attest=$test_runtime/tilo-dev-session/active
+if [[ -r $attest ]] \
+    && grep -Fqx "path=$(realpath -e "$marked")" "$attest" \
+    && grep -Eq '^sha256=[0-9a-f]{64}$' "$attest"; then
+    echo "ok: developer launch records a protected binary attestation"
+    pass=$((pass + 1))
+else
+    echo "FAIL: developer launch attestation is missing or malformed"
     fails=$((fails + 1))
 fi
 

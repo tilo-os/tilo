@@ -824,6 +824,7 @@ pub struct DocumentViewport {
     content_node: Option<NodeId>,
     rect: Rect,
     dirty: bool,
+    layout_theme: Theme,
 }
 
 impl DocumentViewport {
@@ -840,6 +841,7 @@ impl DocumentViewport {
             content_node: None,
             rect: Rect::ZERO,
             dirty: true,
+            layout_theme: Theme::dark(),
         }
     }
 
@@ -858,6 +860,7 @@ impl DocumentViewport {
             content_node: None,
             rect: Rect::ZERO,
             dirty: true,
+            layout_theme: Theme::dark(),
         }
     }
 
@@ -952,9 +955,10 @@ impl Widget for DocumentViewport {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = theme.clone();
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -975,8 +979,10 @@ impl Widget for DocumentViewport {
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.state.set_rect(self.rect);
-        let theme = Theme::dark();
+        self.dirty = true;
+        let theme = self.layout_theme.clone();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
         self.place_child(&theme, &mut tr);
     }
 
@@ -988,6 +994,11 @@ impl Widget for DocumentViewport {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Reconcile with the live renderer before paint so custom font
+        // metrics cannot diverge from the pre-paint layout/hit targets.
+        if self.dirty {
+            self.place_child(theme, text_renderer);
+        }
         let content_xf = compose(transform, self.state.content_to_screen());
         match &mut self.content {
             Content::Widget(c) => c.draw(scene, content_xf, text_renderer, theme, presence),
@@ -1193,6 +1204,15 @@ impl DocumentViewport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_layout_keeps_the_active_theme_for_child_layout() {
+        let mut viewport = DocumentViewport::from_draw(100.0, 100.0, Box::new(|_, _, _, _, _| {}));
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        viewport.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
+        assert_eq!(viewport.layout_theme.text_scale, 2.0);
+    }
 
     /// Build a kernel with a 1000×1400 content in an 800×600 viewport at the
     /// top-left of the window.

@@ -164,6 +164,27 @@ def frame_for(control: Control, app_id: str) -> dict | None:
     return None
 
 
+def frame_or_process_exit(
+    control: Control, case: Case, process: subprocess.Popen
+) -> dict | None:
+    """Return the first real frame, or fail immediately if its app died.
+
+    A dead toolkit process cannot become a compositor timeout. Keeping these
+    failure modes distinct is important when the matrix catches a broken host
+    package before the application ever connects to Wayland.
+    """
+    frame = frame_for(control, case.app_id)
+    if frame is not None:
+        return frame
+    status = process.poll()
+    if status is not None:
+        raise Failure(
+            f"{case.name}: real application exited with status {status} "
+            "before publishing a Wayland frame; see app.log"
+        )
+    return None
+
+
 def wait_for_frame_after(control: Control, app_id: str, sequence: int) -> dict:
     return wait_until(
         f"{app_id} to render after input frame {sequence}",
@@ -261,6 +282,68 @@ def complete_onboarding(control: Control) -> None:
     )
 
 
+def preflight_toolkit_runtime(
+    case: Case, executable: str, env: dict[str, str], root: Path, log
+) -> None:
+    """Distinguish a broken toolkit installation from a Wayland failure."""
+    if case.name not in {"qt6", "libreoffice"}:
+        return
+
+    preflight_env = env.copy()
+    preflight_env.pop("WAYLAND_DISPLAY", None)
+    preflight_env.pop("DISPLAY", None)
+    if case.name == "qt6":
+        preflight_env["QT_QPA_PLATFORM"] = "offscreen"
+        command = [executable, *case.args]
+    else:
+        preflight_env["SAL_USE_VCLPLUGIN"] = "svp"
+        command = [
+            executable,
+            *case.args,
+            "--headless",
+            f"-env:UserInstallation=file://{root / 'libreoffice-preflight-profile'}",
+        ]
+
+    process = subprocess.Popen(
+        command,
+        env=preflight_env,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        status = None
+        deadline = time.monotonic() + 3.0
+        while status is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+            status = process.poll()
+        if status is not None and status != 0:
+            raise Failure(
+                f"{case.name}: installed application exits with status {status} "
+                "on its toolkit's compositor-independent backend; this host "
+                "runtime cannot exercise Tilo (see preflight.log)"
+            )
+    finally:
+        terminate(process)
+
+
+def stage_qt_plugins(root: Path, env: dict[str, str]) -> None:
+    """Put Qt plugins on mmap-capable storage for virtiofs test hosts.
+
+    Qt maps plugin metadata before `dlopen`. Some VM virtiofs mounts permit
+    executable mappings but reject that metadata mapping, making every Qt
+    backend appear absent. Copying the installed files unchanged into the
+    case's private tmpfs keeps this a real toolkit/app test.
+    """
+    candidates = (Path("/usr/lib64/qt6/plugins"), Path("/usr/lib/qt6/plugins"))
+    source = next((candidate for candidate in candidates if candidate.is_dir()), None)
+    if source is None:
+        raise Failure("qt6: installed Qt plugin directory was not found")
+    destination = root / "qt-plugins"
+    shutil.copytree(source, destination)
+    env["QT_PLUGIN_PATH"] = str(destination)
+
+
 def run_case(shell: Path, case: Case, artifacts: Path) -> None:
     executable = case.executable()
     if executable is None:
@@ -271,13 +354,19 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
     # Keep Unix socket paths comfortably below SUN_LEN. TemporaryDirectory
     # removes this tree on success and failure; durable diagnostics live in
     # ``artifacts`` instead.
-    with tempfile.TemporaryDirectory(prefix="tilo-legacy-") as raw_root:
+    temp_parent = (
+        "/dev/shm"
+        if case.name in {"qt6", "libreoffice"} and os.access("/dev/shm", os.W_OK)
+        else None
+    )
+    with tempfile.TemporaryDirectory(prefix="tilo-legacy-", dir=temp_parent) as raw_root:
         root = Path(raw_root)
         runtime = root / "runtime"
         runtime.mkdir(mode=0o700)
         control_path = root / "control.sock"
         compositor_log = (case_artifacts / "compositor.log").open("wb")
         app_log = (case_artifacts / "app.log").open("wb")
+        preflight_log = (case_artifacts / "preflight.log").open("wb")
 
         env = os.environ.copy()
         env.update({
@@ -295,10 +384,13 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
         })
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("DISPLAY", None)
+        if case.name == "qt6":
+            stage_qt_plugins(root, env)
 
         compositor = None
         app = None
         try:
+            preflight_toolkit_runtime(case, executable, env, root, preflight_log)
             compositor = subprocess.Popen(
                 [str(shell), "--mode", "native", "--backend", "headless"],
                 env=env,
@@ -337,7 +429,7 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
 
             frame = wait_until(
                 f"{case.name} to render a real frame",
-                lambda: frame_for(control, case.app_id),
+                lambda: frame_or_process_exit(control, case, app),
             )
             rect = frame["rect"]
             click_x = rect["x"] + rect["w"] * case.click_fraction[0]
@@ -399,6 +491,7 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             terminate(compositor)
             compositor_log.close()
             app_log.close()
+            preflight_log.close()
 
 
 def parse_args() -> argparse.Namespace:

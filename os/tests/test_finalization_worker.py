@@ -29,7 +29,7 @@ class WorkerContract(unittest.TestCase):
                 'target': 'code.podesta.ai/qos/tilo-development:old-aarch64',
                 'new_target': 'code.podesta.ai/qos/tilo-development:new-aarch64',
                 'publish_repository': 'code.podesta.ai/qos/tilo-development',
-                'generation': 1, 'source_date_epoch': 1234, 'systemd_version': '259.1',
+                'generation': 1, 'source_date_epoch': 1789690573, 'systemd_version': '259.1',
                 'minimum_free_bytes': 8 * 1024**3, 'stage_timeout_seconds': 1800,
                 **{key: 'registry.invalid/input@sha256:' + 'f' * 64
                    for key in ('base_ref', 'rpms_ref', 'kernel_ref', 'wpe_ref')}}
@@ -46,6 +46,33 @@ class WorkerContract(unittest.TestCase):
 
     def test_exact_public_contract(self):
         self.assertEqual(json.loads(self.check(self.request())), self.request())
+
+    def test_reviewed_assembly_source_and_epoch_bound_together(self):
+        request = self.request()
+        request.update(source_revision='8fff1d6001b64a80bc730e87d3ffc529d2d9e70a', source_date_epoch=1789733507)
+        self.assertEqual(json.loads(self.check(request)), request)
+        request['source_date_epoch'] = 1789690573
+        with self.assertRaisesRegex(ValueError, 'source/epoch'):
+            self.check(request)
+        request.update(source_revision='f' * 40, source_date_epoch=1789733507)
+        with self.assertRaisesRegex(ValueError, 'source/epoch'):
+            self.check(request)
+
+    def test_reviewed_dns_source_preserves_distinct_epoch(self):
+        request = self.request()
+        request.update(source_revision='36c58be61ef1b25f24ae130c5ab4dde5d2350d45', source_date_epoch=1789748444)
+        self.assertEqual(json.loads(self.check(request)), request)
+        request['source_date_epoch'] = 1789733507
+        with self.assertRaisesRegex(ValueError, 'source/epoch'):
+            self.check(request)
+
+    def test_reviewed_runtime_policy_source_requires_its_epoch(self):
+        request = self.request()
+        request.update(source_revision='b4f01a7d5437d015950c9b79be37e673b09b829c', source_date_epoch=1789749860)
+        self.assertEqual(json.loads(self.check(request)), request)
+        request['source_date_epoch'] = 1789748444
+        with self.assertRaisesRegex(ValueError, 'source/epoch'):
+            self.check(request)
 
     def test_driver_evidence_is_owner_only_and_varlib_traversable(self):
         self.assertEqual(worker.DIRECTORY_MODES['/evidence'], 0o700)

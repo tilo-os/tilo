@@ -10417,9 +10417,11 @@ dependencies = [
 name = "photos"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "atomic-file",
  "automerge",
  "image",
+ "kamadak-exif",
  "png 0.18.1",
  "qdoc",
  "runtime-dylib",
@@ -10429,7 +10431,9 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-ocr",
  "tilo-reference",
+ "tilo-vision",
  "vello",
  "vello_encoding",
  "winit",
@@ -11073,6 +11077,7 @@ dependencies = [
  "os-actions",
  "qdoc-pdf",
  "runtime-dylib",
+ "serde_json",
  "taffy",
  "tempfile",
  "thumbnail",
@@ -11353,7 +11358,6 @@ name = "qdoc-epub"
 version = "0.1.0"
 dependencies = [
  "qdoc",
- "qdoc-html",
  "zip 4.6.1",
 ]
 
@@ -12233,18 +12237,46 @@ dependencies = [
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
+ "accounts",
+ "agent-provider-config",
+ "app-catalogue",
+ "app-host",
+ "atomic-file",
+ "chrono-tz",
  "cli",
+ "collab-types",
  "comemo",
+ "desktop-policy",
  "iroh",
+ "launcher",
+ "media",
+ "mime_guess",
+ "os-actions",
+ "pdfium-render",
+ "registry-types",
+ "roxmltree",
  "runtime",
+ "runtime-fs",
+ "runtime-identity",
+ "runtime-portal-xdg",
  "rustypipe",
+ "settings-store",
+ "thumbnail",
+ "tilo-actions",
+ "tilo-bluez",
  "tilo-callstream",
+ "tilo-desktop-entry",
+ "tilo-model-gateway",
+ "tilo-relay",
+ "tilo-user-identity",
  "tiny-skia",
  "typst",
  "typst-assets",
  "typst-pdf",
  "typst-render",
  "ui",
+ "vte",
+ "xattr",
 ]
 
 [[package]]
@@ -14493,6 +14525,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "taffy",
+ "tempfile",
  "tilo-actions",
  "tilo-app",
  "tracing",
@@ -14631,6 +14664,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
+ "postcard",
  "regex",
  "serde",
  "serde_json",
@@ -14758,12 +14792,14 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "agent-provider-config",
+ "base64 0.22.1",
  "clap",
  "libc",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "url",
  "zeroize",
 ]
 
@@ -14937,6 +14973,22 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-vision"
+version = "0.1.0"
+dependencies = [
+ "agent-provider-config",
+ "base64 0.22.1",
+ "hex",
+ "image",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tilo-model-gateway",
+ "url",
 ]
 
 [[package]]

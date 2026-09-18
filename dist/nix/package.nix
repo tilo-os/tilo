@@ -81,6 +81,7 @@ rustPlatform.buildRustPackage rec {
     install -Dm755 "$p/bin/tilo-launcher" "$out/bin/tilo-launcher"
     install -Dm755 "$p/libexec/tilo-unlock-helper" "$out/libexec/tilo-unlock-helper"
     install -Dm755 "$p/libexec/tilo-session" "$out/libexec/tilo-session"
+    install -Dm755 "$p/libexec/tilo-session-runner" "$out/libexec/tilo-session-runner"
     install -Dm644 "$p/pam/tilo-unlock" "$out/etc/pam.d/tilo-unlock"
     install -Dm644 "$p/wayland-sessions/tilo.desktop" "$out/share/wayland-sessions/tilo.desktop"
     install -Dm644 "$p/portal/tilo.portal" "$out/share/xdg-desktop-portal/portals/tilo.portal"
@@ -91,6 +92,8 @@ rustPlatform.buildRustPackage rec {
     # Store paths replace FHS paths in the wrapper and session entry.
     substituteInPlace "$out/libexec/tilo-session" \
       --replace-fail 'TILO_SHELL=/usr/bin/tilo-shell' "TILO_SHELL=$out/bin/tilo-shell" \
+      --replace-fail 'SESSION_RUNNER=/usr/libexec/tilo-session-runner' "SESSION_RUNNER=$out/libexec/tilo-session-runner"
+    substituteInPlace "$out/libexec/tilo-session-runner" \
       --replace-fail 'SYSTEMCTL=/usr/bin/systemctl' "SYSTEMCTL=${systemd}/bin/systemctl" \
       --replace-fail 'SYSTEMD_CAT=/usr/bin/systemd-cat' "SYSTEMD_CAT=${systemd}/bin/systemd-cat" \
       --replace-fail 'DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "DBUS_UPDATE=${dbus}/bin/dbus-update-activation-environment"

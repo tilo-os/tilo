@@ -78,25 +78,16 @@ impl std::fmt::Display for LoadError {
 #[derive(Debug)]
 pub enum SaveError {
     Io(io::Error),
-    /// The file changed on disk since the buffer was read. Carries the stamp
-    /// found there now so the caller can adopt it after an explicit overwrite —
-    /// which no caller does yet; the one match on this arm discards it and
-    /// re-stamps by reading the file again.
-    Conflict(#[allow(dead_code)] Stamp),
-    /// The buffer has never been given a path (an unsaved scratch file), so
-    /// there is nowhere to write it without asking the user first. Nothing
-    /// raises this yet — the save path is only reached once a buffer has a
-    /// path — so it is the error a Save As flow would return.
-    #[allow(dead_code)]
-    NoPath,
+    /// The file changed on disk since the buffer was read. The app resolves
+    /// this through overwrite/reload/cancel and re-stamps the chosen contents.
+    Conflict,
 }
 
 impl std::fmt::Display for SaveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SaveError::Io(e) => write!(f, "{e}"),
-            SaveError::Conflict(_) => write!(f, "the file changed on disk since it was opened"),
-            SaveError::NoPath => write!(f, "this buffer has no file yet"),
+            SaveError::Conflict => write!(f, "the file changed on disk since it was opened"),
         }
     }
 }
@@ -142,7 +133,7 @@ pub fn load(path: &Path) -> Result<Loaded, LoadError> {
 pub fn save(path: &Path, text: &str, expected: Option<&Stamp>) -> Result<Stamp, SaveError> {
     if let Some(expected) = expected {
         match Stamp::of(path) {
-            Ok(current) if &current != expected => return Err(SaveError::Conflict(current)),
+            Ok(current) if &current != expected => return Err(SaveError::Conflict),
             Ok(_) => {}
             // Not existing yet is not a conflict — the save creates it.
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -277,18 +268,16 @@ mod tests {
         // Something else rewrites the file — `git checkout`, rustfmt, a peer.
         std::fs::write(&p, "rewritten by someone else").unwrap();
 
-        match save(&p, "my edit", Some(&stale)) {
-            Err(SaveError::Conflict(found)) => {
-                assert_ne!(found, stale);
-                // Crucially, the other writer's bytes are still there.
-                assert_eq!(
-                    std::fs::read_to_string(&p).unwrap(),
-                    "rewritten by someone else",
-                    "a refused save must not have written anything"
-                );
-            }
-            other => panic!("expected a conflict, got {other:?}"),
-        }
+        assert!(matches!(
+            save(&p, "my edit", Some(&stale)),
+            Err(SaveError::Conflict)
+        ));
+        // Crucially, the other writer's bytes are still there.
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "rewritten by someone else",
+            "a refused save must not have written anything"
+        );
 
         // And `changed_on_disk` agrees, which is what drives the tab indicator.
         assert!(changed_on_disk(&p, &stale));
@@ -302,7 +291,7 @@ mod tests {
         std::fs::write(&p, "theirs").unwrap();
         assert!(matches!(
             save(&p, "mine", Some(&stale)),
-            Err(SaveError::Conflict(_))
+            Err(SaveError::Conflict)
         ));
         // Passing no expectation is the user having said "overwrite anyway".
         save(&p, "mine", None).expect("an unconditional save always writes");

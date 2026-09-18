@@ -62,16 +62,17 @@ trap 'rm -rf "$SHOTS"' EXIT
 # package names.
 declare -A NAME=(
 [api-tester]="API Tester" [backups]="Backups" [calculator]="Calculator" [calendar]="Calendar"
-[camera]="Camera" [chat]="Chat" [code-editor]="Code Editor" [contacts]="Contacts"
+[camera]="Camera" [chat]="Chat" [clocks]="Clocks" [code-editor]="Code Editor" [contacts]="Contacts"
 [containers]="Containers" [db-client]="Database Client" [diffmerge]="Diff & Merge" [disks]="Disks"
-[ebook]="E-Book Reader" [feeds]="Feeds" [file-explorer]="Files" [firewall]="Firewall"
+[disk-usage]="Disk Usage" [ebook]="E-Book Reader" [feeds]="Feeds" [file-explorer]="Files" [firewall]="Firewall"
 [git-client]="Git" [hex-editor]="Hex Editor" [imager]="Disk Imager" [logs]="Logs"
-[mail]="Mail" [maps]="Maps" [monitor]="System Monitor" [music]="Music" [notes]="Notes"
-[osk]="On-Screen Keyboard" [pdf-viewer]="PDF Viewer" [remote]="Remote Desktop" [settings]="Settings"
-[sheets]="Sheets" [slides]="Slides" [snippets]="Snippets" [store]="App Store"
+[image-editor]="Image Editor" [mail]="Mail" [maps]="Maps" [monitor]="System Monitor" [music]="Music" [notes]="Notes"
+[osk]="On-Screen Keyboard" [passwords]="Passwords" [pdf-viewer]="PDF Viewer" [photos]="Photos"
+[print-centre]="Print Centre" [remote]="Remote Desktop" [scratchpad]="Scratchpad" [settings]="Settings"
+[sheets]="Sheets" [slides]="Slides" [snippets]="Snippets" [speed-test]="Speed Test" [store]="App Store"
 [terminal]="Terminal" [themes]="Themes" [totp]="TOTP" [tube]="Tube"
 [typst-editor]="Typst Editor" [video-editor]="Video Editor" [video-player]="Video Player"
-[vpn]="VPN" [weather]="Weather" [word-processor]="Word Processor")
+[vpn]="VPN" [weather]="Weather" [windows]="Windows Apps" [word-processor]="Word Processor")
 
 # Apps with no window to shoot, and why. Listing them explicitly is what lets
 # the drift check below treat anything *else* that is missing as a mistake.

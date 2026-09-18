@@ -20,7 +20,11 @@ runtime = { path = "../runtime" }
 cli = { path = "../cli" }
 # The UI toolkit and its rendering graph are included in the shared dylib.
 # `portal` covers apps that open host files through the XDG portal.
-ui = { path = "../../../ui", features = ["portal", "webview-adblock"] }
+# This must be the superset used by every thin app in the default collection.
+# A Rust dylib's exported symbol names contain the dependency crate hash; if an
+# app enables a UI feature absent here, Cargo builds a second `ui` instance and
+# the app can link successfully but fail at runtime with undefined symbols.
+ui = { path = "../../../ui", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"] }
 # Heavy document engines belong in the versioned runtime rather than each qpkg.
 typst = "0.14"
 typst-render = "0.14"
@@ -33,6 +37,40 @@ comemo = "0.5"
 tilo-callstream = { path = "../../collab/tilo-callstream" }
 rustypipe.workspace = true
 iroh.workspace = true
+# Desktop-owned service implementations are shared runtime code, not app
+# payload. Settings composes all of these control surfaces and would otherwise
+# statically repeat several megabytes of the same implementations in its qpkg.
+settings-store = { path = "../../system/settings-store" }
+desktop-policy = { path = "../../system/desktop-policy" }
+launcher = { path = "../../packaging/launcher" }
+tilo-desktop-entry = { path = "../../system/desktop-entry" }
+collab-types = { path = "../../collab/collab-types" }
+tilo-actions = { path = "../../collab/actions" }
+os-actions = { path = "../../system/os-actions" }
+runtime-identity = { path = "../runtime-identity" }
+tilo-user-identity = { path = "../../identity/tilo-user-identity" }
+runtime-fs = { path = "../runtime-fs" }
+tilo-relay = { path = "../../hosting/tilo-relay" }
+tilo-bluez = { path = "../../system/tilo-bluez" }
+runtime-portal-xdg = { path = "../runtime-portal-xdg" }
+accounts = { path = "../../system/accounts" }
+agent-provider-config = { path = "../../agent/provider-config" }
+tilo-model-gateway = { path = "../../agent/model-gateway" }
+media = { path = "../../media/core" }
+atomic-file = { path = "../../system/atomic-file" }
+# Versioned format/network engines used by system apps. Keeping these in the
+# runtime bundle lets qpkgs contain policy and UI while the replaceable engine
+# implementations are stored once per runtime generation.
+chrono-tz = "0.10.4"
+vte = "0.15.0"
+pdfium-render = "0.8.37"
+thumbnail = { path = "../../media/thumbnail", features = ["pdf"] }
+roxmltree = "0.20"
+xattr = "1.6.1"
+mime_guess = "2.0.5"
+app-catalogue = { path = "../../packaging/app-catalogue" }
+app-host = { path = "../../packaging/app-host" }
+registry-types = { path = "../../packaging/registry-types" }
 
 [lints]
 workspace = true

@@ -42,11 +42,12 @@ use ui::a11y::{AccessNode, Politeness, Role};
 use ui::tilo_actions::{
     ActionAddress, ActionArgs, ActionBinding, ActionContract, ActionParam, ActionSpec,
     Availability, ConfirmationPolicy, ControlInvocation, EncodedAction, ExecutionLocus,
-    ExecutionMode, OperationKind, ParamType, Resource, ResultSpec, RetryPolicy, RiskLevel,
+    ExecutionMode, OperationKind, ParamType, Resource, ResourcePresentation, ResultSpec,
+    RetryPolicy, RiskLevel,
 };
 use ui::widget::{
-    CardGrid, Column, Container, Dropdown, EmptyState, Row, ScrollAxis, Scrollable, Spacer, Text,
-    TextInput, Widget,
+    Badge, BadgeTone, Banner, CardGrid, Column, Container, Dropdown, EmptyState, ProgressBar, Row,
+    ScrollAxis, Scrollable, Spacer, Text, TextInput, Widget,
 };
 use ui::{
     Theme,
@@ -90,6 +91,9 @@ const MAX_REMOTE_URL_BYTES: usize = 2_048;
 /// so an untrusted server cannot turn the masthead into an unbounded layout.
 const MAX_VISIBLE_OPERATION_STATUS_CHARS: usize = 96;
 const UNKNOWN_OPERATION_STATUS: &str = "No additional details were provided.";
+/// Search/history tiles need a stable, bounded summary even when an upstream
+/// catalogue description is malformed or unexpectedly huge.
+const MAX_RESOURCE_DETAIL_BYTES: usize = 140;
 /// The contextual action snapshot deliberately stays small. The retained
 /// global catalogue and `Widget::resource` resolve every omitted stable app
 /// on demand, so this never hides a catalogue entry from agents or Ctrl+K.
@@ -266,14 +270,6 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Keep failure feedback in the masthead's single-line reading measure. The
-/// full worker message remains in the status surface and operation record;
-/// injecting an arbitrary remote error verbatim here can force an unbreakable
-/// layout width and corrupt the retained header scene.
-fn operation_error_summary() -> &'static str {
-    "The last operation failed. Refresh the catalogue and try again."
-}
-
 /// A compact, printable status detail for the visible progress/error surface.
 ///
 /// The worker's raw status is intentionally still retained for the operation
@@ -294,6 +290,47 @@ fn visible_operation_status(status: &str) -> String {
         visible.push('…');
     }
     visible
+}
+
+/// Collapse arbitrary catalogue copy into a small, printable resource detail
+/// without first allocating a normalized version of the entire input. This is
+/// used in system-search and history presentation, where a remote listing
+/// must never turn one resource summary into a large allocation.
+fn resource_detail_excerpt(value: &str) -> String {
+    let mut result = String::with_capacity(MAX_RESOURCE_DETAIL_BYTES);
+    let mut pending_space = false;
+    let mut truncated = false;
+    for ch in value.chars() {
+        if ch.is_control() {
+            // Newlines and tabs are both control characters *and* word
+            // separators. Keep that boundary rather than running words
+            // together when we sanitise untrusted catalogue prose.
+            pending_space |= !result.is_empty() && ch.is_whitespace();
+            continue;
+        }
+        if ch.is_whitespace() {
+            pending_space |= !result.is_empty();
+            continue;
+        }
+        if pending_space {
+            if result.len().saturating_add(1 + '…'.len_utf8()) > MAX_RESOURCE_DETAIL_BYTES {
+                truncated = true;
+                break;
+            }
+            result.push(' ');
+            pending_space = false;
+        }
+        if result.len().saturating_add(ch.len_utf8() + '…'.len_utf8()) > MAX_RESOURCE_DETAIL_BYTES
+        {
+            truncated = true;
+            break;
+        }
+        result.push(ch);
+    }
+    if truncated {
+        result.push('…');
+    }
+    result
 }
 
 /// Name the result region for what it actually contains.  A responsive
@@ -490,7 +527,26 @@ fn store_app_resource(item: &StoreItem, flatpak_available: bool) -> Resource {
     let action = item.action_kind(flatpak_available);
     let code = action_code(action);
     let payload = vec![item.id.clone(), code.to_string()];
-    let mut resource = Resource::new(format!("app:{}", item.id), "store.app", item.name.clone());
+    let source = match &item.source {
+        StoreSource::Tilo { .. } => "Tilo verified",
+        StoreSource::Flathub => "Flathub",
+    };
+    // The resource directory feeds system search, history, and assistive
+    // clients which do not see the card layout.  Keep its summary short and
+    // useful rather than exporting a second, unbounded copy of catalogue
+    // metadata.  The canonical detail route still resolves the full item.
+    let detail = resource_detail_excerpt(&item.description);
+    let latest = item.latest_version();
+    let badge = if latest.is_empty() {
+        source.to_string()
+    } else {
+        format!("{source} · v{latest}")
+    };
+    let mut resource = Resource::new(format!("app:{}", item.id), "store.app", item.name.clone())
+        .with_presentation(ResourcePresentation {
+            detail: (!detail.is_empty()).then_some(detail),
+            badge: Some(badge),
+        });
     if let Ok(show) = ActionSpec::operation(
         "show-details",
         "Show app details",
@@ -1465,12 +1521,13 @@ impl StoreApp {
         self.roomy_desktop() && !self.readable_type_layout()
     }
 
-    /// Minimum width for a discovery card at the current layout mode. The
-    /// bounded desktop surface intentionally resolves to two comparison
-    /// columns; intermediate widths retain the shared grid's denser reflow.
+    /// Minimum width for a discovery card at the current layout mode. A wide
+    /// Store canvas resolves to three editorial tiles: enough room for real
+    /// artwork, a reason-to-care and an action rail, without the sparse
+    /// 2+1 shelves that made a catalogue look unfinished.
     fn catalogue_card_min_width(&self) -> f64 {
         if self.desktop_browse_layout() {
-            500.0
+            348.0
         } else {
             330.0
         }
@@ -1486,20 +1543,10 @@ impl StoreApp {
     }
 
     fn catalogue_source_summary(&self) -> String {
-        // Reuse the catalogue's stable summary slot for progress rather than
-        // growing the masthead while a worker is busy. On a narrow window an
-        // extra header row can otherwise consume the scroll body's negotiated
-        // height and make the top controls appear to slide underneath it.
-        if self.worker_busy {
-            return format!(
-                "Status · {}",
-                if self.status_line.is_empty() {
-                    "Package operation in progress…".to_string()
-                } else {
-                    visible_operation_status(&self.status_line)
-                }
-            );
-        }
+        // This line stays about catalogue scope even while an operation is
+        // running. Progress and failures receive their own semantic notice
+        // below, rather than making this quiet provenance label unexpectedly
+        // change meaning or compete with the result count.
         let source_count = self
             .items
             .iter()
@@ -1518,6 +1565,43 @@ impl StoreApp {
                 if source_count == 1 { "" } else { "s" }
             )
         }
+    }
+
+    /// Persistent operation feedback belongs in document flow, not in a
+    /// tiny subtitle or a transient overlay. `Banner` is the shared native
+    /// alert treatment: it honours every theme, retains a readable measure at
+    /// 200% type, and exposes a status role to assistive technology.
+    fn operation_notice(&self) -> Option<Box<dyn Widget>> {
+        if self.worker_busy {
+            let detail = if self.status_line.is_empty() {
+                "Package operation in progress…".to_string()
+            } else {
+                visible_operation_status(&self.status_line)
+            };
+            // Worker operations do not publish one trustworthy unit: a
+            // launch, catalogue refresh, and Flatpak update cannot honestly
+            // share a made-up percentage. The shared indeterminate bar makes
+            // activity visible without pretending otherwise, respects
+            // reduce-motion, and carries a polite accessible label.
+            return Some(Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_gap(7.0)
+                    .push(Box::new(
+                        Banner::info("Working in background").with_message(detail),
+                    ))
+                    .push(Box::new(
+                        ProgressBar::indeterminate().with_label("Operation in progress"),
+                    )),
+            ));
+        }
+        self.operation_error.as_ref().map(|_| {
+            Box::new(
+                Banner::error("The last operation failed")
+                    .with_message(visible_operation_status(&self.status_line)),
+            ) as Box<dyn Widget>
+        })
     }
 
     /// Detail, remote-management, and moderation views have a much shorter
@@ -1569,6 +1653,10 @@ impl StoreApp {
             crate::StoreTrust::Flathub => "Distributed by Flathub",
         };
         let action = item.action_kind(self.flatpak_available);
+        let operation_active = self
+            .active_operation
+            .as_ref()
+            .is_some_and(|(id, active_action)| id == &item.id && *active_action == action);
         let mut primary = ui::widget::Button::new(
             &format!("store.app.{}.{}", item.id, action_code(action)),
             action.label(),
@@ -1607,14 +1695,24 @@ impl StoreApp {
             device_actions = device_actions.push(Box::new(button));
         }
         let installed = device_state_label(item);
-        let package = item.versions.first().map_or_else(
-            || "No version metadata published".to_string(),
+        let package_lines = item.versions.first().map_or_else(
+            || vec!["No version metadata was published by this source.".to_string()],
             |version| {
-                format!(
-                    "Version {} · {}",
-                    version.version,
-                    format_size(version.size_bytes)
-                )
+                let mut lines = vec![format!("Latest release · {}", version.version)];
+                if version.size_bytes > 0 {
+                    lines.push(format!(
+                        "Download size · {}",
+                        format_size(version.size_bytes)
+                    ));
+                }
+                if let Some(hash) = version.root_hash_hex.as_deref() {
+                    let prefix = hash.chars().take(16).collect::<String>();
+                    lines.push(format!("Package digest · BLAKE3:{prefix}…"));
+                }
+                if version.download_url.is_some() {
+                    lines.push("Package download record published".to_string());
+                }
+                lines
             },
         );
         let mut back = ui::widget::Button::new("store.detail.back", "Back to apps", None)
@@ -1656,11 +1754,22 @@ impl StoreApp {
         ) {
             moderation = moderation.on_action(binding);
         }
+        let availability = if operation_active {
+            Badge::semantic_pill("Working", BadgeTone::Accent)
+        } else if item.installed.update_available() {
+            Badge::semantic_pill("Update available", BadgeTone::Warning)
+        } else if item.installed.is_installed() {
+            Badge::semantic_pill("On this device", BadgeTone::Success)
+        } else if matches!(item.source, StoreSource::Tilo { .. }) {
+            Badge::semantic_pill("On demand", BadgeTone::Accent)
+        } else {
+            Badge::semantic_pill("Not installed", BadgeTone::Neutral)
+        };
         let hero = bounded_detail_card(
             Box::new(
                 Container::new()
                     .with_no_padding()
-                    .with_height(112.0)
+                    .with_height(154.0)
                     .with_child(Box::new(
                         Row::new()
                             .no_wrap()
@@ -1668,10 +1777,12 @@ impl StoreApp {
                                 self.images.clone(),
                                 item.icon_url.as_deref(),
                                 &item.name,
-                                88.0,
-                                88.0,
+                                104.0,
+                                104.0,
                             )))
-                            .push(Box::new(Container::new().with_no_padding().with_width(8.0)))
+                            .push(Box::new(
+                                Container::new().with_no_padding().with_width(14.0),
+                            ))
                             .push(Box::new(
                                 Container::new()
                                     .with_no_padding()
@@ -1693,13 +1804,18 @@ impl StoreApp {
                                                     .with_color(theme.text_dim),
                                             ))
                                             .push(Box::new(
-                                                Text::new(&item.description).with_scaled_size(17.0),
+                                                Row::new().no_wrap().push(Box::new(availability)),
+                                            ))
+                                            .push(Box::new(
+                                                Text::new(&item.description)
+                                                    .with_scaled_size(16.0)
+                                                    .with_color(theme.text_dim),
                                             )),
                                     )),
                             ))
                             .push(Box::new(
                                 Container::new()
-                                    .with_width(220.0)
+                                    .with_width(212.0)
                                     .with_no_padding()
                                     .with_child(Box::new(device_actions)),
                             )),
@@ -1708,26 +1824,25 @@ impl StoreApp {
             false,
             true,
         );
-        let mut facts = Column::new()
+        let mut publisher_facts = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(9.0)
+            .with_gap(8.0)
             .push(Box::new(
-                Text::new("App details")
-                    .with_scaled_size(20.0)
+                Text::new("Source & publisher")
+                    .with_scaled_size(18.0)
                     .with_weight(TextWeight::Semibold)
                     .with_heading_level(2),
             ))
-            .push(Box::new(Text::new(&package).with_scaled_size(14.0)))
             .push(Box::new(
-                Text::new(&format!("Categories · {}", item.categories.join(", ")))
+                Text::new(&source)
                     .with_scaled_size(13.0)
                     .with_color(theme.text_dim),
             ))
             .push(Box::new(
-                Text::new(&format!("App ID · {}", item.id))
-                    .with_scaled_size(12.0)
-                    .with_color(theme.text_tertiary),
+                Text::new(trust_label)
+                    .with_scaled_size(13.0)
+                    .with_weight(TextWeight::Semibold),
             ));
         if let Some(key) = item.publisher_pubkey_hex.as_deref() {
             let full_key = format!("ed25519:{key}");
@@ -1747,77 +1862,115 @@ impl StoreApp {
                         .set_text(ui::clipboard::ClipboardTarget::Clipboard, &clipboard_key);
                 }
             });
-            facts = facts.push(Box::new(key_button));
+            publisher_facts = publisher_facts.push(Box::new(key_button));
         } else {
-            facts = facts.push(Box::new(
+            publisher_facts = publisher_facts.push(Box::new(
                 Text::new(&format!("Publisher · {}", full_publisher(item)))
                     .with_scaled_size(13.0)
                     .with_color(theme.text_dim),
             ));
         }
-        if item.homepage_url.is_some() || item.source_url.is_some() {
-            facts = facts.push(Box::new(
-                Text::new("Project links are available through the app resource.")
-                    .with_scaled_size(12.0)
-                    .with_color(theme.text_dim),
-            ));
-        }
-        let facts = bounded_detail_card(Box::new(facts), false, true);
-        let assurance = bounded_detail_card(
-            Box::new(
-                Column::new()
+        let fact_surface = |child: Box<dyn Widget>| {
+            bounded_detail_card(
+                Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_height(188.0)
+                        .with_child(child),
+                ),
+                false,
+                true,
+            )
+        };
+        let package_facts = fact_surface(Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(8.0)
+                .push(Box::new(
+                    Text::new("Package")
+                        .with_scaled_size(18.0)
+                        .with_weight(TextWeight::Semibold)
+                        .with_heading_level(2),
+                ))
+                .push(Box::new(
+                    Text::new(&format!("App ID · {}", item.id))
+                        .with_scaled_size(12.0)
+                        .with_color(theme.text_tertiary),
+                ))
+                .push(Box::new(
+                    Text::new(&format!("Categories · {}", item.categories.join(", ")))
+                        .with_scaled_size(13.0)
+                        .with_color(theme.text_dim),
+                ))
+                .push(Box::new(
+                    Text::new(&package_lines.join("\n"))
+                        .with_scaled_size(13.0)
+                        .with_color(theme.text_dim),
+                )),
+        ));
+        let publisher_facts = fact_surface(Box::new(publisher_facts));
+        let device_facts = fact_surface(Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(8.0)
+                .push(Box::new(
+                    Text::new("On this device")
+                        .with_scaled_size(18.0)
+                        .with_weight(TextWeight::Semibold)
+                        .with_heading_level(2),
+                ))
+                .push(Box::new(Text::new(&installed).with_scaled_size(14.0)))
+                .push(Box::new(
+                    Text::new(trust_explanation)
+                        .with_scaled_size(13.0)
+                        .with_color(theme.text_dim),
+                ))
+                .push(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .push(Box::new(report))
+                        .push(Box::new(moderation)),
+                )),
+        ));
+        let facts = Row::new()
+            .no_wrap()
+            .push(Box::new(
+                Container::new()
+                    .with_width(364.0)
                     .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(9.0)
-                    .push(Box::new(
-                        Text::new("Device & trust")
-                            .with_scaled_size(20.0)
-                            .with_weight(TextWeight::Semibold)
-                            .with_heading_level(2),
-                    ))
-                    .push(Box::new(Text::new(&installed).with_scaled_size(14.0)))
-                    .push(Box::new(
-                        Text::new(trust_label)
-                            .with_scaled_size(13.0)
-                            .with_weight(TextWeight::Semibold),
-                    ))
-                    .push(Box::new(
-                        Text::new(trust_explanation)
-                            .with_scaled_size(13.0)
-                            .with_color(theme.text_dim),
-                    ))
-                    .push(Box::new(
-                        Row::new()
-                            .no_wrap()
-                            .push(Box::new(report))
-                            .push(Box::new(moderation)),
-                    )),
-            ),
-            false,
-            true,
-        );
-        let page = Column::new()
+                    .with_child(package_facts),
+            ))
+            .push(Box::new(
+                Container::new()
+                    .with_width(364.0)
+                    .with_no_padding()
+                    .with_child(publisher_facts),
+            ))
+            .push(Box::new(
+                Container::new()
+                    .with_width(364.0)
+                    .with_no_padding()
+                    .with_child(device_facts),
+            ));
+        let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(16.0)
-            .push(Box::new(back))
-            .push(hero)
+            // Back is navigation, not a content surface. A no-wrap row
+            // retains the compact control width instead of painting an empty
+            // full-width slab before the product hero.
             .push(Box::new(
                 Row::new()
                     .no_wrap()
-                    .push(Box::new(
-                        Container::new()
-                            .with_width(552.0)
-                            .with_no_padding()
-                            .with_child(facts),
-                    ))
-                    .push(Box::new(
-                        Container::new()
-                            .with_width(552.0)
-                            .with_no_padding()
-                            .with_child(assurance),
-                    )),
+                    .push(Box::new(back))
+                    .push(Box::new(Spacer::new())),
             ));
+        if let Some(notice) = self.operation_notice() {
+            page = page.push(notice);
+        }
+        let page = page.push(hero).push(Box::new(facts));
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
@@ -2896,25 +3049,29 @@ impl StoreApp {
                                 .push(Box::new(refresh_btn)),
                         )),
                 ));
-            return Box::new(
-                Container::new().with_no_padding().with_child(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_gap(8.0)
-                        .push(Box::new(main))
+            let mut header = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(8.0)
+                .push(Box::new(main))
+                .push(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .push(self.build_filter_row(theme))
+                        .push(self.build_category_row(theme))
                         .push(Box::new(
-                            Row::new()
-                                .no_wrap()
-                                .push(self.build_filter_row(theme))
-                                .push(self.build_category_row(theme))
-                                .push(Box::new(
-                                    Text::new(&self.catalogue_source_summary())
-                                        .with_scaled_size(12.0)
-                                        .with_color(theme.text_dim),
-                                )),
+                            Text::new(&self.catalogue_source_summary())
+                                .with_scaled_size(12.0)
+                                .with_color(theme.text_dim),
                         )),
-                )),
+                ));
+            if let Some(notice) = self.operation_notice() {
+                header = header.push(notice);
+            }
+            return Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_child(Box::new(header)),
             );
         }
         if compact_header {
@@ -2954,35 +3111,15 @@ impl StoreApp {
                         .push(Box::new(refresh_btn)),
                 ))
                 .push(scope_controls);
-            if !self.readable_type_layout() || self.worker_busy {
+            if !self.readable_type_layout() {
                 header = header.push(Box::new(
                     Text::new(&self.catalogue_source_summary())
                         .with_scaled_size(12.0)
                         .with_color(theme.text_tertiary),
                 ));
             }
-            if self.operation_error.is_some() && !self.items.is_empty() {
-                header = header.push(Box::new(
-                    Container::new().with_background().with_child(Box::new(
-                        Column::new()
-                            .with_no_padding()
-                            .with_intrinsic_height()
-                            .with_gap(4.0)
-                            .push(Box::new(
-                                Text::new(operation_error_summary())
-                                    .with_scaled_size(13.0)
-                                    .with_color(theme.text_dim),
-                            ))
-                            .push(Box::new(
-                                Text::new(&format!(
-                                    "Status · {}",
-                                    visible_operation_status(&self.status_line)
-                                ))
-                                .with_scaled_size(12.0)
-                                .with_color(theme.text_tertiary),
-                            )),
-                    )),
-                ));
+            if let Some(notice) = self.operation_notice() {
+                header = header.push(notice);
             }
             return Box::new(
                 Container::new()
@@ -3054,28 +3191,8 @@ impl StoreApp {
                         )),
                 )),
         ));
-        if self.operation_error.is_some() && !self.items.is_empty() {
-            header = header.push(Box::new(
-                Container::new().with_background().with_child(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_gap(4.0)
-                        .push(Box::new(
-                            Text::new(operation_error_summary())
-                                .with_scaled_size(13.0)
-                                .with_color(theme.text_dim),
-                        ))
-                        .push(Box::new(
-                            Text::new(&format!(
-                                "Status · {}",
-                                visible_operation_status(&self.status_line)
-                            ))
-                            .with_scaled_size(12.0)
-                            .with_color(theme.text_tertiary),
-                        )),
-                )),
-            ));
+        if let Some(notice) = self.operation_notice() {
+            header = header.push(notice);
         }
         Box::new(
             Container::new()
@@ -3294,6 +3411,7 @@ impl StoreApp {
         // sort from `visible_items`, then give those two honest states their
         // own editorial groups instead of presenting one anonymous wall of
         // identical cards.
+        let mut update_cards: Vec<Box<dyn Widget>> = Vec::new();
         let mut ready_cards: Vec<Box<dyn Widget>> = Vec::new();
         let mut discover_cards: Vec<Box<dyn Widget>> = Vec::new();
         let mut search_cards: Vec<Box<dyn Widget>> = Vec::new();
@@ -3324,6 +3442,8 @@ impl StoreApp {
             );
             if !group_by_availability {
                 search_cards.push(card);
+            } else if item.installed.update_available() {
+                update_cards.push(card);
             } else if item.installed.is_installed() {
                 ready_cards.push(card);
             } else {
@@ -3348,9 +3468,23 @@ impl StoreApp {
                             .with_color(theme.text_dim),
                     )),
             ));
-            if group_by_availability && !ready_cards.is_empty() {
+            if group_by_availability && !update_cards.is_empty() {
                 column = column.push(Box::new(
                     Container::new().with_no_padding().with_height(12.0),
+                ));
+                column = column.push(Box::new(
+                    Text::new(&format!("Updates ready · {}", update_cards.len()))
+                        .with_scaled_size(16.0)
+                        .with_weight(TextWeight::Semibold)
+                        .with_heading_level(2),
+                ));
+            }
+            for card in update_cards {
+                column = column.push(card);
+            }
+            if group_by_availability && !ready_cards.is_empty() {
+                column = column.push(Box::new(
+                    Container::new().with_no_padding().with_height(16.0),
                 ));
                 column = column.push(Box::new(
                     Text::new(&format!("Ready to use · {}", ready_cards.len()))
@@ -3429,24 +3563,38 @@ impl StoreApp {
                         .push(Box::new(
                             CardGrid::new(cards)
                                 .with_min_card_width(min_card_width)
-                                // Desktop cards are an editorial two-column
-                                // layout on the bounded desktop canvas (or
-                                // reflow naturally at the medium breakpoint),
-                                // never the cramped three-column catalogue
-                                // that made artwork and copy compete for the
-                                // same pixels.
+                                // The redesigned desktop tile owns distinct
+                                // artwork, copy and action regions, so this
+                                // bounded canvas can carry three balanced
+                                // discovery cards without turning the last
+                                // entry into an orphaned half-row.
                                 .with_card_height(card_height)
                                 .with_gap(16.0),
                         )),
                 ) as Box<dyn Widget>
             };
+            if group_by_availability && !update_cards.is_empty() {
+                let update_count = update_cards.len();
+                recommended = recommended.push(make_section(
+                    &format!("Updates ready · {update_count}"),
+                    "A newer verified version is available on this device.",
+                    update_cards,
+                    104.0,
+                    330.0,
+                ));
+                if !ready_cards.is_empty() || !discover_cards.is_empty() {
+                    recommended = recommended.push(Box::new(
+                        Container::new().with_no_padding().with_height(22.0),
+                    ));
+                }
+            }
             if group_by_availability && !ready_cards.is_empty() {
                 let ready_count = ready_cards.len();
                 recommended = recommended.push(make_section(
                     &format!("Ready to use · {ready_count}"),
                     "Open or update apps already on this device.",
                     ready_cards,
-                    104.0,
+                    208.0,
                     desktop_card_min_width,
                 ));
                 if !discover_cards.is_empty() {
@@ -3478,7 +3626,7 @@ impl StoreApp {
                         "Results stay in relevance order across names, publishers, descriptions, and categories."
                     },
                     remaining_cards,
-                    if group_by_availability { 190.0 } else { 174.0 },
+                    if group_by_availability { 208.0 } else { 208.0 },
                     desktop_card_min_width,
                 ));
             }
@@ -5056,13 +5204,13 @@ mod tests {
     }
 
     #[test]
-    fn bounded_desktop_catalogue_keeps_a_two_column_card_measure() {
+    fn bounded_desktop_catalogue_keeps_a_balanced_three_column_measure() {
         let mut app = seeded_app();
         app.set_layout_width_hint(1_440.0);
-        assert!((app.catalogue_card_min_width() - 500.0).abs() < f64::EPSILON);
+        assert!((app.catalogue_card_min_width() - 348.0).abs() < f64::EPSILON);
         assert_eq!(
             ui::widget::card_columns(1_120.0, app.catalogue_card_min_width(), 16.0),
-            2
+            3
         );
 
         app.set_layout_width_hint(1_024.0);
@@ -5101,6 +5249,79 @@ mod tests {
         assert_eq!(
             empty.catalogue_source_summary(),
             "No apps loaded from configured sources yet"
+        );
+    }
+
+    #[test]
+    fn operation_notice_uses_shared_live_banner_semantics() {
+        let mut app = seeded_app();
+        assert!(app.operation_notice().is_none());
+
+        app.set_status_line("Installing Notes…");
+        app.set_worker_busy(true);
+        let busy_notice = app
+            .operation_notice()
+            .expect("busy work has a semantic notice");
+        let busy = busy_notice
+            .children()
+            .first()
+            .and_then(|child| child.accessibility())
+            .expect("busy banner remains a live child of the progress notice");
+        assert_eq!(busy.name.as_deref(), Some("Working in background"));
+        assert_eq!(busy.live, Some(Politeness::Polite));
+        assert_eq!(busy.description.as_deref(), Some("Installing Notes…"));
+        let progress = busy_notice
+            .children()
+            .get(1)
+            .and_then(|child| child.accessibility())
+            .expect("progress remains visible to a screen reader");
+        assert_eq!(progress.name.as_deref(), Some("Operation in progress"));
+
+        app.set_worker_busy(false);
+        app.set_operation_error(Some("signature mismatch".into()));
+        let error = app
+            .operation_notice()
+            .and_then(|notice| notice.accessibility())
+            .expect("failure has a semantic notice");
+        assert_eq!(error.name.as_deref(), Some("The last operation failed"));
+        assert_eq!(error.live, Some(Politeness::Assertive));
+    }
+
+    #[test]
+    fn update_priority_follows_the_current_catalogue_snapshot() {
+        let mut app = seeded_app();
+        let mut files = item(
+            "Files",
+            StoreSource::Tilo {
+                registry_name: "Tilo".into(),
+            },
+            "System",
+            InstalledState::Installed {
+                version: "1.0.0".into(),
+                available: "1.1.0".into(),
+                pinned: false,
+                user_managed: true,
+            },
+        );
+        files.versions[0].version = "1.1.0".into();
+        app.set_items({
+            let mut items = app.items().to_vec();
+            items.push(files);
+            items
+        });
+        assert!(
+            app.visible_items()
+                .iter()
+                .any(|item| item.installed.update_available()),
+            "the current catalogue exposes the verified update candidate"
+        );
+
+        app.set_active_filter(SourceFilter::Flatpak);
+        assert!(
+            app.visible_items()
+                .iter()
+                .all(|item| !item.installed.update_available()),
+            "the update shelf must be derived from the active visible catalogue"
         );
     }
 
@@ -5611,6 +5832,23 @@ mod tests {
     }
 
     #[test]
+    fn app_resources_include_bounded_catalogue_context_for_nonvisual_clients() {
+        let app = seeded_app();
+        let item = app.items.iter().find(|item| item.id == "id.notes").unwrap();
+        let resource = store_app_resource(item, true);
+        let presentation = resource
+            .presentation
+            .expect("app resource has a search and history summary");
+        assert_eq!(presentation.badge.as_deref(), Some("Tilo verified · v1"));
+        assert!(
+            presentation
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("Notes description"))
+        );
+    }
+
+    #[test]
     fn moderation_submission_refuses_a_stale_or_substituted_report_target() {
         let mut app = seeded_app();
         app.reports.push(ReportRecord {
@@ -5700,16 +5938,6 @@ mod tests {
     }
 
     #[test]
-    fn operation_error_summary_stays_within_the_masthead_reading_measure() {
-        assert_eq!(
-            operation_error_summary(),
-            "The last operation failed. Refresh the catalogue and try again."
-        );
-        assert!(operation_error_summary().chars().count() <= 72);
-        assert!(!operation_error_summary().contains('\n'));
-    }
-
-    #[test]
     fn visible_operation_status_is_printable_and_bounded() {
         assert_eq!(visible_operation_status("\n\t"), UNKNOWN_OPERATION_STATUS);
         assert_eq!(
@@ -5723,6 +5951,15 @@ mod tests {
             MAX_VISIBLE_OPERATION_STATUS_CHARS + 1
         );
         assert!(visible.ends_with('…'));
+    }
+
+    #[test]
+    fn resource_detail_excerpt_is_printable_and_byte_bounded() {
+        assert_eq!(resource_detail_excerpt(" one\n\ttwo  "), "one two");
+        let detail = resource_detail_excerpt(&format!("{}\nignored", "界".repeat(200)));
+        assert!(detail.len() <= MAX_RESOURCE_DETAIL_BYTES);
+        assert!(detail.ends_with('…'));
+        assert!(!detail.contains('\n'));
     }
 
     #[test]

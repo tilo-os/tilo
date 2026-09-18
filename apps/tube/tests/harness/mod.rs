@@ -52,11 +52,20 @@ pub struct Harness<W: Widget> {
 impl<W: Widget> Harness<W> {
     /// Build a harness at the given logical viewport and run the first frame.
     pub fn new(app: W, viewport: (f32, f32)) -> Self {
+        Self::with_theme(app, viewport, Theme::dark())
+    }
+
+    /// Build a harness with the exact theme and text scale a real offscreen
+    /// shot would use. Keeping the renderer's scale in lockstep with the theme
+    /// is essential for rect assertions at 200% text.
+    pub fn with_theme(app: W, viewport: (f32, f32), theme: Theme) -> Self {
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
         let mut h = Harness {
             app,
             state: ui::State::new(),
-            theme: Theme::dark(),
-            text: TextRenderer::new(),
+            theme,
+            text,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
             child: NodeId::new(0),

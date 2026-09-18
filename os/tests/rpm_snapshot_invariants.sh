@@ -92,10 +92,49 @@ has "$workflow" 'needs: signing-preflight' \
   'expensive native snapshot builds wait for signing-authority preflight'
 has "$workflow" 'python3 os/dev/promote-native-index.py' \
   'snapshot promotion verifies signed native children'
-has "$workflow" 'test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"' \
-  'snapshot pin updates reject source changes during the build'
+has "$workflow" 'driver = "vfs"' \
+  'snapshot promotion isolates Podman storage from the runner overlay'
+has "$workflow" 'rm -f -- "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' \
+  'snapshot promotion preserves web-identity token cleanup when extending its exit trap'
+has "$workflow" 'git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"' \
+  'snapshot pin updates reject build-input changes while allowing unrelated commits'
+has "$workflow" 'git checkout --detach FETCH_HEAD' \
+  'snapshot promotion applies its pin on the current branch tip'
 has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
   'snapshot signing requires a non-exportable key'
+has "$workflow" '. os/dev/configure-cosign-kms.sh' \
+  'snapshot signing configures the KMS provider from its trusted key reference'
+oidc_fixture="$(mktemp -d)"
+printf '{"value":"e30.eyJzdWIiOiJ0ZXN0LXN1YmplY3QifQ.signature"}\n' \
+  > "$oidc_fixture/token&audience=tilo-release-signing"
+aws_config="$(COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/example' \
+  AWS_SIGNING_ROLE_ARN='arn:aws:iam::123456789012:role/release' \
+  ACTIONS_ID_TOKEN_REQUEST_URL="file://$oidc_fixture/token" \
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN=request-token RUNNER_TEMP="$oidc_fixture" \
+  AWS_ACCESS_KEY_ID=ambient-cache-user \
+  sh -c '. "$1"; printf "%s:%s:%s:%s:%s:" "$AWS_REGION" "$AWS_DEFAULT_REGION" \
+    "$AWS_ROLE_ARN" "${AWS_ACCESS_KEY_ID-unset}" \
+    "$(stat -c %a "$AWS_WEB_IDENTITY_TOKEN_FILE")"; \
+    cat "$AWS_WEB_IDENTITY_TOKEN_FILE"' fixture "$repo/os/dev/configure-cosign-kms.sh")"
+rm -rf -- "$oidc_fixture"
+[ "$aws_config" = 'Using Forgejo OIDC subject: test-subject
+eu-west-2:eu-west-2:arn:aws:iam::123456789012:role/release:unset:600:e30.eyJzdWIiOiJ0ZXN0LXN1YmplY3QifQ.signature' ] \
+  && ok 'AWS KMS setup derives the region and installs least-exposure web identity' \
+  || bad 'AWS KMS setup does not configure Forgejo web identity safely'
+if COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/example' \
+   AWS_SIGNING_ROLE_ARN='arn:aws:iam::999999999999:role/release' \
+   ACTIONS_ID_TOKEN_REQUEST_URL=unused ACTIONS_ID_TOKEN_REQUEST_TOKEN=unused \
+   sh -c '. "$1"' fixture "$repo/os/dev/configure-cosign-kms.sh" >/dev/null 2>&1; then
+  bad 'a signing role from outside the KMS account is accepted'
+else
+  ok 'AWS signing role is bound to the KMS key account'
+fi
+if COSIGN_KEY_REF='awskms:///not-an-arn' \
+   sh -c '. "$1"' fixture "$repo/os/dev/configure-cosign-kms.sh" >/dev/null 2>&1; then
+  bad 'malformed AWS KMS key references are accepted'
+else
+  ok 'malformed AWS KMS key references fail closed'
+fi
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$workflow" \
    && grep -Fq 'needs: signing-preflight' "$workflow"; then

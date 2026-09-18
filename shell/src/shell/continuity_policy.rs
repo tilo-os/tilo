@@ -137,6 +137,9 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
             | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
             | PersonalFabricAction::BluetoothHandoffCancel { .. } => ContinuityCapability::Media,
+            PersonalFabricAction::DisplayMirrorRequest { .. }
+            | PersonalFabricAction::DisplayMirrorDecision { .. }
+            | PersonalFabricAction::DisplayMirrorStop { .. } => ContinuityCapability::DisplayInput,
             PersonalFabricAction::NearbyDrop { .. }
             | PersonalFabricAction::NearbyDropResult { .. }
             | PersonalFabricAction::NearbyTransferOffer { .. }

@@ -236,10 +236,38 @@ plugin. Both add avoidable OpenSSL-linked client stacks: Tilo's sandboxed Git
 application supplies repository workflows, development containers may install
 their own CLI, and the kernel/NetworkManager WireGuard path remains available
 without OpenVPN's general-purpose TLS implementation.
-Inherited OpenSSH clients and server components are removed as well; the Remote
-application uses its Rust SSH implementation, so host-wide OpenSSH adds parser,
-daemon, and OpenSSL surface without serving a Tilo runtime path.
-Tilo application TLS and all Tilo-owned signing paths do not use it.
+The OpenSSH server remains forbidden. Fedora's `virt-viewer` package has a
+strong dependency on `openssh-clients` and its `openssh` base package. Those two
+packages are admitted only while `virt-viewer` is installed; Tilo's viewer uses
+`--connect qemu:///system --attach`, and its Remote application still uses Rust
+SSH. The retained client binaries are a documented distribution dependency,
+not evidence that Tilo uses SSH to display its local Windows VM.
+
+Fedora's `swtpm-tools` requires `gnutls-utils`. Normal fresh libvirt TPM 2.0
+provisioning requests endorsement and platform certificates; the shipped
+`swtpm_setup` configuration invokes `swtpm_localca`, whose initial CA setup uses
+`certtool`. Removing that package breaks provisioning. It is admitted only with
+`swtpm-tools`, including the companion GnuTLS utilities packaged alongside
+`certtool`. The runtime audit reports this residual surface explicitly.
+These are third-party VM dependencies; Tilo application TLS and all Tilo-owned
+signing paths remain Rust-native. General OpenSSL, EFI signing and NSS tools
+remain forbidden, as do Git, OpenVPN, and the OpenSSH server.
+
+The named ABI sets also cover the pinned Fedora base's bootc/OSTree/container
+transport, initramfs, authentication, storage, networking and TPM libraries,
+and the rootfs requests' desktop/VM dependency closure (including Fedora
+recommendations): Qt, Wi-Fi, PipeWire, GStreamer, FreeRDP/SPICE, software TPM, Xwayland, and the Fedora libvirt/QEMU
+storage backends, mobile-device access and archive/DNS helpers. The review used
+base digest
+`69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06`
+and RPM snapshot digest
+`912255637bab849ee5c3f62a963481f0b994576ef08cec8ff4fe4bc4cfb9e02f`.
+Build-only compiler, Cargo and signing packages are not admitted by copying the
+snapshot inventory. Package metadata can conservatively retain an ABI edge even
+when an unused plugin was removed; the separate ELF gate continues to check the
+actual Tilo outputs. The final installed inventory must still pass the build
+gate: dependency-graph review alone does not prove a finished image or a boot.
+
 The workspace also patches `rustls-native-certs` with the small
 `tilo-native-certs` loader: on Tilo it reads only
 `/etc/pki/tls/certs/ca-bundle.crt`, ignores `SSL_CERT_FILE` and certificate

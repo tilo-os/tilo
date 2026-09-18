@@ -71,6 +71,40 @@ pub use trust::{
     TrustedAttestors, attestation_preimage, default_revoked_keys_path,
     default_trusted_attestors_path,
 };
-pub use unpack::{UnpackError, unpack};
+pub use unpack::{UnpackError, unpack, validate_materialized_payload};
 pub use validate::{ManifestError, validate_manifest, validate_manifest_with_payload};
 pub use verify::{Verification, verify, verify_with_trust};
+
+/// Maximum wire size of an application `.qpkg`. Large shared dependencies
+/// belong in a versioned runtime bundle; user documents and downloadable
+/// content are resources, not application payload.
+pub const MAX_APP_QPKG_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Materialized application payload budget. Collection entries may legally
+/// share one content-addressed blob; count every reference so deduplication
+/// cannot turn a tiny qpkg into an arbitrarily large install.
+pub const MAX_APP_UNPACKED_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Bound filesystem work/inodes independently of bytes. Empty files are not
+/// allowed to bypass the materialized-byte limit indefinitely.
+pub const MAX_APP_PAYLOAD_ENTRIES: usize = 4096;
+
+/// Whether a package of `kind` and wire `size` satisfies the thin-app limit.
+/// Non-app bundles are shared infrastructure and use their own distribution
+/// policy.
+pub fn qpkg_size_allowed(kind: Kind, size: u64) -> bool {
+    kind != Kind::App || size <= MAX_APP_QPKG_BYTES
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    #[test]
+    fn app_limit_is_five_mib_and_runtime_bundles_are_separate() {
+        assert_eq!(MAX_APP_QPKG_BYTES, 5_242_880);
+        assert!(qpkg_size_allowed(Kind::App, MAX_APP_QPKG_BYTES));
+        assert!(!qpkg_size_allowed(Kind::App, MAX_APP_QPKG_BYTES + 1));
+        assert!(qpkg_size_allowed(Kind::Runtime, u64::MAX));
+    }
+}

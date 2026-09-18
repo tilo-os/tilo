@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use ui::State;
+use ui::num::f32_of_u32;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::taffy::{AvailableSpace, NodeId, Size, TaffyTree};
@@ -31,8 +32,8 @@ fn shoot(theme: &Theme, width: u32, height: u32, inspected: bool, out: &Path) {
     let _ = taffy.compute_layout_with_measure(
         node,
         Size {
-            width: AvailableSpace::Definite(width as f32),
-            height: AvailableSpace::Definite(height as f32),
+            width: AvailableSpace::Definite(f32_of_u32(width)),
+            height: AvailableSpace::Definite(f32_of_u32(height)),
         },
         |known, available, id, _, _| {
             map.get(&id).map_or(Size::ZERO, |&widget| unsafe {

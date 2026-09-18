@@ -144,10 +144,11 @@ fn usage() -> String {
 }
 
 fn generate_ed25519_key(private_path: &Path, public_path: &Path) -> Result<(), String> {
+    use ring::rand::{SecureRandom as _, SystemRandom};
+
     if private_path == public_path {
         return Err("private and public key paths must differ".into());
     }
-    use ring::rand::{SecureRandom as _, SystemRandom};
     let mut seed = Zeroizing::new([0_u8; 32]);
     SystemRandom::new()
         .fill(&mut *seed)
@@ -589,6 +590,169 @@ fn hash_password_command(mut args: impl Iterator<Item = std::ffi::OsString>) -> 
     Ok(())
 }
 
+fn generate_ed25519_key_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let private = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let public = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    generate_ed25519_key(&private, &public)
+}
+
+fn generate_secure_boot_cert_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let common_name = args.next().ok_or_else(usage)?;
+    let key = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let cert = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    generate(
+        common_name
+            .to_str()
+            .ok_or("common name must be valid UTF-8")?,
+        &key,
+        &cert,
+    )
+}
+
+fn generate_tls_fixture_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let ip = args.next().ok_or_else(usage)?;
+    let ca_certificate = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let server_key = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let server_certificate = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    let ip = ip
+        .to_str()
+        .ok_or("server IP must be valid UTF-8")?
+        .parse()
+        .map_err(|_| "server IP is invalid")?;
+    let fixture = tilo_crypto::generate_tls_fixture(ip)?;
+    write_new(
+        &ca_certificate,
+        fixture.ca_certificate_pem.as_bytes(),
+        0o644,
+    )?;
+    if let Err(error) = write_new(
+        &server_key,
+        fixture.server_private_key_pem.as_bytes(),
+        0o600,
+    ) {
+        let _ = fs::remove_file(&ca_certificate);
+        return Err(error);
+    }
+    if let Err(error) = write_new(
+        &server_certificate,
+        fixture.server_certificate_pem.as_bytes(),
+        0o644,
+    ) {
+        let _ = fs::remove_file(&server_key);
+        let _ = fs::remove_file(&ca_certificate);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn p256_public_key_sha256_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let public = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    let public = read_text_bounded(&public, MAX_CERTIFICATE_BYTES, "public key")?;
+    println!("{}", tilo_crypto::p256_public_key_sha256(&public)?);
+    Ok(())
+}
+
+fn sign_rsa_sha256_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let key = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let input = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let output = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    let key = read_private_key(&key)?;
+    let message = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "signed input")?;
+    let signature = tilo_crypto::sign_rsa_sha256(&key, &message)?;
+    write_new(&output, &signature, 0o600)
+}
+
+fn rsa_public_key_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let private = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let output = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    let private = read_private_key(&private)?;
+    let public = tilo_crypto::rsa_public_key_pem(&private)?;
+    write_new(&output, public.as_bytes(), 0o644)
+}
+
+fn rsa_public_key_info_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let public = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    let public = read_text_bounded(&public, MAX_CERTIFICATE_BYTES, "public key")?;
+    let (bits, identity) = tilo_crypto::rsa_public_key_info(&public)?;
+    println!("{bits} {identity}");
+    Ok(())
+}
+
+fn key_matches_certificate_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let private = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let certificate = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    let private = read_private_key(&private)?;
+    let certificate = read_bounded(&certificate, MAX_CERTIFICATE_BYTES, "certificate")?;
+    tilo_crypto::rsa_private_key_matches_certificate(&private, &certificate)
+}
+
+fn verify_rsa_sha256_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let key = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let input = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let signature = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    let key = read_text_bounded(&key, MAX_CERTIFICATE_BYTES, "public key")?;
+    let message = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "signed input")?;
+    let signature = read_bounded(&signature, MAX_SIGNATURE_BYTES, "signature")?;
+    tilo_crypto::verify_rsa_sha256(&key, &message, &signature)
+}
+
+fn efi_signature_count_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let input = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    let image = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "EFI image")?;
+    println!("{}", tilo_crypto::efi_signature_count(&image)?);
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let command = args.next().ok_or_else(usage)?;
@@ -600,130 +764,15 @@ fn run() -> Result<(), String> {
         Some("certificate-esl") => certificate_esl_command(args),
         Some("firmware-read-esl") => firmware_read_esl_command(args),
         Some("firmware-write-esl") => firmware_write_esl_command(args),
-        Some("generate-ed25519-key") => {
-            let private = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            let public = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            if args.next().is_some() {
-                return Err(usage());
-            }
-            generate_ed25519_key(&private, &public)
-        }
-        Some("generate-secure-boot-cert") => {
-            let common_name = args.next().ok_or_else(usage)?;
-            let key = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            let cert = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            if args.next().is_some() {
-                return Err(usage());
-            }
-            generate(
-                common_name
-                    .to_str()
-                    .ok_or("common name must be valid UTF-8")?,
-                &key,
-                &cert,
-            )
-        }
-        Some("generate-tls-fixture") => {
-            let ip = args.next().ok_or_else(usage)?;
-            let ca_certificate = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            let server_key = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            let server_certificate = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            if args.next().is_some() {
-                return Err(usage());
-            }
-            let ip = ip
-                .to_str()
-                .ok_or("server IP must be valid UTF-8")?
-                .parse()
-                .map_err(|_| "server IP is invalid")?;
-            let fixture = tilo_crypto::generate_tls_fixture(ip)?;
-            write_new(
-                &ca_certificate,
-                fixture.ca_certificate_pem.as_bytes(),
-                0o644,
-            )?;
-            if let Err(error) = write_new(
-                &server_key,
-                fixture.server_private_key_pem.as_bytes(),
-                0o600,
-            ) {
-                let _ = fs::remove_file(&ca_certificate);
-                return Err(error);
-            }
-            if let Err(error) = write_new(
-                &server_certificate,
-                fixture.server_certificate_pem.as_bytes(),
-                0o644,
-            ) {
-                let _ = fs::remove_file(&server_key);
-                let _ = fs::remove_file(&ca_certificate);
-                return Err(error);
-            }
-            Ok(())
-        }
-        Some("p256-public-key-sha256") => {
-            let public = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            if args.next().is_some() {
-                return Err(usage());
-            }
-            let public = read_text_bounded(&public, MAX_CERTIFICATE_BYTES, "public key")?;
-            println!("{}", tilo_crypto::p256_public_key_sha256(&public)?);
-            Ok(())
-        }
-        Some("sign-rsa-sha256") => {
-            let key = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            let input = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            let output = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            if args.next().is_some() {
-                return Err(usage());
-            }
-            let key = read_private_key(&key)?;
-            let message = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "signed input")?;
-            let signature = tilo_crypto::sign_rsa_sha256(&key, &message)?;
-            write_new(&output, &signature, 0o600)
-        }
-        Some("rsa-public-key") => {
-            let private = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            let output = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            if args.next().is_some() {
-                return Err(usage());
-            }
-            let private = read_private_key(&private)?;
-            let public = tilo_crypto::rsa_public_key_pem(&private)?;
-            write_new(&output, public.as_bytes(), 0o644)
-        }
-        Some("rsa-public-key-info") => {
-            let public = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            if args.next().is_some() {
-                return Err(usage());
-            }
-            let public = read_text_bounded(&public, MAX_CERTIFICATE_BYTES, "public key")?;
-            let (bits, identity) = tilo_crypto::rsa_public_key_info(&public)?;
-            println!("{bits} {identity}");
-            Ok(())
-        }
-        Some("key-matches-certificate") => {
-            let private = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            let certificate = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            if args.next().is_some() {
-                return Err(usage());
-            }
-            let private = read_private_key(&private)?;
-            let certificate = read_bounded(&certificate, MAX_CERTIFICATE_BYTES, "certificate")?;
-            tilo_crypto::rsa_private_key_matches_certificate(&private, &certificate)
-        }
-        Some("verify-rsa-sha256") => {
-            let key = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            let input = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            let signature = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            if args.next().is_some() {
-                return Err(usage());
-            }
-            let key = read_text_bounded(&key, MAX_CERTIFICATE_BYTES, "public key")?;
-            let message = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "signed input")?;
-            let signature = read_bounded(&signature, MAX_SIGNATURE_BYTES, "signature")?;
-            tilo_crypto::verify_rsa_sha256(&key, &message, &signature)
-        }
+        Some("generate-ed25519-key") => generate_ed25519_key_command(args),
+        Some("generate-secure-boot-cert") => generate_secure_boot_cert_command(args),
+        Some("generate-tls-fixture") => generate_tls_fixture_command(args),
+        Some("p256-public-key-sha256") => p256_public_key_sha256_command(args),
+        Some("sign-rsa-sha256") => sign_rsa_sha256_command(args),
+        Some("rsa-public-key") => rsa_public_key_command(args),
+        Some("rsa-public-key-info") => rsa_public_key_info_command(args),
+        Some("key-matches-certificate") => key_matches_certificate_command(args),
+        Some("verify-rsa-sha256") => verify_rsa_sha256_command(args),
         Some("sign-module") => sign_module_command(args),
         Some("verify-module") => verify_module_command(args),
         Some("sign-efi") => sign_efi_command(args),
@@ -734,15 +783,7 @@ fn run() -> Result<(), String> {
         }
         Some("durable-rename") => durable_rename_command(args),
         Some("durable-unlink") => durable_unlink_command(args),
-        Some("efi-signature-count") => {
-            let input = args.next().map(PathBuf::from).ok_or_else(usage)?;
-            if args.next().is_some() {
-                return Err(usage());
-            }
-            let image = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "EFI image")?;
-            println!("{}", tilo_crypto::efi_signature_count(&image)?);
-            Ok(())
-        }
+        Some("efi-signature-count") => efi_signature_count_command(args),
         _ => Err(usage()),
     }
 }

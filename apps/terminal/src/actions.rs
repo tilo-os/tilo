@@ -59,7 +59,8 @@
 //!
 //! ## Presentation is never an action
 //!
-//! The scrollback offset, the current text selection, whether the context menu is
+//! The scrollback offset, the current text selection, local find-in-scrollback
+//! query/matches, whether the context menu is
 //! open, and the viewport are per-peer view state held on the widget. The recipe
 //! names "the current selection, an overlay being open" as presentation that must
 //! *never* be an action.

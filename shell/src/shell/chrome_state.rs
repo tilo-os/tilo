@@ -289,6 +289,10 @@ pub struct QuickSettingsState {
     /// drill-in list.
     pub nav_stack: Vec<QsLevel>,
     pub wifi_networks: Vec<WifiNetwork>,
+    /// SSID currently being joined off-thread. Kept separate from the
+    /// password prompt so open networks can show progress without presenting
+    /// an irrelevant secret field.
+    pub wifi_joining: Option<String>,
     pub bt_devices: Vec<BtDevice>,
     /// The passphrase prompt for a protected network; `None` except
     /// while the user is typing into it.
@@ -298,6 +302,40 @@ pub struct QuickSettingsState {
     /// `Balanced` so a host without `power-profiles-daemon` still
     /// renders a sensible label.
     pub power_profile: PowerProfile,
+}
+
+/// One compositor-authoritative screen exposure projected into trusted
+/// chrome. This is session-local: it must never be persisted or replicated,
+/// because a stale viewer is worse than no disclosure at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ActiveExposure {
+    pub peer: u64,
+    pub surface: u64,
+    pub can_control: bool,
+}
+
+/// Session-local drill-down into one app-published resource directory.
+/// Route identity is retained with the resource so a similarly named object
+/// in another room or app can never receive the child query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResourceScope {
+    pub peer_id: u64,
+    pub cluster_id: String,
+    pub app_id: String,
+    pub resource: String,
+    pub label: String,
+}
+
+/// Session-local presence changes requested through the semantic action
+/// surface. The overlay host owns the live publisher and follow viewport, so
+/// chrome queues these rather than pretending the action provider can mutate
+/// either subsystem directly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PresenceRequest {
+    Follow(String),
+    StopFollowing,
+    SetManualStatus(Option<String>),
+    SetStatusSharing(ui::StatusSharing),
 }
 
 impl Default for QuickSettingsState {
@@ -324,6 +362,7 @@ impl Default for QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            wifi_joining: None,
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
@@ -359,6 +398,7 @@ impl QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            wifi_joining: None,
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
@@ -407,6 +447,7 @@ pub struct ChromeState {
     /// Caret + selection inside `editing_workspace_name`.
     pub editing_workspace_name_selection: ui::text_selection::Selection,
     pub search_scope: SearchScope,
+    pub search_resource_scope: Option<SearchResourceScope>,
     /// Set by the tab strip's "+", cleared when the palette closes.
     pub open_target: OpenTarget,
     /// Copied here once per frame from
@@ -480,6 +521,9 @@ pub struct ChromeState {
     /// While `true`, the notification stack withholds app
     /// names/summaries/bodies and shows only a count.
     session_locked: bool,
+    /// Live viewers/controllers copied from the compositor's share registry
+    /// each frame. Trusted chrome and accessibility read this same snapshot.
+    active_exposures: Vec<ActiveExposure>,
     /// Edge-triggered request from the shell's power menu.  The native
     /// compositor drains this and is the only layer allowed to transition
     /// the session lock state, so a UI action cannot diverge from the lock
@@ -506,6 +550,7 @@ pub struct ChromeState {
     records: RecordStore,
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
+    presence_requests: Vec<PresenceRequest>,
     /// An exported action asked into the current room, as `(record
     /// id, record kind)`. Queued because the room's index lives on
     /// the overlay host, unreachable from an action's `apply`.
@@ -593,6 +638,7 @@ impl ChromeState {
             editing_workspace_name: None,
             editing_workspace_name_selection: ui::text_selection::Selection::default(),
             search_scope: SearchScope::default(),
+            search_resource_scope: None,
             open_target: OpenTarget::default(),
             status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
@@ -619,12 +665,14 @@ impl ChromeState {
             dnd: false,
             visual_alert_until: None,
             session_locked: false,
+            active_exposures: Vec::new(),
             session_lock_requested: false,
             fullscreen_group: None,
             maximized_group: None,
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
+            presence_requests: Vec::new(),
             wheel_summon: None,
             record_requests: Vec::new(),
             close_surface_requests: Vec::new(),
@@ -670,6 +718,14 @@ impl ChromeState {
 
     pub fn take_peer_sync_requests(&mut self) -> Vec<crate::shell::overlay_host::PeerSyncAction> {
         std::mem::take(&mut self.peer_sync_requests)
+    }
+
+    pub fn push_presence_request(&mut self, request: PresenceRequest) {
+        self.presence_requests.push(request);
+    }
+
+    pub fn take_presence_requests(&mut self) -> Vec<PresenceRequest> {
+        std::mem::take(&mut self.presence_requests)
     }
 
     /// Same effect as activating that record's row in search — a
@@ -792,11 +848,27 @@ impl ChromeState {
     pub fn commit_workspace_name(&mut self) {
         if let Some(buf) = self.editing_workspace_name.take() {
             let trimmed = buf.trim();
-            if self.can_rename_active_workspace()
-                && !trimmed.is_empty()
-                && let Some(ws) = self.tree_mut().active_workspace_mut()
-            {
-                ws.name = trimmed.to_string();
+            if self.can_rename_active_workspace() && !trimmed.is_empty() {
+                let mut tree = self.tree_mut();
+                let room = if let Some(ws) = tree.active_workspace_mut() {
+                    if ws.name == trimmed {
+                        None
+                    } else {
+                        ws.name = trimmed.to_string();
+                        Some(ws.room)
+                    }
+                } else {
+                    None
+                };
+                if let Some(room) = room {
+                    // A workspace name is both local restart state and room
+                    // metadata. Commit both authorities at the same mutation
+                    // boundary so a crash/restart cannot restore the old
+                    // label and a peer cannot immediately write it back.
+                    tree.sync_room_doc(room);
+                    tree.seed_doc_from_cache();
+                    tree.flush_to_disk();
+                }
             }
             self.bump();
         }
@@ -1560,6 +1632,21 @@ impl ChromeState {
         self.session_locked
     }
 
+    /// Replace the trusted disclosure snapshot. Sorting keeps cache
+    /// invalidation independent of the registry's hash iteration order.
+    pub fn set_active_exposures(&mut self, mut exposures: Vec<ActiveExposure>) {
+        exposures.sort_unstable();
+        exposures.dedup();
+        if self.active_exposures != exposures {
+            self.active_exposures = exposures;
+            self.bump();
+        }
+    }
+
+    pub fn active_exposures(&self) -> &[ActiveExposure] {
+        &self.active_exposures
+    }
+
     /// Queue a lock requested by the in-compositor power menu.  This is an
     /// edge, rather than a second source of truth for whether the session is
     /// locked: the native loop drains it into [`SessionManager`].
@@ -2025,6 +2112,61 @@ mod active_tab_tests {
     }
 
     #[test]
+    fn committed_workspace_name_survives_restart_and_replicates_to_a_room_peer() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let path = dir.path().join("workspace.json");
+        let mut tree = tree_with(100);
+        let room = tree.workspaces[0].room;
+        tree.persist_path = Some(path.clone());
+        tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
+        tree.flush_to_disk();
+
+        // Establish a real shared-room lineage before the rename. Merely
+        // assigning the same RoomId to two independently-seeded documents
+        // creates concurrent `name` values; that is not how a peer joins and
+        // cannot prove which later edit should win.
+        let mut replica = tree_with(100);
+        let replica_workspace = replica.active;
+        assert!(replica.set_room(replica_workspace, room));
+        let baseline = tree
+            .export_room_changes_since(room, &[])
+            .expect("host room baseline");
+        replica
+            .apply_room_changes(room, &baseline, &crate::shell::state::PeerOrigin::hub(1))
+            .expect("guest joins host room");
+        assert_eq!(replica.active_workspace().unwrap().name, "Home");
+        let replica_heads = replica.room_heads(room);
+
+        let chrome = ChromeState::new_with_fixture_handle(
+            tree.shared(),
+            crate::shell::hosted_inputs::HostedTileInputs::fixture()
+                .expect("hosted fixture inputs"),
+        );
+        {
+            let mut state = chrome.borrow_mut();
+            assert!(state.can_rename_active_workspace());
+            state.editing_workspace_name = Some("  Project Aurora  ".into());
+            state.commit_workspace_name();
+        }
+
+        let restarted = crate::shell::persist::load_tree_from(&path).expect("renamed state");
+        assert_eq!(restarted.active_workspace().unwrap().name, "Project Aurora");
+        let changes = chrome
+            .borrow()
+            .tree_mut()
+            .export_room_changes_since(room, &replica_heads)
+            .expect("room rename delta");
+        assert!(
+            !changes.is_empty(),
+            "the rename must enter the room document"
+        );
+        replica
+            .apply_room_changes(room, &changes, &crate::shell::state::PeerOrigin::hub(1))
+            .expect("room merge");
+        assert_eq!(replica.workspaces[0].name, "Project Aurora");
+    }
+
+    #[test]
     fn no_active_returns_none_instead_of_first_group() {
         let handle = Arc::new(RwLock::new(WorkspaceTree::default()));
         let chrome = ChromeState::new_with_handle(handle);
@@ -2234,5 +2376,32 @@ mod active_tab_tests {
         assert_eq!(state.revision, initial.wrapping_add(1));
         assert!(!state.sync_external_tree_revision());
         assert_eq!(state.revision, initial.wrapping_add(1));
+    }
+
+    #[test]
+    fn active_exposure_snapshot_is_sorted_deduplicated_and_edge_triggered() {
+        let cell = ChromeState::new(WorkspaceTree::default());
+        let mut state = cell.borrow_mut();
+        let initial = state.revision;
+        let a = ActiveExposure {
+            peer: 9,
+            surface: 42,
+            can_control: true,
+        };
+        let b = ActiveExposure {
+            peer: 3,
+            surface: 77,
+            can_control: false,
+        };
+        state.set_active_exposures(vec![a, b, a]);
+        assert_eq!(state.active_exposures(), &[b, a]);
+        assert_eq!(state.revision, initial.wrapping_add(1));
+
+        state.set_active_exposures(vec![a, b]);
+        assert_eq!(
+            state.revision,
+            initial.wrapping_add(1),
+            "an unchanged authority snapshot must not force a frame"
+        );
     }
 }
