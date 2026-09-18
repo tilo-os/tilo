@@ -23,6 +23,30 @@ on:
         description: SHA256 of exact delta receipt UTF-8 bytes
         required: true
         type: string
+      checkpoint_release:
+        description: Optional run8166 checkpoint_release (supply all reconstructed inputs together)
+        required: false
+        type: string
+      checkpoint_release_sha256:
+        description: Optional run8166 checkpoint_release_sha256 (supply all reconstructed inputs together)
+        required: false
+        type: string
+      checkpoint_windows:
+        description: Optional run8166 checkpoint_windows (supply all reconstructed inputs together)
+        required: false
+        type: string
+      checkpoint_windows_sha256:
+        description: Optional run8166 checkpoint_windows_sha256 (supply all reconstructed inputs together)
+        required: false
+        type: string
+      reconstructed_partial_admission:
+        description: Optional run8166 reconstructed_partial_admission (supply all reconstructed inputs together)
+        required: false
+        type: string
+      reconstructed_partial_admission_sha256:
+        description: Optional run8166 reconstructed_partial_admission_sha256 (supply all reconstructed inputs together)
+        required: false
+        type: string
       wpe_adoption:
         description: Original verified WPE adoption receipt JSON
         required: true
@@ -86,6 +110,12 @@ jobs:
           CHECKPOINT_INITIAL_SHA256: ${{ inputs.checkpoint_initial_sha256 }}
           CHECKPOINT_DELTA: ${{ inputs.checkpoint_delta }}
           CHECKPOINT_DELTA_SHA256: ${{ inputs.checkpoint_delta_sha256 }}
+          CHECKPOINT_RELEASE: ${{ inputs.checkpoint_release }}
+          CHECKPOINT_RELEASE_SHA256: ${{ inputs.checkpoint_release_sha256 }}
+          CHECKPOINT_WINDOWS: ${{ inputs.checkpoint_windows }}
+          CHECKPOINT_WINDOWS_SHA256: ${{ inputs.checkpoint_windows_sha256 }}
+          RECONSTRUCTED_PARTIAL_ADMISSION: ${{ inputs.reconstructed_partial_admission }}
+          RECONSTRUCTED_PARTIAL_ADMISSION_SHA256: ${{ inputs.reconstructed_partial_admission_sha256 }}
           WPE_ADOPTION: ${{ inputs.wpe_adoption }}
           WPE_ADOPTION_SHA256: ${{ inputs.wpe_adoption_sha256 }}
           THIN_CACHE_APPROVAL: ${{ inputs.thin_cache_approval }}
