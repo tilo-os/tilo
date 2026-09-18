@@ -13,6 +13,8 @@ if grep -Eq '^[[:space:]]*sync([[:space:]]|$)' "$secureboot"; then
 fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+export TILO_SB_BOOT_ID_FILE="$work/boot-id"
+printf '11111111-1111-1111-1111-111111111111\n' >"$TILO_SB_BOOT_ID_FILE"
 mkdir -p "$work/bin" "$work/keys" "$work/boot/EFI/systemd" "$work/run"
 chmod 0700 "$work/keys"
 printf 'test db key\n' >"$work/keys/db.key"
@@ -378,11 +380,12 @@ for variable in db KEK PK; do test -s "$firmware/$variable.esl"; done
 
 vendor_captured="$work/vendor-captured"
 cp -a "$captured" "$vendor_captured"
+printf '22222222-2222-2222-2222-222222222222\n' >"$TILO_SB_BOOT_ID_FILE"
+printf '\6\0\0\0\1' >"$efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
 PATH="$work/bin:$PATH" TILO_SB_KEYDIR="$vendor_captured" TILO_SB_BOOT="$work/boot" \
   TILO_SB_ESP="$work/boot" TILO_SB_EFIVARS="$efivars" \
   TILO_TEST_FIRMWARE_DIR="$firmware" \
   "$repo/os/usr/libexec/tilo-secureboot" retire-enrollment-keys --yes >/dev/null
-printf '\6\0\0\0\1' >"$efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
 if PATH="$work/bin:$PATH" TILO_SB_KEYDIR="$vendor_captured" TILO_SB_TPM_DEVICE=/dev/null \
   TILO_SB_EFIVARS="$efivars" TILO_TEST_FIRMWARE_DIR="$firmware" \
   TILO_SB_RUNTIME_DIR="$work/vendor-seal-run" \
@@ -418,6 +421,14 @@ PATH="$work/bin:$PATH" TILO_SB_KEYDIR="$captured" TILO_SB_BOOT="$work/boot" \
 cmp -s "$captured/db.esl" "$firmware/db.esl"
 grep -Fqx -- "$(cat "$captured/KEK.esl")" "$firmware/KEK.esl"
 grep -Fqx -- "$(cat "$captured/vendor-KEK.esl")" "$firmware/KEK.esl"
+if PATH="$work/bin:$PATH" TILO_SB_KEYDIR="$captured" TILO_SB_BOOT="$work/boot" \
+  TILO_SB_ESP="$work/boot" TILO_SB_EFIVARS="$efivars" \
+  TILO_TEST_FIRMWARE_DIR="$firmware" \
+  "$repo/os/usr/libexec/tilo-secureboot" retire-enrollment-keys --yes >/dev/null 2>&1; then
+  echo 'Secure Boot enrollment keys retired without a verified reboot boundary' >&2
+  exit 1
+fi
+printf '33333333-3333-3333-3333-333333333333\n' >"$TILO_SB_BOOT_ID_FILE"
 
 bad_firmware="$work/bad-firmware"
 bad_efivars="$work/bad-efivars"
@@ -431,6 +442,7 @@ if PATH="$work/bin:$PATH" TILO_SB_KEYDIR="$captured" TILO_SB_BOOT="$work/boot" \
   exit 1
 fi
 test ! -e "$bad_firmware/KEK.esl" -a ! -e "$bad_firmware/PK.esl"
+printf '44444444-4444-4444-4444-444444444444\n' >"$TILO_SB_BOOT_ID_FILE"
 PATH="$work/bin:$PATH" TILO_SB_KEYDIR="$captured" TILO_SB_BOOT="$work/boot" \
   TILO_SB_ESP="$work/boot" TILO_SB_EFIVARS="$efivars" \
   TILO_TEST_FIRMWARE_DIR="$firmware" \

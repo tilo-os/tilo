@@ -103,9 +103,10 @@ sudo tilo-secureboot status                # read this before going further
 # Copy PK.key and KEK.key to encrypted offline recovery media now.
 
 # Reboot into firmware setup, CLEAR the Secure Boot keys, boot back, then:
-sudo tilo-secureboot enroll --yes --owner-only-db --retire-enrollment-keys
+sudo tilo-secureboot enroll --yes --owner-only-db
 # Reboot into firmware setup, turn Secure Boot ON.
 # After that verified Secure Boot boot:
+sudo tilo-secureboot retire-enrollment-keys --yes
 sudo tilo-secureboot seal-db-key --yes
 ```
 
@@ -130,9 +131,11 @@ stored as an unauthenticated variable is not accepted as firmware trust.
 `EFI_VARIABLE_AUTHENTICATION_2` timestamp using current UTC, never a
 future-dated replay floor. Installing `PK` uses a Rust-native detached
 RSA/SHA-256 PKCS#7 self-signature and must make firmware leave Setup Mode.
-After that verification, `--retire-enrollment-keys` durably unlinks the online
-PK and KEK private keys. Their certificates and ESLs remain for inspection and
-the db key remains available for routine kernel/UKI signing. The retirement
+Enrollment durably records the current kernel boot ID. Only after Secure Boot
+is enabled and a later boot ID is observed does `retire-enrollment-keys`
+durably unlink the online PK and KEK private keys. Their certificates and ESLs
+remain for inspection and the db key remains available for routine kernel/UKI
+signing. The retirement
 step refuses while firmware is still in Setup Mode, if the enrolled PK/KEK do
 not read back, or if db signing authority is missing or mismatched. It is also
 available later as `tilo-secureboot retire-enrollment-keys --yes`; the explicit
