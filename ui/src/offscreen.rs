@@ -51,13 +51,8 @@ const RESILIENT_RENDER_ATTEMPTS: usize = 8;
 /// Decide whether a screenshot submission is safe to return. A non-empty
 /// scene must fit twice in succession: the first clean submission may still
 /// be populating Vello's atlas after a bump allocation changed.
-const fn resilient_submission_accepted(
-    scene_is_empty: bool,
-    confirmed: bool,
-    overflowed: bool,
-    unexpectedly_transparent: bool,
-) -> bool {
-    !overflowed && !unexpectedly_transparent && (scene_is_empty || confirmed)
+const fn resilient_submission_accepted(scene_is_empty: bool, confirmed: bool) -> bool {
+    scene_is_empty || confirmed
 }
 
 /// Damage targets change by a handful of pixels during animation. Keeping
@@ -2008,6 +2003,16 @@ impl OffscreenRenderer {
     /// dropped, up to a strict attempt limit. This checks the renderer's GPU
     /// counters, so partially missing glyphs are caught as reliably as a
     /// completely transparent failed frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `Vello` cannot produce two consecutive valid submissions
+    /// within the bounded retry count. Returning partial screenshot pixels
+    /// would make visual-regression output silently untrustworthy.
+    #[allow(
+        clippy::panic,
+        reason = "exhausting bounded screenshot retries is a fatal renderer invariant"
+    )]
     pub fn render_resilient(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
         let mut confirmed = false;
         for _ in 0..RESILIENT_RENDER_ATTEMPTS {
@@ -2025,12 +2030,7 @@ impl OffscreenRenderer {
                 confirmed = false;
                 continue;
             }
-            if resilient_submission_accepted(
-                scene.encoding().is_empty(),
-                confirmed,
-                overflowed,
-                unexpectedly_transparent,
-            ) {
+            if resilient_submission_accepted(scene.encoding().is_empty(), confirmed) {
                 return pixels;
             }
             // A scene that just fit is still not sufficient: Vello can use
@@ -2152,16 +2152,11 @@ mod tests {
     fn resilient_render_requires_a_second_clean_nonempty_submission() {
         // A first clean output may have warmed Vello's atlas, so only the
         // next clean submission may leave the offscreen renderer.
-        assert!(!resilient_submission_accepted(false, false, false, false));
-        assert!(resilient_submission_accepted(false, true, false, false));
-
-        // A new bump allocation or a blank nonempty scene invalidates a
-        // prior confirmation and must retry instead of emitting corruption.
-        assert!(!resilient_submission_accepted(false, true, true, false));
-        assert!(!resilient_submission_accepted(false, true, false, true));
+        assert!(!resilient_submission_accepted(false, false));
+        assert!(resilient_submission_accepted(false, true));
 
         // Intentionally empty transparent scenes need no atlas warm-up.
-        assert!(resilient_submission_accepted(true, false, false, false));
+        assert!(resilient_submission_accepted(true, false));
     }
 
     #[test]

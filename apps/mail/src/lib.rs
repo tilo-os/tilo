@@ -93,7 +93,7 @@ pub fn shot_viewport(scenario: &str) -> (u32, u32) {
             (560, 860)
         }
         "mid" => (1000, 720),
-        "compose" => (1180, 820),
+        "compose" | "reply" => (1180, 820),
         "setup" | "setup_add" | "setup_oauth" | "firstrun" | "error" => (1100, 780),
         "html_mail" => (1280, 820),
         _ => (1280, 800),
@@ -123,6 +123,9 @@ pub fn app_root_scenario(scenario: &str) -> Box<dyn Widget> {
         "html_mail" => app.prime_html_mail_shot(),
         "search" => app.prime_search_shot(),
         "preview" => app.prime_preview_shot(),
+        "bulk" => app.prime_bulk_shot(),
+        "bulk_purge_confirmation" => app.prime_bulk_purge_confirmation_shot(),
+        "reply" => app.prime_reply_shot(),
         "empty" => app.prime_empty_shot(),
         "loading" => app.prime_loading_shot(),
         "offline" => app.prime_offline_shot(),
