@@ -19,7 +19,7 @@ exclude = [
 # the full workspace nightly.
 default-members = [
     "crates/doc/qdoc",
-    "fs",
+    "crates/system/fs",
     "shell",
     "ui",
     "crates/packaging/pkg",
@@ -27,7 +27,6 @@ default-members = [
 ]
 members = [
     # Core product surfaces
-    "fs",
     "shell",
     "ui",
 
@@ -179,6 +178,7 @@ members = [
     "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
+    "crates/system/fs",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",

@@ -33,7 +33,7 @@
 //! clients; [`identity`] consumes an app-scoped signing connection while
 //! private key material remains in the host launcher-side broker.
 //!
-//! The broker lives in the compositor, the FUSE driver in `fs/`, and the
+//! The broker lives in the compositor, the FUSE driver in `crates/system/fs/`, and the
 //! launcher is `tilo-launcher` — this umbrella is client-side only.
 #![cfg_attr(
     test,

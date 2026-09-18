@@ -41,7 +41,7 @@ Most of the rest follows from that:
 |---|---|
 | `shell/` | Wayland compositor: scrollable strips, wheel-disc workspace switcher, per-workspace bubblewrap sandbox. `smithay` + `vello` + `wgpu`, collaboration over Iroh and `automerge`. Also `tilo-control` (drives a running desktop) and `shots` (offscreen renderer). |
 | `ui/` | Retained-mode CRDT-native toolkit. Every widget reads and writes one automerge document, so undo, persistence and collaboration share a mechanism. `wgpu` + `vello` + `taffy` + `cosmic-text` + `winit` + `fluent`. |
-| `fs/` | FUSE3 driver. Iroh content addressing, `blake3`, `moka` cache. Mounted at `/var/workspace`; projects metadata immediately, hydrates content on first read. |
+| `crates/system/fs/` | FUSE3 driver. Iroh content addressing, `blake3`, `moka` cache. Mounted at `/var/workspace`; projects metadata immediately, hydrates content on first read. |
 | `apps/` | 50 native applications — office suite, Servo-based browser, mail, calendar, maps, creative tools, passwords, clocks, terminal, and files. See [`apps/README.md`](apps/README.md). |
 | `crates/` | Supporting libraries by domain: collab, doc, runtime, packaging, session, system, text, format. |
 | `os/` | Bootc-based Fedora image. greetd → Wayland session → `shell`. |
