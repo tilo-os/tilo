@@ -1,4 +1,3 @@
-
 use super::*;
 use automerge::ROOT;
 use serial_test::serial;
@@ -3456,6 +3455,7 @@ fn time_popover_arrow_key_sets_the_start_time() {
 fn all_day_toggle_flips_the_flag() {
     let mut h = Harness::new(1280, 800);
     let id = selected_event_id(&h.app);
+    let start_day = h.app.model.event(id).unwrap().start.date();
     let before = h.app.model.event(id).unwrap().all_day;
     let p = h
         .hit_center(|a| matches!(a, Action::ToggleAllDay))
@@ -3466,6 +3466,14 @@ fn all_day_toggle_flips_the_flag() {
         !before,
         "all-day flipped"
     );
+    let event = h.app.model.event(id).unwrap();
+    assert_eq!(event.start.time(), NaiveTime::MIN);
+    assert_eq!(
+        event.end,
+        (start_day + Duration::days(1)).and_time(NaiveTime::MIN)
+    );
+    assert!(event.occurs_on(start_day));
+    assert!(!event.occurs_on(start_day + Duration::days(1)));
 }
 
 #[test]
