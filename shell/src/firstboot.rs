@@ -627,9 +627,9 @@ fn ensure_collaboration_identity_in_context(
         persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
     if device_owner && paths.device_cert.exists() {
         let cert = persist::read_device_cert(&paths.device_cert)
-            .map_err(|e| io::Error::other(e.to_string()))?;
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         tilo_user_identity::verify_device_cert(&cert)
-            .map_err(|e| io::Error::other(e.to_string()))?;
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         if cert.user_public_key != root_public
             || cert.device_public_key != device.verifying_key().to_bytes()
         {
@@ -809,10 +809,10 @@ fn ensure_device_certificate_for_identity(
     let user_public_key = identity.group_public_key();
     let cert_path = paths.device_cert_for_user(&user_public_key);
     if cert_path.exists() {
-        let cert =
-            persist::read_device_cert(&cert_path).map_err(|e| io::Error::other(e.to_string()))?;
+        let cert = persist::read_device_cert(&cert_path)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         tilo_user_identity::verify_device_cert(&cert)
-            .map_err(|e| io::Error::other(e.to_string()))?;
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         if cert.user_public_key != user_public_key
             || cert.device_public_key != device.verifying_key().to_bytes()
         {
