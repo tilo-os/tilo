@@ -52,14 +52,12 @@ struct SystemPackage {
 
 fn system_data_dir() -> PathBuf {
     std::env::var_os("TILO_APPS_SYSTEM_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(SYSTEM_DATA_DIR))
+        .map_or_else(|| PathBuf::from(SYSTEM_DATA_DIR), PathBuf::from)
 }
 
 fn system_payload_dir() -> PathBuf {
     std::env::var_os("TILO_APPS_SYSTEM_PAYLOAD_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(SYSTEM_PAYLOAD_DIR))
+        .map_or_else(|| PathBuf::from(SYSTEM_PAYLOAD_DIR), PathBuf::from)
 }
 
 fn is_within(root: &Path, path: &Path) -> bool {
@@ -594,27 +592,24 @@ impl app_host::Server for AppHostServer {
             let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
             let id = parse_id(p.get_id().map_err(|e| Error::failed(e.to_string()))?)?;
             let status = tokio::task::spawn_blocking(move || {
-                let (entry, manifest, user_managed) = match store.resolve(id) {
-                    Ok(entry) => {
-                        let manifest = store
-                            .root()
-                            .join("manifests")
-                            .join(format!("{}.toml", id.to_hex()));
-                        if let Some(parent) = manifest.parent() {
-                            std::fs::create_dir_all(parent).map_err(|e| {
-                                Error::failed(format!("create manifest directory: {e}"))
-                            })?;
-                        }
-                        atomic_file::write(&manifest, entry.manifest_text.as_bytes())
-                            .map_err(|e| Error::failed(format!("materialize manifest: {e}")))?;
-                        (entry, manifest, true)
+                let (entry, manifest, user_managed) = if let Ok(entry) = store.resolve(id) {
+                    let manifest = store
+                        .root()
+                        .join("manifests")
+                        .join(format!("{}.toml", id.to_hex()));
+                    if let Some(parent) = manifest.parent() {
+                        std::fs::create_dir_all(parent).map_err(|e| {
+                            Error::failed(format!("create manifest directory: {e}"))
+                        })?;
                     }
-                    Err(_) => {
-                        let system = visible_system_for_id(&store, id)?
-                            .ok_or_else(|| Error::failed(format!("unknown package {id}")))?;
-                        let manifest = system.manifest_path.clone();
-                        (system_as_registry(&system), manifest, false)
-                    }
+                    atomic_file::write(&manifest, entry.manifest_text.as_bytes())
+                        .map_err(|e| Error::failed(format!("materialize manifest: {e}")))?;
+                    (entry, manifest, true)
+                } else {
+                    let system = visible_system_for_id(&store, id)?
+                        .ok_or_else(|| Error::failed(format!("unknown package {id}")))?;
+                    let manifest = system.manifest_path.clone();
+                    (system_as_registry(&system), manifest, false)
                 };
                 let mut command = std::process::Command::new(launcher_bin());
                 command
