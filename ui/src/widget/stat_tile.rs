@@ -181,6 +181,7 @@ pub struct StatTile {
     value_color: Option<Color>,
     delta: Option<(String, Trend)>,
     rect: Rect,
+    layout_height: f32,
 }
 
 impl StatTile {
@@ -192,6 +193,7 @@ impl StatTile {
             value_color: None,
             delta: None,
             rect: Rect::ZERO,
+            layout_height: px(tile_height(false, &Theme::dark())),
         }
     }
 
@@ -258,6 +260,7 @@ impl Widget for StatTile {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let h = px(tile_height(self.delta.is_some(), theme));
+        self.layout_height = h;
         // Grows to share a row evenly, but keeps the fixed content height.
         let node = taffy.leaf_node(Style {
             flex_grow: 1.0,
@@ -282,10 +285,9 @@ impl Widget for StatTile {
         _a: taffy::Size<taffy::AvailableSpace>,
         _tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let theme = Theme::dark();
         taffy::Size {
             width: 160.0,
-            height: px(tile_height(self.delta.is_some(), &theme)),
+            height: self.layout_height,
         }
     }
 
@@ -364,7 +366,26 @@ impl Widget for StatTile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taffy::prelude::TaffyMaxContent;
     use vello_encoding::DrawTag;
+
+    #[test]
+    fn retained_measure_uses_the_active_text_scale() {
+        let mut tile = StatTile::new("CPU", "42%");
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        tile.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
+        let mut text = TextRenderer::new();
+        let measured = tile.measure(
+            taffy::Size {
+                width: None,
+                height: None,
+            },
+            taffy::Size::MAX_CONTENT,
+            &mut text,
+        );
+        assert!(measured.height > px(tile_height(false, &Theme::dark())));
+    }
 
     fn lay_out_row(tiles: usize) -> Vec<Rect> {
         // Lay N tiles inside a Row-like flex container 600px wide.
