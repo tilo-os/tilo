@@ -1967,7 +1967,7 @@ pub use breadcrumb::Breadcrumb;
 pub mod avatar;
 pub use avatar::Avatar;
 pub mod badge;
-pub use badge::Badge;
+pub use badge::{Badge, BadgeTone};
 pub mod icon;
 pub use icon::IconWidget;
 pub mod chart;

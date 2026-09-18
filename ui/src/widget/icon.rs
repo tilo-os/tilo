@@ -29,6 +29,7 @@ use crate::widget::Widget;
 enum Tint {
     Primary,
     Dim,
+    Accent,
     Fixed(Color),
 }
 
@@ -68,6 +69,15 @@ impl IconWidget {
         self
     }
 
+    /// Resolve the glyph through the active theme's primary accent. Prefer
+    /// this over capturing `Theme::dark().accent_primary` at construction so
+    /// light, custom, and high-contrast themes remain truthful.
+    #[must_use]
+    pub fn accent(mut self) -> Self {
+        self.tint = Tint::Accent;
+        self
+    }
+
     #[must_use]
     pub fn with_stroke(mut self, stroke_px: f64) -> Self {
         self.stroke_px = stroke_px;
@@ -82,6 +92,7 @@ impl IconWidget {
         match self.tint {
             Tint::Primary => theme.text_primary,
             Tint::Dim => theme.text_dim,
+            Tint::Accent => theme.accent_primary,
             Tint::Fixed(c) => c,
         }
     }
