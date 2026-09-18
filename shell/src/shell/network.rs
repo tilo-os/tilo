@@ -561,6 +561,7 @@ pub(crate) struct AuthenticatedPersonalRoute {
 }
 
 impl AuthenticatedPersonalRoute {
+    #[cfg(test)]
     pub(crate) fn device(&self) -> &crate::shell::personal_continuity::DeviceId {
         &self.device
     }
