@@ -331,6 +331,7 @@ RUN set -eux; \
           '# CONFIG_USELIB is not set' \
           '# CONFIG_DEVPORT is not set' '# CONFIG_X86_MSR is not set' \
           '# CONFIG_X86_CPUID is not set' \
+          '# CONFIG_PARPORT is not set' '# CONFIG_BLK_DEV_FD is not set' \
           CONFIG_SCHED_MC_PRIO=y; do \
         if grep -qx "$opt" .config; then echo "  ok      $opt"; \
         else echo "  MISSING $opt"; missing="$missing $opt"; fi; \
