@@ -19,9 +19,9 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-runtime = { path = "../../runtime/runtime" }
+runtime = { path = "../../../crates/runtime/runtime" }
 # Only pulled in under `--features thin`; see the `thin` feature above.
-runtime-dylib = { path = "../../runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../../crates/runtime/runtime-dylib", optional = true }
 
 [lints]
 workspace = true
