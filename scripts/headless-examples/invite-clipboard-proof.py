@@ -241,7 +241,7 @@ def main() -> int:
     os.makedirs(shots, exist_ok=True)
 
     stale = freshness(SHELL, [
-        REPO / "shell" / "src" / "shell" / "overlay_host.rs",
+        REPO / "shell" / "src" / "shell" / "overlay_host" / "mod.rs",
         REPO / "shell" / "src" / "compositor" / "selection.rs",
         REPO / "shell" / "src" / "network" / "invite.rs",
     ])
