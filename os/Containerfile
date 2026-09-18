@@ -906,6 +906,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     v4l-utils \
     sane-backends \
     sane-backends-drivers-scanners \
+    tesseract \
+    tesseract-langpack-eng \
     libcanberra-gtk3 \
     sound-theme-freedesktop \
     && dnf clean all && ${FINALIZE_RPMDB}
