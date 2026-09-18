@@ -188,14 +188,14 @@ test('versioned private actions share committed device storage and never expose 
  const host='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',invocation='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
  const route={app_peer:'7',app_id:'writer',record_id:'tab:1',resource:'document',action:'insert',revision:null};
  const catalogue={version:1,surfaces:[{peer_id:'7',app_id:'writer',record_id:'tab:1',actions:[{resource:'document',action:'insert',contract:{confirmation:{mode:'none'}}}]}]};
- f.storage.commit=async writes=>{for(const write of writes)rows.set(JSON.stringify(write.key),structuredClone(write));};
+ f.storage.commit=async writes=>{for(const write of writes)rows.set(write.key,structuredClone(write));};
  f.storage.hydrate=async()=>[...rows.values()];
  f.runtime.peer_action_context=()=>JSON.stringify({room:'r',sender:'d',senderRoot:'root',target:'native',targetRoot:'root',certificate:'exact'});
- f.runtime.peer_action_request=(_id,raw)=>{const message=JSON.parse(raw),id=String(++sequence);if(message.type==='invoke_bound'){const stored=[...rows.values()].find(row=>row.key.type==='privateActions');assert(stored);assert.equal(JSON.parse(new TextDecoder().decode(stored.bytes)).entries[0].invocation,invocation);}
+ f.runtime.peer_action_request=(_id,raw)=>{const message=JSON.parse(raw),id=String(++sequence);if(message.type==='invoke_bound'){const stored=[...rows.values()].find(row=>JSON.parse(row.key).type==='privateActions');assert(stored);assert.equal(JSON.parse(new TextDecoder().decode(stored.bytes)).entries[0].invocation,invocation);}
  responses.set(id,message.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue}:{type:'observation',host,invocation,update:{state:'succeeded',invocation,output:{resources:[]}},uncertain:false,cancellation_requested:false});return id;};
  f.runtime.peer_action_response=(_id,id)=>JSON.stringify(responses.get(id));f.runtime.peer_action_forget=(_id,id)=>responses.delete(id);
- const peer=await f.connect();assert.equal(peer.sendAction,undefined);assert.equal(peer.actionsV1.version,1);
+ const peer=await f.connect();try{assert.equal(peer.sendAction,undefined);assert.equal(peer.actionsV1.version,1);
  const row=await peer.actionsV1.invoke({...route,invocation});assert.equal(row.terminal,true);
- const stored=[...rows.values()].find(row=>row.key.type==='privateActions');assert.equal(stored.key.workspace,'r');assert.equal(stored.actor,null);
- await peer.dispose();assert.equal(f.counts().held,0);
+ const stored=[...rows.values()].find(row=>JSON.parse(row.key).type==='privateActions');assert.equal(JSON.parse(stored.key).workspace,'r');assert.equal(stored.actor,null);
+ }finally{await peer.dispose();}assert.equal(f.counts().held,0);
 });

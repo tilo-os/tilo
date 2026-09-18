@@ -11,7 +11,7 @@ use ui::{
     application_view::InstanceViewStore,
     headless::FrameHarness,
     permissions::{Actor, PermissionContext, Role, UserId},
-    portable_storage::{PendingWrite, PortableStorage, StorageKey},
+    portable_storage::{PendingWrite, PortableStorage},
     record::{RecordCheckout, RecordId, RecordOwners},
 };
 use wasm_bindgen::{JsCast, prelude::*};
@@ -45,78 +45,7 @@ struct Config {
     #[serde(default)]
     mac: bool,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub(crate) enum DiskKey {
-    Admission { workspace: String },
-    Record {
-        package: String,
-        workspace: String,
-        record: String,
-    },
-    Primary {
-        package: String,
-        workspace: String,
-    },
-    View {
-        workspace: String,
-        instance: u64,
-    },
-    PrivateActions { workspace: String },
-}
-impl From<&StorageKey> for DiskKey {
-    fn from(k: &StorageKey) -> Self {
-        match k {
-            StorageKey::PrivateActions { workspace } => Self::PrivateActions { workspace:workspace.clone() },
-            StorageKey::Admission { workspace } => Self::Admission { workspace:workspace.clone() },
-            StorageKey::Record {
-                package,
-                workspace,
-                record,
-            } => Self::Record {
-                package: package.clone(),
-                workspace: workspace.clone(),
-                record: record.clone(),
-            },
-            StorageKey::Primary { package, workspace } => Self::Primary {
-                package: package.clone(),
-                workspace: workspace.clone(),
-            },
-            StorageKey::View {
-                workspace,
-                instance,
-            } => Self::View {
-                workspace: workspace.clone(),
-                instance: *instance,
-            },
-        }
-    }
-}
-impl From<DiskKey> for StorageKey {
-    fn from(k: DiskKey) -> Self {
-        match k {
-            DiskKey::PrivateActions { workspace } => Self::PrivateActions { workspace },
-            DiskKey::Admission { workspace } => Self::Admission { workspace },
-            DiskKey::Record {
-                package,
-                workspace,
-                record,
-            } => Self::Record {
-                package,
-                workspace,
-                record,
-            },
-            DiskKey::Primary { package, workspace } => Self::Primary { package, workspace },
-            DiskKey::View {
-                workspace,
-                instance,
-            } => Self::View {
-                workspace,
-                instance,
-            },
-        }
-    }
-}
+use crate::storage_key::DiskKey;
 struct Request {
     canvas: web_sys::HtmlCanvasElement,
     config: Config,
@@ -1084,25 +1013,16 @@ pub(crate) fn load_cache(profile:&str,device:&str,hydrated:&JsValue)->Result<Por
         Ok::<_, JsValue>(cache)
     })?;
     for entry in js_sys::Array::from(hydrated).iter() {
-        let key: DiskKey = serde_json::from_str(
-            &Reflect::get(&entry, &"key".into())?
-                .as_string()
-                .ok_or_else(|| error("missing storage key"))?,
-        )
-        .map_err(error)?;
-        let key = StorageKey::from(key);
-        if storage.get(&key).is_none() {
-            let bytes = Uint8Array::new(&Reflect::get(&entry, &"bytes".into())?).to_vec();
-            let actor = Reflect::get(&entry, &"actor".into())?;
-            storage
-                .hydrate(
-                    key,
-                    bytes,
-                    (!actor.is_null() && !actor.is_undefined())
-                        .then(|| Uint8Array::new(&actor).to_vec()),
-                )
-                .map_err(error)?;
-        }
+        let key = Reflect::get(&entry, &"key".into())?.as_string();
+        let bytes = Uint8Array::new(&Reflect::get(&entry, &"bytes".into())?).to_vec();
+        let actor = Reflect::get(&entry, &"actor".into())?;
+        crate::storage_key::hydrate_entry(
+            &storage,
+            key.as_deref(),
+            bytes,
+            (!actor.is_null() && !actor.is_undefined())
+                .then(|| Uint8Array::new(&actor).to_vec()),
+        ).map_err(error)?;
     }
     Ok(storage)
 }

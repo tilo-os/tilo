@@ -86,10 +86,10 @@ return async function connectPeer(options={}){
     clearFailure('connection');await persist();
     if(typeof runtime.peer_action_request==='function'){
       if(!actionsV1){
-        const key={type:'privateActions',workspace:namespace.room};
+        const key=JSON.stringify({type:'privateActions',workspace:namespace.room});
         actionsV1=await createActionClient({
           context:()=>JSON.parse(runtime.peer_action_context(id)),
-          load:async()=>{const rows=await storage.hydrate();const saved=rows.find(row=>row.key?.type==='privateActions'&&row.key.workspace===namespace.room);if(saved)actionRevision=BigInt(saved.revision);return saved?JSON.parse(new TextDecoder().decode(saved.bytes)):undefined;},
+          load:async()=>{const rows=await storage.hydrate();const saved=rows.find(row=>{const storedKey=JSON.parse(row.key);return storedKey.type==='privateActions'&&storedKey.workspace===namespace.room;});if(saved)actionRevision=BigInt(saved.revision);return saved?JSON.parse(new TextDecoder().decode(saved.bytes)):undefined;},
           commit:value=>{
             const write={key,revision:String(++actionRevision),bytes:new TextEncoder().encode(JSON.stringify(value)),actor:null};
             const task=flush.catch(()=>{}).then(()=>storage.commit([write]));flush=task;return task;
