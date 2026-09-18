@@ -127,3 +127,11 @@ These are operational baselines, not permanent targets. Keep `ci-measure.sh`
 around the test/check commands and compare wall time *and* total CPU before
 adding shards or caches; a faster wall clock that doubles runner CPU is a
 regression for this installation.
+
+For current workflow startup, `tools/ci_timing_report.py` on main at `d86e8f437`
+also reports task receipt to container creation (`runner_to_create_seconds`).
+This interval remains measurable when no Docker pull event is logged; the
+pull-to-create interval then remains unavailable instead of becoming zero.
+Absence of a pull event alone does not prove a cache hit. Match the exact run,
+image digest and worker/isolated-seed evidence before attributing startup savings
+to reuse. Queue time, container setup and check execution remain separate costs.
