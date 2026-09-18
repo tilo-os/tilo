@@ -143,6 +143,12 @@ fn import_directory_at_startup(
                 .or_else(|| photos::analysis::recognize_text(&indexed.photo.image, "eng").ok());
             if let Some(mut analysis) = result {
                 "shared".clone_into(&mut analysis.provenance.scope);
+                if let Some(provenance) = &mut analysis.ocr_provenance {
+                    "shared".clone_into(&mut provenance.scope);
+                }
+                if let Some(provenance) = &mut analysis.vision_provenance {
+                    "shared".clone_into(&mut provenance.scope);
+                }
                 if !analysis.searchable_text().is_empty() {
                     indexed.photo.analysis = Some(analysis);
                 }
@@ -232,10 +238,10 @@ fn render_scenario(
             | "album-manage"
             | "metadata-edit"
     ) {
-        // The live view fills a four-item bounded queue per sync. Two frames
-        // exercise the real hydration path without turning a still-image
-        // acceptance render into an expensive background indexing loop.
-        2
+        // The live view fills a four-item bounded queue per sync. Acceptance
+        // images must let that real queue drain far enough to review the
+        // photograph layout itself rather than mostly reviewing placeholders.
+        20
     } else {
         2
     };
