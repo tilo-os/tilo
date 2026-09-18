@@ -2055,16 +2055,20 @@ impl OffscreenRenderer {
     /// Encode a complete PNG before publishing it. Screenshot tools are often
     /// interrupted by a new iteration or CI timeout; writing the final path
     /// directly made those interruptions look like successful, corrupt PNGs.
+    #[allow(
+        clippy::expect_used,
+        reason = "PNG encoding is internal to the explicitly infallible render_png debug helper"
+    )]
     fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
-        let mut encoded = Vec::new();
+        let mut bytes = Vec::new();
         {
-            let mut encoder = png::Encoder::new(&mut encoded, width, height);
+            let mut encoder = png::Encoder::new(&mut bytes, width, height);
             encoder.set_color(png::ColorType::Rgba);
             encoder.set_depth(png::BitDepth::Eight);
             let mut writer = encoder.write_header().expect("png header");
             writer.write_image_data(rgba).expect("png write");
         }
-        encoded
+        bytes
     }
 
     /// Convenience: render `scene` and write the result to `path` as a
