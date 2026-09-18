@@ -54,7 +54,7 @@ Single Cargo workspace, no submodules. Prefer explicit paths over `git add -A`.
   sandboxing, collaboration. Also the `tilo-control` CLI and the `shots` renderer.
 - `ui/` — the toolkit: retained-mode, CRDT-native. `wgpu`+`vello` (render), `taffy` (layout),
   `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
-- `fs/` — FUSE3 + Iroh, mounted at `/var/workspace`, cache at `/var/cache/tilo-fs`.
+- `crates/system/fs/` — FUSE3 + Iroh, mounted at `/var/workspace`, cache at `/var/cache/tilo-fs`.
 - `apps/` — ~40 app crates built on `ui`.
 - `crates/<domain>/` — collab, doc, runtime, packaging, session, system, text, format.
 - `os/` — Containerfile, systemd units, image build scripts.
@@ -222,8 +222,8 @@ path rather than a tautological helper.
 
 ## Where to read first
 
-`docs/architecture.md`, `docs/headless-testing.md`, `ui/HIG.md`, and
-`plan/{architecture,collaboration,compositor,security}.md` before non-trivial changes in
+`docs/architecture/{README,overview,collaboration,compositor,security}.md`,
+`docs/headless-testing.md`, and `ui/HIG.md` before non-trivial changes in
 those subsystems. `DEVELOPMENT.md` for the build environment.
 
 ## CI

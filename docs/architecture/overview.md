@@ -38,7 +38,7 @@ Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See 
 │  └──────────────────────────────────────────────────┘   │
 │                                                          │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │  Fedora Bootc 42 (immutable container OCI image) │   │
+│  │  Fedora Bootc (immutable container OCI image)    │   │
 │  │  Linux · Btrfs · Wayland · Mesa · greetd         │   │
 │  └──────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────┘
@@ -51,20 +51,20 @@ Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See 
 - Atomic updates via `bootc upgrade`; rollback via `bootc rollback`.
 - Read-only root; persistent state lives under `/var`.
 - User apps via Flatpak; dev environments via Distrobox.
-- See `plan/os-layer.md`.
+- See `docs/architecture/os-layer.md`.
 
 ### 2. Compositor (`shell`)
 - Smithay-based Wayland **server**. Hosts foreign Wayland clients and adopts them as tabs in the active strip via `app-id` matching.
 - Two modes selected at boot: `--mode hosted` (smithay-backed Wayland session running as a client of a parent display server, for dev) and `--mode native` (default — smithay running on bare hardware via `--backend drm` or in winit for development).
 - Backends are a trait (`compositor::backend::Backend`); current implementations are `winit` and `drm` (libseat + libinput + udev + GBM).
 - Per-frame paint uses `vello` over `wgpu`. Shell chrome (top bar, wheel disc, command palette, modals) and foreign-surface buffers compose in the same `vello::Scene`.
-- See `plan/compositor.md`.
+- See `docs/architecture/compositor.md`.
 
 ### 3. Collaboration + Sandbox Layer
 - **Collaboration:** Iroh gossip carries direct workspace traffic; the authenticated Iroh workspace host persists and store-and-forwards durable changes. CRDT changes ride on top via `automerge`'s incremental change protocol.
 - **Surface streaming:** owners encode foreign-client surfaces to H.264 (openh264 software path) and publish them on the workspace topic. Peers decode in a `peer_view` widget; their input events are serialised and replayed into the owner's smithay seat.
 - **Sandbox:** every workspace pins a per-workspace `SandboxProfile` rendered into `bwrap` argv, with a seccomp-bpf blocklist, a private DBus session bus, and a per-workspace Wayland bridge socket. The portal D-Bus backend (`org.freedesktop.impl.portal.*`) gates capability requests through the compositor's prompt UI.
-- See `plan/collaboration.md`, `plan/security.md`.
+- See `docs/architecture/collaboration.md`, `docs/architecture/security.md`.
 
 ## Data flow
 
@@ -149,8 +149,8 @@ The control socket is the out-of-process path for covering the seat layer, frame
 
 ```
 tilo/                            # workspace root
-├── plan/                                # this directory — design intent
-├── docs/                                # architecture + testing + superpowers plans/specs
+├── docs/                                # architecture, testing, security, and specifications
+│   └── architecture/                    # this directory — product and system design
 ├── ui/                                  # UI toolkit
 ├── shell/                               # compositor + shell
 │   └── src/
@@ -161,7 +161,7 @@ tilo/                            # workspace root
 │       ├── portal/                      # FileChooser, ScreenCast, Camera D-Bus backends
 │       ├── network/                     # Iroh actor, identity, hub, replica, encoder, invite
 │       └── bin/{shots,tilo-control}/  # e2e harness + control-socket CLI
-├── fs/                                  # FUSE3 driver
+├── crates/system/fs/                    # FUSE3 driver
 ├── apps/{terminal,file-explorer,browser,…}/  # native apps
 ├── crates/<domain>/                     # supporting libraries (collab, doc, runtime, packaging, …)
 └── os/                                  # Containerfile + systemd units
