@@ -502,6 +502,10 @@ impl PersonalFabricReplayWindow {
 /// second device without retaining any message contents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerDeparture {
+    /// Process-local monotonic marker assigned when the departure is recorded.
+    /// Consumers use it as a cursor over the bounded history; wall-clock time
+    /// is diagnostic only and must not decide whether an event is new.
+    pub generation: u64,
     pub endpoint_id: iroh::EndpointId,
     pub session_handle: u64,
     pub route: CrdtRoute,
@@ -515,25 +519,33 @@ pub struct PeerDeparture {
 /// the actor event channel so a reader exit can still be recorded if a later
 /// roster or identity cleanup step cannot acquire its own lock.
 #[derive(Default)]
+struct PeerDepartureHistoryState {
+    generation: u64,
+    entries: VecDeque<PeerDeparture>,
+}
+
+#[derive(Default)]
 pub(crate) struct PeerDepartureHistory {
-    entries: Mutex<VecDeque<PeerDeparture>>,
+    state: Mutex<PeerDepartureHistoryState>,
 }
 
 impl PeerDepartureHistory {
-    fn record(&self, departure: PeerDeparture) {
-        let Ok(mut entries) = self.entries.lock() else {
+    fn record(&self, mut departure: PeerDeparture) {
+        let Ok(mut state) = self.state.lock() else {
             return;
         };
-        if entries.len() >= PEER_DEPARTURE_HISTORY_CAPACITY {
-            entries.pop_front();
+        state.generation = state.generation.saturating_add(1).max(1);
+        departure.generation = state.generation;
+        if state.entries.len() >= PEER_DEPARTURE_HISTORY_CAPACITY {
+            state.entries.pop_front();
         }
-        entries.push_back(departure);
+        state.entries.push_back(departure);
     }
 
     pub(crate) fn snapshot(&self) -> Vec<PeerDeparture> {
-        self.entries
+        self.state
             .lock()
-            .map(|entries| entries.iter().cloned().collect())
+            .map(|state| state.entries.iter().cloned().collect())
             .unwrap_or_default()
     }
 }
@@ -4299,6 +4311,7 @@ impl ShellNetwork {
             .get(&crate::shell::state::PeerOrigin::peer(&peer))
             .map(|identity| identity.user_pubkey);
         self.peer_departures.record(PeerDeparture {
+            generation: 0,
             endpoint_id: peer,
             session_handle,
             route,
@@ -8396,6 +8409,7 @@ mod tests {
             panic!("one departure should be retained: {departures:?}");
         };
         assert_eq!(departure.endpoint_id, peer);
+        assert_eq!(departure.generation, 1);
         assert_eq!(
             departure.session_handle,
             crate::network::behaviour::peer_liveness_handle(&peer)

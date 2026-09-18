@@ -917,6 +917,10 @@ struct SpatialInputState {
     )>,
     release_controllers: VecDeque<crate::shell::personal_continuity::DeviceId>,
     outbound: VecDeque<OutboundSpatialInput>,
+    /// Last authenticated transport-departure generation consumed from the
+    /// network's bounded history. A cursor prevents an old departure from
+    /// revoking authority freshly granted after the same device reconnects.
+    last_peer_departure_generation: u64,
     placement_override: Option<DisplayRect>,
     placement_stream_source: Option<crate::shell::personal_continuity::DeviceId>,
 }
@@ -2757,47 +2761,97 @@ fn discard_nearby_staging_results() {
     }
 }
 
+fn prune_spatial_state(
+    spatial: &mut SpatialInputState,
+    now: u64,
+    departures: &[crate::shell::network::PeerDeparture],
+    is_online: impl Fn(&crate::shell::personal_continuity::DeviceId) -> bool,
+) {
+    let unseen = departures
+        .iter()
+        .filter(|departure| departure.generation > spatial.last_peer_departure_generation)
+        .collect::<Vec<_>>();
+    let history_gap = unseen.first().is_some_and(|departure| {
+        departure.generation > spatial.last_peer_departure_generation.saturating_add(1)
+    });
+    let mut departed = unseen
+        .iter()
+        .filter_map(|departure| {
+            // Direct personal peers use the endpoint key as DeviceId. Network
+            // admission proves the device certificate key equals these
+            // endpoint bytes before recording an authenticated departure, so
+            // a relay/service endpoint cannot alias an enrolled controller.
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                departure.endpoint_id.as_bytes(),
+            ))
+            .ok()
+        })
+        .collect::<BTreeSet<_>>();
+    if history_gap {
+        // The history is intentionally bounded. If this frame missed entries,
+        // fail closed rather than leave an unknown departed controller holding
+        // local seat state.
+        departed.extend(
+            spatial
+                .issued
+                .values()
+                .map(|lease| lease.controller.clone()),
+        );
+        departed.extend(spatial.received.keys().cloned());
+    }
+    if let Some(generation) = departures
+        .last()
+        .map(|departure| departure.generation)
+        .filter(|generation| *generation > spatial.last_peer_departure_generation)
+    {
+        spatial.last_peer_departure_generation = generation;
+    }
+
+    let issued_to_release = spatial
+        .issued
+        .values()
+        .filter(|lease| {
+            lease.validate_at(now).is_err()
+                || departed.contains(&lease.controller)
+                || !is_online(&lease.controller)
+        })
+        .map(|lease| lease.controller.clone())
+        .collect::<Vec<_>>();
+    spatial.issued.retain(|_, lease| {
+        lease.validate_at(now).is_ok()
+            && !departed.contains(&lease.controller)
+            && is_online(&lease.controller)
+    });
+    spatial.received.retain(|target, lease| {
+        lease.validate_at(now).is_ok() && !departed.contains(target) && is_online(target)
+    });
+    for controller in issued_to_release {
+        if !spatial.release_controllers.contains(&controller) {
+            spatial.release_controllers.push_back(controller);
+        }
+    }
+    let received = spatial.received.clone();
+    spatial.outbound.retain(|input| {
+        received
+            .get(&input.target)
+            .is_some_and(|lease| lease.nonce == input.lease_nonce && lease.validate_at(now).is_ok())
+    });
+}
+
 fn prune_spatial_leases(network: &ShellNetwork) {
     if let Ok(mut spatial) = spatial_input_state().lock() {
-        let now = unix_ms();
         let fabric = network.device_fabric();
-        let issued_to_release = spatial
-            .issued
-            .values()
-            .filter(|lease| {
-                lease.validate_at(now).is_err()
-                    || fabric
-                        .snapshots()
-                        .get(&lease.controller)
-                        .is_none_or(|snapshot| !snapshot.presence.online)
-            })
-            .map(|lease| lease.controller.clone())
-            .collect::<Vec<_>>();
-        spatial.issued.retain(|_, lease| {
-            lease.validate_at(now).is_ok()
-                && fabric
+        prune_spatial_state(
+            &mut spatial,
+            unix_ms(),
+            &network.peer_departures(),
+            |device| {
+                fabric
                     .snapshots()
-                    .get(&lease.controller)
+                    .get(device)
                     .is_some_and(|snapshot| snapshot.presence.online)
-        });
-        spatial.received.retain(|target, lease| {
-            lease.validate_at(now).is_ok()
-                && fabric
-                    .snapshots()
-                    .get(target)
-                    .is_some_and(|snapshot| snapshot.presence.online)
-        });
-        for controller in issued_to_release {
-            if !spatial.release_controllers.contains(&controller) {
-                spatial.release_controllers.push_back(controller);
-            }
-        }
-        let received = spatial.received.clone();
-        spatial.outbound.retain(|input| {
-            received.get(&input.target).is_some_and(|lease| {
-                lease.nonce == input.lease_nonce && lease.validate_at(now).is_ok()
-            })
-        });
+            },
+        );
     }
 }
 
@@ -5648,6 +5702,9 @@ pub fn grant_input_control(
     controller: &crate::shell::personal_continuity::DeviceId,
 ) -> Result<InputLease, String> {
     require_continuity(ContinuityCapability::DisplayInput)?;
+    // Advance the authenticated-departure cursor before minting replacement
+    // authority, so retained history cannot revoke a fresh reconnect lease.
+    prune_spatial_leases(network);
     let (target, _) = network
         .local_device_fabric_identity()
         .ok_or_else(|| "this device has no certified personal identity".to_string())?;
@@ -8309,6 +8366,62 @@ mod tests {
             state.outbound.get(1).map(|input| input.event),
             Some(FabricInputEvent::PointerButton { pressed: true, .. })
         ));
+    }
+
+    #[test]
+    fn authenticated_departure_revokes_only_exact_controller_and_is_not_replayed() {
+        let departed_endpoint = iroh::SecretKey::from_bytes(&[41; 32]).public();
+        let sibling_endpoint = iroh::SecretKey::from_bytes(&[42; 32]).public();
+        let departed = DeviceId::new(hex::encode(departed_endpoint.as_bytes())).unwrap();
+        let sibling = DeviceId::new(hex::encode(sibling_endpoint.as_bytes())).unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let now = 10_000_u64;
+        let lease = |controller: DeviceId, nonce: [u8; 16]| InputLease {
+            controller,
+            target: target.clone(),
+            issued_unix_ms: now,
+            expires_unix_ms: now.saturating_add(1_000),
+            nonce,
+            allow_keyboard: true,
+            allow_pointer: true,
+        };
+        let mut spatial = SpatialInputState {
+            last_peer_departure_generation: 7,
+            ..SpatialInputState::default()
+        };
+        spatial
+            .issued
+            .insert([1; 16], lease(departed.clone(), [1; 16]));
+        spatial
+            .issued
+            .insert([2; 16], lease(sibling.clone(), [2; 16]));
+        let departures = vec![crate::shell::network::PeerDeparture {
+            generation: 8,
+            endpoint_id: departed_endpoint,
+            session_handle: 1,
+            route: crate::shell::collab_broker::CrdtRoute::cluster("personal"),
+            cause: crate::shell::network::PeerDepartureCause::LivenessTimedOut,
+            user_public_key: Some([3; 32]),
+            participant_name: None,
+            observed_at: std::time::SystemTime::now(),
+        }];
+
+        prune_spatial_state(&mut spatial, now, &departures, |_| true);
+        assert!(!spatial.issued.contains_key(&[1; 16]));
+        assert!(spatial.issued.contains_key(&[2; 16]));
+        assert_eq!(
+            spatial.release_controllers.iter().collect::<Vec<_>>(),
+            vec![&departed]
+        );
+
+        spatial.release_controllers.clear();
+        spatial
+            .issued
+            .insert([3; 16], lease(departed.clone(), [3; 16]));
+        prune_spatial_state(&mut spatial, now, &departures, |_| true);
+        assert!(spatial.issued.contains_key(&[3; 16]));
+        assert!(spatial.issued.contains_key(&[2; 16]));
+        assert!(spatial.release_controllers.is_empty());
     }
 
     #[test]
