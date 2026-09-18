@@ -333,6 +333,14 @@ impl Operation {
             3 => ReceiptStage::Verified,
             4 => ReceiptStage::BaselineCommitted,
             5 => ReceiptStage::Aborted,
+            6 if self.recovery.is_empty()
+                && matches!(
+                    (self.decision, &self.source, &self.destination),
+                    (1, Some(State::File { .. }), None) | (2, None, Some(State::File { .. }))
+                ) =>
+            {
+                ReceiptStage::PreparedNoDisplacement
+            }
             _ => return Err(StoreError::Corrupt),
         };
         if self.serial == 0
@@ -395,6 +403,99 @@ fn conflict_from(code: u8) -> Result<Conflict, StoreError> {
 pub(super) fn next(value: u64) -> Result<u64, StoreError> {
     value.checked_add(1).ok_or(StoreError::LimitExceeded)
 }
+/// Exact registered native name and immutable descriptor clues, never authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct NativeRegistration {
+    pub connection: [u8; 16],
+    pub serial: u64,
+    pub attempt: u32,
+    pub nonce: [u8; 16],
+    pub side: u8,
+    pub admission: u64,
+    pub baseline: Option<u64>,
+    pub fence: u64,
+    pub intent: Option<Vec<u8>>,
+    pub stage: Option<Vec<u8>>,
+}
+impl NativeRegistration {
+    pub fn key(&self) -> Vec<u8> {
+        let mut key = key(5, self.connection, self.serial);
+        key.extend(self.attempt.to_be_bytes());
+        key
+    }
+    pub fn validate(&self) -> Result<(), StoreError> {
+        if self.serial == 0
+            || !(1..=8).contains(&self.attempt)
+            || self.nonce == [0; 16]
+            || self.side > 1
+            || self.admission == 0
+        {
+            return Err(StoreError::Corrupt);
+        }
+        if let Some(bytes) = &self.intent {
+            use super::super::transaction::native::descriptor::{self, Body};
+            let decoded = descriptor::decode(bytes).map_err(|_| StoreError::Corrupt)?;
+            if !matches!(decoded.body, Body::Intent(_))
+                || decoded.header.connection != self.connection
+                || decoded.header.operation != self.serial
+                || decoded.header.attempt != u64::from(self.attempt)
+                || decoded.header.nonce != self.nonce
+                || decoded.header.admission != self.admission
+                || decoded.header.baseline != self.baseline
+                || decoded.header.fence != self.fence
+            {
+                return Err(StoreError::Corrupt);
+            }
+            if let Some(stage) = &self.stage {
+                let stage = descriptor::decode(stage).map_err(|_| StoreError::Corrupt)?;
+                if !matches!(stage.body, Body::Stage(_)) {
+                    return Err(StoreError::Corrupt);
+                }
+                stage
+                    .joined(&decoded, None, None)
+                    .map_err(|_| StoreError::Corrupt)?;
+            }
+        } else if self.stage.is_some() {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(())
+    }
+}
+/// Durable exact originating object facts. This row cannot recreate a guard.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct NativeRecoveryFact {
+    pub connection: [u8; 16],
+    pub serial: u64,
+    pub slot: u32,
+    pub attempt: u32,
+    pub fact: Vec<u8>,
+    pub displaced: Vec<u8>,
+}
+impl NativeRecoveryFact {
+    pub fn key(&self) -> Vec<u8> {
+        let mut key = key(6, self.connection, self.serial);
+        key.extend(self.slot.to_be_bytes());
+        key
+    }
+    pub fn validate(&self) -> Result<(), StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        let fact = d::RecoveryFact::decode(&self.fact).map_err(|_| StoreError::Corrupt)?;
+        let displaced = d::decode(&self.displaced).map_err(|_| StoreError::Corrupt)?;
+        if fact.recovery.connection != self.connection
+            || fact.recovery.operation != self.serial
+            || fact.recovery.slot != self.slot
+            || displaced.header.connection != self.connection
+            || displaced.header.operation != self.serial
+            || displaced.header.attempt != u64::from(self.attempt)
+            || !matches!(displaced.body, d::Body::Displaced(_))
+        {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "table", content = "value", deny_unknown_fields)]
 pub(super) enum Row {
@@ -403,10 +504,14 @@ pub(super) enum Row {
     Recovery(Recovery),
     Conflict(ConflictData),
     Baseline(BaselineEntry),
+    NativeRegistration(NativeRegistration),
+    NativeRecoveryFact(NativeRecoveryFact),
 }
 impl Row {
     pub fn key(&self) -> Vec<u8> {
         match self {
+            Self::NativeRegistration(n) => n.key(),
+            Self::NativeRecoveryFact(n) => n.key(),
             Self::Connection(c) => key(0, c.id, 0),
             Self::Operation(o) => key(1, o.connection, o.serial),
             Self::Recovery(r) => r.key(),
@@ -420,6 +525,12 @@ impl Row {
     }
     pub fn validate(&self) -> Result<(), StoreError> {
         match self {
+            Self::NativeRegistration(n) => {
+                n.validate()?;
+            }
+            Self::NativeRecoveryFact(n) => {
+                n.validate()?;
+            }
             Self::Connection(c) => {
                 c.decode()?;
             }
@@ -451,6 +562,19 @@ pub(super) fn key(table: u8, connection: [u8; 16], serial: u64) -> Vec<u8> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
 pub(super) enum Change {
+    NativeBound {
+        fact: NativeRecoveryFact,
+        expected: u64,
+        fence: u64,
+    },
+    NativeReserve {
+        registration: NativeRegistration,
+        expected: u64,
+    },
+    NativePrepared {
+        registration: NativeRegistration,
+        expected: u64,
+    },
     Create {
         record: Connection,
     },

@@ -1714,3 +1714,574 @@ pub(super) fn native_checkpoint_hook(
 ) {
     CHECKPOINT_HOOK.with(|slot| *slot.borrow_mut() = Some((point, hook)));
 }
+
+// A stale progress token, durable fence or new store session must close native admission.
+#[test]
+fn native_live_admission_rejects_stale_revision_fence_and_reopened_session() {
+    use super::super::transaction::StepKind;
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 701);
+    let session = store.transaction_session(record.id).unwrap();
+    let live = store.begin_native(intent(&record), &session).unwrap();
+    let cancel = AtomicBool::new(false);
+    let step = session
+        .admit_step(&store, &live, StepKind::Namespace, &cancel)
+        .unwrap();
+    assert!(matches!(
+        session.admit_step(&store, &live, StepKind::Namespace, &cancel),
+        Err(StoreError::Busy)
+    ));
+    drop(step);
+    assert!(
+        session
+            .admit_step(&store, &live, StepKind::Namespace, &cancel)
+            .is_ok()
+    );
+    session.request_disconnect();
+    assert!(matches!(
+        session.admit_step(&store, &live, StepKind::Namespace, &cancel),
+        Err(StoreError::Cancelled)
+    ));
+    assert_eq!(
+        store.load_connection(record.id).unwrap().lifecycle,
+        Lifecycle::Active
+    );
+    store
+        .request_disconnect(record.id, live.revision())
+        .unwrap();
+    assert!(matches!(
+        store.check_native(&live),
+        Err(StoreError::Disconnected)
+    ));
+    drop(store);
+    let reopened = ConnectionStore::open_at(&path).unwrap();
+    assert!(matches!(
+        reopened.check_native(&live),
+        Err(StoreError::StaleRevision)
+    ));
+    assert_eq!(live.lifetime().strong_count(), 0);
+}
+
+// Catches private namespace creation lacking a durable exact registration, stale
+// progress reuse, and attempt exhaustion incorrectly releasing retained names.
+#[test]
+fn native_namespace_reservation_is_exact_durable_and_bounded() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 702);
+    let session = store.transaction_session(record.id).unwrap();
+    let mut live = store.begin_native(intent(&record), &session).unwrap();
+    let reservation = store
+        .reserve_native_namespace_with_nonce(&mut live, Side::Destination, [7; 16])
+        .unwrap();
+    assert_eq!(
+        reservation.name(),
+        ".qos-operation-000000000000000000000000000002be-0000000000000001-07070707070707070707070707070707"
+    );
+    assert_eq!(live.revision(), 3);
+    assert_eq!(store.connection(record.id).unwrap().revision, 3);
+    assert!(matches!(
+        store.reserve_native_namespace_with_nonce(&mut live, Side::Destination, [7; 16]),
+        Err(StoreError::StaleRevision)
+    ));
+    for nonce in 8..=14 {
+        store
+            .reserve_native_namespace_with_nonce(&mut live, Side::Destination, [nonce; 16])
+            .unwrap();
+    }
+    assert!(matches!(
+        store.reserve_native_namespace_with_nonce(&mut live, Side::Destination, [15; 16]),
+        Err(StoreError::LimitExceeded)
+    ));
+    store.checkpoint().unwrap();
+    drop(store);
+    let reopened = ConnectionStore::open_at(&path).unwrap();
+    let rows = reopened
+        .rows()
+        .unwrap()
+        .map(Result::unwrap)
+        .filter(|row| matches!(row, Row::NativeRegistration(_)))
+        .count();
+    assert_eq!(rows, 8);
+    assert_eq!(live.lifetime().strong_count(), 0);
+    assert_eq!(reservation.lifetime.strong_count(), 0);
+}
+
+// Reducer fixtures are historical facts only; these never construct live native proofs.
+fn native_prepared_facts(
+    live: &LiveOperation,
+    reservation: &NamespaceReservation,
+) -> format::NativeRegistration {
+    use super::super::transaction::native::descriptor as d;
+    let object = |kind, generation| d::Object {
+        dev: 1,
+        ino: u64::from(generation),
+        kind,
+        generation: [generation; 32],
+    };
+    let root = object(0o040_000, 10);
+    let content = d::Content {
+        digest: [7; 32],
+        length: 3,
+        executable: false,
+    };
+    let stamp = d::Stamp {
+        length: 3,
+        modified: (0, 0),
+        changed: (0, 0),
+        mode: 0o100_600,
+        uid: 0,
+        gid: 0,
+        links: 1,
+    };
+    let source = object(0o100_000, 11);
+    let identity = |id: EndpointIdentity| {
+        let mut value = [0; 64];
+        value[..32].copy_from_slice(&id.volume);
+        value[32..].copy_from_slice(&id.root);
+        value
+    };
+    let header = d::Header {
+        connection: live.id.connection.0,
+        operation: live.id.serial,
+        attempt: 1,
+        nonce: reservation.registration.nonce,
+        epoch: [20; 16],
+        session: [21; 16],
+        admission: live.admission,
+        baseline: live.baseline,
+        progress: live.revision,
+        fence: live.fence,
+    };
+    let intent = d::Body::Intent(d::Intent {
+        endpoints: [identity(live.endpoints[0]), identity(live.endpoints[1])],
+        direction: 0,
+        decision: 1,
+        namespace: object(0o040_000, 12),
+        path: live.intent.path.clone(),
+        chains: [vec![root.clone()], vec![root.clone()]],
+        expected: [
+            d::State::Regular {
+                object: source.clone(),
+                stamp: stamp.clone(),
+                content: content.clone(),
+            },
+            d::State::Absent,
+        ],
+        selection: d::Selection::None,
+    });
+    let bytes = d::encode(&header, &intent).unwrap();
+    let stage = d::Body::Stage(d::Stage {
+        intent: d::decode(&bytes).unwrap().digest,
+        object: object(0o100_000, 13),
+        content,
+        source: d::Source::Endpoint {
+            side: 0,
+            parent: root,
+            object: source,
+            stamp,
+        },
+    });
+    let mut registration = reservation.registration.clone();
+    registration.intent = Some(bytes);
+    registration.stage = Some(d::encode(&header, &stage).unwrap());
+    registration
+}
+#[test]
+fn native_prepared_addition_can_publish_without_dummy_recovery() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 703);
+    let session = store.transaction_session(record.id).unwrap();
+    let mut live = store.begin_native(intent(&record), &session).unwrap();
+    let reservation = store
+        .reserve_native_namespace_with_nonce(&mut live, Side::Destination, [7; 16])
+        .unwrap();
+    let registration = native_prepared_facts(&live, &reservation);
+    store
+        .append(Change::NativePrepared {
+            registration,
+            expected: live.revision,
+        })
+        .unwrap();
+    let connection = store.connection(record.id).unwrap();
+    store
+        .append(Change::Published {
+            connection: record.id.0,
+            serial: live.id.serial,
+            expected: connection.revision,
+            source: connection.source.identity,
+            destination: connection.destination.identity,
+        })
+        .unwrap();
+    let operation = store.operation(live.id).unwrap();
+    assert_eq!(operation.decode().unwrap().stage, ReceiptStage::Published);
+    assert!(operation.recovery.is_empty());
+    drop(store);
+    let reopened = ConnectionStore::open_at(&path).unwrap();
+    assert_eq!(
+        reopened.operation(live.id).unwrap().decode().unwrap().stage,
+        ReceiptStage::Published
+    );
+    assert!(
+        reopened
+            .load_baseline(record.id)
+            .unwrap()
+            .entries()
+            .is_none()
+    );
+}
+
+// A closed control latch must reject a new intent even before fence fsync.
+#[test]
+fn native_closed_session_cannot_begin_an_intent() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 704);
+    let session = store.transaction_session(record.id).unwrap();
+    session.request_disconnect();
+    assert!(matches!(
+        store.begin_native(intent(&record), &session),
+        Err(StoreError::Cancelled)
+    ));
+    assert_eq!(
+        store.load_connection(record.id).unwrap().revision,
+        record.revision
+    );
+}
+
+// The exact durable reservation can produce context only at its current revision.
+#[test]
+fn native_namespace_context_rejects_stale_attempt_and_session() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 705);
+    let session = store.transaction_session(record.id).unwrap();
+    let mut live = store.begin_native(intent(&record), &session).unwrap();
+    let reservation = store
+        .reserve_native_namespace_with_nonce(&mut live, Side::Destination, [4; 16])
+        .unwrap();
+    let header = reservation.header(&live, [9; 16]).unwrap();
+    assert_eq!(header.operation, 1);
+    assert_eq!(
+        header.session,
+        reservation.header(&live, [10; 16]).unwrap().session
+    );
+    assert_eq!(header.namespace_name(), reservation.name());
+    let next = store
+        .reserve_native_namespace_with_nonce(&mut live, Side::Destination, [5; 16])
+        .unwrap();
+    assert!(matches!(
+        reservation.header(&live, [9; 16]),
+        Err(StoreError::StaleRevision)
+    ));
+    assert!(next.header(&live, [9; 16]).is_ok());
+    drop(store);
+    assert!(matches!(
+        next.header(&live, [9; 16]),
+        Err(StoreError::StaleRevision)
+    ));
+}
+
+// Historical facts must bind the actual displaced generation AND the freshly
+// copied private artifact. A recovery row on the same side is insufficient.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One real recovery artifact is checked against each substituted fact and then checkpointed and reopened."
+)]
+fn native_recovery_fact_requires_actual_version_and_full_artifact() {
+    use super::super::transaction::native::descriptor as d;
+    use sha2::Digest;
+    let (temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 706);
+    let session = store.transaction_session(record.id).unwrap();
+    let mut proposed = intent(&record);
+    let original_digest: [u8; 32] = sha2::Sha256::digest(b"old").into();
+    proposed.destination_before = Some(EntryState::File {
+        sha256: original_digest,
+        bytes: 3,
+        executable: false,
+    });
+    let mut live = store.begin_native(proposed, &session).unwrap();
+    let namespace = store
+        .reserve_native_namespace_with_nonce(&mut live, Side::Destination, [7; 16])
+        .unwrap();
+    let mut registration = native_prepared_facts(&live, &namespace);
+    let mut intent = d::decode(registration.intent.as_ref().unwrap()).unwrap();
+    let d::Body::Intent(body) = &mut intent.body else {
+        unreachable!()
+    };
+    let d::State::Regular { object, stamp, .. } = body.expected[0].clone() else {
+        unreachable!()
+    };
+    let mut original = object;
+    original.ino = 41;
+    original.generation = [41; 32];
+    let original_content = d::Content {
+        digest: original_digest,
+        length: 3,
+        executable: false,
+    };
+    body.expected[1] = d::State::Regular {
+        object: original.clone(),
+        stamp: stamp.clone(),
+        content: original_content.clone(),
+    };
+    let parent = body.chains[1][0].clone();
+    registration.intent = Some(d::encode(&intent.header, &intent.body).unwrap());
+    let intent = d::decode(registration.intent.as_ref().unwrap()).unwrap();
+    let mut staged = d::decode(registration.stage.as_ref().unwrap()).unwrap();
+    let d::Body::Stage(stage) = &mut staged.body else {
+        unreachable!()
+    };
+    stage.intent = intent.digest;
+    registration.stage = Some(d::encode(&staged.header, &staged.body).unwrap());
+    let staged = d::decode(registration.stage.as_ref().unwrap()).unwrap();
+    store
+        .append(Change::NativePrepared {
+            registration,
+            expected: live.revision,
+        })
+        .unwrap();
+    let displaced = d::encode(
+        &intent.header,
+        &d::Body::Displaced(d::Displaced {
+            intent: intent.digest,
+            stage: Some(staged.digest),
+            object: original.clone(),
+            stamp,
+            matches_expected: true,
+            side: 1,
+            parent,
+            leaf: NativeName::Unix(b"file".to_vec()),
+            barriers: 3,
+        }),
+    )
+    .unwrap();
+    let ack = store.ack(live.id);
+    let reservation = store
+        .reserve_recovery(
+            &ack,
+            Side::Destination,
+            live.intent.path.clone(),
+            RecoveryReason::DisplacedVersion,
+        )
+        .unwrap();
+    let version_path = temp.path().join("version");
+    std::fs::write(&version_path, b"old").unwrap();
+    let preserved = store
+        .preserve_file(
+            reservation,
+            &mut File::open(&version_path).unwrap(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let id = preserved.value.id;
+    let mut key = format::key(2, id.operation.connection.0, id.operation.serial);
+    key.extend(id.slot.to_be_bytes());
+    let Some(Row::Recovery(entry)) = store.row(&key).unwrap() else {
+        unreachable!()
+    };
+    let artifact = entry.object.as_ref().unwrap();
+    let mut endpoint = [0; 64];
+    endpoint[..32].copy_from_slice(&artifact.root.volume);
+    endpoint[32..].copy_from_slice(&artifact.root.root);
+    let mut identity = [0; 24];
+    let platform = match artifact.file_id {
+        format::FileIdentity::Unix(inode) => {
+            identity[..8].copy_from_slice(&inode.to_le_bytes());
+            0
+        }
+        format::FileIdentity::Windows(id) => {
+            identity[..8].copy_from_slice(&id.volume_serial.to_le_bytes());
+            identity[8..].copy_from_slice(&id.file_id);
+            1
+        }
+    };
+    let mut origin = [0; 64];
+    origin[..32].copy_from_slice(&record.destination.identity.volume);
+    origin[32..].copy_from_slice(&record.destination.identity.root);
+    let fact = d::RecoveryFact {
+        intent: intent.digest,
+        recovery: d::Recovery {
+            connection: id.operation.connection.0,
+            operation: id.operation.serial,
+            slot: id.slot,
+        },
+        side: 1,
+        role: 0,
+        endpoint: origin,
+        object: original,
+        content: original_content,
+        artifact: d::Artifact {
+            endpoint,
+            platform,
+            identity,
+        },
+    };
+    let row = format::NativeRecoveryFact {
+        connection: id.operation.connection.0,
+        serial: id.operation.serial,
+        slot: id.slot,
+        attempt: 1,
+        fact: fact.encode().unwrap(),
+        displaced,
+    };
+    let expected = store.connection(record.id).unwrap().revision;
+    let connection = store.connection(record.id).unwrap();
+    let premature = Event {
+        schema: 1,
+        predecessor: store.digest,
+        change: Change::Published {
+            connection: record.id.0,
+            serial: live.id.serial,
+            expected,
+            source: connection.source.identity.clone(),
+            destination: connection.destination.identity.clone(),
+        },
+    };
+    assert!(matches!(
+        store.reduce(&premature, &mut RecoveryChecks::default()),
+        Err(StoreError::RecoveryRequired)
+    ));
+    store
+        .append(Change::NativeBound {
+            fact: row.clone(),
+            expected,
+            fence: 0,
+        })
+        .unwrap();
+    assert!(matches!(
+        store.row(&row.key()).unwrap(),
+        Some(Row::NativeRecoveryFact(_))
+    ));
+    let accounted = Event {
+        schema: 1,
+        predecessor: store.digest,
+        change: Change::Published {
+            connection: record.id.0,
+            serial: live.id.serial,
+            expected: expected + 1,
+            source: connection.source.identity,
+            destination: connection.destination.identity,
+        },
+    };
+    assert!(
+        store
+            .reduce(&accounted, &mut RecoveryChecks::default())
+            .is_ok()
+    );
+
+    store.checkpoint().unwrap();
+    drop(preserved);
+    drop(store);
+    let store = ConnectionStore::open_at(&path).unwrap();
+    assert_eq!(
+        store.row(&row.key()).unwrap(),
+        Some(Row::NativeRecoveryFact(row.clone()))
+    );
+    for field in 0..4 {
+        let mut changed = fact.clone();
+        match field {
+            0 => changed.object.generation[0] ^= 1,
+            1 => changed.artifact.identity[0] ^= 1,
+            2 => changed.content.digest[0] ^= 1,
+            _ => changed.endpoint[0] ^= 1,
+        }
+        let changed = format::NativeRecoveryFact {
+            fact: changed.encode().unwrap(),
+            ..row.clone()
+        };
+        assert!(
+            matches!(
+                store.reduce_native_bound(&changed, expected + 1, 0),
+                Err(StoreError::Corrupt)
+            ),
+            "field {field}"
+        );
+    }
+}
+
+// Admission is for one exact store progress revision, even if a caller retains
+// the old token and its original revision after another durable store change.
+#[test]
+fn native_step_is_invalid_after_intervening_durable_progress() {
+    use super::super::transaction::StepKind;
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 707);
+    let session = store.transaction_session(record.id).unwrap();
+    let mut live = store.begin_native(intent(&record), &session).unwrap();
+    let revision = live.revision();
+    let step = session
+        .admit_step(&store, &live, StepKind::Namespace, &AtomicBool::new(false))
+        .unwrap();
+    assert!(
+        step.validate(live.id(), live.lifetime(), revision, StepKind::Namespace)
+            .is_ok()
+    );
+    assert!(matches!(
+        step.validate(live.id(), live.lifetime(), revision, StepKind::Publish),
+        Err(StoreError::StaleRevision)
+    ));
+    store
+        .reserve_native_namespace_with_nonce(&mut live, Side::Destination, [22; 16])
+        .unwrap();
+    assert!(matches!(
+        step.validate(live.id(), live.lifetime(), revision, StepKind::Namespace),
+        Err(StoreError::StaleRevision)
+    ));
+    drop(step);
+    let fresh = session
+        .admit_step(&store, &live, StepKind::Namespace, &AtomicBool::new(false))
+        .unwrap();
+    assert!(
+        fresh
+            .validate(
+                live.id(),
+                live.lifetime(),
+                live.revision(),
+                StepKind::Namespace
+            )
+            .is_ok()
+    );
+    drop(store);
+    assert!(matches!(
+        fresh.validate(
+            live.id(),
+            live.lifetime(),
+            live.revision(),
+            StepKind::Namespace
+        ),
+        Err(StoreError::StaleRevision)
+    ));
+}
+
+// An uncertain durable store invalidates live native context before a retained
+// admitted token could be used after the failure.
+#[test]
+fn native_store_failure_invalidates_admitted_tokens() {
+    use super::super::transaction::StepKind;
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 708);
+    let session = store.transaction_session(record.id).unwrap();
+    let live = store.begin_native(intent(&record), &session).unwrap();
+    let step = session
+        .admit_step(&store, &live, StepKind::Namespace, &AtomicBool::new(false))
+        .unwrap();
+    store.log.set_len(0).unwrap();
+    assert!(store.checkpoint().is_err());
+    assert!(matches!(
+        step.validate(
+            live.id(),
+            live.lifetime(),
+            live.revision(),
+            StepKind::Namespace
+        ),
+        Err(StoreError::StaleRevision)
+    ));
+}

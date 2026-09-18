@@ -102,6 +102,7 @@ pub(super) enum ReceiptStage {
     Verified,
     BaselineCommitted,
     Aborted,
+    PreparedNoDisplacement,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct OperationReceipt {
@@ -172,6 +173,110 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
 };
+// Historical per-open correlation only; process-id reuse can collide across
+// processes. This tag is never tested for admission or reconstructed authority.
+fn native_correlation() -> Result<[u8; 16], StoreError> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let serial = NEXT
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |value| value.checked_add(1),
+        )
+        .map_err(|_| StoreError::LimitExceeded)?;
+    let mut bytes = [0; 16];
+    bytes[..8].copy_from_slice(&u64::from(std::process::id()).to_le_bytes());
+    bytes[8..].copy_from_slice(&serial.to_le_bytes());
+    Ok(bytes)
+}
+/// Opaque current-store authority. No serialized row can recreate it.
+pub(super) struct LiveOperation {
+    id: OperationId,
+    lifetime: std::sync::Weak<()>,
+    revision: Revision,
+    admission: Revision,
+    baseline: Option<Revision>,
+    fence: u64,
+    intent: OperationIntent,
+    endpoints: [EndpointIdentity; 2],
+    correlation: [u8; 16],
+    reads: Arc<super::transaction::native::OperationReads>,
+}
+impl LiveOperation {
+    pub(super) fn id(&self) -> OperationId {
+        self.id
+    }
+    pub(super) fn revision(&self) -> Revision {
+        self.revision
+    }
+    pub(super) fn lifetime(&self) -> &std::sync::Weak<()> {
+        &self.lifetime
+    }
+    pub(super) fn intent(&self) -> &OperationIntent {
+        &self.intent
+    }
+    pub(super) fn endpoints(&self) -> &[EndpointIdentity; 2] {
+        &self.endpoints
+    }
+    pub(super) fn admission(&self) -> Revision {
+        self.admission
+    }
+    pub(super) fn fence(&self) -> u64 {
+        self.fence
+    }
+    pub(super) fn operation_reads(&self) -> &Arc<super::transaction::native::OperationReads> {
+        &self.reads
+    }
+}
+pub(super) struct NamespaceReservation {
+    registration: format::NativeRegistration,
+    lifetime: std::sync::Weak<()>,
+    revision: u64,
+}
+impl NamespaceReservation {
+    pub(super) fn name(&self) -> String {
+        use super::transaction::native::descriptor::Header;
+        Header {
+            connection: self.registration.connection,
+            operation: self.registration.serial,
+            attempt: u64::from(self.registration.attempt),
+            nonce: self.registration.nonce,
+            epoch: [0; 16],
+            session: [0; 16],
+            admission: self.registration.admission,
+            baseline: self.registration.baseline,
+            progress: self.revision,
+            fence: self.registration.fence,
+        }
+        .namespace_name()
+    }
+    pub(super) fn header(
+        &self,
+        live: &LiveOperation,
+        epoch: [u8; 16],
+    ) -> Result<super::transaction::native::descriptor::Header, StoreError> {
+        if !self.lifetime.ptr_eq(live.lifetime())
+            || self.lifetime.strong_count() == 0
+            || self.revision != live.revision
+            || self.registration.connection != live.id.connection.0
+            || self.registration.serial != live.id.serial
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        Ok(super::transaction::native::descriptor::Header {
+            connection: live.id.connection.0,
+            operation: live.id.serial,
+            attempt: u64::from(self.registration.attempt),
+            nonce: self.registration.nonce,
+            epoch,
+            session: live.correlation,
+            admission: live.admission,
+            baseline: live.baseline,
+            progress: live.revision,
+            fence: live.fence,
+        })
+    }
+}
 pub(super) struct ConnectionStore {
     storage: storage::Storage,
     current: storage::Current,
@@ -183,6 +288,9 @@ pub(super) struct ConnectionStore {
     sequence: u64,
     digest: [u8; 32],
     session: Arc<()>,
+    native_lifetime: Arc<()>,
+    native_correlation: [u8; 16],
+    native_gates: BTreeMap<[u8; 16], std::sync::Weak<super::transaction::AdmissionGate>>,
     poisoned: bool,
     connections: u64,
     active_intents: u64,
@@ -260,6 +368,9 @@ impl ConnectionStore {
             sequence,
             digest,
             session: Arc::new(()),
+            native_lifetime: Arc::new(()),
+            native_correlation: native_correlation()?,
+            native_gates: BTreeMap::new(),
             poisoned: false,
             connections: 0,
             active_intents: 0,
@@ -339,10 +450,23 @@ impl ConnectionStore {
         }
         Ok(())
     }
+    fn poison_native(&mut self) {
+        self.poisoned = true;
+        // Weak live contexts and already-issued step tokens expire immediately,
+        // including failures before the store owner itself is dropped.
+        self.native_lifetime = Arc::new(());
+        for gate in self
+            .native_gates
+            .values()
+            .filter_map(std::sync::Weak::upgrade)
+        {
+            gate.close();
+        }
+    }
     fn guard(&mut self) -> Result<(), StoreError> {
         let result = self.validate();
         if result.is_err() {
-            self.poisoned = true;
+            self.poison_native();
         }
         result
     }
@@ -500,11 +624,286 @@ impl ConnectionStore {
         })?;
         Ok(self.ack(id))
     }
+    pub(super) fn transaction_session(
+        &mut self,
+        id: ConnectionId,
+    ) -> Result<super::transaction::TransactionSession, StoreError> {
+        let record = self.load_connection(id)?;
+        if record.lifecycle != Lifecycle::Active {
+            return Err(StoreError::Disconnected);
+        }
+        self.native_gates.retain(|_, gate| gate.strong_count() != 0);
+        let gate = if let Some(gate) = self
+            .native_gates
+            .get(&id.0)
+            .and_then(std::sync::Weak::upgrade)
+        {
+            gate
+        } else {
+            let gate = Arc::new(super::transaction::AdmissionGate::new());
+            self.native_gates.insert(id.0, Arc::downgrade(&gate));
+            gate
+        };
+        gate.set_progress(record.revision);
+        Ok(super::transaction::TransactionSession::new(
+            id,
+            Arc::downgrade(&self.native_lifetime),
+            gate,
+        ))
+    }
+    pub(super) fn begin_native(
+        &mut self,
+        intent: OperationIntent,
+        session: &super::transaction::TransactionSession,
+    ) -> Result<LiveOperation, StoreError> {
+        session.validate(intent.connection, &self.native_lifetime)?;
+        let before = self.load_connection(intent.connection)?;
+        let ack = self.begin_intent(intent.clone())?;
+        let revision = format::next(before.revision)?;
+        Ok(LiveOperation {
+            id: ack.value,
+            lifetime: Arc::downgrade(&self.native_lifetime),
+            revision,
+            admission: revision,
+            baseline: before.baseline_revision,
+            fence: before.fence_generation,
+            intent,
+            endpoints: [before.source.identity, before.destination.identity],
+            correlation: self.native_correlation,
+            reads: Arc::new(super::transaction::native::OperationReads::new()),
+        })
+    }
+    pub(super) fn check_native(&self, live: &LiveOperation) -> Result<(), StoreError> {
+        if !live.lifetime.ptr_eq(&Arc::downgrade(&self.native_lifetime))
+            || live.lifetime.strong_count() == 0
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        let connection = self.connection(live.id.connection)?;
+        if connection.lifecycle != 0 || connection.fence != live.fence {
+            return Err(StoreError::Disconnected);
+        }
+        if connection.revision != live.revision
+            || connection.pending != Some(live.id.serial)
+            || connection.baseline != live.baseline
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        let operation = self.operation(live.id)?;
+        if operation.revision != live.revision
+            || operation.expected.checked_add(1) != Some(live.admission)
+            || operation.decode()?.intent != live.intent
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    pub(super) fn reserve_native_namespace(
+        &mut self,
+        live: &mut LiveOperation,
+        side: Side,
+    ) -> Result<NamespaceReservation, StoreError> {
+        let nonce = super::transaction::native::namespace_nonce()?;
+        self.reserve_native_namespace_with_nonce(live, side, nonce)
+    }
+    // Shared durable reducer input; outside the store only the native random
+    // producer above can select a new attempt label.
+    fn reserve_native_namespace_with_nonce(
+        &mut self,
+        live: &mut LiveOperation,
+        side: Side,
+        nonce: [u8; 16],
+    ) -> Result<NamespaceReservation, StoreError> {
+        self.check_native(live)?;
+        let mut count = 0_u32;
+        let mut attempts = 0_u32;
+        for row in self.rows()? {
+            if let Row::NativeRegistration(row) = row? {
+                if row.connection != live.id.connection.0 {
+                    continue;
+                }
+                count = count.checked_add(1).ok_or(StoreError::LimitExceeded)?;
+                if row.serial == live.id.serial {
+                    if row.nonce == nonce {
+                        return Err(StoreError::StaleRevision);
+                    }
+                    attempts = attempts.checked_add(1).ok_or(StoreError::LimitExceeded)?;
+                }
+            }
+        }
+        if count >= 128 || attempts >= 8 {
+            return Err(StoreError::LimitExceeded);
+        }
+        let registration = format::NativeRegistration {
+            connection: live.id.connection.0,
+            serial: live.id.serial,
+            attempt: attempts + 1,
+            nonce,
+            side: u8::from(side != Side::Source),
+            admission: live.admission,
+            baseline: live.baseline,
+            fence: live.fence,
+            intent: None,
+            stage: None,
+        };
+        let revision = format::next(live.revision)?;
+        self.append(Change::NativeReserve {
+            registration: registration.clone(),
+            expected: live.revision,
+        })?;
+        live.revision = revision;
+        Ok(NamespaceReservation {
+            registration,
+            lifetime: live.lifetime.clone(),
+            revision,
+        })
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Reservation and prepared transitions share the same bounded historical registration join."
+    )]
+    fn reduce_native_registration(
+        &self,
+        registration: &format::NativeRegistration,
+        expected: u64,
+        prepared: bool,
+    ) -> Result<Vec<Row>, StoreError> {
+        registration.validate()?;
+        let mut connection = self.connection(ConnectionId(registration.connection))?;
+        if connection.lifecycle != 0 || connection.fence != registration.fence {
+            return Err(StoreError::Disconnected);
+        }
+        if connection.revision != expected || connection.pending != Some(registration.serial) {
+            return Err(StoreError::StaleRevision);
+        }
+        let mut operation = self.operation(OperationId {
+            connection: ConnectionId(registration.connection),
+            serial: registration.serial,
+        })?;
+        if registration.admission != format::next(operation.expected)?
+            || registration.baseline != operation.baseline
+            || operation.stage > 1
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        if (matches!(operation.decision, 1 | 4) && registration.side != 1)
+            || (matches!(operation.decision, 2 | 3) && registration.side != 0)
+        {
+            return Err(StoreError::Corrupt);
+        }
+        if prepared {
+            let Some(Row::NativeRegistration(mut previous)) = self.row(&registration.key())? else {
+                return Err(StoreError::Corrupt);
+            };
+            if previous.intent.is_some() || registration.intent.is_none() {
+                return Err(StoreError::StaleRevision);
+            }
+            previous.intent.clone_from(&registration.intent);
+            previous.stage.clone_from(&registration.stage);
+            if previous != *registration {
+                return Err(StoreError::Corrupt);
+            }
+            use super::transaction::native::descriptor::{self, Body, State};
+            let decoded =
+                descriptor::decode(registration.intent.as_ref().ok_or(StoreError::Corrupt)?)
+                    .map_err(|_| StoreError::Corrupt)?;
+            let Body::Intent(intent) = &decoded.body else {
+                return Err(StoreError::Corrupt);
+            };
+            let identity = |v: &storage::Identity| {
+                let mut bytes = [0; 64];
+                bytes[..32].copy_from_slice(&v.volume);
+                bytes[32..].copy_from_slice(&v.root);
+                bytes
+            };
+            let state = |v: &State| -> Result<Option<format::State>, StoreError> {
+                match v {
+                    State::Absent => Ok(None),
+                    State::Regular { content, .. } => Ok(Some(format::State::File {
+                        sha256: content.digest,
+                        bytes: content.length,
+                        executable: content.executable,
+                    })),
+                    _ => Err(StoreError::Corrupt),
+                }
+            };
+            if decoded.header.progress != expected
+                || intent.endpoints
+                    != [
+                        identity(&connection.source.identity),
+                        identity(&connection.destination.identity),
+                    ]
+                || intent.path != operation.path.to_relative()?
+                || intent.decision != operation.decision
+                || state(&intent.expected[0])? != operation.source
+                || state(&intent.expected[1])? != operation.destination
+                || (matches!(operation.decision, 1 | 2) && registration.stage.is_none())
+                || (matches!(operation.decision, 3 | 4) && registration.stage.is_some())
+            {
+                return Err(StoreError::Corrupt);
+            }
+            if matches!(
+                (
+                    operation.decision,
+                    &operation.source,
+                    &operation.destination
+                ),
+                (1, Some(format::State::File { .. }), None)
+                    | (2, None, Some(format::State::File { .. }))
+            ) {
+                if !operation.recovery.is_empty() {
+                    return Err(StoreError::Corrupt);
+                }
+                operation.stage = 6;
+            }
+        } else {
+            if registration.intent.is_some()
+                || registration.stage.is_some()
+                || self.row(&registration.key())?.is_some()
+            {
+                return Err(StoreError::Corrupt);
+            }
+            let mut count = 0_u32;
+            let mut attempts = 0_u32;
+            for row in self.rows()? {
+                if let Row::NativeRegistration(row) = row? {
+                    if row.connection != registration.connection {
+                        continue;
+                    }
+                    count = count.checked_add(1).ok_or(StoreError::LimitExceeded)?;
+                    if row.serial == registration.serial {
+                        if row.nonce == registration.nonce {
+                            return Err(StoreError::StaleRevision);
+                        }
+                        attempts = attempts.checked_add(1).ok_or(StoreError::LimitExceeded)?;
+                    }
+                }
+            }
+            if count >= 128 || attempts >= 8 || registration.attempt != attempts + 1 {
+                return Err(StoreError::LimitExceeded);
+            }
+        }
+        connection.revision = format::next(connection.revision)?;
+        operation.revision = connection.revision;
+        Ok(vec![
+            Row::Connection(connection),
+            Row::Operation(operation),
+            Row::NativeRegistration(registration.clone()),
+        ])
+    }
     pub(super) fn request_disconnect(
         &mut self,
         id: ConnectionId,
         expected: Revision,
     ) -> Result<DurableAck<DisconnectFence>, StoreError> {
+        if let Some(gate) = self
+            .native_gates
+            .get(&id.0)
+            .and_then(std::sync::Weak::upgrade)
+        {
+            gate.close();
+        }
         self.guard()?;
         let connection = self.connection(id)?;
         if connection.revision != expected {
@@ -549,6 +948,10 @@ impl ConnectionStore {
         })?;
         Ok(self.ack(self.load_connection(fence.value.connection)?))
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One exhaustive event dispatch preserves the shared preconditions and recovery guard owner."
+    )]
     fn reduce(
         &self,
         event: &Event,
@@ -558,6 +961,23 @@ impl ConnectionStore {
             return Err(StoreError::Corrupt);
         }
         match &event.change {
+            Change::NativeBound {
+                fact,
+                expected,
+                fence,
+            } => self.reduce_native_bound(fact, *expected, *fence),
+            Change::NativeReserve {
+                registration,
+                expected,
+            }
+            | Change::NativePrepared {
+                registration,
+                expected,
+            } => self.reduce_native_registration(
+                registration,
+                *expected,
+                matches!(event.change, Change::NativePrepared { .. }),
+            ),
             Change::Published {
                 connection,
                 serial,
@@ -795,6 +1215,15 @@ impl ConnectionStore {
     }
     fn commit_rows(&mut self, prepared: PreparedRows) {
         for row in prepared.rows {
+            if let Row::Connection(record) = &row {
+                if let Some(gate) = self
+                    .native_gates
+                    .get(&record.id)
+                    .and_then(std::sync::Weak::upgrade)
+                {
+                    gate.set_progress(record.revision);
+                }
+            }
             self.overlay.insert(row.key(), row);
         }
         self.connections = prepared.connections;
@@ -872,7 +1301,7 @@ impl ConnectionStore {
                     | StoreError::RecoverySpace)
             )
         {
-            self.poisoned = true;
+            self.poison_native();
         }
         result
     }
@@ -941,7 +1370,7 @@ impl ConnectionStore {
             Ok(self.ack(generation))
         })();
         if result.is_err() {
-            self.poisoned = true;
+            self.poison_native();
         }
         result
     }
@@ -967,7 +1396,7 @@ impl ConnectionStore {
         self.guard()?;
         let result = self.collect_garbage();
         if result.is_err() {
-            self.poisoned = true;
+            self.poison_native();
         }
         result
     }
@@ -984,3 +1413,193 @@ pub(super) use format::WindowsFileId;
 
 #[cfg(windows)]
 pub(super) use storage::{CurrentReplacement, GcDeletion};
+
+#[cfg(target_os = "linux")]
+pub(super) struct PreparedNative {
+    registration: format::NativeRegistration,
+    lifetime: std::sync::Weak<()>,
+    revision: u64,
+}
+#[cfg(target_os = "linux")]
+impl PreparedNative {
+    pub(super) fn validate(
+        &self,
+        live: &LiveOperation,
+        header: &super::transaction::native::descriptor::Header,
+    ) -> Result<(), StoreError> {
+        if !self.lifetime.ptr_eq(live.lifetime())
+            || self.lifetime.strong_count() == 0
+            || self.revision != live.revision
+            || self.registration.connection != live.id.connection.0
+            || self.registration.serial != live.id.serial
+            || u64::from(self.registration.attempt) != header.attempt
+            || self.registration.nonce != header.nonce
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        Ok(())
+    }
+    pub(super) fn descriptors(&self) -> (&[u8], Option<&[u8]>) {
+        (
+            self.registration.intent.as_deref().unwrap_or(&[]),
+            self.registration.stage.as_deref(),
+        )
+    }
+}
+#[cfg(target_os = "linux")]
+impl ConnectionStore {
+    pub(super) fn prepare_native(
+        &mut self,
+        live: &mut LiveOperation,
+        reservation: NamespaceReservation,
+        mut proof: super::transaction::native::NativePrepared<'_, '_>,
+    ) -> Result<DurableAck<PreparedNative>, StoreError> {
+        self.check_native(live)?;
+        reservation.header(live, [0; 16])?;
+        proof.validate(live)?;
+        let (intent, stage) = proof.descriptors()?;
+        let mut registration = reservation.registration;
+        registration.intent = Some(intent);
+        registration.stage = stage;
+        let revision = format::next(live.revision)?;
+        proof.validate(live)?;
+        self.append(Change::NativePrepared {
+            registration: registration.clone(),
+            expected: live.revision,
+        })?;
+        live.revision = revision;
+        proof.validate(live)?;
+        Ok(self.ack(PreparedNative {
+            registration,
+            lifetime: live.lifetime.clone(),
+            revision,
+        }))
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) struct BoundRecovery {
+    fact: super::transaction::native::descriptor::RecoveryFact,
+    preserved: PreservedObject,
+    parent: Arc<storage::Directory>,
+    lifetime: std::sync::Weak<()>,
+    epoch: [u8; 16],
+    metadata: cap_primitives::fs::Metadata,
+}
+#[cfg(target_os = "linux")]
+impl BoundRecovery {
+    pub(super) fn validate(
+        &self,
+        live: &LiveOperation,
+        epoch: [u8; 16],
+    ) -> Result<&super::transaction::native::descriptor::RecoveryFact, StoreError> {
+        if !self.lifetime.ptr_eq(live.lifetime())
+            || self.lifetime.strong_count() == 0
+            || self.epoch != epoch
+            || self.preserved.id.operation != live.id
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        let metadata = storage::recovery_metadata(&self.preserved.file)?;
+        if !storage::same_snapshot(&self.metadata, &metadata) {
+            return Err(StoreError::IdentityChanged);
+        }
+        storage::validate_recovery_reader(
+            &self.parent,
+            &format!(
+                "{}-{}",
+                self.preserved.id.operation.serial, self.preserved.id.slot
+            ),
+            &self.preserved.file,
+            &self.metadata,
+        )?;
+        Ok(&self.fact)
+    }
+}
+
+/// Read-only durable ownership clues. Construction is confined to the locked
+/// store; native inspection must still validate every current namespace object.
+#[cfg(target_os = "linux")]
+pub(super) struct NativeNamespaceRecord {
+    registration: format::NativeRegistration,
+    lifetime: std::sync::Weak<()>,
+}
+#[cfg(target_os = "linux")]
+impl NativeNamespaceRecord {
+    pub(super) fn validate(&self, live: &LiveOperation) -> Result<(), StoreError> {
+        if !self.lifetime.ptr_eq(live.lifetime())
+            || self.lifetime.strong_count() == 0
+            || self.registration.connection != live.id.connection.0
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        self.registration.validate()
+    }
+    pub(super) fn side(&self) -> u8 {
+        self.registration.side
+    }
+    pub(super) fn name(&self) -> String {
+        NamespaceReservation {
+            registration: self.registration.clone(),
+            lifetime: self.lifetime.clone(),
+            revision: 0,
+        }
+        .name()
+    }
+    pub(super) fn descriptors(&self) -> Result<(&[u8], Option<&[u8]>), StoreError> {
+        Ok((
+            self.registration
+                .intent
+                .as_deref()
+                .ok_or(StoreError::RecoveryRequired)?,
+            self.registration.stage.as_deref(),
+        ))
+    }
+}
+#[cfg(target_os = "linux")]
+impl ConnectionStore {
+    pub(super) fn native_namespace_records(
+        &self,
+        live: &LiveOperation,
+    ) -> Result<Vec<NativeNamespaceRecord>, StoreError> {
+        self.check_native(live)?;
+        let mut records = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = self.table_page(live.id.connection, 5, cursor, 128)?;
+            for row in page.entries {
+                let Row::NativeRegistration(registration) = row else {
+                    return Err(StoreError::Corrupt);
+                };
+                if records.len() >= 128 {
+                    return Err(StoreError::LimitExceeded);
+                }
+                registration.validate()?;
+                records.push(NativeNamespaceRecord {
+                    registration,
+                    lifetime: live.lifetime.clone(),
+                });
+            }
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(records)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+thread_local! { static AFTER_NATIVE_BYTES: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None); }
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn after_native_bytes_for_test(hook: impl FnOnce() + 'static) {
+    AFTER_NATIVE_BYTES.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+#[cfg(all(test, target_os = "linux"))]
+fn run_after_native_bytes() {
+    AFTER_NATIVE_BYTES.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
