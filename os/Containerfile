@@ -1800,7 +1800,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
       *) echo 'unsupported Windows VM firmware architecture' >&2; exit 1 ;; \
     esac && dnf install -y --setopt=reposdir=/repo \
     $windows_packages \
-    gamescope \
     qemu-kvm \
     libvirt-client \
     libvirt-daemon-kvm \
