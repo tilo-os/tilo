@@ -149,6 +149,7 @@ impl PowerMenu {
         if !self.open {
             return PowerMenuClick::Ignored;
         }
+        let point = self.untransform_pointer(viewport, point, Instant::now());
         if !panel_rect(viewport).contains(point) {
             self.close();
             return PowerMenuClick::Consumed;
@@ -160,6 +161,23 @@ impl PowerMenu {
         };
         self.selected = index;
         self.activate(index)
+    }
+
+    /// Convert a pointer in painted viewport coordinates back into the
+    /// flyout's stable layout coordinates. During the 220ms open/close scale
+    /// animation the rows are painted through a centre transform; hit-testing
+    /// the untransformed rectangles made a visibly correct click activate an
+    /// adjacent action (most dangerously Lock instead of Log out).
+    fn untransform_pointer(&self, viewport: Rect, point: Point, now: Instant) -> Point {
+        let (_, dy, scale) = modal_transition_curve(&self.transition, now, 0.94);
+        if !scale.is_finite() || scale <= f64::EPSILON {
+            return point;
+        }
+        let centre = panel_rect(viewport).center();
+        Point::new(
+            centre.x + (point.x - centre.x) / scale,
+            centre.y + (point.y - centre.y - dy) / scale,
+        )
     }
 
     pub(crate) fn key(&mut self, key: &winit::keyboard::Key, shift: bool) -> PowerMenuClick {
@@ -577,6 +595,30 @@ mod tests {
             );
             assert!(!menu.open);
         }
+    }
+
+    #[test]
+    fn opening_animation_hit_test_tracks_the_painted_logout_row() {
+        let mut menu = PowerMenu::default();
+        menu.open();
+        let now = Instant::now();
+        let panel = panel_rect(VIEWPORT);
+        let stable = action_rect(VIEWPORT, 1).center();
+        let (_, dy, scale) = modal_transition_curve(&menu.transition, now, 0.94);
+        let centre = panel.center();
+        let painted = Point::new(
+            centre.x + (stable.x - centre.x) * scale,
+            centre.y + dy + (stable.y - centre.y) * scale,
+        );
+        let logical = menu.untransform_pointer(VIEWPORT, painted, now);
+        assert!((logical.x - stable.x).abs() < 0.001);
+        assert!((logical.y - stable.y).abs() < 0.001);
+        // The production click samples a fresh instant. Freeze the transition
+        // at this same intermediate value so the regression remains exact.
+        assert_eq!(
+            (0..ACTIONS.len()).find(|&index| action_rect(VIEWPORT, index).contains(logical)),
+            Some(1)
+        );
     }
 
     #[test]
