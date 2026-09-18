@@ -145,6 +145,34 @@ impl ProjectDoc {
         true
     }
 
+    /// Hide an adjustment through the shared, reversible history channel.
+    ///
+    /// The visible editor's remove affordance promises undo, so it must not
+    /// create the permanent tombstone used for delete-wins synchronization.
+    /// Hiding is still a document edit seen by collaborators; the row and its
+    /// stable resource identity remain available for a history restore.
+    pub fn hide_adjustment(doc: &mut AutoCommit, id: &str) -> bool {
+        if id == "source" || id == "output" || id.is_empty() {
+            return false;
+        }
+        Self::seed(doc);
+        let root = Self::root_map(doc);
+        let tombstones = Self::map(doc, &root, TOMBSTONES);
+        if Self::is_tombstoned(doc, &tombstones, id) {
+            return false;
+        }
+        let nodes = Self::map(doc, &root, NODES);
+        if doc.get(&nodes, id).ok().flatten().is_none() {
+            return false;
+        }
+        let hidden = Self::map(doc, &root, HISTORY_HIDDEN);
+        if Self::is_tombstoned(doc, &hidden, id) {
+            return true;
+        }
+        let _ = doc.put(&hidden, id, ScalarValue::Boolean(true));
+        true
+    }
+
     /// Change one declared adjustment field without rebuilding any other
     /// node.  These are the same leaf fields the v2 reader materializes, so
     /// independent agent edits merge at Automerge's natural granularity.

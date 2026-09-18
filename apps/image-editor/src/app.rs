@@ -3358,6 +3358,7 @@ mod portal_tests {
             let mut document = AutoCommit::new();
             ProjectDoc::seed(&mut document);
             assert!(app.project.insert_before_output(id, id, operation));
+            ProjectDoc::write(&mut document, &app.project);
             app.editor.select_only(id);
             assert!(app.set_selected_slider(&mut document, 0.0));
             let low = app.selected_slider().unwrap().0;
@@ -3424,6 +3425,7 @@ mod portal_tests {
             "Contrast",
             Operation::Contrast { amount: 0.2 },
         ));
+        ProjectDoc::write(&mut document, &app.project);
         app.editor.select_only("exposure");
 
         assert!(app.perform_semantic_action(
@@ -3454,6 +3456,7 @@ mod portal_tests {
             "Contrast",
             Operation::Contrast { amount: 0.0 },
         ));
+        ProjectDoc::write(&mut document, &app.project);
         app.editor.select_only("contrast");
         assert!(app.perform_semantic_action(
             "image-editor.adjust.slider",
