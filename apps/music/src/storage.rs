@@ -19,6 +19,9 @@ use crate::model::{CacheState, Playback};
 /// user gesture.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeviceProfile {
+    /// The last explicitly opened file belongs only to this device.
+    #[serde(default)]
+    pub local_file: Option<crate::local_file::LocalFile>,
     /// Legacy field accepted on read so older profiles migrate safely. Actual
     /// cache availability comes only from [`MediaCache`] objects, never this
     /// profile metadata.
