@@ -43,12 +43,23 @@ python3 os/dev/stage-finalization-worker.py stage \
 ```
 
 The current EKS operator route uses the existing authenticated broker Kubernetes
-API runner, not a proven direct kubectl connection. That runner must supply the
-existing `Transport.runner` contract; call `stage(client, packet, request_raw)`
-with that same bound Transport. `remote_call` retains before/after identity
-checks and the fixed nested Docker command. Do not create another credential
-route merely to use the convenience CLI. The broker runner's live proof is
-separate from this helper's fixture tests.
+API runner. For that route, replace the context argument above with
+`--context broker-authenticated-api --broker`. The same two options apply to
+`transfer-signing-spool.py list|fetch|deliver`. Run locally as root: the adapter
+uses the existing `xemmerling` AWS profile `tilo-eks-operator`, then the existing
+on-prem kubectl context `admin@tupo-production` to `deployment/sandbox-broker`. It loads the broker's
+existing EKS endpoint/CA config and supplies the fresh authorized operator token
+through stdin. No kubeconfig is copied or new service started.
+
+`broker_signing_runner.py` implements the existing `Transport.runner` contract;
+`stage(client, packet, request_raw)` also remains available for orchestration.
+The adapter admits only exact bound get/exec commands and fixed endpoint
+operations. Public payloads stream with byte/deadline bounds; tokens remain in
+memory/pipes and diagnostics are suppressed. The API EOF wrapper runs inside the
+tools container, so the enclosing DinD container needs no Python installation.
+`remote_call` retains all before/after identity checks. The earlier live fixture
+proved the existing API route; this production adapter and nested Docker route
+still require their own public-only live acceptance before actual signing.
 
 The packet contains only the retained receipt and exact five-file public bundles
 as bounded base64 values, the pinned context, and exact request SHA256. The helper
