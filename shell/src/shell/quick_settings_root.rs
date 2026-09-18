@@ -111,6 +111,7 @@ impl QuickSettingsRoot {
     const GAP: f64 = 8.0;
     const POWER: f64 = 48.0;
     const EDIT_ROW: f64 = 46.0;
+    const EDIT_ACTION_WIDTH: f64 = 76.0;
     // Edit mode has three distinct header lines: title, a concise interaction
     // hint, and the active-controls section label.  Keeping this as a real
     // measured band prevents the hint and section label from sharing the same
@@ -118,6 +119,7 @@ impl QuickSettingsRoot {
     // text).
     const EDIT_HELP: f64 = 42.0;
     const EDIT_FOOTER: f64 = 38.0;
+    const EDIT_HELP_COPY: &'static str = "Drag rows to reorder · Ctrl + Up/Down";
 
     fn header_baseline_offset(&self) -> f64 {
         // Spatial chrome may compact below 1× on a short display, but the
@@ -452,11 +454,11 @@ impl QuickSettingsRoot {
     }
 
     fn edit_help_baseline(&self) -> f64 {
-        self.panel.y0 + self.scaled(Self::PAD + Self::HEADER - 5.0)
+        self.panel.y0 + self.header_baseline_offset() + self.scaled(20.0)
     }
 
     fn edit_section_baseline(&self) -> f64 {
-        self.panel.y0 + self.scaled(Self::PAD + Self::HEADER + 17.0)
+        self.edit_help_baseline() + self.scaled(20.0)
     }
     fn available_edit_top(&self, state: &QuickSettingsState) -> f64 {
         let active = self.active_edit_controls(state).len();
@@ -504,6 +506,14 @@ impl QuickSettingsRoot {
         let x = panel.x0 + pad + n(col) * (w + gap);
         let y = top + n(row) * self.scaled(Self::CARD + Self::GAP);
         Rect::new(x, y, x + w, y + self.scaled(Self::CARD))
+    }
+    fn edit_action_rect(&self, row: Rect) -> Rect {
+        Rect::new(
+            row.x1 - self.scaled(Self::EDIT_ACTION_WIDTH + 6.0),
+            row.y0 + self.scaled(7.0),
+            row.x1 - self.scaled(6.0),
+            row.y1 - self.scaled(7.0),
+        )
     }
     fn control_card(&self, panel: Rect, i: usize, count: usize) -> Rect {
         let row = i / 2;
@@ -1527,7 +1537,7 @@ impl QuickSettingsRoot {
         let colors = &theme.tokens.colors;
         text.draw_text(
             scene,
-            "Drag to reorder · Ctrl+↑/↓ with keyboard",
+            Self::EDIT_HELP_COPY,
             theme.tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate(
@@ -1599,12 +1609,7 @@ impl QuickSettingsRoot {
                     );
                 }
             }
-            let action = Rect::new(
-                r.x1 - self.scaled(40.),
-                r.y0 + self.scaled(7.),
-                r.x1 - self.scaled(6.),
-                r.y1 - self.scaled(7.),
-            );
+            let action = self.edit_action_rect(r);
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
@@ -1623,7 +1628,7 @@ impl QuickSettingsRoot {
                 None,
                 TextWeight::Medium,
             );
-            let action_face = ButtonFace::new(action, "")
+            let action_face = ButtonFace::new(action, if c.required() { "" } else { "Remove" })
                 .hovered(cursor.is_some_and(|p| action.contains(p)))
                 .accessible_name(if c.required() {
                     "Required Quick Settings control"
@@ -1636,7 +1641,7 @@ impl QuickSettingsRoot {
             let action_face = if c.required() {
                 action_face.icon(ui::icons::Icon::Shield).ghost()
             } else {
-                action_face.icon(ui::icons::Icon::X)
+                action_face
             };
             Button::paint(scene, transform, text, theme, &action_face);
         }
@@ -1725,12 +1730,7 @@ impl QuickSettingsRoot {
                         );
                     }
                 }
-                let action = Rect::new(
-                    ghost.x1 - self.scaled(40.),
-                    ghost.y0 + self.scaled(7.),
-                    ghost.x1 - self.scaled(6.),
-                    ghost.y1 - self.scaled(7.),
-                );
+                let action = self.edit_action_rect(ghost);
                 #[allow(
                     clippy::cast_possible_truncation,
                     reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
@@ -1751,17 +1751,18 @@ impl QuickSettingsRoot {
                     None,
                     TextWeight::Medium,
                 );
-                let ghost_face = ButtonFace::new(action, "")
-                    .text_size(theme.tokens.typography.scale.xs)
-                    .accessible_name(if control.required() {
-                        "Required Quick Settings control"
-                    } else {
-                        "Remove Quick Settings control"
-                    });
+                let ghost_face =
+                    ButtonFace::new(action, if control.required() { "" } else { "Remove" })
+                        .text_size(theme.tokens.typography.scale.xs)
+                        .accessible_name(if control.required() {
+                            "Required Quick Settings control"
+                        } else {
+                            "Remove Quick Settings control"
+                        });
                 let ghost_face = if control.required() {
                     ghost_face.ghost()
                 } else {
-                    ghost_face.icon(ui::icons::Icon::X)
+                    ghost_face
                 };
                 Button::paint(scene, transform, text, theme, &ghost_face);
             }
@@ -2315,10 +2316,35 @@ mod tests {
 
             let help = root.edit_help_baseline();
             let section = root.edit_section_baseline();
+            let title = root.panel.y0 + root.header_baseline_offset();
             let first_control = root.card(root.panel, 0, true);
+            assert!(help - title >= root.scaled(18.0));
             assert!(section - help >= root.scaled(20.0));
             assert!(first_control.y0 - section >= root.scaled(10.0));
         }
+    }
+
+    #[test]
+    fn edit_help_copy_uses_font_safe_keyboard_names() {
+        assert_eq!(
+            QuickSettingsRoot::EDIT_HELP_COPY,
+            "Drag rows to reorder · Ctrl + Up/Down"
+        );
+        assert!(!QuickSettingsRoot::EDIT_HELP_COPY.contains('↑'));
+        assert!(!QuickSettingsRoot::EDIT_HELP_COPY.contains('↓'));
+    }
+
+    #[test]
+    fn edit_remove_action_has_a_clear_wide_target() {
+        let mut root = QuickSettingsRoot::default();
+        root.edit_mode = true;
+        root.panel = PANEL;
+        let row = root.card(PANEL, 0, true);
+        let action = root.edit_action_rect(row);
+        assert_eq!(action.width(), QuickSettingsRoot::EDIT_ACTION_WIDTH);
+        assert!(action.x0 > row.x0);
+        assert!(action.x1 < row.x1);
+        assert!(action.y0 > row.y0 && action.y1 < row.y1);
     }
     #[test]
     fn odd_control_count_uses_a_balanced_full_width_last_card() {
