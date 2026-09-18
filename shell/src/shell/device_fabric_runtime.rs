@@ -1363,7 +1363,7 @@ pub struct DeviceFabricRuntime {
     notification_bridge: NotificationBridge,
     realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
     realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
-    remote_capture: Option<crate::shell::remote_capture_runtime::SharedRemoteCaptureRuntime>,
+    remote_capture: Option<crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime>,
     remote_capture_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
     remote_capture_pending_actions: VecDeque<crate::shell::network::ReceivedPersonalFabricAction>,
     tethering: crate::shell::personal_tethering_runtime::PersonalTetheringRuntime,
@@ -1414,7 +1414,7 @@ impl DeviceFabricRuntime {
 
     pub(crate) fn set_remote_capture_runtime(
         &mut self,
-        runtime: crate::shell::remote_capture_runtime::SharedRemoteCaptureRuntime,
+        runtime: crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime,
     ) {
         self.remote_capture = Some(runtime);
     }
@@ -1725,7 +1725,7 @@ impl DeviceFabricRuntime {
                 {
                     runtime.handle_action(&envelope, Instant::now());
                 } else if self.remote_capture_pending_actions.len()
-                    < crate::shell::remote_capture_device::MAX_REMOTE_CAPTURE_SESSIONS * 4
+                    < crate::shell::remote_capture::device::MAX_REMOTE_CAPTURE_SESSIONS * 4
                 {
                     self.remote_capture_pending_actions.push_back(
                         crate::shell::network::ReceivedPersonalFabricAction { envelope, route },
@@ -5562,7 +5562,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         calibration_proposals,
         revertible_calibrations,
         tethering: crate::shell::personal_tethering_runtime::tethering_statuses(),
-        remote_capture: crate::shell::remote_capture_runtime::active_view(),
+        remote_capture: crate::shell::remote_capture::runtime::active_view(),
         display_mirror_consents,
         display_mirrors,
         display_mirror_available,
