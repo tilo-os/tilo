@@ -36,7 +36,7 @@ def replace_once(text, before, after):
     return text.replace(before, after, 1)
 
 
-def derive_recipe(original, retained, required):
+def derive_recipe(original, retained, required, *, thin_cache_approval_sha256=None):
     """Keep original package/features graph; omit only completed binary targets."""
     allowed = set(required) | {'browser'}
     require(set(retained) <= allowed and retained, 'invalid checkpoint targets')
@@ -50,6 +50,13 @@ def derive_recipe(original, retained, required):
     start = text.index('RUN --mount=type=cache,target=/build/.cargo-home')
     text = text[:start] + text[start:].replace('RUN --mount=type=cache,target=/build/.cargo-home',
         'RUN --mount=type=bind,from=tilo-resume,target=/tilo-resume,ro \\\n    --mount=type=cache,target=/build/.cargo-home', 1)
+    if thin_cache_approval_sha256 is not None:
+        require(re.fullmatch('[0-9a-f]{64}', thin_cache_approval_sha256), 'independent thin-cache approval required')
+        text = replace_once(text, 'RUN --mount=type=bind,from=tilo-resume,target=/tilo-resume,ro',
+            'RUN --mount=type=bind,from=tilo-thin-cache,target=/tilo-thin-cache,ro \\\n    --mount=type=bind,from=tilo-resume,target=/tilo-resume,ro')
+        seam = '    && cp /tilo-resume/partial/* target/release/ \\\n'
+        text = replace_once(text, seam, seam +
+            '    && python3 /tilo-thin-cache/restore-thin-cache.py --approval-sha256 ' + thin_cache_approval_sha256 + ' \\\n')
     before = '       cargo build --release ${RELEASE_ARGS} -p tilo-relay --bins ${BROWSER_PKG}'
     command = ('cargo build --release ${RELEASE_ARGS} -p tilo-relay ' +
                ' '.join('--bin ' + name for name in release) + ' ${BROWSER_PKG}') if release else 'true'
