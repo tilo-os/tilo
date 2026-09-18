@@ -332,20 +332,15 @@ fn clipboard_fallback() -> &'static Mutex<(Option<String>, Option<String>)> {
 }
 
 /// Write `text` to `target`, trying each backend in priority order.
-fn write_selection(target: ClipboardTarget, text: &str) {
+fn try_write_selection(target: ClipboardTarget, text: &str) -> bool {
     if let Some(backend) = clipboard_backend()
         && backend.set_text(target, text)
     {
-        return;
+        return true;
     }
-    // Windows has no primary-selection protocol. Keep select/middle-click
-    // local to the app instead of overwriting the user's Ctrl+C clipboard.
     #[cfg(windows)]
     if target == ClipboardTarget::Primary {
-        if let Ok(mut selection) = clipboard_fallback().lock() {
-            selection.1 = Some(text.to_string());
-        }
-        return;
+        return false;
     }
     if let Some(cb) = arboard_clipboard()
         && let Ok(mut handle) = cb.lock()
@@ -367,8 +362,25 @@ fn write_selection(target: ClipboardTarget, text: &str) {
             ClipboardTarget::Primary => handle.set_text(text.to_string()).is_ok(),
         };
         if wrote {
-            return;
+            return true;
         }
+    }
+    false
+}
+
+/// Copy with a local fallback for editors and headless use.
+fn write_selection(target: ClipboardTarget, text: &str) {
+    if try_write_selection(target, text) {
+        return;
+    }
+    // Windows has no primary-selection protocol. Keep select/middle-click
+    // local to the app instead of overwriting the user's Ctrl+C clipboard.
+    #[cfg(windows)]
+    if target == ClipboardTarget::Primary {
+        if let Ok(mut selection) = clipboard_fallback().lock() {
+            selection.1 = Some(text.to_string());
+        }
+        return;
     }
     warn_fallback_once("copy");
     if let Ok(mut fb) = clipboard_fallback().lock() {
@@ -421,6 +433,21 @@ fn read_selection(target: ClipboardTarget) -> Option<String> {
 /// when there is no clipboard at all, and says so in the log when it does.
 pub fn clipboard_copy(text: &str) {
     write_selection(ClipboardTarget::Clipboard, text);
+}
+
+/// Copy text only if a system clipboard backend accepts it.
+///
+/// Returns `false` on failure and never retains the text in the in-process
+/// fallback. Use this for secrets and success messages that require an actual
+/// clipboard write rather than an editor-local copy.
+#[must_use]
+pub fn try_clipboard_copy(text: &str) -> bool {
+    // An explicitly installed host backend is authoritative. Its refusal
+    // must not route a secret through another backend or a local fallback.
+    if let Some(backend) = clipboard_backend() {
+        return backend.set_text(ClipboardTarget::Clipboard, text);
+    }
+    try_write_selection(ClipboardTarget::Clipboard, text)
 }
 
 /// Push an RGBA8 image (`width * height * 4` bytes, row-major, no padding) onto
