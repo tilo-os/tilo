@@ -9,7 +9,6 @@ use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 use winit::event::{Modifiers, WindowEvent};
 
 use ui::ColorCompat;
@@ -386,23 +385,9 @@ impl CommentOverlay {
         group: Uuid,
     ) -> f64 {
         let colors = &theme.tokens.colors;
-        let shadow = Rect::new(card.x0 - 1.0, card.y0 + 4.0, card.x1 + 1.0, card.y1 + 7.0);
-        paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 80));
-        paint::fill_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            colors.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            theme.border_focus,
-            1.4,
-        );
+        // A floating Panel: elevation, ground and the derived Panel border.
+        // The focus ring belongs to the control being edited, not the card.
+        crate::chrome::panel(scene, t, theme, card);
         self.push_hit(card, CommentAction::Swallow);
 
         let ix0 = card.x0 + pad;
@@ -462,11 +447,28 @@ impl CommentOverlay {
         text_w: f32,
         gap: f64,
     ) -> f64 {
+        use crate::chrome::rhythm;
         let colors = &theme.tokens.colors;
+        // The two row controls are full pointer targets, a sibling step from
+        // each other and a tight step in from the row's edge.
+        let control = 24.0;
         for (annotation, height) in comments.iter().zip(row_heights) {
             let height = *height;
             let row = Rect::new(ix0, y, ix1, y + height);
-            paint::fill_round(scene, t, row, 8.0, colors.surfaces.overlay);
+            // A row on the panel: one tier up, with its derived edge.
+            crate::chrome::card_on_raised(scene, t, theme, row, 8.0);
+            let delete = Rect::new(
+                ix1 - rhythm::TIGHT - control,
+                y + rhythm::TIGHT,
+                ix1 - rhythm::TIGHT,
+                y + rhythm::TIGHT + control,
+            );
+            let edit = Rect::new(
+                delete.x0 - rhythm::SIBLING - control,
+                delete.y0,
+                delete.x0 - rhythm::SIBLING,
+                delete.y1,
+            );
             let editing = self.editing == Some(annotation.id);
             if editing {
                 paint::stroke_round(scene, t, row, 8.0, theme.border_focus, 1.4);
@@ -475,7 +477,7 @@ impl CommentOverlay {
                 self.editor.apply_layout_external(Rect::new(
                     ix0 + 8.0,
                     y + 6.0,
-                    ix1 - 52.0,
+                    edit.x0 - rhythm::RELATED,
                     y + height - 6.0,
                 ));
                 self.editor
@@ -495,7 +497,6 @@ impl CommentOverlay {
                     Some(text_w),
                 );
             }
-            let delete = Rect::new(ix1 - 24.0, y + 4.0, ix1 - 2.0, y + 26.0);
             let delete_hover = delete.contains(cursor);
             paint::close(
                 scene,
@@ -508,8 +509,10 @@ impl CommentOverlay {
                 },
                 1.4,
             );
-            self.push_hit(delete, CommentAction::Delete(annotation.id));
-            let edit = Rect::new(ix1 - 48.0, y + 4.0, ix1 - 26.0, y + 26.0);
+            self.push_hit(
+                crate::chrome::pointer_target(delete, theme),
+                CommentAction::Delete(annotation.id),
+            );
             paint::pencil(
                 scene,
                 t,
@@ -522,7 +525,10 @@ impl CommentOverlay {
                 1.4,
             );
             if !editing {
-                self.push_hit(edit, CommentAction::Edit(annotation.id));
+                self.push_hit(
+                    crate::chrome::pointer_target(edit, theme),
+                    CommentAction::Edit(annotation.id),
+                );
             }
             y += height + gap;
         }
@@ -545,30 +551,18 @@ impl CommentOverlay {
         group: Uuid,
     ) {
         let add = Rect::new(ix0, y, ix1, y + add_h - 4.0);
-        let add_hover = add.contains(cursor);
-        paint::fill_round(
+        // The shared Neutral face (HIG §8): raised, derived edge, themed hover.
+        ui::widget::Button::paint(
             scene,
             t,
-            add,
-            8.0,
-            if add_hover {
-                theme.accent_primary
-            } else {
-                theme.accent_primary.with_alpha_factor(0.14)
-            },
-        );
-        tr.draw_text_weighted(
-            scene,
-            "＋  Add comment",
-            12.5,
-            if add_hover {
-                Color::from_rgb8(248, 248, 252)
-            } else {
-                theme.accent_primary
-            },
-            t * Affine::translate((ix0 + 12.0, y + 8.0)),
-            None,
-            TextWeight::Semibold,
+            tr,
+            theme,
+            &ui::widget::ButtonFace::new(add, "Add comment")
+                .icon(ui::icons::Icon::Plus)
+                .radius(8.0)
+                .text_size(12.5)
+                .weight(TextWeight::Semibold)
+                .hovered(add.contains(cursor)),
         );
         self.push_hit(add, CommentAction::Add(group));
     }
