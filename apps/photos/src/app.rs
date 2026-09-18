@@ -8724,7 +8724,7 @@ mod tests {
     }
 
     #[test]
-    fn enlarged_library_exposes_full_tag_and_one_photo_semantic_paging() {
+    fn enlarged_library_keeps_density_navigation_without_metadata_chips() {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
@@ -8756,11 +8756,7 @@ mod tests {
             &PresenceCtx::empty(),
         );
 
-        assert!(
-            app.metadata_filter_cards
-                .iter()
-                .any(|card| card.tag.as_deref() == Some("golden hour"))
-        );
+        assert!(app.metadata_filter_cards.is_empty());
         let semantics = app.accessibility_tree();
         let children = &semantics.children[1].children;
         assert!(
