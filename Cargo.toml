@@ -131,7 +131,7 @@ members = [
     "crates/identity/tilo-user-identity",
 
     # Media
-    "crates/media",
+    "crates/media/core",
     "crates/media/ocr",
     "crates/media/thumbnail",
     "crates/media/vision",

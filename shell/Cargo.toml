@@ -125,7 +125,7 @@ mime_guess = "2.0.5"
 os-actions = { path = "../crates/system/os-actions" }
 # Session-owned balance/mono policy and PipeWire graph enumeration. Settings
 # persists intent; the compositor is the single long-lived actuator.
-media = { path = "../crates/media" }
+media = { path = "../crates/media/core" }
 hex.workspace = true
 sha2.workspace = true
 xattr = "1.6.1"
