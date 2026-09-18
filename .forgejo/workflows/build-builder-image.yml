@@ -51,12 +51,14 @@ jobs:
       - name: Require non-exportable builder signing authority
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           resolved="$RUNNER_TEMP/builder-signing-authority.pub"
           cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"
           cmp --silent keys/cosign.pub "$resolved" || {
@@ -77,6 +79,7 @@ jobs:
             platform: linux/arm64
             runner: runner-arm64
     runs-on: ${{ matrix.runner }}
+    enable-openid-connect: true
     timeout-minutes: 180
     steps:
       - name: Checkout
@@ -167,6 +170,7 @@ jobs:
       - name: Sign and describe the native builder
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
           CHILD_ARCH: ${{ matrix.arch }}
           CHILD_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
@@ -175,6 +179,7 @@ jobs:
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           ref="code.sandbox.example/qos/tilo-builder@${CHILD_DIGEST}"
           cosign sign --yes --key "$COSIGN_KEY_REF" "$ref"
           cosign verify --key keys/cosign.pub "$ref" >/dev/null
@@ -330,6 +335,7 @@ jobs:
     timeout-minutes: 60
     needs: [build, images, cache-cold, cache-warm]
     runs-on: runner
+    enable-openid-connect: true
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -360,6 +366,7 @@ jobs:
       - name: Verify and publish the tested native builder index
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
           BUILDER_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
@@ -367,6 +374,7 @@ jobs:
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           # Index assembly needs manifest metadata, not mounted image layers.
           # Use an isolated VFS store inside the containerized runner; its
           # overlay root cannot host another unconfigured overlay store.

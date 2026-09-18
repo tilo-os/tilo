@@ -98,12 +98,27 @@ has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
   'snapshot signing requires a non-exportable key'
 has "$workflow" '. os/dev/configure-cosign-kms.sh' \
   'snapshot signing configures the KMS provider from its trusted key reference'
-aws_regions="$(COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/example' \
-  sh -c '. "$1"; printf "%s:%s" "$AWS_REGION" "$AWS_DEFAULT_REGION"' \
-  fixture "$repo/os/dev/configure-cosign-kms.sh")"
-[ "$aws_regions" = 'eu-west-2:eu-west-2' ] \
-  && ok 'AWS KMS region is derived from the trusted signing-key ARN' \
-  || bad 'AWS KMS region is not derived from the trusted signing-key ARN'
+oidc_fixture="$(mktemp -d)"
+printf '{"value":"signed-for-test"}\n' > "$oidc_fixture/token&audience=tilo-release-signing"
+aws_config="$(COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/example' \
+  AWS_SIGNING_ROLE_ARN='arn:aws:iam::123456789012:role/release' \
+  ACTIONS_ID_TOKEN_REQUEST_URL="file://$oidc_fixture/token" \
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN=request-token RUNNER_TEMP="$oidc_fixture" \
+  sh -c '. "$1"; printf "%s:%s:%s:%s:" "$AWS_REGION" "$AWS_DEFAULT_REGION" \
+    "$AWS_ROLE_ARN" "$(stat -c %a "$AWS_WEB_IDENTITY_TOKEN_FILE")"; \
+    cat "$AWS_WEB_IDENTITY_TOKEN_FILE"' fixture "$repo/os/dev/configure-cosign-kms.sh")"
+rm -rf -- "$oidc_fixture"
+[ "$aws_config" = 'eu-west-2:eu-west-2:arn:aws:iam::123456789012:role/release:600:signed-for-test' ] \
+  && ok 'AWS KMS setup derives the region and installs least-exposure web identity' \
+  || bad 'AWS KMS setup does not configure Forgejo web identity safely'
+if COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/example' \
+   AWS_SIGNING_ROLE_ARN='arn:aws:iam::999999999999:role/release' \
+   ACTIONS_ID_TOKEN_REQUEST_URL=unused ACTIONS_ID_TOKEN_REQUEST_TOKEN=unused \
+   sh -c '. "$1"' fixture "$repo/os/dev/configure-cosign-kms.sh" >/dev/null 2>&1; then
+  bad 'a signing role from outside the KMS account is accepted'
+else
+  ok 'AWS signing role is bound to the KMS key account'
+fi
 if COSIGN_KEY_REF='awskms:///not-an-arn' \
    sh -c '. "$1"' fixture "$repo/os/dev/configure-cosign-kms.sh" >/dev/null 2>&1; then
   bad 'malformed AWS KMS key references are accepted'
