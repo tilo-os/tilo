@@ -29,6 +29,9 @@ use super::folders::{self, FolderScan, SkipReason, SkippedEntry};
 use super::import_view::ImportApp;
 use super::known_folders::{self, KnownFolder, KnownFolderKind};
 use super::model::{Capabilities, Experience, FolderMode, HostOs};
+// Page rhythm (HIG §7b): the crate's steps and the shared page sections.
+use super::{page, stack};
+use crate::rhythm::px::{FOOTER_INSET, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
 
 type CommandSink = Rc<RefCell<Vec<SetupCommand>>>;
 type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
@@ -641,9 +644,8 @@ impl SetupApp {
     }
 
     fn experience_body(&self) -> Box<dyn Widget> {
-        let mut body = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
+        let header = stack()
+            .with_gap(RELATED)
             .push(Box::new(
                 Text::new("Choose your qOS experience")
                     .with_role(TextRole::Title)
@@ -652,6 +654,7 @@ impl SetupApp {
             .push(Box::new(Text::new(
                 "Setup keeps your current operating system. Options that are not ready in this build stay unavailable.",
             ).dimmed()));
+        let mut body = stack();
 
         for experience in [Experience::Desktop, Experience::FullOs] {
             let supported = self.capabilities.platform.supports(experience);
@@ -715,7 +718,7 @@ impl SetupApp {
                 Box::new(card_body),
             )));
         }
-        Box::new(body)
+        Box::new(page(header).push(Box::new(body)))
     }
 
     fn mode_card(&self, mode: FolderMode, title: &str, explanation: &str) -> Card {
@@ -750,7 +753,7 @@ impl SetupApp {
                             Column::new()
                                 .with_no_padding()
                                 .with_intrinsic_height()
-                                .with_gap(4.0)
+                                .with_gap(RELATED)
                                 .push(Box::new(Text::new(title).with_role(TextRole::Heading)))
                                 .push(Box::new(Text::new(&detail).dimmed())),
                         )),
@@ -892,9 +895,8 @@ impl SetupApp {
     }
 
     fn folders_body(&self) -> Box<dyn Widget> {
-        let mut body = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
+        let header = stack()
+            .with_gap(RELATED)
             .push(Box::new(
                 Text::new("Bring your files into qOS")
                     .with_role(TextRole::Title)
@@ -902,7 +904,8 @@ impl SetupApp {
             ))
             .push(Box::new(Text::new(
                 "Choose a common behavior. Suggestions are never selected automatically, shared, or uploaded.",
-            ).dimmed()))
+            ).dimmed()));
+        let mut modes = stack()
             .push(Box::new(self.mode_card(
                 FolderMode::Copy,
                 "Copy selected folders — recommended",
@@ -920,41 +923,49 @@ impl SetupApp {
             )))
             .push(Box::new(self.button(
                 "setup.help",
-                if self.show_help { "Hide guidance" } else { "Help me choose" },
+                if self.show_help {
+                    "Hide guidance"
+                } else {
+                    "Help me choose"
+                },
                 SetupCommand::ToggleHelp,
             )));
         if self.show_help {
-            body = body.push(Box::new(Card::titled(
+            modes = modes.push(Box::new(Card::titled(
                 "Help me choose",
                 Box::new(Text::new(
                     "If you are trying qOS or are unsure, choose Copy. If you will keep working in both systems, Connected may fit when folder syncing is available for this computer. You can always decide later.",
                 )),
             )));
         }
-        body = body.push(Box::new(
+        // Each heading opens its own section, a `GROUP` after the previous
+        // one; the cards inside keep the sibling step.
+        let mut suggested = stack().push(Box::new(
             Text::new("Suggested folders")
                 .with_role(TextRole::Heading)
                 .with_heading_level(2),
         ));
         for (index, known) in self.known_folders.iter().enumerate() {
-            body = body.push(Box::new(self.known_folder_card(index, known)));
+            suggested = suggested.push(Box::new(self.known_folder_card(index, known)));
         }
-        body = body.push(Box::new(self.button(
+        suggested = suggested.push(Box::new(self.button(
             "setup.add-folder",
             "Add folder…",
             SetupCommand::AddFolder,
         )));
+        let mut body = page(header).push(Box::new(modes)).push(Box::new(suggested));
 
         let controller = self.controller();
         if !controller.folders().is_empty() {
-            body = body.push(Box::new(
+            let mut selected = stack().push(Box::new(
                 Text::new("Selected folders")
                     .with_role(TextRole::Heading)
                     .with_heading_level(2),
             ));
             for (index, folder) in controller.folders().iter().enumerate() {
-                body = body.push(Box::new(self.selected_folder_card(index, folder)));
+                selected = selected.push(Box::new(self.selected_folder_card(index, folder)));
             }
+            body = body.push(Box::new(selected));
         }
         drop(controller);
         Box::new(body)
@@ -1138,18 +1149,16 @@ impl SetupApp {
             self.desktop_flow.state(),
             DesktopFlowState::Installed { .. }
         );
-        let mut body = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(
-                Text::new(if installed {
-                    "qOS Desktop is installed"
-                } else {
-                    "Review qOS setup"
-                })
-                .with_role(TextRole::Title)
-                .with_heading_level(1),
-            ));
+        let header = stack().push(Box::new(
+            Text::new(if installed {
+                "qOS Desktop is installed"
+            } else {
+                "Review qOS setup"
+            })
+            .with_role(TextRole::Title)
+            .with_heading_level(1),
+        ));
+        let mut body = stack();
         if plan.experience == Experience::Desktop {
             body = body.push(Box::new(self.desktop_install_card()));
         }
@@ -1172,7 +1181,7 @@ impl SetupApp {
                     "Current blockers",
                     Box::new(Text::new(&blockers).with_live(Politeness::Polite)),
                 )));
-        Box::new(body.push(Box::new(copy_status)))
+        Box::new(page(header).push(Box::new(body.push(Box::new(copy_status)))))
     }
 
     fn ensure_import_app(&mut self) {
@@ -1196,8 +1205,8 @@ impl SetupApp {
         let scroll = Scrollable::new_vertical()
             .fill_parent_height()
             .always_visible()
-            .with_content_gutter(14.0)
-            .with_bottom_content_inset(4.0)
+            .with_content_gutter(SCROLLBAR_GUTTER)
+            .with_bottom_content_inset(FOOTER_INSET)
             .with_child(body);
         let status = Text::new(&self.status).with_live(if self.status_is_error {
             Politeness::Assertive
@@ -1207,13 +1216,8 @@ impl SetupApp {
         let status = Card::new(Box::new(
             Scrollable::new_vertical()
                 .with_max_height(56.0)
-                .with_content_gutter(10.0)
-                .with_child(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .push(Box::new(status)),
-                )),
+                .with_content_gutter(SCROLLBAR_GUTTER)
+                .with_child(Box::new(stack().push(Box::new(status)))),
         ));
         let mut nav = Row::new().no_wrap();
         if page == SetupPage::Experience {
@@ -1294,9 +1298,9 @@ impl SetupApp {
             Container::new().filling().with_child(Box::new(
                 Column::new()
                     .with_no_padding()
-                    .with_horizontal_padding(24.0, 24.0)
-                    .with_vertical_padding(18.0)
-                    .with_gap(12.0)
+                    .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
+                    .with_vertical_padding(PAGE_GUTTER)
+                    .with_gap(SIBLING)
                     .push(Box::new(
                         Text::new(&format!(
                             "Set up qOS  ·  Step {} of 3",
