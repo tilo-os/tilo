@@ -928,6 +928,9 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
     for v in vids {
         col = col.push(compact_card(model, theme, bus, imgs, v));
     }
+    if let Some(recovery) = &model.history_recovery_notice {
+        col = col.push(empty_state(theme, "History recovery needed", recovery));
+    }
     scroll(
         Flex::col()
             .fill_w()

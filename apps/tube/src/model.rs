@@ -569,6 +569,10 @@ pub struct TubeModel {
     /// IDs without loaded metadata remain here so a refresh
     /// cannot erase durable history membership.
     pub history: Vec<VideoId>,
+    /// A local-only recovery banner shown when the durable owner history store
+    /// was preserved but could not be opened or written. Never synchronised.
+    #[serde(default)]
+    pub history_recovery_notice: Option<String>,
     pub settings: Settings,
     pub route: Route,
     /// Last submitted, device-local search query. The editable top-bar buffer
@@ -670,6 +674,7 @@ impl Default for TubeModel {
             queue: Vec::new(),
             history_owner: default_history_owner(),
             history: Vec::new(),
+            history_recovery_notice: None,
             settings: Settings::default(),
             route: Route::Home,
             search_query: String::new(),
