@@ -84,7 +84,14 @@ fn styles_panel_controls_follow_measured_text_at_every_scale() {
         );
         if (scale - 1.0).abs() < f32::EPSILON {
             assert!((pm.control_h() - PANEL_CONTROL_H).abs() < 0.01, "1x control {}", pm.control_h());
-            assert!((pm.row_adv() - 30.0).abs() < 0.01, "1x row advance {}", pm.row_adv());
+            // A 24 px control plus the `s2` sibling seam (the 1× polish pass
+            // moved the seam from an off-scale 6 px onto the token grid).
+            assert!(
+                (pm.row_adv() - (PANEL_CONTROL_H + PANEL_ROW_SEAM)).abs() < 0.01,
+                "1x row advance {}",
+                pm.row_adv()
+            );
+            assert!((pm.row_adv() - 32.0).abs() < 0.01, "1x row advance is 24 + s2");
             assert!((panel.width() - STYLES_PANEL_W).abs() < 0.01, "1x panel width");
         }
     }
