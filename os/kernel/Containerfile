@@ -80,6 +80,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 COPY os/kernel/tilo-crypto.Cargo.toml /work/tilo-crypto/Cargo.toml
 COPY os/kernel/tilo-crypto.Cargo.lock /work/tilo-crypto/Cargo.lock
 COPY crates/system/tilo-crypto/src /work/tilo-crypto/src
+# bootc keeps /root as a symlink into an unpopulated /var. Cargo's registry
+# and lock files need a real writable build directory, independent of HOME.
+ENV CARGO_HOME=/work/cargo-home
 RUN cd /work/tilo-crypto \
     && RUSTC_WRAPPER= cargo build --release --locked \
     && strip target/release/tilo-crypto \
