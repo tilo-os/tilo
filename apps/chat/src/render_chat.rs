@@ -14,7 +14,7 @@ use ui::format::bytes as format_bytes;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Avatar;
+use ui::widget::{Avatar, Button, ButtonFace};
 
 use crate::app::{AVATAR, ChatApp, Hit, MenuTarget};
 use crate::geometry::{SidebarHeaderSpec, centered_band, line_top, sidebar_header_layout};
@@ -334,18 +334,13 @@ impl ChatApp {
         // fixed envelope icon and aggregate unread badge make that distinction
         // visible before a person opens it.
         let inbox = Rect::new(cx - btn / 2.0, y, cx + btn / 2.0, y + btn);
-        let inbox_bg = if self.inbox_open {
-            c.accent[5]
+        // A rail tile at rest is a raised disc with its derived edge (HIG
+        // §9.5); the open state is the accent, its own contrast step.
+        if self.inbox_open {
+            fill_round(scene, tf, inbox, 16.0, c.accent[5]);
         } else {
-            c.neutral[2]
-        };
-        fill_round(
-            scene,
-            tf,
-            inbox,
-            if self.inbox_open { 16.0 } else { 24.0 },
-            inbox_bg,
-        );
+            ui::surface::card(scene, tf, inbox, 24.0, c.neutral[2]);
+        }
         label(
             scene,
             tr,
@@ -394,7 +389,7 @@ impl ChatApp {
             rail.x0 + 18.0,
             rail.x1 - 18.0,
             y - 7.0,
-            c.border_standard,
+            ui::surface::edge_on(c.neutral[0]),
         );
 
         // One contextual destination: the qOS workspace that owns this Chat
@@ -406,17 +401,11 @@ impl ChatApp {
                 let pill = Rect::new(rail.x0 + 3.0, y + 8.0, rail.x0 + 7.0, y + btn - 8.0);
                 fill_round(scene, tf, pill, 2.0, c.text_primary);
             }
-            fill_round(
-                scene,
-                tf,
-                b,
-                if active { 16.0 } else { btn / 2.0 },
-                if active {
-                    palette_color(theme, ws.color_idx)
-                } else {
-                    c.neutral[2]
-                },
-            );
+            if active {
+                fill_round(scene, tf, b, 16.0, palette_color(theme, ws.color_idx));
+            } else {
+                ui::surface::card(scene, tf, b, btn / 2.0, c.neutral[2]);
+            }
             let (tw, th) = tr.measure_weighted(&ws.glyph, 17.0, None, TextWeight::Bold);
             text(
                 scene,
@@ -510,7 +499,7 @@ impl ChatApp {
             side.x0 + 12.0,
             side.x1 - 12.0,
             side.y0 + 58.0,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
         );
 
         let mut y = side.y0 + 68.0;
@@ -720,7 +709,8 @@ impl ChatApp {
             layout.title_y,
         );
         if let (Some(txt), Some(pill)) = (pill_txt.as_deref(), layout.pill) {
-            fill_round(scene, tf, pill, PRESENCE_PILL_H / 2.0, c.lift(0.72));
+            // A chip on the sidebar: lifted fill + derived edge (HIG §9.5).
+            ui::surface::card(scene, tf, pill, PRESENCE_PILL_H / 2.0, c.lift(0.72));
             let dot_cx = pill.x0 + f64::from(sp.s2) + PRESENCE_DOT_R;
             fill_circle(
                 scene,
@@ -741,18 +731,22 @@ impl ChatApp {
                 line_top(pill.center().y, f64::from(ph)),
             );
         }
-        hline(
+        // The header's rule is derived against the sidebar's raised ground
+        // and stops an `s3` short of both ends (HIG §9.5).
+        ui::surface::separator(
             scene,
             tf,
-            side.x0 + 12.0,
-            side.x1 - 12.0,
+            side.x0,
+            side.x1,
             header.y1,
-            c.border_standard,
+            f64::from(sp.s3),
+            c.surfaces.raised,
         );
 
         // "+ category" affordance below the workspace title: a chip sized
         // from its measured label (never smaller than the 1× chip), with the
-        // label centred on the chip's measured line box.
+        // label centred on the chip's measured line box. Lifted fill plus its
+        // derived edge, so the chip reads as a control on both presets.
         let (chip_w, chip_h) = add_category_chip_size(tr, theme);
         let add_cat = Rect::new(
             side.x0 + f64::from(sp.s3),
@@ -760,7 +754,7 @@ impl ChatApp {
             side.x0 + f64::from(sp.s3) + chip_w,
             header.y1 + CATEGORY_GAP + chip_h,
         );
-        fill_round(scene, tf, add_cat, 7.0, c.lift(0.35));
+        ui::surface::card(scene, tf, add_cat, 7.0, c.lift(0.35));
         let add_label = crate::i18n::t(ADD_CATEGORY_KEY);
         let (lw, lh) = tr.measure(&add_label, ADD_CATEGORY_SIZE, None);
         label(
@@ -889,7 +883,9 @@ impl ChatApp {
             }
             // Caret + name toggles collapse; right-click (resolved against the
             // toggle / "+" hit in `on_right_click`) opens the category menu.
-            let toggle = Rect::new(hrow.x0, y, plus.x0, y + hrow_h);
+            // The toggle stops an `s1` short of the "+" so the two targets
+            // never share an edge (HIG §7).
+            let toggle = Rect::new(hrow.x0, y, plus.x0 - f64::from(sp.s1), y + hrow_h);
             if !renaming_cat {
                 ChatApp::push_hit(hits, toggle, Hit::CategoryToggle(cat.id.clone()));
             }
@@ -1466,7 +1462,8 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let h = self.header_rect();
         fill_rect(scene, tf, h, c.surfaces.base);
-        hline(scene, tf, h.x0, h.x1, h.y1, c.border_standard);
+        // Bar-role hairline, derived against the base it closes (HIG §9.5).
+        hline(scene, tf, h.x0, h.x1, h.y1, ui::surface::edge_on(c.surfaces.base));
 
         // When the left flap is hidden/overlay, leave room for the floating
         // hamburger that `draw_flap_toggles` paints at the header's left edge.
@@ -1555,12 +1552,16 @@ impl ChatApp {
         // call button (accent when a call is live).
         let call_x0 = h.x1 - f64::from(sp.s4) - call_w;
         let call_btn = Rect::new(call_x0, cy - half_h, call_x0 + call_w, cy + half_h);
-        let (cbg, ctx) = if self.call.active {
-            (c.accent[5], Color::WHITE)
+        // Live call: the accent is its own contrast step (HIG §9.4), ink
+        // resolved against it; at rest the pill is a lifted card with the
+        // derived edge (HIG §9.5).
+        let ctx = if self.call.active {
+            fill_round(scene, tf, call_btn, 8.0, c.accent[5]);
+            theme.on_surface(c.accent[5]).ink
         } else {
-            (c.lift(0.72), c.text_primary)
+            ui::surface::card(scene, tf, call_btn, 8.0, c.lift(0.72));
+            c.text_primary
         };
-        fill_round(scene, tf, call_btn, 8.0, cbg);
         label(
             scene,
             tr,
@@ -1581,17 +1582,11 @@ impl ChatApp {
         let mem_x0 = call_x0 - gap - mem_w;
         let mem = Rect::new(mem_x0, cy - half_h, mem_x0 + mem_w, cy + half_h);
         let mem_on = self.right_flap_open();
-        fill_round(
-            scene,
-            tf,
-            mem,
-            8.0,
-            if mem_on {
-                c.accent[5].with_alpha_factor(0.22)
-            } else {
-                c.lift(0.35)
-            },
-        );
+        if mem_on {
+            fill_round(scene, tf, mem, 8.0, c.accent[5].with_alpha_factor(0.22));
+        } else {
+            ui::surface::card(scene, tf, mem, 8.0, c.lift(0.35));
+        }
         label(
             scene,
             tr,
@@ -1735,21 +1730,19 @@ impl ChatApp {
             (self.rect.y1 - menu_h - 6.0).max(self.rect.y0 + 6.0),
         );
         let panel = Rect::new(x0, y0, x0 + w, y0 + menu_h);
-        fill_round(
-            scene,
-            tf,
-            panel.inflate(5.0, 5.0),
-            16.0,
-            Color::from_rgba8(0, 0, 0, 80),
-        );
+        // A floating Panel: its shadow is its own shape from the elevation
+        // ladder (HIG §9.3) and its edge the derived panel border, crisp on
+        // the outermost pixel row (HIG §9.5). The solid 5 px silhouette and
+        // the hairline declared against `raised` (the body is `neutral[1]`)
+        // it replaces read as a thick grey ring on the light preset.
+        ui::surface::shadow(scene, tf, panel, 12.0, &theme.tokens.elevation.e2);
         fill_round(scene, tf, panel, 12.0, c.neutral[1]);
-        stroke_round(
-            scene,
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
             tf,
-            panel,
-            12.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(panel, 12.0),
         );
 
         let mut y = panel.y0 + 6.0;
@@ -1955,13 +1948,15 @@ impl ChatApp {
         );
         let (dw, _) = tr.measure(&dl, 11.5, None);
         let dcy = y + divider_h / 2.0;
+        // Rules derived against the message area's base (HIG §9.5).
+        let rule = ui::surface::edge_on(c.surfaces.base);
         hline(
             scene,
             tf,
             area.x0 + 24.0,
             area.center().x - f64::from(dw) / 2.0 - 14.0,
             dcy,
-            c.border_standard,
+            rule,
         );
         hline(
             scene,
@@ -1969,7 +1964,7 @@ impl ChatApp {
             area.center().x + f64::from(dw) / 2.0 + 14.0,
             area.x1 - 24.0,
             dcy,
-            c.border_standard,
+            rule,
         );
         label(
             scene,
@@ -2381,19 +2376,16 @@ impl ChatApp {
         );
         ChatApp::push_hit(hits, save, Hit::EditSave);
         let cancel = Rect::new(save.x0 - 8.0 - 62.0, cy, save.x0 - 8.0, cy + 24.0);
-        fill_round(scene, tf, cancel, 7.0, c.lift(0.72));
-        let (kw, kh) = tr.measure("Cancel", 12.5, None);
-        text(
+        // The shared Neutral button face (HIG §8).
+        Button::paint(
             scene,
-            tr,
             tf,
-            "Cancel",
-            12.5,
-            c.text_primary,
-            cancel.center().x - f64::from(kw) / 2.0,
-            cancel.center().y - f64::from(kh) / 2.0,
-            TextWeight::Regular,
-            None,
+            tr,
+            theme,
+            &ButtonFace::new(cancel, "Cancel")
+                .text_size(12.5)
+                .weight(TextWeight::Regular)
+                .radius(7.0),
         );
         ChatApp::push_hit(hits, cancel, Hit::EditCancel);
         *y += rm.edit_ctrl_h;
@@ -2420,14 +2412,13 @@ impl ChatApp {
             let lbl = format!("{}  {}", r.emoji, r.count());
             let (lw, lh) = tr.measure(&lbl, REACTION_SIZE, None);
             let chip = Rect::new(x, y, x + f64::from(lw) + 20.0, y + chip_h);
-            let bg = if mine {
-                c.accent[5].with_alpha_factor(0.22)
-            } else {
-                c.lift(0.35)
-            };
-            fill_round(scene, tf, chip, chip_r, bg);
+            // My reaction: accent wash with the accent ring; others: a lifted
+            // chip with its derived rest edge (HIG §9.5).
             if mine {
+                fill_round(scene, tf, chip, chip_r, c.accent[5].with_alpha_factor(0.22));
                 stroke_round(scene, tf, chip, chip_r, c.accent[5], 1.0);
+            } else {
+                ui::surface::card(scene, tf, chip, chip_r, c.lift(0.35));
             }
             label(
                 scene,
@@ -2447,11 +2438,12 @@ impl ChatApp {
                     emoji: r.emoji.clone(),
                 },
             );
-            x = chip.x1 + 6.0;
+            // Sibling chips sit an `s2` apart (HIG §7b).
+            x = chip.x1 + f64::from(theme.tokens.spacing.s2);
         }
         // add-reaction affordance
         let add = Rect::new(x, y, x + 34.0, y + chip_h);
-        fill_round(scene, tf, add, chip_r, c.lift(0.35));
+        ui::surface::card(scene, tf, add, chip_r, c.lift(0.35));
         let (aw, ah) = tr.measure("☺", 14.0, None);
         text(
             scene,
@@ -2831,8 +2823,7 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let chip = Rect::new(x, y, x + f64::from(text_w).min(360.0), y + 58.0);
-        fill_round(scene, tf, chip, 10.0, c.surfaces.raised);
-        stroke_round(scene, tf, chip, 10.0, c.border_standard, 1.0);
+        ui::surface::card(scene, tf, chip, 10.0, c.surfaces.raised);
         let icon = Rect::new(
             chip.x0 + 10.0,
             chip.y0 + 11.0,
@@ -2898,8 +2889,7 @@ impl ChatApp {
             Attachment::File { .. } => (f64::from(text_w).min(360.0), 58.0),
         };
         let rect = Rect::new(x, y, x + card_w, y + card_h);
-        fill_round(scene, tf, rect, 12.0, c.neutral[1]);
-        stroke_round(scene, tf, rect, 12.0, c.border_standard, 1.0);
+        ui::surface::card(scene, tf, rect, 12.0, c.neutral[1]);
         let cx = rect.center().x;
         let cy = rect.center().y - if card_h > 64.0 { 8.0 } else { 6.0 };
         let (lw, lh) = tr.measure("🔒", 18.0, None);
@@ -2991,8 +2981,7 @@ impl ChatApp {
         rect: Rect,
     ) {
         let c = &theme.tokens.colors;
-        fill_round(scene, tf, rect, 14.0, c.lift(0.35));
-        stroke_round(scene, tf, rect, 14.0, c.border_standard, 1.0);
+        ui::surface::card(scene, tf, rect, 14.0, c.lift(0.35));
         label(
             scene,
             tr,
@@ -3034,6 +3023,8 @@ impl ChatApp {
         let btn = f64::from(sp.s8);
         let half_btn = btn / 2.0;
         let cy = rect.center().y;
+        // The field's rest edge is derived from its fill (HIG §9.5); focus
+        // keeps the focus ring.
         fill_round(scene, tf, rect, 14.0, c.neutral[2]);
         stroke_round(
             scene,
@@ -3043,7 +3034,7 @@ impl ChatApp {
             if focused {
                 c.border_focus
             } else {
-                c.border_standard
+                ui::surface::edge_on(c.neutral[2])
             },
             if focused { 1.6 } else { 1.0 },
         );
@@ -3053,19 +3044,16 @@ impl ChatApp {
         if attach {
             let plus_x0 = rect.x0 + f64::from(sp.s3);
             let plus = Rect::new(plus_x0, cy - half_btn, plus_x0 + btn, cy + half_btn);
-            fill_round(scene, tf, plus, 8.0, c.lift(0.72));
-            let (pw, ph) = tr.measure("+", 20.0, None);
-            text(
+            // The shared Neutral button face (HIG §8).
+            Button::paint(
                 scene,
-                tr,
                 tf,
-                "+",
-                20.0,
-                c.text_dim,
-                plus.center().x - f64::from(pw) / 2.0,
-                line_top(plus.center().y, f64::from(ph)),
-                TextWeight::Regular,
-                None,
+                tr,
+                theme,
+                &ButtonFace::new(plus, "+")
+                    .text_size(20.0)
+                    .weight(TextWeight::Regular)
+                    .radius(8.0),
             );
             ChatApp::push_hit(hits, plus, Hit::Attach);
             tx = plus.x1 + f64::from(sp.s3);
@@ -3074,33 +3062,22 @@ impl ChatApp {
         // right cluster: emoji + send
         let send_x1 = rect.x1 - f64::from(sp.s3);
         let send = Rect::new(send_x1 - SEND_BTN_W, cy - half_btn, send_x1, cy + half_btn);
-        fill_round(
+        // The shared button face (HIG §8): Primary while there is something
+        // to send, the toolkit's disabled face otherwise.
+        let send_face = ButtonFace::new(send, "➤")
+            .text_size(16.0)
+            .weight(TextWeight::Regular)
+            .radius(9.0);
+        Button::paint(
             scene,
             tf,
-            send,
-            9.0,
-            if send_enabled {
-                c.accent[5]
-            } else {
-                c.lift(0.35)
-            },
-        );
-        let (sw, sh) = tr.measure("➤", 16.0, None);
-        text(
-            scene,
             tr,
-            tf,
-            "➤",
-            16.0,
-            if send_enabled {
-                Color::WHITE
+            theme,
+            &if send_enabled {
+                send_face.primary()
             } else {
-                c.text_dim
+                send_face.disabled(true)
             },
-            send.center().x - f64::from(sw) / 2.0,
-            line_top(send.center().y, f64::from(sh)),
-            TextWeight::Regular,
-            None,
         );
         ChatApp::push_hit(hits, send, Hit::Send);
 
@@ -3156,15 +3133,16 @@ impl ChatApp {
         };
         let panel = self.thread_rect();
         fill_rect(scene, tf, panel, c.surfaces.raised);
-        hline(scene, tf, panel.x0, panel.x0, panel.y0, c.border_standard);
+        // The flap's leading edge is derived against its raised ground (HIG
+        // §9.5) and sits on the flap's first pixel column.
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             tf,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &vello::kurbo::Line::new(
-                Point::new(panel.x0, panel.y0),
-                Point::new(panel.x0, panel.y1),
+                Point::new(panel.x0 + 0.5, panel.y0),
+                Point::new(panel.x0 + 0.5, panel.y1),
             ),
         );
 
@@ -3259,29 +3237,28 @@ impl ChatApp {
                 panel.y0 + 40.0,
             )
         };
-        fill_round(scene, tf, close, 8.0, c.lift(0.72));
         let close_label = if narrow_detail { "← Back" } else { "✕" };
-        let (xw, xh) = tr.measure(close_label, 13.0, None);
-        text(
+        // The shared Neutral button face (HIG §8).
+        Button::paint(
             scene,
-            tr,
             tf,
-            close_label,
-            13.0,
-            c.text_primary,
-            close.center().x - f64::from(xw) / 2.0,
-            close.center().y - f64::from(xh) / 2.0,
-            TextWeight::Regular,
-            None,
+            tr,
+            theme,
+            &ButtonFace::new(close, close_label)
+                .text_size(13.0)
+                .weight(TextWeight::Regular)
+                .radius(8.0),
         );
         ChatApp::push_hit(hits, close, Hit::CloseThread);
-        hline(
+        // The header's rule: derived against the flap, inset `s3` (HIG §9.5).
+        ui::surface::separator(
             scene,
             tf,
-            panel.x0 + 12.0,
-            panel.x1 - 12.0,
+            panel.x0,
+            panel.x1,
             head.y1,
-            c.border_standard,
+            f64::from(theme.tokens.spacing.s3),
+            c.surfaces.raised,
         );
         head
     }
@@ -3338,13 +3315,14 @@ impl ChatApp {
             let s = format!("{n} {}", if n == 1 { "reply" } else { "replies" });
             let (sw, _) = tr.measure(&s, 11.5, None);
             let dcy = y + 14.0;
+            let rule = ui::surface::edge_on(c.surfaces.raised);
             hline(
                 scene,
                 tf,
                 panel.x0 + 16.0,
                 panel.center().x - f64::from(sw) / 2.0 - 10.0,
                 dcy,
-                c.border_standard,
+                rule,
             );
             hline(
                 scene,
@@ -3352,7 +3330,7 @@ impl ChatApp {
                 panel.center().x + f64::from(sw) / 2.0 + 10.0,
                 panel.x1 - 16.0,
                 dcy,
-                c.border_standard,
+                rule,
             );
             label(
                 scene,
@@ -3460,7 +3438,7 @@ impl ChatApp {
                 let lbl = format!("{} {}", r.emoji, r.count());
                 let (lw, _) = tr.measure(&lbl, 11.5, None);
                 let chip = Rect::new(x, yy, x + f64::from(lw) + 16.0, yy + 22.0);
-                fill_round(scene, tf, chip, 11.0, c.lift(0.35));
+                ui::surface::card(scene, tf, chip, 11.0, c.lift(0.35));
                 label(
                     scene,
                     tr,
@@ -3496,14 +3474,15 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let panel = self.thread_rect();
         fill_rect(scene, tf, panel, c.surfaces.raised);
+        // Leading edge derived against the flap's raised ground (HIG §9.5).
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             tf,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &vello::kurbo::Line::new(
-                Point::new(panel.x0, panel.y0),
-                Point::new(panel.x0, panel.y1),
+                Point::new(panel.x0 + 0.5, panel.y0),
+                Point::new(panel.x0 + 0.5, panel.y1),
             ),
         );
 
@@ -3576,29 +3555,27 @@ impl ChatApp {
             panel.x1 - 12.0,
             panel.y0 + 40.0,
         );
-        fill_round(scene, tf, close, 8.0, c.lift(0.72));
-        let (xw, xh) = tr.measure("✕", 14.0, None);
-        text(
+        // The shared Neutral button face (HIG §8).
+        Button::paint(
             scene,
-            tr,
             tf,
-            "✕",
-            14.0,
-            c.text_primary,
-            close.center().x - f64::from(xw) / 2.0,
-            close.center().y - f64::from(xh) / 2.0,
-            TextWeight::Regular,
-            None,
+            tr,
+            theme,
+            &ButtonFace::new(close, "✕")
+                .text_size(14.0)
+                .weight(TextWeight::Regular)
+                .radius(8.0),
         );
         ChatApp::push_hit(hits, close, Hit::ToggleRightFlap);
         let head_y1 = panel.y0 + 52.0;
-        hline(
+        ui::surface::separator(
             scene,
             tf,
-            panel.x0 + 12.0,
-            panel.x1 - 12.0,
+            panel.x0,
+            panel.x1,
             head_y1,
-            c.border_standard,
+            f64::from(theme.tokens.spacing.s3),
+            c.surfaces.raised,
         );
         head_y1
     }
@@ -3700,21 +3677,19 @@ impl ChatApp {
         ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
 
         let panel = self.attach_picker_rect(tr);
-        fill_round(
-            scene,
-            tf,
-            panel.inflate(5.0, 5.0),
-            18.0,
-            Color::from_rgba8(0, 0, 0, 70),
-        );
+        // The shadow is the panel's own shape, from the elevation ladder (HIG
+        // §9.3); the solid 5 px silhouette it replaces was a grey ring on the
+        // light preset.
+        ui::surface::shadow(scene, tf, panel, 14.0, &theme.tokens.elevation.e2);
+        // A floating Panel: the derived panel border, crisp on the outermost
+        // pixel row (HIG §9.5).
         fill_round(scene, tf, panel, 14.0, c.neutral[1]);
-        stroke_round(
-            scene,
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
             tf,
-            panel,
-            14.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(panel, 14.0),
         );
 
         let head_h = 56.0;
@@ -3810,13 +3785,14 @@ impl ChatApp {
                 panel.y0 + 30.0,
             );
         }
-        hline(
+        ui::surface::separator(
             scene,
             tf,
-            panel.x0 + 12.0,
-            panel.x1 - 12.0,
+            panel.x0,
+            panel.x1,
             panel.y0 + head_h - 4.0,
-            c.border_standard,
+            f64::from(theme.tokens.spacing.s3),
+            c.neutral[1],
         );
     }
 
@@ -4007,9 +3983,13 @@ fn category_row_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
 fn add_category_chip_size(tr: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
     let sp = &theme.tokens.spacing;
     let (lw, lh) = tr.measure(&crate::i18n::t(ADD_CATEGORY_KEY), ADD_CATEGORY_SIZE, None);
+    // The chip is a pointer target, so it is never shorter than the
+    // toolkit's minimum target (HIG §7b: a hit target reads `metrics`, not a
+    // spacing step) — the authored 22 px chip fell under it.
+    let min_h = ADD_CATEGORY_CHIP_MIN_H.max(f64::from(theme.tokens.metrics.min_pointer_target));
     (
         (f64::from(lw) + 2.0 * f64::from(sp.s2)).max(ADD_CATEGORY_CHIP_MIN_W),
-        (f64::from(lh) + 2.0 * f64::from(sp.s1)).max(ADD_CATEGORY_CHIP_MIN_H),
+        (f64::from(lh) + 2.0 * f64::from(sp.s1)).max(min_h),
     )
 }
 

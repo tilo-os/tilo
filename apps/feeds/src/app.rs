@@ -36,7 +36,9 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{FlapState, ModalDialog, SplitLayout, Widget};
+use ui::widget::{
+    Button, ButtonFace, FlapState, ModalDialog, SegmentedFace, SplitLayout, ToggleGroup, Widget,
+};
 
 use crate::actions::{self, FeedsAction, FeedsResourceCtx};
 use crate::doc::FeedsDoc;
@@ -384,6 +386,11 @@ pub struct FeedsApp {
     sidebar_row_h: f64,
     sidebar_section_h: f64,
     list_row_h: f64,
+    /// Measured sizes of a row's trailing column (time label over the star),
+    /// taken on paint with the styles the column paints with; the authored
+    /// 1× column before the first paint. `build_list_rows` places the star's
+    /// hit rect from these so pointer, focus and paint share one centre.
+    list_trailing: crate::list_layout::TrailingColumnMetrics,
     list_scroll: f64,
     reader_scroll: f64,
     reader_content_h: f64,
@@ -523,6 +530,7 @@ impl FeedsApp {
             sidebar_row_h: SIDE_ROW_H,
             sidebar_section_h: 24.0,
             list_row_h: LIST_ROW_H,
+            list_trailing: crate::list_layout::TrailingColumnMetrics::ONE_X,
             list_scroll: 0.0,
             reader_scroll: 0.0,
             reader_content_h: 0.0,
@@ -2044,11 +2052,14 @@ impl FeedsApp {
             let top = content_top + i as f64 * self.list_row_h - self.list_scroll;
             let rect = Rect::new(x0, top, x1, top + self.list_row_h);
             // One rect for the star's paint, pointer, and accessibility bounds:
-            // vertically centred in the row (see `list_layout`).
+            // centred on the glyph's place in the trailing column (time label
+            // over star; see `list_layout`).
+            let (_, star_cy) = crate::list_layout::trailing_column(rect, &self.list_trailing);
             let star_rect = crate::list_layout::star_rect(
                 rect,
                 crate::list_layout::STAR_HIT_SIZE,
                 crate::list_layout::STAR_RIGHT_PAD,
+                star_cy,
             );
             rows.push(ListRow {
                 rect,
@@ -2136,6 +2147,15 @@ impl FeedsApp {
             f64::from(sp.s3),
             LIST_ROW_H,
         );
+        // The trailing column (time label over the star): the 12 px label's
+        // line box (`text_metrics::line_height_px`, what `measure` reports
+        // for one line) and the glyph's box, so the star's hit rect lands
+        // where the glyph does.
+        self.list_trailing = crate::list_layout::TrailingColumnMetrics {
+            time_h: ui::text_metrics::line_height_px(12.0, theme.text_scale),
+            star_box: f64::from(theme.tokens.metrics.icon_sm),
+            gap: f64::from(sp.s1),
+        };
 
         // Advance the sidebar flap transition with real elapsed time, then
         // recompute the eased geometry so the slide is reflected this frame.
@@ -2237,8 +2257,9 @@ impl FeedsApp {
         self.reader_content_h = content_h;
 
         // The list/reader divider only exists in the wide three-pane layout;
-        // the middle + narrow tiers show a single content pane at a time.
-        let divider = alpha(c.border_standard, 150);
+        // the middle + narrow tiers show a single content pane at a time. It
+        // is derived against the base both panes sit on (HIG §9.5).
+        let divider = ui::surface::edge_on(c.surfaces.base);
         if tier == Tier::Wide {
             vline(
                 scene,
@@ -2388,61 +2409,37 @@ impl FeedsApp {
         let btn = Rect::new(bx1 - size, cy - size / 2.0, bx1, cy + size / 2.0);
         self.settings_btn_rect = btn;
 
-        let tag_btn = Rect::new(btn.x0 - size - 8.0, btn.y0, btn.x0 - 8.0, btn.y1);
+        // Siblings in the header: `s2` apart, like the toolbar's buttons.
+        let sp = &theme.tokens.spacing;
+        let radius = f64::from(theme.tokens.radii.md);
+        let sibling_gap = f64::from(sp.s2);
+        let tag_btn = Rect::new(btn.x0 - size - sibling_gap, btn.y0, btn.x0 - sibling_gap, btn.y1);
         self.tags_btn_rect = tag_btn;
-        let tag_shape = RoundedRect::from_rect(tag_btn, 9.0);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            if tag_btn.contains(self.last_mouse) {
-                c.neutral[3]
-            } else {
-                c.surfaces.raised
-            }
-            .with_alpha_factor(0.96),
-            None,
-            &tag_shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            alpha(c.border_standard, 150),
-            None,
-            &tag_shape,
-        );
-        tr.draw_text_weighted(
+        // Both chrome buttons are the shared button face (HIG §8): the tags
+        // button carries its `#` as the label; the gear paints the face with
+        // no label and draws its own glyph in the face's ink, Primary while
+        // the popover it opens is showing.
+        Button::paint(
             scene,
-            "#",
-            16.0,
-            c.text_primary,
-            t * Affine::translate((tag_btn.center().x - 4.5, tag_btn.y0 + 7.0)),
-            None,
-            TextWeight::Semibold,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(tag_btn, "#")
+                .text_size(16.0)
+                .weight(TextWeight::Semibold)
+                .radius(radius)
+                .hovered(tag_btn.contains(self.last_mouse)),
         );
 
-        let shape = RoundedRect::from_rect(btn, 9.0);
         let hovered = btn.contains(self.last_mouse);
-        let bg = if self.show_reader_settings {
-            c.accent[5]
-        } else if hovered {
-            c.neutral[3]
+        let gear_face = ButtonFace::new(btn, "").radius(radius).hovered(hovered);
+        let gear_face = if self.show_reader_settings {
+            gear_face.primary()
         } else {
-            c.surfaces.raised
+            gear_face
         };
-        scene.fill(Fill::NonZero, t, bg.with_alpha_factor(0.96), None, &shape);
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            alpha(c.border_standard, 150),
-            None,
-            &shape,
-        );
-        let glyph_col = if self.show_reader_settings {
-            Color::WHITE
-        } else {
-            c.text_primary
-        };
-        icons::gear(scene, t, btn.center(), 6.5, glyph_col);
+        Button::paint(scene, t, tr, theme, &gear_face);
+        icons::gear(scene, t, btn.center(), 6.5, gear_face.colors(theme).2);
 
         if !self.show_reader_settings {
             return;
@@ -2457,19 +2454,22 @@ impl FeedsApp {
         let px0 = (px1 - pw).max(self.reader_rect.x0 + 8.0);
         let py0 = btn.y1 + 8.0;
         let card = Rect::new(px0, py0, px0 + pw, py0 + ph);
+        // A floating Panel: derived panel border, crisp on the outermost
+        // pixel row (HIG §9.5).
+        let card_radius = f64::from(theme.tokens.radii.lg);
         scene.fill(
             Fill::NonZero,
             t,
             c.surfaces.raised,
             None,
-            &RoundedRect::from_rect(card, 12.0),
+            &RoundedRect::from_rect(card, card_radius),
         );
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            alpha(c.border_standard, 180),
+            ui::chrome::panel_border(theme),
             None,
-            &RoundedRect::from_rect(card, 12.0),
+            &ui::surface::edge_outline(card, card_radius),
         );
 
         let lx = card.x0 + 16.0;
@@ -2529,27 +2529,23 @@ impl FeedsApp {
         );
         let seg_x0 = lx + 52.0;
         let seg_w = rx - seg_x0;
-        let n = ReadFont::ALL.len();
-        let cellw = seg_w / n as f64;
-        for (i, f) in ReadFont::ALL.iter().enumerate() {
-            let cell = Rect::new(
-                seg_x0 + i as f64 * cellw,
-                y,
-                seg_x0 + (i + 1) as f64 * cellw,
-                y + bsz,
-            );
-            let active = self.settings.font == *f;
-            self.seg_cell(
-                scene,
-                t,
-                tr,
-                theme,
-                &cell,
-                f.label(),
-                active,
-                SettingsAction::SetFont(*f),
-            );
-        }
+        let font_labels: Vec<&str> = ReadFont::ALL.iter().map(|f| f.label()).collect();
+        let font_actions: Vec<SettingsAction> =
+            ReadFont::ALL.iter().map(|f| SettingsAction::SetFont(*f)).collect();
+        let font_selected = ReadFont::ALL
+            .iter()
+            .position(|f| *f == self.settings.font)
+            .unwrap_or(0);
+        self.seg_row(
+            scene,
+            t,
+            tr,
+            theme,
+            Rect::new(seg_x0, y, seg_x0 + seg_w, y + bsz),
+            &font_labels,
+            font_selected,
+            &font_actions,
+        );
         y += bsz + 14.0;
 
         // Reading theme segmented control (Light / Sepia / Dark).
@@ -2561,26 +2557,65 @@ impl FeedsApp {
             t * Affine::translate((lx, y + 6.0)),
             None,
         );
-        let n = ReadTheme::ALL.len();
-        let cellw = seg_w / n as f64;
-        for (i, th) in ReadTheme::ALL.iter().enumerate() {
-            let cell = Rect::new(
-                seg_x0 + i as f64 * cellw,
-                y,
-                seg_x0 + (i + 1) as f64 * cellw,
-                y + bsz,
-            );
-            let active = self.settings.theme == *th;
-            self.seg_cell(
-                scene,
-                t,
-                tr,
-                theme,
-                &cell,
-                th.label(),
-                active,
-                SettingsAction::SetTheme(*th),
-            );
+        let theme_labels: Vec<&str> = ReadTheme::ALL.iter().map(|th| th.label()).collect();
+        let theme_actions: Vec<SettingsAction> = ReadTheme::ALL
+            .iter()
+            .map(|th| SettingsAction::SetTheme(*th))
+            .collect();
+        let theme_selected = ReadTheme::ALL
+            .iter()
+            .position(|th| *th == self.settings.theme)
+            .unwrap_or(0);
+        self.seg_row(
+            scene,
+            t,
+            tr,
+            theme,
+            Rect::new(seg_x0, y, seg_x0 + seg_w, y + bsz),
+            &theme_labels,
+            theme_selected,
+            &theme_actions,
+        );
+    }
+
+    /// One segmented row of the settings popover, painted by the shared
+    /// `ToggleGroup` face (HIG §8: never hand-roll a control) over rects this
+    /// popover owns: equal-width segments an `s2` apart across `band`, each
+    /// registered as a settings hit.
+    #[allow(clippy::too_many_arguments)]
+    fn seg_row(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        band: Rect,
+        labels: &[&str],
+        selected: usize,
+        actions: &[SettingsAction],
+    ) {
+        let n = labels.len().max(1) as f64;
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let cellw = ((band.width() - (n - 1.0) * gap) / n).max(0.0);
+        let rects: Vec<Rect> = (0..labels.len())
+            .map(|i| {
+                let x0 = band.x0 + i as f64 * (cellw + gap);
+                Rect::new(x0, band.y0, x0 + cellw, band.y1)
+            })
+            .collect();
+        let hovered = rects.iter().position(|r| r.contains(self.last_mouse));
+        ToggleGroup::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(&rects, labels, selected)
+                .pill()
+                .hovered(hovered)
+                .text_size(12.0),
+        );
+        for (rect, action) in rects.iter().zip(actions) {
+            self.settings_hits.push((*rect, *action));
         }
     }
 
@@ -2596,84 +2631,19 @@ impl FeedsApp {
         glyph: &str,
         action: SettingsAction,
     ) {
-        let c = &theme.tokens.colors;
         let hovered = rect.contains(self.last_mouse);
-        let bg = if hovered { c.neutral[3] } else { c.neutral[1] };
-        scene.fill(
-            Fill::NonZero,
-            t,
-            bg,
-            None,
-            &RoundedRect::from_rect(*rect, 7.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            alpha(c.border_standard, 140),
-            None,
-            &RoundedRect::from_rect(*rect, 7.0),
-        );
-        let gw = measure_w(tr, glyph, 16.0);
-        tr.draw_text_weighted(
+        // The shared Neutral button face (HIG §8) with the glyph as its
+        // label, centred on its measured box by the face painter.
+        Button::paint(
             scene,
-            glyph,
-            16.0,
-            c.text_primary,
-            t * Affine::translate((rect.center().x - gw / 2.0, rect.y0 + 3.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        self.settings_hits.push((*rect, action));
-    }
-
-    /// One cell of a segmented control in the settings popover.
-    #[allow(clippy::too_many_arguments)]
-    fn seg_cell(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: &Rect,
-        label: &str,
-        active: bool,
-        action: SettingsAction,
-    ) {
-        let c = &theme.tokens.colors;
-        let inner = Rect::new(rect.x0 + 2.0, rect.y0, rect.x1 - 2.0, rect.y1);
-        let hovered = rect.contains(self.last_mouse);
-        let bg = if active {
-            c.accent[5]
-        } else if hovered {
-            c.neutral[3]
-        } else {
-            c.neutral[1]
-        };
-        scene.fill(
-            Fill::NonZero,
             t,
-            bg,
-            None,
-            &RoundedRect::from_rect(inner, 7.0),
-        );
-        if !active {
-            scene.stroke(
-                &Stroke::new(1.0),
-                t,
-                alpha(c.border_standard, 120),
-                None,
-                &RoundedRect::from_rect(inner, 7.0),
-            );
-        }
-        let col = if active { Color::WHITE } else { c.text_primary };
-        let lw = measure_w(tr, label, 12.0);
-        tr.draw_text(
-            scene,
-            label,
-            12.0,
-            col,
-            t * Affine::translate((inner.center().x - lw / 2.0, inner.y0 + 6.0)),
-            None,
+            tr,
+            theme,
+            &ButtonFace::new(*rect, glyph)
+                .text_size(16.0)
+                .weight(TextWeight::Semibold)
+                .radius(f64::from(theme.tokens.radii.sm))
+                .hovered(hovered),
         );
         self.settings_hits.push((*rect, action));
     }
@@ -2935,6 +2905,14 @@ fn badge(
     w
 }
 
+/// The pill a sidebar row paints its selection as, and the bounds the row
+/// reports to assistive technology: inset from the row band so two stacked
+/// rows read as neighbours an `s1` apart (HIG §7) rather than one shape. The
+/// pointer hit rect stays the full band.
+fn sidebar_pill(row: Rect) -> Rect {
+    Rect::new(row.x0 + 6.0, row.y0 + 2.0, row.x1 - 6.0, row.y1 - 2.0)
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
@@ -2961,7 +2939,7 @@ fn draw_sidebar(
         rect.x0,
         rect.x1,
         header.y1,
-        alpha(c.border_standard, 120),
+        ui::surface::edge_on(sidebar_bg),
     );
 
     let content = Rect::new(rect.x0, rect.y0 + HEADER_H, rect.x1, rect.y1);
@@ -2996,18 +2974,12 @@ fn draw_sidebar(
 
         // Selection / hover background.
         if row.selected {
-            let pill = Rect::new(
-                row.rect.x0 + 6.0,
-                row.rect.y0 + 2.0,
-                row.rect.x1 - 6.0,
-                row.rect.y1 - 2.0,
-            );
             scene.fill(
                 Fill::NonZero,
                 t,
                 alpha(c.accent[5], 46),
                 None,
-                &RoundedRect::from_rect(pill, 8.0),
+                &RoundedRect::from_rect(sidebar_pill(row.rect), 8.0),
             );
         }
 
@@ -3255,7 +3227,7 @@ fn draw_list(
         rect.x0,
         rect.x1,
         header_bottom,
-        alpha(c.border_standard, 120),
+        ui::surface::edge_on(c.surfaces.base),
     );
 
     // Refresh-progress strip (per-feed progress + a bar; a summary once done).
@@ -3316,19 +3288,24 @@ fn draw_list(
             let bar = Rect::new(lr.rect.x0, lr.rect.y0, lr.rect.x0 + 3.0, lr.rect.y1);
             scene.fill(Fill::NonZero, t, c.accent[5], None, &bar);
         }
-        hline(
+        // The rule between rows is derived against the base and stops an
+        // `s3` short of both ends (HIG §9.5): the washed `border_standard`
+        // it replaced was a 27 %-alpha ghost on the dark preset.
+        ui::surface::separator(
             scene,
             t,
-            lr.rect.x0 + 14.0,
+            lr.rect.x0,
             lr.rect.x1,
-            lr.rect.y1,
-            alpha(c.border_standard, 70),
+            lr.rect.y1 - 0.5,
+            f64::from(theme.tokens.spacing.s3),
+            c.surfaces.base,
         );
 
         // Title + source line are one related group, centred in the row (HIG
-        // §7a); the time and unread marker sit on the title's first line and
-        // the star on the row's centre. Everything below is measured with the
-        // style it is painted with and placed by `list_layout`.
+        // §7a); the unread marker sits on the title's first line and the
+        // trailing column (time over star) is centred on the row. Everything
+        // below is measured with the style it is painted with and placed by
+        // `list_layout`.
         let text_x = lr.rect.x0 + 34.0;
         let right_pad = 16.0;
         let time = relative_time(a.published, now);
@@ -3369,9 +3346,13 @@ fn draw_list(
                 title_h: f64::from(title_h),
                 title_line_h: f64::from(title_line_h),
                 meta_h: f64::from(meta_h),
-                time_h: f64::from(th),
                 gap: f64::from(sp.s1),
                 pad_min: f64::from(sp.s3),
+                trailing: crate::list_layout::TrailingColumnMetrics {
+                    time_h: f64::from(th),
+                    star_box: f64::from(theme.tokens.metrics.icon_sm),
+                    gap: f64::from(sp.s1),
+                },
             },
         );
 
@@ -3460,7 +3441,7 @@ fn draw_refresh_strip(
         band.x0,
         band.x1,
         band.y1,
-        alpha(c.border_standard, 120),
+        ui::surface::edge_on(c.surfaces.base),
     );
 
     let pad = 18.0;
@@ -3633,13 +3614,9 @@ fn draw_reader(
         let tw = measure_w(tr, tag, 10.5);
         let tagx = rect.x1 - pad - tw - 14.0;
         let tag_rect = Rect::new(tagx, y - 2.0, tagx + tw + 14.0, y + 16.0);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            palette.code_bg,
-            None,
-            &RoundedRect::from_rect(tag_rect, 6.0),
-        );
+        // A chip on the page: its fill plus the edge derived from that fill
+        // (HIG §7), so it reads as a chip on every reading palette.
+        ui::surface::card(scene, t, tag_rect, 6.0, palette.code_bg);
         tr.draw_text(
             scene,
             tag,
@@ -3739,13 +3716,7 @@ fn draw_reader(
                 chip_y += 28.0;
             }
             let chip = Rect::new(chip_x, chip_y - 3.0, chip_x + chip_w, chip_y + 20.0);
-            scene.fill(
-                Fill::NonZero,
-                t,
-                palette.code_bg,
-                None,
-                &RoundedRect::from_rect(chip, 7.0),
-            );
+            ui::surface::card(scene, t, chip, 7.0, palette.code_bg);
             tr.draw_text_weighted(
                 scene,
                 &label,
@@ -3961,38 +3932,31 @@ fn draw_block(
 fn draw_toolbar(
     scene: &mut Scene,
     t: Affine,
-    tr: &TextRenderer,
+    tr: &mut TextRenderer,
     theme: &Theme,
     rect: &Rect,
     buttons: &[ToolbarButton],
 ) {
     let c = &theme.tokens.colors;
+    // The toolbar's bottom rule and each button's rest edge are derived
+    // against the surface they sit on (HIG §9.5): a washed `border_standard`
+    // over the dark base vanished, leaving five glyphs floating with no
+    // control shape around them.
     hline(
         scene,
         t,
         rect.x0,
         rect.x1,
         rect.y1,
-        alpha(c.border_standard, 120),
+        ui::surface::edge_on(c.surfaces.base),
     );
     for b in buttons {
         let center = b.rect.center();
-        let bg = alpha(c.neutral[2], 160);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            bg,
-            None,
-            &RoundedRect::from_rect(b.rect, 9.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            alpha(c.border_standard, 120),
-            None,
-            &RoundedRect::from_rect(b.rect, 9.0),
-        );
-        let col = c.text_primary;
+        // The shared Neutral button face (HIG §8) with no label; the app's
+        // own glyph is drawn in the face's ink.
+        let face = ButtonFace::new(b.rect, "").radius(f64::from(theme.tokens.radii.md));
+        Button::paint(scene, t, tr, theme, &face);
+        let col = face.colors(theme).2;
         match b.action {
             ToolbarAction::AddSubscription => icons::plus(scene, t, center, 7.0, c.accent[6]),
             ToolbarAction::Refresh => icons::refresh(scene, t, center, 8.0, col),
@@ -4000,7 +3964,6 @@ fn draw_toolbar(
             ToolbarAction::ImportOpml => icons::import_arrow(scene, t, center, 6.0, col),
             ToolbarAction::ExportOpml => icons::external_link(scene, t, center, 6.0, col),
         }
-        let _ = tr; // tooltips are not drawn statically
     }
 }
 
@@ -4026,32 +3989,33 @@ fn draw_chrome_button(
     glyph: ChromeGlyph,
     mouse: Point,
 ) {
-    let c = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(*rect, 9.0);
     let hovered = rect.contains(mouse);
-    let bg = if hovered {
-        c.neutral[3]
-    } else {
-        c.surfaces.raised
-    };
-    scene.fill(Fill::NonZero, t, bg.with_alpha_factor(0.94), None, &shape);
-    scene.stroke(
-        &Stroke::new(1.0),
-        t,
-        alpha(c.border_standard, 150),
-        None,
-        &shape,
+    // The shared Neutral button face (HIG §8), resolved through
+    // `face_colors` because this painter runs without a text renderer; the
+    // glyph is drawn in the face's ink.
+    let (bg, border, ink) = ui::widget::face_colors(
+        theme,
+        ui::widget::ButtonStyle::Neutral,
+        ui::widget::ButtonInteract {
+            hovered,
+            ..Default::default()
+        },
     );
+    let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.md));
+    scene.fill(Fill::NonZero, t, bg, None, &shape);
+    if let Some(border) = border {
+        scene.stroke(&Stroke::new(1.0), t, border, None, &shape);
+    }
     let center = rect.center();
     match glyph {
-        ChromeGlyph::Menu => icons::hamburger(scene, t, center, 8.0, c.text_primary),
+        ChromeGlyph::Menu => icons::hamburger(scene, t, center, 8.0, ink),
         ChromeGlyph::Close => {
             let r = 6.0;
             let s = Stroke::new(1.8);
             scene.stroke(
                 &s,
                 t,
-                c.text_primary,
+                ink,
                 None,
                 &Line::new(
                     Point::new(center.x - r, center.y - r),
@@ -4061,7 +4025,7 @@ fn draw_chrome_button(
             scene.stroke(
                 &s,
                 t,
-                c.text_primary,
+                ink,
                 None,
                 &Line::new(
                     Point::new(center.x + r, center.y - r),
@@ -4069,7 +4033,7 @@ fn draw_chrome_button(
                 ),
             );
         }
-        ChromeGlyph::Back => icons::back_arrow(scene, t, center, 6.0, c.text_primary),
+        ChromeGlyph::Back => icons::back_arrow(scene, t, center, 6.0, ink),
     }
 }
 
@@ -4754,7 +4718,7 @@ impl Widget for FeedsApp {
                         .with_name(row.label.clone())
                         .with_description(format!("{} unread", row.badge))
                         .with_state(AccessState::new().focusable(true).checked(row.selected))
-                        .with_bounds(row.rect)
+                        .with_bounds(sidebar_pill(row.rect))
                         .with_action_target(format!("feeds.filter:{target}"))
                 }
                 RowRole::Folder { id, collapsed } => AccessNode::new(Role::TreeItem)
@@ -4766,19 +4730,19 @@ impl Widget for FeedsApp {
                             .selected(row.selected)
                             .expanded(!collapsed),
                     )
-                    .with_bounds(row.rect)
+                    .with_bounds(sidebar_pill(row.rect))
                     .with_action_target(format!("feeds.folder:{id}")),
                 RowRole::Feed { id, .. } => AccessNode::new(Role::TreeItem)
                     .with_name(row.label.clone())
                     .with_description(format!("{} unread", row.badge))
                     .with_state(AccessState::new().focusable(true).selected(row.selected))
-                    .with_bounds(row.rect)
+                    .with_bounds(sidebar_pill(row.rect))
                     .with_action_target(format!("feeds.feed:{id}")),
                 RowRole::Tag { key } => AccessNode::new(Role::TreeItem)
                     .with_name(row.label.clone())
                     .with_description(format!("{} articles", row.badge))
                     .with_state(AccessState::new().focusable(true).selected(row.selected))
-                    .with_bounds(row.rect)
+                    .with_bounds(sidebar_pill(row.rect))
                     .with_action_target(format!("feeds.tag-filter:{key}")),
             })
             .collect();
@@ -4797,7 +4761,7 @@ impl Widget for FeedsApp {
                                 .focusable(true)
                                 .selected(self.selected == Some(row.id)),
                         )
-                        .with_bounds(row.rect)
+                        .with_bounds(crate::list_layout::row_semantic_bounds(row.rect))
                         .with_action_target(format!("feeds.article:{}", row.id))
                         .with_children(vec![
                             AccessNode::new(Role::ToggleButton)

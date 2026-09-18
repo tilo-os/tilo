@@ -14,6 +14,13 @@
 //! the list instead of stacking rows over each other. [`article_row_layout`]
 //! then decides where the text block, the unread marker, the time and the
 //! star land inside that row.
+//!
+//! The row's trailing column — the relative-time label over the star — is one
+//! block too ([`trailing_column`]): the time used to sit on the title's first
+//! line and the star on the row's centre, which for a one-line title put the
+//! label's descenders over the star's top (HIG §7: nothing touches). Now the
+//! two stack with an `s1` gap and the pair is centred on the row, and the
+//! star's hit rect is built around the same centre the glyph is painted at.
 
 use vello::kurbo::Rect;
 
@@ -35,9 +42,45 @@ pub(crate) fn row_height(
 
 /// Side of the star's square hit/paint rect (the `s8` spacing step, spelled
 /// out because `build_list_rows` runs without a theme).
-pub(crate) const STAR_HIT_SIZE: f64 = 32.0;
+pub(crate) const STAR_HIT_SIZE: f64 = ui::tokens::spacing::Spacing::BASE.s8 as f64;
 /// Gap between the star's rect and the row's right edge (the `s2` step).
-pub(crate) const STAR_RIGHT_PAD: f64 = 8.0;
+pub(crate) const STAR_RIGHT_PAD: f64 = ui::tokens::spacing::Spacing::BASE.s2 as f64;
+/// Gap between the time label and the star glyph in the trailing column (the
+/// `s1` step: label ↔ its icon).
+pub(crate) const TRAILING_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s1 as f64;
+/// 1× line box of the 12 px time label and the star glyph's box
+/// (`metrics.icon_sm`), used before the first paint has measured them.
+pub(crate) const TIME_LINE_H_1X: f64 = 15.0;
+pub(crate) const STAR_BOX_1X: f64 = 14.0;
+
+/// Measured inputs for [`trailing_column`]: the time label's line box, the
+/// star glyph's box and the gap between them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TrailingColumnMetrics {
+    pub time_h: f64,
+    pub star_box: f64,
+    pub gap: f64,
+}
+
+impl TrailingColumnMetrics {
+    /// The authored 1× column, for layout passes that run without a
+    /// renderer.
+    pub(crate) const ONE_X: Self = Self {
+        time_h: TIME_LINE_H_1X,
+        star_box: STAR_BOX_1X,
+        gap: TRAILING_GAP,
+    };
+}
+
+/// Where the row's trailing column lands: `(time_y, star_cy)` — the top of
+/// the time label's line box and the centre of the star glyph. The label
+/// sits over the star with `gap` between them and the pair is centred on
+/// the row, so the two never share a pixel row at any text scale.
+pub(crate) fn trailing_column(row: Rect, m: &TrailingColumnMetrics) -> (f64, f64) {
+    let block_h = m.time_h + m.gap + m.star_box;
+    let top = row.center().y - block_h / 2.0;
+    (top, top + m.time_h + m.gap + m.star_box / 2.0)
+}
 
 /// Measured inputs for [`article_row_layout`]. Every height is a line box the
 /// caller measured with the exact style it paints with.
@@ -45,19 +88,19 @@ pub(crate) const STAR_RIGHT_PAD: f64 = 8.0;
 pub(crate) struct ArticleRowMetrics {
     /// Height of the (possibly two-line) title block.
     pub title_h: f64,
-    /// Height of a single title line, used to centre the time and the marker
-    /// on the title's first line.
+    /// Height of a single title line, used to centre the marker on the
+    /// title's first line.
     pub title_line_h: f64,
     /// Height of the source · summary line.
     pub meta_h: f64,
-    /// Height of the relative-time label.
-    pub time_h: f64,
     /// Gap between the title block and its meta line (the *related* gap).
     pub gap: f64,
     /// Smallest padding the block keeps from the row's top when it is taller
     /// than the row (a two-line title at large text): the block then reads
     /// from the top instead of poking out above the row.
     pub pad_min: f64,
+    /// The trailing column's measured sizes.
+    pub trailing: TrailingColumnMetrics,
 }
 
 /// Where the parts of an article row are painted.
@@ -67,41 +110,51 @@ pub(crate) struct ArticleRowLayout {
     pub title_y: f64,
     /// Top of the meta line's box, one `gap` under the title block.
     pub meta_y: f64,
-    /// Top of the time label, centred on the title's first line.
+    /// Top of the time label, the upper half of the trailing column.
     pub time_y: f64,
     /// Centre of the unread/read marker, on the title's first line.
     pub marker_cy: f64,
-    /// Centre of the star, on the row's vertical centre.
+    /// Centre of the star, the lower half of the trailing column.
     pub star_cy: f64,
 }
 
 /// Group the title and its meta line as one block, vertically centred in the
-/// row; the time and unread marker align to the title's first line and the
-/// star to the row's centre.
+/// row; the unread marker aligns to the title's first line and the trailing
+/// column (time over star) is centred on the row.
 pub(crate) fn article_row_layout(row: Rect, m: &ArticleRowMetrics) -> ArticleRowLayout {
     let block_h = m.title_h + m.gap + m.meta_h;
     let title_y = (row.y0 + (row.height() - block_h) / 2.0).max(row.y0 + m.pad_min);
     let meta_y = title_y + m.title_h + m.gap;
     let first_line_cy = title_y + m.title_line_h / 2.0;
+    let (time_y, star_cy) = trailing_column(row, &m.trailing);
     ArticleRowLayout {
         title_y,
         meta_y,
-        time_y: first_line_cy - m.time_h / 2.0,
+        time_y,
         marker_cy: first_line_cy,
-        star_cy: row.center().y,
+        star_cy,
     }
 }
 
-/// The star's square hit/paint rect: `size` wide, vertically centred in the
-/// row, `right_pad` from the row's right edge. Pointer, keyboard focus,
-/// accessibility bounds and the painted glyph all use this one rect.
-pub(crate) fn star_rect(row: Rect, size: f64, right_pad: f64) -> Rect {
-    let cy = row.center().y;
+/// The bounds an article row reports to assistive technology: the row band
+/// less the 1 px rule painted along its bottom edge and the 1 px pane
+/// divider on its left, which belong to neither row. The pointer hit rect
+/// stays the full band; the reported rect is what the row *is*, so two
+/// stacked rows are neighbours with a gap, not one shape (HIG §7).
+pub(crate) fn row_semantic_bounds(row: Rect) -> Rect {
+    Rect::new(row.x0 + 1.0, row.y0, row.x1, (row.y1 - 1.0).max(row.y0))
+}
+
+/// The star's square hit/paint rect: `size` wide, centred on `star_cy` (the
+/// centre [`trailing_column`] paints the glyph at), `right_pad` from the
+/// row's right edge. Pointer, keyboard focus, accessibility bounds and the
+/// painted glyph all use this one rect.
+pub(crate) fn star_rect(row: Rect, size: f64, right_pad: f64, star_cy: f64) -> Rect {
     Rect::new(
         row.x1 - right_pad - size,
-        cy - size / 2.0,
+        star_cy - size / 2.0,
         row.x1 - right_pad,
-        cy + size / 2.0,
+        star_cy + size / 2.0,
     )
 }
 
@@ -119,9 +172,9 @@ mod tests {
             title_h: 18.75 * title_lines,
             title_line_h: 18.75,
             meta_h: 15.625,
-            time_h: 15.0,
             gap: 4.0,
             pad_min: 12.0,
+            trailing: TrailingColumnMetrics::ONE_X,
         }
     }
 
@@ -147,12 +200,51 @@ mod tests {
     }
 
     #[test]
-    fn time_and_marker_align_to_the_first_title_line() {
+    fn marker_aligns_to_the_first_title_line() {
         let row = Rect::new(0.0, 100.0, 400.0, 188.0);
         let l = article_row_layout(row, &metrics(2.0));
-        let first_cy = l.title_y + 18.75 / 2.0;
-        assert!(approx(l.marker_cy, first_cy));
-        assert!(approx(l.time_y + 7.5, first_cy));
+        assert!(approx(l.marker_cy, l.title_y + 18.75 / 2.0));
+    }
+
+    #[test]
+    fn one_x_time_line_is_the_toolkit_line_height() {
+        // The authored 1× line box the layout pass uses before paint is the
+        // toolkit's own answer for a 12 px line, so pre-paint and painted
+        // geometry agree.
+        assert!(approx(TIME_LINE_H_1X, ui::text_metrics::line_height_px(12.0, 1.0)));
+    }
+
+    #[test]
+    fn time_label_clears_the_star_by_the_token_gap_and_the_pair_is_centred() {
+        // The 1× defect: a one-line title's time label (on the first title
+        // line) ran into the star (on the row centre). The column now stacks
+        // them with `s1` between the label's box and the glyph's box.
+        let row = Rect::new(0.0, 100.0, 400.0, 188.0);
+        for lines in [1.0, 2.0] {
+            let l = article_row_layout(row, &metrics(lines));
+            let time_bottom = l.time_y + TIME_LINE_H_1X;
+            let star_top = l.star_cy - STAR_BOX_1X / 2.0;
+            assert!(approx(star_top - time_bottom, TRAILING_GAP), "{lines} line(s): gap {}", star_top - time_bottom);
+            let block_top = l.time_y;
+            let block_bottom = l.star_cy + STAR_BOX_1X / 2.0;
+            assert!(approx(block_top - row.y0, row.y1 - block_bottom), "column centred on the row");
+        }
+    }
+
+    #[test]
+    fn a_scaled_time_line_keeps_the_star_clear_of_it() {
+        // 200% text: the label's line box doubles; the gap is still `s1` and
+        // the star's hit rect stays inside the (grown) row.
+        let row = Rect::new(0.0, 0.0, 400.0, 138.25);
+        let trailing = TrailingColumnMetrics {
+            time_h: 30.0,
+            star_box: 14.0,
+            gap: TRAILING_GAP,
+        };
+        let (time_y, star_cy) = trailing_column(row, &trailing);
+        assert!(approx((star_cy - 7.0) - (time_y + 30.0), TRAILING_GAP));
+        let s = star_rect(row, STAR_HIT_SIZE, STAR_RIGHT_PAD, star_cy);
+        assert!(s.y0 >= row.y0 && s.y1 <= row.y1, "hit rect inside the row: {s:?}");
     }
 
     #[test]
@@ -164,9 +256,9 @@ mod tests {
             title_h: 75.0,
             title_line_h: 37.5,
             meta_h: 31.25,
-            time_h: 30.0,
             gap: 4.0,
             pad_min: 12.0,
+            trailing: TrailingColumnMetrics::ONE_X,
         };
         let l = article_row_layout(row, &m);
         assert!(approx(l.title_y, row.y0 + 12.0));
@@ -191,9 +283,9 @@ mod tests {
             title_h: 75.0,
             title_line_h: 37.5,
             meta_h: 31.25,
-            time_h: 30.0,
             gap: 4.0,
             pad_min: 12.0,
+            trailing: TrailingColumnMetrics::ONE_X,
         };
         let l = article_row_layout(row, &m);
         assert!(l.title_y >= row.y0 + 12.0);
@@ -201,12 +293,26 @@ mod tests {
     }
 
     #[test]
-    fn star_rect_is_centred_and_square() {
+    fn stacked_rows_report_bounds_that_do_not_touch() {
+        // Two contiguous row bands: the reported bounds leave the rule's
+        // pixel row between them and start past the pane divider.
+        let a = Rect::new(256.0, 100.0, 656.0, 188.0);
+        let b = Rect::new(256.0, 188.0, 656.0, 276.0);
+        let (ra, rb) = (row_semantic_bounds(a), row_semantic_bounds(b));
+        assert!(rb.y0 - ra.y1 > 0.0, "a gap, not a shared edge: {ra:?} {rb:?}");
+        assert!(approx(ra.x0, 257.0), "past the divider column");
+        assert!(approx(ra.x1, a.x1));
+    }
+
+    #[test]
+    fn star_rect_is_centred_on_the_glyph_and_square() {
         let row = Rect::new(0.0, 100.0, 400.0, 188.0);
-        let s = star_rect(row, 32.0, 8.0);
+        let (_, star_cy) = trailing_column(row, &TrailingColumnMetrics::ONE_X);
+        let s = star_rect(row, STAR_HIT_SIZE, STAR_RIGHT_PAD, star_cy);
         assert!(approx(s.width(), 32.0));
         assert!(approx(s.height(), 32.0));
-        assert!(approx(s.center().y, row.center().y));
+        assert!(approx(s.center().y, star_cy));
         assert!(approx(s.x1, row.x1 - 8.0));
+        assert!(s.y0 >= row.y0 && s.y1 <= row.y1, "hit rect inside the row: {s:?}");
     }
 }
