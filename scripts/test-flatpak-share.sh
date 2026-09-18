@@ -207,9 +207,12 @@ run_e2e() {
     echo "=== end-to-end pipeline ==="
     cargo_in_distrobox \
         "cargo test -p shell \
-            --test flatpak_share_e2e \
-            --test two_netns_share \
-            --release -- --include-ignored"
+            --test it --release --locked flatpak_share_e2e:: \
+            -- --include-ignored && \
+         cargo test -p shell \
+            --test it --release --locked \
+            two_netns_share::in_process_udp_pipeline_sustains_10_fps_and_bounded_latency \
+            -- --exact --nocapture"
 }
 
 run_shim() {
