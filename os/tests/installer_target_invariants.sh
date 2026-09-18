@@ -318,7 +318,8 @@ else
 fi
 
 if grep -Fq 'CONF_TMP="$(mktemp ' "$backend" \
-   && grep -Fq 'find "$MNT/state/deploy"' "$backend" \
+   && grep -Fq 'find "$1/state/deploy"' "$backend" \
+   && grep -Fq 'DEPLOY_ETC="$(find_deploy_etc "$MNT")"' "$backend" \
    && grep -Fq 'chmod 0600 "$CONF_TMP"' "$backend" \
    && grep -Fq 'mv -f "$CONF_TMP" "$CONF"' "$backend"; then
   ok "account password hash is created privately and published atomically"
@@ -374,6 +375,25 @@ for policy in \
   grep -Fqx "$policy" "$firstboot_unit" \
     || bad "first-boot account creator sandbox is missing: $policy"
 done
+
+installer_setup_unit="$repo_root/os/usr/lib/systemd/system/tilo-installer-setup.service"
+for policy in \
+  'NoNewPrivileges=yes' \
+  'PrivateNetwork=yes' \
+  'PrivateIPC=yes' \
+  'ProtectHome=yes' \
+  'ProtectProc=invisible' \
+  'ProtectKernelModules=yes' \
+  'ProtectKernelLogs=yes' \
+  'RestrictNamespaces=yes' \
+  'MemoryDenyWriteExecute=yes' \
+  'SystemCallArchitectures=native'; do
+  grep -Fqx "$policy" "$installer_setup_unit" \
+    || bad "live installer setup sandbox is missing: $policy"
+done
+if grep -Eq '^(PrivateDevices|ProtectKernelTunables)=' "$installer_setup_unit"; then
+  bad 'live installer setup cannot inspect its source disk or load its SELinux policy'
+fi
 
 if [ -x "$profile_extractor" ] \
    && grep -Fq 'TILO_INSTALL_PROFILE_V1' "$profile_extractor" \
