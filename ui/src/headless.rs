@@ -419,7 +419,10 @@ pub struct FrameOutput<'a> {
     pub ime: Option<crate::ime::ImeWindowState>,
 }
 
+mod caller_palette;
+
 pub struct FrameHarness {
+    caller_palette: caller_palette::CallerPalette,
     component_wake: Option<ComponentRunnerWakeState>,
     state: State,
     root: Box<dyn Widget>,
@@ -785,6 +788,7 @@ impl FrameHarness {
             text.set_text_scale(theme.text_scale);
         }
         let mut d = Self {
+            caller_palette: Default::default(),
             component_wake,
             state,
             root,
@@ -1073,7 +1077,7 @@ impl FrameHarness {
             device_size: ((f64::from(self.viewport.0) * self.input_scale).ceil() as u32,
                           (f64::from(self.viewport.1) * self.input_scale).ceil() as u32),
             semantics: self.inspection(),
-            ime: self.focused.and_then(|id| self.inspect_node(id, crate::ime::ImeWindowState::from_widget).ok().flatten()),
+            ime: self.caller_palette.palette.as_ref().and_then(|p| crate::ime::ImeWindowState::from_widget(p.presentation_widgets().0)).or_else(|| self.focused.and_then(|id| self.inspect_node(id, crate::ime::ImeWindowState::from_widget).ok().flatten())),
             needs_animation_frame: self.presentation_roots().iter().any(|root| root.needs_animation_frame()),
             next_wake_deadline: self.presentation_roots().iter().filter_map(|root| root.next_wake_deadline()).min(),
             needs_redraw: self.presentation_roots().iter().any(|root| root.needs_redraw()) || !self.bound_invocations.is_empty() || !self.pending_control_invocations.is_empty() || self.component_wake.as_ref().is_some_and(|wake| wake.dirty.get()),
@@ -1405,6 +1409,8 @@ impl FrameHarness {
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
         }
+
+        self.draw_caller_palette();
 
         // One `relayout` is one rendered frame; commit it, folding in any
         // `handle_event` time banked by a preceding `send`.
@@ -1824,6 +1830,11 @@ impl FrameHarness {
         use automerge::transaction::Transactable;
         self.pump_component_wakes();
 
+        if self.caller_palette.palette.is_some() {
+            let handled = self.caller_palette.palette.as_mut().unwrap().perform_host_semantic(name, semantic_target, action, &mut self.state.doc, &self.state.root);
+            self.finish_caller_palette(); self.relayout();
+            return if handled { Ok(()) } else { Err("palette owns input".into()) };
+        }
         let targets = self.named_target_nodes();
         let node = targets
             .get(name)
@@ -2102,7 +2113,7 @@ impl FrameHarness {
         let mut sibling_counts = HashMap::new();
         InspectionSnapshot {
             viewport: [self.viewport.0, self.viewport.1],
-            root: if let Some(history) = &self.history {
+            root: if let Some(palette) = self.caller_palette_inspection() { palette } else if let Some(history) = &self.history {
                 let mut presentation = collect_inspection(history.as_ref(), "", &mut sibling_counts);
                 if history.live_visible() { presentation.children.push(collect_inspection(self.root.as_ref(), "", &mut sibling_counts)); }
                 presentation
@@ -2248,6 +2259,7 @@ impl FrameHarness {
             || matches!(event, WindowEvent::KeyboardInput { .. })
                 && crate::history_mode::embedded::keyboard_captured(self.root.as_ref(), self.focused, &self.taffy);
         if history_input { self.send(event); return; }
+        if self.caller_palette_event(event) { return; }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed {
             let modal = self.root.modal_capture();
@@ -3787,6 +3799,18 @@ fn write_headless_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn portable_caller_palette_opens_over_the_real_frame() {
+        let mut frame = FrameHarness::new_with_controlled_inputs(State::new(),
+            Box::new(crate::widget::TextInput::local().with_id("document")),
+            (640, 480), Theme::dark(), crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()));
+        frame.set_platform_conventions(crate::platform::PlatformConventions::new(crate::platform::Platform::Linux));
+        frame.send_host_event(&WindowEvent::ModifiersChanged(winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL)));
+        frame.send_host_event(&key_event(&Key::Character("k".into()), ElementState::Pressed));
+        assert!(frame.inspection_json().unwrap().contains("action-palette-results"));
+    }
+
     #[test]
     fn portable_host_events_preserve_modifiers_tab_and_command_undo() {
         let input = crate::widget::TextInput::local().with_id("name").with_initial_value("hello");

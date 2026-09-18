@@ -158,6 +158,10 @@ impl PendingOperation {
         }
     }
 
+    pub(crate) fn has_valid_input(&self) -> bool {
+        !matches!(self.input, PendingInput::Invalid)
+    }
+
     pub fn confirmation_evidence(&self) -> &serde_json::Value {
         &self.confirmation_evidence
     }
@@ -1308,6 +1312,50 @@ impl ActionPalette {
             .draw(scene, transform, text_renderer, theme, presence);
         self.results
             .draw(scene, transform, text_renderer, theme, presence);
+    }
+
+    pub(crate) fn presentation_widgets(&self) -> (&dyn Widget, &dyn Widget) {
+        (&self.field, &self.results)
+    }
+
+    pub(crate) fn perform_host_semantic(&mut self, name: &str, target: Option<&str>, action: &crate::a11y::Action, doc: &mut AutoCommit, root: &ObjId) -> bool {
+        if !name.starts_with("caller-palette/") { return false; }
+        let handled = if name.contains("SearchField") || name.contains("TextInput") {
+            if matches!(action, crate::a11y::Action::Focus) { true }
+            else { self.field.perform_action(action, doc, root) }
+        } else if name.contains("SearchResultsView") || name.contains("action-palette-results") {
+            target.is_some_and(|target| self.results.perform_semantic_action(target, action, doc, root))
+        } else { false };
+        if let Some(query) = self.field.take_dirty() {
+            if self.arg.is_none() && self.confirm.is_none() { self.rebuild(&query); }
+        }
+        self.poll_view_activation();
+        handled
+    }
+
+    pub(crate) fn handle_host_event(&mut self, event: &WindowEvent, scale: f64, modifiers: &Modifiers, doc: &mut AutoCommit, root: &ObjId) -> bool {
+        if self.handle_key(event, modifiers, doc, root) { return true; }
+        let normalized;
+        let event = if let WindowEvent::CursorMoved {device_id,position} = event {
+            normalized = WindowEvent::CursorMoved {device_id:*device_id,position:winit::dpi::PhysicalPosition::new(position.x/scale,position.y/scale)};
+            &normalized
+        } else { event };
+        match event {
+            WindowEvent::Ime(_) => {
+                self.route_to_field(event, *modifiers, doc, root);
+                if let Some(query) = self.field.take_dirty() {
+                    if self.arg.is_none() && self.confirm.is_none() { self.rebuild(&query); }
+                }
+                true
+            }
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
+                self.route_to_field(event, *modifiers, doc, root);
+                self.route_to_results(event, *modifiers, doc, root);
+                self.poll_view_activation(); true
+            }
+            WindowEvent::Touch(_) => true,
+            _ => false,
+        }
     }
 
     /// Feed a keyboard event to the open palette; returns whether consumed.

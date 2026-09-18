@@ -144,7 +144,7 @@ export interface BrokerRoute {
  app_peer:string; app_id:string; record_id:string; resource:string; action:string; revision:string|null;
 }
 export type ActionConfirmation={kind:'confirm'}|{kind:'phrase';phrase:string};
-export interface ActionIntent extends BrokerRoute {invocation?:string;argument?:unknown;confirmation?:ActionConfirmation|null}
+export interface ActionIntent extends BrokerRoute {invocation?:string;argument?:unknown;confirmation?:ActionConfirmation|null;expected?:{host:string;binding:ActionBinding;descriptor:BrokerCatalogue['surfaces'][number]['actions'][number]}}
 export type PrivateInvocationUpdate=
  | {state:'accepted';invocation:string}
  | {state:'progress';invocation:string;sequence:string;phase:string;completed:number|null;total:number|null;message:string|null}

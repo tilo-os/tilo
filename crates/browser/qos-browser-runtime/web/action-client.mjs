@@ -60,6 +60,7 @@ export async function createActionClient({context,load,commit,request}){
     if(declared?.mode==='confirm'&&value.confirmation?.kind!=='confirm')throw Error('Action confirmation required');
     if(declared?.mode==='phrase'&&(value.confirmation?.kind!=='phrase'||value.confirmation.phrase!==declared.phrase))throw Error('Action confirmation phrase required');
     if(!['none','confirm','phrase'].includes(declared?.mode))throw Error('Unsupported confirmation mechanism');
+    return offered[0];
   }
   return {version:1,getSnapshot:snapshot,subscribe(listener){listeners.add(listener);return()=>listeners.delete(listener);},
     invalidate(reason){capability={state:'unavailable',reason};notify();},
@@ -69,7 +70,9 @@ export async function createActionClient({context,load,commit,request}){
       const existing=disk.entries.find(row=>row.invocation===input.invocation);
       if(existing){if(!equal(existing.intent,intent(input,existing.host)))throw Error('Invocation intent changed');await bound(existing);return observe(existing,{type:'status',invocation:existing.invocation});}
       if(disk.entries.length>=MAX_ENTRIES)throw Error('Action outbox capacity exceeded; retained work is never evicted');
-      const current=await discover(),value=intent(input,current.host);resolve(current,value);
+      const current=await discover();
+      const value=intent(input,current.host),descriptor=resolve(current,value);
+      if(input.expected&&(!equal(input.expected.binding,current.binding)||input.expected.host!==current.host||!equal(input.expected.descriptor,descriptor)))throw Error('Action binding or catalogue changed');
       const row={invocation:input.invocation,host:current.host,binding:current.binding,intent:value,state:'unknown',reason:'may-have-dispatched',update:null,terminal:false,cancellationRequested:false};
       await save({...disk,entries:[...disk.entries,row]});
       if(!equal(row.binding,context()))throw Error('Action identity changed after commit');

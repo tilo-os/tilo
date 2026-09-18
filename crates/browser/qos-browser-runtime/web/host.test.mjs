@@ -161,3 +161,9 @@ test('beforeinput covers soft-keyboard edits without duplicating composition or 
   assert.deepEqual(route({inputType:'insertCompositionText',data:'東京'},false),{kind:'handled-elsewhere'});
   assert.deepEqual(route({inputType:'insertFromPaste'},false),{kind:'handled-elsewhere'});
 });
+
+test('focused application command K reaches the shared frame palette',()=>{
+  assert.equal(hostCore.keyboardRoute({key:'k',ctrlKey:true},false,false),'forward');
+  assert.equal(hostCore.keyboardRoute({key:'k',metaKey:true},false,true),'forward');
+  assert.equal(hostCore.keyboardRoute({key:'k',ctrlKey:true,altKey:true},false,false),'text');
+});

@@ -51,3 +51,6 @@ pub mod action_client;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod storage_key;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod action_palette;

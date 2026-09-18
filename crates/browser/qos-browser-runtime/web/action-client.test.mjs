@@ -22,3 +22,10 @@ test('caller cannot change queued intent by mutating its input',async()=>{const 
 test('corrupt and newer outboxes fail closed',async()=>{for(const value of [{version:2,entries:[]},{version:1,entries:[{invocation:id}]}])await assert.rejects(createActionClient({context:()=>context,load:async()=>value,commit:async()=>{},request:async()=>{throw Error('must not send');}}),/outbox/);});
 test('older accepted/progress cannot regress a durable stream sequence',async()=>{const f=fixture(),c=await f.open();await c.invoke({...route,invocation:id});const observation=update=>({type:'observation',host,invocation:id,update,uncertain:false,cancellation_requested:false});f.response=observation({state:'progress',invocation:id,sequence:'9007199254740993',phase:'working'});await c.status(id);f.response=observation({state:'accepted',invocation:id});assert.equal((await c.status(id)).update.sequence,'9007199254740993');f.response=observation({state:'progress',invocation:id,sequence:'9007199254740992',phase:'older'});assert.equal((await c.status(id)).update.phase,'working');});
 test('automatic recovery exposes host mismatch and preserves original destination',async()=>{const f=fixture(),c=await f.open();await c.invoke({...route,invocation:id});f.host='dddddddd-dddd-4ddd-8ddd-dddddddddddd';await c.recover();assert.equal(c.getSnapshot().entries[0].reason,'host-changed');assert.equal(f.bytes.entries[0].host,host);assert.equal(f.calls.filter(m=>m.type==='status').length,0);});
+
+test('a retained palette control cannot rebind to a replacement certified host',async()=>{
+ const f=fixture(), c=await f.open();const offered=await c.catalogue();
+ f.host='dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+ await assert.rejects(c.invoke({...route,invocation:id,expected:{host:offered.host,binding:offered.binding,descriptor:offered.catalogue.surfaces[0].actions[0]}}),/binding|catalogue/i);
+ assert.equal(f.bytes,undefined);assert.equal(f.calls.filter(m=>m.type==='invoke_bound').length,0);
+});

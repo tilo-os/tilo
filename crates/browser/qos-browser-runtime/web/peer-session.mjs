@@ -282,7 +282,7 @@ return async function connectPeer(options={}){
             if(entry.cancelled||closed||closing||surfaceTargets.get(target)!==surface)throw Error('Desktop attempt cancelled');
             const current=++allocation;let admissionRejected=false;
             try{
-              return await mountDesktop(target,{...mountOptions,...namespace,signal:controller.signal,app,peer:id,record:record?.record_id||undefined,author:snapshot.deviceId,onStatus:status=>{
+              return await mountDesktop(target,{...mountOptions,...namespace,actionsV1,signal:controller.signal,app,peer:id,record:record?.record_id||undefined,author:snapshot.deviceId,onStatus:status=>{
                 if(entry.cancelled||current!==allocation||closed||closing||surfaceTargets.get(target)!==surface)return;
                 // Only this exact initial guard failure is temporary. Allocation
                 // cleanup must finish before retry; all security/GPU errors pass through.

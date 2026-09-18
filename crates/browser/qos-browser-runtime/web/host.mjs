@@ -1,3 +1,4 @@
+import {bindActionPalette} from './action-palette-bridge.mjs';
 import {commitPeerBatches} from './peer-persistence.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import init,* as runtime from './pkg/qos_browser_runtime.js';
@@ -29,8 +30,8 @@ export async function mountDesktop(target,options={}) {
   const report=data=>options.onStatus?.(data);
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
-  delete config.onStatus;delete config.signal;delete config.loadAsset;
-  let semanticKeys;
+  delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;
+  let semanticKeys,actionPalette;
   const semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report,{
     keydown:(...args)=>active()&&semanticKeys?.keydown(...args),
     keyup:(...args)=>active()&&semanticKeys?.keyup(...args),
@@ -40,6 +41,10 @@ export async function mountDesktop(target,options={}) {
   function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined;}
   function update(raw){
     if(closed||!registry.current(token))return;
+    if(actionPalette){
+      const request=runtime.take_caller_action(id);
+      if(request)void actionPalette.submit(JSON.parse(request)).catch(error=>{if(active())report({actionError:String(error)});});
+    }
     const state=JSON.parse(raw);lastState={...lastState,...state};report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;}
     if(state.phase==='presented'){surface.inert=false;editor.disabled=false;}
@@ -105,7 +110,7 @@ export async function mountDesktop(target,options={}) {
   let closeWrites=[];
   const cleanup=recoverableClose({
     begin(){
-      semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      actionPalette?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=JSON.parse(runtime.close(id));
       surface.remove();
     },
@@ -158,7 +163,7 @@ export async function mountDesktop(target,options={}) {
     }
     const dispatchKey=(type,event)=>canvas.dispatchEvent(new KeyboardEvent(type,event));
     const hiddenKeys=createKeyboardForwarder({route:keyboardRoute,mac:config.mac,dispatch:dispatchKey,clearModifiers,report:()=>report({lastInput:'keyboard'})});
-    semanticKeys=createKeyboardForwarder({route:semanticKeyboardRoute,mac:config.mac,dispatch:dispatchKey,publishModifiers,clearModifiers,report:()=>report({lastInput:'keyboard'})});
+    semanticKeys=createKeyboardForwarder({route:(...args)=>lastState?.semantics?.root?.widget==='ActionPalette'?keyboardRoute(...args):semanticKeyboardRoute(...args),mac:config.mac,dispatch:dispatchKey,publishModifiers,clearModifiers,report:()=>report({lastInput:'keyboard'})});
     const hiddenKeyOwner={};
     const dispatchCanvasKey=key=>{canvas.dispatchEvent(new KeyboardEvent('keydown',{key}));canvas.dispatchEvent(new KeyboardEvent('keyup',{key}));};
     on(editor,'keydown',event=>{
@@ -179,6 +184,8 @@ export async function mountDesktop(target,options={}) {
     },{passive:false});
     on(document,'visibilitychange',()=>{if(active())runtime.visible(id,document.visibilityState==='visible');});
     await presented;
+    if(!active())throw Error('mount disposed');
+    if(options.actionsV1)actionPalette=bindActionPalette({actions:options.actionsV1,publish:rows=>{if(active())runtime.caller_actions(id,JSON.stringify(rows));},report});
     return {retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,editor,semantics:accessibility,
       durableState:()=>acquired.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),

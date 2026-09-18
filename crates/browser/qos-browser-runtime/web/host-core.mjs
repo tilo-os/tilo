@@ -29,7 +29,7 @@ export function physicalViewport(width, height, dpr) {
 export function wheelPixels(x,y,mode,width,height) {
   return [-x*(mode===1?16:mode===2?width:1), -y*(mode===1?16:mode===2?height:1)];
 }
-const applicationCommands=new Set(['a','b','f','i','u','y','z']);
+const applicationCommands=new Set(['a','b','f','i','k','u','y','z']);
 const clipboardCommands=new Set(['c','v','x']);
 export function keyboardRoute(event,composing,mac) {
   if(composing||event.isComposing)return 'composition';
@@ -50,6 +50,7 @@ export function modifierSnapshot(event) {
 export function semanticKeyboardRoute(event,composing,mac) {
   if(keyboardRoute(event,composing,mac)!=='forward')return 'native';
   const key=String(event.key??'').toLowerCase();
+  if(key==='k')return 'forward';
   if(mac)return key==='z'&&event.metaKey&&!event.ctrlKey&&!event.altKey?'forward':'native';
   if(!event.ctrlKey||event.metaKey||event.altKey)return 'native';
   return key==='z'||(key==='y'&&!event.shiftKey)?'forward':'native';

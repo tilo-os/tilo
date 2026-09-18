@@ -1065,3 +1065,27 @@ pub(crate) fn prepare_peer_remote(peer:u32)->Result<(),String>{
   Ok(())
  })
 }
+
+/// Caller projection is supplied only by the session's durable private client.
+#[wasm_bindgen]
+pub fn caller_actions(id: u64, json: &str) -> Result<(), JsValue> {
+    let resources = crate::action_palette::resources(json).map_err(error)?;
+    MOUNTS.with_borrow_mut(|mounts| {
+        let mount = mounts.get_mut(&id).ok_or_else(|| error("action surface disposed"))?;
+        mount.frame.set_caller_actions(resources);
+        mount.pending = true;
+        mount.window.request_redraw();
+        Ok(())
+    })
+}
+
+#[wasm_bindgen]
+pub fn take_caller_action(id: u64) -> Result<Option<String>, JsValue> {
+    MOUNTS.with_borrow_mut(|mounts| {
+        let mount = mounts.get_mut(&id).ok_or_else(|| error("action surface disposed"))?;
+        if mount.peer_suspended { return Ok(None); }
+        mount.frame.take_caller_operation().map(|pending| {
+            crate::action_palette::request(pending).map(|value| value.to_string()).map_err(error)
+        }).transpose()
+    })
+}

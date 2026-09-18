@@ -1,15 +1,20 @@
+import type {CertifiedActionsV1,PrivateInvocation} from './peer';
 export type Application = 'writer' | 'chat' | 'desktop';
 export interface RuntimeStatus {
   phase?: 'gpu-pending' | 'presented' | 'failed' | 'closed';
   error?: string;
   persistence?: 'committed' | 'failed';
   frames?: number;
+  /** Private caller observation; never a claim of replicated document completion. */
+  action?: Pick<PrivateInvocation,'invocation'|'state'|'terminal'|'cancellationRequested'>;
+  actionError?: string;
   document?: unknown;
   heads?: string[];
   [diagnostic: string]: unknown;
 }
 export interface MountOptions {
   app?: Application;
+  actionsV1?: CertifiedActionsV1;
   profile?: string;
   device?: string;
   room?: string;
