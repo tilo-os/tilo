@@ -1,4 +1,7 @@
-#![allow(dead_code)] // IPresentationManager is unused currently
+#![allow(
+    dead_code,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)] // IPresentationManager is unused currently
 
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 
@@ -12,7 +15,10 @@ pub enum PresentationTimer {
     ///
     /// [`IPresentationManager`]: https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/Graphics/CompositionSwapchain/struct.IPresentationManager.html
     /// [`QueryInterruptTimePrecise()`]: https://microsoft.github.io/windows-docs-rs/doc/windows/Win32/System/WindowsProgramming/fn.QueryInterruptTimePrecise.html
-    #[allow(non_snake_case)]
+    #[allow(
+        non_snake_case,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     IPresentationManager {
         fnQueryInterruptTimePrecise: unsafe extern "system" fn(*mut u64),
     },

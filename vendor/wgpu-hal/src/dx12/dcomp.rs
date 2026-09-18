@@ -3,8 +3,8 @@ use core::{ffi, ptr};
 
 use once_cell::sync::Lazy;
 use windows::{
-    core::Interface as _,
     Win32::{Foundation::HWND, Graphics::DirectComposition},
+    core::Interface as _,
 };
 
 use super::DynLib;

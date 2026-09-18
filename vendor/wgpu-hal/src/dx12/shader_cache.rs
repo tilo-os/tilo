@@ -1,7 +1,7 @@
 //! Tilo's narrow DXC cache extension. Does not advertise PIPELINE_CACHE.
 //! File storage and compiler-binary identity belong to the caller.
 
-use super::{shader_compilation::CompilerContainer, Device, ShaderCacheKey};
+use super::{Device, ShaderCacheKey, shader_compilation::CompilerContainer};
 use alloc::vec::Vec;
 
 /// Opaque key and compiler output. Only persist entries returned by this device.

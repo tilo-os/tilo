@@ -1,7 +1,7 @@
 use alloc::{string::String, vec::Vec};
 use core::ops::Deref;
 
-use windows::{core::Interface as _, Win32::Graphics::Dxgi};
+use windows::{Win32::Graphics::Dxgi, core::Interface as _};
 
 use crate::dx12::DxgiLib;
 

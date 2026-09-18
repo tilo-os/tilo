@@ -171,7 +171,7 @@ impl crate::Instance for Instance {
             _ => {
                 return Err(crate::InstanceError::new(format!(
                     "window handle {window_handle:?} is not a web handle"
-                )))
+                )));
             }
         };
 
