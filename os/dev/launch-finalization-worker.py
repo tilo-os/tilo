@@ -19,6 +19,8 @@ import time
 TOOLS = 'code.podesta.ai/qos/tilo-development-finalization-tools-aarch64@sha256:b8f09490cb08b93ca137a9aca5a7c87b97a218ae33453f6b24b315fb0469903f'
 CONFIG = 'sha256:8deaeea8c5fd08f67856c6a82efa87ad5c580e829c46fd8b15d58900c6d5e47a'
 SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
+# Independently reviewed assembly sources; native artifact provenance is separate.
+SOURCES = {SOURCE: 1789690573, '8fff1d6001b64a80bc730e87d3ffc529d2d9e70a': 1789733507}
 HEX = re.compile(r'[0-9a-f]{64}')
 DIRECTORY_MODES = {'/var/lib': 0o755, '/var/lib/containers': 0o755,
                    '/work': 0o755, '/evidence': 0o700}
@@ -142,7 +144,10 @@ def request_bytes(raw, digest, helpers):
     driver.validate_request(value)
     if not re.fullmatch(r'[0-9a-f]{40}', helpers):
         raise ValueError('exact helper commit required')
-    required = {'source_revision': SOURCE, 'helpers_revision': helpers,
+    if (value['source_revision'] not in SOURCES
+            or value['source_date_epoch'] != SOURCES[value['source_revision']]):
+        raise ValueError('assembly source/epoch is not independently admitted')
+    required = {'helpers_revision': helpers,
                 'source_dir': '/work/source', 'architecture': 'aarch64',
                 'receipt': '/work/inputs/retained-rootfs.json',
                 'public_bundle': '/work/inputs/original-public',
@@ -234,7 +239,8 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     helpers = os.environ['HELPERS_REVISION']
     data = request_bytes(os.environ['FINALIZATION_REQUEST'], os.environ['FINALIZATION_REQUEST_SHA256'], helpers)
-    for path, revision in ((args.source, SOURCE), (args.helpers, helpers)):
+    source_revision = json.loads(data)['source_revision']
+    for path, revision in ((args.source, source_revision), (args.helpers, helpers)):
         if run('git', '-C', str(path), 'rev-parse', 'HEAD') != revision:
             raise ValueError('checkout revision mismatch')
         if run('git', '-C', str(path), 'status', '--porcelain', '--untracked-files=no'):
@@ -274,7 +280,7 @@ def main():
                 with archive.open('rb') as stream:
                     run('docker', 'cp', '-', container + ':/work', stdin=stream)
                 archive.unlink()
-            for label, revision in (('source', SOURCE), ('helpers', helpers)):
+            for label, revision in (('source', source_revision), ('helpers', helpers)):
                 marker = stage / ('.finalization-' + label + '.json')
                 marker.write_text(json.dumps({'revision': revision}) + '\n')
                 run('docker', 'cp', str(marker), container + ':/work/' + label + '/' + marker.name)
@@ -291,7 +297,7 @@ def main():
             raise ValueError('worker did not start with pinned tools')
         identity = {'schema': 1, 'docker_container_id': container, 'docker_image_id': state['Image'],
                     'docker_started_at': state['State']['StartedAt'], 'docker_running': state['State']['Running'],
-                    'tools_ref': TOOLS, 'source_revision': SOURCE, 'helpers_revision': helpers,
+                    'tools_ref': TOOLS, 'source_revision': source_revision, 'helpers_revision': helpers,
                     'request_sha256': hashlib.sha256(data).hexdigest(),
                     'controller_revision': run('git', '-C', str(args.controller), 'rev-parse', 'HEAD')}
         (args.evidence / 'worker-identity.json').write_text(json.dumps(identity, indent=2) + '\n')
