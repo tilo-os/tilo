@@ -63,7 +63,7 @@ def reject_firmware_access(mountinfo=Path('/proc/self/mountinfo'),
         raise ValueError('disk creation guest must not expose a TPM')
 
 
-def guest_inputs(args):
+def guest_inputs(args, *, supervised=False):
     if not args.disposable_guest:
         raise ValueError('explicit disposable guest acknowledgement is required')
     if sys.platform != 'linux' or os.getuid() != 0 or os.geteuid() != 0:
@@ -75,7 +75,7 @@ def guest_inputs(args):
     if any(os.environ.get(name) for name in ('CONTAINER_HOST', 'CONTAINER_CONNECTION',
                                             'CONTAINER_SSHKEY', 'DOCKER_HOST')):
         raise ValueError('remote container configuration is unsupported')
-    if command(['/usr/bin/systemd-detect-virt', '--vm']).strip() not in ('kvm', 'qemu'):
+    if not supervised and command(['/usr/bin/systemd-detect-virt', '--vm']).strip() not in ('kvm', 'qemu'):
         raise ValueError('a disposable QEMU/KVM guest is required')
     # Privileged image execution must not receive a TPM or firmware variable
     # store, even belonging to the temporary build guest.
@@ -88,6 +88,35 @@ def guest_inputs(args):
 
 def create(args):
     guest_inputs(args)
+    return _create_verified_disk(args)
+
+
+def create_from_supervised_controller(args, observation):
+    """Controller-only API for guests without firmware virtualization markers.
+
+    The authenticated controller must inspect the live Pod, sandbox, effective
+    runtime, QEMU devices/fds and exact shared mounts immediately before exec.
+    Its observation is an audit record, NOT an authorization token: a guest can
+    manufacture JSON. Authorization comes from the controller's inspection and
+    authenticated exec, and this API must never be exposed as a CLI option.
+    The standalone CLI retains its independent virtualization check.
+    """
+    # Select only non-secret identity fields; never copy arbitrary controller
+    # diagnostics, runtime environments or credentials into the disk receipt.
+    fields = ('node_uid', 'pod_uid', 'sandbox_id', 'container_id', 'kernel_sha256')
+    if not isinstance(observation, dict) or set(observation) != set(fields):
+        raise ValueError('controller observation must contain exact guest identity fields')
+    for field in fields:
+        pattern = r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}' if field.endswith('_uid') else r'[0-9a-f]{64}'
+        if not isinstance(observation[field], str) or not re.fullmatch(pattern, observation[field]):
+            raise ValueError('invalid controller observation identity')
+    guest_inputs(args, supervised=True)
+    receipt = _create_verified_disk(args)
+    receipt['controller_observation'] = dict(observation)
+    return receipt
+
+
+def _create_verified_disk(args):
     with ExitStack() as disks:
         with source.verified_source(args) as verified:
             auth_args = []
