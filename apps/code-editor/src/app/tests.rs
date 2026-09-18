@@ -1,4 +1,5 @@
 use super::*;
+use automerge::ReadDoc;
 
 #[test]
 fn direct_open_is_accepted_then_reports_the_exact_failure() {
