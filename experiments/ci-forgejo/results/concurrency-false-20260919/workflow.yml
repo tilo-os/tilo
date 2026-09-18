@@ -1,0 +1,15 @@
+name: Isolated concurrency false probe
+on:
+  push:
+    branches: [probe-concurrency-false-20260919]
+concurrency:
+  group: isolated-concurrency-false-20260919
+  cancel-in-progress: false
+jobs:
+  wait:
+    runs-on: runner
+    timeout-minutes: 3
+    container:
+      image: docker.io/library/python:3.13-alpine
+    steps:
+      - run: python3 -c "import time; print('probe started', flush=True); time.sleep(90)"

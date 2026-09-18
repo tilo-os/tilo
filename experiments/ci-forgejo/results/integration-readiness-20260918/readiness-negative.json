@@ -1,0 +1,111 @@
+{
+  "collected_at": "2026-09-18T21:55:10.222723+00:00",
+  "repo": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "pr": 4,
+  "policy_sha256": "9f485d320c35961017767475cb44418d8933466a1ff1ad7126c492720d618cba",
+  "policy": {
+    "reviewers": [
+      "claude"
+    ],
+    "trusted_revision": "28dd5076014e8b2148ea2b3acbbc9b5e28ccf730",
+    "protected_paths": [
+      ".forgejo/workflows",
+      "tools"
+    ],
+    "runs": [
+      {
+        "events": [
+          "push"
+        ],
+        "workflow": "misleading-status-probe.yml",
+        "run_id": 22588,
+        "jobs": [
+          "issuer"
+        ]
+      }
+    ]
+  },
+  "merge_authorized": false,
+  "limitations": [
+    "No runner isolation or credential separation qualification",
+    "Protected path closure must be supplied by trusted policy",
+    "Snapshots are not an atomic merge authorization; server must recheck exact head and base"
+  ],
+  "head": "41d99b13834f1243937be2264b130de52baf15c4",
+  "base": "41d99b13834f1243937be2264b130de52baf15c4",
+  "evidence": {
+    "pr": {
+      "number": 4,
+      "state": "closed",
+      "draft": false,
+      "merged": true,
+      "head": {
+        "sha": "41d99b13834f1243937be2264b130de52baf15c4",
+        "ref": "probe-review-head",
+        "repo": "qos/ci-workflow-pilot-20260918-9245-repeat"
+      },
+      "base": {
+        "sha": "41d99b13834f1243937be2264b130de52baf15c4",
+        "ref": "main",
+        "repo": "qos/ci-workflow-pilot-20260918-9245-repeat"
+      }
+    },
+    "author": "xemmerling",
+    "base": "41d99b13834f1243937be2264b130de52baf15c4",
+    "reviews": [
+      {
+        "id": 52,
+        "state": "APPROVED",
+        "commit_id": "cc1461402a4cfcfdd4575adda2aabb342ab68c4e",
+        "dismissed": true,
+        "official": false,
+        "user": "claude"
+      },
+      {
+        "id": 53,
+        "state": "APPROVED",
+        "commit_id": "41d99b13834f1243937be2264b130de52baf15c4",
+        "dismissed": false,
+        "official": true,
+        "user": "claude"
+      }
+    ],
+    "runs": [
+      {
+        "run": {
+          "id": 22588,
+          "status": "failure",
+          "commit_sha": "168f7b957e1478dff8990518333930355fafdc0b",
+          "workflow_id": "misleading-status-probe.yml",
+          "event": "push",
+          "started": "2026-09-18T21:06:30Z",
+          "stopped": "2026-09-18T21:07:06Z",
+          "repository": {
+            "id": 59,
+            "full_name": "qos/ci-workflow-pilot-20260918-9245-repeat"
+          }
+        },
+        "jobs": [
+          {
+            "id": 82967,
+            "run_id": 22588,
+            "repo_id": 59,
+            "name": "must-fail",
+            "status": "failure",
+            "attempt": 1,
+            "task_id": 74774
+          }
+        ]
+      }
+    ]
+  },
+  "errors": [
+    "PR is not the requested open unmerged candidate",
+    "incomplete observation: CalledProcessError",
+    "misleading-status-probe.yml: job 'must-fail' not successful",
+    "misleading-status-probe.yml: job set differs from trusted expectation",
+    "misleading-status-probe.yml: run head mismatch",
+    "misleading-status-probe.yml: run not successful"
+  ],
+  "observed_ready": false
+}

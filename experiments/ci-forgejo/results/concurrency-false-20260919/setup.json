@@ -1,0 +1,9 @@
+{
+  "repo": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "branch": "probe-concurrency-false-20260919",
+  "shas": [
+    "e37e3ce150d5350dc682891902276b26c9d3036f",
+    "6725dd77a81da55d784a102e42b93d0869dc1b9d",
+    "ba2e135743142d2ce8d906f6890bdca53c20c970"
+  ]
+}
