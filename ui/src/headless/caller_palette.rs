@@ -16,7 +16,7 @@ impl FrameHarness {
     pub fn set_caller_actions(&mut self, resources: Vec<qos_actions::Resource>) {
         self.caller_palette.resources = resources;
         if let Some(palette) = &mut self.caller_palette.palette {
-            palette.refresh_open_resources(&self.caller_palette.resources);
+            palette.refresh_visible_resources(&self.caller_palette.resources);
         }
         self.relayout();
     }
@@ -314,6 +314,33 @@ mod tests {
     }
 
     #[test]
+    fn open_palette_refreshes_visible_availability_without_input_and_keeps_target() {
+        let mut frame=frame();let original=resources(qos_actions::ConfirmationPolicy::None,vec![]);
+        frame.set_caller_actions(original.clone());open(&mut frame);
+        assert_eq!(frame.caller_palette.palette.as_ref().unwrap().result_labels(),vec!["Writer — Insert table"]);
+        frame.set_caller_actions(vec![]);
+        assert!(frame.caller_palette.palette.as_ref().unwrap().result_labels().is_empty(),"revocation removes rendered rows without a keypress");
+        assert!(!frame.inspection_json().unwrap().contains("Insert table"));
+        frame.set_caller_actions(original);
+        assert!(frame.inspection_json().unwrap().contains("Insert table"),"restoration is present in real semantics without input");
+        enter(&mut frame);
+        assert_eq!(frame.take_caller_operation().unwrap().address.resource,"certified-host/room/record/revision");
+    }
+
+    #[test]
+    fn real_result_semantics_activate_only_the_current_exact_row() {
+        let mut frame=frame();let original=resources(qos_actions::ConfirmationPolicy::None,vec![]);
+        frame.set_caller_actions(original.clone());open(&mut frame);
+        let snapshot=frame.caller_palette_inspection().unwrap();let results=&snapshot.children[1];
+        let target=results.semantics.as_ref().unwrap().children[0].action_target.clone().unwrap();
+        frame.set_caller_actions(vec![]);
+        assert!(frame.perform_semantic_named(&results.path,Some(&target),&crate::a11y::Action::Activate).is_err());
+        frame.set_caller_actions(original);
+        frame.perform_semantic_named(&results.path,Some(&target),&crate::a11y::Action::Activate).unwrap();
+        assert_eq!(frame.take_caller_operation().unwrap().address.action,"insert");
+    }
+
+    #[test]
     fn invalid_typed_input_does_not_become_a_nullary_effect() {
         let mut frame = frame();
         frame.set_caller_actions(resources(
@@ -331,5 +358,7 @@ mod tests {
         )));
         enter(&mut frame);
         assert!(frame.take_caller_operation().is_none());
+        assert!(frame.inspection_json().unwrap().contains("Invalid arguments"),"invalid input has a visible semantic diagnostic");
+        assert!(frame.caller_palette.palette.as_ref().unwrap().in_argument_mode());
     }
 }
