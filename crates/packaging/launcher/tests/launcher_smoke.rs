@@ -317,7 +317,7 @@ fn install_signed_bundle(
 }
 
 /// When an app manifest declares a runtime bundle, the launcher's argv
-/// should: bind the bundle at /usr/lib/tilo-runtime/<v>/, set
+/// should: bind the bundle at /run/tilo-runtime/<v>/, set
 /// `LD_LIBRARY_PATH` to <mount>/lib, and NOT include the --minimal-libs
 /// loader binds even if the flag is on.
 #[test]
@@ -382,13 +382,13 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
     assert!(
         argv.windows(3).any(|w| w[0] == "--ro-bind"
             && w[1] == bundle_dir.display().to_string()
-            && w[2] == "/usr/lib/tilo-runtime/smoke-1.0.0"),
+            && w[2] == "/run/tilo-runtime/smoke-1.0.0"),
         "runtime bind not in argv: {argv:?}"
     );
     assert!(
         argv.windows(3).any(|w| w[0] == "--setenv"
             && w[1] == "LD_LIBRARY_PATH"
-            && w[2] == "/usr/lib/tilo-runtime/smoke-1.0.0/lib"),
+            && w[2] == "/run/tilo-runtime/smoke-1.0.0/lib"),
         "LD_LIBRARY_PATH setenv not in argv: {argv:?}"
     );
 
@@ -524,7 +524,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
         None,
         &CapabilityPlan::empty(),
     );
-    let mount = format!("/usr/lib/tilo-runtime/{version}");
+    let mount = format!("/run/tilo-runtime/{version}");
     assert!(
         argv.windows(3).any(|w| w[0] == "--ro-bind"
             && w[1] == resolved_path.display().to_string()
@@ -537,6 +537,49 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
             && w[2] == format!("{mount}/lib")),
         "LD_LIBRARY_PATH not pointed at the shared-lib dir: {argv:?}"
     );
+}
+
+#[test]
+#[serial_test::serial(process_env)]
+fn configured_runtime_root_wins_over_the_installed_fallback() {
+    let _guard = RUNTIME_ENV_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let overlay = tempfile::tempdir().unwrap();
+    let version = "developer-overlay-smoke";
+    let bundle = overlay.path().join(version);
+    let host = tempfile::tempdir().unwrap();
+    for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
+        let path = host.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, rel).unwrap();
+    }
+    let identity = runtime_bundle::Identity::generate();
+    let identity_path = host.path().join("identity.json");
+    std::fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+    runtime_bundle::build_bundle_with(
+        &bundle,
+        version,
+        &runtime_bundle::BuildOptions {
+            from: Some(host.path()),
+            arch: Some("x86_64"),
+            identity: Some(&identity_path),
+            ..runtime_bundle::BuildOptions::default()
+        },
+    )
+    .unwrap();
+    let mut manifest = hello_manifest(Path::new("/payload"), BTreeMap::new());
+    manifest.runtime = Some(format!("tilo-runtime/{version}"));
+    let old = std::env::var_os(runtime_bundle::RUNTIME_DIR_ENV);
+    unsafe { std::env::set_var(runtime_bundle::RUNTIME_DIR_ENV, overlay.path()) };
+    let resolved = launcher::run::resolve_runtime_test_helper(&manifest, &RunOptions::default());
+    unsafe {
+        match old {
+            Some(value) => std::env::set_var(runtime_bundle::RUNTIME_DIR_ENV, value),
+            None => std::env::remove_var(runtime_bundle::RUNTIME_DIR_ENV),
+        }
+    }
+    assert_eq!(resolved.unwrap().unwrap().0, bundle);
 }
 
 /// End-to-end: a manifest with `[sandbox.portals] notifications =
