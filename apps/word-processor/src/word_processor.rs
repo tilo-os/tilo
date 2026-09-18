@@ -11,6 +11,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use qdoc::model::Region;
 use qdoc::{Containers, DocMut, IdGen};
+use ui::text_edit::{Edit, EditCore};
 
 /// One block's `(block_id, start, end)` character range, as returned by the
 /// selection/format-span readers below.
@@ -128,6 +129,9 @@ pub struct WordProcessor {
     body_caret: Option<(Caret, Option<Caret>)>,
     header_caret: Option<(Caret, Option<Caret>)>,
     footer_caret: Option<(Caret, Option<Caret>)>,
+    /// Shared byte-safe horizontal edit core for the active block. The
+    /// surrounding model still owns block splits/merges and qdoc structure.
+    edit_core: EditCore,
 }
 
 impl Default for WordProcessor {
@@ -147,6 +151,7 @@ impl WordProcessor {
             body_caret: None,
             header_caret: None,
             footer_caret: None,
+            edit_core: EditCore::new(),
         }
     }
 
@@ -2736,17 +2741,18 @@ impl WordProcessor {
 
     /// Select the whitespace-delimited word under the caret (double-click).
     pub fn select_word(&mut self, state: &AutoCommit) {
-        let chars: Vec<char> = self.current_text(state).chars().collect();
-        let off = self.caret.offset.min(chars.len());
-        let word = |c: char| !c.is_whitespace();
-        let mut s = off;
-        while s > 0 && chars.get(s - 1).is_some_and(|c| word(*c)) {
-            s -= 1;
-        }
-        let mut e = off;
-        while chars.get(e).is_some_and(|c| word(*c)) {
-            e += 1;
-        }
+        let text = self.current_text(state);
+        let byte = text
+            .char_indices()
+            .nth(self.caret.offset.min(text.chars().count()))
+            .map_or(text.len(), |(byte, _)| byte);
+        self.edit_core.set_caret(byte);
+        self.edit_core.select_word(&text, byte);
+        let range = self.edit_core.range();
+        let start = range.start;
+        let end = range.end;
+        let s = text[..start].chars().count();
+        let e = text[..end].chars().count();
         if s == e {
             return; // caret is on whitespace
         }
@@ -2754,6 +2760,59 @@ impl WordProcessor {
         self.clear_anchor();
         self.set_anchor();
         self.caret.offset = e;
+    }
+
+    fn sync_edit_core_from_state(&mut self, text: &str) {
+        let byte_at = |char_idx: usize| {
+            text.char_indices()
+                .nth(char_idx)
+                .map_or(text.len(), |(byte, _)| byte)
+        };
+        let anchor = self
+            .selection_anchor
+            .as_ref()
+            .filter(|anchor| anchor.block == self.caret.block)
+            .map_or(self.caret.offset, |anchor| anchor.offset);
+        self.edit_core
+            .set_selection(byte_at(anchor), byte_at(self.caret.offset));
+        self.edit_core.clamp_to(text);
+    }
+
+    fn sync_state_from_edit_core(&mut self, text: &str) {
+        let selection = self.edit_core.selection();
+        let char_at = |byte: usize| text[..byte.min(text.len())].chars().count();
+        let anchor = char_at(selection.anchor);
+        let cursor = char_at(selection.cursor);
+        self.caret.offset = cursor;
+        self.selection_anchor = (!selection.is_collapsed()).then(|| Caret {
+            block: self.caret.block.clone(),
+            offset: anchor,
+        });
+    }
+
+    fn apply_edit_core(&mut self, state: &mut AutoCommit, text: &str, edit: Edit) -> bool {
+        if edit.is_noop() {
+            return false;
+        }
+        let start = text[..edit.at].chars().count();
+        let removed = text[edit.at..edit.at.saturating_add(edit.removed)]
+            .chars()
+            .count();
+        let block = self.caret.block.clone();
+        self.region_splice(
+            state,
+            &block,
+            start,
+            num::isize_of_usize(removed),
+            &edit.inserted,
+        );
+        let mut updated = text.to_owned();
+        updated.replace_range(
+            edit.at..edit.at.saturating_add(edit.removed),
+            &edit.inserted,
+        );
+        self.sync_state_from_edit_core(&updated);
+        true
     }
 
     /// Select the entire document (Ctrl+A).
@@ -2780,6 +2839,18 @@ impl WordProcessor {
     /// Insert `s` at the caret and advance. Replaces the selection if any.
     /// Routes through the active region (body / header / footer).
     pub fn insert_str(&mut self, state: &mut AutoCommit, s: &str) {
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_none_or(|a| a.block == self.caret.block)
+        {
+            let text = self.current_text(state);
+            self.sync_edit_core_from_state(&text);
+            let edit = self.edit_core.insert(s);
+            if self.apply_edit_core(state, &text, edit) {
+                return;
+            }
+        }
         self.delete_selection(state);
         if self.containers.is_none() {
             return;
@@ -2844,6 +2915,18 @@ impl WordProcessor {
     /// Delete the character before the caret; at offset 0 merge into the
     /// previous block. Region-aware.
     pub fn backspace(&mut self, state: &mut AutoCommit) {
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_none_or(|a| a.block == self.caret.block)
+        {
+            let text = self.current_text(state);
+            self.sync_edit_core_from_state(&text);
+            let edit = self.edit_core.delete_backward(&text, false);
+            if self.apply_edit_core(state, &text, edit) {
+                return;
+            }
+        }
         if self.delete_selection(state) {
             return;
         }
@@ -2891,6 +2974,18 @@ impl WordProcessor {
     /// Delete the character after the caret; at end-of-block merge the next
     /// block in. Region-aware.
     pub fn delete_forward(&mut self, state: &mut AutoCommit) {
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_none_or(|a| a.block == self.caret.block)
+        {
+            let text = self.current_text(state);
+            self.sync_edit_core_from_state(&text);
+            let edit = self.edit_core.delete_forward(&text, false);
+            if self.apply_edit_core(state, &text, edit) {
+                return;
+            }
+        }
         if self.delete_selection(state) {
             return;
         }
@@ -2927,6 +3022,18 @@ impl WordProcessor {
     // ---- caret motion ------------------------------------------------------
 
     pub fn move_left(&mut self, state: &AutoCommit) {
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_none_or(|a| a.block == self.caret.block)
+        {
+            let text = self.current_text(state);
+            self.sync_edit_core_from_state(&text);
+            self.edit_core
+                .motion(&text, ui::text_edit::Motion::Left, false);
+            self.sync_state_from_edit_core(&text);
+            return;
+        }
         if self.caret.offset > 0 {
             self.caret.offset -= 1;
             return;
@@ -2945,6 +3052,18 @@ impl WordProcessor {
     }
 
     pub fn move_right(&mut self, state: &AutoCommit) {
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_none_or(|a| a.block == self.caret.block)
+        {
+            let text = self.current_text(state);
+            self.sync_edit_core_from_state(&text);
+            self.edit_core
+                .motion(&text, ui::text_edit::Motion::Right, false);
+            self.sync_state_from_edit_core(&text);
+            return;
+        }
         let len = self.block_len(state, &self.caret.block);
         if self.caret.offset < len {
             self.caret.offset += 1;
@@ -2963,6 +3082,22 @@ impl WordProcessor {
     }
 
     pub fn move_home(&mut self) {
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_none_or(|a| a.block == self.caret.block)
+        {
+            // The widget calls this only for the active block; the text is
+            // synchronized by the next stateful motion/edit if no document
+            // snapshot is available here.
+            if self.selection_anchor.is_none() {
+                self.caret.offset = 0;
+            } else {
+                self.selection_anchor = None;
+                self.caret.offset = 0;
+            }
+            return;
+        }
         self.caret.offset = 0;
     }
 
@@ -2975,6 +3110,18 @@ impl WordProcessor {
     }
 
     pub fn move_end(&mut self, state: &AutoCommit) {
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_none_or(|a| a.block == self.caret.block)
+        {
+            let text = self.current_text(state);
+            self.sync_edit_core_from_state(&text);
+            self.edit_core
+                .motion(&text, ui::text_edit::Motion::LineEnd, false);
+            self.sync_state_from_edit_core(&text);
+            return;
+        }
         self.caret.offset = self.block_len(state, &self.caret.block);
     }
 
