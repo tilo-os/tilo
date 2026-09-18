@@ -76,11 +76,36 @@ class SelectorTests(unittest.TestCase):
                 self.assertIn("leaf", plan["selected"])
 
     def test_unknown_docs_and_embedded_code_retain_contract_checks(self) -> None:
-        for path in ["docs/contracts.md", "docs/designs/fixture.rs", "docs/designs/../contract.md", "unknown-input"]:
+        for path in ["docs/contracts.md", "docs/packaging.md", "docs/app-development.md",
+                     "ui/CHARTS.md", "docs/unknown.md", "docs/designs/fixture.rs",
+                     "docs/designs/../contract.md", "unknown-input"]:
             with self.subTest(path=path):
                 plan = ci_select.make_plan(self.metadata, self.root, [path], 2)
                 self.assertTrue(plan["rust_required"])
                 self.assertTrue(ci_select.ALWAYS_PACKAGES.issubset(plan["selected"]))
+
+    def test_audited_developer_docs_omit_only_rust(self) -> None:
+        paths = ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md"]
+        for changes in [[path] for path in paths] + [paths + ["docs/designs/ci.md"]]:
+            with self.subTest(changes=changes):
+                plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+                self.assertFalse(plan["rust_required"])
+                self.assertEqual(plan["selected_count"], 0)
+                self.assertEqual(plan["matrix"], {"include": []})
+
+    def test_developer_docs_do_not_mask_mixed_changes_or_full_override(self) -> None:
+        for doc in ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md"]:
+            for extra, force in [(None, True), ("leaf/src/lib.rs", False),
+                                 ("Cargo.lock", False), ("docs/packaging.md", False)]:
+                with self.subTest(doc=doc, extra=extra, force=force):
+                    changes = [doc] + ([extra] if extra else [])
+                    plan = ci_select.make_plan(self.metadata, self.root, changes, 2, force_full=force)
+                    self.assertTrue(plan["rust_required"])
+                    if force or extra == "Cargo.lock":
+                        self.assertTrue(plan["full"])
+                        self.assertEqual(plan["selected_count"], plan["workspace_count"])
+                    if extra == "leaf/src/lib.rs":
+                        self.assertIn("leaf", plan["selected"])
 
     def test_build_input_forces_full_workspace(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
