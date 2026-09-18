@@ -507,6 +507,20 @@ enum AlbumEditorHit {
 enum MetadataEditorHit {
     Save,
     Cancel,
+    Organize,
+    TimeAndPlace,
+    ClearFolder,
+    ClearPeople,
+    ClearTags,
+    ClearCapturedAt,
+    ClearLocation,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum MetadataEditorSection {
+    #[default]
+    Organize,
+    TimeAndPlace,
 }
 
 /// The local selection shelf. Selection is intentionally not a CRDT value:
@@ -518,6 +532,7 @@ enum SelectionHit {
     SelectAll,
     Clear,
     Favorite,
+    EditDetails,
     ChooseAlbum,
     CancelDestinationChooser,
     ApplyDestination,
@@ -1063,12 +1078,22 @@ pub struct PhotosApp {
     album_page_buttons: Vec<(AlbumEditorHit, Button)>,
     album_page_pending: Rc<Cell<Option<AlbumEditorHit>>>,
     metadata_editor: bool,
-    metadata_editor_id: Option<String>,
+    metadata_editor_ids: Vec<String>,
     metadata_folder_input: TextInput,
     metadata_people_input: TextInput,
     metadata_tags_input: TextInput,
     metadata_captured_at_input: TextInput,
-    /// Tab order in the details sheet: four shared fields, Cancel, Save.
+    metadata_place_input: TextInput,
+    metadata_latitude_input: TextInput,
+    metadata_longitude_input: TextInput,
+    /// Whether each field started with multiple values in a multi-photo edit.
+    /// An untouched empty mixed field means Keep, never Clear.
+    metadata_mixed: [bool; 5],
+    /// A visible Clear command resolves the otherwise ambiguous empty mixed
+    /// field without magic sentinel text.
+    metadata_force_clear: [bool; 5],
+    metadata_editor_section: MetadataEditorSection,
+    /// Tab order within the active section plus Cancel and Save.
     metadata_editor_focus: usize,
     metadata_editor_hits: Vec<(MetadataEditorHit, Rect)>,
     /// At most two viewportfuls of decoded thumbnails.  Originals are never
@@ -1745,11 +1770,31 @@ impl PhotosApp {
             album_page_buttons: build_album_page_buttons(&album_page_pending),
             album_page_pending,
             metadata_editor: false,
-            metadata_editor_id: None,
-            metadata_folder_input: TextInput::local().with_id("photos-metadata-folder"),
-            metadata_people_input: TextInput::local().with_id("photos-metadata-people"),
-            metadata_tags_input: TextInput::local().with_id("photos-metadata-tags"),
-            metadata_captured_at_input: TextInput::local().with_id("photos-metadata-captured-at"),
+            metadata_editor_ids: Vec::new(),
+            metadata_folder_input: TextInput::local()
+                .with_id("photos-metadata-folder")
+                .with_placeholder("Mixed — leave unchanged"),
+            metadata_people_input: TextInput::local()
+                .with_id("photos-metadata-people")
+                .with_placeholder("Mixed — leave unchanged"),
+            metadata_tags_input: TextInput::local()
+                .with_id("photos-metadata-tags")
+                .with_placeholder("Mixed — leave unchanged"),
+            metadata_captured_at_input: TextInput::local()
+                .with_id("photos-metadata-captured-at")
+                .with_placeholder("Mixed — leave unchanged"),
+            metadata_place_input: TextInput::local()
+                .with_id("photos-metadata-place")
+                .with_placeholder("Optional place name"),
+            metadata_latitude_input: TextInput::local()
+                .with_id("photos-metadata-latitude")
+                .with_placeholder("Latitude"),
+            metadata_longitude_input: TextInput::local()
+                .with_id("photos-metadata-longitude")
+                .with_placeholder("Longitude"),
+            metadata_mixed: [false; 5],
+            metadata_force_clear: [false; 5],
+            metadata_editor_section: MetadataEditorSection::Organize,
             metadata_editor_focus: 0,
             metadata_editor_hits: Vec::new(),
             library_thumbnails: HashMap::new(),
@@ -2712,6 +2757,7 @@ impl PhotosApp {
                         .all(|id| library.photo(id).is_some_and(|photo| photo.favorite));
                 self.set_selected_favorite(doc, !all_favorite);
             }
+            SelectionHit::EditDetails => self.begin_selected_metadata_editor(doc),
             SelectionHit::ChooseAlbum => {
                 if self.selected_photo_ids.is_empty() || self.library_albums.is_empty() {
                     self.notice = Some("Select photographs and create an album first".to_owned());
@@ -2771,6 +2817,15 @@ impl PhotosApp {
         {
             self.begin_metadata_editor(doc, &id);
         }
+    }
+
+    /// Pose a mixed-value multi-photo edit on its location section. This is
+    /// the state most likely to regress silently because blank means “keep”
+    /// until the user explicitly clears or replaces the dimension.
+    pub fn show_batch_metadata_editor_for_shot(&mut self, doc: &AutoCommit) {
+        self.show_selection_for_shot(doc);
+        self.begin_selected_metadata_editor(doc);
+        self.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
     }
 
     /// Pose the offline Places destination for deterministic visual coverage.
@@ -3074,23 +3129,136 @@ impl PhotosApp {
     /// Open the compact, shared-widget metadata sheet for an explicit card.
     /// Nothing is inferred from pixels: people are only labels the user types.
     fn begin_metadata_editor(&mut self, doc: &AutoCommit, photo_id: &str) {
-        let Some(photo) = PhotosDoc::library(doc).photo(photo_id).cloned() else {
-            self.notice = Some("That photograph is no longer in the library".to_owned());
+        self.begin_metadata_editor_for_ids(doc, vec![photo_id.to_owned()]);
+    }
+
+    fn begin_selected_metadata_editor(&mut self, doc: &AutoCommit) {
+        let mut ids: Vec<_> = self.selected_photo_ids.iter().cloned().collect();
+        ids.sort_unstable();
+        if ids.is_empty() {
+            self.notice = Some("Select at least one photograph first".to_owned());
             return;
+        }
+        self.begin_metadata_editor_for_ids(doc, ids);
+    }
+
+    fn begin_metadata_editor_for_ids(&mut self, doc: &AutoCommit, photo_ids: Vec<String>) {
+        let library = PhotosDoc::library(doc);
+        if photo_ids.is_empty()
+            || photo_ids.len() > crate::actions::MAX_BATCH_PHOTOS
+            || !photo_ids.iter().all(|id| library.photo(id).is_some())
+        {
+            self.notice = Some("A selected photograph is no longer in the library".to_owned());
+            return;
+        }
+        let photos: Vec<_> = photo_ids
+            .iter()
+            .filter_map(|id| library.photo(id))
+            .collect();
+        let common = |values: Vec<String>| {
+            values
+                .first()
+                .filter(|first| values.iter().all(|value| value == *first))
+                .cloned()
         };
+        let folders: Vec<_> = photos
+            .iter()
+            .map(|photo| photo.folder.clone().unwrap_or_default())
+            .collect();
+        let people: Vec<_> = photos.iter().map(|photo| photo.people.join(", ")).collect();
+        let tags: Vec<_> = photos.iter().map(|photo| photo.tags.join(", ")).collect();
+        let captured: Vec<_> = photos
+            .iter()
+            .map(|photo| photo.captured_at.clone().unwrap_or_default())
+            .collect();
+        let locations: Vec<_> = photos.iter().map(|photo| photo.location.clone()).collect();
+        let common_folder = common(folders);
+        let common_people = common(people);
+        let common_tags = common(tags);
+        let common_captured = common(captured);
+        let common_location = locations
+            .first()
+            .filter(|first| locations.iter().all(|value| value == *first))
+            .cloned();
+
         self.metadata_editor = true;
-        self.metadata_editor_id = Some(photo.id);
+        self.metadata_editor_ids = photo_ids;
+        self.metadata_mixed = [
+            common_folder.is_none(),
+            common_people.is_none(),
+            common_tags.is_none(),
+            common_captured.is_none(),
+            common_location.is_none(),
+        ];
+        self.metadata_force_clear = [false; 5];
         self.metadata_folder_input
-            .set_text(photo.folder.as_deref().unwrap_or_default());
+            .set_text(common_folder.as_deref().unwrap_or_default());
         self.metadata_people_input
-            .set_text(&photo.people.join(", "));
-        self.metadata_tags_input.set_text(&photo.tags.join(", "));
+            .set_text(common_people.as_deref().unwrap_or_default());
+        self.metadata_tags_input
+            .set_text(common_tags.as_deref().unwrap_or_default());
         self.metadata_captured_at_input
-            .set_text(photo.captured_at.as_deref().unwrap_or_default());
+            .set_text(common_captured.as_deref().unwrap_or_default());
+        if let Some(Some(location)) = common_location {
+            self.metadata_place_input
+                .set_text(location.label.as_deref().unwrap_or_default());
+            self.metadata_latitude_input
+                .set_text(&format!("{:.6}", location.latitude));
+            self.metadata_longitude_input
+                .set_text(&format!("{:.6}", location.longitude));
+        } else {
+            self.metadata_place_input.set_text("");
+            self.metadata_latitude_input.set_text("");
+            self.metadata_longitude_input.set_text("");
+        }
+        for (input, mixed, ordinary) in [
+            (
+                &mut self.metadata_folder_input,
+                self.metadata_mixed[0],
+                "Folder",
+            ),
+            (
+                &mut self.metadata_people_input,
+                self.metadata_mixed[1],
+                "Add people names",
+            ),
+            (
+                &mut self.metadata_tags_input,
+                self.metadata_mixed[2],
+                "Add searchable tags",
+            ),
+            (
+                &mut self.metadata_captured_at_input,
+                self.metadata_mixed[3],
+                "Date and time",
+            ),
+        ] {
+            input.set_placeholder(if mixed {
+                "Mixed — leave unchanged"
+            } else {
+                ordinary
+            });
+        }
+        let location_hint = if self.metadata_mixed[4] {
+            "Mixed — leave unchanged"
+        } else {
+            "Latitude"
+        };
+        self.metadata_latitude_input.set_placeholder(location_hint);
+        self.metadata_longitude_input
+            .set_placeholder(if self.metadata_mixed[4] {
+                "Mixed — leave unchanged"
+            } else {
+                "Longitude"
+            });
         self.metadata_folder_input.set_focus(true);
         self.metadata_people_input.set_focus(false);
         self.metadata_tags_input.set_focus(false);
         self.metadata_captured_at_input.set_focus(false);
+        self.metadata_place_input.set_focus(false);
+        self.metadata_latitude_input.set_focus(false);
+        self.metadata_longitude_input.set_focus(false);
+        self.metadata_editor_section = MetadataEditorSection::Organize;
         self.metadata_editor_focus = 0;
         self.album_editor = false;
         // The sheet owns the full privacy explanation. Keeping a duplicate
@@ -3100,19 +3268,22 @@ impl PhotosApp {
 
     fn cancel_metadata_editor(&mut self) {
         self.metadata_editor = false;
-        self.metadata_editor_id = None;
+        self.metadata_editor_ids.clear();
         self.metadata_folder_input.set_focus(false);
         self.metadata_people_input.set_focus(false);
         self.metadata_tags_input.set_focus(false);
         self.metadata_captured_at_input.set_focus(false);
+        self.metadata_place_input.set_focus(false);
+        self.metadata_latitude_input.set_focus(false);
+        self.metadata_longitude_input.set_focus(false);
         self.metadata_editor_focus = 0;
         self.notice = Some("Photo details discarded".to_owned());
     }
 
     fn save_metadata_editor(&mut self, doc: &mut AutoCommit) {
-        let Some(photo_id) = self.metadata_editor_id.clone() else {
+        if self.metadata_editor_ids.is_empty() {
             return;
-        };
+        }
         let labels = |input: &TextInput| {
             input
                 .value()
@@ -3126,28 +3297,158 @@ impl PhotosApp {
             let value = input.value().trim();
             (!value.is_empty()).then(|| value.to_owned())
         };
+        let text_patch = |input: &TextInput, mixed: bool, clear: bool| {
+            if clear {
+                crate::actions::MetadataPatch::Clear
+            } else if mixed && input.value().trim().is_empty() {
+                crate::actions::MetadataPatch::Keep
+            } else {
+                optional(input).map_or(
+                    crate::actions::MetadataPatch::Clear,
+                    crate::actions::MetadataPatch::Set,
+                )
+            }
+        };
+        let labels_patch = |input: &TextInput, mixed: bool, clear: bool| {
+            if clear {
+                crate::actions::MetadataPatch::Clear
+            } else {
+                let values = labels(input);
+                if mixed && values.is_empty() {
+                    crate::actions::MetadataPatch::Keep
+                } else if values.is_empty() {
+                    crate::actions::MetadataPatch::Clear
+                } else {
+                    crate::actions::MetadataPatch::Set(values)
+                }
+            }
+        };
+        let latitude = self.metadata_latitude_input.value().trim();
+        let longitude = self.metadata_longitude_input.value().trim();
+        let location = if self.metadata_force_clear[4] {
+            crate::actions::MetadataPatch::Clear
+        } else if self.metadata_mixed[4] && latitude.is_empty() && longitude.is_empty() {
+            crate::actions::MetadataPatch::Keep
+        } else if latitude.is_empty() && longitude.is_empty() {
+            crate::actions::MetadataPatch::Clear
+        } else {
+            let (Ok(latitude), Ok(longitude)) = (latitude.parse::<f64>(), longitude.parse::<f64>())
+            else {
+                self.notice =
+                    Some("Location needs numeric latitude and longitude together".to_owned());
+                return;
+            };
+            crate::actions::MetadataPatch::Set(crate::model::PhotoLocation {
+                latitude,
+                longitude,
+                label: optional(&self.metadata_place_input),
+                provenance: crate::model::LocationProvenance {
+                    source: "user".to_owned(),
+                    scope: "shared".to_owned(),
+                },
+            })
+        };
         self.commit_library_action(
             doc,
-            &crate::actions::PhotosAction::SetMetadata {
-                photo_id,
-                folder: optional(&self.metadata_folder_input),
-                people: labels(&self.metadata_people_input),
-                tags: labels(&self.metadata_tags_input),
-                captured_at: optional(&self.metadata_captured_at_input),
+            &crate::actions::PhotosAction::SetMetadataBatch {
+                photo_ids: self.metadata_editor_ids.clone(),
+                folder: text_patch(
+                    &self.metadata_folder_input,
+                    self.metadata_mixed[0],
+                    self.metadata_force_clear[0],
+                ),
+                people: labels_patch(
+                    &self.metadata_people_input,
+                    self.metadata_mixed[1],
+                    self.metadata_force_clear[1],
+                ),
+                tags: labels_patch(
+                    &self.metadata_tags_input,
+                    self.metadata_mixed[2],
+                    self.metadata_force_clear[2],
+                ),
+                captured_at: text_patch(
+                    &self.metadata_captured_at_input,
+                    self.metadata_mixed[3],
+                    self.metadata_force_clear[3],
+                ),
+                location,
             },
         );
+        let count = self.metadata_editor_ids.len();
         self.metadata_editor = false;
-        self.metadata_editor_id = None;
+        self.metadata_editor_ids.clear();
         self.metadata_editor_focus = 0;
-        self.notice = Some("Shared photo details saved".to_owned());
+        self.notice = Some(if count == 1 {
+            "Shared photo details saved".to_owned()
+        } else {
+            format!("Shared details saved for {count} photographs")
+        });
+        if count > 1 {
+            self.finish_selection();
+        }
     }
 
     fn set_metadata_editor_focus(&mut self, focus: usize) {
-        self.metadata_editor_focus = focus.min(5);
-        self.metadata_folder_input.set_focus(focus == 0);
-        self.metadata_people_input.set_focus(focus == 1);
-        self.metadata_tags_input.set_focus(focus == 2);
-        self.metadata_captured_at_input.set_focus(focus == 3);
+        let max = if self.metadata_editor_section == MetadataEditorSection::Organize {
+            4
+        } else {
+            5
+        };
+        self.metadata_editor_focus = focus.min(max);
+        let organize = self.metadata_editor_section == MetadataEditorSection::Organize;
+        self.metadata_folder_input.set_focus(organize && focus == 0);
+        self.metadata_people_input.set_focus(organize && focus == 1);
+        self.metadata_tags_input.set_focus(organize && focus == 2);
+        self.metadata_captured_at_input
+            .set_focus(!organize && focus == 0);
+        self.metadata_place_input.set_focus(!organize && focus == 1);
+        self.metadata_latitude_input
+            .set_focus(!organize && focus == 2);
+        self.metadata_longitude_input
+            .set_focus(!organize && focus == 3);
+    }
+
+    fn set_metadata_editor_section(&mut self, section: MetadataEditorSection) {
+        self.metadata_editor_section = section;
+        self.set_metadata_editor_focus(0);
+    }
+
+    fn clear_metadata_dimension(&mut self, dimension: usize) {
+        self.metadata_force_clear[dimension] = !self.metadata_force_clear[dimension];
+        if !self.metadata_force_clear[dimension] {
+            return;
+        }
+        match dimension {
+            0 => self.metadata_folder_input.set_text(""),
+            1 => self.metadata_people_input.set_text(""),
+            2 => self.metadata_tags_input.set_text(""),
+            3 => self.metadata_captured_at_input.set_text(""),
+            4 => {
+                self.metadata_place_input.set_text("");
+                self.metadata_latitude_input.set_text("");
+                self.metadata_longitude_input.set_text("");
+            }
+            _ => {}
+        }
+    }
+
+    fn activate_metadata_editor_hit(&mut self, hit: MetadataEditorHit, doc: &mut AutoCommit) {
+        match hit {
+            MetadataEditorHit::Save => self.save_metadata_editor(doc),
+            MetadataEditorHit::Cancel => self.cancel_metadata_editor(),
+            MetadataEditorHit::Organize => {
+                self.set_metadata_editor_section(MetadataEditorSection::Organize)
+            }
+            MetadataEditorHit::TimeAndPlace => {
+                self.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace)
+            }
+            MetadataEditorHit::ClearFolder => self.clear_metadata_dimension(0),
+            MetadataEditorHit::ClearPeople => self.clear_metadata_dimension(1),
+            MetadataEditorHit::ClearTags => self.clear_metadata_dimension(2),
+            MetadataEditorHit::ClearCapturedAt => self.clear_metadata_dimension(3),
+            MetadataEditorHit::ClearLocation => self.clear_metadata_dimension(4),
+        }
     }
 
     fn begin_edit_album(&mut self, doc: &AutoCommit) {
@@ -3591,12 +3892,17 @@ impl PhotosApp {
         if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == winit::event::ElementState::Pressed
         {
+            let focus_count = if self.metadata_editor_section == MetadataEditorSection::Organize {
+                5
+            } else {
+                6
+            };
             match &key.logical_key {
                 Key::Named(NamedKey::Tab) => {
                     self.set_metadata_editor_focus(if modifiers.state().shift_key() {
-                        (self.metadata_editor_focus + 5) % 6
+                        (self.metadata_editor_focus + focus_count - 1) % focus_count
                     } else {
-                        (self.metadata_editor_focus + 1) % 6
+                        (self.metadata_editor_focus + 1) % focus_count
                     });
                     *handled = true;
                     return true;
@@ -3613,12 +3919,12 @@ impl PhotosApp {
                     *handled = true;
                     return true;
                 }
-                Key::Named(NamedKey::Enter) if self.metadata_editor_focus == 4 => {
+                Key::Named(NamedKey::Enter) if self.metadata_editor_focus == focus_count - 2 => {
                     self.cancel_metadata_editor();
                     *handled = true;
                     return true;
                 }
-                Key::Named(NamedKey::Enter) if self.metadata_editor_focus == 5 => {
+                Key::Named(NamedKey::Enter) if self.metadata_editor_focus == focus_count - 1 => {
                     self.save_metadata_editor(doc);
                     *handled = true;
                     return true;
@@ -3631,6 +3937,9 @@ impl PhotosApp {
             &mut self.metadata_people_input,
             &mut self.metadata_tags_input,
             &mut self.metadata_captured_at_input,
+            &mut self.metadata_place_input,
+            &mut self.metadata_latitude_input,
+            &mut self.metadata_longitude_input,
         ] {
             let mut sink = None;
             input.handle_event(
@@ -3658,10 +3967,7 @@ impl PhotosApp {
             .find(|(_, rect)| rect.contains(self.pointer))
             .copied()
         {
-            match hit {
-                MetadataEditorHit::Save => self.save_metadata_editor(doc),
-                MetadataEditorHit::Cancel => self.cancel_metadata_editor(),
-            }
+            self.activate_metadata_editor_hit(hit, doc);
             *handled = true;
         }
         true
@@ -4603,6 +4909,11 @@ impl PhotosApp {
                             "photos:selection:favorite",
                             self.selected_photo_ids.is_empty(),
                         ),
+                        SelectionHit::EditDetails => (
+                            "Edit details for selected photographs",
+                            "photos:selection:edit-details",
+                            self.selected_photo_ids.is_empty(),
+                        ),
                         SelectionHit::ChooseAlbum => (
                             "Choose destination album",
                             "photos:selection:choose-album",
@@ -4678,15 +4989,23 @@ impl PhotosApp {
                     );
                 }
                 if self.metadata_editor {
-                    for (name, input) in [
-                        ("Folder", &self.metadata_folder_input),
-                        ("People", &self.metadata_people_input),
-                        ("Tags", &self.metadata_tags_input),
-                        ("Captured", &self.metadata_captured_at_input),
-                    ] {
+                    let fields: &[(&str, &TextInput)] = match self.metadata_editor_section {
+                        MetadataEditorSection::Organize => &[
+                            ("Folder", &self.metadata_folder_input),
+                            ("People", &self.metadata_people_input),
+                            ("Tags", &self.metadata_tags_input),
+                        ],
+                        MetadataEditorSection::TimeAndPlace => &[
+                            ("Captured", &self.metadata_captured_at_input),
+                            ("Place name", &self.metadata_place_input),
+                            ("Latitude", &self.metadata_latitude_input),
+                            ("Longitude", &self.metadata_longitude_input),
+                        ],
+                    };
+                    for (name, input) in fields {
                         cards.push(
                             AccessNode::new(Role::TextInput)
-                                .with_name(name)
+                                .with_name(*name)
                                 .with_value(input.value())
                                 .with_bounds(input.get_rect())
                                 .with_state(AccessState {
@@ -4704,6 +5023,27 @@ impl PhotosApp {
                             }
                             MetadataEditorHit::Cancel => {
                                 ("Cancel photo details", "photos:metadata:cancel")
+                            }
+                            MetadataEditorHit::Organize => {
+                                ("Organize fields", "photos:metadata:organize")
+                            }
+                            MetadataEditorHit::TimeAndPlace => {
+                                ("Time and place fields", "photos:metadata:time-and-place")
+                            }
+                            MetadataEditorHit::ClearFolder => {
+                                ("Clear folder", "photos:metadata:clear-folder")
+                            }
+                            MetadataEditorHit::ClearPeople => {
+                                ("Clear people", "photos:metadata:clear-people")
+                            }
+                            MetadataEditorHit::ClearTags => {
+                                ("Clear tags", "photos:metadata:clear-tags")
+                            }
+                            MetadataEditorHit::ClearCapturedAt => {
+                                ("Clear capture time", "photos:metadata:clear-captured-at")
+                            }
+                            MetadataEditorHit::ClearLocation => {
+                                ("Clear location", "photos:metadata:clear-location")
                             }
                         };
                         cards.push(
@@ -5271,6 +5611,7 @@ impl PhotosApp {
                     "all" => SelectionHit::SelectAll,
                     "clear" => SelectionHit::Clear,
                     "favorite" => SelectionHit::Favorite,
+                    "edit-details" => SelectionHit::EditDetails,
                     "choose-album" => SelectionHit::ChooseAlbum,
                     "destination-cancel" => SelectionHit::CancelDestinationChooser,
                     "destination-apply" => SelectionHit::ApplyDestination,
@@ -5322,6 +5663,15 @@ impl PhotosApp {
             match command {
                 "save" => self.save_metadata_editor(doc),
                 "cancel" => self.cancel_metadata_editor(),
+                "organize" => self.set_metadata_editor_section(MetadataEditorSection::Organize),
+                "time-and-place" => {
+                    self.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace)
+                }
+                "clear-folder" => self.clear_metadata_dimension(0),
+                "clear-people" => self.clear_metadata_dimension(1),
+                "clear-tags" => self.clear_metadata_dimension(2),
+                "clear-captured-at" => self.clear_metadata_dimension(3),
+                "clear-location" => self.clear_metadata_dimension(4),
                 _ => return false,
             }
             return true;
@@ -9732,6 +10082,12 @@ impl PhotosApp {
                     selected > 0,
                 ),
                 (
+                    SelectionHit::EditDetails,
+                    "Edit details",
+                    112.0,
+                    selected > 0,
+                ),
+                (
                     if self.selection_destination_album.is_some() {
                         SelectionHit::AddToAlbum
                     } else {
@@ -9771,6 +10127,8 @@ impl PhotosApp {
                 TextWeight::Medium,
             );
             let row_y = selection_y + 4.0;
+            let middle_x = x + 98.0;
+            let middle_w = ((max_x - 84.0 - middle_x - 6.0) * 0.5).max(72.0);
             for (hit, label, rect, enabled) in [
                 (
                     SelectionHit::Done,
@@ -9779,13 +10137,19 @@ impl PhotosApp {
                     true,
                 ),
                 (
+                    SelectionHit::EditDetails,
+                    "Details",
+                    Rect::new(middle_x, row_y, middle_x + middle_w, row_y + 40.0),
+                    selected > 0,
+                ),
+                (
                     if self.selection_destination_album.is_some() {
                         SelectionHit::AddToAlbum
                     } else {
                         SelectionHit::ChooseAlbum
                     },
                     destination_label.as_str(),
-                    Rect::new(x + 106.0, row_y, max_x - 84.0, row_y + 40.0),
+                    Rect::new(middle_x + middle_w + 6.0, row_y, max_x - 84.0, row_y + 40.0),
                     selected > 0 && !self.library_albums.is_empty(),
                 ),
             ] {
@@ -10644,175 +11008,18 @@ impl PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.metadata_editor_hits.clear();
-        if !self.metadata_editor {
-            return;
-        }
-        if theme.text_scale > 1.25 {
-            self.draw_large_text_metadata_editor(scene, transform, text_renderer, theme, presence);
-            return;
-        }
-        let bounds = self.canvas_rect;
-        let narrow = bounds.width() < 620.0;
-        let panel_w = if narrow { bounds.width() - 16.0 } else { 420.0 };
-        let scale = f64::from(theme.text_scale);
-        // Keep each field's scaled label, input, and its own focus ring on a
-        // separate line. The former fixed 66px rhythm made 200% text paint
-        // through the next field and the footer actions.
-        let panel_h = (408.0 * scale).min((bounds.height() - 24.0).max(0.0));
-        let panel = Rect::new(
-            if narrow {
-                bounds.x0 + 8.0
-            } else {
-                bounds.x1 - panel_w - 12.0
-            },
-            if narrow {
-                (bounds.y1 - panel_h - 8.0).max(bounds.y0 + 8.0)
-            } else {
-                bounds.y0 + 12.0
-            },
-            if narrow {
-                bounds.x1 - 8.0
-            } else {
-                bounds.x1 - 12.0
-            },
-            if narrow {
-                bounds.y1 - 8.0
-            } else {
-                (bounds.y0 + 12.0 + panel_h).min(bounds.y1 - 8.0)
-            },
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &panel,
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.border_standard,
-            None,
-            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Photo details",
-            18.0,
-            theme.text_primary,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0 * scale)),
-            Some((panel.width() - 32.0) as f32),
-            TextWeight::Medium,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Shared labels only — no automatic people identification",
-            12.0,
-            theme.text_dim,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 48.0 * scale)),
-            Some((panel.width() - 32.0) as f32),
-            TextWeight::Regular,
-        );
-        let fields = [
-            ("Folder", &mut self.metadata_folder_input),
-            ("People (comma-separated)", &mut self.metadata_people_input),
-            ("Tags (comma-separated)", &mut self.metadata_tags_input),
-            ("Captured", &mut self.metadata_captured_at_input),
-        ];
-        for (index, (label, input)) in fields.into_iter().enumerate() {
-            // Leave a full scaled line after the privacy subtitle.  At 200%
-            // the sentence wraps, so the old 70px origin put “Folder” on its
-            // second line even though the field rectangles themselves fit.
-            let y = panel.y0 + 90.0 * scale + index as f64 * 60.0 * scale;
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                12.0,
-                theme.text_dim,
-                transform * Affine::translate((panel.x0 + 16.0, y)),
-                Some((panel.width() - 32.0) as f32),
-                TextWeight::Regular,
-            );
-            input.apply_layout_external(Rect::new(
-                panel.x0 + 16.0,
-                y + 17.0 * scale,
-                panel.x1 - 16.0,
-                y + 55.0 * scale,
-            ));
-            input.draw(scene, transform, text_renderer, theme, presence);
-        }
-        let y = panel.y1 - 64.0 * scale;
-        let cancel = Rect::new(
-            panel.x0 + 16.0,
-            y,
-            panel.x0 + 112.0 * scale,
-            y + 44.0 * scale,
-        );
-        let save = Rect::new(
-            panel.x1 - 96.0 * scale,
-            y,
-            panel.x1 - 16.0,
-            y + 44.0 * scale,
-        );
-        for (hit, rect, label, color) in [
-            (
-                MetadataEditorHit::Cancel,
-                cancel,
-                "Cancel",
-                theme.tokens.colors.neutral[3],
-            ),
-            (
-                MetadataEditorHit::Save,
-                save,
-                "Save",
-                theme.tokens.colors.accent[6],
-            ),
-        ] {
-            let focused = matches!(hit, MetadataEditorHit::Cancel)
-                && self.metadata_editor_focus == 4
-                || matches!(hit, MetadataEditorHit::Save) && self.metadata_editor_focus == 5;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                if focused { theme.bg_hover } else { color },
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                13.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 14.0 * scale)),
-                Some((rect.width() - 16.0) as f32),
-                TextWeight::Medium,
-            );
-            self.metadata_editor_hits.push((hit, rect));
-        }
-    }
-
-    /// Reflow the details form for enlarged text. Font scaling belongs to the
-    /// text renderer; multiplying every desktop offset by the same factor
-    /// produced an 816 px form in a 728 px phone canvas and hid Captured under
-    /// the footer. This rhythm reserves a complete row for every label/input
-    /// and anchors the actions only after those rows.
-    fn draw_large_text_metadata_editor(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
         use vello::peniko::Fill;
 
+        if !self.metadata_editor {
+            self.metadata_editor_hits.clear();
+            return;
+        }
         let bounds = self.canvas_rect;
-        let narrow = bounds.width() < 620.0;
+        let narrow = bounds.width() < 680.0;
         let panel_w = if narrow {
-            bounds.width() - 16.0
+            (bounds.width() - 16.0).max(0.0)
         } else {
-            480.0_f64.min(bounds.width() - 24.0)
+            500.0_f64.min(bounds.width() - 24.0)
         };
         let panel = Rect::new(
             if narrow {
@@ -10838,9 +11045,21 @@ impl PhotosApp {
             None,
             &panel,
         );
+
+        let count = self.metadata_editor_ids.len();
+        let title = if count == 1 {
+            "Photo details".to_owned()
+        } else {
+            format!("Edit {count} photographs")
+        };
+        let subtitle = if count == 1 {
+            "Organize this photograph or correct when and where it was taken."
+        } else {
+            "Only fields you change are applied. Mixed values stay untouched."
+        };
         text_renderer.draw_text_weighted(
             scene,
-            "Photo details",
+            &title,
             18.0,
             theme.text_primary,
             transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0)),
@@ -10849,97 +11068,249 @@ impl PhotosApp {
         );
         text_renderer.draw_text_weighted(
             scene,
-            "No automatic face matching",
-            12.0,
+            subtitle,
+            11.0,
             theme.text_dim,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 62.0)),
+            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 48.0)),
             Some((panel.width() - 32.0) as f32),
             TextWeight::Regular,
         );
 
-        self.draw_large_metadata_fields(scene, transform, text_renderer, theme, presence, panel);
-        self.draw_large_metadata_actions(scene, transform, text_renderer, theme, panel);
-    }
-
-    fn draw_large_metadata_fields(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        panel: Rect,
-    ) {
-        let available_for_fields = (panel.height() - 178.0).max(288.0);
-        let row_h = (available_for_fields / 4.0).clamp(72.0, 92.0);
-        let fields = [
-            ("Folder", &mut self.metadata_folder_input),
-            ("People (comma-separated)", &mut self.metadata_people_input),
-            ("Tags (comma-separated)", &mut self.metadata_tags_input),
-            ("Captured", &mut self.metadata_captured_at_input),
-        ];
-        for (index, (label, input)) in fields.into_iter().enumerate() {
-            let y = panel.y0 + 106.0 + index as f64 * row_h;
+        let tab_y = panel.y0 + if theme.text_scale > 1.25 { 86.0 } else { 76.0 };
+        let tab_gap = 8.0;
+        let tab_w = (panel.width() - 32.0 - tab_gap) * 0.5;
+        let mut hits = Vec::new();
+        for (section, hit, label, x) in [
+            (
+                MetadataEditorSection::Organize,
+                MetadataEditorHit::Organize,
+                "Organize",
+                panel.x0 + 16.0,
+            ),
+            (
+                MetadataEditorSection::TimeAndPlace,
+                MetadataEditorHit::TimeAndPlace,
+                "Time & place",
+                panel.x0 + 16.0 + tab_w + tab_gap,
+            ),
+        ] {
+            let rect = Rect::new(x, tab_y, x + tab_w, tab_y + 40.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if self.metadata_editor_section == section {
+                    theme.tokens.colors.accent[6]
+                } else {
+                    theme.tokens.colors.neutral[3]
+                },
+                None,
+                &rect,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &rect,
+            );
             text_renderer.draw_text_weighted(
                 scene,
                 label,
-                11.0,
-                theme.text_dim,
-                transform * Affine::translate((panel.x0 + 16.0, y)),
-                Some((panel.width() - 32.0) as f32),
-                TextWeight::Regular,
+                12.0,
+                theme.text_primary,
+                transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 12.0)),
+                Some((rect.width() - 24.0) as f32),
+                TextWeight::Medium,
             );
-            input.apply_layout_external(Rect::new(
-                panel.x0 + 16.0,
-                y + 24.0,
-                panel.x1 - 16.0,
-                (y + row_h - 4.0).max(y + 68.0),
-            ));
-            input.draw(scene, transform, text_renderer, theme, presence);
+            hits.push((hit, rect));
         }
-    }
 
-    fn draw_large_metadata_actions(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        panel: Rect,
-    ) {
-        use vello::peniko::Fill;
+        let fields_y = tab_y + 54.0;
+        let footer_y = panel.y1 - 60.0;
+        let label_and_input =
+            |scene: &mut Scene,
+             text_renderer: &mut TextRenderer,
+             input: &mut TextInput,
+             label: &str,
+             mixed: bool,
+             clear_hit: MetadataEditorHit,
+             force_clear: bool,
+             rect: Rect,
+             hits: &mut Vec<(MetadataEditorHit, Rect)>| {
+                let visible_label = if mixed {
+                    format!("{label} · Mixed — unchanged")
+                } else {
+                    label.to_owned()
+                };
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &visible_label,
+                    11.0,
+                    theme.text_dim,
+                    transform * Affine::translate((rect.x0, rect.y0)),
+                    Some((rect.width() - 64.0) as f32),
+                    TextWeight::Medium,
+                );
+                let clear = Rect::new(rect.x1 - 58.0, rect.y0 - 6.0, rect.x1, rect.y0 + 26.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    if force_clear {
+                        theme.tokens.colors.semantic.danger
+                    } else {
+                        theme.tokens.colors.neutral[3]
+                    },
+                    None,
+                    &clear,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    if force_clear { "Cleared" } else { "Clear" },
+                    10.0,
+                    theme.text_primary,
+                    transform * Affine::translate((clear.x0 + 7.0, clear.y0 + 8.0)),
+                    Some((clear.width() - 12.0) as f32),
+                    TextWeight::Medium,
+                );
+                hits.push((clear_hit, clear));
+                input.apply_layout_external(Rect::new(rect.x0, rect.y0 + 24.0, rect.x1, rect.y1));
+                input.draw(scene, transform, text_renderer, theme, presence);
+            };
 
-        let action_y = panel.y1 - 64.0;
-        let action_w = ((panel.width() - 40.0) * 0.5).max(96.0);
-        let cancel = Rect::new(
-            panel.x0 + 16.0,
-            action_y,
-            panel.x0 + 16.0 + action_w,
-            panel.y1 - 12.0,
-        );
-        let save = Rect::new(
-            panel.x1 - 16.0 - action_w,
-            action_y,
-            panel.x1 - 16.0,
-            panel.y1 - 12.0,
-        );
-        for (hit, rect, label, color) in [
+        match self.metadata_editor_section {
+            MetadataEditorSection::Organize => {
+                let row_h = ((footer_y - fields_y - 12.0) / 3.0).clamp(70.0, 94.0);
+                for (index, (label, input, hit)) in [
+                    (
+                        "Folder",
+                        &mut self.metadata_folder_input,
+                        MetadataEditorHit::ClearFolder,
+                    ),
+                    (
+                        "People",
+                        &mut self.metadata_people_input,
+                        MetadataEditorHit::ClearPeople,
+                    ),
+                    (
+                        "Tags",
+                        &mut self.metadata_tags_input,
+                        MetadataEditorHit::ClearTags,
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let y = fields_y + index as f64 * row_h;
+                    label_and_input(
+                        scene,
+                        text_renderer,
+                        input,
+                        label,
+                        self.metadata_mixed[index],
+                        hit,
+                        self.metadata_force_clear[index],
+                        Rect::new(panel.x0 + 16.0, y, panel.x1 - 16.0, y + row_h - 8.0),
+                        &mut hits,
+                    );
+                }
+            }
+            MetadataEditorSection::TimeAndPlace => {
+                let row_h = ((footer_y - fields_y - 12.0) / 3.0).clamp(70.0, 94.0);
+                label_and_input(
+                    scene,
+                    text_renderer,
+                    &mut self.metadata_captured_at_input,
+                    "Captured",
+                    self.metadata_mixed[3],
+                    MetadataEditorHit::ClearCapturedAt,
+                    self.metadata_force_clear[3],
+                    Rect::new(
+                        panel.x0 + 16.0,
+                        fields_y,
+                        panel.x1 - 16.0,
+                        fields_y + row_h - 8.0,
+                    ),
+                    &mut hits,
+                );
+                label_and_input(
+                    scene,
+                    text_renderer,
+                    &mut self.metadata_place_input,
+                    "Place name",
+                    self.metadata_mixed[4],
+                    MetadataEditorHit::ClearLocation,
+                    self.metadata_force_clear[4],
+                    Rect::new(
+                        panel.x0 + 16.0,
+                        fields_y + row_h,
+                        panel.x1 - 16.0,
+                        fields_y + row_h * 2.0 - 8.0,
+                    ),
+                    &mut hits,
+                );
+                let y = fields_y + row_h * 2.0;
+                let gap = 8.0;
+                let field_w = (panel.width() - 32.0 - gap) * 0.5;
+                for (label, input, x) in [
+                    (
+                        "Latitude",
+                        &mut self.metadata_latitude_input,
+                        panel.x0 + 16.0,
+                    ),
+                    (
+                        "Longitude",
+                        &mut self.metadata_longitude_input,
+                        panel.x0 + 16.0 + field_w + gap,
+                    ),
+                ] {
+                    let visible_label = if self.metadata_mixed[4] {
+                        format!("{label} · Mixed")
+                    } else {
+                        label.to_owned()
+                    };
+                    text_renderer.draw_text_weighted(
+                        scene,
+                        &visible_label,
+                        11.0,
+                        theme.text_dim,
+                        transform * Affine::translate((x, y)),
+                        Some(field_w as f32),
+                        TextWeight::Medium,
+                    );
+                    input.apply_layout_external(Rect::new(
+                        x,
+                        y + 24.0,
+                        x + field_w,
+                        y + row_h - 8.0,
+                    ));
+                    input.draw(scene, transform, text_renderer, theme, presence);
+                }
+            }
+        }
+
+        let cancel = Rect::new(panel.x0 + 16.0, footer_y, panel.x0 + 124.0, panel.y1 - 12.0);
+        let save = Rect::new(panel.x1 - 124.0, footer_y, panel.x1 - 16.0, panel.y1 - 12.0);
+        let footer_focus = if self.metadata_editor_section == MetadataEditorSection::Organize {
+            (3, 4)
+        } else {
+            (4, 5)
+        };
+        for (hit, rect, label, focused, color) in [
             (
                 MetadataEditorHit::Cancel,
                 cancel,
                 "Cancel",
+                self.metadata_editor_focus == footer_focus.0,
                 theme.tokens.colors.neutral[3],
             ),
             (
                 MetadataEditorHit::Save,
                 save,
-                "Save",
+                "Save changes",
+                self.metadata_editor_focus == footer_focus.1,
                 theme.tokens.colors.accent[6],
             ),
         ] {
-            let focused = matches!(hit, MetadataEditorHit::Cancel)
-                && self.metadata_editor_focus == 4
-                || matches!(hit, MetadataEditorHit::Save) && self.metadata_editor_focus == 5;
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -10959,12 +11330,13 @@ impl PhotosApp {
                 label,
                 12.0,
                 theme.text_primary,
-                transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 13.0)),
-                Some((rect.width() - 24.0) as f32),
+                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 13.0)),
+                Some((rect.width() - 20.0) as f32),
                 TextWeight::Medium,
             );
-            self.metadata_editor_hits.push((hit, rect));
+            hits.push((hit, rect));
         }
+        self.metadata_editor_hits = hits;
     }
 }
 
@@ -14708,18 +15080,17 @@ mod tests {
     }
 
     #[test]
-    fn metadata_sheet_focus_is_a_six_stop_keyboard_cycle() {
+    fn metadata_sheet_focus_tracks_each_adaptive_section() {
         let mut app = PhotosApp::new();
-        for focus in 0..6 {
+        for focus in 0..5 {
             app.set_metadata_editor_focus(focus);
             assert_eq!(app.metadata_editor_focus, focus);
             assert_eq!(app.metadata_folder_input.is_focused(), focus == 0);
             assert_eq!(app.metadata_people_input.is_focused(), focus == 1);
             assert_eq!(app.metadata_tags_input.is_focused(), focus == 2);
-            assert_eq!(app.metadata_captured_at_input.is_focused(), focus == 3);
         }
         app.set_metadata_editor_focus(99);
-        assert_eq!(app.metadata_editor_focus, 5);
+        assert_eq!(app.metadata_editor_focus, 4);
         assert!(
             !app.metadata_folder_input.is_focused()
                 && !app.metadata_people_input.is_focused()
@@ -14727,6 +15098,18 @@ mod tests {
                 && !app.metadata_captured_at_input.is_focused(),
             "button focus must leave a single semantic keyboard owner"
         );
+
+        app.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
+        for focus in 0..6 {
+            app.set_metadata_editor_focus(focus);
+            assert_eq!(app.metadata_editor_focus, focus);
+            assert_eq!(app.metadata_captured_at_input.is_focused(), focus == 0);
+            assert_eq!(app.metadata_place_input.is_focused(), focus == 1);
+            assert_eq!(app.metadata_latitude_input.is_focused(), focus == 2);
+            assert_eq!(app.metadata_longitude_input.is_focused(), focus == 3);
+        }
+        app.set_metadata_editor_focus(99);
+        assert_eq!(app.metadata_editor_focus, 5);
     }
 
     #[test]
