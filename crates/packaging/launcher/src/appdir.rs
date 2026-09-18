@@ -31,7 +31,7 @@ pub const APP_DIR_ENV: &str = "TILO_APP_DIR";
 
 /// The room a launch with no workspace belongs to.
 ///
-/// `plan/rooms.md`: "Your own room is not special — same kind of room,
+/// `docs/architecture/rooms.md`: "Your own room is not special — same kind of room,
 /// one member." A slug like any other, deliberately not a UUID, so it
 /// cannot collide with a workspace id.
 pub const PERSONAL_ROOM: &str = "personal";
