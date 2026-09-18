@@ -168,8 +168,16 @@ impl SortKey {
 const OUTER_PAD: f64 = 14.0;
 const HEADER_H: f64 = 56.0;
 const GAP: f64 = 14.0;
-const ROW_H: f64 = 22.0;
-const TABLE_HEADER_H: f64 = 26.0;
+/// The painted band (and hit target) of a process-table row or column
+/// header at 1×: the geometry lint's `target_size_24` floor.
+const ROW_BAND_H: f64 = 24.0;
+/// Process-table row *pitch* at 1×: the band plus one `s1` so neighbouring
+/// rows keep a token-step gap instead of touching (HIG §7). `Density` re-derives
+/// this from the *scaled* `s1` each frame (`row_gap`), so pitch and gap move
+/// together under `ui_scale` and a custom `spacing_px`.
+const ROW_H: f64 = ROW_BAND_H + ui::tokens::spacing::Spacing::BASE.s1 as f64;
+/// Column-header pitch at 1×: the same band + `s1` as a row.
+const TABLE_HEADER_H: f64 = ROW_BAND_H + ui::tokens::spacing::Spacing::BASE.s1 as f64;
 const DETAIL_H: f64 = 96.0;
 /// Per-depth indentation of a tree row's NAME column.
 const TREE_INDENT: f64 = 16.0;
@@ -229,8 +237,12 @@ const DETAIL_STAT_ROW_H: f64 = 48.0;
 /// menu anchor) all read one pitch. At 1× this is [`Density::ONE`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Density {
-    /// Process-table row (`sm` cells).
+    /// Process-table row pitch (`sm` cells): [`Self::row_gap`] plus the band.
     row_h: f64,
+    /// Gap between neighbouring row bands and between sort-header targets —
+    /// this frame's `spacing.s1`, so it follows `ui_scale`. Half of it insets
+    /// the painted band / hit rect from the pitch on each side.
+    row_gap: f64,
     /// Process-table header row (`xs` labels).
     table_header_h: f64,
     /// One toolbar row (search box / pill row, `sm` labels).
@@ -261,6 +273,7 @@ impl Density {
     /// first frame has measured anything.
     const ONE: Self = Self {
         row_h: ROW_H,
+        row_gap: ui::tokens::spacing::Spacing::BASE.s1 as f64,
         table_header_h: TABLE_HEADER_H,
         toolbar_row_h: TOOLBAR_ROW_H,
         header_h: HEADER_H,
@@ -283,9 +296,13 @@ impl Density {
         let sm = grow(charts::line_h(tr, ty.sm));
         let base = grow(charts::line_h(tr, ty.base));
         let lg = grow(charts::line_h(tr, ty.lg));
+        // Pitch = band + this frame's scaled `s1`: the gap and the pitch are
+        // one value, so a scaled theme cannot shrink the band below its floor.
+        let row_gap = f64::from(theme.tokens.spacing.s1);
         Self {
-            row_h: ROW_H + sm,
-            table_header_h: TABLE_HEADER_H + xs,
+            row_h: ROW_BAND_H + row_gap + sm,
+            row_gap,
+            table_header_h: ROW_BAND_H + row_gap + xs,
             toolbar_row_h: TOOLBAR_ROW_H + sm,
             header_h: HEADER_H + lg + xs,
             detail_h: DETAIL_H + lg + xs + xs + base,
@@ -1569,8 +1586,7 @@ impl MonitorApp {
 
         // Interval pill, left of the right block.
         let interval_r = Rect::new(pill_x0, cy + 1.0, pill_x1, cy + seg_h - 1.0);
-        charts::fill_rrect(scene, t, interval_r, seg_h / 2.0, c.lift(0.35));
-        charts::stroke_rrect(scene, t, interval_r, seg_h / 2.0, c.border_standard, 1.0);
+        ui::surface::card(scene, t, interval_r, seg_h / 2.0, c.lift(0.35));
         let (tw, th) = tr.measure_weighted(
             &il,
             ts(tr, theme.tokens.typography.scale.sm),
@@ -1618,7 +1634,7 @@ impl MonitorApp {
                 if rect.contains(self.last_cursor) {
                     c.accent[5]
                 } else {
-                    c.border_standard
+                    ui::surface::edge_on(c.lift(if active { 0.55 } else { 0.35 }))
                 },
                 if rect.contains(self.last_cursor) {
                     1.5
@@ -1674,8 +1690,7 @@ impl MonitorApp {
         if active {
             charts::fill_rrect(scene, t, r, radius, c.accent[5]);
         } else {
-            charts::fill_rrect(scene, t, r, radius, c.lift(0.35));
-            charts::stroke_rrect(scene, t, r, radius, c.border_standard, 1.0);
+            ui::surface::card(scene, t, r, radius, c.lift(0.35));
         }
         let text_color = if active {
             c.on_surface(c.accent[5]).ink
@@ -2300,7 +2315,7 @@ impl MonitorApp {
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.base),
             None,
             &Line::new((hdr.x0, hdr.y1), (hdr.x1, hdr.y1)),
         );
@@ -2345,9 +2360,13 @@ impl MonitorApp {
             let hx0 = x0.max(geom.band.x0);
             let hx1 = (x0 + col.w).min(geom.band.x1);
             if hx1 > hx0 {
+                // Half the row gap in from the column and the header band on
+                // every side, so adjacent sort targets — and the first row
+                // below — keep a token-step gap rather than touching.
+                let g = self.density.row_gap / 2.0;
                 self.hit
                     .sort_headers
-                    .push((col.key, Rect::new(hx0, hdr.y0, hx1, hdr.y1)));
+                    .push((col.key, Rect::new(hx0 + g, hdr.y0 + g, hx1 - g, hdr.y1 - g)));
             }
         }
         scene.pop_layer();
@@ -2486,7 +2505,16 @@ impl MonitorApp {
             let idx = start + i;
             let Some(p) = rows.get(idx) else { break };
             let y0 = geom.view.y0 + i as f64 * self.density.row_h;
-            let row = Rect::new(geom.view.x0, y0, geom.view.x1, y0 + self.density.row_h);
+            // The painted band and hit target sit inside the pitch, half the
+            // row gap above and below: neighbouring rows keep a token-step gap
+            // (HIG §7) while the pitch stays the paging unit.
+            let inset = self.density.row_gap / 2.0;
+            let row = Rect::new(
+                geom.view.x0,
+                y0 + inset,
+                geom.view.x1,
+                y0 + self.density.row_h - inset,
+            );
             self.draw_table_row(scene, t, tr, theme, columns, geom, p, row, idx % 2 == 1);
         }
         scene.pop_layer();
@@ -2690,7 +2718,7 @@ impl MonitorApp {
         if rows_len > self.rows_per_page {
             let view = geom.view;
             let track = Rect::new(view.x1 - 8.0, view.y0, view.x1 - 1.0, view.y1);
-            charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
+            charts::fill_rrect(scene, t, track, 2.0, charts::inner_rule(theme, 40));
             let frac_v = self.rows_per_page as f64 / rows_len as f64;
             let thumb_h = (track.height() * frac_v).max(24.0);
             let max_off = (rows_len - self.rows_per_page) as f64;
@@ -2721,7 +2749,7 @@ impl MonitorApp {
                 geom.band.x1,
                 geom.ti.y1 - 1.0,
             );
-            charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
+            charts::fill_rrect(scene, t, track, 2.0, charts::inner_rule(theme, 40));
             let frac_h = (geom.avail_w / geom.content_w).clamp(0.0, 1.0);
             let thumb_w = (track.width() * frac_h).max(24.0);
             let pos = (geom.sx / geom.h_overflow).clamp(0.0, 1.0);
@@ -2785,20 +2813,12 @@ impl MonitorApp {
             back_x0 + 34.0 + f64::from(lw) + 14.0,
             r.y0 + bar_h - 4.0,
         );
-        charts::fill_rrect(
+        ui::surface::card(
             scene,
             t,
             back,
             f64::from(theme.tokens.radii.md),
             c.surfaces.raised,
-        );
-        charts::stroke_rrect(
-            scene,
-            t,
-            back,
-            f64::from(theme.tokens.radii.md),
-            c.border_standard,
-            1.0,
         );
         let chev = Rect::new(
             back.x0 + 8.0,
@@ -2949,7 +2969,11 @@ impl MonitorApp {
             t,
             rect,
             radius,
-            if on { c.accent[5] } else { c.border_standard },
+            if on {
+                c.accent[5]
+            } else {
+                ui::surface::edge_on(c.lift(0.35))
+            },
             1.0,
         );
         let (lw, _) = tr.measure(label, fs, None);
@@ -3004,7 +3028,11 @@ impl MonitorApp {
             t,
             kt_r,
             kt_r.height() / 2.0,
-            if on { c.accent[5] } else { c.border_standard },
+            if on {
+                c.accent[5]
+            } else {
+                ui::surface::edge_on(c.lift(0.35))
+            },
             1.0,
         );
         // Keep the app-specific labeled pill, but use the shared switch face
@@ -3168,7 +3196,7 @@ impl MonitorApp {
         let border = if search_focused {
             c.border_focus
         } else {
-            c.border_standard
+            ui::surface::edge_on(c.surfaces.base)
         };
         charts::stroke_rrect(
             scene,
@@ -3370,7 +3398,7 @@ impl MonitorApp {
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            with_alpha(c.border_standard, 120),
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &Line::new((bar.x0, bar.y0), (bar.x1, bar.y0)),
         );
@@ -3439,7 +3467,7 @@ impl MonitorApp {
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &Line::new((content.x0, y), (content.x1, y)),
         );
@@ -3493,7 +3521,9 @@ impl MonitorApp {
         // legible on a short pane.
         let spark_h = (content.y1 - y - grid_h - 28.0).max(46.0);
         let spark = Rect::new(content.x0, y, content.x1, y + spark_h);
-        charts::fill_rrect(scene, t, spark, 6.0, with_alpha(c.border_standard, 40));
+        // A faint well inside the detail card: a contrast step, not a second
+        // edge (HIG §9.5 — a section inside a card gets space, not a box).
+        charts::fill_rrect(scene, t, spark, 6.0, charts::inner_rule(theme, 12));
         if let Some(ring) = self.proc_cpu_hist.get(&p.pid) {
             let smax = ring.max().max(100.0);
             charts::sparkline(
@@ -3510,7 +3540,7 @@ impl MonitorApp {
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &Line::new((content.x0, y), (content.x1, y)),
         );
@@ -5588,7 +5618,7 @@ impl MonitorApp {
     ) {
         let track = Rect::new(body.x1 - 8.0, body.y0, body.x1 - 1.0, body.y1);
         let c = &theme.tokens.colors;
-        charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
+        charts::fill_rrect(scene, t, track, 2.0, charts::inner_rule(theme, 40));
         let frac_v = (viewport_h / self.content_h).clamp(0.0, 1.0);
         let thumb_h = (track.height() * frac_v).max(24.0);
         let pos = if page_overflow > 0.0 {
@@ -6035,23 +6065,90 @@ mod tests {
         assert_eq!(a.density, d, "draw caches the density it painted with");
         let rows: Vec<Rect> = a.hit.rows.iter().map(|(_, r)| *r).collect();
         assert!(rows.len() >= 2, "the seeded table paints rows: {}", rows.len());
+        let gap = d.row_gap;
+        assert!((gap - f64::from(theme.tokens.spacing.s1)).abs() < 1e-6);
         for pair in rows.windows(2) {
             let (top, next) = (pair[0], pair[1]);
             assert!(
-                (top.height() - d.row_h).abs() < 1e-6,
-                "row height {} must be the measured pitch {}",
+                (top.height() - (d.row_h - gap)).abs() < 1e-6,
+                "row band {} must be the measured pitch {} less the row gap {gap}",
                 top.height(),
                 d.row_h
             );
             assert!(
-                !rects_overlap(top, next),
-                "adjacent rows must not overlap: {top:?} vs {next:?}"
+                next.y0 - top.y1 >= gap - 1e-6,
+                "adjacent rows keep an s1 gap and never touch: {top:?} vs {next:?}"
             );
         }
         assert!(
             a.rows_per_page as f64 * d.row_h <= a.table_viewport.height() + 1e-6,
             "the page count is derived from the same pitch the rows are painted at"
         );
+    }
+
+    /// `draw_at` under an arbitrary theme (a ui-scaled or custom-spacing one).
+    fn draw_with_theme(a: &mut MonitorApp, w: f64, h: f64, theme: &Theme) {
+        a.rect = Rect::new(0.0, 0.0, w, h);
+        let presence = PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        a.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    }
+
+    /// Rule 1 of the 1× bar on the process table: every row band is at least
+    /// the 24 px touch floor, consecutive rows keep exactly one `s1` between
+    /// them, and the sort headers clear each other and the first row by a
+    /// token step — so nothing in the table touches at 100 %. The same holds
+    /// under `ui_scale` 2 (s1 = 8): the pitch grows with the gap, so the band
+    /// never drops below its floor.
+    #[test]
+    fn table_rows_and_sort_headers_keep_an_s1_gap_at_1x() {
+        for theme in [Theme::dark(), Theme::dark().with_ui_scale(2.0)] {
+            table_rows_keep_an_s1_gap_under(&theme);
+        }
+    }
+
+    fn table_rows_keep_an_s1_gap_under(theme: &Theme) {
+        let gap = f64::from(theme.tokens.spacing.s1);
+        let mut a = MonitorApp::new();
+        a.seed_shot_scenario("detail");
+        draw_with_theme(&mut a, 1280.0, 800.0, theme);
+        assert!(
+            (a.density.row_gap - gap).abs() < 1e-6,
+            "the painted row gap is this theme's s1 ({gap}), got {}",
+            a.density.row_gap
+        );
+        let rows: Vec<Rect> = a.hit.rows.iter().map(|(_, r)| *r).collect();
+        assert!(rows.len() >= 2, "the seeded table paints rows: {}", rows.len());
+        for r in &rows {
+            assert!(r.height() >= 24.0 - 1e-6, "row band {} under the 24 px floor", r.height());
+        }
+        for pair in rows.windows(2) {
+            let (top, next) = (pair[0], pair[1]);
+            assert!(
+                (next.y0 - top.y1 - gap).abs() < 1e-6,
+                "rows step by exactly one s1: {top:?} vs {next:?}"
+            );
+        }
+        let mut headers: Vec<Rect> = a.hit.sort_headers.iter().map(|(_, r)| *r).collect();
+        headers.sort_by(|x, y| x.x0.total_cmp(&y.x0));
+        assert!(headers.len() >= 2, "sort headers recorded: {}", headers.len());
+        for pair in headers.windows(2) {
+            assert!(
+                pair[1].x0 - pair[0].x1 >= gap - 1e-6,
+                "sort headers keep an s1 gap: {:?} vs {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        let first_row = rows[0];
+        for h in &headers {
+            assert!(h.height() >= 24.0 - 1e-6, "header target {} under the 24 px floor", h.height());
+            assert!(
+                first_row.y0 - h.y1 >= gap - 1e-6,
+                "header {h:?} clears the first row {first_row:?} by an s1"
+            );
+        }
     }
 
     #[test]

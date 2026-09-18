@@ -45,7 +45,6 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
@@ -1080,7 +1079,7 @@ impl LogsApp {
             reg.header.y1,
             reg.header.x1,
             reg.header.y1,
-            c.border_standard,
+            ui::chrome::chrome_hairline(theme),
             1.0,
         );
 
@@ -1205,20 +1204,12 @@ impl LogsApp {
         }
         let c = &theme.tokens.colors;
         let hovered = reg.refresh_btn.contains(self.cursor);
-        fill_round(
+        ui::surface::card(
             scene,
             t,
             reg.refresh_btn,
-            theme.tokens.radii.full,
+            f64::from(theme.tokens.radii.full),
             if hovered { c.lift(0.72) } else { c.lift(0.35) },
-        );
-        stroke_round(
-            scene,
-            t,
-            reg.refresh_btn,
-            theme.tokens.radii.full,
-            c.border_standard,
-            1.0,
         );
         let label = "↻";
         let sz = ts(tr, theme.tokens.typography.scale.base);
@@ -1256,18 +1247,13 @@ impl LogsApp {
         } else {
             c.lift(0.35)
         };
-        fill_round(scene, t, reg.live_pill, theme.tokens.radii.full, pill_bg);
-        if !on {
-            stroke_round(
-                scene,
-                t,
-                reg.live_pill,
-                theme.tokens.radii.full,
-                c.border_standard,
-                1.0,
-            );
+        if on {
+            fill_round(scene, t, reg.live_pill, theme.tokens.radii.full, pill_bg);
+        } else {
+            ui::surface::card(scene, t, reg.live_pill, f64::from(theme.tokens.radii.full), pill_bg);
         }
-        let dot_c = if on { Color::WHITE } else { theme.text_dim };
+        let on_accent = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+        let dot_c = if on { on_accent } else { theme.text_dim };
         fill_circle(
             scene,
             t,
@@ -1276,7 +1262,7 @@ impl LogsApp {
             dot_c,
         );
         let label = "Live tail";
-        let lc = if on { Color::WHITE } else { theme.text_dim };
+        let lc = if on { on_accent } else { theme.text_dim };
         text_at(
             tr,
             scene,
@@ -1307,29 +1293,22 @@ impl LogsApp {
         }
         let c = &theme.tokens.colors;
         let open = self.popup == Some(Popup::Actions);
-        fill_round(
-            scene,
-            t,
-            reg.overflow_trigger,
-            theme.tokens.radii.full,
-            if open || reg.overflow_trigger.contains(self.cursor) {
-                c.lift(0.72)
-            } else {
-                c.lift(0.35)
-            },
-        );
-        stroke_round(
-            scene,
-            t,
-            reg.overflow_trigger,
-            theme.tokens.radii.full,
-            if open {
-                c.border_focus
-            } else {
-                c.border_standard
-            },
-            if open { 1.5 } else { 1.0 },
-        );
+        let trigger_bg = if open || reg.overflow_trigger.contains(self.cursor) {
+            c.lift(0.72)
+        } else {
+            c.lift(0.35)
+        };
+        ui::surface::card(scene, t, reg.overflow_trigger, f64::from(theme.tokens.radii.full), trigger_bg);
+        if open {
+            stroke_round(
+                scene,
+                t,
+                reg.overflow_trigger,
+                theme.tokens.radii.full,
+                c.border_focus,
+                1.5,
+            );
+        }
         let label = "Actions";
         let sz = ts(tr, theme.tokens.typography.scale.sm);
         text_at(
@@ -1385,7 +1364,7 @@ impl LogsApp {
             reg.filter.y1,
             reg.filter.x1,
             reg.filter.y1,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.base),
             1.0,
         );
         self.draw_filter_search_box(scene, t, tr, theme, reg);
@@ -1405,26 +1384,17 @@ impl LogsApp {
     ) {
         let c = &theme.tokens.colors;
         let focused = self.search_input.is_focused();
-        fill_round(
-            scene,
-            t,
-            reg.search,
-            theme.tokens.radii.md,
-            c.surfaces.raised,
-        );
-        let border = if focused {
-            c.border_focus
-        } else {
-            c.border_standard
-        };
-        stroke_round(
-            scene,
-            t,
-            reg.search,
-            theme.tokens.radii.md,
-            border,
-            if focused { 1.5 } else { 1.0 },
-        );
+        ui::surface::card(scene, t, reg.search, f64::from(theme.tokens.radii.md), c.surfaces.raised);
+        if focused {
+            stroke_round(
+                scene,
+                t,
+                reg.search,
+                theme.tokens.radii.md,
+                c.border_focus,
+                1.5,
+            );
+        }
         // search glyph
         let gy = reg.search.center().y;
         fill_circle(
@@ -1539,7 +1509,9 @@ impl LogsApp {
             }
             let tag = p.tag();
             let label_c = if active {
-                contrast_on(col)
+                // Ink measured against the severity fill with the toolkit's
+                // on-fill floor: near-black on amber, white on the dark reds.
+                theme.tokens.colors.on_surface(col).ink
             } else {
                 theme.text_dim
             };
@@ -1574,22 +1546,17 @@ impl LogsApp {
         active: bool,
     ) {
         let c = &theme.tokens.colors;
-        fill_round(scene, t, rect, theme.tokens.radii.md, c.surfaces.raised);
-        let border = if open {
-            c.border_focus
-        } else if active {
-            theme.accent_primary
-        } else {
-            c.border_standard
-        };
-        stroke_round(
-            scene,
-            t,
-            rect,
-            theme.tokens.radii.md,
-            border,
-            if open || active { 1.5 } else { 1.0 },
-        );
+        ui::surface::card(scene, t, rect, f64::from(theme.tokens.radii.md), c.surfaces.raised);
+        if open || active {
+            stroke_round(
+                scene,
+                t,
+                rect,
+                theme.tokens.radii.md,
+                if open { c.border_focus } else { theme.accent_primary },
+                1.5,
+            );
+        }
         let sz = ts(tr, theme.tokens.typography.scale.sm);
         // kind caption
         text_at(
@@ -1657,7 +1624,7 @@ impl LogsApp {
             return;
         }
         self.draw_list_rows(scene, t, tr, theme, reg);
-        self.draw_list_scrollbar(scene, t, reg);
+        self.draw_list_scrollbar(scene, t, theme, reg);
     }
 
     /// The list card background plus the TIME/LEVEL/UNIT/MESSAGE column
@@ -1679,15 +1646,7 @@ impl LogsApp {
             reg.list_header.x1,
             reg.list_body.y1,
         );
-        fill_round(scene, t, card, theme.tokens.radii.lg, c.surfaces.raised);
-        stroke_round(
-            scene,
-            t,
-            card,
-            theme.tokens.radii.lg,
-            c.border_standard,
-            1.0,
-        );
+        ui::surface::card(scene, t, card, f64::from(theme.tokens.radii.lg), c.surfaces.raised);
 
         // Column header.
         fill_round(
@@ -1762,7 +1721,7 @@ impl LogsApp {
             reg.list_header.y1,
             reg.list_header.x1 - 8.0,
             reg.list_header.y1,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             1.0,
         );
     }
@@ -1912,18 +1871,23 @@ impl LogsApp {
             let is_sel = sel == Some(abs);
             let is_hover = self.hover_row == Some(abs);
             let col = e.priority.color(&tc);
+            // The painted band sits inside the row pitch, half an `s1` above
+            // and below, so neighbouring rows keep a token-step gap (HIG §7)
+            // while the pitch stays the paging and hit unit.
+            let g = f64::from(theme.tokens.spacing.s1) / 2.0;
+            let band = Rect::new(row.x0, row.y0 + g, row.x1, row.y1 - g);
             if is_sel {
-                fill_rect(scene, t, row, tint(theme.accent_primary, 46));
+                fill_rect(scene, t, band, tint(theme.accent_primary, 46));
                 fill_rect(
                     scene,
                     t,
-                    Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1),
+                    Rect::new(band.x0, band.y0, band.x0 + 3.0, band.y1),
                     theme.accent_primary,
                 );
             } else if is_hover {
-                fill_rect(scene, t, row, c.lift(0.35));
+                fill_rect(scene, t, band, c.lift(0.35));
             } else if pos % 2 == 1 {
-                fill_rect(scene, t, row, tint(Color::WHITE, 6));
+                fill_rect(scene, t, band, ui::tokens::Colors::hairline_on(c.surfaces.raised, 6));
             }
 
             let cols = column_x(row, self.m.k);
@@ -2002,7 +1966,7 @@ impl LogsApp {
     }
 
     /// The list body's vertical scrollbar thumb, when the content overflows.
-    fn draw_list_scrollbar(&self, scene: &mut Scene, t: Affine, reg: &Regions) {
+    fn draw_list_scrollbar(&self, scene: &mut Scene, t: Affine, theme: &Theme, reg: &Regions) {
         let body = reg.list_body;
         let content = self.content_h();
         if content > body.height() {
@@ -2016,7 +1980,7 @@ impl LogsApp {
                 t,
                 Rect::new(track_x, ty0, track_x + 3.0, ty0 + thumb_h),
                 1.5,
-                tint(Color::WHITE, 70),
+                ui::tokens::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 70),
             );
         }
     }
@@ -2031,8 +1995,7 @@ impl LogsApp {
     ) {
         let c = &theme.tokens.colors;
         let d = reg.detail;
-        fill_round(scene, t, d, theme.tokens.radii.lg, c.surfaces.raised);
-        stroke_round(scene, t, d, theme.tokens.radii.lg, c.border_standard, 1.0);
+        ui::surface::card(scene, t, d, f64::from(theme.tokens.radii.lg), c.surfaces.raised);
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &d);
         let mut layout = DetailLayout {
@@ -2112,7 +2075,7 @@ impl LogsApp {
             t,
             &badge_label,
             bsz,
-            contrast_on(col),
+            theme.tokens.colors.on_surface(col).ink,
             badge.x0 + 12.0,
             m.vcenter(badge, bsz),
             TextWeight::Bold,
@@ -2189,7 +2152,7 @@ impl LogsApp {
             layout.y,
             inner_x + inner_w,
             layout.y,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             1.0,
         );
         layout.y += 12.0;
@@ -2284,15 +2247,7 @@ impl LogsApp {
         let c = &theme.tokens.colors;
         let hovered = rect.contains(self.cursor);
         let bg = if hovered { c.lift(0.72) } else { c.lift(0.35) };
-        fill_round(scene, t, rect, theme.tokens.radii.full, bg);
-        stroke_round(
-            scene,
-            t,
-            rect,
-            theme.tokens.radii.full,
-            c.border_standard,
-            1.0,
-        );
+        ui::surface::card(scene, t, rect, f64::from(theme.tokens.radii.full), bg);
         // Left chevron.
         let cyp = rect.center().y;
         let cxp = rect.x0 + 18.0;
@@ -2589,17 +2544,6 @@ fn line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, c: Col
         None,
         &Line::new(Point::new(x0, y0), Point::new(x1, y1)),
     );
-}
-
-/// Pick a readable foreground for text sitting on a saturated severity
-/// fill: white over the dark dangers, near-black over amber.
-fn contrast_on(bg: Color) -> Color {
-    let lum = 0.299 * f64::from(bg.r()) + 0.587 * f64::from(bg.g()) + 0.114 * f64::from(bg.b());
-    if lum > 150.0 {
-        Color::from_rgb8(20, 20, 25)
-    } else {
-        Color::WHITE
-    }
 }
 
 // ===================================================================
@@ -3192,29 +3136,28 @@ impl LogsApp {
 
     /// The dropdown panel's shadow, fill and border.
     fn draw_overlay_panel_bg(scene: &mut Scene, transform: Affine, theme: &Theme, panel: Rect) {
-        let c = &theme.tokens.colors;
-        // soft shadow
-        fill_round(
+        // Panel role (HIG §9.5): the shared floating-panel shadow, ground and
+        // derived border, so the list matches every other menu on the desktop.
+        ui::surface::shadow(
             scene,
             transform,
-            panel.inflate(2.0, 2.0),
-            theme.tokens.radii.md,
-            tint(Color::BLACK, 80),
+            panel,
+            f64::from(theme.tokens.radii.md),
+            &theme.tokens.elevation.e3,
         );
         fill_round(
             scene,
             transform,
             panel,
             theme.tokens.radii.md,
-            c.surfaces.overlay,
+            ui::chrome::panel_ground(theme),
         );
-        stroke_round(
-            scene,
+        scene.stroke(
+            &Stroke::new(1.0),
             transform,
-            panel,
-            theme.tokens.radii.md,
-            c.border_standard,
-            1.0,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(panel, f64::from(theme.tokens.radii.md)),
         );
     }
 
