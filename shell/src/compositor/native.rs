@@ -3513,6 +3513,28 @@ fn install_device_fabric_bridge(
                         session_id,
                     )?;
                 }
+                DeviceFabricUiAction::RequestDisplayMirror { target } => {
+                    let _ = crate::shell::device_fabric_runtime::request_display_mirror(
+                        &fabric_net,
+                        &target,
+                    )?;
+                }
+                DeviceFabricUiAction::ResolveDisplayMirror {
+                    session_id,
+                    approved,
+                } => {
+                    crate::shell::device_fabric_runtime::resolve_display_mirror_consent(
+                        &fabric_net,
+                        session_id,
+                        approved,
+                    )?;
+                }
+                DeviceFabricUiAction::StopDisplayMirror { session_id } => {
+                    crate::shell::device_fabric_runtime::stop_display_mirror(
+                        &fabric_net,
+                        session_id,
+                    )?;
+                }
                 DeviceFabricUiAction::RequestPhoneTethering { phone } => {
                     let _ = crate::shell::personal_tethering_runtime::request_phone_tethering(
                         &fabric_net,
