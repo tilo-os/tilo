@@ -289,6 +289,11 @@ grep -Fq 'unreviewed runtime packages directly requiring libssl' "$runtime_packa
   && grep -Fq 'bash /usr/local/bin/verify-runtime-crypto-packages.sh' "$repo/os/Containerfile" \
   && grep -Fq 'rm -f /usr/local/bin/verify-runtime-crypto-packages.sh' "$repo/os/Containerfile" \
   || bad 'finished rootfs does not enforce and retire its residual OpenSSL ABI allowlist gate'
+grep -Fq -- "-path '*/ossl-modules/legacy.so'" "$repo/os/Containerfile" \
+  && grep -Fq -- "-path '*/engines-3/*.so'" "$repo/os/Containerfile" \
+  && grep -Fq 'optional OpenSSL legacy provider and engines absent' \
+       "$repo/os/usr/libexec/tilo-security-audit" \
+  || bad 'sealed rootfs does not remove and audit optional OpenSSL provider/engine modules'
 rootfs_end_line="$(grep -n '^FROM rootfs AS split' "$repo/os/Containerfile" | cut -d: -f1)"
 last_package_mutation_line="$(rg -n 'dnf (install|remove)|rpm -[ei]' "$repo/os/Containerfile" \
   | awk -F: -v end="$rootfs_end_line" '$1 < end { line=$1 } END { print line+0 }')"

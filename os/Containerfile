@@ -2231,7 +2231,18 @@ RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
 # /usr/lib/modules/$kver *directories*, and the split leaves that directory in
 # place, so one kernel is still one kernel; `nonempty-boot` is a warning, not a
 # fatal, so a UKI in /boot does not fail it either.
-RUN bash /usr/local/bin/verify-runtime-crypto-packages.sh \
+# Fedora's OpenSSL libraries carry optional legacy-provider and ENGINE DSOs for
+# compatibility with old applications. Tilo has no consumer for either plugin
+# API: Rust-native code owns signing/TLS, while foundational distro consumers
+# use the built-in provider. Delete the loadable algorithm surface before the
+# composefs root is sealed, on both Fedora library layouts.
+RUN find /usr/lib /usr/lib64 \
+      \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \) \
+      \( -type f -o -type l \) -delete \
+    && ! find /usr/lib /usr/lib64 \
+      \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \) \
+      \( -type f -o -type l \) -print -quit | grep -q . \
+    && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh \
     && bootc container lint
 
