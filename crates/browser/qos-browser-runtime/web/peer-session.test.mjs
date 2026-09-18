@@ -82,6 +82,31 @@ test('health generations increase as decimal integers and storage recovery is co
  f.setFailCommit(false);const a=peer.recover({kind:'retry-saving'}),b=peer.recover({kind:'retry-saving'});assert.equal(a,b);assert.deepEqual(await a,await b);assert(!peer.getSnapshot().health.failures.some(f=>f.scope.kind==='storage'));assert(seen.every((value,index)=>index===0||BigInt(value)>BigInt(seen[index-1])));await peer.dispose();
 });
 
+test('unchanged presented frames keep surface health stable while failure recovery still publishes',async()=>{
+ const f=fixture(),peer=await f.connect(),notifications=[];peer.subscribe(snapshot=>notifications.push(snapshot));const mount=await peer.mountDesktop({});
+ const presentedGeneration=peer.getSnapshot().health.generation,presentedNotifications=notifications.length;
+ for(let frame=0;frame<60;frame++)mount.status({phase:'presented',gpuGeneration:1,frame});
+ assert.equal(peer.getSnapshot().health.generation,presentedGeneration);assert.equal(notifications.length,presentedNotifications);
+
+ mount.failRenderer();const failed=peer.getSnapshot();assert(BigInt(failed.health.generation)>BigInt(presentedGeneration));assert.equal(failed.health.surfaces[0].phase,'failed');assert(failed.health.failures.some(f=>f.code==='gpu-device-lost'));
+ const surfaceId=failed.health.surfaces[0].id,recovery=peer.recover({kind:'retry-desktop',surfaceId});await drain();
+ const recovering=peer.getSnapshot(),recoveringNotifications=notifications.length;assert.equal(recovering.health.surfaces[0].phase,'initializing');
+ mount.status({phase:'gpu-pending',gpuGeneration:2,frame:61});assert.equal(peer.getSnapshot().health.generation,recovering.health.generation);assert.equal(notifications.length,recoveringNotifications);
+ mount.present(2);const result=await recovery,restored=peer.getSnapshot();assert.equal(operation(peer,result).state,'succeeded');assert.equal(restored.health.surfaces[0].phase,'presented');assert(!restored.health.failures.some(f=>f.scope.surfaceId===surfaceId));
+ await peer.dispose();
+});
+
+test('same-phase asset and storage failures still publish their health side effects',async()=>{
+ const f=fixture(),peer=await f.connect(),notifications=[];peer.subscribe(snapshot=>notifications.push(snapshot));const mount=await peer.mountDesktop({});
+ const beforeAsset=notifications.length;mount.status({phase:'presented',gpuGeneration:1,asset:'unavailable',assetId:'image-1',error:'asset load failed'});
+ assert.equal(notifications.length,beforeAsset+1);assert(peer.getSnapshot().health.failures.some(f=>f.id.endsWith(':image-1')&&f.code==='asset-unavailable'));
+ const afterAsset=notifications.length;mount.status({phase:'presented',gpuGeneration:1,asset:'unavailable',assetId:'image-1',error:'asset load failed'});
+ assert.equal(notifications.length,afterAsset+1,'a repeated error must retain its reporting side effect');
+ const beforeStorage=notifications.length;mount.status({phase:'presented',gpuGeneration:1,persistence:'failed'});
+ assert.equal(notifications.length,beforeStorage+1);assert(peer.getSnapshot().health.failures.some(f=>f.scope.kind==='storage'));
+ await peer.dispose();
+});
+
 test('desktop retry settles only after newer presentation and preserves unrelated saving failure',async()=>{
  const f=fixture(),peer=await f.connect(),mount=await peer.mountDesktop({});mount.failRenderer();f.setFailCommit(true);await assert.rejects(peer.retryPersistence());
  const surface=peer.getSnapshot().health.surfaces[0].id;let done=false;const recovery=peer.recover({kind:'retry-desktop',surfaceId:surface}).then(value=>{done=true;return value;});

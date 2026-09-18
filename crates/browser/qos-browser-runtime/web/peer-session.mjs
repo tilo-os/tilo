@@ -116,15 +116,19 @@ return async function connectPeer(options={}){
     const generation=typeof status.gpuGeneration==='string'?status.gpuGeneration:Number.isSafeInteger(status.gpuGeneration)?String(status.gpuGeneration):prior.generation;
     if(!/^(0|[1-9][0-9]*)$/.test(generation)||BigInt(generation)<BigInt(prior.generation))return;
     const phase=status.phase==='gpu-pending'?'initializing':status.phase==='presented'?'presented':status.phase==='failed'?'failed':status.phase==='closed'?'closed':prior.phase;
+    let healthChanged=false;
     if(status.error&&(status.phase==='failed'||status.asset==='unavailable')){
       const code=status.asset==='unavailable'?'asset-unavailable':/device.*lost/i.test(status.error)?'gpu-device-lost':'renderer-initialization-failed';
-      const asset=status.asset==='unavailable';const failureId=asset?`asset:${surface}:${status.assetId}`:`surface:${surface}`;health={...health,failures:[...health.failures.filter(f=>f.id!==failureId),{id:failureId,code,scope:asset?{kind:'asset',surfaceId:surface,assetId:status.assetId}:{kind:'renderer',surfaceId:surface},severity:'error',message:asset?'An image could not be loaded.':'The desktop could not be displayed. Your work is retained.',recovery:[asset?{kind:'retry-asset',surfaceId:surface,assetId:status.assetId}:{kind:'retry-desktop',surfaceId:surface}],occurredAtMs:Date.now()}]};
+      const asset=status.asset==='unavailable';const failureId=asset?`asset:${surface}:${status.assetId}`:`surface:${surface}`;health={...health,failures:[...health.failures.filter(f=>f.id!==failureId),{id:failureId,code,scope:asset?{kind:'asset',surfaceId:surface,assetId:status.assetId}:{kind:'renderer',surfaceId:surface},severity:'error',message:asset?'An image could not be loaded.':'The desktop could not be displayed. Your work is retained.',recovery:[asset?{kind:'retry-asset',surfaceId:surface,assetId:status.assetId}:{kind:'retry-desktop',surfaceId:surface}],occurredAtMs:Date.now()}]};healthChanged=true;
     }
     const waiter=surfaceWaiters.get(surface);
     if(status.phase==='failed'&&waiter&&BigInt(generation)>=waiter.generation){surfaceWaiters.delete(surface);waiter.reject(Error('Desktop recovery failed'));}
     if(phase==='presented'&&waiter&&BigInt(generation)>waiter.generation){surfaceWaiters.delete(surface);health={...health,failures:health.failures.filter(f=>f.id!==`surface:${surface}`)};waiter.resolve();}
-    if(status.persistence==='failed')setFailure('storage',Error('Local storage transaction failed'));
-    health={...health,surfaces:health.surfaces.map(row=>row.id===surface?{...row,phase,generation,failureIds:health.failures.filter(f=>f.scope.surfaceId===surface).map(f=>f.id)}:row)};report({});
+    if(status.persistence==='failed'){setFailure('storage',Error('Local storage transaction failed'));healthChanged=true;}
+    const failureIds=health.failures.filter(f=>f.scope.surfaceId===surface).map(f=>f.id);
+    const surfaceChanged=phase!==prior.phase||generation!==prior.generation||failureIds.length!==prior.failureIds.length||failureIds.some((id,index)=>id!==prior.failureIds[index]);
+    if(surfaceChanged)health={...health,surfaces:health.surfaces.map(row=>row.id===surface?{...row,phase,generation,failureIds}:row)};
+    if(healthChanged||surfaceChanged)report({});
   }
   async function settleMounts(items){
     const results=await Promise.allSettled([...items].map(mount=>mount.cleanup()));
