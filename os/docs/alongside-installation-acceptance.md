@@ -89,3 +89,18 @@ acceptance checks. Passing it proves software-rendered behavior, not accelerated
 GPU functionality. `--graphics gl` (the default) retains the GL/virgl path for
 suitable hosts. `scenario.txt` records the explicitly selected mode. Neither
 selection pre-judges whether the real framebuffer checks will pass.
+
+## Profile encoder on the acceptance host
+
+Build the headless production-shared encoder once using
+`apps/imager/profile-tool/README.md`, then put the native executable in the tools
+image. Set both `TILO_PROFILE_ENCODER=/absolute/path/to/tilo-imager-profile` and
+`TILO_PROFILE_ENCODER_SHA256=<independently recorded SHA256>` for each cycle.
+The cycle checks the digest before preparation and again immediately before
+encoding, and records it in `scenario.txt`. Missing or mismatched pins fail
+before VM creation. No Cargo dependency is needed on that host.
+
+Local developers can explicitly select `--build-profile-encoder` to use the
+small standalone locked Cargo workspace instead. This cannot be combined with
+prebuilt encoder settings and is recorded as `explicit-local-build`, not as a
+verified binary hash. No path invokes the Imager GUI workspace build.
