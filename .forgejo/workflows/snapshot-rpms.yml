@@ -148,6 +148,18 @@ jobs:
         with:
           driver: docker-container
 
+      - name: Use the RPM build cache after its first successful export
+        id: build-cache
+        env:
+          CACHE_REF: code.sandbox.example/qos/tilo-rpms-buildcache:${{ matrix.arch }}
+        run: |
+          if docker buildx imagetools inspect "$CACHE_REF" >/dev/null 2>&1; then
+            echo "from=type=registry,ref=$CACHE_REF" >> "$GITHUB_OUTPUT"
+          else
+            echo '::notice::RPM build cache is not published yet; bootstrapping it'
+            echo 'from=' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build + push the frozen RPM repo image
         id: rpms
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
@@ -163,7 +175,7 @@ jobs:
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
             PACKAGES=${{ env.PACKAGES }}
-          cache-from: type=registry,ref=code.sandbox.example/qos/tilo-rpms-buildcache:${{ matrix.arch }}
+          cache-from: ${{ steps.build-cache.outputs.from }}
           cache-to: type=registry,ref=code.sandbox.example/qos/tilo-rpms-buildcache:${{ matrix.arch }},mode=max
           provenance: false
 

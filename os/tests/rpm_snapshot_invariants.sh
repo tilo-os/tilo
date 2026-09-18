@@ -155,6 +155,8 @@ has "$workflow" './os/dev/cache-github-assets.sh' \
   'snapshot materializes checksum-verified external inputs'
 has "$workflow" 'github-assets=os/external-assets/cache' \
   'snapshot receives only the materialized external-input cache'
+has "$workflow" 'docker buildx imagetools inspect "$CACHE_REF"' \
+  'first snapshot bootstraps a missing registry build cache'
 has "$snapshot" '/tilo-assets/virtio-win-0.1.302-1.noarch.rpm' \
   'snapshot caches the content-pinned virtio RPM for selective extraction'
 has "$repo/os/Containerfile" '# tilo-rpm-snapshot-package: virtio-win' \
