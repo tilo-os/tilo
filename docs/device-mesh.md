@@ -63,9 +63,15 @@ distinct hosts. Capacity, latency and operator priority are bounded routing
 signals rather than authorization.
 
 The first workloads are workspace replication, content residency, inbound
-collaboration/chat relay and remote-control relay. App serving and sandboxed
-compute use the same placement model. This lays the distributed-computing
-boundary without pretending the relay daemon already executes arbitrary jobs.
+collaboration/chat relay and remote-control relay. Sandboxed compute uses a
+dedicated mutually authenticated `tilo-personal-compute/1` session and the
+signed-package launcher; the relay never accepts a command, host path,
+environment, or bearer secret from a requester. A worker advertises only after
+its package catalogue, launcher, private staging store and power policy pass
+health checks, and disconnect/health regression withdraws it immediately.
+Until workspace CAS hydration is connected to this protocol, the production
+owner explicitly rejects jobs with remote inputs and never reports an output
+digest that the requester cannot retrieve.
 
 ## Integration seams
 
@@ -78,12 +84,13 @@ boundary without pretending the relay daemon already executes arbitrary jobs.
 - The remote-control client first tries the target directly, then requests a
   `RemoteControl` placement and tunnels the existing encrypted session through
   the selected relay.
-- An app/compute worker will consume `App`/`Compute` placements and must retain
-  qpkg sandboxing, input/output capability checks and signed result attribution.
+- The compute worker consumes `Compute` placements, executes only verified qpkg
+  catalogue entrypoints, and retains exact requester/worker/workspace binding,
+  bounded diagnostics, cancellation and monotonic result attribution.
 
 No new wire message was added to `tilo-relay/1`: adding an enum variant to the
-postcard protocol would make old peers reject the stream. Service discovery and
-job execution need a versioned, negotiated protocol extension before rollout.
+postcard protocol would make old peers reject the stream. Compute uses its own
+versioned ALPN so old relay peers keep their byte-compatible v1 stream.
 
 ## Personal device fabric
 
