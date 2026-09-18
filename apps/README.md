@@ -7,14 +7,12 @@ Rust library names and imports use underscores (`code_editor`).
 Every app here is a native Tilo application built on the public
 [`tilo-app`](../crates/app/tilo-app) SDK (normally renamed to `ui` in Cargo).
 `tilo-app` re-exports the complete retained-widget, layout, canvas,
-custom-painting, native-view and GPU API: the action-native boundary does not
-limit presentation. The lower [`ui-core`](../ui) package is an implementation
-dependency for the shell and SDK, not an application dependency.
+custom-painting, native-view and GPU API. The internal [`ui-core`](../ui) package
+is a dependency of the shell and SDK; apps use `tilo-app`.
 
 Apps are retained-mode and CRDT-native: durable state lives in a shared
-Automerge document, so undo/redo, persistence and live collaboration ride one
-mechanism, while Vello and Taffy remain available for arbitrary rendering and
-layout. Each app is its own workspace crate and has a `--shots PATH` headless
+Automerge document for undo/redo, persistence and collaboration. Vello and Taffy
+provide rendering and layout. Each app is its own workspace crate and has a `--shots PATH` headless
 mode that renders the live production root offscreen for review and CI. Apps
 that reach the network or hardware keep that behind an off-by-default feature
 (`live`, `audio`, …) and fall back to bundled sample data, so default builds
@@ -24,10 +22,8 @@ Toolkit exception: `browser` embeds Servo for page rendering.
 
 ## Application contract (required)
 
-The resource/action surface is the application API. A feature is not complete
-when it is only reachable from a button, key binding, private message enum, or
-test hook. Its UI and every non-visual caller must converge on the same typed
-operation:
+Expose each operation through the resource/action API. UI controls, scripts and
+agents must invoke the same typed operation:
 
 1. `Widget::resources` publishes stable resource and action IDs, labels,
    availability, permission, risk/confirmation, retry, execution, discovery,
@@ -46,7 +42,7 @@ operation:
    Apps never accept a boolean such as `trusted` as authority and never report
    simulated external success.
 
-For a small zero-argument control, use the action-native convenience path:
+For a zero-argument control:
 
 ```rust
 let sync = ui::Button::new("sync", "Sync", None)
@@ -55,8 +51,7 @@ let preview = ui::Button::new("preview", "Preview", None)
     .on_view(move || preview_state.toggle());
 ```
 
-Both publish a real operation; they are not callback-only controls. For a
-domain operation, bind the actual advertised spec instead:
+To bind a declared resource action:
 
 ```rust
 let resource = project_resource(&project);
@@ -70,7 +65,7 @@ required, and routes document/effect/view work through the shared execution
 and lifecycle machinery. Do not mirror the operation in `on_click`, a private
 message bus, or a hand-maintained command list.
 
-Ctrl+K is native and automatic: the host recursively flattens
+For Ctrl+K, the host recursively flattens
 `Widget::resources` into command rows, semantic actions and the same broker
 catalogue consumed by scripts and agents. Custom widgets retain arbitrary
 rendering by owning an `ActionEmitter<T>`, exposing its metadata through
@@ -80,9 +75,8 @@ the same intent.
 
 The toolkit validates the live surface before publishing it, and the broker
 validates untrusted descriptors again. Presubmit runs
-`tools/check_app_resource_action_contract.py`, so an app without this surface or
-with an unattached operation handler cannot land. Exercise exactly what an agent
-sees with:
+`tools/check_app_resource_action_contract.py` to reject missing resources and
+unattached operation handlers. Invoke and inspect actions with:
 
 ```bash
 cargo run -q --bin tilo-control -- actions list
@@ -95,8 +89,7 @@ The same catalogue and invocation/status/cancel protocol is available to
 workspace agents through the certified collaboration channel. Do not add a
 second app-specific automation protocol.
 
-The application boundary is zero tolerance. Validate one app, or the complete
-graphical workspace, with:
+Validate one app or the graphical workspace:
 
 ```bash
 tilo-dev check apps/my-app
@@ -108,9 +101,8 @@ tilo-dev certify . --workspace
 tests, runtime certification and audited scenarios. `certify` runs the focused
 production-root native audit. Direct `ui-core` dependencies, legacy callbacks,
 stale bindings, missing semantics, and invalid or unhandled operations are
-certification failures—not advisory warnings. Direct CRDT field controls are
-the small collaborative primitive: the SDK projects them into searchable
-semantic actions and records their mutations in shared history.
+certification failures. The SDK exposes direct CRDT field controls as searchable
+actions and records their mutations in shared history.
 
 ## Productivity & documents
 
