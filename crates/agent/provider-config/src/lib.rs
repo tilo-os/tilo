@@ -123,6 +123,11 @@ pub struct ModelDescriptor {
     /// For locally managed models this value is copied from the signed
     /// catalogue; hosted profiles remain an explicit user/provider claim.
     pub vision: bool,
+    /// Signed declaration that this exact local model exposes the bounded
+    /// Photos face-detection/embedding/clustering protocol. This is separate
+    /// from generic vision: image descriptions must never enable biometrics.
+    #[serde(default)]
+    pub face_recognition: bool,
     pub tool_calling: bool,
 }
 
@@ -134,6 +139,7 @@ impl Default for ModelDescriptor {
             context_window: None,
             revision: None,
             vision: false,
+            face_recognition: false,
             tool_calling: true,
         }
     }
