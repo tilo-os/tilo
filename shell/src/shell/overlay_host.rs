@@ -833,12 +833,12 @@ mod device_fabric_ui_tests {
         view.local_outputs.clear();
         view.remote_capture.local_receivers.camera = true;
         view.remote_capture.consents = vec![
-            crate::shell::remote_capture_runtime::RemoteCaptureConsentView {
+            crate::shell::remote_capture::runtime::RemoteCaptureConsentView {
                 request_id: [12; 16],
                 peer: remote.clone(),
                 app_label: "Camera".into(),
-                profile: crate::shell::remote_capture_device::RemoteCaptureProfile::Camera {
-                    format: crate::shell::remote_capture_device::RemoteVideoFormat::Nv12,
+                profile: crate::shell::remote_capture::device::RemoteCaptureProfile::Camera {
+                    format: crate::shell::remote_capture::device::RemoteVideoFormat::Nv12,
                     width: 1280,
                     height: 720,
                     frames_per_second: 30,
@@ -870,7 +870,7 @@ mod device_fabric_ui_tests {
         assert!(
             actions.contains(&DeviceFabricUiAction::RequestRemoteCapture {
                 peer: remote,
-                kind: crate::shell::remote_capture_device::RemoteCaptureKind::Camera,
+                kind: crate::shell::remote_capture::device::RemoteCaptureKind::Camera,
             })
         );
     }
@@ -1416,7 +1416,7 @@ pub struct DeviceFabricView {
     pub calibration_proposals: Vec<crate::shell::spatial_calibration::CalibrationProposal>,
     pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
     pub tethering: Vec<crate::shell::personal_tethering_runtime::TetheringStatusView>,
-    pub(crate) remote_capture: crate::shell::remote_capture_runtime::RemoteCaptureView,
+    pub(crate) remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView,
     pub display_mirror_consents: Vec<crate::shell::device_fabric_runtime::DisplayMirrorConsentView>,
     pub display_mirrors: Vec<crate::shell::device_fabric_runtime::DisplayMirrorStatusView>,
     pub display_mirror_available: bool,
@@ -1479,7 +1479,7 @@ pub enum DeviceFabricUiAction {
     },
     RequestRemoteCapture {
         peer: crate::shell::personal_continuity::DeviceId,
-        kind: crate::shell::remote_capture_device::RemoteCaptureKind,
+        kind: crate::shell::remote_capture::device::RemoteCaptureKind,
     },
     AuthorizeRemoteCapture {
         request_id: [u8; 16],
@@ -1561,10 +1561,10 @@ enum DeviceFabricPaneRow {
     RemoteAudioConsent(crate::shell::remote_audio::RemoteAudioConsentView),
     RemoteAudioSource(crate::shell::remote_audio::RemoteAudioSourceView),
     RemoteAudioRoute(crate::shell::remote_audio::RemoteAudioRouteView),
-    RemoteCaptureConsent(crate::shell::remote_capture_runtime::RemoteCaptureConsentView),
-    RemoteCaptureSource(crate::shell::remote_capture_device::RemoteCaptureKind),
-    RemoteCaptureSession(crate::shell::remote_capture_runtime::RemoteCaptureSessionView),
-    RemoteCaptureDegraded(crate::shell::remote_capture_runtime::RemoteCaptureDegradedView),
+    RemoteCaptureConsent(crate::shell::remote_capture::runtime::RemoteCaptureConsentView),
+    RemoteCaptureSource(crate::shell::remote_capture::device::RemoteCaptureKind),
+    RemoteCaptureSession(crate::shell::remote_capture::runtime::RemoteCaptureSessionView),
+    RemoteCaptureDegraded(crate::shell::remote_capture::runtime::RemoteCaptureDegradedView),
     DisplayMirrorConsent(crate::shell::device_fabric_runtime::DisplayMirrorConsentView),
     DisplayMirrorSource,
     DisplayMirrorStatus(crate::shell::device_fabric_runtime::DisplayMirrorStatusView),
@@ -1626,15 +1626,15 @@ fn device_fabric_pane_rows(
         .chain(
             [
                 (
-                    crate::shell::remote_capture_device::RemoteCaptureKind::Camera,
+                    crate::shell::remote_capture::device::RemoteCaptureKind::Camera,
                     view.remote_capture.local_receivers.camera,
                 ),
                 (
-                    crate::shell::remote_capture_device::RemoteCaptureKind::Microphone,
+                    crate::shell::remote_capture::device::RemoteCaptureKind::Microphone,
                     view.remote_capture.local_receivers.microphone,
                 ),
                 (
-                    crate::shell::remote_capture_device::RemoteCaptureKind::DocumentScanner,
+                    crate::shell::remote_capture::device::RemoteCaptureKind::DocumentScanner,
                     view.remote_capture.local_receivers.scanner,
                 ),
             ]
@@ -1744,12 +1744,12 @@ fn device_fabric_pane_rows(
 }
 
 fn remote_capture_kind_label(
-    kind: crate::shell::remote_capture_device::RemoteCaptureKind,
+    kind: crate::shell::remote_capture::device::RemoteCaptureKind,
 ) -> &'static str {
     match kind {
-        crate::shell::remote_capture_device::RemoteCaptureKind::Camera => "camera",
-        crate::shell::remote_capture_device::RemoteCaptureKind::Microphone => "microphone",
-        crate::shell::remote_capture_device::RemoteCaptureKind::DocumentScanner => "scanner",
+        crate::shell::remote_capture::device::RemoteCaptureKind::Camera => "camera",
+        crate::shell::remote_capture::device::RemoteCaptureKind::Microphone => "microphone",
+        crate::shell::remote_capture::device::RemoteCaptureKind::DocumentScanner => "scanner",
     }
 }
 
@@ -2012,7 +2012,7 @@ pub struct ShellOverlayHost {
     qs_selected_realtime: Option<String>,
     qs_selected_gamepad: Option<u64>,
     qs_selected_remote_audio: Option<u64>,
-    qs_selected_remote_capture: Option<crate::shell::remote_capture_device::RemoteCaptureKind>,
+    qs_selected_remote_capture: Option<crate::shell::remote_capture::device::RemoteCaptureKind>,
     qs_selected_display_mirror: bool,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
@@ -12397,7 +12397,7 @@ impl ShellOverlayHost {
                 };
                 if session.receiving
                     && session.phase
-                        == crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::AppApprovalRequired
+                        == crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::AppApprovalRequired
                 {
                     Some((
                         DeviceFabricUiAction::ApproveRemoteCaptureTarget { session_id },
@@ -15607,15 +15607,15 @@ impl Widget for ShellOverlayHost {
                                                 remote_capture_kind_label(session.kind)
                                             ),
                                             match session.phase {
-                                                crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::Requesting =>
+                                                crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Requesting =>
                                                     "Waiting for the source device to approve".into(),
-                                                crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::Provisioning =>
+                                                crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Provisioning =>
                                                     "Preparing a private local endpoint".into(),
-                                                crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::AppApprovalRequired =>
+                                                crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::AppApprovalRequired =>
                                                     "Local app approval is required".into(),
-                                                crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::WaitingForReceiver =>
+                                                crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::WaitingForReceiver =>
                                                     "Waiting for the receiving device".into(),
-                                                crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::Streaming =>
+                                                crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Streaming =>
                                                     "Private session active; activate to stop".into(),
                                             },
                                             Vec::new(),
@@ -15626,11 +15626,11 @@ impl Widget for ShellOverlayHost {
                                                 remote_capture_kind_label(degraded.kind)
                                             ),
                                             match degraded.reason {
-                                                crate::shell::remote_capture_runtime::RemoteCaptureDegradedReason::SourceUnavailable =>
+                                                crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::SourceUnavailable =>
                                                     "The source device cannot provide this input".into(),
-                                                crate::shell::remote_capture_runtime::RemoteCaptureDegradedReason::ReceiverUnavailable =>
+                                                crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::ReceiverUnavailable =>
                                                     "This device cannot create the private receiver".into(),
-                                                crate::shell::remote_capture_runtime::RemoteCaptureDegradedReason::TransferInterrupted =>
+                                                crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::TransferInterrupted =>
                                                     "The certified route was interrupted and closed".into(),
                                             },
                                             Vec::new(),
@@ -20645,19 +20645,19 @@ impl ShellOverlayHost {
                         .find(|device| device.id == session.peer)
                         .map_or("certified device", |device| device.label.as_str());
                     let detail = match session.phase {
-                        crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::Requesting => {
+                        crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Requesting => {
                             format!("Waiting for approval on {peer}")
                         }
-                        crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::Provisioning => {
+                        crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Provisioning => {
                             "Preparing a private local endpoint".into()
                         }
-                        crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::AppApprovalRequired => {
+                        crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::AppApprovalRequired => {
                             "Allow the focused app once".into()
                         }
-                        crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::WaitingForReceiver => {
+                        crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::WaitingForReceiver => {
                             format!("Waiting for {peer} to become ready")
                         }
-                        crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::Streaming => {
+                        crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Streaming => {
                             format!("Private session with {peer} · select to stop")
                         }
                     };
@@ -20666,9 +20666,9 @@ impl ShellOverlayHost {
                         detail,
                         ui::icons::Icon::Camera,
                         session.phase
-                            == crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::Streaming,
+                            == crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Streaming,
                         session.phase
-                            == crate::shell::remote_capture_runtime::RemoteCaptureSessionPhase::AppApprovalRequired
+                            == crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::AppApprovalRequired
                             || session.session_id.is_some(),
                     )
                 }
@@ -20678,13 +20678,13 @@ impl ShellOverlayHost {
                         remote_capture_kind_label(degraded.kind)
                     ),
                     match degraded.reason {
-                        crate::shell::remote_capture_runtime::RemoteCaptureDegradedReason::SourceUnavailable => {
+                        crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::SourceUnavailable => {
                             "Source cannot provide this input".into()
                         }
-                        crate::shell::remote_capture_runtime::RemoteCaptureDegradedReason::ReceiverUnavailable => {
+                        crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::ReceiverUnavailable => {
                             "Private receiver could not be created".into()
                         }
-                        crate::shell::remote_capture_runtime::RemoteCaptureDegradedReason::TransferInterrupted => {
+                        crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::TransferInterrupted => {
                             "Certified route interrupted · session closed".into()
                         }
                     },
