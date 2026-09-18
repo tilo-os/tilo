@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Affine, Fill, MapsApp, NAVIGATION_FLOAT_ID, Point, Rect, Scene, Stroke, TextRenderer,
+    TextWeight, Theme, draw, geo,
+};
 
 impl MapsApp {
     /// Compact live-navigation surface for the shell floating host. The source
