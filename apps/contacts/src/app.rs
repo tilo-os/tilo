@@ -57,6 +57,8 @@ use crate::vcard::{self, VCardVersion};
 
 /// Suggested file name for the export Save dialog.
 const EXPORT_FILE_NAME: &str = "contacts-export.vcf";
+/// Private presentation token; it is never written to the shared document.
+const FAVORITES_FILTER: &str = "\u{0}contacts:favorites";
 
 fn contacts_import_request() -> PickRequest {
     PickRequest::open_multiple("Import contacts", "Import")
@@ -1211,23 +1213,13 @@ impl ContactsApp {
     /// `--shots`.
     pub fn shots_show_context_menu(&mut self) {
         if let Some(id) = self.selected {
-            // Anchor the menu near the selected row in the list.
-            let anchor = self
-                .list_rows
-                .iter()
-                .find(|(rid, _)| *rid == id)
-                .map_or_else(
-                    || {
-                        Rect::new(
-                            self.list_rect.x0 + 60.0,
-                            self.list_rect.y0 + 200.0,
-                            self.list_rect.x0 + 60.0,
-                            self.list_rect.y0 + 200.0,
-                        )
-                    },
-                    |(_, r)| Rect::new(r.x0 + 40.0, r.center().y, r.x0 + 40.0, r.center().y),
-                );
-            self.open_popup(Popup::ContextMenu { target: id, anchor });
+            // The screenshot hook runs before its first layout pass. Defer the
+            // anchor instead of guessing a row position that could point at a
+            // different person than the menu target.
+            self.open_popup(Popup::ContextMenu {
+                target: id,
+                anchor: Rect::ZERO,
+            });
         }
     }
 
@@ -1243,8 +1235,25 @@ impl ContactsApp {
 
     /// Ids currently visible after search + group filter, in sort order.
     fn visible_ids(&self) -> Vec<ContactId> {
+        if self.group_filter.as_deref() == Some(FAVORITES_FILTER) {
+            let query = self.search.value();
+            let mut contacts = self
+                .store
+                .contacts
+                .iter()
+                .filter(|contact| contact.favorite && contact.matches(query))
+                .collect::<Vec<_>>();
+            contacts.sort_by(|left, right| crate::model::sort_cmp(left, right, self.sort));
+            return contacts.into_iter().map(|contact| contact.id).collect();
+        }
         self.store
             .filtered_sorted(self.search.value(), self.group_filter.as_deref(), self.sort)
+    }
+
+    fn group_filter_options(&self) -> Vec<String> {
+        let mut options = vec!["All".to_string(), "Favorites".to_string()];
+        options.extend(self.store.all_groups());
+        options
     }
 
     fn show_toast(&mut self, msg: impl Into<String>) {
@@ -1696,6 +1705,9 @@ impl ContactsApp {
             import_conflicts: Vec::new(),
         };
         if id == "contacts.book" {
+            return Some(ctx);
+        }
+        if id == crate::actions::FAVORITES_RESOURCE_ID {
             return Some(ctx);
         }
         if let Some(raw) = id.strip_prefix("contacts.contact:") {
@@ -3020,6 +3032,15 @@ impl ContactsApp {
                 anchor: self.hit.group,
             });
         }
+        if let Some(Popup::ContextMenu { target, anchor }) = self.popup
+            && anchor == Rect::ZERO
+            && let Some((_, row)) = self.list_rows.iter().find(|(id, _)| *id == target)
+        {
+            self.open_popup(Popup::ContextMenu {
+                target,
+                anchor: Rect::new(row.x0 + 40.0, row.center().y, row.x0 + 40.0, row.center().y),
+            });
+        }
         if let Some(popup) = &self.popup {
             self.draw_popup(scene, transform, tr, theme, popup);
         }
@@ -3332,6 +3353,7 @@ impl ContactsApp {
         let sort_label = format!("Sort: {}", self.sort.label());
         chip(scene, t, tr, theme, self.hit.sort, &sort_label, false);
         let group_label = match &self.group_filter {
+            Some(filter) if filter == FAVORITES_FILTER => "Favorites".to_string(),
             Some(g) => format!("Group: {g}"),
             None => "Group: All".to_string(),
         };
@@ -4281,7 +4303,7 @@ impl ContactsApp {
         theme: &Theme,
         anchor: Rect,
     ) {
-        let mut opts = vec!["All".to_string()];
+        let mut opts = vec!["All".to_string(), "Favorites".to_string()];
         opts.extend(self.store.all_groups());
         let (panel, rows) = self.popup_menu_geometry(anchor, opts.len(), 180.0);
         menu_panel(scene, t, theme, panel);
@@ -4292,6 +4314,7 @@ impl ContactsApp {
             };
             let sel = match &self.group_filter {
                 None => i == 0,
+                Some(filter) if filter == FAVORITES_FILTER => opt == "Favorites",
                 Some(g) => opt == g,
             };
             menu_item(scene, t, tr, theme, *r, opt, hov, sel);
@@ -5255,15 +5278,18 @@ impl ContactsApp {
     }
 
     fn accessibility_group_menu(&self, anchor: Rect) -> AccessNode {
-        let mut options = vec!["All".to_string()];
-        options.extend(self.store.all_groups());
+        let options = self.group_filter_options();
         let (panel, rows) = self.popup_menu_geometry(anchor, options.len(), 180.0);
         let children = options
             .iter()
             .zip(rows)
             .enumerate()
             .map(|(index, (option, bounds))| {
-                let selected = self.group_filter.as_deref().unwrap_or("All") == option;
+                let selected = match self.group_filter.as_deref() {
+                    None => option == "All",
+                    Some(FAVORITES_FILTER) => option == "Favorites",
+                    Some(group) => option == group,
+                };
                 AccessNode::new(Role::RadioButton)
                     .with_name(option.clone())
                     .with_action_target(group_option_target(option))
@@ -5680,6 +5706,12 @@ impl Widget for ContactsApp {
                 crate::actions::ContactsOperation::OpenGroup { name },
             ) => self.reveal_group(&name)?,
             (
+                tilo_actions::OperationKind::View,
+                crate::actions::ContactsOperation::OpenFavorites,
+            ) => {
+                self.set_group_filter(Some(FAVORITES_FILTER.into()));
+            }
+            (
                 tilo_actions::OperationKind::Effect,
                 crate::actions::ContactsOperation::ImportVcard { path },
             ) => {
@@ -5831,6 +5863,7 @@ impl Widget for ContactsApp {
             }
             crate::actions::ContactsOperation::Open { .. }
             | crate::actions::ContactsOperation::OpenGroup { .. }
+            | crate::actions::ContactsOperation::OpenFavorites
             | crate::actions::ContactsOperation::KeepImportConflict { .. }
             | crate::actions::ContactsOperation::ImportConflictAsNew { .. } => self
                 .invoke_resource_operation(kind, type_id, payload, doc, path)
@@ -6172,7 +6205,11 @@ impl Widget for ContactsApp {
                     ),
                 AccessNode::new(Role::ComboBox)
                     .with_name("Group filter")
-                    .with_value(self.group_filter.as_deref().unwrap_or("All"))
+                    .with_value(match self.group_filter.as_deref() {
+                        Some(FAVORITES_FILTER) => "Favorites",
+                        Some(group) => group,
+                        None => "All",
+                    })
                     .with_action_target("contacts.group")
                     .with_bounds(self.hit.group)
                     .with_state(
@@ -6581,15 +6618,18 @@ impl Widget for ContactsApp {
         }
 
         if matches!(action, Action::Activate | Action::ToggleCheck) {
-            let mut groups = vec!["All".to_string()];
-            groups.extend(self.store.all_groups());
+            let groups = self.group_filter_options();
             if let Some(group) = groups
                 .iter()
                 .find(|group| target == group_option_target(group))
                 && matches!(self.popup, Some(Popup::GroupFilter { .. }))
             {
                 self.popup = None;
-                self.set_group_filter((group != "All").then(|| group.clone()));
+                self.set_group_filter(match group.as_str() {
+                    "All" => None,
+                    "Favorites" => Some(FAVORITES_FILTER.into()),
+                    _ => Some(group.clone()),
+                });
                 return true;
             }
             for (sort, _) in [(SortKey::Name, "Name"), (SortKey::Org, "Organization")] {
@@ -7679,11 +7719,15 @@ impl ContactsApp {
     /// Group-filter selection: narrows the list to the picked group (or
     /// clears it for "All"), and keeps the selection valid.
     fn handle_popup_group_filter(&mut self, anchor: Rect, p: Point) {
-        let mut opts = vec!["All".to_string()];
-        opts.extend(self.store.all_groups());
+        let opts = self.group_filter_options();
         let (_panel, rows) = self.popup_menu_geometry(anchor, opts.len(), 180.0);
         if let Some(i) = rows.iter().position(|r| r.contains(p)) {
-            self.set_group_filter(if i == 0 { None } else { opts.get(i).cloned() });
+            self.set_group_filter(match opts.get(i).map(String::as_str) {
+                Some("All") => None,
+                Some("Favorites") => Some(FAVORITES_FILTER.into()),
+                Some(group) => Some(group.to_string()),
+                None => return,
+            });
         }
         self.relayout = true;
     }
@@ -8246,7 +8290,7 @@ impl ContactsApp {
         let count = match popup {
             Popup::TypeMenu { .. } => TYPE_OPTIONS.len(),
             Popup::Sort { .. } => 2,
-            Popup::GroupFilter { .. } => self.store.all_groups().len() + 1,
+            Popup::GroupFilter { .. } => self.group_filter_options().len(),
             Popup::ContextMenu { .. } => CONTEXT_ACTIONS.len(),
             Popup::Calendar { year, month, .. } => date::days_in_month(*year, *month) as usize + 2,
         };
@@ -8359,13 +8403,13 @@ impl ContactsApp {
                 self.relayout = true;
             }
             Popup::GroupFilter { .. } => {
-                let mut options = vec!["All".to_string()];
-                options.extend(self.store.all_groups());
-                self.set_group_filter(
-                    (self.popup_focus != 0)
-                        .then(|| options.get(self.popup_focus).cloned())
-                        .flatten(),
-                );
+                let options = self.group_filter_options();
+                self.set_group_filter(match options.get(self.popup_focus).map(String::as_str) {
+                    Some("All") => None,
+                    Some("Favorites") => Some(FAVORITES_FILTER.into()),
+                    Some(group) => Some(group.to_string()),
+                    None => None,
+                });
             }
             Popup::ContextMenu { target, .. } => {
                 let Some(action) = CONTEXT_ACTIONS.get(self.popup_focus).copied() else {
