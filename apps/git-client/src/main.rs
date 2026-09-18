@@ -92,7 +92,21 @@ fn stage_and_commit(message: &str) -> Result<(), LaunchError> {
     Ok(())
 }
 
+fn install_locales() -> Result<(), ui::i18n::I18nError> {
+    ui::i18n::I18nManager::install_system(
+        "en-US",
+        &[
+            ("en-US", include_str!("../locales/en-US.ftl")),
+            ("de-DE", include_str!("../locales/de-DE.ftl")),
+        ],
+    )
+}
+
 pub fn main() {
+    if let Err(error) = install_locales() {
+        eprintln!("Git Client locale initialization failed: {error}");
+        std::process::exit(1);
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.tilo.git-client", git_client::app_root)
             .shot_root(shot_root)
@@ -104,4 +118,23 @@ pub fn main() {
                 git_client::actions::register(app.action_registry_mut());
             }),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn startup_installs_remote_status_catalog() {
+        super::install_locales().unwrap();
+        for (key, value) in [
+            ("git-remote-running", ui::i18n!("git-remote-running")),
+            ("git-remote-busy", ui::i18n!("git-remote-busy")),
+            (
+                "git-remote-worker-stopped",
+                ui::i18n!("git-remote-worker-stopped"),
+            ),
+        ] {
+            assert_ne!(key, value);
+            assert!(!value.is_empty());
+        }
+    }
 }
