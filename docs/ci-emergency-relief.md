@@ -28,11 +28,12 @@ health guarantee.
 | Infrastructure `a30e1c8` | Adds one exclusive on-prem `runner-quality` slot, with a 2 CPU / 4 GiB Docker-in-Docker workload envelope; general/heavy jobs cannot use its reserved capacity. |
 | Infrastructure `ffbd0a1` | Adds completed-cleanup tolerance and live-runner deletion guards, retained in later images. These guards do not prove the cause of historical runner loss. |
 | Infrastructure `3e2e8ba` | Deploys repository-scoped full-builder seed clones with broker image `48a5bf...`. Actual repository 23 snapshot cloning is proven; its first observed job used a public image, so this is not private-builder cache-hit evidence. |
+| Infrastructure `a970175` | Deploys current broker `c80bd455...` with both AX41 v2 seeds. Both replicas Ready with zero restarts at acceptance. Normal repository 23 control and lint jobs received isolated snapshot clones and created their pinned containers without a pull event; timings below. |
 
 Broker image:
 
 ```text
-code.sandbox.example/podestaai/sandbox-broker@sha256:48a5bfac79b32e398fc11a36d6b16956d13e7a3103ca80547efa619d83ad7b95
+code.sandbox.example/podestaai/sandbox-broker@sha256:c80bd455e9959e48d1a06d14f26a823402a34eee79d050a3ae939ef425225fc7
 ```
 
 The broker runs as Deployment `sandbox-broker` in namespace `sandbox-broker`.
@@ -42,7 +43,7 @@ five-second intervals. Startup-probe recovery is healthy independently of the
 performance patch. The `c568...` image patched a source-tree copy, while the running
 broker imported its implementation from `site-packages`; the intended performance
 guard therefore did **not** take effect. Infrastructure `506195f` replaces that
-image with the imported-module correction. The later `3e2e8ba` deployment
+image with the imported-module correction. The current `a970175` deployment
 retains that correction, the exclusive quality lane, and `ffbd0a1` cleanup guards
 that tolerate completed resources and protect live runners. Green probes and
 source changes alone do not prove end-to-end improvement; the production
@@ -155,11 +156,24 @@ measurement; the on-prem result does not establish equivalent cloud timings.
 
 The second AX41 node's three-image seed experiment reported an **18-second clone**
 and all three image pulls below **one second**. Infrastructure `d600500` configures
-that verified seed, but production v2 runtime and normal-job acceptance are pending
-in this record. Complete that acceptance with the effective running broker/seed
-identity, an ordinary request receiving its own writable clone, and that job's
-actual image preparation timings. Do not replace this pending state with prototype
-timings or configuration presence alone.
+that verified seed. Production v2 runtime and normal-job acceptance subsequently
+passed at infrastructure `a970175`: both AX41 nodes supplied repository 23 with
+isolated writable snapshot clones under broker `c80bd455...`; both broker replicas
+were Ready with zero restarts at the observed acceptance point.
+
+Normal main revision `6d221fd9` supplied these actual workflow observations:
+
+| Request | Pinned image | Received to container creation | Observed result |
+| --- | --- | --- | --- |
+| Check 22761, builder job 83565, task 75054 | `ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5` | 22:55:12.230 to 22:55:12.766 UTC: 535.6 ms | Job succeeded at 22:55:27.021, about 14.8 seconds after receipt |
+| Lint 22762, job 83571, task 75056 | `ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a` | 22:55:20.276 to 22:55:20.620 UTC: 343.9 ms | Policy completed by 22:56:12; dependency-usage analysis still running at that observation |
+
+Neither log contained a Docker pull event. These intervals are **task receipt to
+container creation**, not pull-to-create or isolated network timings. They prove
+warm startup for these normal pinned control/quality jobs, not success of the
+entire check or lint run. Cloud/ARM cold startup remains outside this proof.
+The separate generic full-builder pilot 22744 measured a **236.876-second cold
+pull**; do not represent these two lean-image hits as eliminating that path.
 
 The separate storage recovery task reports expansion/cleanup without a Forgejo
 restart. This is an operator report, not a retained-space or sustained-write
