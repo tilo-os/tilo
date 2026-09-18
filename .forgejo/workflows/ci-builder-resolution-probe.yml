@@ -25,3 +25,24 @@ jobs:
           python3 tools/tests/test_resolve_ci_builder.py
           python3 os/tests/test_builder_candidate_workflow.py
           python3 tools/tests/test_ci_queue_relief.py
+      - name: Verify resolved package digest is the registry index
+        env:
+          RESOLVED_IMAGE: ${{ steps.resolve.outputs.image }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          temporary=$(mktemp -d)
+          trap 'rm -rf "$temporary"' EXIT
+          export DOCKER_CONFIG="$temporary/auth"
+          printf '%s' "$REGISTRY_TOKEN" | docker login code.podesta.ai --username "$REGISTRY_USER" --password-stdin >/dev/null
+          docker buildx imagetools inspect --raw "$RESOLVED_IMAGE" > "$temporary/index.json"
+          python3 - "$temporary/index.json" <<'PY'
+          import hashlib, json, os, pathlib, sys
+          payload = pathlib.Path(sys.argv[1]).read_bytes()
+          document = json.loads(payload)
+          assert 'sha256:' + hashlib.sha256(payload).hexdigest() == os.environ['RESOLVED_IMAGE'].split('@')[1]
+          assert document['mediaType'] in ('application/vnd.oci.image.index.v1+json', 'application/vnd.docker.distribution.manifest.list.v2+json')
+          assert {'amd64', 'arm64'} <= {item['platform']['architecture'] for item in document['manifests'] if item['platform']['os'] == 'linux'}
+          print('REGISTRY_INDEX_EQUIVALENCE_PASS')
+          PY
