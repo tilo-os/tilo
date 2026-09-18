@@ -1188,7 +1188,8 @@ impl Widget for DiffMergeApp {
             self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
 
-        if self.handle_keyboard_shortcut(event, *modifiers) {
+        let merge_editor_focused = self.mode == Mode::Merge && self.merge.merged_editor_focused();
+        if !merge_editor_focused && self.handle_keyboard_shortcut(event, *modifiers) {
             *handled = true;
             return;
         }

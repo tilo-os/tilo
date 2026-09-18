@@ -18,6 +18,7 @@ use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::text_edit::{EditCore, Motion};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
@@ -88,29 +89,55 @@ pub enum GridCmd {
 #[derive(Clone)]
 struct EditState {
     addr: Addr,
-    chars: Vec<char>,
-    caret: usize,
-    /// Selection anchor. When `Some` and different from `caret`, the text
-    /// between the two is selected (highlighted, replaced on type/paste,
-    /// removed on backspace). `None` means a plain caret with no selection.
-    sel: Option<usize>,
+    text: String,
+    /// Shared caret/selection core. The grid keeps its custom cell painting
+    /// and point-mode formula insertion, but all text editing semantics come
+    /// from the same byte-safe core as the other editable surfaces.
+    core: EditCore,
 }
 
 impl EditState {
     fn text(&self) -> String {
-        self.chars.iter().collect()
+        self.text.clone()
     }
 
     /// The ordered `(start, end)` char indices of the current selection, or
     /// `None` when nothing is selected.
     fn selection(&self) -> Option<(usize, usize)> {
-        let anchor = self.sel?;
-        let (a, b) = (anchor.min(self.caret), anchor.max(self.caret));
-        if a == b {
-            None
-        } else {
-            Some((a, b.min(self.chars.len())))
+        let range = self.core.range();
+        if range.is_empty() {
+            return None;
         }
+        Some((
+            self.text[..range.start].chars().count(),
+            self.text[..range.end].chars().count(),
+        ))
+    }
+
+    fn caret(&self) -> usize {
+        self.text[..self.core.caret().min(self.text.len())]
+            .chars()
+            .count()
+    }
+
+    fn set_caret(&mut self, char_idx: usize, extend: bool) {
+        let byte = self
+            .text
+            .char_indices()
+            .nth(char_idx)
+            .map_or(self.text.len(), |(byte, _)| byte);
+        self.core.place(byte, extend);
+    }
+
+    fn apply_edit(&mut self, edit: ui::text_edit::Edit) {
+        if edit.is_noop() {
+            return;
+        }
+        self.text.replace_range(
+            edit.at..edit.at.saturating_add(edit.removed),
+            &edit.inserted,
+        );
+        self.core.clamp_to(&self.text);
     }
 }
 
@@ -1058,22 +1085,15 @@ impl Grid {
     /// Begin editing the active cell. `seed` replaces the content (typed
     /// character) or, when `None`, loads the existing raw for in-place edit.
     pub fn begin_edit(&mut self, seed: Option<String>) {
-        let chars: Vec<char> = match seed {
-            Some(s) => s.chars().collect(),
-            None => self
-                .raw
-                .get(&self.active)
-                .cloned()
-                .unwrap_or_default()
-                .chars()
-                .collect(),
+        let text = match seed {
+            Some(s) => s,
+            None => self.raw.get(&self.active).cloned().unwrap_or_default(),
         };
-        let caret = chars.len();
+        let caret = text.len();
         self.edit = Some(EditState {
             addr: self.active,
-            chars,
-            caret,
-            sel: None,
+            core: EditCore::at(caret),
+            text,
         });
         self.point_anchor = None;
         self.point_selecting = false;
@@ -1104,9 +1124,7 @@ impl Grid {
     /// (begins with `=`). Formula edits enter "point mode": clicking cells
     /// inserts their references instead of moving the selection.
     pub fn editing_formula(&self) -> bool {
-        self.edit
-            .as_ref()
-            .is_some_and(|e| e.chars.first() == Some(&'='))
+        self.edit.as_ref().is_some_and(|e| e.text.starts_with('='))
     }
 
     /// The formula body (text after `=`) whose references should be
@@ -1131,16 +1149,17 @@ impl Grid {
     /// pending replacement or the caret sits right after an operator/opener.
     fn can_point(&self) -> bool {
         let Some(e) = &self.edit else { return false };
-        if e.chars.first() != Some(&'=') {
+        if !e.text.starts_with('=') {
             return false;
         }
         if self.point_anchor.is_some() {
             return true;
         }
-        let prev = if e.caret == 0 {
+        let caret = e.caret();
+        let prev = if caret == 0 {
             None
         } else {
-            e.chars.get(e.caret - 1).copied()
+            e.text.chars().nth(caret - 1)
         };
         matches!(
             prev,
@@ -1155,19 +1174,22 @@ impl Grid {
         let insert_at = match self.point_anchor {
             Some(a) => {
                 if let Some(e) = &mut self.edit {
-                    e.chars.truncate(a);
-                    e.caret = a;
+                    let byte = e
+                        .text
+                        .char_indices()
+                        .nth(a)
+                        .map_or(e.text.len(), |(byte, _)| byte);
+                    e.text.truncate(byte);
+                    e.core.set_caret(byte);
                 }
                 a
             }
-            None => self.edit.as_ref().map_or(0, |e| e.caret),
+            None => self.edit.as_ref().map_or(0, EditState::caret),
         };
         let s = addr_to_a1(addr.0, addr.1);
         if let Some(e) = &mut self.edit {
-            for ch in s.chars() {
-                e.chars.insert(e.caret, ch);
-                e.caret += 1;
-            }
+            let edit = e.core.insert(&s);
+            e.apply_edit(edit);
         }
         self.point_anchor = Some(insert_at);
         self.point_drag_start = addr;
@@ -1190,12 +1212,15 @@ impl Grid {
             format!("{}:{}", addr_to_a1(tl.0, tl.1), addr_to_a1(br.0, br.1))
         };
         if let Some(e) = &mut self.edit {
-            e.chars.truncate(anchor);
-            e.caret = anchor;
-            for ch in text.chars() {
-                e.chars.insert(e.caret, ch);
-                e.caret += 1;
-            }
+            let byte = e
+                .text
+                .char_indices()
+                .nth(anchor)
+                .map_or(e.text.len(), |(byte, _)| byte);
+            e.text.truncate(byte);
+            e.core.set_caret(byte);
+            let edit = e.core.insert(&text);
+            e.apply_edit(edit);
         }
         self.dirty = true;
     }
@@ -1699,25 +1724,20 @@ impl Grid {
                 true
             }
             Key::Named(NamedKey::Backspace) => {
-                // Backspace removes the selection when there is one, else the
-                // character before the caret.
-                if !self.delete_selection()
-                    && let Some(e) = &mut self.edit
-                    && e.caret > 0
-                {
-                    e.chars.remove(e.caret - 1);
-                    e.caret -= 1;
+                if let Some(e) = &mut self.edit {
+                    let text = e.text.clone();
+                    let edit = e.core.delete_backward(&text, false);
+                    e.apply_edit(edit);
                 }
                 self.point_anchor = None;
                 self.dirty = true;
                 true
             }
             Key::Named(NamedKey::Delete) => {
-                if !self.delete_selection()
-                    && let Some(e) = &mut self.edit
-                    && e.caret < e.chars.len()
-                {
-                    e.chars.remove(e.caret);
+                if let Some(e) = &mut self.edit {
+                    let text = e.text.clone();
+                    let edit = e.core.delete_forward(&text, false);
+                    e.apply_edit(edit);
                 }
                 self.point_anchor = None;
                 self.dirty = true;
@@ -1760,14 +1780,9 @@ impl Grid {
     }
 
     fn insert_text(&mut self, s: &str) {
-        // Typing over a selection replaces it (standard text-field behaviour).
-        self.delete_selection();
         if let Some(e) = &mut self.edit {
-            for ch in s.chars() {
-                e.chars.insert(e.caret, ch);
-                e.caret += 1;
-            }
-            e.sel = None;
+            let edit = e.core.insert(s);
+            e.apply_edit(edit);
             // Typing commits any click-inserted reference into ordinary text,
             // so the next click appends a fresh reference instead of replacing.
             self.point_anchor = None;
@@ -1781,12 +1796,12 @@ impl Grid {
         let Some(e) = &mut self.edit else {
             return false;
         };
-        let Some((start, end)) = e.selection() else {
+        let text = e.text.clone();
+        let edit = e.core.delete_backward(&text, false);
+        if edit.is_noop() {
             return false;
-        };
-        e.chars.drain(start..end);
-        e.caret = start;
-        e.sel = None;
+        }
+        e.apply_edit(edit);
         self.point_anchor = None;
         self.dirty = true;
         true
@@ -1794,7 +1809,7 @@ impl Grid {
 
     /// The caret's char index within the current edit buffer, if editing.
     pub fn edit_caret(&self) -> Option<usize> {
-        self.edit.as_ref().map(|e| e.caret.min(e.chars.len()))
+        self.edit.as_ref().map(EditState::caret)
     }
 
     /// The ordered `(start, end)` selection within the edit buffer, if any.
@@ -1808,15 +1823,7 @@ impl Grid {
     /// and drag-select. A no-op when not editing.
     pub fn set_edit_caret(&mut self, idx: usize, extend: bool) {
         if let Some(e) = &mut self.edit {
-            let idx = idx.min(e.chars.len());
-            if extend {
-                if e.sel.is_none() {
-                    e.sel = Some(e.caret);
-                }
-            } else {
-                e.sel = None;
-            }
-            e.caret = idx;
+            e.set_caret(idx.min(e.text.chars().count()), extend);
             self.point_anchor = None;
             self.dirty = true;
         }
@@ -1825,8 +1832,8 @@ impl Grid {
     /// Select the whole edit buffer (Ctrl+A inside the formula bar / cell).
     pub fn select_all_edit(&mut self) {
         if let Some(e) = &mut self.edit {
-            e.sel = Some(0);
-            e.caret = e.chars.len();
+            let text = e.text.clone();
+            e.core.select_all(&text);
             self.point_anchor = None;
             self.dirty = true;
         }
@@ -1836,8 +1843,10 @@ impl Grid {
     /// there is no selection.
     pub fn edit_selected_text(&self) -> Option<String> {
         let e = self.edit.as_ref()?;
-        let (start, end) = e.selection()?;
-        Some(e.chars.get(start..end)?.iter().collect())
+        let range = e.core.range();
+        (!range.is_empty())
+            .then(|| e.text.get(range).map(str::to_owned))
+            .flatten()
     }
 
     /// Cut: return the selected text and remove it from the buffer.
@@ -1862,27 +1871,13 @@ impl Grid {
     /// in the motion's direction.
     fn edit_move_caret(&mut self, mv: CaretMove, shift: bool) {
         if let Some(e) = &mut self.edit {
-            let len = e.chars.len();
-            let sel = e.selection();
-            let stepped = |caret: usize| match mv {
-                CaretMove::Left => caret.saturating_sub(1),
-                CaretMove::Right => (caret + 1).min(len),
-                CaretMove::Home => 0,
-                CaretMove::End => len,
+            let motion = match mv {
+                CaretMove::Left => Motion::Left,
+                CaretMove::Right => Motion::Right,
+                CaretMove::Home => Motion::LineStart,
+                CaretMove::End => Motion::LineEnd,
             };
-            if shift {
-                if e.sel.is_none() {
-                    e.sel = Some(e.caret);
-                }
-                e.caret = stepped(e.caret);
-            } else {
-                match (sel, mv) {
-                    (Some((start, _)), CaretMove::Left) => e.caret = start,
-                    (Some((_, end)), CaretMove::Right) => e.caret = end,
-                    _ => e.caret = stepped(e.caret),
-                }
-                e.sel = None;
-            }
+            e.core.motion(&e.text, motion, shift);
             self.point_anchor = None;
             self.dirty = true;
         }
@@ -2626,7 +2621,7 @@ impl Grid {
             size,
             colors.text_primary,
             Point::new(tx, ty),
-            Some(e.caret.min(e.chars.len())),
+            Some(e.caret()),
         );
         scene.stroke(
             &Stroke::new(1.5),
@@ -3189,6 +3184,18 @@ mod tests {
         g.select_all_edit();
         g.edit_paste_text("=A1+B2");
         assert_eq!(g.active_display_raw(), "=A1+B2");
+    }
+
+    #[test]
+    fn shared_edit_core_keeps_unicode_selection_on_grapheme_boundaries() {
+        let mut g = Grid::new();
+        g.begin_edit(Some("a🙂b".into()));
+        g.set_edit_caret(1, false);
+        g.set_edit_caret(2, true);
+        assert_eq!(g.edit_selected_text().as_deref(), Some("🙂"));
+        g.insert_text_public("X");
+        assert_eq!(g.edit_selected_text(), None);
+        assert_eq!(g.active_display_raw(), "aXb");
     }
 
     #[test]
