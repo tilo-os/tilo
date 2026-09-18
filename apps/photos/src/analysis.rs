@@ -39,6 +39,8 @@ pub fn recognize_text(open: &OpenImage, language: &str) -> Result<ImageAnalysis,
         provenance: AnalysisProvenance {
             source: "local-ocr".to_owned(),
             engine: "tilo-ocr".to_owned(),
+            model_id: String::new(),
+            model_revision: String::new(),
             language: language.to_owned(),
             content: open.content.clone().unwrap_or_default(),
             // This return value is intentionally local. `SetImageAnalysis`
@@ -47,6 +49,59 @@ pub fn recognize_text(open: &OpenImage, language: &str) -> Result<ImageAnalysis,
         },
         ..ImageAnalysis::default()
     })
+}
+
+/// Run the fixed-schema local vision capability on locally available bytes.
+///
+/// This deliberately has no remote fallback. The caller must have discovered
+/// a signed, loopback capability and chosen this operation explicitly; only
+/// the compact result is returned for the caller to decide whether to share.
+///
+/// # Errors
+///
+/// Returns a stable, non-sensitive message if local bytes are unavailable or
+/// unsafe to decode/prepare, or if the signed local service rejects the fixed
+/// schema request.
+pub fn analyze_image(
+    open: &OpenImage,
+    capability: &tilo_vision::LocalVisionCapability,
+) -> Result<ImageAnalysis, String> {
+    let bytes = doc::bytes_of(open).ok_or_else(|| {
+        "This photograph is not available on this device yet; retry after it syncs".to_owned()
+    })?;
+    let rgba = pixels::decode(&bytes)
+        .ok_or_else(|| "This photograph cannot be safely prepared for local analysis".to_owned())?;
+    let image = image::RgbaImage::from_raw(rgba.w, rgba.h, rgba.bytes)
+        .ok_or_else(|| "This photograph has invalid decoded pixels".to_owned())?;
+    let prepared = tilo_vision::prepare(&image::DynamicImage::ImageRgba8(image), &bytes)
+        .map_err(|error| error.user_message().to_owned())?;
+    let result = tilo_vision::analyze(capability, prepared)
+        .map_err(|error| error.user_message().to_owned())?;
+    Ok(image_analysis_from_vision_result(open, capability, result))
+}
+
+fn image_analysis_from_vision_result(
+    open: &OpenImage,
+    capability: &tilo_vision::LocalVisionCapability,
+    result: tilo_vision::Analysis,
+) -> ImageAnalysis {
+    ImageAnalysis {
+        ocr_text: result.ocr,
+        description: result.description,
+        // The fixed vision schema supplies generic labels only. In particular,
+        // a label is never upgraded into a person or pet classification.
+        objects: result.labels,
+        provenance: AnalysisProvenance {
+            source: "local-vision".to_owned(),
+            engine: "tilo-vision".to_owned(),
+            model_id: capability.model_id.clone(),
+            model_revision: capability.revision.clone(),
+            language: String::new(),
+            content: open.content.clone().unwrap_or_default(),
+            scope: "local".to_owned(),
+        },
+        ..ImageAnalysis::default()
+    }
 }
 
 fn valid_language(language: &str) -> bool {
@@ -82,5 +137,32 @@ mod tests {
         let mut value = "ééé".to_owned();
         truncate_chars(&mut value, 2);
         assert_eq!(value, "éé");
+    }
+
+    #[test]
+    fn vision_output_stays_generic_and_records_the_pinned_model() {
+        let open = OpenImage::from_path("vision.png", 3, 2).with_content("b".repeat(64));
+        let capability = tilo_vision::LocalVisionCapability {
+            profile_id: "local".to_owned(),
+            model_id: "vision-model".to_owned(),
+            model_label: "Vision model".to_owned(),
+            revision: "a".repeat(64),
+        };
+        let analysis = image_analysis_from_vision_result(
+            &open,
+            &capability,
+            tilo_vision::Analysis {
+                description: "A dog beside a bicycle".to_owned(),
+                labels: vec!["dog".to_owned(), "bicycle".to_owned()],
+                ocr: "42 North Street".to_owned(),
+            },
+        );
+        assert_eq!(analysis.objects, ["dog", "bicycle"]);
+        assert!(analysis.people.is_empty());
+        assert!(analysis.pets.is_empty());
+        assert_eq!(analysis.ocr_text, "42 North Street");
+        assert_eq!(analysis.provenance.source, "local-vision");
+        assert_eq!(analysis.provenance.model_id, "vision-model");
+        assert_eq!(analysis.provenance.model_revision, "a".repeat(64));
     }
 }
