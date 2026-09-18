@@ -659,6 +659,10 @@ pub struct PhotosApp {
     analysis_rx: Receiver<AnalysisResult>,
     active_analysis: HashSet<tilo_actions::InvocationId>,
     cancelled_analysis: HashSet<tilo_actions::InvocationId>,
+    /// Private People-review state. It is intentionally neither a document
+    /// field nor a resource: unconfirmed face proposals belong only on this
+    /// device until an explicit review commits a compact label membership.
+    people_controller: crate::people::PeopleController,
     canvas_state: CanvasState,
     search_provider: crate::search::PhotosSearchProvider,
     /// Heads that produced the cached immutable/Arc-backed search catalogue.
@@ -942,6 +946,7 @@ impl PhotosApp {
             analysis_rx,
             active_analysis: HashSet::new(),
             cancelled_analysis: HashSet::new(),
+            people_controller: crate::people::PeopleController::new(),
             canvas_state: CanvasState::Empty,
             search_provider: crate::search::PhotosSearchProvider::empty(),
             search_heads: Vec::new(),
@@ -1192,6 +1197,36 @@ impl PhotosApp {
     /// Whether a photograph is loaded and rendered.
     pub fn has_image(&self) -> bool {
         self.viewer.is_some()
+    }
+
+    /// Device-local People controller for a platform-specific face pipeline
+    /// or the shared People management surface. It intentionally exposes no
+    /// document reference: local clusters and their evidence never sync.
+    pub fn people_controller(&self) -> &crate::people::PeopleController {
+        &self.people_controller
+    }
+
+    /// Mutable local People controller. Callers use this for explicit opt-in,
+    /// review, hiding, splitting, and deletion of private clusters.
+    pub fn people_controller_mut(&mut self) -> &mut crate::people::PeopleController {
+        &mut self.people_controller
+    }
+
+    /// Commit a reviewed cluster's compact, user-approved membership through
+    /// the normal typed action dispatcher. The local cluster stays local; the
+    /// action contains only the selected display name and stable photo ids.
+    pub fn approve_people_cluster(&mut self, doc: &mut AutoCommit, cluster_id: &str) -> bool {
+        let Some(action) = self.people_controller.approve_membership(cluster_id) else {
+            self.notice = Some(
+                "Name and confirm this local People suggestion before sharing its labels"
+                    .to_owned(),
+            );
+            return false;
+        };
+        self.commit_library_action(doc, &action);
+        self.notice =
+            Some("Approved person labels were added to the shared photo library".to_owned());
+        true
     }
 
     /// Reveal the bounded library grid.  Kept public for the deterministic
@@ -7885,7 +7920,7 @@ mod tests {
     use crate::model::{Album, LibraryPhoto};
     use crate::shots_pattern;
     use automerge::ROOT;
-    use tilo_actions::ResourceProvider;
+    use tilo_actions::{Action, ResourceProvider};
 
     fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
         resource.id.0 == id
@@ -8069,6 +8104,40 @@ mod tests {
         );
         assert!(handled);
         assert_eq!(app.timeline_density, after_pinch + 1);
+    }
+
+    #[test]
+    fn people_review_commits_only_an_explicit_membership_action() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = LibraryPhoto::from_image(
+            OpenImage::from_path("/photos/person.png", 20, 10)
+                .with_content(qdoc::blobstore::hash_bytes(b"people-review")),
+        );
+        let photo_id = photo.id.clone();
+        crate::actions::PhotosAction::ImportPhoto { photo }
+            .apply(&mut doc)
+            .unwrap();
+        assert!(app.people_controller_mut().add_cluster(
+            "manual-person",
+            [photo_id.clone()],
+            crate::people::ProposalOrigin::ImportedOrManual,
+        ));
+        assert_eq!(
+            app.people_controller_mut()
+                .confirm_suggestion("manual-person", "Sam"),
+            crate::people::PeopleChange::Updated
+        );
+        assert!(app.approve_people_cluster(&mut doc, "manual-person"));
+        assert_eq!(PhotosDoc::photo(&doc, &photo_id).unwrap().people, ["Sam"]);
+        assert_eq!(
+            app.people_controller()
+                .cluster("manual-person")
+                .unwrap()
+                .origin,
+            crate::people::ProposalOrigin::ImportedOrManual
+        );
     }
 
     #[test]

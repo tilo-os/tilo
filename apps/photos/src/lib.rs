@@ -65,6 +65,7 @@ pub mod analysis;
 pub mod app;
 pub mod doc;
 pub mod model;
+pub mod people;
 pub mod pixels;
 /// Offline-capable place grouping and map projection shared by the timeline
 /// surface and resource/action routing. This module deliberately has no tile
