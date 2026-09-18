@@ -146,6 +146,8 @@ has "$workflow" 'https://tilo.dev/buildtypes/frozen-rpm-index/v1' \
   'snapshot provenance binds the package-set build type'
 has "$workflow" 'cosign attest --yes --key "$COSIGN_KEY_REF" --type slsaprovenance1' \
   'snapshot publishes signed SLSA provenance'
+has "$workflow" 'if type == "array" then .[] else . end' \
+  'snapshot verification accepts current object and legacy array Cosign output'
 has "$image_workflow" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
   'OS CI verifies exact RPM snapshot provenance'
 has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
