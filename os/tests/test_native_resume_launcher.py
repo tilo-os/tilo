@@ -41,7 +41,7 @@ class LauncherContract(unittest.TestCase):
             self.assertEqual(subprocess.check_output([staged, 'version'], text=True), 'staged-tool-ok\n')
             self.assertEqual(recipe.read_text(), original)
             self.assertTrue((build / 'Containerfile').read_text().endswith(
-                '\nRUN /usr/local/bin/cosign version\n'))
+                '\nRUN chmod 0755 /var/lib && /usr/local/bin/cosign version\n'))
 
     def test_driver_arguments_cannot_fall_back_to_full_native_compilation(self):
         values = {name + '_SHA256': str(i) * 64 for i, name in enumerate(
