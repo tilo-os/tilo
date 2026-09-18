@@ -193,6 +193,10 @@ pub struct BackupsApp {
     search_index: crate::search_provider::BackupsSearchIndex,
     source_path: Option<PathBuf>,
     destination_path: Option<PathBuf>,
+    /// A persisted local configuration can outlive an unplugged drive or a
+    /// damaged repository. Keep that distinct from first-run so actions never
+    /// imply the repository is ready when it was not successfully loaded.
+    repository_error: Option<String>,
     picker: Option<(PickPurpose, ui::portal::PortalChannel)>,
     job: Option<Receiver<JobEvent>>,
     job_status: Option<String>,
@@ -210,20 +214,44 @@ impl BackupsApp {
     }
 
     pub(crate) fn is_configured(&self) -> bool {
-        self.source_path.is_some() && self.destination_path.is_some()
+        self.source_path.is_some()
+            && self.destination_path.is_some()
+            && self.repository_error.is_none()
+    }
+
+    pub(crate) fn unavailable_reason(&self) -> Option<&str> {
+        self.repository_error.as_deref()
     }
 
     /// The live app: starts on an empty catalog (real first-run state) and
     /// shows onboarding until the user configures a source + destination.
     pub fn new() -> Self {
         let mut app = Self::with_catalog(Catalog::empty());
-        if let Some((source, destination)) = Self::read_config()
-            && let Ok(manifests) = crate::engine::list_snapshots(&destination)
-        {
-            app.catalog = Catalog::from_local(&source, &destination, &manifests);
-            app.sync_search_index();
-            app.source_path = Some(source);
-            app.destination_path = Some(destination);
+        if let Some((source, destination)) = Self::read_config() {
+            app.source_path = Some(source.clone());
+            app.destination_path = Some(destination.clone());
+            // `list_snapshots` correctly treats a brand-new repository as an
+            // empty one. A *saved* destination is different: never create a
+            // missing mount path on startup, or an unplugged drive could look
+            // like a fresh local repository and receive a backup in the wrong
+            // place later.
+            if !destination.is_dir() {
+                app.repository_error = Some(
+                    "Couldn’t read the saved backup location: it is not mounted or is no longer a folder."
+                        .into(),
+                );
+            } else {
+                match crate::engine::list_snapshots(&destination) {
+                    Ok(manifests) => {
+                        app.catalog = Catalog::from_local(&source, &destination, &manifests);
+                        app.sync_search_index();
+                    }
+                    Err(error) => {
+                        app.repository_error =
+                            Some(format!("Couldn’t read the saved backup location: {error}"));
+                    }
+                }
+            }
         }
         app
     }
@@ -265,6 +293,7 @@ impl BackupsApp {
             search_index,
             source_path: None,
             destination_path: None,
+            repository_error: None,
             picker: None,
             job: None,
             job_status: None,
@@ -371,6 +400,12 @@ impl BackupsApp {
     }
 
     fn start_backup(&mut self) {
+        if let Some(error) = self.repository_error.clone() {
+            self.toast_error(format!(
+                "{error} Choose another backup location to continue."
+            ));
+            return;
+        }
         let (Some(source), Some(destination)) =
             (self.source_path.clone(), self.destination_path.clone())
         else {
@@ -402,6 +437,12 @@ impl BackupsApp {
     }
 
     fn start_verify(&mut self) {
+        if let Some(error) = self.repository_error.clone() {
+            self.toast_error(format!(
+                "{error} Choose another backup location to continue."
+            ));
+            return;
+        }
         let (Some(destination), Some(id)) =
             (self.destination_path.clone(), self.ui.sel_snapshot.clone())
         else {
@@ -430,6 +471,12 @@ impl BackupsApp {
     }
 
     fn start_restore(&mut self, restore_to: PathBuf) {
+        if let Some(error) = self.repository_error.clone() {
+            self.toast_error(format!(
+                "{error} Choose another backup location to continue."
+            ));
+            return;
+        }
         let (Some(destination), Some(id)) =
             (self.destination_path.clone(), self.ui.sel_snapshot.clone())
         else {
@@ -498,6 +545,7 @@ impl BackupsApp {
                             match crate::engine::validate_paths(source, &path) {
                                 Ok(_) => {
                                     self.destination_path = Some(path);
+                                    self.repository_error = None;
                                     self.save_config();
                                     self.start_backup();
                                 }
@@ -548,10 +596,22 @@ impl BackupsApp {
                     self.job_status = None;
                     if let (Some(source), Some(destination)) =
                         (&self.source_path, &self.destination_path)
-                        && let Ok(manifests) = crate::engine::list_snapshots(destination)
                     {
-                        self.catalog = Catalog::from_local(source, destination, &manifests);
-                        self.sync_search_index();
+                        match crate::engine::list_snapshots(destination) {
+                            Ok(manifests) => {
+                                self.catalog = Catalog::from_local(source, destination, &manifests);
+                                self.sync_search_index();
+                            }
+                            Err(error) => {
+                                self.repository_error = Some(format!(
+                                    "Backup finished, but its repository could not be reloaded: {error}"
+                                ));
+                                self.toast_error(
+                                    "Backup finished, but its history could not be reopened. Choose the location again before another operation.",
+                                );
+                                break;
+                            }
+                        }
                     }
                     self.toast_now(format!(
                         "Backup complete · {} files · {}",
@@ -1209,6 +1269,15 @@ impl BackupsApp {
                 "Backup paused: the destination is unavailable. Reconnect it, then retry.",
             ),
             "restore" => self.shot_scenario = Some(ShotScenario::Restore),
+            "unavailable" => {
+                self.catalog = Catalog::empty();
+                self.sync_search_index();
+                self.source_path = Some(PathBuf::from("/home/you/Documents"));
+                self.destination_path = Some(PathBuf::from("/media/backup-drive"));
+                self.repository_error = Some(
+                    "Couldn’t read the saved backup location: the drive is unavailable.".into(),
+                );
+            }
             _ => {}
         }
     }
@@ -1227,6 +1296,93 @@ impl BackupsApp {
         content: Rect,
     ) {
         let c = &theme.tokens.colors;
+        if let Some(error) = self.repository_error.as_deref() {
+            // A saved configuration is not equivalent to a usable repository.
+            // Make the distinction persistent and actionable rather than
+            // falling through to first-run copy or a transient error toast.
+            let scale = f64::from(theme.text_scale);
+            let card_w = content.width().min(620.0 * scale);
+            let card_h = 176.0 * scale;
+            let card = Rect::new(
+                content.center().x - card_w / 2.0,
+                content.center().y - card_h / 2.0,
+                content.center().x + card_w / 2.0,
+                content.center().y + card_h / 2.0,
+            );
+            paint::card(
+                scene,
+                t,
+                card,
+                16.0,
+                c.surfaces.raised,
+                c.semantic.danger.with_alpha_factor(0.8),
+            );
+            let inner_w = (card.width() - 48.0 * scale).max(0.0) as f32;
+            let title = if scale >= 1.5 {
+                "Location unavailable"
+            } else {
+                "Backup location needs attention"
+            };
+            let title = tr.elide_to_width(title, 17.0, inner_w);
+            paint::text_center(
+                scene,
+                tr,
+                t,
+                &title,
+                17.0,
+                c.semantic.danger,
+                card.x0 + 24.0 * scale,
+                card.x1 - 24.0 * scale,
+                card.y0 + 22.0 * scale,
+            );
+            let detail = tr.elide_to_width(error, 12.5, inner_w);
+            paint::text_center(
+                scene,
+                tr,
+                t,
+                &detail,
+                12.5,
+                c.text_dim,
+                card.x0 + 24.0 * scale,
+                card.x1 - 24.0 * scale,
+                card.y0 + 55.0 * scale,
+            );
+            let safety = tr.elide_to_width(
+                "Backups are paused until this location is reopened.",
+                11.5,
+                inner_w,
+            );
+            paint::text_center(
+                scene,
+                tr,
+                t,
+                &safety,
+                11.5,
+                c.text_dim,
+                card.x0 + 24.0 * scale,
+                card.x1 - 24.0 * scale,
+                card.y0 + 78.0 * scale,
+            );
+            let button_w = (252.0 * scale).min(card.width() - 40.0 * scale);
+            let button = Rect::new(
+                card.center().x - button_w / 2.0,
+                card.y1 - 58.0 * scale,
+                card.center().x + button_w / 2.0,
+                card.y1 - 18.0 * scale,
+            );
+            Button::paint(
+                scene,
+                t,
+                tr,
+                theme,
+                &ButtonFace::new(button, "Choose another location")
+                    .primary()
+                    .radius(9.0)
+                    .hovered(self.hover == Some(Hit::Setup)),
+            );
+            self.hits.push((button, Hit::Setup));
+            return;
+        }
         let cy = content.y0 + content.height() * 0.36;
         let title = if self.job.is_some() {
             "Creating a verified backup"
@@ -3502,8 +3658,10 @@ impl BackupsApp {
         content: Rect,
     ) {
         let scale = f64::from(theme.text_scale);
-        // Below this the editor + summary stack vertically instead of a 60/40 split.
-        let stacked = content.width() < 660.0;
+        // Large text needs the same horizontal budget as a narrow viewport.
+        // The old physical-width-only breakpoint left 200% labels underneath
+        // the retention steppers even on a wide window.
+        let stacked = Self::schedules_stack_for(content, scale);
         Self::draw_schedules_header(scene, t, tr, theme, content, stacked);
 
         let panel = Self::schedules_panel_rect(content, stacked, scale);
@@ -3523,15 +3681,25 @@ impl BackupsApp {
         // Summary of effective retention — beside the editor when wide, stacked
         // beneath it when narrow.
         let side = Self::schedules_side_rect(content, panel, stacked, scale);
-        Self::draw_schedules_summary(scene, t, tr, theme, side, p);
+        // Custom-painted views do not get an implicit scroll container. Avoid
+        // beginning a summary card that cannot fully fit below large-text
+        // controls; a clipped heading suggests content is missing rather than
+        // simply below the current viewport.
+        if side.y1 <= content.y1 {
+            Self::draw_schedules_summary(scene, t, tr, theme, side, p);
 
-        // Retention ruler — one lane per class, dots = snapshots kept. Sits
-        // below whichever of {editor, stacked summary} is lowest.
-        let ruler_top = if stacked { side.y1 } else { panel.y1 } + 22.0 * scale;
-        let ruler = Rect::new(content.x0, ruler_top, content.x1, ruler_top + 200.0 * scale);
-        if ruler.y1 < content.y1 {
-            Self::draw_retention_ruler(scene, t, tr, theme, ruler, p);
+            // Retention ruler — one lane per class, dots = snapshots kept.
+            // It sits below whichever of {editor, stacked summary} is lowest.
+            let ruler_top = if stacked { side.y1 } else { panel.y1 } + 22.0 * scale;
+            let ruler = Rect::new(content.x0, ruler_top, content.x1, ruler_top + 200.0 * scale);
+            if ruler.y1 < content.y1 {
+                Self::draw_retention_ruler(scene, t, tr, theme, ruler, p);
+            }
         }
+    }
+
+    fn schedules_stack_for(content: Rect, text_scale: f64) -> bool {
+        content.width() < 660.0 * text_scale
     }
 
     /// The "Retention policy" title + subtitle. Split out of
@@ -5076,7 +5244,11 @@ impl Widget for BackupsApp {
                         AccessState::new().focusable(true),
                     ),
                     Hit::Setup => (
-                        "Set up backups".into(),
+                        if self.repository_error.is_some() {
+                            "Choose another backup location; backup location needs attention".into()
+                        } else {
+                            "Set up backups".into()
+                        },
                         Role::Button,
                         AccessState::new().focusable(true),
                     ),
@@ -5283,6 +5455,30 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_saved_repository_blocks_effects_until_reselected() {
+        let mut app = BackupsApp::with_catalog(Catalog::empty());
+        app.source_path = Some(PathBuf::from("/documents"));
+        app.destination_path = Some(PathBuf::from("/backup-drive"));
+        app.repository_error = Some("Couldn’t read the saved backup location: unavailable".into());
+
+        assert!(
+            !app.is_configured(),
+            "paths alone must not advertise a usable local repository"
+        );
+        app.start_backup();
+        assert!(
+            app.job.is_none(),
+            "no worker starts against an unknown repository"
+        );
+        assert!(
+            app.toast
+                .as_ref()
+                .is_some_and(|(_, kind, _)| *kind == ToastKind::Error),
+            "the blocked operation is reported as an error, not success"
+        );
+    }
+
+    #[test]
     fn demo_constructor_seeds_the_sample_catalog() {
         // The --shots/demo builder keeps the populated sample dashboard.
         let app = BackupsApp::new_demo();
@@ -5481,6 +5677,28 @@ mod tests {
             before + 1,
             "the visible phone control uses the durable action path"
         );
+    }
+
+    #[test]
+    fn large_text_retention_editor_stacks_before_controls_collide() {
+        let mut f = Frame::demo();
+        f.app.rect = Rect::new(0.0, 0.0, 880.0, 800.0);
+        f.theme = Theme::dark().with_text_scale(2.0);
+        f.click_hit(|hit| matches!(hit, Hit::Tab(View::Schedules)));
+
+        let content = Rect::new(20.0, 118.0, 860.0, 732.0);
+        assert!(
+            BackupsApp::schedules_stack_for(content, 2.0),
+            "200% type uses the single-column retention editor"
+        );
+        for field in PolicyField::ALL {
+            let minus =
+                f.rect_of(|hit| matches!(hit, Hit::Policy(candidate, -1) if *candidate == field));
+            let plus =
+                f.rect_of(|hit| matches!(hit, Hit::Policy(candidate, 1) if *candidate == field));
+            assert!(minus.x1 <= plus.x0, "{field:?} controls overlap at 200%");
+            assert!(minus.width() >= 44.0 && plus.width() >= 44.0);
+        }
     }
 
     #[test]
