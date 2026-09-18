@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -51,6 +52,24 @@ def repository_layout_violations(paths: list[str]) -> list[str]:
     return sorted(generated_artifact_violations(paths) + retired_source_root_violations(paths))
 
 
+def duplicate_fixture_violations(root: Path, paths: list[str]) -> list[str]:
+    by_digest: dict[str, list[str]] = {}
+    for path in paths:
+        relative = PurePosixPath(path)
+        if "fixtures" not in relative.parts[:-1]:
+            continue
+        candidate = root / path
+        if not candidate.is_file():
+            continue
+        digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        by_digest.setdefault(digest, []).append(path)
+    return sorted(
+        f"duplicate tracked fixture content; use one canonical file: {', '.join(sorted(matches))}"
+        for matches in by_digest.values()
+        if len(matches) > 1
+    )
+
+
 def tracked_files(root: Path) -> list[str]:
     result = subprocess.run(
         ["git", "ls-files", "-z"],
@@ -71,7 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = args.root.resolve()
     try:
-        violations = repository_layout_violations(tracked_files(root))
+        paths = tracked_files(root)
+        violations = repository_layout_violations(paths)
+        violations.extend(duplicate_fixture_violations(root, paths))
+        violations.sort()
     except (OSError, subprocess.CalledProcessError) as error:
         print(f"repository layout check failed: {error}", file=sys.stderr)
         return 1
