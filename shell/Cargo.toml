@@ -34,7 +34,7 @@ nvenc = ["ffmpeg-next"]
 # decoder side is feature-gated because software HEVC decode is the one
 # piece that needs libavcodec.
 hdr-decode = ["ffmpeg-next"]
-# Compile the tests that need libavcodec to actually *carry* HEVC —
+# Compile the tests that encode and decode HEVC —
 # `tests/hdr_decode_pipeline.rs`, which encodes with libx265 and decodes
 # with the HEVC decoder. Off by default because that is a property of the
 # host's ffmpeg, not of Tilo: Fedora builds `libavcodec-free` with
@@ -92,8 +92,8 @@ bytes.workspace = true
 futures-lite.workspace = true
 blake3.workspace = true
 
-# Phase 5 Task 5.1: structured error type for DRM backend construction.
-# Bubbles up clean error messages to the binary entry point instead of
+# Structured error type for DRM backend construction. Bubbles up clean error
+# messages to the binary entry point instead of
 # panicking — the host machine (Gnome already holds the seat) needs the
 # `--backend drm` path to fail cleanly with a useful diagnostic.
 thiserror.workspace = true
@@ -290,19 +290,14 @@ smithay = { version = "0.7", default-features = false, features = [
     "backend_winit",
     "renderer_glow",
     "desktop",
-    # Phase 5 Task 5.1: real DRM/KMS + libseat + udev + libinput
-    # backend for running on a bare TTY. See
-    # `shell/src/compositor/backend/drm/` for the implementation
-    # and `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`
-    # (Phase 5) for design intent.
+    # DRM/KMS + libseat + udev + libinput backend for running on a bare TTY.
     "backend_drm",
     "backend_libinput",
     "backend_udev",
     "backend_session_libseat",
     "renderer_gl",
 ] }
-# Phase 2 of `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`:
-# host-side compiler for the per-workspace seccomp-bpf deny-list. Pinned to the
+# Host-side compiler for the per-workspace seccomp-bpf deny-list. Pinned to the
 # latest 0.5.x to track upstream sock_filter / TargetArch shape (x86_64,
 # aarch64, riscv64). Linux-only crate — sandbox callers gate at runtime.
 seccompiler.workspace = true

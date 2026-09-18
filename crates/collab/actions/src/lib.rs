@@ -47,7 +47,7 @@
 //!
 //! ## Sharing this vocabulary with the compositor
 //!
-//! [`params`] is deliberately the *same* vocabulary the compositor's headless
+//! [`params`] is the *same* vocabulary the compositor's headless
 //! action API speaks — [`ParamType`], [`ActionParam`], [`ArgValue`], and the
 //! strict [`ActionArgs::bind`] — lifted into one definition rather than left to
 //! converge by accident. The wire spellings of `text` / `integer` / `boolean`
@@ -56,7 +56,7 @@
 //! `const` constructors keep a `const PARAMS: &[ActionParam] = &[…]` compiling
 //! as written.
 //!
-//! Two deliberate supersets, both additive: [`ParamType::Number`], because the
+//! Two additive extensions: [`ParamType::Number`], because the
 //! app-side arguments this replaces are overwhelmingly fractional and rounding
 //! them would discard the values they exist to carry; and
 //! [`ActionParam::choices`], which turns a prose list into something a caller

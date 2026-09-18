@@ -161,10 +161,9 @@ fn run_always_visible(purpose: Option<InputPurpose>) {
         widget.set_purpose(p);
     }
 
-    // NOTE: in production this surface is a wlr-layer-shell overlay; for now it
-    // is a plain ui::App window. `ui::App::run()` owns the event loop, so the
-    // `on_key` callback above is the seam that needs no `ui` change — it fires
-    // synchronously as each key is committed.
+    // Production uses a wlr-layer-shell overlay; this launch path uses a plain
+    // `ui::App` window. `ui::App::run()` owns the event loop, and `on_key`
+    // forwards each committed key synchronously.
     // Deliberately no `--headless-drive` hook. Every key this widget commits
     // is forwarded to `injector`, which types into whatever application holds
     // focus in the live session — driving it from a test harness would inject

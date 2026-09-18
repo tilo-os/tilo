@@ -3,8 +3,7 @@
 //!
 //! The relay uses **one long-lived bidirectional stream per
 //! connection**. After the handshake, the stream is a sequence of
-//! length-prefixed postcard-encoded [`Envelope`] messages. This is
-//! deliberately simple:
+//! length-prefixed postcard-encoded [`Envelope`] messages:
 //!
 //! - The relay is not a general-purpose RPC service — its message
 //!   shape is a small closed enum.

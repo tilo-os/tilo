@@ -327,8 +327,8 @@ impl AccountStore {
     }
 }
 
-/// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`. Deliberately
-/// identical to the Settings app's `config_root()` so every app resolves the same directory.
+/// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
+/// It matches the Settings app's `config_root()` so every app resolves the same directory.
 pub fn config_root() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)

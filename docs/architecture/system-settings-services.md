@@ -96,7 +96,7 @@ the lifecycle writer for `started`, `succeeded`, `offline`, authentication
 required, and bounded generic failures, and it preserves the previous
 successful-sync timestamp. Consumers keep protocol errors in private logs and
 never persist URLs, credentials, response bodies, or raw transport errors as UI
-status. Calendar uses it around the real background CalDAV pass. Files status
+status. Calendar uses it around the background CalDAV pass. Files status
 must be emitted by the eventual WebDAV/Nextcloud network worker, not inferred
 from Files' read-only hydration badges; this repository does not yet contain
 that worker.

@@ -129,7 +129,7 @@ impl PrintSpoolerHandle {
         Self { inner }
     }
 
-    /// The real thing: `lp` against the local CUPS.
+    /// Use `lp` against the local CUPS.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub fn cups() -> Self {

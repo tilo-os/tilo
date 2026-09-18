@@ -1914,7 +1914,7 @@ pub struct ShellOverlayHost {
     add_workspace_rect: Rect,
     /// Vertical inset at which the floating sidebar wheel starts.
     /// Defaults to [`SIDEBAR_TOP_OFFSET_PX`]; `with_sidebar_top`
-    /// overrides it so the real shell's padded topbar doesn't overlap.
+    /// overrides it so the shell's padded topbar doesn't overlap.
     sidebar_top_y: f32,
     /// Live permission-prompt widget, populated by
     /// `pump_permission_prompt` from the front of
@@ -2009,11 +2009,10 @@ pub struct ShellOverlayHost {
     /// [`crate::shell::status`].
     status_bridge: Option<crate::shell::status::StatusBridge>,
     /// Single session-lifetime owner for persistent balance/mono transforms.
-    /// Present only in real compositor sessions, never shots or unit tests.
+    /// Present only in compositor sessions; omitted from shots and unit tests.
     session_audio_policy: Option<crate::shell::session_audio_policy::SessionAudioPolicyOwner>,
-    /// Room-activity sheet. Held rather than drawn immediate-mode
-    /// because it is a real `Widget` with its own hover/scroll/filter
-    /// state, placed by hand like the notification stack.
+    /// Room-activity sheet. Held as a `Widget` with its own hover, scroll, and
+    /// filter state, placed by hand like the notification stack.
     room_activity: crate::shell::room_activity::RoomActivityPane,
     /// Background, local-only prose renderer. Deterministic summaries remain
     /// installed until a cited model result passes validation.
@@ -3271,7 +3270,7 @@ impl ShellOverlayHost {
         self.onboarding.is_some()
     }
 
-    /// Replace the real protocol broker. Headless tests use this to drive
+    /// Replace the protocol broker. Headless tests use this to drive
     /// discovery, connection and failure states without receiver hardware.
     #[must_use]
     pub fn with_projection_backend(
@@ -3755,7 +3754,7 @@ impl ShellOverlayHost {
 
     /// Drained by the compositor's floating-surface host after app updates.
     /// The request keeps the app/region identity intact, so the shell can
-    /// continue presenting the real source rather than a copied mock panel.
+    /// continue presenting the source rather than a copied panel.
     pub fn take_floating_surface_requests(
         &mut self,
     ) -> Vec<ui::floating_surface::FloatingSurfaceRequest> {
@@ -3802,7 +3801,7 @@ impl ShellOverlayHost {
     ) -> Self {
         self.qs_actions = actions;
         // Replacing where quick settings writes means this host is not
-        // driving the real machine, so it must not read from it either.
+        // driving the host, so it must not read from it either.
         self.qs_refresh.disable_os_reads();
         self
     }
@@ -4277,7 +4276,7 @@ impl ShellOverlayHost {
     }
 
     /// Override the sidebar's top y-offset. The 40px default assumes an
-    /// unpadded topbar; without this on the real shell's padded topbar,
+    /// unpadded topbar; without this on the shell's padded topbar,
     /// the sidebar overlaps it and swallows overview-toggle clicks.
     #[must_use]
     pub fn with_sidebar_top(mut self, y: f32) -> Self {
@@ -4881,7 +4880,7 @@ impl ShellOverlayHost {
                     for (idx, tab) in g.tabs.iter().enumerate() {
                         let signature = tile_signature(&tab.tile);
                         if live_tab_ids.contains(&tab.id) {
-                            // A placeholder becoming the real window: held
+                            // A placeholder becoming a window: held
                             // off by `window_is_still_starting` until the
                             // surface has drawn, so a swap doesn't replace
                             // an "opening" card with a blank frame — the
@@ -7695,7 +7694,7 @@ impl ShellOverlayHost {
         self.qs_transition = ui::Transition::capture_open_at(permille);
     }
 
-    /// Screenshot-driver hook for the real Quick Settings edit surface.
+    /// Screenshot-driver hook for the Quick Settings edit surface.
     pub fn force_quick_settings_edit_for_visual_test(&mut self, dragging: bool) {
         if !self.overlay_flags().quick_settings {
             return;
@@ -7708,7 +7707,7 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Open the real session menu and optionally arm Shut down, then pin its
+    /// Open the session menu and optionally arm Shut down, then pin its
     /// entrance animation so deterministic screenshots capture the resting
     /// production surface rather than a wall-clock-dependent intermediate.
     pub fn force_power_menu_for_visual_test(&mut self, select_shutdown: bool) {
@@ -23775,9 +23774,8 @@ mod modal_curve_tests {
 mod overlay_event_absorb_tests {
     //! Pins the modal event-absorb gate: every pointer event over an open
     //! overlay must short-circuit rather than leak to the content widget
-    //! underneath. Runs against the real `host.handle_event` path via a
-    //! [`RecordingContent`] mock, not just the
-    //! [`ShellOverlayHost::cursor_over_open_overlay`] predicate.
+    //! underneath. The test runs `host.handle_event` with a
+    //! [`RecordingContent`] sink.
     use super::overlay_test_offscreen as offscreen;
     use super::*;
     use crate::shell::chrome_state::ChromeState;
@@ -25524,7 +25522,7 @@ mod tests {
 
     /// Recording mock content for the host's `content` slot. The palette
     /// test never reaches `content.handle_event`, but the WS-settings click
-    /// test needs a real layout target so taffy can place the modal.
+    /// test needs a layout target so taffy can place the modal.
     struct StubContent {
         rect: Rect,
     }
@@ -26512,7 +26510,7 @@ mod tests {
     }
 
     /// The sheet lays out inside the viewport and derives its rows from the
-    /// room document the chrome is actually holding — not from a seeded list.
+    /// room document the chrome is holding — not from a seeded list.
     #[test]
     fn room_activity_sheet_shows_the_live_rooms_history() {
         let mut h = build_harness();
@@ -26621,10 +26619,9 @@ mod tests {
         );
     }
 
-    /// Makes the local user owner of every room — what a real session does
-    /// on the way up but `bootstrap_demo` leaves undone. Without it nobody
-    /// may invite, correctly, but that's not a state a real session is
-    /// ever in.
+    /// Makes the local user owner of every room, as boot does while starting
+    /// up. `bootstrap_demo` leaves this step undone so invite permissions can
+    /// be tested separately.
     fn adopt_rooms(h: &Harness) {
         let st = h.chrome.borrow();
         st.tree_mut()
@@ -26899,8 +26896,8 @@ mod tests {
         );
     }
 
-    /// Write a registry + manifest pair under `dir` so the real
-    /// `launcher::gui_apps()` — and therefore the real
+    /// Write a registry + manifest pair under `dir` so
+    /// `launcher::gui_apps()` — and therefore the
     /// `ApplicationsProvider` — enumerates one installed GUI package.
     fn install_gui_fixture(dir: &std::path::Path, package_id: &str, name: &str) {
         let payload = dir.join("payloads").join(package_id);
@@ -28625,7 +28622,7 @@ mod peer_cursor_tests {
         );
     }
 
-    /// The half that keeps the no-peer assertions honest: if this fails,
+    /// The half that supports the no-peer assertions: if this fails,
     /// the helper reports zero for everything and proves nothing. A peer
     /// published under the active workspace's presence key still paints.
     #[test]

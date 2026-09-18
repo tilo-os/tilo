@@ -3,9 +3,9 @@
 //! The lock screen ([`crate::compositor::lock_controller::LockController`]) must prove the
 //! person at the keyboard is the session owner before clearing the lock. [`PasswordVerifier`]
 //! is the injection seam for that proof, so the lock state machine can be driven with a
-//! deterministic fake in tests while the shipped binary talks to the real auth stack.
+//! deterministic verifier in tests while the shipped binary talks to the auth stack.
 //!
-//! [`GreetdVerifier`] is the real path — reuses the greeter's greetd/PAM conversation but stops
+//! [`GreetdVerifier`] reuses the greeter's greetd/PAM conversation but stops
 //! at `Success`/`Error` instead of starting a session, which is why unlock and login share one
 //! non-leaky failure message. [`FixedVerifier`] is the injected headless-test path, selected by
 //! `TILO_LOCK_TEST_PASSWORD` and read only when [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]
@@ -33,7 +33,7 @@ pub const INCORRECT_MSG: &str = "Incorrect username or password";
 pub const UNAVAILABLE_MSG: &str = "Password verification is unavailable";
 
 /// Abstracts "is `password` correct for `username`?" so the lock state machine can be
-/// unit-tested with a fake and run against real PAM in production. `Send + Sync` so a verifier can be shared (`Arc`) and later moved onto a worker thread.
+/// unit-tested with an injected verifier and run against PAM in production. `Send + Sync` so a verifier can be shared (`Arc`) and later moved onto a worker thread.
 pub trait PasswordVerifier: Send + Sync {
     /// `Ok(())` iff the credential is valid. `Err` carries the *user-facing* one-liner for the lock screen — it must never leak which field was wrong or any raw PAM text.
     ///
@@ -45,7 +45,7 @@ pub trait PasswordVerifier: Send + Sync {
     fn verify(&self, username: &str, password: &str) -> Result<(), String>;
 }
 
-/// The real verifier: reuses the greeter's greetd/PAM `verify_password` exchange against the socket at `sock` (typically `$GREETD_SOCK`).
+/// Reuses the greeter's greetd/PAM `verify_password` exchange against the socket at `sock` (typically `$GREETD_SOCK`).
 #[derive(Debug, Clone)]
 #[cfg(target_os = "linux")]
 pub struct GreetdVerifier {
@@ -70,7 +70,7 @@ impl PasswordVerifier for GreetdVerifier {
 }
 
 /// A verifier that accepts exactly one known password with no I/O, via `TILO_LOCK_TEST_PASSWORD`
-/// — lets the lock/unlock state machine run the real code path in headless tests without a PAM/greetd socket. Never used when the env var is unset.
+/// — lets the lock/unlock state machine run in headless tests without a PAM/greetd socket. Never used when the env var is unset.
 #[derive(Debug, Clone)]
 pub struct FixedVerifier {
     password: String,
@@ -167,7 +167,7 @@ impl PasswordVerifier for HelperVerifier {
     }
 }
 
-/// Fail-closed verifier used when no real or injected verifier is configured: every attempt is rejected, so a locked session with no auth backend stays locked — the safe default, never silently unlock.
+/// Fail-closed verifier used when no verifier is configured: every attempt is rejected, so a locked session with no auth backend stays locked.
 #[derive(Debug, Clone, Default)]
 pub struct UnavailableVerifier;
 
@@ -279,7 +279,8 @@ mod tests {
 
     #[test]
     fn shipped_build_ignores_the_test_password_entirely() {
-        // Same inputs, gate closed. The injected password must not be able to displace the real helper — this is the whole point of the gate.
+        // Same inputs, gate closed. The injected password must not be able to
+        // displace the configured helper.
         assert_eq!(
             select_verifier(
                 false,
@@ -302,7 +303,8 @@ mod tests {
 
     #[test]
     fn shipped_build_with_no_helper_installed_falls_closed_not_to_the_override() {
-        // With nothing real to verify against, an ignored override must leave the session unverifiable rather than becoming the fallback.
+        // With no verifier to use, an ignored override must leave the session
+        // unverifiable rather than becoming the fallback.
         assert_eq!(
             select_verifier(
                 false,
@@ -325,7 +327,8 @@ mod tests {
 
     #[test]
     fn blank_helper_override_is_not_a_path() {
-        // An empty or whitespace-only override would otherwise spawn "" and fail closed on every attempt; fall through to the real helper.
+        // An empty or whitespace-only override would otherwise spawn "" and
+        // fail closed on every attempt; fall through to the helper.
         assert_eq!(
             select_verifier(true, None, Some("   ".into()), true, None),
             VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.into()),
@@ -388,7 +391,7 @@ mod tests {
     static FAKE_SEQ: AtomicU32 = AtomicU32::new(0);
 
     /// Write a `/bin/sh` script with `body` and return a [`HelperVerifier`] that runs it via
-    /// `sh <script>` (username on argv, password on stdin — exactly like the real helper);
+    /// `sh <script>` (username on argv, password on stdin, like the helper);
     /// invoked through `/bin/sh` so the freshly-written file is *read*, not directly `exec`'d,
     /// avoiding an `ETXTBSY` race with a concurrent fork.
     fn fake_helper(body: &str) -> (HelperVerifier, PathBuf) {

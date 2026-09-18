@@ -39,7 +39,7 @@ The user prepends the printed dir to their PATH once. From then on, every
 `tilo-install install …` that ships a `[cli].commands` entry adds fresh
 PATH commands automatically. `tilo-install remove` un-writes the shims.
 
-## What actually happens on `notes "hello world"`
+## What happens on `notes "hello world"`
 
 ```text
    $ notes "hello world"
@@ -128,7 +128,7 @@ instead of panicking.
 
 The two paths are deliberately unrelated to `runtime::fs` so the CLI keeps
 working when the FUSE is offline. If your app needs the CRDT-backed
-workspace, wire `runtime::fs::try_connect()` explicitly; if it just needs
+workspace, wire `runtime::fs::try_connect()` explicitly; if it only needs
 a place to put its own state, use `resolve_workspace_path`.
 
 ## Walkthrough: notes-cli

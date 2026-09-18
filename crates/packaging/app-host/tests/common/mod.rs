@@ -1,4 +1,4 @@
-//! Test helper: build a real .qpkg-tar in memory so integration tests
+//! Test helper: build a .qpkg-tar in memory so integration tests
 //! can round-trip through `install::install_qpkg`.
 //!
 //! Mirrors `pkg-cli::write_qpkg`, kept local so this test crate does

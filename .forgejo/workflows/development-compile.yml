@@ -88,8 +88,8 @@ concurrency:
 jobs:
   full-source:
     if: github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/codex/'))
-    # An explicit capacity experiment: full browser compilation has not yet
-    # been measured. The driver samples space and stops at an 8 GiB reserve.
+    # Full browser compilation requires additional disk capacity. The driver
+    # samples free space and stops at an 8 GiB reserve.
     runs-on: ${{ inputs.architecture == 'aarch64' && 'runner-disk-100g-arm64' || 'runner-disk-100g' }}
     # Leave evidence-cleanup headroom inside the existing 180-minute runner cap.
     # This is a limit, not an estimate of full compilation duration.

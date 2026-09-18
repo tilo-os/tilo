@@ -8,7 +8,7 @@
 //!
 //! The state machine itself is pure: it takes events in and returns the
 //! new state plus the [`SessionAction`]s that state change implies. Tests
-//! drive it directly with synthetic events. The integration with the real
+//! drive it directly with synthetic events. The integration with
 //! `LibSeatSession` lives in `super::runtime::DrmRuntime` (hardware-only
 //! path).
 //!

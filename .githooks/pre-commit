@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Fast guards only. Compiling is CI's job; a hook that takes a minute gets
-# bypassed with --no-verify and then guards nothing.
+# Compilation runs in CI to keep the pre-commit hook fast.
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 fail=0
@@ -22,9 +21,8 @@ if [ -n "$staged_rs" ] && command -v rustfmt >/dev/null 2>&1; then
   fi
 fi
 
-# Every tests/*.rs must be reachable from its crate's tests/it.rs. Crates build
-# one test binary, so a file with no `mod` line is not compiled and not run —
-# it fails silently, which is the worst way to fail.
+# Crates with tests/it.rs need module declarations for their integration tests;
+# undeclared files are not compiled or run.
 while IFS= read -r f; do
   [ -z "$f" ] && continue
   case "$f" in */tests/*.rs) ;; *) continue ;; esac
@@ -49,8 +47,7 @@ while IFS= read -r f; do
   fi
 done <<< "$staged_rs"
 
-# The verification covenant, as a check rather than a paragraph: an added
-# #[ignore] needs a reason, so "temporarily disabled" cannot pass as a skip.
+# Require a reason for added #[ignore] attributes.
 added_ignores=$(git diff --cached -U0 -- '*.rs' | grep -E '^\+\s*#\[ignore\]\s*$' || true)
 if [ -n "$added_ignores" ]; then
   note "#[ignore] added with no reason string. Use #[ignore = \"why\"]."
@@ -60,7 +57,6 @@ fi
 # Credentials in the staged diff.
 "$root/scripts/scan-secrets.sh" || fail=1
 
-# A conflict marker that reaches a commit compiles as neither side.
 if git diff --cached -U0 --diff-filter=ACM | grep -qE '^\+(<{7}|={7}|>{7})( |$)'; then
   note "merge-conflict marker in the staged diff"
   fail=1
@@ -82,14 +78,12 @@ if git diff --cached -U0 -- '*.rs' | grep -A1 -E '^\+\s*#\[allow\(' | grep -qE '
   fail=1
 fi
 
-# `dbg!` is a debugging aid, never a thing to ship.
 if printf '%s\n' "$added" | grep -qE '(^|[^a-z_])dbg!\('; then
   note "dbg! in the staged diff"
   fail=1
 fi
 
-# Cargo.lock is committed and deliberately not regenerated — see AGENTS.md.
-# A lock change with no manifest change beside it is a stray `cargo update`.
+# Require a manifest change alongside Cargo.lock changes; see AGENTS.md.
 if git diff --cached --name-only | grep -qx 'Cargo.lock' \
    && ! git diff --cached --name-only | grep -qE '(^|/)Cargo\.toml$'; then
   note "Cargo.lock changed with no Cargo.toml beside it — regenerating it is not supported here"

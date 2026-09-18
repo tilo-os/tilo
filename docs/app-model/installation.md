@@ -27,8 +27,8 @@ Commands:
   runtime  Manage installed Tilo runtime bundles
 ```
 
-`add` is an alias for `install`, so `tilo-install add ./app.qpkg` works for
-people who think of this as adding an app rather than installing a file.
+`add` is an alias for `install`, so `tilo-install add ./app.qpkg` is accepted
+as an alternative spelling.
 
 For catalogue apps, use `tilo-catalogue install <package-id>` (or its `add`
 alias). It resolves the configured repositories and pins both the expected
@@ -176,7 +176,7 @@ Sequence:
    `bin/` per command.
 7. Append a `RegistryEntry` to `registry.toml`.
 
-Actual run against the hello demo:
+Example run against the hello demo:
 
 ```
 $ tilo-install install /tmp/tilo-hello-demo/tilo-hello.qpkg
@@ -225,7 +225,7 @@ since install), then `exec()`s `tilo-launcher run --manifest <path>
 --payload-root <path>`, which forks bwrap and starts the sandbox flow
 described in [`sandbox.md`](./sandbox.md).
 
-Because `run` uses `exec()`, this process's exit code IS the launcher's.
+Because `run` uses `exec()`, this process's exit code is the launcher's.
 
 ## `remove`
 

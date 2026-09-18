@@ -5,7 +5,7 @@
 #
 # Beyond the system read profile it needs, as a consented capability:
 # read+write on the directories the user opens documents from. It does
-# NOT get the account vault — only Mail and Settings do.
+# not get the account vault — only Mail and Settings do.
 #
 
 

@@ -25,14 +25,14 @@
 //!   this crate; pass the aggregated signature in via
 //!   [`pack::pack_with_signature`].
 //!
-//! ## What this crate deliberately does NOT do
+//! ## Scope boundaries
 //!
 //! - No tokio. Everything in this crate is synchronous.
 //! - No on-disk file format. That layering is owned by the CLI
 //!   crate (`pkg-cli`): it dumps a `MemoryBlobStore` into a
 //!   tar archive at pack time and the reverse at unpack time.
 //! - No live iroh-blobs serving. The loader crate provides a
-//!   `BlobStore` adapter over a real iroh `Store`.
+//!   `BlobStore` adapter over an iroh `Store`.
 
 #![cfg_attr(
     test,

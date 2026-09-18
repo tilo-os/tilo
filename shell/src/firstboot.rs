@@ -396,7 +396,7 @@ fn now_ns_u64() -> u64 {
 }
 
 /// Pure form of [`run`] that takes env-var values as arguments instead
-/// of reading the real environment — tests drive this with a `tempdir`-rooted fixture so the suite never pokes the developer's real `$HOME`.
+/// of reading the process environment — tests drive this with a `tempdir`-rooted fixture so the suite never pokes the developer's `$HOME`.
 ///
 /// # Errors
 ///

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A window one person opens becomes a real window on the other's screen.
+"""A window one person opens appears on the other's screen.
 
 `installed-app-collab-proof.py` has both people open the app themselves
 and proves their documents converge. That leaves the beat before it
@@ -15,8 +15,8 @@ opened its own instance of the app against the same room.
 
 What it checks, in order:
 
-  1. bob's tab for alice's window stops being a card and becomes a real
-     surface — asserted on the tile in bob's tree, not on the picture.
+  1. bob's tab for alice's window stops being a card and becomes a
+     surface, asserted on the tile in bob's tree.
   2. bob's compositor has taken frames from that surface (`frame_seq >
      0`), so it is a painting window and not a placeholder.
   3. exactly one word-processor window on bob's side. A tab that got a

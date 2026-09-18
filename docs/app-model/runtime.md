@@ -140,7 +140,7 @@ impl SigningIdentity {
 }
 ```
 
-This is your app-level identity — an app-scoped capability for the user's
+This is the app-level identity — an app-scoped capability for the user's
 Ed25519 identity. `load()` consumes the launcher-provided broker descriptor
 (`TILO_IDENTITY_BROKER_FD`); public metadata and signatures cross that
 connection, but the key does not. `is_single_device()` distinguishes
@@ -258,11 +258,11 @@ tilo-hello: a Tilo-native app, running.
 tilo-hello: done.
 ```
 
-Note the last block: the D-Bus bus address IS set (bwrap inherited it),
+The last block shows that the D-Bus bus address is set (bwrap inherited it),
 but because the manifest did not declare any `[sandbox.portals]` entry,
 the launcher did not bind the bus socket into the sandbox — so
 `is_portal_available()` returns false and every portal call surfaces
-`NotAvailable`. Exactly what an app on stock Linux without a bus sees.
+`NotAvailable`, as an app on stock Linux without a bus would see.
 
 ## Depending on `runtime`
 
@@ -274,8 +274,7 @@ runtime = { path = "crates/runtime/runtime" }
 ```
 
 For an out-of-workspace crate publish (until we cut a crates.io release),
-depend directly by pinned path relative to your worktree. The transitive
-dep footprint is small enough that this is not painful; the SDK carries
+depend directly by pinned path relative to your worktree. The SDK carries
 `ashpd`, `capnp-rpc`, `tokio` at pinned versions and nothing else.
 
 Next: [`cli-apps.md`](./cli-apps.md) — the CLI-flavour of the same

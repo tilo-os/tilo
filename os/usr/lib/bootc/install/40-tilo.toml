@@ -17,7 +17,7 @@
 #   * Simpler chain (BLS entries live on the ESP; kernel + initrd load in one
 #     hop; no chainload from grub2-efi -> shim -> vmlinuz).
 #   * Aligned with the direction of UKI + measured-boot: systemd-boot has
-#     first-class UKI verification; grub2's story is bolt-on.
+#     direct UKI verification; grub2 requires an additional chain.
 #
 # The accepted values for the `bootloader` key are `grub`, `systemd`, `none`
 # (verified against bootc 1.15.2's config schema — `systemd-boot` is rejected).

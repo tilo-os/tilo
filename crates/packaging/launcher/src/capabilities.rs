@@ -1,4 +1,4 @@
-//! Workspace capabilities → real sandbox restrictions.
+//! Workspace capabilities → sandbox restrictions.
 //!
 //! The package manifest says what an app asks for *at install time*.
 //! This module carries the other half: what the **user** granted it at
@@ -10,7 +10,7 @@
 //!
 //! A capability is a [`CapOverride`] from `collab-types` — the same
 //! record the compositor stores and shows in the permissions UI.
-//! Deliberately no launcher-local permission type, or the recorded and
+//! No launcher-local permission type is used, or the recorded and
 //! enforced grants could drift apart.
 //!
 //! ## How a capability becomes a kernel restriction

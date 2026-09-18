@@ -14,9 +14,7 @@ stream-copying, because inputs that merely *look* alike — same nominal
 size, different pixel format or frame rate — concatenate into a file that
 plays correctly in the tool that wrote it and stutters everywhere else.
 
-It refuses rather than improvises. A missing clip is an error, not a
-silently shorter video: the whole point of the piece being separate is
-that nobody notices when it goes missing.
+A missing clip is an error so the output cannot silently omit a segment.
 
 Usage:
   ./demo-assemble.py --out final.mp4 boot.mp4 tilo-demo.mp4

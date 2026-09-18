@@ -1058,7 +1058,7 @@ where
             ),
             // The resource broker gives every Wine/UMU launch a fresh
             // playback-only PipeWire/Pulse graph. A startup failure is a
-            // launch error, not an imaginary unavailable feature in the UI.
+            // launch error, not an unavailable feature in the UI.
             audio_output_available: true,
             audio_unavailable_reason: None,
             installation_status,

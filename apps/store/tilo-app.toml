@@ -1,6 +1,5 @@
-# Package manifest for the Tilo `store` — the app store, itself shipped as
-# a Tilo app so it's discoverable, updatable and sandbox-audited exactly
-# like every other native app.
+# Package manifest for the Tilo `store`, shipped as a Tilo app so it is
+# discoverable, updatable, and sandbox-audited with the rest of the system.
 
 
 [package]

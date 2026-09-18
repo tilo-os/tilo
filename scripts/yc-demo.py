@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Three Tilo sessions in one room, and an agent that drives one of them.
+"""Run three Tilo sessions in one room, with an agent driving one of them.
 
-Starts three real compositors — separate state directories, separate
-Iroh endpoint keys, separate user identities, separate control sockets:
+Starts three isolated compositors with separate state directories, Iroh
+endpoint keys, user identities and control sockets:
 
   ada  hosts the room and owns it
   bob    joins it by invite
@@ -10,7 +10,7 @@ Iroh endpoint keys, separate user identities, separate control sockets:
            the action API: semantic invocation by `(provider, id)`,
            never by a click, a keystroke, or a pixel
 
-The storyboard, in order, about a minute:
+The storyboard, in order:
 
   1. an empty desktop, and Files opened on it
   2. ada invites bob
@@ -22,9 +22,8 @@ The storyboard, in order, about a minute:
   8. a photograph dragged out of Files and into the document
   9. the agent acts by address, and the other two read the result back
 
-Every claim is read back from a session that did **not** make the change.
-Where that is impossible with today's compositor the transcript prints a
-GAP and moves on; it never prints a success it did not verify.
+Each claim is read back from a session that did **not** make the change.
+When that is not possible, the transcript prints a GAP.
 
     scripts/yc-demo.py
     scripts/yc-demo.py --keep
@@ -34,20 +33,12 @@ Runs against target/demo/shell:
 
     cargo build --profile demo -p shell --bin shell --bin tilo-control
 
-There is no mock and no fixture path: if the binary is missing the
-script exits rather than simulating it.
-
 Build it optimised. `snapshot` re-renders the scene and PNG-encodes it
-on the compositor's own event loop, so the session is blocked for every
-millisecond of it — and an unoptimised build spends ~1.4 s there per
-frame at 1920x1080, which is a recording nobody can watch.
+on the compositor's event loop; an unoptimised build spends ~1.4 s per
+1920x1080 frame.
 
-`--release` is not the profile to use, and not because of speed: the
-`TILO_TEST_CONTROL` socket this script drives the compositor through is a
-complete lock-screen bypass, so a shipped build deliberately does not
-contain the code that reads it. A `--release` shell binds no socket and
-never says why. `demo` is the release profile with that one gate left
-open, and nothing about `--release` changes.
+`--release` omits the `TILO_TEST_CONTROL` socket because it is a complete
+lock-screen bypass. `demo` is the release profile with that test gate open.
 """
 from __future__ import annotations
 

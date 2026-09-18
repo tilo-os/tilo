@@ -141,7 +141,7 @@ mod tests {
     use std::io::Write;
     use zip::write::SimpleFileOptions;
 
-    /// Build a minimal but real EPUB whose OPF names a cover image (the given
+    /// Build a minimal EPUB whose OPF names a cover image (the given
     /// PNG bytes at `OEBPS/cover.png`, tagged `properties="cover-image"`).
     pub(crate) fn epub_with_cover(cover_png: &[u8]) -> Vec<u8> {
         let mut buf = Vec::new();

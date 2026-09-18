@@ -33,9 +33,9 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 
-# Real decode/preview/export runs through GStreamer, linked ONLY under the
+# Decode/preview/export runs through GStreamer, linked only under the
 # `gst` feature so the default fleet build (and `--shots`) compiles without
-# the gstreamer-1.0 dev headers present. ffmpeg is intentionally NOT a dep.
+# the gstreamer-1.0 dev headers present. ffmpeg is intentionally not a dep.
 gstreamer = { workspace = true, optional = true }
 media = { path = "../../crates/media" }
 gstreamer-app = { version = "0.24", optional = true }

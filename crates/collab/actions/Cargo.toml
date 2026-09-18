@@ -9,11 +9,10 @@ license.workspace = true
 name = "tilo_actions"
 path = "src/lib.rs"
 
-# The Tilo ACTION model: a serializable, replayable unit of CRDT mutation, plus
-# the nested Resource tree apps publish and the locus-aware dispatch that either
-# executes-and-replicates locally (`ClientLocal`) or routes to a host
-# (`ServerPreferred`). Pure state layer — no `ui`, no `winit`, no render deps —
-# so both the toolkit and any app can build on it. See `src/lib.rs`.
+# Serializable, replayable CRDT mutations, the nested Resource tree apps
+# publish, and dispatch that either executes locally (`ClientLocal`) or routes
+# to a host (`ServerPreferred`). This is a pure state layer with no `ui`,
+# `winit`, or rendering dependencies.
 
 [dependencies]
 automerge = "0.8.0"

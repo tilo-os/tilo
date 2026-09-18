@@ -49,11 +49,11 @@ use crate::ssh::{SshConfig, SshSession};
 use crate::theme_ext::ColorExt;
 use crate::vnc::{VncConfig, VncInput, VncSession};
 
-/// A live transport backing an open session. Real, not simulated: SSH is a
-/// `russh` PTY channel feeding the terminal grid; VNC is an RFB client
+/// A live transport backing an open session. SSH is a `russh` PTY channel
+/// feeding the terminal grid; VNC is an RFB client
 /// decoding the remote framebuffer. `Error` holds a pre-flight failure
-/// (e.g. missing credentials) so the surface can show the honest reason
-/// without ever fabricating a session.
+/// (e.g. missing credentials) so the surface can show the reason without
+/// opening a session.
 enum LiveSession {
     Ssh(Box<SshSession>),
     Vnc(VncSession),
@@ -61,8 +61,8 @@ enum LiveSession {
     Error(String),
     /// A saved profile that cannot start in this process. This is a distinct
     /// state from a failed connection: no socket was opened and no credential
-    /// was sent. Keeping it explicit lets the UI offer an honest recovery path
-    /// instead of a blank row or a misleading retry button.
+    /// was sent. Keeping it explicit lets the UI offer a recovery path instead
+    /// of a blank row or a misleading retry button.
     Unavailable {
         readiness: TransportReadiness,
         kind: ConnectionKind,
@@ -532,8 +532,8 @@ pub struct RemoteApp {
     /// The shared [`TextInput`] behind each editable field.
     inputs: FieldInputs,
     /// The live transport for the open session. Production Tilo control always
-    /// creates one; gated SSH/VNC leave it `None` and show the honest "not
-    /// connected" surface until explicitly enabled.
+    /// creates one; gated SSH/VNC leave it `None` and show the "not connected"
+    /// surface until explicitly enabled.
     live: Option<LiveSession>,
     /// Cached GPU image of the most recent VNC frame, rebuilt only when a
     /// new framebuffer generation arrives.
@@ -811,17 +811,16 @@ impl RemoteApp {
         self.push_hit(confirm, Action::ConfirmPending);
     }
 
-    /// The live app: starts empty. Only the user's real saved connections
-    /// (held in the shared document, persisted across sessions) appear — no
-    /// fabricated machines are ever written into the CRDT.
+    /// The live app starts empty. Only the user's saved connections (held in the
+    /// shared document and persisted across sessions) appear.
     pub fn new() -> Self {
         Self::from_parts(Workspace::new(), Vec::new())
     }
 
     /// The hermetic `--shots` / demo build: a representative connection list
     /// plus a discovered-device roster so the screenshot reads as lived-in.
-    /// This is the ONLY place sample machines come from — the live app never
-    /// fabricates them.
+    /// This is the only place sample machines come from; the live app does not
+    /// seed them.
     pub fn new_demo() -> Self {
         let mut workspace = Workspace::new();
         for c in seed_connections() {
@@ -879,8 +878,7 @@ impl RemoteApp {
     pub fn dev_shot_scenario(&mut self, scenario: &str) {
         match scenario {
             "narrow" => self.rail_snap = Some(false),
-            // The summoned overlay rail (flap open over the dimming scrim) —
-            // proves the narrow open state for visual verification.
+            // The summoned overlay rail (flap open over the dimming scrim).
             "narrow-open" => self.rail_snap = Some(true),
             _ => {}
         }
@@ -5550,9 +5548,9 @@ impl RemoteApp {
             return;
         };
 
-        // No live transport object: the honest "not connected" card. Only
+        // No live transport object: the "not connected" card. Only
         // app-owned SSH/VNC transports use the developer gate; production Tilo
-        // control always creates a real broker session or an honest error.
+        // control always creates a broker session or an error.
         let Some(status) = self.live.as_ref().map(LiveSession::status) else {
             self.draw_status_session(
                 scene,
@@ -5664,7 +5662,7 @@ impl RemoteApp {
                 );
             }
             SessionStatus::Connected => {
-                // Real surface. Toolbar hidden in immersive/fullscreen mode.
+                // Session surface. Toolbar hidden in immersive/fullscreen mode.
                 let surface = if immersive {
                     content
                 } else {
@@ -5689,11 +5687,10 @@ impl RemoteApp {
     }
 
     /// A session surface that is *not* a live pixel/terminal view: the
-    /// honest states (not connected, connecting, failed, ended), composed as
+    /// states (not connected, connecting, failed, ended), composed as
     /// a centred card — a state emblem carrying the protocol, the machine
-    /// identity, a status pill, an explanation, and real actions. The state
+    /// identity, a status pill, an explanation, and available actions. The state
     /// has a visible form (the emblem ring + pill colour), not just a label.
-    /// Never draws a fabricated terminal or desktop.
     fn draw_status_session(
         &mut self,
         scene: &mut Scene,
@@ -7204,8 +7201,7 @@ mod tests {
     #[test]
     fn connect_ssh_explains_the_missing_live_capability_without_opening_a_socket() {
         // Default build has no live transport: Connect opens an explicit
-        // unavailable surface, not a fabricated terminal or an ambiguous
-        // "not connected" screen.
+        // unavailable surface.
         let mut app = RemoteApp::new_demo();
         let id = app
             .workspace

@@ -109,11 +109,8 @@ impl PhotosDoc {
         ) && !matches!(doc.get(&ROOT, "edits"), Ok(Some((Value::Scalar(_), _))))
     }
 
-    /// Seed default state: **no image open** and no edits.
-    ///
-    /// There is no sample photograph here and no fabricated recent list. An
-    /// app with nothing open shows an empty state that says so; content only
-    /// ever arrives from a file the user actually opened.
+    /// Seed default state: **no image open** and no edits. An app with nothing
+    /// open shows an empty state; content arrives from an opened file.
     /// Idempotent — only writes fields that are missing.
     pub fn seed(doc: &mut AutoCommit) {
         if Self::get_str(doc, "image").is_none() {
@@ -1627,7 +1624,7 @@ mod tests {
     /// made. Automerge resolves two concurrent writes to one key by the op's
     /// Lamport stamp — its counter first, the actor id second. The counter is
     /// just how much history that replica's document happens to carry, which
-    /// for a real app is however much its toolkit wrote before the app itself
+    /// for an app is however much its toolkit wrote before the app itself
     /// wrote anything; the actor id is random. So the empty replica is run
     /// both behind and ahead of the populated one, under both actor
     /// orderings, and both merge directions are checked because it is one

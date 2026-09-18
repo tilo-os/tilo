@@ -1,10 +1,10 @@
 //! Structural version diff between two states of the **same** document.
 //!
 //! A CRDT-native document has stable block identity — a paragraph keeps its id across every edit
-//! and save/load — so two versions align by id instead of fuzzy text matching, giving a clean
-//! structural diff (added/removed/changed blocks, plus a run-level diff within a changed block).
-//! Feed it two [`DocSnapshot`]s; the result is plain serializable data. Blocks align by an LCS over
-//! shared ids when both versions share any; otherwise it falls back to positional pairing.
+//! and save/load — so two versions align by id instead of fuzzy text matching.
+//! The diff includes added, removed, and changed blocks, plus run-level changes
+//! within changed blocks. Blocks align by an LCS over shared ids when possible;
+//! otherwise the implementation falls back to positional pairing.
 
 use crate::document::MarkSpan;
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};

@@ -54,9 +54,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// Default queue ceiling — matches the receive-side `PeerView`'s pending
-/// ceiling. A shim backed up beyond this many frames represents a
-/// real-world "the wire can't keep up" — the fix is drop, not buffering.
+/// Default queue ceiling, matching the receive-side `PeerView`'s pending
+/// ceiling. Frames beyond this limit are dropped rather than buffered.
 pub const DEFAULT_QUEUE_CAPACITY: usize = 8;
 
 /// Default jitter — 5 ms uniform-random on each side of the nominal latency.
@@ -67,12 +66,9 @@ pub const DEFAULT_JITTER_MS: u32 = 5;
 /// throttle chunking it into subframe pieces.
 pub const TOKEN_BUCKET_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Lossy but harmless `u64 -> f64`, used throughout this module for
-/// token-bucket and stats math. The values that flow through it — frame
-/// sizes, byte counters, kbps configs — are bounded by realistic
-/// encoded-video sizes and session-lifetime totals, many orders of
-/// magnitude below 2^53 (where `f64` stops exactly representing
-/// integers), so the conversion loses no precision that matters here.
+/// Convert a counter to `f64` for token-bucket and statistics calculations.
+/// The values are bounded well below 2^53, where `f64` stops representing
+/// integers exactly.
 #[allow(
     clippy::cast_precision_loss,
     reason = "values converted here are bounded far below 2^53 in every realistic configuration; see doc comment"

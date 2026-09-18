@@ -1467,7 +1467,7 @@ impl TileHost {
                 }
             }
             // Reduced motion takes the cut — the window just being there
-            // is the honest end state.
+            // is the end state.
             if theme.reduce_motion {
                 self.opening_shown = false;
                 self.handed_over_at = None;
@@ -1574,7 +1574,7 @@ fn draw_card_text(
     // legible on one of them.
     let card = theme.tokens.colors.surfaces.window_card;
     let on_card = theme.on_card().ink;
-    // The floor here is measured for an ideal glyph but a real one
+    // The floor here is measured for an ideal glyph but an antialiased glyph
     // anti-aliases: derived at 4.5:1 it measured 3.8:1 on screen against
     // the light card, a tier under the floor it was picked to clear.
     let on_card_dim = theme
@@ -2672,7 +2672,7 @@ mod tests {
     /// An unpresented app has only its own early buffer size, so painting
     /// it is the window appearing magnified then snapping down. The frame
     /// holds the place instead, since it's the one thing that knows the
-    /// tab's real size.
+    /// tab's size.
     #[test]
     fn a_tile_holding_a_place_does_not_paint_the_app_behind_it() {
         let theme = Theme::default();

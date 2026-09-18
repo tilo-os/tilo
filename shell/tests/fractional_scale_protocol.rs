@@ -1,15 +1,14 @@
 //! End-to-end `wp_fractional_scale_v1` protocol walk, wiring an in-process
 //! wayland-client through a `UnixStream` pair into a headless smithay
-//! `State` — the real `CompositorHandler::commit` / `FractionalScaleHandler`
-//! paths, not a hand-rolled helper:
+//! `State`, including the `CompositorHandler::commit` /
+//! `FractionalScaleHandler` paths:
 //!
 //! 1. Walks `wl_registry` for `wl_compositor`,
 //!    `wp_fractional_scale_manager_v1`, and `wp_viewporter`.
 //! 2. Sets the compositor's display scale to a *fractional* 1.5x.
 //! 3. Creates a `wl_surface`, mints a `wp_fractional_scale_v1`, commits.
 //! 4. Asserts `preferred_scale = round(1.5 * 120) = 180` (the protocol's
-//!    1/120 fixed-point encoding), so the scale is genuinely fractional
-//!    rather than rounded to 1x or 2x.
+//!    1/120 fixed-point encoding), confirming fractional scaling.
 
 #![allow(
     clippy::unwrap_used,

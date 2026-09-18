@@ -1,8 +1,8 @@
-//! The write / verify seam — the real, destructive work, safely gated.
+//! The write / verify seam for destructive work, safely gated.
 //!
 //! Writing a disk image onto a block device is **destructive** and needs
 //! privileged raw access. This module is the single choke point where that
-//! work happens. It ships a **real** streaming copy + read-back verify
+//! work happens. It ships a streaming copy + read-back verify
 //! engine ([`stream_copy`], [`verify_readback`], [`run_job_paths`]) — the
 //! exact byte loop that flashes a USB stick — and three independent safety
 //! gates in front of the block device:
@@ -19,7 +19,7 @@
 //!
 //! 3. **Capacity + fit checks** ([`WriteRequest`] / [`TargetDrive::fits`]).
 //!
-//! The engine is exercised in tests against **temp files** (a real copy +
+//! The engine is exercised in tests against **temp files** (a copy +
 //! verify, byte-for-byte) — never a block device — so the production loop is
 //! proven without any risk to hardware.
 

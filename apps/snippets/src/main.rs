@@ -25,7 +25,7 @@ use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
 // The signature is fixed by `ui::launch::ShotFactory`: other apps' shot roots
-// genuinely can fail, so the alias is fallible even where this one isn't.
+// may fail, so the alias is fallible even where this one isn't.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "signature is dictated by ui::launch::ShotFactory, which other apps' fallible shot roots need"

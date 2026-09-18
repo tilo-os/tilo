@@ -1,4 +1,4 @@
-//! Round-trip test: install a real .qpkg via the library surface,
+//! Round-trip test: install a .qpkg via the library surface,
 //! then resolve it and check the payload landed on disk.
 
 #![allow(

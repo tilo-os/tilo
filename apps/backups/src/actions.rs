@@ -9,7 +9,7 @@
 //! whole action surface: a single [`BackupsAction::SetRetention`] that sets one
 //! policy field to an absolute, pre-resolved count. The exact same
 //! [`EncodedAction`] the on-screen +/- affordance dispatches is what Ctrl+K
-//! dispatches — one source of truth, one replay path, undo for free.
+//! dispatches, keeping one source of truth and one replay path.
 //!
 //! Carrying the resolved target (rather than a delta) makes replay order-free:
 //! two replicas at the same heads land on the byte-identical result, and a set

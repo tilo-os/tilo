@@ -14,7 +14,7 @@
 //!     `loading`, `error`, `conflict`, `reducedmotion`.
 //!
 //! The shots path always seeds the sample workbook and disables on-disk
-//! persistence, so a screenshot shows real formulas without ever touching the
+//! persistence, so a screenshot shows formulas without touching the
 //! user's stored data.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
@@ -160,8 +160,8 @@ fn render_shot_to_png(
     setup: ShotSetup,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome can be proven across palettes; defaults to dark.
+    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme;
+    // defaults to dark.
     let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
@@ -190,8 +190,8 @@ fn render_shot_to_png(
 
     let mut state = ui::State::new();
     app.sync(&mut state.doc, &state.root);
-    // Apply the scenario hook now that the document is seeded; it may dispatch
-    // real actions against the document (the fill/paste scenarios do).
+    // Apply the scenario hook now that the document is seeded; fill/paste
+    // scenarios dispatch actions against the document.
     setup(&mut app, &mut state.doc);
     let widget: &mut dyn Widget = &mut app;
 

@@ -76,7 +76,7 @@ for name, n in sorted(c.items()): print(f"{n} {name}")' < "$raw")
 
 # An empty count means one of two very different things: clippy linted the
 # whole workspace and found nothing, or it never ran. `build-finished` tells
-# them apart — without it, an empty result is a failure, not a clean bill.
+# them apart — without it, an empty result is a failure.
 if ! grep -q '"reason":"build-finished"' "$raw"; then
   echo "clippy produced no build-finished record — it did not complete, so an" >&2
   echo "empty violation count would be a false pass. Not trusting it." >&2

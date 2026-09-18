@@ -2,7 +2,7 @@
 //!
 //! `--shots` renders a cold-start frame offscreen but never delivers input,
 //! so it can't answer *does a change survive a restart?* [`Driver`] does:
-//! it stands up the app's real widget tree over a Taffy layout at a fixed
+//! it stands up the app's widget tree over a Taffy layout at a fixed
 //! viewport and feeds it the same `WindowEvent`s winit would, through the
 //! same [`Widget::handle_event`](crate::widget::Widget::handle_event) the
 //! live app uses — nothing stubbed, including CRDT mutations.
@@ -24,7 +24,7 @@
 //!
 //! The first process changes state and exits (flushing its store); the
 //! second loads the store and dumps the document as JSON. Diffing the two
-//! dumps is the persistence proof, against the app's real document.
+//! dumps is the persistence proof for the app's document.
 
 use std::collections::{HashMap, HashSet};
 
@@ -596,7 +596,7 @@ impl FrameHarness {
 
     /// Stand the app up and resolve its first observable layout.
     ///
-    /// Responsive structure discovered from the real viewport is settled
+    /// Responsive structure discovered from the viewport is settled
     /// before this returns, so tests can address compact/wide controls
     /// immediately without an app-specific warm-up frame.
     pub fn new(state: State, root: Box<dyn Widget>, viewport: (u32, u32)) -> Self {
@@ -2325,7 +2325,7 @@ impl FrameHarness {
     }
 
     /// Move the pointer to `(x, y)` and press+release the left button — the
-    /// three events a real click produces, in order.
+    /// three events a click produces, in order.
     pub fn click_at(&mut self, x: f64, y: f64) {
         self.pump_component_wakes();
         self.send(&WindowEvent::CursorMoved {
@@ -2503,7 +2503,7 @@ impl FrameHarness {
     }
 
     /// Render one frame with no input and record it. A frame here is one
-    /// `relayout`, which runs the real sync → build → apply → draw passes.
+    /// `relayout`, which runs the sync → build → apply → draw passes.
     pub fn profile_frame(&mut self) {
         self.pump_component_wakes();
         self.relayout();
@@ -4717,7 +4717,7 @@ mod undo_driver_tests {
         )
     }
 
-    /// One real edit, typed through the driver and committed by the driver —
+    /// One edit, typed through the driver and committed by the driver —
     /// so how the driver attributes an action is part of what is under test.
     fn type_action(d: &mut Driver, text: &str) {
         d.type_text(text);
@@ -4827,7 +4827,7 @@ mod dispatched_action_driver_tests {
     use serde::{Deserialize, Serialize};
     use tilo_actions::{ActionError, Doc, ExecutionLocus};
 
-    /// A real action: append `text` to the document's `body`. Deterministic, as
+    /// An action that appends `text` to the document's `body`. Deterministic, as
     /// the executor requires.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct Append {
@@ -5216,7 +5216,7 @@ mod dispatched_action_driver_tests {
     }
 
     /// An event that dispatches nothing must not push an empty entry, or the
-    /// next Ctrl+Z is spent on a no-op and the user's real edit survives a
+    /// next Ctrl+Z is spent on a no-op and the user's edit survives a
     /// press they expected to undo it.
     #[test]
     fn an_event_that_dispatches_nothing_records_no_boundary() {

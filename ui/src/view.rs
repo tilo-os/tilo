@@ -560,7 +560,7 @@ mod tests {
             "the CRDT document round-tripped through freeze/thaw"
         );
         // The restored document carries the record identity that
-        // `open_resource` named — the resource is genuinely reopened.
+        // `open_resource` named — the resource is reopened.
         assert_eq!(
             crate::record::identity(&doc2).map(|c| c.id.as_str().to_string()),
             Some("file:/report.md".to_string()),

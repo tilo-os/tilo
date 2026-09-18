@@ -1,9 +1,8 @@
-//! A representative, fully populated sample mailbox used when the app runs
-//! headless (`--shots`) or before a live account is configured. It is *not*
-//! a hollow mockup: two messages (including one with a PDF attachment) are
-//! authored as raw RFC 5322 `.eml` blobs and hydrated through
-//! [`crate::transport::parse_eml`], so the screenshot exercises the real
-//! MIME-parse path. The rest are constructed directly for breadth across
+//! A representative sample mailbox used when the app runs headless
+//! (`--shots`) or before a live account is configured. Two messages (including
+//! one with a PDF attachment) are authored as raw RFC 5322 `.eml` blobs and
+//! hydrated through [`crate::transport::parse_eml`]. The rest are constructed
+//! directly for breadth across
 //! folders, threads, read/unread, and starred state.
 
 use uuid::Uuid;

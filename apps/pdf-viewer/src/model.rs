@@ -93,11 +93,10 @@ impl Document {
         self.pages.iter().find(|p| p.number == number)
     }
 
-    /// Build a document from text already extracted from a real PDF, one
+    /// Build a document from text already extracted from a PDF, one
     /// string per page. Paragraphs are split on blank lines; a short leading
     /// line is promoted to a heading so the reflow keeps some structure.
-    /// The content is genuine — search, selection and markup all run against
-    /// the source PDF's own words.
+    /// Search, selection and markup all run against the source PDF's own words.
     pub fn from_text_pages(title: &str, author: &str, page_texts: &[String]) -> Self {
         let mut pages = Vec::with_capacity(page_texts.len());
         for (i, raw) in page_texts.iter().enumerate() {
@@ -430,11 +429,9 @@ impl Comment {
 // Signatures
 // ----------------------------------------------------------------------
 
-/// The visible content of a placed signature — **real user input**, not a
-/// canned style picked from a name hash. A signature is either the signer's
-/// typed name (rendered in a signature script) or the freehand strokes they
-/// actually drew, normalised into the field's `0..1` box so it scales to any
-/// placement size.
+/// The visible content of a placed signature: either the signer's typed name
+/// (rendered in a signature script) or freehand strokes, normalised into the
+/// field's `0..1` box so it scales to any placement size.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SignatureInk {
     /// Render the signer's name as a script-style typed signature.
@@ -445,7 +442,7 @@ pub enum SignatureInk {
 }
 
 impl SignatureInk {
-    /// A drawn signature with no ink is empty (nothing was actually drawn).
+    /// A drawn signature with no ink is empty.
     pub fn is_empty(&self) -> bool {
         match self {
             SignatureInk::Typed => false,
@@ -878,8 +875,7 @@ fn sample_outline() -> Vec<OutlineItem> {
 }
 
 /// Build the bundled sample PDF: a believable multi-page technical
-/// document. Real text so search, highlight ranges and selection all
-/// operate on genuine content.
+/// document. Its text supports search, highlight ranges and selection.
 pub fn sample_document() -> Document {
     Document {
         title: "Tilo Technical Overview".into(),

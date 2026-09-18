@@ -11,11 +11,11 @@ FROM registry.fedoraproject.org/fedora:42
 
 # nodejs: actions/checkout. capnproto: runtime-collab build.rs.
 # vulkan-loader + mesa-vulkan-drivers: llvmpipe, so GPU tests run headless.
-# GNOME Text Editor, qt6-qtbase-examples and LibreOffice Writer are real-process
+# GNOME Text Editor, qt6-qtbase-examples and LibreOffice Writer are process-level
 # subjects for the legacy-app caret E2E. Keeping them in this weekly-built
 # image makes the path-gated PR job deterministic and avoids live dnf traffic.
 # bubblewrap is a test *subject*, not a tool — the launcher's confinement
-# suites drive the real sandbox and refuse to skip when it is absent. So is
+# suites drive the sandbox and refuse to skip when it is absent. So is
 # rust-analyzer, for the code editor's language-server suite, but it comes from
 # rustup below: the shims in /usr/local/cargo/bin precede /usr/bin, so a Fedora
 # package here would be shadowed by a shim reporting the component missing.

@@ -21,7 +21,7 @@ use vello::peniko::Color;
 use crate::color_compat::ColorCompat;
 
 /// A thin subset of AccessKit's 182 roles covering the widgets the toolkit
-/// actually ships; unknown/rare cases fall back to [`Role::Generic`].
+/// supports; unknown/rare cases fall back to [`Role::Generic`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Role {

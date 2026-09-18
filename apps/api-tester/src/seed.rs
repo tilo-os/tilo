@@ -1,9 +1,8 @@
 //! First-run / screenshot workspace seed.
 //!
 //! Produces a representative set of collections, environments, a populated
-//! active request, and a short history so a brand-new workspace (and the
-//! headless screenshot) reads as a real, lived-in API tool rather than an
-//! empty shell.
+//! active request, and a short history for a brand-new workspace and the
+//! headless screenshot.
 
 use crate::model::{
     Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, KeyValue, Request,
@@ -145,8 +144,8 @@ pub fn active_request() -> Request {
 }
 
 /// A short recent-request history for the History list.
-/// A single blank starter request for the live app — a real Send is what
-/// produces a response; nothing is fabricated.
+/// A single blank starter request for the live app. Sending it produces a
+/// response.
 pub fn blank_request() -> Request {
     let mut r = Request::new("New request");
     r.method = HttpMethod::Get;

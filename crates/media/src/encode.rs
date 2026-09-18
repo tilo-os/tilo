@@ -1,33 +1,23 @@
 //! Encoder discovery, preference order, and the record of what was selected.
 //!
-//! The decode side observes which decoder `GStreamer` autoplugged
-//! ([`crate::hw::HwReport`]). Encoding has no autoplugger: an encode pipeline
-//! names its encoder element outright, so if the name is hard-coded to a
-//! software encoder then a machine with a perfectly capable GPU still encodes
-//! on the CPU, and nothing in the pipeline ever says so.
+//! Encoding has no autoplugger: an encode pipeline names its encoder element
+//! outright. This module chooses an encoder from the available registry and
+//! records the selection.
 //!
-//! This module supplies the missing half. It declares, per codec, the encoders
-//! worth trying in preference order — hardware first, then the best software
-//! encoder, then the guaranteed-present baseline — and picks the first one a
-//! *real registry* confirms is installed.
+//! It declares, per codec, encoders in preference order and picks the first one
+//! the registry confirms is installed.
 //!
-//! ## Two things this module refuses to do
+//! [`Selection::confirmed`] is false when no registry was consulted, and
+//! [`Selection::is_hardware`] is false unless the element was confirmed and
+//! belongs to a hardware family.
 //!
-//! **Claim hardware it has not seen.** [`Selection::confirmed`] is false when
-//! no registry was consulted, and [`Selection::is_hardware`] is false unless
-//! the element was both confirmed *and* belongs to a hardware family. A build
-//! with no `GStreamer` linked therefore reports "baseline, nothing observed"
-//! rather than anything that could be read as a GPU claim — the same rule
-//! [`crate::hw::HwReport::is_hardware`] follows for decode.
-//!
-//! **Guess at bitrate units.** `GStreamer` encoders disagree: `openh264enc` and
+//! `GStreamer` encoders disagree on bitrate units: `openh264enc` and
 //! `vp8enc` take bits per second, while every VA-API, NVENC, QSV and `x264enc`
 //! encoder takes *kilo*bits per second. Setting 16000000 on `x264enc` asks for
-//! 16 Gbit/s, which the encoder clamps — silently producing a file nothing
-//! like the size the export dialog promised. So each [`EncoderSpec`] carries
+//! 16 Gbit/s, which the encoder clamps and silently changes the output rate.
+//! Each [`EncoderSpec`] carries
 //! its property name *and* its units, and [`EncoderSpec::bitrate_arg`] does
-//! the conversion. A test in this file checks that table against the live
-//! registry, so a wrong entry fails a test rather than an export.
+//! the conversion. Tests check that table against the registry.
 //!
 //! ## Overriding
 //!
@@ -106,7 +96,7 @@ pub struct EncoderSpec {
     /// rate bears no relation to the one it was asked for.
     ///
     /// The measurement that settles it is incompressible content at a low
-    /// target: a rate controller holds the line, an encoder that is really
+    /// target: a rate controller holds the line, while a quality-based encoder
     /// choosing a quality overshoots by whatever the content costs. Five
     /// seconds of 720p noise asked for 1 Mbit/s, on this build:
     ///
@@ -120,10 +110,8 @@ pub struct EncoderSpec {
     /// not rate control, and the property is accepted either way — nothing
     /// errors — so an encode is the only thing that can tell.
     ///
-    /// `false` is the *absence* of such an observation, not a promise of
-    /// accuracy: it means nobody has caught this encoder ignoring the
-    /// setting, which is the most any table can honestly say about an
-    /// encoder this machine may not even have installed.
+    /// `false` means no observation has shown the encoder ignoring the setting;
+    /// it does not guarantee accuracy for an encoder that is not installed.
     pub ignores_bitrate: bool,
 }
 
@@ -133,27 +121,11 @@ impl EncoderSpec {
     ///
     /// A kilobit encoder given a target under 1000 bit/s would round to 0,
     /// which every one of them reads as "auto" — so the result is floored at
-    /// 1 kbps. A request for a real bitrate must never turn into a request
-    /// for whatever the encoder feels like.
+    /// 1 kbps. This prevents a small positive bitrate from becoming an
+    /// automatic-quality request.
     ///
-    /// Getting the units wrong here is not a cosmetic error, which is why the
-    /// table they come from is checked against the live registry by test
-    /// rather than trusted. Deliberately breaking the conversion on this
-    /// machine sent `vaav1enc` a bits-per-second number as kilobits — 400
-    /// Mbit/s, a rate the property accepts and the hardware cannot serve — and
-    /// the amdgpu driver reported "the CS has cancelled because the context is
-    /// lost", took a hard recovery, and aborted the process. On a machine
-    /// whose compositor shares that GPU, that is a good deal worse than a
-    /// wrongly sized file.
-    ///
-    /// There is deliberately no defensive ceiling on the way out. The obvious
-    /// one — the 2 Gbit/s these properties declare as their maximum — was
-    /// measured and does not help: `vaav1enc bitrate=2048000` hard-recovers
-    /// the context just the same, while a value *past* the declared maximum is
-    /// rejected outright by `GObject` and never reaches the driver at all. A cap
-    /// low enough to actually protect would be a policy limit on legitimate
-    /// exports, and one that merely looked protective would be worse than
-    /// none. The units table is the real mitigation.
+    /// The units table is checked against the registry because an incorrect
+    /// conversion can be accepted by GStreamer while producing the wrong rate.
     pub fn bitrate_value(&self, bits_per_second: u64) -> u64 {
         match self.bitrate_units {
             BitrateUnits::BitsPerSecond => bits_per_second,
@@ -196,22 +168,13 @@ pub enum AudioCodec {
 // ---------------------------------------------------------------------------
 // Candidate tables.
 //
-// Order is preference order: hardware families first, then software best-first.
-// The LAST entry of every list is the baseline — an encoder from the plugin set
-// this workspace already depends on, so there is always something to fall back
-// to.
-//
-// Unit column: checked against the live registry by
-// `declared_bitrate_properties_exist_on_the_real_elements` for every element
-// present on the machine running it. The `va` family convention ("The desired
-// bitrate expressed in kbps") is confirmed locally through `vaav1enc`, which
-// shares `GstVaBaseEnc`'s property with `vah264enc`.
+// Order is preference order: hardware families first, then software. The last
+// entry of each list is the baseline encoder.
 // ---------------------------------------------------------------------------
 
-/// H.264. VA first: it is the one plugin that covers both AMD and Intel,
-/// integrated and discrete, and it is what the decode side prefers too.
+/// H.264. VA is first because it covers AMD and Intel hardware.
 /// `x264enc` outranks `openh264enc` because openh264 only writes Baseline
-/// profile — no CABAC, no B-frames — which costs real quality at the same
+/// profile — no CABAC, no B-frames — which reduces quality at the same
 /// bitrate.
 const H264: &[EncoderSpec] = &[
     kbit("vah264enc", EncoderKind::Va),
@@ -227,7 +190,7 @@ const H264: &[EncoderSpec] = &[
 ];
 const H264_BASELINE: EncoderSpec = bits_untracked("openh264enc", EncoderKind::Software);
 
-/// VP8. Hardware VP8 encode is rare but real on some Intel parts.
+/// VP8.
 const VP8: &[EncoderSpec] = &[
     kbit("vavp8enc", EncoderKind::Va),
     kbit("vaapivp8enc", EncoderKind::Va),

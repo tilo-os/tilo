@@ -10,9 +10,7 @@ There are three answers, and they are ordered by how broken the machine is.
 | boots, session does not work | it rolls back **by itself** after three tries | nothing |
 | boots, nothing works | Repair Mode, from the boot menu | the disk passphrase |
 
-## What a rollback actually promises
-
-This is the part that is usually left unsaid, so it is said first.
+## What a rollback changes
 
 **`/usr` reverts.** The system image, the compositor, the shipped apps, the
 kernel, and the runtime bundle at `/usr/lib/tilo-runtime/<version>/` all go back
@@ -70,7 +68,7 @@ Tilo uses it is not dependable: [bootc#2208](https://github.com/bootc-dev/bootc/
 has a series of updates leaving rollback broken, and broken *through reboots*.
 
 So `tilo rollback` does not trust it. It runs `bootc rollback`, then asks the boot
-loader what the next boot will actually be, and if that did not change it writes
+loader what the next boot will be, and if that did not change it writes
 the boot loader's own default entry instead (`bootctl set-default`). The output
 says which of the two happened. The bootloader is the component that decides;
 going straight to it is the shorter statement of the same intent.
@@ -135,7 +133,8 @@ filesystem, no update timer, no sshd. It gives you a console with
 It is the same rootfs the desktop boots, selected by `tilo.mode=repair` on a
 *sealed* kernel command line — see [security/repair-mode.md](security/repair-mode.md)
 for how that is derived and for the authentication story (short version: on an
-encrypted machine you have to prove a LUKS passphrase, and the check is real).
+encrypted machine the recovery gate verifies a passphrase against the LUKS
+header, even when the disk is already unlocked).
 
 What repair mode cannot fix: a rootfs that will not mount. The composefs root is
 verity-enforced, so corruption is refused rather than silently used, and repair
@@ -196,7 +195,7 @@ you read it as the failure.
 
 ## Proving it
 
-None of this is established by reading it. What can be checked, and where:
+Check the following invariants and paths:
 
 ```bash
 # Host-side, no VM: the invariants the mechanism rests on — that the two
@@ -208,7 +207,7 @@ None of this is established by reading it. What can be checked, and where:
 # And that the ESP is sized for the retention window plus the repair image.
 ./os/tests/esp_capacity.sh
 
-# In a booted guest: the facts only a real machine has. Fails rather than skips
+# In a booted guest: the facts only a booted machine has. Fails rather than skips
 # when it cannot observe its subject.
 sudo /usr/libexec/tilo-recovery-boot-check
 
@@ -218,15 +217,15 @@ sudo /usr/libexec/tilo-recovery-boot-check
 TILO_CFS_SESSION_OK=0 ./os/dev/composefs/build.sh 2
 ./os/dev/composefs/recovery-series.sh
 
-# The state-version refusal, against the real compositor binary:
+# The state-version refusal, against the compositor binary:
 cargo build -p shell --bin shell
 ./scripts/headless-examples/older-binary-meets-newer-state.py
 ```
 
 ## The state a rollback cannot help with
 
-An older binary can meet state a newer one wrote. That is not a hypothetical after
-a rollback, it is the expected case. Both of the places Tilo keeps state carry a
+An older binary can meet state a newer one wrote. This is expected after a
+rollback across a schema change. Both places Tilo keeps state carry a
 schema version and **refuse** rather than guess:
 
 - `~/.config/tilo/state.json` — the compositor's workspace tree. A file from a

@@ -74,7 +74,7 @@ impl ActionHost {
     ///
     /// Unlike [`dispatch`](Self::dispatch), this does not swallow errors. It
     /// only records an undo boundary and last-dispatched payload after the
-    /// action actually applies.
+    /// action applies.
     ///
     /// # Errors
     ///

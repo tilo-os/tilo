@@ -96,7 +96,7 @@ struct CapBinding {
     caps: Vec<CapOverride>,
     /// The instant capability expiry is evaluated at. `None` reads the
     /// system clock every check, so an [`collab_types::Expiry::AtUnix`]
-    /// actually expires mid-mount; `Some(t)` pins every check for
+    /// expires mid-mount; `Some(t)` pins every check for
     /// reproducible tests. Distinct from `decide_capability`'s `now: None`
     /// (which skips expiry entirely — right for the wire validator, wrong
     /// here, since it would make every expired capability immortal).

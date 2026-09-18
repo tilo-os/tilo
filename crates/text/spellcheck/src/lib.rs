@@ -7,7 +7,7 @@
 //! 2. [`Dictionary`] holds a set of known words. [`Dictionary::builtin`] loads an
 //!    embedded English word list; [`Dictionary::from_words`] builds one from any
 //!    iterator of strings.
-//! 3. [`check`] walks the tokens, skips things that are not really spellable
+//! 3. [`check`] walks the tokens, skips non-spellable forms
 //!    (numbers, ALL-CAPS acronyms, URLs, emails), and flags the rest that are not
 //!    in the dictionary, attaching a ranked list of [`suggest`]ions.
 //!
@@ -101,12 +101,9 @@ pub fn check(dict: &Dictionary, text: &str) -> Vec<Misspelling> {
 
 /// Where the misspelled words in `text` are, without suggesting corrections.
 ///
-/// [`check`] suggests a replacement for every word it flags, and each suggestion
-/// walks the dictionary computing edit distances. Drawing a squiggle needs only
-/// the positions, and the word processor was paying the whole price on every
-/// keystroke — a half-typed word is a misspelling until it is finished, so the
-/// search ran between keypress and letter for suggestions nothing displayed.
-/// Measured on release, 12 ms of a 13 ms draw pass.
+/// [`check`] suggests a replacement for every flagged word and computes edit
+/// distances across the dictionary. Drawing a squiggle needs only the
+/// positions, so this avoids suggestion work when rendering underlines.
 pub fn spans(dict: &Dictionary, text: &str) -> Vec<(usize, usize)> {
     tokenize(text)
         .into_iter()

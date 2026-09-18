@@ -1,7 +1,7 @@
 //! On-disk config schema for `tilo-relay`.
 //!
 //! The daemon reads a TOML file — path is passed via `--config` and
-//! defaults to `/etc/tilo/relay.toml`. The file is deliberately small:
+//! defaults to `/etc/tilo/relay.toml`. The file contains
 //! filesystem paths + a listen address + policy + a list of
 //! workspace bindings. Any secrets stay on disk under those paths
 //! and are never inlined here.

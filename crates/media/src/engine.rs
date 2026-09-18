@@ -1,20 +1,20 @@
 //! The playback engine: one control surface, two interchangeable backends.
 //!
-//! * **Real decode** (`--features decode`) drives the `GStreamer` pipeline in
+//! * **GStreamer decode** (`--features decode`) drives the pipeline in
 //!   [`crate::gst_backend`]: `playbin3` with hardware decoders ranked above
 //!   software ones, a sink that negotiates the best memory the consumer
 //!   declared it can take (dmabuf → planar → RGBA), frame-exact `ACCURATE`
 //!   seeking that reads the preroll without ever starting the audio sink, and
-//!   real clock-driven playback. It decodes any codec `GStreamer` can plug from
+//!   clock-driven playback. It decodes any codec `GStreamer` can plug from
 //!   a local file, the FUSE workspace, or a stream URL.
 //! * **Synthesized fallback** (default) produces a deterministic RGBA test
-//!   pattern driven by a real playhead clock, plus genuine buffering progress
+//!   pattern driven by a playhead clock, plus buffering progress
 //!   from the prefetcher when a file source is opened. It needs no gstreamer
-//!   stack, so hermetic builds, `--shots` and CI stay green.
+//!   stack, so hermetic builds, `--shots`, and CI do not require it.
 //!
-//! The public surface ([`MediaEngine`]) is identical either way, so a consumer
-//! never branches on which backend is linked. What a consumer *does* declare
-//! is what memory it can paint — see [`EngineConfig`] and [`FrameAcceptance`].
+//! The public surface ([`MediaEngine`]) is identical for both backends. A
+//! consumer declares what memory it can paint through [`EngineConfig`] and
+//! [`FrameAcceptance`].
 
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -122,8 +122,8 @@ impl EngineConfig {
     }
 }
 
-/// Placeholder stream length for the synthesized fallback when nothing better
-/// is known. Real decode always overrides this from the pipeline's duration.
+/// Placeholder stream length for the synthesized fallback when the duration is
+/// unknown. The decode backend overrides this with the pipeline's duration.
 const DEFAULT_SYNTH_DURATION_MS: u64 = 120_000;
 
 /// Synthesized-frame dimensions. 16:9, small enough to regenerate cheaply each
@@ -179,7 +179,7 @@ pub struct MediaEngine {
     volume: f32,
     muted: bool,
     /// The requested playback multiplier. Kept at the engine boundary so the
-    /// synthesized fallback, real decoder, collaborative transport, and every
+    /// synthesized fallback, decoder, collaborative transport, and every
     /// consumer agree on the one value the user selected.
     rate: f32,
     config: EngineConfig,
@@ -222,7 +222,7 @@ impl MediaEngine {
 
     /// Build an engine with the default configuration: system-memory RGBA
     /// frames, hardware decode per `TILO_MEDIA_HWDEC`. With `--features decode`
-    /// this stands up a real `GStreamer` pipeline; if `GStreamer` can't initialise
+    /// this stands up a `GStreamer` pipeline; if `GStreamer` can't initialise
     /// (or the feature is off) it transparently falls back to the synthesized
     /// backend. Never fails.
     pub fn new() -> Self {
@@ -271,7 +271,7 @@ impl MediaEngine {
 
     /// Force the synthesized backend regardless of build features. Used by the
     /// hermetic engine tests so event ordering and transport application are
-    /// exercised deterministically without a real decode.
+    /// exercised deterministically without the decode backend.
     pub fn new_synthesized() -> Self {
         Self {
             handoff_id: Self::next_handoff_id(),
@@ -290,13 +290,12 @@ impl MediaEngine {
         self.config
     }
 
-    /// What the decode pipeline actually plugged: the decoder element's name,
+    /// What the decode pipeline plugged: the decoder element's name,
     /// its family, and the caps the sink negotiated.
     ///
-    /// This is an **observation**, not a restatement of configuration. Until a
-    /// frame has prerolled it reports nothing, and [`HwReport::is_hardware`]
-    /// is `false` — so a caller can never read "not yet known" as "yes,
-    /// hardware".
+    /// This is an observation of the pipeline rather than a restatement of
+    /// configuration. Until a frame has prerolled it reports nothing, and
+    /// [`HwReport::is_hardware`] is `false`.
     pub fn hw_report(&self) -> HwReport {
         match &self.backend {
             Backend::Synth(_) => HwReport::default(),
@@ -305,7 +304,7 @@ impl MediaEngine {
         }
     }
 
-    /// Whether this engine is decoding through a real `GStreamer` pipeline (vs.
+    /// Whether this engine is decoding through a `GStreamer` pipeline (vs.
     /// the synthesized fallback).
     pub fn is_real_decode(&self) -> bool {
         match &self.backend {
@@ -315,7 +314,7 @@ impl MediaEngine {
         }
     }
 
-    /// Whether real decode is even compiled into this build.
+    /// Whether the decode backend is compiled into this build.
     pub fn is_decode_compiled() -> bool {
         cfg!(feature = "decode")
     }
@@ -502,8 +501,7 @@ impl MediaEngine {
     }
 
     /// Enumerate audio tracks after the container has exposed them. An empty
-    /// list is an honest result for the synthesized backend and for video-only
-    /// media; it is not an unsupported API.
+    /// list is expected for the synthesized backend and for video-only media.
     pub fn audio_tracks(&self) -> Vec<MediaTrack> {
         match &self.backend {
             Backend::Synth(_) => Vec::new(),
@@ -560,8 +558,8 @@ impl MediaEngine {
     /// tee into a mixer. `None` on the synthesized backend (no audio at all)
     /// and when the audio chain could not be built.
     ///
-    /// Mixing several sources together is the caller's job; this is the point
-    /// where a mixer attaches to one source's output.
+    /// Mixing several sources together is the caller's job; a mixer attaches
+    /// to one source's output here.
     #[cfg(feature = "decode")]
     pub fn audio_sink(&self) -> Option<gstreamer::Element> {
         match &self.backend {
@@ -654,7 +652,7 @@ impl MediaEngine {
     }
 
     /// Test seam: pump the synthesized backend at an explicit virtual `now_ms`
-    /// so event ordering is deterministic without real time. On a real-decode
+    /// so event ordering is deterministic without wall-clock time. On a decode
     /// backend this behaves like [`Self::poll`] (the argument is ignored).
     pub fn poll_at(&mut self, now_ms: u64) -> Vec<MediaEvent> {
         let events = match &mut self.backend {
@@ -748,7 +746,7 @@ struct SynthState {
     /// Position at which `latest` was last generated, so we only re-render the
     /// pattern when the playhead actually moved.
     last_frame_pos: Option<u64>,
-    /// Prefetch progress for a file source (genuine hydration percentage).
+    /// Prefetch progress for a file source.
     prefetch: Option<PrefetchProgress>,
     last_buffering: Option<u8>,
 }
@@ -782,13 +780,13 @@ impl SynthState {
         self.last_frame_pos = None;
         self.last_buffering = None;
         // Derive a plausible placeholder duration from the file size when we
-        // have one (~125 KB/s), clamped to a sane range; real decode replaces
+        // have one (~125 KB/s), clamped to a supported range; decode replaces
         // this entirely. Remote / unknown sources get the default.
         self.duration = source.byte_len().map_or(DEFAULT_SYNTH_DURATION_MS, |b| {
             (b / 125).clamp(3_000, 3_600_000)
         });
-        // Prefetch a file source through the ring so buffering is real
-        // hydration progress. Remote sources have no local reader here.
+        // Prefetch a file source through the ring to report hydration progress.
+        // Remote sources have no local reader here.
         self.prefetch = match source.open_reader() {
             Ok(reader) => {
                 let total = source.byte_len();

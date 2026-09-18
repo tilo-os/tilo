@@ -9,9 +9,9 @@
 //! module is compiled only under `live-media`.
 //!
 //! Capture needs a device (camera) or a live portal (screen), so those
-//! pipelines return `None` when absent and the call falls back to the honest
+//! pipelines return `None` when absent and the call falls back to the
 //! "camera off" / "connecting" placeholder. The codec itself is device-free
-//! and is exercised by a real encode→transport→decode round-trip test against
+//! and is exercised by an encode→transport→decode round-trip test against
 //! [`tilo_callstream`].
 
 use gstreamer as gst;

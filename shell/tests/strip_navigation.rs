@@ -7,8 +7,8 @@
 //! the view travels through focus changes, so a sideways scroll here steps
 //! focus rather than free-panning the canvas.
 //!
-//! The harness builds a real `ShellOverlayHost`/`WorkspaceTree`, runs a
-//! real layout pass, and drives real `WindowEvent`s.
+//! The harness builds a `ShellOverlayHost`/`WorkspaceTree`, runs a layout
+//! pass, and drives `WindowEvent`s.
 
 #![allow(
     clippy::unwrap_used,

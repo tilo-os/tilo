@@ -13,9 +13,8 @@ ignored = ["capnpc"]
 [dependencies]
 format-provider-wit = { path = "../format-provider-wit" }
 
-# Wasmtime 46 ships component-model + the on-disk compilation cache out of the
-# box. We rely on epoch-based interruption + ResourceLimiter for per-call
-# wallclock + memory caps.
+# Use Wasmtime's component model, compilation cache, epoch interruption, and
+# resource limiter for per-call wallclock and memory caps.
 wasmtime = { version = "46", default-features = false, features = [
     "cranelift",
     "component-model",

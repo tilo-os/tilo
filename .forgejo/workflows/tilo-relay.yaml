@@ -47,7 +47,7 @@ jobs:
       - name: Verify the relay-only Compose contract
         run: bash os/containers/tilo-relay/test-contract.sh
 
-      # Login is required on every build now (build-only or push): the
+      # Login is required on every build (build-only or push): the
       # Containerfile FROMs the private frozen RPM repo, which needs
       # registry auth to pull.
       - name: Log in to the code.sandbox.example registry

@@ -122,7 +122,7 @@ impl MlsSnapshotReceipt {
     }
 }
 
-/// Broker-internal MLS membership command. This is deliberately not exposed
+/// Broker-internal MLS membership command. This is not exposed
 /// as a `CollabService` RPC: applications never submit governance commands.
 /// The shell's authenticated workspace authority constructs it from live
 /// membership state and vault-issued handles.
@@ -524,7 +524,7 @@ fn valid_uuid(value: &str) -> bool {
         })
 }
 
-/// A short-lived shell capability naming one picker target. It deliberately
+/// A short-lived shell capability naming one picker target. It
 /// carries no cryptographic peer identity and has no authority outside the
 /// authenticated app connection that received it.
 #[derive(
@@ -635,7 +635,7 @@ pub enum NearbyTransferPhase {
     Cancelled,
 }
 
-/// Bounded status projection. Paths and file contents are deliberately absent:
+/// Bounded status projection. Paths and file contents are absent:
 /// receiver UI needs a portable display name, exact peer and byte progress.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -694,7 +694,7 @@ pub enum NearbyTransferReply {
 
 impl NearbyTransferCommand {
     /// Structural validation shared by clients and the shell broker. This is
-    /// deliberately independent of authorization: the broker must still bind
+    /// independent of authorization: the broker must still bind
     /// the app, source path, transfer id and device to its live route.
     pub fn valid(&self) -> bool {
         match self {
@@ -1270,7 +1270,7 @@ impl ChannelHandle {
     ///
     /// Call this immediately before beginning an invocation. `Found` is the
     /// only outcome that may be used for execution; stale/disconnected rows
-    /// are deliberately not served from a broker cache.
+    /// are not served from a broker cache.
     ///
     /// # Errors
     ///

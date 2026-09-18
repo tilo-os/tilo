@@ -1,4 +1,5 @@
-//! End-to-end pairing check: real `bluetoothd`, real agent, real prompt.
+//! End-to-end pairing check using `bluetoothd`, the pairing agent, and the
+//! prompt UI.
 //!
 //! ```text
 //! cargo run -p shell --example pairing_e2e
@@ -7,18 +8,18 @@
 //! Walks the whole chain the way a pairing does:
 //!
 //! 1. The compositor's [`PairingService`] connects to `BlueZ` and registers the
-//!    agent — the real daemon, not a stub.
+//!    agent.
 //! 2. A **root** process invokes `org.bluez.Agent1.RequestConfirmation`, which
 //!    is the only thing the bus policy permits to drive an agent, and is
 //!    byte-for-byte the call `bluetoothd` makes. The tool re-executes itself
 //!    under `sudo` to play that part.
-//! 3. The question reaches the prompt handle, is rendered by the real
+//! 3. The question reaches the prompt handle, is rendered by
 //!    `PairingPromptView`, and the PNG is written out.
 //! 4. The answer is delivered through the widget's own CRDT key, exactly as a
 //!    click would, and travels back to the caller.
 //!
-//! A tool rather than a test, so it can demand real hardware instead of
-//! skipping. Every step that cannot observe its subject exits non-zero.
+//! This is a tool rather than a test because it requires Bluetooth hardware;
+//! every step that cannot observe its subject exits non-zero.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -100,7 +101,7 @@ async fn bluez_side(unique: &str) -> Result<String, String> {
     reason = "Box<dyn Widget> is !Send by design; run() is only ever awaited in-place, never spawned"
 )]
 async fn run() -> Result<(), String> {
-    // 1. The compositor's service, against the real daemon.
+    // 1. The compositor's service.
     let handle = PairingPromptHandle::new();
     let service = PairingService::start(handle.clone())
         .await
@@ -147,7 +148,7 @@ async fn run() -> Result<(), String> {
         return Err(format!("unexpected prompt: {:?}", request.prompt));
     }
 
-    // 4. Render the real widget for the real request.
+    // 4. Render the widget for the request.
     let out = PathBuf::from(
         std::env::var("PAIRING_E2E_OUT").unwrap_or_else(|_| "target/pairing-e2e.png".to_string()),
     );

@@ -1,8 +1,7 @@
 #!/bin/bash
-# Build the Tilo CUSTOM (self-install) installer: a bootable live qcow2 that runs
-# the Tilo-branded graphical installer (installer/, binary tilo-installer) under
-# cage and installs the booted image onto a target disk. It is the only installer
-# path; the Anaconda ISO it used to sit beside has been retired.
+# Build the Tilo self-install installer: a bootable live qcow2 that runs
+# the graphical installer (installer/, binary tilo-installer) under
+# cage and installs the booted image onto a target disk.
 #
 #   ./os/dev/build-image.sh                 # build + load localhost/tilo first
 #   ./os/dev/build-custom-installer.sh      # -> os/output/installer/qcow2/disk.qcow2

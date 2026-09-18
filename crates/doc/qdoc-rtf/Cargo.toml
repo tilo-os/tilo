@@ -8,8 +8,7 @@ description = "RTF (Rich Text Format) export for qdoc DocSnapshot documents (Til
 
 [dependencies]
 qdoc = { path = "../qdoc" }
-# No new deps: RTF is a plain-text control-word format we emit by hand, matching
-# qdoc-html/qdoc-pdf's "stay lockfile-stable" stance.
+# RTF is emitted directly as a plain-text control-word format.
 
 [lints]
 workspace = true

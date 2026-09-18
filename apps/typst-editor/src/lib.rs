@@ -11,7 +11,7 @@
 //!
 //! The source text is the app's *only* collaborative document state, so there is
 //! nothing structural to migrate onto the resource + action model — see
-//! [`actions`] for the finding and its production-path proof.
+//! [`actions`] for the finding and its action wiring.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -52,7 +52,7 @@ pub mod worker;
 
 use ui::widget::Widget;
 
-/// Build the live app root: it reads the user's real document library from
+/// Build the live app root: it reads the user's document library from
 /// disk and opens (or seeds) an untitled starter document.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(app::TypstApp::new())

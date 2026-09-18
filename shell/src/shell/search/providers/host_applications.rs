@@ -826,7 +826,7 @@ mod tests {
         );
     }
 
-    /// Must surface a visible error, not fail silently. Drives the real
+    /// Must surface a visible error, not fail silently. Drives the
     /// `on_open` closure.
     #[test]
     fn a_failed_launch_pushes_an_error_notification() {

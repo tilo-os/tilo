@@ -9,7 +9,7 @@
 //! small deterministic blob (see [`Collection`]).
 //!
 //! The iroh-blobs-backed adapter lives in the loader (a follow-on
-//! crate), implementing [`BlobStore`] over a real iroh `Store` so a
+//! crate), implementing [`BlobStore`] over an iroh `Store` so a
 //! node can ingest a `.qpkg` and re-serve its blobs to peers.
 
 use std::collections::BTreeMap;

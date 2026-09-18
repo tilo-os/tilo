@@ -1,12 +1,12 @@
 //! A layer: the writable half of the guest's root filesystem.
 //!
-//! A layer is a plain directory owned by the real user, mounted as the
+//! A layer is a plain directory owned by the user, mounted as the
 //! `upperdir` of an `overlayfs` whose `lowerdir` is the host's, so
 //! everything the guest writes to a system path lands here and the host's
 //! own filesystem is never touched.
 //!
-//! Unprivileged overlayfs has two limits that shape this module, both from
-//! the same fact: the guest's user namespace maps only the real user, and
+//! Unprivileged overlayfs has two limits that shape this module. The guest's
+//! user namespace maps only the user, and
 //! host `uid 0` is not in that map, so a capability check against a
 //! root-owned inode fails regardless of what the process holds.
 //!
@@ -21,9 +21,8 @@
 //!   user's own copies ([`STATE_SEED_DIRS`]). This also makes a layer a
 //!   *delta*: `pkg install htop` downloads htop, not glibc.
 //!
-//! The result is a property, not an accident: you can add to the base and
-//! shadow it, but you cannot alter a file that came from the image — the
-//! correct direction of failure on an image-based OS.
+//! A layer can add to or shadow the base, but cannot alter a file that came
+//! from the image.
 
 use std::path::{Path, PathBuf};
 

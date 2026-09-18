@@ -324,7 +324,7 @@ fn running_on_wayland() -> bool {
 ///
 /// Keeps copy → paste round-tripping **within the process** so the shared
 /// caret/clipboard core stays testable headlessly. A silently-working
-/// fallback can mask a genuinely dead clipboard, so every fall-through here
+/// fallback can mask an unavailable clipboard, so every fall-through here
 /// logs once via [`crate::clipboard::warn_fallback_once`].
 fn clipboard_fallback() -> &'static Mutex<(Option<String>, Option<String>)> {
     static FB: OnceLock<Mutex<(Option<String>, Option<String>)>> = OnceLock::new();
@@ -353,7 +353,7 @@ fn write_selection(target: ClipboardTarget, text: &str) {
                     .is_ok()
             }
             // No primary selection outside Linux; the regular clipboard is
-            // the closest honest equivalent.
+            // the closest equivalent.
             #[cfg(not(target_os = "linux"))]
             ClipboardTarget::Primary => handle.set_text(text.to_string()).is_ok(),
         };

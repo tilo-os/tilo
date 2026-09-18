@@ -1,8 +1,7 @@
 # Tilo product vision — apps & system surface
 
-The bar: everything we ship must be **genuinely usable for most users**, not just
-toy/demo use cases. No mock/example data — apps start empty and operate on real
-state. Design is governed by `ui/HIG.md`; per-app open issues are tracked in
+Everything we ship must be usable for most users. Apps start empty and operate
+on user state. Design is governed by `ui/HIG.md`; per-app open issues are tracked in
 the current [`ui-ux-overview.md`](ui-ux-overview.md) release ledger; this
 document is the canonical scope + intent.
 
@@ -55,7 +54,7 @@ the ordering can later become personal as usage history exists.
   - **Decision: bespoke chat + conferencing over MoQ** (not Matrix). Reasoning: we
     already have most of what Matrix buys, and its model (home servers) is
     architecturally incompatible with our ad-hoc P2P + auth model — bolting our auth
-    onto Matrix would be customization hell.
+    onto Matrix would require extensive customization.
   - Chat features: channels tied to workspaces (details TBD); permission-system
     integration; real-time + persistent messages; edits + edit history; emoji
     reactions; full media support (via FUSE fs); FUSE fs file sharing.
@@ -99,8 +98,8 @@ diff/merge tool, text-snippet tool, hex editor.
 - **Software store** — open questions: how does installing work? how are apps
   distributed? role of Flatpaks? how does proper app isolation work?
 - **Remote machines** — start remote desktop sessions (to other Tilo: render locally,
-  stream data only!); VNC + SSH. Goal: seamlessly operate your own NAS/homeserver,
-  which is just another Tilo system running your selected workspaces in a "relay mode."
+  stream data only!); VNC + SSH. Goal: operate your own NAS/homeserver,
+  which runs your selected workspaces in "relay mode."
 - **Backups / snapshots** manager.
 - **ISO / installation creator** — install arbitrary .isos; install Tilo (to USB or
   disk; option to make a USB a permanent install); customizable install options

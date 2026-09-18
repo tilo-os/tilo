@@ -35,7 +35,7 @@ For headless visual review, render one offscreen frame to a PNG:
 ```bash
 cargo run -p notes --release -- --shots out.png --viewport 800x600
 # add `--scenario drawer` to show the open page drawer on a narrow width
-# add `--text-scale 1.5` to review the real large-text layout
+# add `--text-scale 1.5` to review the large-text layout
 # add `--scenario shortcuts` to review the shared keyboard-help dialog
 ```
 

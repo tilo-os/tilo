@@ -32,7 +32,7 @@ reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 rustls.workspace = true
 png.workspace = true
 # Device location through the XDG Location portal (GeoClue2). Runs off the UI
-# thread and reports unavailable/error states without fabricating a position.
+# thread and reports unavailable/error states when no position is available.
 ashpd.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
 futures-util.workspace = true

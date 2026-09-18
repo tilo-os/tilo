@@ -1,17 +1,15 @@
-//! Transport: the real protocol edge of the Mail app.
+//! Transport: the protocol edge of the Mail app.
 //!
 //! ## The offline / online split (important for `--shots`)
 //!
 //! `--shots` runs one headless frame with no event loop and no live account,
 //! so it cannot talk to an IMAP/SMTP server. To still render a fully populated
-//! client we bundle a representative corpus (`sample.rs`) — and that corpus is
-//! not faked structs typed by hand: several messages are authored as raw
-//! RFC 5322 `.eml` blobs and **parsed through `mail-parser`** here, exactly as
-//! incoming server messages would be. So the screenshot exercises the real
-//! parse path.
+//! client we bundle a representative corpus (`sample.rs`). Several messages
+//! are authored as raw RFC 5322 `.eml` blobs and **parsed through
+//! `mail-parser`** here, matching incoming server messages.
 //!
 //! Outgoing mail is built with `mail-builder` ([`build_mime`]), producing a
-//! real multipart RFC 5322 message (headers, text body, and base64 MIME
+//! multipart RFC 5322 message (headers, text body, and base64 MIME
 //! attachments). In the **live** app that byte buffer is handed to an SMTP
 //! transport; here we expose it directly so compose/send is genuinely wired
 //! end to end up to the socket.
@@ -31,9 +29,9 @@
 //!   `smtp_tls`, `AUTH`, then submit the [`build_mime`] buffer.
 //!
 //! Those crates pull a TLS + async stack we deliberately keep out of the
-//! headless build so it stays small and green; the seam is this module, and
-//! the data types ([`AccountConfig`], [`Draft`], [`Message`]) are already the
-//! exact shapes those libraries consume and produce.
+//! headless build; the seam is this module, and the data types
+//! ([`AccountConfig`], [`Draft`], [`Message`]) match those libraries' inputs
+//! and outputs.
 
 use mail_builder::MessageBuilder;
 use mail_parser::{MessageParser, MimeHeaders};

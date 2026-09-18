@@ -37,7 +37,7 @@ pub const FONTS: [&str; 5] = [
 ];
 
 /// Map a font-family name to a [`FontChoice`] the text renderer can shape
-/// with, so the live preview actually re-renders in the chosen family. A
+/// with, so the live preview re-renders in the chosen family. A
 /// monospace or serif family resolves to that generic class (a guaranteed
 /// visible change even when the exact face isn't installed); anything else
 /// targets the named family, falling back to the system sans face.
@@ -468,10 +468,8 @@ pub fn presets() -> Vec<ThemeSpec> {
 }
 
 /// One editable theme for the demo catalog so a `--shots` capture shows the
-/// customizer editing a real custom theme. **Never** seeded into the live
-/// catalog: a fresh install ships the built-in presets (the product's themes)
-/// and no fabricated "your custom theme" — the user authors their own with New
-/// / Duplicate.
+/// customizer editing a custom theme. It is not seeded into the live catalog;
+/// users author their own themes with New / Duplicate.
 pub fn seed_custom() -> ThemeSpec {
     ThemeSpec {
         id: "sunset".to_string(),
@@ -497,9 +495,8 @@ pub fn seed_custom() -> ThemeSpec {
 }
 
 /// The live default catalog: the built-in presets only. These are the OS's
-/// shipped themes (the product), not fabricated user content — an empty theme
-/// picker would be wrong. A fresh install seeds exactly this; the user's own
-/// themes are added by New / Duplicate and persist alongside.
+/// shipped themes. A fresh install seeds exactly this; the user's own themes
+/// are added by New / Duplicate and persist alongside.
 pub fn default_catalog() -> Vec<ThemeSpec> {
     presets()
 }

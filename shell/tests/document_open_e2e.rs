@@ -1,6 +1,6 @@
 //! Opening a document from search, end to end: Super+K, the document's
-//! name, Enter — through a real `ShellOverlayHost`, real layout, real
-//! winit key events, the real search fan-out, `doc_open` routing and
+//! name, Enter — through `ShellOverlayHost`, layout, winit key events, search
+//! fan-out, `doc_open` routing, and
 //! `tilo-launcher` invocation, asserting on the command actually executed.
 //!
 //! Two process-wide env vars make this assertable without a session:

@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """An agent edits a shared document, and the other people see it.
 
-This is the claim the collaboration story rests on, so it is verified
-the only way that means anything: the text is read back out of the
-sessions that did **not** write it.
+The text is read back from sessions that did **not** write it.
 
-Three real compositors, separate identities, separate homes, one room.
+Three compositors with separate identities and homes share one room.
 The third invokes `actions/text.insert` by address with arguments and no
 synthetic input at all — no click, no keystroke. Then ada's and
 bob's own sessions are asked whether that text is in their copy of the
@@ -14,8 +12,7 @@ document.
 The read-back goes through the production search path rather than a
 back door: the text providers match a query against each tab's document
 body (`shell/src/shell/search/providers/text_app.rs`), so a session that
-returns a hit for a token it never typed is a session whose document
-genuinely contains it.
+returns a hit for a token it never typed has that token in its document.
 
 Usage:
   ./agent-collab-proof.py [--keep]

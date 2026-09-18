@@ -616,7 +616,7 @@ mod tests {
         set_x11_unavailable();
     }
 
-    /// The real scan of this machine, not a fixture.
+    /// Scan the host for installed applications.
     #[test]
     fn the_host_scan_returns_entries_with_usable_identities() {
         invalidate_cache();

@@ -630,8 +630,8 @@ mod tests {
         (taffy, node)
     }
 
-    /// Count GLYPH draw-tags in a freshly-drawn scene — proxy for "text was
-    /// actually emitted". A dropped leading Text shows up as zero glyphs.
+    /// Count GLYPH draw-tags in a freshly-drawn scene. A dropped leading Text
+    /// shows up as zero glyphs.
     fn glyph_count(root: &mut dyn Widget) -> usize {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();

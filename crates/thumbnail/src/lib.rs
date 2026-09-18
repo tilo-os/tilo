@@ -1,27 +1,24 @@
-//! Tilo's one shared thumbnail system: generate a small, good-looking, type-
-//! telling preview for a file, cache it content-addressed, and hand it out
-//! off-thread.
+//! Shared thumbnail generation and content-addressed caching for files.
 //!
 //! Three layers, each usable on its own:
 //!
-//! 1. **Generation** ([`generate`], [`pdf`], [`video`], [`epub`]) — decode +
-//!    downscale a real preview for the types worth it (images, PDF first page,
-//!    EPUB cover, video keyframe), or classify anything else into a
-//!    [`FileCategory`] the UI draws an honest **type badge** for. Rich decoders
+//! 1. **Generation** ([`generate`], [`pdf`], [`video`], [`epub`]) — decode and
+//!    downscale previews for images, PDF first pages, EPUB covers, and video
+//!    keyframes, or classify other files into a [`FileCategory`] for a type
+//!    badge. Rich decoders
 //!    are feature-gated (`pdf`, `video`) so the FUSE daemon and hermetic builds
 //!    stay light; images and EPUB covers are always-on pure Rust.
 //! 2. **Cache** ([`ThumbCache`]) — content-addressed (BLAKE3 → PNG) on disk so
 //!    it survives a restart, fronted by a bounded in-memory LRU. Keyed by the
-//!    same hash the Tilo filesystem addresses content by, so previews dedup
-//!    across paths and peers and invalidate for free when a file changes.
+//!    same hash the Tilo filesystem addresses content by, so previews deduplicate
+//!    across paths and peers and a changed file receives a new key.
 //! 3. **Service** ([`ThumbnailService`]) — an off-thread worker pool: request a
-//!    preview, get a placeholder now and the real image on a later frame; a big
-//!    folder never janks because generation is bounded, cached and lazy.
+//!    preview, get a placeholder immediately, and receive the image later.
 //!
 //! The crate is deliberately free of `vello`/`wgpu`/`ui`: it links into the FUSE
 //! filesystem, which must never pull a GPU stack into the OS image. Generation
 //! yields raw RGBA + PNG bytes; the UI layer wraps them in a `peniko::ImageData`
-//! at the edge (see the file manager's adoption).
+//! at the edge.
 
 #![cfg_attr(
     test,

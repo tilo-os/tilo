@@ -147,7 +147,7 @@ impl Widget for Spinner {
         for (i, &alpha) in DOT_ALPHAS.iter().enumerate() {
             // `i` and `DOT_COUNT` are both < 8 (a hard-coded 4-entry alpha
             // ramp), far below f64's exact-integer range (2^53) — this
-            // conversion can never actually lose precision.
+            // conversion cannot lose precision.
             #[allow(
                 clippy::cast_precision_loss,
                 reason = "i and DOT_COUNT are both small, hard-coded constants (DOT_COUNT = 4), far below f64's 2^53 exact-integer range"

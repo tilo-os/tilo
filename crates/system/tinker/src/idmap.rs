@@ -1,17 +1,16 @@
 //! Entering the user namespace a layer's files live in.
 //!
-//! A layer needs more than one uid. The moment a real package manager runs it
+//! A layer needs more than one uid. When a package manager runs it
 //! drops privilege to a service account — apt to `_apt`, rpm scriptlets to
 //! whatever the package asks for — and a namespace that maps only the calling
 //! user turns that into `seteuid 42: Invalid argument`. So a layer session maps
 //! the user's whole subordinate id range, which makes every uid in
-//! `/etc/passwd` inside the layer a real, distinct uid.
+//! `/etc/passwd` inside the layer a distinct uid.
 //!
 //! The consequence is that files in the layer belong to subordinate ids that the
 //! plain host user has no authority over: reading or deleting them from outside
 //! the namespace fails with `EPERM`. Every command that touches a layer's
-//! contents therefore re-executes itself inside the same mapping first. This is
-//! the same trick `podman unshare` performs, for the same reason.
+//! contents therefore re-executes itself inside the same mapping first.
 
 use std::os::unix::process::CommandExt;
 use std::process::Command;

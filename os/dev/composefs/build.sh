@@ -23,7 +23,7 @@ IMAGE="$TILO_CFS_IMAGE:gen$GEN"
 
 mkdir -p "$TILO_CFS_RUN"
 
-# Everything the probe shares with the real image is copied in at build time, not
+# Everything the probe shares with the desktop image is copied in at build time, not
 # duplicated in this directory, so the probe cannot drift from what Tilo ships.
 cp -f "$TILO_OS_DIR/usr/lib/bootc/kargs.d/01-hardening.toml" "$HERE/01-hardening.toml"
 # The mode karg is what makes repair mode selectable at all, and the probe is

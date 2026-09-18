@@ -2,7 +2,7 @@
 
 This note is the runtime truth for the singleton Windows appliance. It is
 intentionally narrower than the Windows Apps product flow: it describes what
-the host and guest presentation stack actually enforce.
+the host and guest presentation stack enforce.
 
 ## Selection
 
@@ -86,7 +86,7 @@ The manager receives a server-derived `VmSharedSessionLeaseSummary` inside
 `effective_grants` list, and active contributors identified by authenticated
 guest publication ID and display name. The summary is recorded from the
 capability broker's materialized result, not client input. This reflects the
-real security boundary: Windows applications in one user/session can see the
+security boundary: Windows applications in one user/session can see the
 session-wide union of redirects and are not mutually isolated.
 
 SPICE remains stricter. Libvirt blocks SPICE clipboard and file transfer in

@@ -15,19 +15,11 @@ name = "flatpak-share-demo"
 path = "src/bin/flatpak-share-demo.rs"
 
 [dependencies]
-# The library is deliberately dependency-light: stdlib + tracing spans so
-# callers that only want the shim don't pay for encode/decode/font
-# machinery. The demo binary sits in the same crate but pulls in the real
-# shell types (encoder/decoder/SharedFlatpakSession) + a font rasteriser
-# so the "wired against production types" contract holds.
+# The library uses only the standard library and tracing. The demo binary also
+# depends on the shell's encoder/decoder types and a font rasteriser.
 tracing.workspace = true
 
-# Demo-only dependencies. Kept in `[dependencies]` (not gated behind a
-# feature) because the whole crate lives in the Tilo workspace: `shell` is
-# built anyway, and cargo dedupes so there's no marginal cost. Downstream
-# consumers of the library who don't want the demo can depend on this
-# crate with `default-features = false` — but the practical case is that
-# nothing outside this workspace will pull it.
+# Demo-only dependencies. The demo and library share this workspace crate.
 shell = { path = "../../../shell", default-features = false }
 ab_glyph = "0.2"
 tracing-subscriber = { workspace = true, features = ["registry", "fmt", "env-filter"] }

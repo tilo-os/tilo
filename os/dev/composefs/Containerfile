@@ -1,14 +1,12 @@
 # composefs-backend + UKI probe image.
 #
-# A deliberately thin image: the Tilo *boot chain* pieces that the composefs
-# question turns on (hardening kargs, a generation number on the measured
+# A deliberately thin image containing the Tilo *boot chain* pieces used by the
+# composefs probe (hardening kargs, a generation number on the measured
 # command line, the bounded-rollback machinery that binds to it, systemd-boot, no
-# bootupd) on top of the same digest-pinned Fedora bootc base the real image uses
-# — and nothing else. The full Tilo
-# rootfs takes ~25 minutes to build and none of it participates in the
-# mechanism under test, so building it three times to prove an update series
-# would only slow the answer down. os/dev/composefs/build-tilo.sh does the real
-# image once the mechanism is settled.
+# bootupd) on top of the same digest-pinned Fedora bootc base the desktop image uses
+# — and nothing else. The full Tilo rootfs takes ~25 minutes to build and none
+# of it participates in the mechanism under test. os/dev/composefs/build-tilo.sh
+# builds the desktop image once the mechanism is settled.
 #
 # Build with os/dev/composefs/build.sh (it passes BASE_REF and GENERATION).
 #
@@ -21,7 +19,7 @@ ARG BASE_REF
 ARG RPMS_REF
 ARG GENERATION=1
 # Whether the generation number reaches the sealed command line at all. Always 1
-# for a real image; 0 builds the negative control — a UKI that measures perfectly
+# for a built image; 0 builds the negative control — a UKI that measures perfectly
 # but carries no generation — so that a check reporting the generation as measured
 # can be shown to fail when it is not there. A check that only ever passes is not
 # evidence.
@@ -33,7 +31,7 @@ FROM ${BASE_REF} AS rootfs
 ARG GENERATION
 
 # systemd-boot comes out of the digest-pinned RPM snapshot, not the network, so
-# this stage builds the same way the real Tilo image does — and stays buildable
+# this stage builds the same way the desktop image does — and stays buildable
 # when Fedora's `updates` metalink is serving repodata checksums that 404 on
 # every mirror, which is a state it does reach.
 #
@@ -54,7 +52,7 @@ RUN rpm -e --nodeps bootupd \
     && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
     && (rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps)
 
-# Tilo's real hardening kargs, unmodified. This is the file whose contents have
+# Tilo's hardening kargs, unmodified. This is the file whose contents have
 # to reach the *measured* command line for the rollback design to work.
 COPY 01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
 # And the mode karg, likewise unmodified. `tilo.mode=repair` on a sealed command
@@ -86,7 +84,7 @@ RUN printf '%s\n' \
         ']' > /usr/lib/bootc/kargs.d/03-spike.toml
 
 # btrfs root (matching Tilo) and systemd-boot, both through the same install
-# drop-in mechanism the real image uses.
+# drop-in mechanism the desktop image uses.
 RUN printf '%s\n' '[install]' 'bootloader = "systemd"' \
         > /usr/lib/bootc/install/40-tilo.toml \
     && printf '%s\n' '[install.filesystem.root]' 'type = "btrfs"' \
@@ -104,9 +102,9 @@ RUN useradd -m -G wheel tester \
         > /etc/ssh/sshd_config.d/01-spike.conf
 
 # The consumer of that measured generation: Tilo's bounded-rollback machinery,
-# copied from the real image rather than reimplemented, so that
+# copied from the desktop image rather than reimplemented, so that
 # os/tests/rollback-boot-check.sh runs here against the same files it will run
-# against on a real install. Without it the boot-side check can only report the
+# against an install. Without it the boot-side check can only report the
 # tooling as missing, which says nothing about whether the measurement works.
 #
 # One COPY, not eight: each layer commit here rewrites a 2.3 GB rootfs through

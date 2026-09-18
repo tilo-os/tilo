@@ -4,7 +4,7 @@
 //! / selection / clipboard / undo / IME / a11y implementation, a line-number
 //! gutter, and Typst syntax highlighting supplied by the toolkit's built-in
 //! `Language::Typst` highlighter. This module is now a thin shell that owns that
-//! widget and adds only what is genuinely Typst-editor-specific: the inline
+//! widget and adds the Typst-editor-specific pieces: the inline
 //! compiler-diagnostic overlay (gutter severity markers, wavy squiggles under
 //! error spans, and the hover tooltip), rendered on top of the shared editor
 //! using its public geometry.

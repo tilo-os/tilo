@@ -1,6 +1,6 @@
 //! Encrypted portable backups of a single-device identity.
 //!
-//! Runtime identity metadata intentionally omits the signing secret after it
+//! Runtime identity metadata omits the signing secret after it
 //! is secured in Secret Service or the broker-file fallback.  A portable
 //! backup therefore has to run inside this crate: it can authenticate the
 //! metadata, retrieve the provider-held secret, and immediately seal the
@@ -118,7 +118,7 @@ pub fn verify_portable_backup(
 /// straight to [`super::import_identity`], which validates and moves its key
 /// back into the configured secret provider.
 ///
-/// This is intentionally the only restoration API: callers can restore an
+/// This is the only restoration API: callers can restore an
 /// identity but cannot ask this crate to hand them a raw signing share.
 ///
 /// # Errors

@@ -705,9 +705,8 @@ pub fn top_bar(
 }
 
 /// Live-vs-sample provenance pill. A green dot + "Live" once the rustypipe
-/// backend has actually returned real data; a dim "Sample" (or "Connecting…")
-/// otherwise, so the user always knows whether the catalogue on screen is real
-/// `YouTube` data or the bundled offline sample.
+/// backend has returned data; a dim "Sample" (or "Connecting…") otherwise,
+/// so the user can distinguish `YouTube` data from the bundled offline sample.
 fn data_source_pill(theme: &Theme, model: &TubeModel) -> Flex {
     let live = model.data_source.live;
     let (dot, fg, label) = if live {
@@ -793,8 +792,8 @@ fn scroll(content: Flex) -> Scrollable {
 }
 
 pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Scrollable {
-    // Cold start shows a skeleton (loading) or an honest empty state — never a
-    // fabricated sample catalogue presented as real. Real cards only.
+    // Cold start shows a skeleton (loading) or an empty state. Cards are added
+    // when catalogue data arrives.
     let body = if model.videos.is_empty() {
         if model.feed_loading {
             skeleton_grid(theme, 12)

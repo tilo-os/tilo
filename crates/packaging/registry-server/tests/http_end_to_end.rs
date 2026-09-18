@@ -1,5 +1,5 @@
-//! End-to-end HTTP tests — spin up a real registry-server bound
-//! to an ephemeral port, drive it with reqwest exactly as an
+//! End-to-end HTTP tests — start the registry server on an ephemeral
+//! port, drive it with reqwest as an
 //! on-device client would, and assert the wire behaviour.
 //!
 //! These tests verify the whole loop: signature construction ↔

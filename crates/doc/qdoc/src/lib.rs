@@ -1,9 +1,8 @@
-//! `qdoc` — the CRDT-native canonical document model and format-provider API.
+//! `qdoc` — the CRDT-native document model and format-provider API.
 //!
-//! Layer 1 (generic): a file is an automerge document; this crate provides the
-//! `FormatProvider` contract + registry. Layer 2 (standard schema): the rich-text
-//! `Document` model that md/odt/docx map onto. See
-//! `docs/superpowers/specs/2026-06-24-crdt-native-file-formats-design.md`.
+//! A file is an Automerge document. This crate provides the `FormatProvider`
+//! contract and registry, plus the rich-text `Document` model used by the
+//! Markdown, ODT, and DOCX codecs.
 
 #![cfg_attr(
     test,

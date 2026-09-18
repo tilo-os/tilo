@@ -560,7 +560,8 @@ fn bring_up_portal(
         grants,
         prompts: portal_prompts,
         caller_map: crate::portal::CallerMap::new(),
-        // The real dialog, not the null spawner: hosted mode has a chrome to render it in, so there's no reason to cancel every request.
+        // Hosted mode has chrome to render the dialog, so keep requests
+        // active instead of cancelling them.
         file_picker: crate::portal::FilePickerSpawnerHandle::new(std::sync::Arc::new(
             portal_pickers,
         )),

@@ -97,7 +97,7 @@ impl ConnectionKind {
         ]
     }
 
-    /// Whether Tilo can genuinely open this transport today.
+    /// Whether Tilo can open this transport today.
     pub fn is_supported(self) -> bool {
         matches!(
             self,
@@ -167,7 +167,7 @@ impl AuthMethod {
         ]
     }
 
-    /// Authentication methods that the selected protocol can actually use.
+    /// Authentication methods supported by the selected protocol.
     ///
     /// This keeps the form from advertising a credential shape that the live
     /// transport would silently ignore or reinterpret.

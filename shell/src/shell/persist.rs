@@ -89,7 +89,7 @@ fn leave_notice_beside_the_file(state: &Path, notice: &StateNotice) {
 /// `TILO_STATE_PATH` overrides it. Anything driving a compositor that
 /// isn't the user's own session must set it — `dirs::config_dir()`
 /// **ignores a relative `XDG_CONFIG_HOME`**, so a harness isolating
-/// itself with a relative path writes into the real
+/// itself with a relative path writes into the user's
 /// `~/.config/tilo/state.json` instead.
 pub fn state_json_path() -> PathBuf {
     if let Ok(v) = std::env::var("TILO_STATE_PATH")

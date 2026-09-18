@@ -5,8 +5,8 @@
 //!
 //! The readings themselves come from `UPower`'s composite *display device*
 //! (see [`super::upower`]); this module never touches the bus. Feeding it
-//! fixture snapshots is exactly what the real service does with real
-//! readings, so the tested logic *is* the production logic.
+//! Feeding fixture snapshots through the same monitor logic keeps the tests
+//! aligned with the service.
 
 use crate::policy::{PowerAction, PowerPolicy};
 

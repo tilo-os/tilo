@@ -1363,7 +1363,7 @@ pub fn build_tilo_overlay_host_with_records(
     build_tilo_overlay_host_with_inputs(tree_handle, enable_peer_sync, records, inputs)
 }
 
-/// Build the real shell tree with host-provided app startup data, retained for tile rebuilds.
+/// Build the shell tree with host-provided app startup data, retained for tile rebuilds.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "Keep the shared-tree construction signature aligned with the existing owned-handle public entry points."

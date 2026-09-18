@@ -1,11 +1,11 @@
 //! Integration tests exercising `tilo-install runtime …` via the built
 //! CLI binary.
 //!
-//! We use a fake `XDG_DATA_HOME` so each test operates on an isolated
-//! bundle store — no side effects on the user's real
+//! Each test uses an isolated `XDG_DATA_HOME` bundle store, with no side
+//! effects on the user's
 //! `$XDG_DATA_HOME/tilo-runtime/`.
 //!
-//! `--from` points the bundle producer at a fake host root we
+//! `--from` points the bundle producer at a fixture host root we
 //! populate with stub loader / libc files so the tests don't depend on
 //! the runner's actual `/lib64` layout.
 

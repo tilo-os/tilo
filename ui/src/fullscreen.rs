@@ -9,9 +9,9 @@
 //! without a live window.
 //!
 //! A headless session or a compositor which cannot expose its output globals
-//! yields an empty monitor list; that degrades to `Borderless(None)` — still
-//! real fullscreen, just compositor-placed. Multi-output presentation is
-//! activated only after a distinct monitor is actually enumerated.
+//! yields an empty monitor list; that degrades to `Borderless(None)`, placed by
+//! the compositor. Multi-output presentation is activated only after a distinct
+//! monitor is enumerated.
 
 /// Which output an app wants its fullscreen surface promoted onto.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -137,7 +137,7 @@ pub fn select_output(monitors: &[MonitorInfo], target: FullscreenTarget) -> Opti
 }
 
 /// Pick an audience display which is *not* the display containing the
-/// presenter window. `None` means that there is no honest second output.
+/// presenter window. `None` means that no second output is available.
 ///
 /// An explicit request for the presenter's own output is rejected rather than
 /// silently putting a second surface on top of the dashboard. For broad

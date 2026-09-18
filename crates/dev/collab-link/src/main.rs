@@ -1,6 +1,5 @@
-//! `tilo-collab-link` — a configurable-latency / throughput proxy in front
-//! of the Tilo collab broker socket, for testing collaboration under
-//! realistic network conditions on a single machine.
+//! `tilo-collab-link` is a configurable-latency and throughput proxy in front
+//! of the Tilo collaboration broker socket.
 //!
 //! ```text
 //!     notes (alice) ─────►┐

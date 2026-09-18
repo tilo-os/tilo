@@ -3,7 +3,7 @@
 `development-compile.yml` is a manual, feature-branch-only x86-64 job. Its default
 `cache-only` mode tests remote compiler-cache access and stops before creating
 signing identities or compiling the OS. Select `full-build` explicitly to invoke
-the actual `os/dev/build-image.sh` development path with browser support enabled
+the `os/dev/build-image.sh` development path with browser support enabled
 and all applications and desktop components compiled from source. Supply the
 reviewed immutable x86-64 WPE buildroot candidate, its completed WPE stage JSON
 receipt and an explicit positive test generation. The committed base, RPM
@@ -30,7 +30,7 @@ transport run 7030 proved cold registry restoration, payload-only projection
 and skipping the original build stage on ARM and x86-64 using synthetic ELF
 payloads; it did not compile or exercise WebKit.
 
-After a successful real producer run, supply the public `wpe-stage.json` contents
+After a successful producer run, supply the public `wpe-stage.json` contents
 as `wpe_stage_receipt` to `development-compile.yml`. Keep its matching buildroot
 as `wpe_candidate`. A normal application change can reuse the completed stage;
 the consumer validates the current dependency hashes before accepting it.
@@ -40,26 +40,26 @@ Credentials enter through secret mounts, never build arguments or image layers.
 Run 7000 verified a remote hit after restarting the cache server with an empty
 local cache, plus invalidation after changing a tracked compiler input. Its
 11.85-second duration measures that tiny probe, not OS compilation. Inspect the
-nested build's own sccache statistics to assess actual Rust reuse.
+nested build's own sccache statistics to assess Rust reuse.
 
 The WPE producer has a separate native Buildah registry cache and stable dependency
 epoch. Source commits and development signing identities do not change that
 epoch; recipe, asset and dependency changes still invalidate the stage. Both
 native architectures passed fresh-store reuse and invalidation fixtures in run
 6992. The full build uses the resulting immutable local stage ID. This proves
-the cache mechanism; actual WebKit compilation and its warm duration remain to
+the cache mechanism; WebKit compilation and its warm duration remain to
 be measured. The completed artifact contains only `/wpe`, so consumer pulls do
 not transfer the producer's compiler and intermediate build layers. Its receipt
 binds architecture, pinned buildroot, dependency epoch, recipe and source archive
 hashes; unrelated application changes reuse that artifact. The recipe key
-currently conservatively includes the entire OS Containerfile.
+conservatively includes the entire OS Containerfile.
 
 Build logs report individual phase durations and compiler-cache statistics,
 including on failure. Missing Rust outputs fail with their names instead of
 triggering another complete compile. The full-build path stops at the raw-rootfs
 handoff and retains it before signing and sealing. Run 7025 passed the native
 registry, signature and historical-layer audit fixtures on both architectures.
-Each real build must independently pass the scoped layer audit before publishing
+Each build must independently pass the scoped layer audit before publishing
 to `code.sandbox.example/qos/tilo-development-rootfs`. Publication uses registry layer
 deduplication instead of creating a second on-disk image archive. The audit scans
 all historical layers for the supplied private material and PEM private keys;
@@ -87,7 +87,7 @@ uses two build jobs, WPE is imported, and receipts record the visible cgroup/gue
 limits and peak. A storage abort is a failed experiment, never a reason to
 disable the browser or publish an incomplete image.
 
-`admission-capacity.json` records the actual free, used and total bytes of both
+`admission-capacity.json` records the free, used and total bytes of both
 private backing filesystems before input pulls and compilation. It is retained
 even when admission or a later preflight fails; `capacity.json` starts only when
 the compilation process starts. Neither receipt proves that a future build fits.
@@ -98,7 +98,7 @@ job container, so the job's own limit does not constrain it. This ceiling leaves
 an engineering margin within the selected class's 10 GiB DinD budget; it is not
 a measured peak or proof that the build fits. The workflow wrapper and any
 other nested containers share that outer budget. Memory receipts record the
-tools container's actual cgroup limit and peak for subsequent sizing decisions.
+tools container's cgroup limit and peak for subsequent sizing decisions.
 
 This is compilation evidence, **not an installation image**. The retained rootfs
 is unsealed. The job creates no disk, performs no VM acceptance and allocates no

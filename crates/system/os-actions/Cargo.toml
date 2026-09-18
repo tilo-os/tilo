@@ -35,8 +35,8 @@ tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "time"] }
 zbus = { version = "4", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
-# Fixture sysfs trees, so the backlight reader/writer is tested against
-# real directory layouts rather than a mocked filesystem.
+# Fixture sysfs trees for testing the backlight reader/writer against
+# representative directory layouts.
 tempfile = { workspace = true }
 
 [lints]

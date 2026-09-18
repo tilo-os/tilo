@@ -1,10 +1,8 @@
 //! Choosing *which* exported action answers an instruction.
 //!
-//! Everything else the agent does is already real: it holds a live replica of
-//! the same document everyone else has, edits it through the word processor's
-//! own exported actions under its own actor, and shows up attributed in the
-//! history strip. The one thing that was scripted is the decision — which
-//! action to take — and that is what this module hands to a model.
+//! The agent holds a live replica of the shared document, edits it through the
+//! word processor's exported actions under its own actor, and appears in the
+//! history strip. This module supplies the decision about which action to take.
 //!
 //! The shape is deliberately narrow, because the narrowness is the point:
 //!

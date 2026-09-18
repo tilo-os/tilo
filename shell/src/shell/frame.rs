@@ -332,7 +332,7 @@ pub struct FrameBuilder {
     /// tree. Its widget only mirrors pixels; protocol trust lives in State.
     osk_overlay: Option<ForeignSurfaceWidget>,
     /// Authenticated app-owned call/navigation toplevels. Like the OSK these
-    /// are real client buffers outside the workspace tree, but each carries
+    /// are client buffers outside the workspace tree, but each carries
     /// its own desktop placement and native input target.
     floating_overlays: Vec<(u64, ForeignSurfaceWidget)>,
     /// Per-output fullscreen client painted above the unchanged tiled scene.
@@ -3080,7 +3080,7 @@ mod tests {
     /// A window from a peer must reach the widget tree, not just the
     /// workspace tree: peer-sync writes the tree from the network thread,
     /// which can't bump the chrome revision `resync_strips_from_tree` gates
-    /// its rebuild on. Drives the real ingest and per-frame pump.
+    /// its rebuild on. Drives the ingest and per-frame pump.
     #[test]
     fn a_peers_changes_landing_make_the_frame_rebuild() {
         use crate::shell::state::PeerOrigin;
@@ -3177,8 +3177,8 @@ mod tests {
 
     /// The top bar's workspace chevrons follow the *live* active workspace:
     /// the bar refreshes `workspace_index` in `Widget::update` when the
-    /// chrome revision bumps. Drives the real per-frame path (`pump_apps` →
-    /// paint) and reads chevron state the way a scenario would.
+    /// chrome revision bumps. Drives the per-frame path (`pump_apps` → paint)
+    /// and reads chevron state the way a scenario would.
     #[test]
     fn topbar_workspace_chevrons_track_the_live_active_workspace() {
         let mut fb = FrameBuilder::new((1600, 900));
@@ -3289,7 +3289,7 @@ mod tests {
     /// A group promoted to fullscreen absorbs the whole output (top bar
     /// collapses, the strip's rect rises and spans the width), and clearing
     /// it restores the exact prior layout — the compositor-scene half of the
-    /// fullscreen contract, driven through the real
+    /// fullscreen contract, driven through the
     /// `FrameBuilder::set_fullscreen` → `ChromeState` → overlay-host path.
     #[test]
     fn set_fullscreen_promotes_group_and_restores_on_exit() {

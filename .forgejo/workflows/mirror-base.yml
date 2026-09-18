@@ -5,15 +5,14 @@ name: Snapshot / Fedora base
 # this one freezes the base underneath it — together they are what makes a
 # rebuild months later produce the same image.
 #
-# Why mirror at all: Fedora rebuilds the fedora-bootc tag daily and garbage-
-# collects the manifest it replaces almost immediately, so a
+# Fedora rebuilds the fedora-bootc tag daily and garbage-collects the manifest
+# it replaces almost immediately, so a
 # `FROM quay.io/fedora/fedora-bootc@sha256:…` pin stops resolving after about a
-# day ("manifest unknown") and every image build fails at its first FROM. Our
-# registry collects nothing, so the pin stays real.
+# day ("manifest unknown") and every image build fails at its first FROM. The
+# mirror retains the manifest so the pin remains resolvable.
 #
-# Manual dispatch: refreshing the base must be a deliberate act, not drift. The
-# job prints the new BASE_REF; commit it to os/base-snapshot.env (a normal
-# PR/commit) and every image build picks it up.
+# Manual dispatch refreshes the base. The job prints the new BASE_REF; commit it
+# to os/base-snapshot.env and every image build picks it up.
 on:
   workflow_dispatch:
 

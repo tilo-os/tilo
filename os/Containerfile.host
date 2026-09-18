@@ -121,7 +121,7 @@ RUN mkdir -p /etc/tilo \
         > /etc/tilo/enrollment-token.txt
 
 # Default relay config; `tilo-relay init` inside the first-boot
-# service writes a real one under `/etc/tilo/relay.toml` once the
+# service writes the configuration under `/etc/tilo/relay.toml` once the
 # enrollment completes.
 RUN mkdir -p /etc/tilo \
     && printf 'identity_root = "/var/lib/tilo"\nstate_root = "/var/lib/tilo-relay"\niroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\n' \
