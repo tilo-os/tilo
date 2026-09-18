@@ -102,6 +102,7 @@ members = [
     "crates/collab/reference",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
+    "crates/collab/tilo-user-identity",
 
     # Dev
     "crates/dev/collab-link",
@@ -124,9 +125,6 @@ members = [
 
     # Hosting
     "crates/hosting/tilo-relay",
-
-    # Identity
-    "crates/identity/tilo-user-identity",
 
     # Media
     "crates/media/core",
