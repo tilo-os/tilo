@@ -117,9 +117,9 @@ class MountedInventoryTests(unittest.TestCase):
 class SignedFixtureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        missing = [tool for tool in ('openssl', 'sbsign', 'sbverify') if not shutil.which(tool)]
-        if missing or not hasattr(os, 'getuid') or os.getuid() != 0:
-            reason = 'real EFI signature fixture requires root and openssl/sbsign/sbverify'
+        missing = [tool for tool in ('cosign',) if not shutil.which(tool)]
+        if missing or not Path('/usr/local/bin/tilo-crypto').is_file():
+            reason = 'real EFI signature fixture requires cosign and host tilo-crypto'
             if os.environ.get('TILO_REQUIRE_BOOT_SIGNATURE_FIXTURE') == '1':
                 raise RuntimeError(reason)
             raise unittest.SkipTest(reason)
@@ -127,8 +127,9 @@ class SignedFixtureTests(unittest.TestCase):
         if cls.architecture not in boot.loader.MACHINES:
             raise RuntimeError('real signature fixture requires native x86_64 or aarch64')
 
-    def command(self, *args):
-        subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    def command(self, *args, env=None):
+        subprocess.run(args, check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, env=env)
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='tilo-synthetic-uki-')
@@ -141,17 +142,25 @@ class SignedFixtureTests(unittest.TestCase):
         generation.parent.mkdir(parents=True)
         generation.write_text('7\n')
         self.key, self.cert = self.work / 'efi.key', self.work / 'efi.crt'
-        self.command('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
-                     '-subj', '/CN=Tilo Nonbootable UKI Fixture/', '-keyout', str(self.key), '-out', str(self.cert))
+        self.command('/usr/local/bin/tilo-crypto', 'generate-secure-boot-cert',
+                     'Tilo Nonbootable UKI Fixture', str(self.key), str(self.cert))
         public = self.work / 'public.pem'
-        self.command('openssl', 'pkey', '-in', str(self.key), '-pubout', '-out', str(public))
+        self.command('/usr/local/bin/tilo-crypto', 'rsa-public-key', str(self.key), str(public))
+        cosign_prefix = self.work / 'cosign'
+        environment = os.environ.copy()
+        environment['COSIGN_PASSWORD'] = ''
+        self.command('cosign', 'generate-key-pair', '--output-key-prefix', str(cosign_prefix),
+                     env=environment)
         owner = self.work / 'owner.pub'
         owner.write_text('ab' * 32 + '\n')
         self.bundle = self.work / 'bundle'
-        self.manifest = boot.trust.create([public, public, self.cert, owner], self.bundle)['manifest_sha256']
+        self.manifest = boot.trust.create(
+            [Path(str(cosign_prefix) + '.pub'), public, self.cert, owner],
+            self.bundle)['manifest_sha256']
         unsigned = self.work / 'unsigned.efi'
         unsigned.write_bytes(synthetic_uki(self.architecture))
-        self.command('sbsign', '--key', str(self.key), '--cert', str(self.cert), '--output', str(self.live), str(unsigned))
+        self.command('/usr/local/bin/tilo-crypto', 'sign-efi', str(self.key), str(self.cert),
+                     str(unsigned), str(self.live))
 
     def validate(self):
         return boot.validate_mounted_boot(self.root, self.bundle, self.manifest, self.architecture, 7, SEAL)
@@ -178,10 +187,12 @@ class SignedFixtureTests(unittest.TestCase):
 
     def test_wrong_certificate_is_rejected(self):
         wrong_key, wrong_cert = self.work / 'wrong.key', self.work / 'wrong.crt'
-        self.command('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
-                     '-subj', '/CN=Wrong Fixture/', '-keyout', str(wrong_key), '-out', str(wrong_cert))
+        self.command('/usr/local/bin/tilo-crypto', 'generate-secure-boot-cert',
+                     'Wrong Fixture', str(wrong_key), str(wrong_cert))
         unsigned = self.work / 'unsigned.efi'
-        self.command('sbsign', '--key', str(wrong_key), '--cert', str(wrong_cert), '--output', str(self.live), str(unsigned))
+        self.live.unlink()
+        self.command('/usr/local/bin/tilo-crypto', 'sign-efi', str(wrong_key), str(wrong_cert),
+                     str(unsigned), str(self.live))
         with self.assertRaises(ValueError):
             self.validate()
 
