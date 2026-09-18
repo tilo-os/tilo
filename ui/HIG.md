@@ -682,6 +682,26 @@ A declared border or ramp token (`border_standard`, `border_strong`,
 `tests/design_token_audit.rs::declared_borders_in_chrome_do_not_grow` ratchets
 their count against `tests/chrome_declared_border_baseline.txt`.
 
+**One painter per row of that table.** `ui::surface::card(fill)` is the edged
+opaque surface; `ui::surface::panel(theme)` is the Panel row (`panel_ground`
+fill + `panel_border`) so no app spells the pair; `ui::surface::card_on(fill,
+ground)` is for a translucent wash (an accent tint, a hover film) — the edge
+derives from what the eye sees, the wash composited over its ground, because a
+hairline judged by a 16 % wash's own RGB flips polarity on light and vanishes.
+`edge_on` assumes an opaque fill. All three snap their rect to whole logical
+pixels and `separator` lands on one device-pixel row (`separator_rect`): a 1 px
+edge on a fractional coordinate is two half-covered rows that fall under
+`HAIRLINE_MIN_DELTA` even when the colour registers.
+
+**Selection lifts from the ground it sits on.** `chrome::selection_tier` measures
+its lift against `surfaces.base`; a row on `panel_ground`, a raised sidebar or a
+card is within rounding distance of that lift on dark and high-contrast (Δ
+0.008 / 0.002). Use `chrome::selection_tier_on(theme, state, ground)` there — it
+keeps the base lift where it registers and otherwise walks `LIFT_ALPHA_STEPS`
+until the active fill clears the ground by `HAIRLINE_MIN_DELTA`, with hover
+halfway between. The same rule for one control never yields a different fill
+depending on which panel hosts it, because the ground is the input.
+
 ### 9.6 Type and density
 
 Chrome type is a **compressed** version of the app scale — chrome labels a thing,
