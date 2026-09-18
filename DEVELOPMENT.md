@@ -374,7 +374,10 @@ Unicode Windows paths. Its encrypted vault lives under
 `%LOCALAPPDATA%/tilo-authenticator` unless `XDG_DATA_HOME` overrides it. Windows
 protects the vault key with current-user DPAPI and a private file ACL; it does
 not fall back to a plaintext key. A private legacy key is migrated only after
-the protected replacement has been read back and verified. A missing or corrupt
+the protected replacement has been read back and verified. Reopening finishes
+interrupted plaintext-key cleanup only after the keys match and any existing
+vault authenticates; conflicting material and failed deletions require recovery.
+A missing or corrupt
 key or vault produces a recovery banner and prevents writes until access is
 restored and the app restarted. DPAPI custody is tied to the Windows user
 profile; copying the vault files is not a portable account export.
