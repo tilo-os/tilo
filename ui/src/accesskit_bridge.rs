@@ -642,6 +642,28 @@ pub fn build_tree_update_with_resources<S: BuildHasher>(
 ) -> TreeUpdate {
     build_tree_update_with_resources_impl::<S, false>(root, node_map, focused, scale, resources)
 }
+
+/// Adapt the redacted semantic tree to native-provider requirements.
+/// AccessKit Windows 0.35 offers IValueProvider only when a node has a value.
+/// A fixed empty placeholder enables SetValue on password fields without
+/// disclosing their text, length, selection, or whether they contain anything.
+/// The shared semantic tree continues to carry no password value at all.
+pub(crate) fn native_tree_update(update: TreeUpdate) -> TreeUpdate {
+    #[cfg(windows)]
+    {
+        let mut update = update;
+        for (_, node) in &mut update.nodes {
+            if node.role() == AkRole::PasswordInput {
+                node.set_value("");
+            }
+        }
+        update
+    }
+    #[cfg(not(windows))]
+    {
+        update
+    }
+}
 /// Host traversal retaining the originating component through every callback.
 pub(crate) fn build_tree_update_with_resources_bound<S: BuildHasher>(
     root: &dyn Widget,
@@ -1019,6 +1041,9 @@ fn apply_synthetic_bounds(ak: &mut AkNode, access: &AccessNode, scale: f64) {
 /// The widget-independent half of [`apply_semantics`], also shared with
 /// [`visit_synthetic`] (table rows/cells), which has no geometry.
 fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
+    if access.state.protected && matches!(access.role, Role::TextInput | Role::MultilineTextInput) {
+        ak.set_role(AkRole::PasswordInput);
+    }
     if let Some(name) = &access.name {
         ak.set_label(name.clone());
     }
@@ -1765,6 +1790,7 @@ mod tests {
     fn protected_value_is_never_exposed() {
         let pw = TestWidget::new(Some(
             AccessNode::new(Role::TextInput)
+                .with_name("Protected input")
                 .with_value("hunter2")
                 .with_state(AccessState::new().protected(true)),
         ));
@@ -1774,13 +1800,44 @@ mod tests {
         let (_, node) = update
             .nodes
             .iter()
-            .find(|(_, n)| n.role() == AkRole::TextInput)
+            .find(|(_, n)| n.label() == Some("Protected input"))
             .unwrap();
+        assert_eq!(node.role(), AkRole::PasswordInput);
         assert_eq!(
             node.value(),
             None,
             "protected value must not leak to the AT"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_password_entry_uses_only_a_fixed_empty_placeholder() {
+        for secret in ["", "hunter2", "a much longer password"] {
+            let mut root = TestWidget::new(Some(
+                AccessNode::new(Role::TextInput)
+                    .with_name("Secret")
+                    .with_value(secret)
+                    .with_state(AccessState::new().protected(true)),
+            ));
+            let (_, node_map, _) = lay_out(&mut root);
+            let semantic = build_tree_update(&root, &node_map, None, 1.0);
+            assert!(
+                semantic
+                    .nodes
+                    .iter()
+                    .all(|(_, node)| node.value().is_none())
+            );
+            let native = native_tree_update(semantic);
+            let (_, password) = native
+                .nodes
+                .iter()
+                .find(|(_, node)| node.role() == AkRole::PasswordInput)
+                .unwrap();
+            assert_eq!(password.value(), Some(""));
+            assert!(password.supports_action(AkAction::SetValue));
+            assert!(password.children().is_empty());
+        }
     }
 
     #[test]

@@ -340,6 +340,28 @@ cargo test --locked -p git-client --all-targets
 ./tools/install-windows-apps.ps1 -Apps git-client
 ```
 
+Authenticator (`totp`) supports native account entry and QR-image import, including
+Unicode Windows paths. Its encrypted vault lives under
+`%LOCALAPPDATA%/tilo-authenticator` unless `XDG_DATA_HOME` overrides it. Windows
+protects the vault key with current-user DPAPI and a private file ACL; it does
+not fall back to a plaintext key. A private legacy key is migrated only after
+the protected replacement has been read back and verified. A missing or corrupt
+key or vault produces a recovery banner and prevents writes until access is
+restored and the app restarted. DPAPI custody is tied to the Windows user
+profile; copying the vault files is not a portable account export.
+
+Password fields expose the native Windows password role and support protected
+value entry while returning only a constant empty accessibility value. Shared
+semantic trees never contain their secret values. Native verification covers
+manual enrollment, QR import, encrypted persistence, restart, recovery without
+overwriting ciphertext, and clipboard codes checked against an independent
+RFC-key calculation.
+
+```powershell
+cargo test --locked -p totp --all-targets
+./tools/install-windows-apps.ps1 -Apps totp
+```
+
 Feeds runs natively on Windows with asynchronous feed fetching, persisted
 subscriptions and article state, and the native OPML import picker. Article links
 use the Windows default application through ShellExecute; local file and script

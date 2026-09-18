@@ -15,6 +15,10 @@
 //! Service round-trip, then removed. Headless/test environments without the
 //! client use the explicit owner-only local fallback so recovery and tests do
 //! not silently lose an authenticator vault.
+//! Windows uses user-scoped DPAPI with a private, atomically published
+//! `vault.key.dpapi` file. A missing or damaged key is never replaced when
+//! ciphertext already exists. Legacy private keys migrate only after a
+//! verified DPAPI restore; DPAPI failure never falls back to plaintext.
 //!
 //! # Migration
 //!
@@ -28,9 +32,14 @@
 //! durable so the UI can state that boundary honestly and offer an explicit,
 //! bounded retry.
 
+#[cfg(not(windows))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::{Command, Stdio};
+
+#[cfg(windows)]
+mod windows;
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -70,17 +79,32 @@ pub(crate) fn force_save_failure_for_test(fail: bool) {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KeyCustody {
+    #[cfg(not(windows))]
     SecretService,
+    #[cfg(any(not(windows), test))]
     LocalFile,
+    #[cfg(windows)]
+    Windows,
 }
 
-/// Resolve the data directory: `$XDG_DATA_HOME/tilo-authenticator`
-/// (falling back to `$HOME/.local/share/...`). Returns `None` when no
-/// home directory is discoverable.
+/// Resolve `$XDG_DATA_HOME/tilo-authenticator`, then Windows `LocalAppData` or
+/// `$HOME/.local/share/...`. Returns `None` when no user directory is available.
 pub fn data_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            #[cfg(windows)]
+            {
+                std::env::var_os("LOCALAPPDATA")
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_absolute())
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        })
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
     Some(base.join("tilo-authenticator"))
 }
@@ -93,6 +117,7 @@ pub fn vault_path() -> Option<PathBuf> {
 }
 
 /// Path of the symmetric key file.
+#[cfg(any(not(windows), test))]
 fn key_path_in(dir: &Path) -> PathBuf {
     dir.join("vault.key")
 }
@@ -105,10 +130,19 @@ fn legacy_plaintext_path_in(dir: &Path) -> PathBuf {
 /// Load the vault from disk. Returns an empty vault when nothing is stored
 /// (or when it can't be read/decrypted) — never an error to the caller.
 pub fn load() -> Vault {
-    match data_dir() {
-        Some(dir) => load_at_with_custody(&dir, key_custody()),
-        None => Vault::new(),
-    }
+    load_checked().unwrap_or_else(|error| {
+        tracing::warn!(%error, "authenticator: vault needs recovery");
+        Vault::new()
+    })
+}
+
+/// Load the real vault without confusing a recovery failure with a fresh install.
+///
+/// # Errors
+/// Returns storage, key-custody, integrity, or migration failures.
+pub fn load_checked() -> std::io::Result<Vault> {
+    let dir = data_dir().ok_or_else(|| std::io::Error::other("no user data directory"))?;
+    load_at_checked(&dir, key_custody())
 }
 
 /// Persist the vault, sealed. `false` means changes remain in memory only.
@@ -126,41 +160,41 @@ fn load_at(dir: &Path) -> Vault {
     load_at_with_custody(dir, KeyCustody::LocalFile)
 }
 
+#[cfg(test)]
 fn load_at_with_custody(dir: &Path, custody: KeyCustody) -> Vault {
+    load_at_checked(dir, custody).unwrap_or_default()
+}
+
+fn load_at_checked(dir: &Path, custody: KeyCustody) -> std::io::Result<Vault> {
     let enc = dir.join("vault.enc");
-    if enc.exists() {
-        return match (load_or_create_key(dir, custody), std::fs::read(&enc)) {
-            (Some(key), Ok(blob)) => {
-                if let Some(plaintext) = open(&key, &blob) {
-                    parse_vault(&plaintext)
-                } else {
-                    tracing::warn!("authenticator: vault decrypt failed; starting empty");
-                    Vault::new()
-                }
-            }
-            _ => Vault::new(),
-        };
+    match std::fs::read(&enc) {
+        Ok(blob) => {
+            let key = load_or_create_key(dir, custody)
+                .ok_or_else(|| std::io::Error::other("vault key unavailable"))?;
+            let plaintext = open(&key, &blob)
+                .ok_or_else(|| std::io::Error::other("vault integrity check failed"))?;
+            return parse_vault(&plaintext);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
 
     // Transparent upgrade: an older build left a plaintext vault. Parse it,
     // re-seal it, and remove the cleartext original.
     let legacy = legacy_plaintext_path_in(dir);
-    if let Ok(text) = std::fs::read_to_string(&legacy)
-        && let Ok(file) = serde_json::from_str::<VaultFile>(&text)
-    {
-        let mut v = Vault::new();
-        v.accounts = file.accounts;
-        v.renumber();
-        save_at_with_custody(dir, &v, custody);
-        if enc.exists()
-            && let Err(e) = std::fs::remove_file(&legacy)
-        {
-            tracing::warn!(error = %e, "authenticator: could not remove migrated plaintext vault");
+    match std::fs::read(&legacy) {
+        Ok(bytes) => {
+            let plaintext = Zeroizing::new(bytes);
+            let vault = parse_vault(&plaintext)?;
+            if !save_at_with_custody(dir, &vault, custody) {
+                return Err(std::io::Error::other("vault migration was not saved"));
+            }
+            std::fs::remove_file(&legacy)?;
+            Ok(vault)
         }
-        return v;
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vault::new()),
+        Err(error) => Err(error),
     }
-
-    Vault::new()
 }
 
 /// Seal + write the vault under `dir`.
@@ -178,6 +212,20 @@ fn save_at_with_custody(dir: &Path, vault: &Vault, custody: KeyCustody) -> bool 
         tracing::warn!("authenticator: no vault key available; changes kept in memory only");
         return false;
     };
+    // Loading an inaccessible vault yields an empty in-memory view. Do not
+    // let a subsequent edit turn that recovery situation into data loss.
+    match std::fs::read(dir.join("vault.enc")) {
+        Ok(previous) if open(&key, &previous).is_none() => {
+            tracing::warn!("authenticator: refusing to replace an unreadable existing vault");
+            return false;
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(%error, "authenticator: existing vault cannot be checked");
+            return false;
+        }
+    }
     let file = VaultFile {
         version: VAULT_VERSION,
         accounts: vault.ordered(),
@@ -201,19 +249,16 @@ fn save_at_with_custody(dir: &Path, vault: &Vault, custody: KeyCustody) -> bool 
     }
 }
 
-fn parse_vault(plaintext: &[u8]) -> Vault {
-    match serde_json::from_slice::<VaultFile>(plaintext) {
-        Ok(file) => {
-            let mut v = Vault::new();
-            v.accounts = file.accounts;
-            v.renumber();
-            v
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "authenticator: decrypted vault parse failed; starting empty");
-            Vault::new()
-        }
+fn parse_vault(plaintext: &[u8]) -> std::io::Result<Vault> {
+    let file = serde_json::from_slice::<VaultFile>(plaintext)
+        .map_err(|_| std::io::Error::other("vault document is invalid"))?;
+    if file.version != VAULT_VERSION {
+        return Err(std::io::Error::other("unsupported vault version"));
     }
+    let mut vault = Vault::new();
+    vault.accounts = file.accounts;
+    vault.renumber();
+    Ok(vault)
 }
 
 /// Read the vault key from `dir`, generating + persisting a fresh random
@@ -225,11 +270,25 @@ fn parse_vault(plaintext: &[u8]) -> Vault {
 /// keyring seam that will replace the local key file.
 fn load_or_create_key(dir: &Path, custody: KeyCustody) -> Option<Zeroizing<[u8; KEY_LEN]>> {
     match custody {
+        #[cfg(not(windows))]
         KeyCustody::SecretService => secret_service_key(dir),
+        #[cfg(any(not(windows), test))]
         KeyCustody::LocalFile => local_file_key(dir),
+        #[cfg(windows)]
+        KeyCustody::Windows => windows::load_or_create_key(dir)
+            .map_err(|error| {
+                tracing::warn!(%error, "authenticator: Windows key custody unavailable");
+            })
+            .ok(),
     }
 }
 
+#[cfg(windows)]
+fn key_custody() -> KeyCustody {
+    KeyCustody::Windows
+}
+
+#[cfg(not(windows))]
 fn key_custody() -> KeyCustody {
     let available = Command::new("secret-tool")
         .arg("--version")
@@ -245,6 +304,7 @@ fn key_custody() -> KeyCustody {
     }
 }
 
+#[cfg(not(windows))]
 fn secret_service_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
     match lookup_secret_service_key() {
         Ok(Some(key)) => return Some(key),
@@ -295,6 +355,7 @@ fn secret_service_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
     }
 }
 
+#[cfg(not(windows))]
 fn lookup_secret_service_key() -> Result<Option<Zeroizing<[u8; KEY_LEN]>>, String> {
     let output = Command::new("secret-tool")
         .args(["lookup", "application", "Tilo", "purpose", "totp-vault"])
@@ -318,6 +379,7 @@ fn lookup_secret_service_key() -> Result<Option<Zeroizing<[u8; KEY_LEN]>>, Strin
     }
 }
 
+#[cfg(not(windows))]
 fn store_secret_service_key(key: &[u8; KEY_LEN]) -> Result<(), String> {
     let mut child = Command::new("secret-tool")
         .args([
@@ -349,6 +411,7 @@ fn store_secret_service_key(key: &[u8; KEY_LEN]) -> Result<(), String> {
     }
 }
 
+#[cfg(any(not(windows), test))]
 fn encode_key(key: &[u8; KEY_LEN]) -> String {
     use std::fmt::Write as _;
     let mut encoded = String::with_capacity(KEY_LEN * 2);
@@ -358,6 +421,7 @@ fn encode_key(key: &[u8; KEY_LEN]) -> String {
     encoded
 }
 
+#[cfg(any(not(windows), test))]
 fn decode_key(encoded: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
     if encoded.len() != KEY_LEN * 2 {
         return Err("Secret Service key has the wrong length".into());
@@ -377,6 +441,7 @@ fn decode_key(encoded: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, String> {
     Ok(key)
 }
 
+#[cfg(any(not(windows), test))]
 fn hex_nibble(byte: u8) -> Result<u8, String> {
     char::from(byte)
         .to_digit(16)
@@ -384,6 +449,7 @@ fn hex_nibble(byte: u8) -> Result<u8, String> {
         .ok_or_else(|| "Secret Service key is not hexadecimal".into())
 }
 
+#[cfg(any(not(windows), test))]
 fn local_file_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
     let path = key_path_in(dir);
     match std::fs::read(&path) {
@@ -459,6 +525,7 @@ fn open(key: &[u8; KEY_LEN], blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
 
 /// Write the key file atomically, restricted to `0600` before it is ever
 /// visible at its final path.
+#[cfg(any(not(windows), test))]
 fn write_key_file(path: &Path, key: &[u8; KEY_LEN]) -> std::io::Result<()> {
     atomic_file::write_with_mode(path, key, 0o600)
 }
@@ -484,6 +551,90 @@ mod tests {
 
     fn temp_dir() -> PathBuf {
         std::env::temp_dir().join(format!("tilo-totp-store-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_live_custody_protects_key_and_restores_vault() {
+        let dir = temp_dir();
+        let mut vault = Vault::new();
+        vault.upsert(demo_accounts().remove(0));
+        assert!(save_at_with_custody(&dir, &vault, key_custody()));
+        assert!(
+            !dir.join("vault.key").exists(),
+            "Windows must not persist a plaintext key"
+        );
+        assert!(dir.join("vault.key.dpapi").is_file());
+        assert_eq!(
+            load_at_with_custody(&dir, key_custody()).ordered(),
+            vault.ordered()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_missing_key_cannot_replace_an_existing_vault() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let previous = b"existing inaccessible vault";
+        std::fs::write(dir.join("vault.enc"), previous).unwrap();
+        assert!(!save_at_with_custody(&dir, &Vault::new(), key_custody()));
+        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), previous);
+        assert!(!dir.join("vault.key").exists());
+        assert!(!dir.join("vault.key.dpapi").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_corrupt_ciphertext_is_preserved_on_save() {
+        let dir = temp_dir();
+        assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
+        let ciphertext = b"corrupt existing vault";
+        std::fs::write(dir.join("vault.enc"), ciphertext).unwrap();
+        assert!(load_at_checked(&dir, key_custody()).is_err());
+        assert!(!save_at_with_custody(&dir, &Vault::new(), key_custody()));
+        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), ciphertext);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_corrupt_protected_key_is_never_replaced() {
+        let dir = temp_dir();
+        assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
+        let ciphertext = std::fs::read(dir.join("vault.enc")).unwrap();
+        private_fs::write_atomic(&dir.join("vault.key.dpapi"), b"corrupt DPAPI key").unwrap();
+        assert!(!save_at_with_custody(&dir, &Vault::new(), key_custody()));
+        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), ciphertext);
+        assert_eq!(
+            std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
+            b"corrupt DPAPI key"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_private_legacy_key_migrates_only_after_verified_restore() {
+        let dir = temp_dir();
+        private_fs::directory(&dir).unwrap();
+        private_fs::create_atomic(&dir.join("vault.key"), &[42; KEY_LEN]).unwrap();
+        let mut vault = Vault::new();
+        vault.upsert(demo_accounts().remove(0));
+        assert!(save_at_with_custody(&dir, &vault, KeyCustody::LocalFile));
+        assert_eq!(
+            load_at_with_custody(&dir, key_custody()).ordered(),
+            vault.ordered()
+        );
+        assert!(!dir.join("vault.key").exists());
+        assert!(private_fs::read(&dir.join("vault.key.dpapi")).is_ok());
+        assert_eq!(
+            load_at_with_custody(&dir, key_custody()).ordered(),
+            vault.ordered()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -582,6 +733,18 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o600, "vault key must be owner-only");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_legacy_vault_is_reported_and_preserved() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = b"not a vault document";
+        std::fs::write(dir.join("vault.json"), original).unwrap();
+        assert!(load_at_checked(&dir, KeyCustody::LocalFile).is_err());
+        assert_eq!(std::fs::read(dir.join("vault.json")).unwrap(), original);
+        assert!(!dir.join("vault.enc").exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

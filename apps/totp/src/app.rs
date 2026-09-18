@@ -131,6 +131,7 @@ pub struct AuthenticatorApp {
     /// A local encrypted-vault write failed. We retain the in-memory vault but
     /// never retry in a frame loop; the user/agent explicitly invokes retry.
     persistence_pending: bool,
+    vault_recovery_required: bool,
     /// Non-secret, human-readable durability detail shown in the dedicated
     /// persistence banner. This replaces a competing transient error toast.
     persistence_message: Option<String>,
@@ -226,6 +227,7 @@ impl AuthenticatorApp {
             list_dirty: false,
             reduce_motion: false,
             persistence_pending: false,
+            vault_recovery_required: false,
             persistence_message: None,
             actions: ui::ActionHost::new(),
         }
@@ -237,7 +239,17 @@ impl AuthenticatorApp {
     /// captures are reproducible and never leak the real vault.
     fn seed(&mut self) {
         let mut vault = match self.seed_mode {
-            SeedMode::Live => storage::load(),
+            SeedMode::Live => match storage::load_checked() {
+                Ok(vault) => vault,
+                Err(error) => {
+                    tracing::warn!(%error, "authenticator: existing vault could not be loaded");
+                    self.vault_recovery_required = true;
+                    self.describe_persistence_failure(
+                        "The vault could not be loaded. Restore key or storage access, then restart Authenticator before saving.",
+                    );
+                    Vault::new()
+                }
+            },
             SeedMode::Demo => {
                 let mut v = Vault::new();
                 v.accounts = demo_accounts();
@@ -304,6 +316,9 @@ impl AuthenticatorApp {
     }
 
     fn persist_vault(&mut self) -> bool {
+        if self.vault_recovery_required {
+            return false;
+        }
         let persisted = self.seed_mode != SeedMode::Live || storage::save(&self.vault);
         self.persistence_pending = !persisted;
         if persisted {
@@ -327,6 +342,9 @@ impl AuthenticatorApp {
     }
 
     fn retry_persist(&mut self) -> bool {
+        if self.vault_recovery_required {
+            return false;
+        }
         if !self.persistence_pending {
             return true;
         }
@@ -2237,6 +2255,17 @@ mod tests {
                 .any(|window| window == secret.as_bytes()),
             "setup never puts a bearer credential in collaboration/history"
         );
+    }
+
+    #[test]
+    fn failed_initial_load_cannot_be_cleared_by_saving_the_empty_view() {
+        let mut app = AuthenticatorApp::demo_persistence_error();
+        app.vault_recovery_required = true;
+        let message = app.persistence_message.clone();
+        assert!(!app.persist_vault());
+        assert!(!app.retry_persist());
+        assert!(app.persistence_pending);
+        assert_eq!(app.persistence_message, message);
     }
 
     #[test]
