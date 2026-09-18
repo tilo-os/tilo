@@ -666,6 +666,9 @@ pub struct PhotosApp {
     /// field nor a resource: unconfirmed face proposals belong only on this
     /// device until an explicit review commits a compact label membership.
     people_controller: crate::people::PeopleController,
+    /// A distinct People collection surface. Its private suggestion state is
+    /// visually and semantically separated from shared approved labels.
+    people_mode: bool,
     canvas_state: CanvasState,
     search_provider: crate::search::PhotosSearchProvider,
     /// Heads that produced the cached immutable/Arc-backed search catalogue.
@@ -956,6 +959,7 @@ impl PhotosApp {
             active_analysis: HashSet::new(),
             cancelled_analysis: HashSet::new(),
             people_controller: crate::people::PeopleController::new(),
+            people_mode: false,
             canvas_state: CanvasState::Empty,
             search_provider: crate::search::PhotosSearchProvider::empty(),
             search_heads: Vec::new(),
@@ -1246,6 +1250,7 @@ impl PhotosApp {
     /// toolbar button and semantic action as a user.
     pub fn show_library(&mut self) {
         self.library_mode = true;
+        self.people_mode = false;
         self.active_album = None;
         self.active_folder = None;
         self.active_person = None;
@@ -1255,6 +1260,14 @@ impl PhotosApp {
         self.active_favorites = false;
         self.library_remove_confirm = None;
         self.finish_selection();
+    }
+
+    /// Reveal the People collection without enabling recognition or changing
+    /// any document metadata. This is used by the resource action and visual
+    /// acceptance scenarios.
+    pub fn show_people(&mut self) {
+        self.show_library();
+        self.people_mode = true;
     }
 
     fn begin_selection(&mut self) {
@@ -2252,6 +2265,7 @@ impl PhotosApp {
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
             crate::actions::PhotosOperation::ViewPeople => {
                 self.show_library();
+                self.people_mode = true;
                 self.notice = Some(
                     "People is local-first: install a signed face model, then review every suggestion before sharing labels".to_owned(),
                 );
@@ -3828,6 +3842,146 @@ impl PhotosApp {
     )]
     /// Render the visible part of the library; the remainder stays reachable
     /// through cursor-paged search and canonical resources.
+    /// A deliberately calm People home: approved shared identities are a
+    /// collection, while local face work is a private review queue. It never
+    /// paints a made-up suggestion when no signed face model is installed.
+    fn draw_people(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        use vello::peniko::Fill;
+        let bounds = self.canvas_rect;
+        let inset = f64::from(PAD) + 18.0;
+        let content = Rect::new(
+            bounds.x0 + inset,
+            bounds.y0 + 18.0,
+            bounds.x1 - inset,
+            bounds.y1 - 18.0,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "People",
+            28.0,
+            theme.text_primary,
+            transform * Affine::translate((content.x0, content.y0)),
+            Some(content.width() as f32),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Private recognition stays on this device. Only names you approve are shared.",
+            14.0,
+            theme.text_dim,
+            transform * Affine::translate((content.x0, content.y0 + 37.0)),
+            Some(content.width() as f32),
+            TextWeight::Regular,
+        );
+        let capability = self.people_controller.capability().summary();
+        let privacy = if self.people_controller.privacy().recognition_enabled {
+            "On for this device"
+        } else {
+            "Off for this device"
+        };
+        let notice = Rect::new(
+            content.x0,
+            content.y0 + 66.0,
+            content.x1,
+            content.y0 + 126.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &notice,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.border_standard,
+            None,
+            &Rect::new(notice.x0, notice.y0, notice.x1, notice.y0 + 1.0),
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            privacy,
+            14.0,
+            theme.text_primary,
+            transform * Affine::translate((notice.x0 + 16.0, notice.y0 + 13.0)),
+            Some(220.0),
+            TextWeight::Medium,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            capability,
+            13.0,
+            theme.text_dim,
+            transform * Affine::translate((notice.x0 + 16.0, notice.y0 + 34.0)),
+            Some((notice.width() - 32.0) as f32),
+            TextWeight::Regular,
+        );
+        // `library_people` is the bounded projection refreshed from the same
+        // document as the canonical resource tree; draw never materializes a
+        // large CRDT collection merely to paint this overview.
+        let mut y = notice.y1 + 30.0;
+        text_renderer.draw_text_weighted(
+            scene,
+            "Approved people",
+            17.0,
+            theme.text_primary,
+            transform * Affine::translate((content.x0, y)),
+            Some(content.width() as f32),
+            TextWeight::Medium,
+        );
+        y += 28.0;
+        let people: Vec<_> = self.library_people.iter().take(8).collect();
+        if people.is_empty() {
+            text_renderer.draw_text_weighted(
+                scene,
+                "No approved names yet. Review a local suggestion before sharing it.",
+                14.0,
+                theme.text_dim,
+                transform * Affine::translate((content.x0, y)),
+                Some(content.width() as f32),
+                TextWeight::Regular,
+            );
+        } else {
+            for (index, (name, count)) in people.into_iter().enumerate() {
+                let x = content.x0 + (index % 3) as f64 * ((content.width() - 24.0) / 3.0 + 12.0);
+                let card_y = y + (index / 3) as f64 * 78.0;
+                let card = Rect::new(x, card_y, x + (content.width() - 24.0) / 3.0, card_y + 64.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.window_card,
+                    None,
+                    &card,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    name,
+                    15.0,
+                    theme.text_primary,
+                    transform * Affine::translate((card.x0 + 12.0, card.y0 + 12.0)),
+                    Some((card.width() - 24.0) as f32),
+                    TextWeight::Medium,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &format!("{count} photos · approved"),
+                    12.0,
+                    theme.text_dim,
+                    transform * Affine::translate((card.x0 + 12.0, card.y0 + 36.0)),
+                    Some((card.width() - 24.0) as f32),
+                    TextWeight::Regular,
+                );
+            }
+        }
+    }
+
     fn draw_library(
         &mut self,
         scene: &mut Scene,
@@ -6610,6 +6764,7 @@ impl Widget for PhotosApp {
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
             crate::actions::PhotosOperation::ViewPeople => {
                 self.show_library();
+                self.people_mode = true;
                 self.notice = Some(
                     "People recognition is local and opt-in; install a verified face model to begin"
                         .to_owned(),
@@ -7253,7 +7408,11 @@ impl Widget for PhotosApp {
         if self.library_mode {
             self.library_search
                 .draw(scene, transform, text_renderer, theme, presence);
-            self.draw_library(scene, transform, text_renderer, theme, presence);
+            if self.people_mode {
+                self.draw_people(scene, transform, text_renderer, theme);
+            } else {
+                self.draw_library(scene, transform, text_renderer, theme, presence);
+            }
         } else if let Some(v) = self.viewer.as_mut() {
             v.draw(scene, transform, text_renderer, theme, presence);
         } else {
