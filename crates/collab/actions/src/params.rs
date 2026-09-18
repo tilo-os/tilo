@@ -847,6 +847,17 @@ fn validate_schema_array(
         {
             return Err(format!("must contain at most {maximum} items"));
         }
+        if schema
+            .get("uniqueItems")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+            && items
+                .iter()
+                .enumerate()
+                .any(|(index, item)| items.get(..index).is_some_and(|prior| prior.contains(item)))
+        {
+            return Err("must contain unique items".into());
+        }
         if let Some(item_schema) = schema.get("items") {
             for (index, item) in items.iter().enumerate() {
                 validate_schema(item, item_schema)
@@ -893,6 +904,7 @@ const SCHEMA_ASSERTIONS: &[&str] = &[
     "format",
     "minItems",
     "maxItems",
+    "uniqueItems",
     "items",
     "required",
     "properties",
@@ -998,6 +1010,12 @@ fn validate_schema_definition_collections(
         .is_some_and(|value| !value.is_boolean())
     {
         return Err("schema `additionalProperties` must be a boolean".into());
+    }
+    if object
+        .get("uniqueItems")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err("schema `uniqueItems` must be a boolean".into());
     }
     if let Some(properties) = object.get("properties") {
         let properties = properties
@@ -1157,5 +1175,22 @@ mod rich_schema_tests {
         assert!(validate_schema_definition(&json!({"minProperties": 1})).is_err());
         assert!(validate_schema_definition(&json!({"additionalProperties": {}})).is_err());
         assert!(validate_schema_definition(&json!({"title": "accepted annotation"})).is_ok());
+    }
+
+    #[test]
+    fn unique_array_items_are_published_and_enforced() {
+        let schema = json!({
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string"}
+        });
+        assert!(validate_schema_definition(&schema).is_ok());
+        assert!(
+            validate_json_schema(&json!(["photos.photo:a", "photos.photo:b"]), &schema).is_ok()
+        );
+        assert!(
+            validate_json_schema(&json!(["photos.photo:a", "photos.photo:a"]), &schema).is_err()
+        );
+        assert!(validate_schema_definition(&json!({"uniqueItems": "yes"})).is_err());
     }
 }
