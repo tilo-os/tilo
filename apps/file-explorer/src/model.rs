@@ -1,3 +1,4 @@
+use crate::filesystem_metadata as xattr;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -701,10 +702,9 @@ fn has_record_index(root: &Path) -> bool {
 }
 
 fn root_generation(root: &Path) -> String {
-    use std::os::unix::ffi::OsStrExt as _;
     let mut hasher = Sha256::new();
     hasher.update(b"tilo.files.record-index-root-generation.v2\\0");
-    let root_bytes = root.as_os_str().as_bytes();
+    let root_bytes = root.as_os_str().as_encoded_bytes();
     hasher.update((root_bytes.len() as u64).to_be_bytes());
     hasher.update(root_bytes);
     // ACL mounts intentionally expose a stable opaque manifest. Do not hash
@@ -1205,11 +1205,11 @@ pub fn read_thumb_xattr(path: &Path) -> Option<Vec<u8>> {
 
 /// The Tilo workspace roots the FUSE driver mounts (first-class sidebar
 /// locations, and the dirs whose entries carry sync state). Normally just
-/// [`WORKSPACE_ROOT`]; `TILO_WORKSPACE_ROOTS` (colon-separated) overrides it for
+/// [`WORKSPACE_ROOT`]; `TILO_WORKSPACE_ROOTS` (a native path list) overrides it for
 /// tests and alternate mounts. This navigable list includes the user's Shared
 /// place even when received shares are separate authority mounts.
 pub fn workspace_roots() -> Vec<PathBuf> {
-    if let Ok(v) = std::env::var("TILO_WORKSPACE_ROOTS") {
+    if let Some(v) = std::env::var_os("TILO_WORKSPACE_ROOTS") {
         return parse_workspace_roots(&v);
     }
     let p = PathBuf::from(WORKSPACE_ROOT);
@@ -1227,20 +1227,20 @@ pub fn workspace_roots() -> Vec<PathBuf> {
 /// record opens. Received-share discovery requires a dedicated subscription
 /// index and is intentionally not inferred by walking `~/Shared`.
 pub fn workspace_record_authority_roots() -> Vec<PathBuf> {
-    if let Ok(value) = std::env::var("TILO_WORKSPACE_ROOTS") {
+    if let Some(value) = std::env::var_os("TILO_WORKSPACE_ROOTS") {
         return parse_workspace_roots(&value);
     }
     let root = PathBuf::from(WORKSPACE_ROOT);
     root.exists().then_some(root).into_iter().collect()
 }
 
-/// Parse a `TILO_WORKSPACE_ROOTS` value (colon-separated) into the roots that
+/// Parse a `TILO_WORKSPACE_ROOTS` value (colon-separated on Unix, semicolon-
+/// separated on Windows) into the roots that
 /// currently exist. Split out so the parsing is unit-testable without touching
 /// the process environment.
-fn parse_workspace_roots(val: &str) -> Vec<PathBuf> {
-    val.split(':')
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
+fn parse_workspace_roots(val: &std::ffi::OsStr) -> Vec<PathBuf> {
+    std::env::split_paths(val)
+        .filter(|path| !path.as_os_str().is_empty())
         .filter(|p| p.exists())
         .collect()
 }
@@ -1602,6 +1602,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn read_sync_state_round_trips_a_real_xattr() {
         // A real getxattr against a real `user.tilo.sync` attribute — the exact
         // syscall the app makes against the FUSE mount, exercised here on a
@@ -1619,6 +1620,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn read_thumb_xattr_round_trips_a_real_host_preview() {
         // The FS-metadata channel: a host writes a preview into `user.tilo.thumb`
         // and the file manager reads the exact bytes back — the same `getxattr`
@@ -1637,6 +1639,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn read_content_hash_requires_exactly_the_raw_blake3_width() {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("photo.png");
@@ -1656,6 +1659,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn read_record_id_requires_exactly_the_raw_uuid_width() {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("shared.txt");
@@ -1769,6 +1773,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn read_dir_populates_sync_state_only_inside_a_workspace_root() {
         // Tag two files with real sync xattrs, then confirm the real listing
         // path surfaces them on `Entry` when (and only when) the directory is a
@@ -1863,11 +1868,8 @@ mod sync_state_tests {
         // through the pure helpers so no global env is touched.
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
-        let spec = format!(
-            "{}:/does/not/exist:{}",
-            a.path().display(),
-            b.path().display()
-        );
+        let missing = a.path().join("missing-root");
+        let spec = std::env::join_paths([a.path(), missing.as_path(), b.path()]).unwrap();
         let roots = parse_workspace_roots(&spec);
         assert!(
             roots.contains(&a.path().to_path_buf()),
@@ -1894,6 +1896,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn share_control_locator_is_read_only_from_the_workspace_root() {
         let root = tempfile::tempdir().unwrap();
         let nested = root.path().join("folder");
@@ -1913,6 +1916,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn workspace_record_index_projects_nested_paths_by_stable_identity() {
         let root = tempfile::tempdir().unwrap();
         let record_id = uuid::Uuid::from_u128(7);
@@ -1982,6 +1986,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn completed_pager_withdraws_rows_after_mount_disappears() {
         let root = tempfile::tempdir().unwrap();
         let projection = serde_json::json!({
@@ -2013,6 +2018,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn pager_does_not_advertise_nested_share_as_an_exact_record_authority() {
         let parent = tempfile::tempdir().unwrap();
         let share = parent.path().join("received-share");
@@ -2044,6 +2050,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn pager_refuses_duplicate_identity_across_revisioned_page_boundary() {
         let root = tempfile::tempdir().unwrap();
         let revision = "b".repeat(64);
@@ -2105,6 +2112,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn workspace_record_index_rejects_noncanonical_or_escaping_projections() {
         let root = tempfile::tempdir().unwrap();
         for records in [

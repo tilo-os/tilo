@@ -41,7 +41,7 @@ fn from_path_maps_docx_extension() {
 
 #[test]
 fn rich_document_round_trips_through_docx() {
-    let path = temp_path("rich.docx");
+    let path = temp_path("Bericht – 日本語.docx");
 
     // --- Author the document through the editor's real editing model. ---
     let mut state = ui::State::new();

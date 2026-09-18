@@ -1,0 +1,3 @@
+git-remote-running = Working with remote…
+git-remote-busy = Wait for the current remote operation to finish.
+git-remote-worker-stopped = The remote worker stopped unexpectedly. Check repository state before retrying.

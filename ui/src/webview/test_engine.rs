@@ -395,6 +395,10 @@ mod tests {
 
     #[test]
     fn download_lifecycle_requires_web_url_and_absolute_portal_destination() {
+        #[cfg(windows)]
+        let destination = "C:/Temp/guide.pdf";
+        #[cfg(not(windows))]
+        let destination = "/tmp/guide.pdf";
         let engine = TestEngine::new();
         engine.send(WebViewCommand::StartDownload {
             uri: "file:///etc/passwd".into(),
@@ -434,12 +438,12 @@ mod tests {
         };
         engine.send(WebViewCommand::SetDownloadDestination {
             id: id.clone(),
-            path: "/tmp/guide.pdf".into(),
+            path: destination.into(),
         });
         assert!(matches!(
             engine.drain_events().as_slice(),
             [WebViewEvent::DownloadProgress { id: progress_id, .. }, WebViewEvent::DownloadFinished { id: finished_id, path }]
-                if progress_id == &id && finished_id == &id && path == "/tmp/guide.pdf"
+                if progress_id == &id && finished_id == &id && path == destination
         ));
     }
 

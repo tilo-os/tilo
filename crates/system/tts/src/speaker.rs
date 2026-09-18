@@ -39,6 +39,7 @@ impl Priority {
     /// Map to the `ssip` crate's [`ssip_client::Priority`]. Kept here (rather than
     /// a `From` impl on the foreign type) so the rest of the crate never has to
     /// name the foreign enum.
+    #[cfg(unix)]
     pub(crate) fn to_ssip(self) -> ssip_client::Priority {
         use ssip_client::Priority as P;
         match self {

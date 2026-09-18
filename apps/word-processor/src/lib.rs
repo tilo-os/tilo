@@ -389,6 +389,9 @@ pub mod recovery {
 
     /// The directory recovery copies live in. Resolution order:
     /// 1. `$TILO_WP_RECOVERY_DIR` (test / explicit override), used verbatim;
+    /// On Windows, the default is `%LOCALAPPDATA%/tilo/word-processor/recovery`,
+    /// falling back to `%USERPROFILE%/AppData/Local` when necessary.
+    /// On other hosts, the remaining resolution order is:
     /// 2. `$XDG_STATE_HOME/tilo/word-processor/recovery`;
     /// 3. `$HOME/.local/state/tilo/word-processor/recovery`;
     /// 4. `./.tilo-wp-recovery` as a last resort (no HOME at all).
@@ -396,6 +399,17 @@ pub mod recovery {
         if let Some(dir) = std::env::var_os(RECOVERY_BASE_ENV) {
             return PathBuf::from(dir);
         }
+        #[cfg(windows)]
+        let state_home = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_absolute())
+                    .map(|path| path.join("AppData").join("Local"))
+            });
+        #[cfg(not(windows))]
         let state_home = std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .filter(|p| !p.as_os_str().is_empty())
@@ -439,6 +453,17 @@ pub mod recovery {
                         std::env::current_dir().map_or_else(|_| p.to_path_buf(), |d| d.join(p))
                     }
                 });
+                // Windows canonicalization adds a verbatim path prefix once a
+                // file exists. File URLs normalize both spellings, keeping the
+                // recovery slot stable across the document's first save.
+                #[cfg(windows)]
+                {
+                    url::Url::from_file_path(&abs).map_or_else(
+                        |()| abs.to_string_lossy().into_owned(),
+                        |url| url.to_string(),
+                    )
+                }
+                #[cfg(not(windows))]
                 abs.to_string_lossy().into_owned()
             }
             None => ":untitled:".to_string(),
@@ -1020,6 +1045,25 @@ mod tests {
     /// half-set by a sibling. `lock().unwrap_or_else(|e| e.into_inner())` keeps a
     /// panicking test from poisoning the suite.
     static RECOVERY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(windows)]
+    #[test]
+    fn recovery_defaults_to_native_local_app_data() {
+        let _guard = RECOVERY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = std::env::var_os(recovery::RECOVERY_BASE_ENV);
+        // SAFETY: recovery environment tests hold RECOVERY_ENV_LOCK and run serially.
+        unsafe { std::env::remove_var(recovery::RECOVERY_BASE_ENV) };
+        let actual = recovery::base_dir();
+        if let Some(previous) = previous {
+            // SAFETY: restore while still holding RECOVERY_ENV_LOCK.
+            unsafe { std::env::set_var(recovery::RECOVERY_BASE_ENV, previous) };
+        }
+        let local = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+        assert_eq!(actual, local.join("tilo/word-processor/recovery"));
+        assert!(actual.is_absolute());
+    }
 
     /// A unique temp directory for a recovery test, cleaned up by the test (the
     /// recovery store never touches the real `$HOME` thanks to the base override).

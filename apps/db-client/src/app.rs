@@ -865,7 +865,7 @@ impl DbClientApp {
                         .with_state(
                             AccessState::new()
                                 .focusable(true)
-                                .selected(index == self.session.active)
+                                .selected(index == self.session.active && self.session.connected)
                                 .busy(index == self.session.active && self.session.busy()),
                         ),
                 ];
@@ -3638,6 +3638,107 @@ mod behavior_tests {
             !app.session.connected,
             "a peer-added connection is not auto-opened"
         );
+    }
+
+    #[test]
+    fn sqlite_unicode_connection_survives_reload_and_executes_resource_queries() {
+        use ui::a11y::Action as A11yAction;
+
+        let directory = std::env::temp_dir().join(format!("tilo-db-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let database = directory.join("Grün 🌍.sqlite");
+        {
+            let seed = rusqlite::Connection::open(&database).unwrap();
+            seed.execute_batch(
+                "CREATE TABLE proof(value TEXT); INSERT INTO proof VALUES ('Grün 🌍');",
+            )
+            .unwrap();
+        }
+        let mut app = DbClientApp::build(Session::new(), false);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        for (target, action) in [
+            ("db.new-connection", A11yAction::Activate),
+            ("db.modal.engine:sqlite", A11yAction::Activate),
+            (
+                "db.modal.field:name",
+                A11yAction::SetValue("Local Unicode".into()),
+            ),
+            (
+                "db.modal.field:file-path",
+                A11yAction::SetValue(database.to_str().unwrap().into()),
+            ),
+            ("db.modal.save", A11yAction::Activate),
+        ] {
+            assert!(app.perform_semantic_action(target, &action, &mut doc, &ROOT));
+        }
+        app.sync(&mut doc, &ROOT);
+        app.session.block_until_idle();
+        assert!(app.session.connected);
+        assert_eq!(ConnectionsDoc::read(&doc).len(), 1);
+        let connection_id = app.session.active_connection_id().unwrap().to_string();
+        assert!(app.perform_semantic_action(
+            "db.editor.sql",
+            &A11yAction::SetValue("SELECT value FROM proof".into()),
+            &mut doc,
+            &ROOT,
+        ));
+        let saved = doc.save();
+        drop(app);
+
+        let mut doc = AutoCommit::load(&saved).unwrap();
+        let mut app = DbClientApp::build(Session::new(), false);
+        app.sync(&mut doc, &ROOT);
+        assert!(
+            !app.session.connected,
+            "loading metadata must not open external resources"
+        );
+        let navigator = app.sidebar_accessibility();
+        assert!(
+            !navigator.children[0].children[0].children[0].state.selected,
+            "a disconnected profile must remain selectable for native reconnect"
+        );
+        assert_eq!(app.editor.value(), "SELECT value FROM proof");
+        let heads = doc.get_heads();
+        for operation in [
+            DbClientOperation::Connect {
+                connection_id: connection_id.clone(),
+            },
+            DbClientOperation::RunQuery {
+                connection_id,
+                sql: "SELECT value FROM proof".into(),
+            },
+        ] {
+            let invocation = tilo_actions::InvocationId::new();
+            assert_eq!(
+                app.start_resource_operation(
+                    invocation,
+                    OperationKind::Effect,
+                    DB_OPERATION_TYPE,
+                    &serde_json::to_vec(&operation).unwrap(),
+                    &doc,
+                    &ROOT,
+                )
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            );
+            app.session.block_until_idle();
+            assert!(matches!(
+                app.poll_resource_operation(invocation, false, &doc, &ROOT),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+        let result = app.session.query_result.as_ref().unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0].display(), "Grün 🌍");
+        assert_eq!(
+            doc.get_heads(),
+            heads,
+            "executing SQL must not copy results into the shared document"
+        );
+        drop(app);
+        std::fs::remove_file(&database).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
     }
 
     #[test]

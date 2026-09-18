@@ -237,9 +237,8 @@ impl AccountStore {
         if let Some(active) = self.accounts.get(self.active) {
             shared.set_active(&ty, &AccountId::from(active.id.clone()));
         }
-        shared.save_in(config_root)?;
-        vault.save();
-        Ok(())
+        vault.try_save().map_err(std::io::Error::other)?;
+        shared.save_in(config_root)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -462,5 +461,37 @@ mod tests {
             "password rehydrates from the vault"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn damaged_vault_rejects_account_changes_and_preserves_recovery_data() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = cfg("a@x.example", "Original");
+        config.password = "fixture-original-secret".into();
+        let mut store = AccountStore::single(config);
+        store.persist_in(root.path()).unwrap();
+        let metadata_path = accounts::store_path_in(root.path());
+        let original_metadata = std::fs::read(&metadata_path).unwrap();
+        let vault_path = accounts::vault_dir_in(root.path()).join("vault.enc");
+        let original_vault = std::fs::read(&vault_path).unwrap();
+        let damaged = b"damaged fixture vault";
+        std::fs::write(&vault_path, damaged).unwrap();
+        store.accounts[0].config.display_name = "Unsaved change".into();
+        store.accounts[0].config.password = "fixture-new-secret".into();
+
+        let error = store
+            .persist_in(root.path())
+            .expect_err("custody must succeed first");
+        assert!(error.to_string().contains("vault recovery required"));
+        assert_eq!(std::fs::read(&vault_path).unwrap(), damaged);
+        assert_eq!(std::fs::read(&metadata_path).unwrap(), original_metadata);
+
+        std::fs::write(&vault_path, original_vault).unwrap();
+        let restored = AccountStore::load_in(root.path());
+        assert_eq!(restored.accounts[0].config.display_name, "Original");
+        assert_eq!(
+            restored.accounts[0].config.password,
+            "fixture-original-secret"
+        );
     }
 }

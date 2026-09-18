@@ -18,6 +18,8 @@ const BACKUP_MAGIC: &[u8] = b"TILOPWBACKUP";
 const BACKUP_VERSION: u8 = 1;
 const BACKUP_SALT_BYTES: usize = 16;
 const BACKUP_NONCE_BYTES: usize = 24;
+const BACKUP_HEADER_BYTES: usize = BACKUP_MAGIC.len() + 1 + BACKUP_SALT_BYTES + BACKUP_NONCE_BYTES;
+const BACKUP_READ_LIMIT: u64 = MAX_BACKUP_BYTES as u64 + 1;
 
 pub fn import_request() -> ui::portal::PickRequest {
     ui::portal::PickRequest::open("Import passwords", "Choose CSV")
@@ -71,7 +73,7 @@ pub fn read_encrypted_backup(mut reader: impl Read) -> Result<Zeroizing<Vec<u8>>
     let mut bytes = Zeroizing::new(Vec::new());
     reader
         .by_ref()
-        .take(MAX_BACKUP_BYTES as u64 + 1)
+        .take(BACKUP_READ_LIMIT)
         .read_to_end(&mut bytes)
         .map_err(|_| "Could not read the selected backup".to_string())?;
     if bytes.len() > MAX_BACKUP_BYTES {
@@ -242,6 +244,9 @@ pub fn export_encrypted_backup(
     use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
 
     validate_backup_passphrase(passphrase)?;
+    if items.len() > MAX_ROWS {
+        return Err("The vault contains more than 10,000 items; no backup was created".into());
+    }
     let plaintext = Zeroizing::new(
         serde_json::to_vec(items).map_err(|_| "Could not prepare the vault backup".to_string())?,
     );
@@ -255,7 +260,7 @@ pub fn export_encrypted_backup(
         .map_err(|_| "Secure randomness is unavailable; no backup was created".to_string())?;
     let key = derive_backup_key(passphrase, &salt)?;
     let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));
-    let mut header = Vec::with_capacity(BACKUP_MAGIC.len() + 1 + salt.len() + nonce.len());
+    let mut header = Vec::with_capacity(BACKUP_HEADER_BYTES);
     header.extend_from_slice(BACKUP_MAGIC);
     header.push(BACKUP_VERSION);
     header.extend_from_slice(&salt);
@@ -284,21 +289,24 @@ pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<Se
     use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
 
     validate_backup_passphrase(passphrase)?;
-    let header_len = BACKUP_MAGIC.len() + 1 + BACKUP_SALT_BYTES + BACKUP_NONCE_BYTES;
-    if backup.len() > MAX_BACKUP_BYTES || backup.len() <= header_len {
+    if backup.len() > MAX_BACKUP_BYTES || backup.len() <= BACKUP_HEADER_BYTES {
         return Err("This is not a valid Passwords backup".into());
     }
-    let Some(rest) = backup.strip_prefix(BACKUP_MAGIC) else {
-        return Err("This is not a valid Passwords backup".into());
-    };
-    if rest.first() != Some(&BACKUP_VERSION) {
+    let (header, ciphertext) = backup
+        .split_at_checked(BACKUP_HEADER_BYTES)
+        .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
+    let rest = header
+        .strip_prefix(BACKUP_MAGIC)
+        .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
+    let (version, rest) = rest
+        .split_first()
+        .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
+    if *version != BACKUP_VERSION {
         return Err("This Passwords backup uses an unsupported version".into());
     }
-    let salt_start = BACKUP_MAGIC.len() + 1;
-    let nonce_start = salt_start + BACKUP_SALT_BYTES;
-    let ciphertext_start = nonce_start + BACKUP_NONCE_BYTES;
-    let salt = &backup[salt_start..nonce_start];
-    let nonce = &backup[nonce_start..ciphertext_start];
+    let (salt, nonce) = rest
+        .split_at_checked(BACKUP_SALT_BYTES)
+        .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
     let key = derive_backup_key(passphrase, salt)?;
     let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));
     let plaintext = Zeroizing::new(
@@ -306,8 +314,8 @@ pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<Se
             .decrypt(
                 XNonce::from_slice(nonce),
                 Payload {
-                    msg: &backup[ciphertext_start..],
-                    aad: &backup[..ciphertext_start],
+                    msg: ciphertext,
+                    aad: header,
                 },
             )
             .map_err(|_| "The password is incorrect or the backup was changed".to_string())?,
@@ -415,9 +423,45 @@ mod tests {
     }
 
     #[test]
+    fn restores_v1_backup_created_by_the_previous_windows_app() {
+        let backup = include_bytes!("../tests/fixtures/backup-v1.tilopw");
+        let items = import_encrypted_backup(backup, "Owned backup fixture 52!").unwrap();
+        assert_eq!(items.len(), 1);
+        let item = items.first().unwrap();
+        assert_eq!(item.title, "Native Grün 🌍");
+        assert_eq!(item.username, "proof@example.invalid");
+        assert_eq!(item.password, "Owned fixture password 92!");
+        assert!(item.origins.contains("https://example.invalid"));
+    }
+
+    #[test]
+    fn backup_export_refuses_item_counts_that_restore_cannot_accept() {
+        let items = vec![SecretItem::login("Fixture", "user", "secret"); MAX_ROWS + 1];
+        assert!(export_encrypted_backup(&items, "a sufficiently long password").is_err());
+    }
+
+    #[test]
+    fn every_truncated_backup_header_is_rejected_without_decryption() {
+        let backup = export_encrypted_backup(&[], "a sufficiently long password").unwrap();
+        let header_len = BACKUP_MAGIC.len() + 1 + BACKUP_SALT_BYTES + BACKUP_NONCE_BYTES;
+        for length in 0..=header_len {
+            assert!(
+                import_encrypted_backup(
+                    backup.get(..length).unwrap(),
+                    "a sufficiently long password"
+                )
+                .is_err()
+            );
+        }
+        let mut unsupported = backup;
+        *unsupported.get_mut(BACKUP_MAGIC.len()).unwrap() = 255;
+        assert!(import_encrypted_backup(&unsupported, "a sufficiently long password").is_err());
+    }
+
+    #[test]
     fn encrypted_backup_rejects_wrong_password_tampering_and_weak_passwords() {
         let item = SecretItem::login("Mail", "ada", "strong secret");
-        assert!(export_encrypted_backup(&[item.clone()], "short").is_err());
+        assert!(export_encrypted_backup(std::slice::from_ref(&item), "short").is_err());
         let mut backup = export_encrypted_backup(&[item], "a sufficiently long password").unwrap();
         assert!(import_encrypted_backup(&backup, "a different long password").is_err());
         let last = backup.len() - 1;
