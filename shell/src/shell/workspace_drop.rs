@@ -74,15 +74,9 @@ pub fn decide_app_for_drop(item: &DraggedItem) -> AppKind {
 /// Splices a new `Tab` into the active workspace's first strip's first
 /// window group (creating one if none exists) and focuses it. `None`
 /// if the tree has no active workspace.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "public API called across the shell/compositor boundary (compositor::tab_binding, \
-              shell::chrome_state); changing the signature would require editing call sites \
-              outside this file's scope"
-)]
-pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Option<u64> {
-    let kind = decide_app_for_drop(&item);
-    let label = tab_label_for(&item, &kind);
+pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: &DraggedItem) -> Option<u64> {
+    let kind = decide_app_for_drop(item);
+    let label = tab_label_for(item, &kind);
     let tab = Tab {
         id: next_id(),
         title: label.clone(),
@@ -117,19 +111,14 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Opti
 /// Splices into the **specific** `(strip_id, group_id)` the pointer was
 /// over at drop time. `None` if either id is stale — a defined no-op
 /// instead of dumping the file into an arbitrary window.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "public API called across the shell/compositor boundary; changing the signature \
-              would require editing call sites outside this file's scope"
-)]
 pub fn apply_workspace_drop_at(
     tree: &mut WorkspaceTree,
-    item: DraggedItem,
+    item: &DraggedItem,
     strip_id: StripId,
     group_id: GroupId,
 ) -> Option<u64> {
-    let kind = decide_app_for_drop(&item);
-    let label = tab_label_for(&item, &kind);
+    let kind = decide_app_for_drop(item);
+    let label = tab_label_for(item, &kind);
     let tab = Tab {
         id: next_id(),
         title: label.clone(),
@@ -158,12 +147,12 @@ pub fn apply_workspace_drop_at_from_path(
     group_id: GroupId,
 ) -> Option<u64> {
     let item = DraggedItem::from_path(path)?;
-    apply_workspace_drop_at(tree, item, strip_id, group_id)
+    apply_workspace_drop_at(tree, &item, strip_id, group_id)
 }
 
 pub fn apply_workspace_drop_from_path(tree: &mut WorkspaceTree, path: &Path) -> Option<u64> {
     let item = DraggedItem::from_path(path)?;
-    apply_workspace_drop(tree, item)
+    apply_workspace_drop(tree, &item)
 }
 
 /// Pick a tab label for a dropped item: folders get "Files — <name>",
@@ -236,7 +225,7 @@ mod tests {
             .tabs
             .len();
         let tab_id =
-            apply_workspace_drop(&mut tree, DraggedItem::file("example.ts")).expect("tab_id");
+            apply_workspace_drop(&mut tree, &DraggedItem::file("example.ts")).expect("tab_id");
         let group = &tree.active_workspace().unwrap().strips[0].window_groups[0];
         assert_eq!(group.tabs.len(), before + 1);
         let new_tab = group.tabs.last().unwrap();
@@ -254,7 +243,7 @@ mod tests {
     #[test]
     fn apply_drop_focuses_the_new_tab() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let tab_id = apply_workspace_drop(&mut tree, DraggedItem::folder("src")).expect("tab_id");
+        let tab_id = apply_workspace_drop(&mut tree, &DraggedItem::folder("src")).expect("tab_id");
         let group = &tree.active_workspace().unwrap().strips[0].window_groups[0];
         assert_eq!(group.active_tab, tab_id);
     }
@@ -267,7 +256,7 @@ mod tests {
             .window_groups
             .clear();
         let tab_id =
-            apply_workspace_drop(&mut tree, DraggedItem::file("readme.md")).expect("tab_id");
+            apply_workspace_drop(&mut tree, &DraggedItem::file("readme.md")).expect("tab_id");
         let strip = &tree.active_workspace().unwrap().strips[0];
         assert_eq!(strip.window_groups.len(), 1);
         assert_eq!(strip.window_groups[0].tabs.len(), 1);
@@ -277,7 +266,7 @@ mod tests {
     #[test]
     fn apply_drop_labels_folder_tab_with_files_prefix() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        apply_workspace_drop(&mut tree, DraggedItem::folder("Documents")).unwrap();
+        apply_workspace_drop(&mut tree, &DraggedItem::folder("Documents")).unwrap();
         let group = &tree.active_workspace().unwrap().strips[0].window_groups[0];
         assert_eq!(group.tabs.last().unwrap().title, "Files — Documents");
     }
@@ -285,7 +274,7 @@ mod tests {
     #[test]
     fn apply_drop_labels_code_file_tab_with_filename_only() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        apply_workspace_drop(&mut tree, DraggedItem::file("main.tsx")).unwrap();
+        apply_workspace_drop(&mut tree, &DraggedItem::file("main.tsx")).unwrap();
         let group = &tree.active_workspace().unwrap().strips[0].window_groups[0];
         assert_eq!(group.tabs.last().unwrap().title, "main.tsx");
     }
@@ -323,7 +312,7 @@ mod tests {
 
         let tab_id = apply_workspace_drop_at(
             &mut tree,
-            DraggedItem::file("main.ts"),
+            &DraggedItem::file("main.ts"),
             strip_id,
             second_group_id,
         )
@@ -347,7 +336,7 @@ mod tests {
         let strip_id = tree.active_workspace().unwrap().strips[0].id;
         // A group id that doesn't exist in the strip → stale target.
         let result =
-            apply_workspace_drop_at(&mut tree, DraggedItem::file("x.ts"), strip_id, 9_999_999);
+            apply_workspace_drop_at(&mut tree, &DraggedItem::file("x.ts"), strip_id, 9_999_999);
         assert!(
             result.is_none(),
             "a drop onto a stale/unknown group must resolve to None, not panic \
@@ -361,7 +350,7 @@ mod tests {
         let group_id = tree.active_workspace().unwrap().strips[0].window_groups[0].id;
         let result = apply_workspace_drop_at(
             &mut tree,
-            DraggedItem::file("x.ts"),
+            &DraggedItem::file("x.ts"),
             crate::shell::state::StripId::new(),
             group_id,
         );
@@ -388,7 +377,7 @@ mod tests {
         .iter()
         .map(|t| t.title.clone())
         .collect();
-        apply_workspace_drop(&mut tree, DraggedItem::file("app.css")).unwrap();
+        apply_workspace_drop(&mut tree, &DraggedItem::file("app.css")).unwrap();
         let titles_after: Vec<String> = tree.active_workspace().unwrap().strips[0].window_groups[0]
             .tabs
             .iter()
