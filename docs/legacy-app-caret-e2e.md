@@ -13,6 +13,20 @@ For each application the harness boots a fresh headless Tilo compositor and:
 5. types a suffix, selects the field, and copies it through Wayland; and
 6. requires Tilo's clipboard mirror to contain the exact combined payload.
 
+Before booting Tilo, the Qt and LibreOffice cases briefly start the same
+installed binary on its toolkit's compositor-independent backend. A crash
+there fails with a distinct `preflight.log` diagnostic: that host cannot test
+Tilo's Wayland compatibility, so the result must not be reported as a
+compositor regression (or as a pass).
+
+On VM hosts where `/usr` is virtiofs-backed, Qt can load shared objects but
+cannot mmap their plugin metadata. The harness copies the installed Qt plugin
+tree byte-for-byte into its private `/dev/shm` case directory and points Qt at
+that ephemeral copy. This changes neither the tested application nor its
+Wayland backend; it only makes the host's installed plugins loadable. Qt and
+LibreOffice also keep their throwaway profiles in tmpfs so host-filesystem
+quirks cannot masquerade as compositor failures.
+
 This fails for lost keyboard focus, a caret cleared by pointer leave, dropped
 or duplicated keys, input routed to the wrong surface, failure to adopt the
 application, or a broken client-to-compositor clipboard path. Each case keeps

@@ -8,6 +8,7 @@ publish.workspace = true
 license.workspace = true
 
 [features]
+netns-e2e = []
 # When set, the hosted-mode compositor (`shell --backend winit`) binds
 # the TILO_TEST_CONTROL Unix socket the same way the headless backend
 # does. A background thread reads JSON commands and injects equivalent

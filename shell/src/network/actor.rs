@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use futures::stream::FuturesUnordered;
 use futures_lite::StreamExt;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
@@ -395,6 +396,12 @@ enum InternalEvent {
         fingerprint: [u8; 32],
         msg: NeighbourMsg,
     },
+    SurfaceFanoutComplete {
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        outcomes: Vec<SurfaceFanoutOutcome>,
+        all_delivered: bool,
+    },
     PersonalFabric {
         ws: WorkspaceId,
         peer: EndpointId,
@@ -424,6 +431,12 @@ enum InternalEvent {
     },
 }
 
+struct SurfaceFanoutOutcome {
+    peer: EndpointId,
+    connection: Option<iroh::endpoint::Connection>,
+    delivered: bool,
+}
+
 enum HostEvent {
     Ready,
     Message {
@@ -447,6 +460,7 @@ struct HostRuntime {
 #[derive(Clone)]
 struct SurfaceStreamProtocol {
     internal_tx: mpsc::Sender<InternalEvent>,
+    input_tx: mpsc::Sender<InternalEvent>,
 }
 
 impl std::fmt::Debug for SurfaceStreamProtocol {
@@ -459,6 +473,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         let peer = connection.remote_id();
         let tx = self.internal_tx.clone();
+        let input_tx = self.input_tx.clone();
         tokio::spawn(async move {
             loop {
                 let Ok(mut recv) = connection.accept_uni().await else {
@@ -491,21 +506,43 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                     continue;
                 };
                 let fingerprint = message_fingerprint(&message_bytes);
-                if tx
-                    .send(InternalEvent::SurfaceFrame {
-                        ws: frame.workspace,
-                        peer,
-                        fingerprint,
-                        msg: frame.message,
-                    })
-                    .await
-                    .is_err()
-                {
+                let event = InternalEvent::SurfaceFrame {
+                    ws: frame.workspace,
+                    peer,
+                    fingerprint,
+                    msg: frame.message,
+                };
+                if !enqueue_surface_event(&tx, &input_tx, event).await {
                     return;
                 }
             }
         });
         Ok(())
+    }
+}
+
+/// Keep latency-sensitive input independent from the lossy media queue. A
+/// receiver that is briefly behind may discard an encoded frame, but must
+/// still accept the following key or pointer event promptly.
+async fn enqueue_surface_event(
+    media_tx: &mpsc::Sender<InternalEvent>,
+    input_tx: &mpsc::Sender<InternalEvent>,
+    event: InternalEvent,
+) -> bool {
+    let is_input = matches!(
+        &event,
+        InternalEvent::SurfaceFrame {
+            msg: NeighbourMsg::RemoteInput { .. },
+            ..
+        }
+    );
+    if is_input {
+        input_tx.send(event).await.is_ok()
+    } else {
+        match media_tx.try_send(event) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        }
     }
 }
 
@@ -632,6 +669,12 @@ struct ActorState {
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
+    /// At most one direct surface fanout per workspace may be dialing or
+    /// writing. A producer can submit frames faster than an unreachable peer's
+    /// dial timeout; retain only the newest pending frame instead of stalling
+    /// the actor or building an unbounded queue of obsolete video.
+    surface_fanout_tasks: HashMap<WorkspaceId, tokio::task::JoinHandle<()>>,
+    pending_surface_frames: HashMap<WorkspaceId, NeighbourMsg>,
     personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
     active_personal_media: HashMap<(EndpointId, [u8; 16]), ActivePersonalMediaTransfer>,
     next_personal_media_generation: u64,
@@ -789,6 +832,11 @@ impl ActorState {
                     }
                 }
                 self.subscribers.remove(&ws);
+                self.peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
+                self.pending_surface_frames.remove(&ws);
+                if let Some(task) = self.surface_fanout_tasks.remove(&ws) {
+                    task.abort();
+                }
                 if let Some(topic) = self.topics.remove(&ws) {
                     topic.pump.abort();
                 }
@@ -816,26 +864,51 @@ impl ActorState {
                 }
             }
             Some(NetCmd::Publish { ws, msg }) => {
-                let gossip_fallback = if matches!(msg, NeighbourMsg::SurfaceFrame { .. }) {
-                    !self.publish_surface_direct(ws, &msg).await
+                if matches!(msg, NeighbourMsg::SurfaceFrame { .. }) {
+                    // The host plane is already connected and independently
+                    // useful. Enqueue it before any direct-peer dial timeout;
+                    // only the compatibility gossip fallback depends on the
+                    // outcome of dedicated media fanout.
+                    publish(
+                        &self.topics,
+                        &self.host_sessions,
+                        ws,
+                        msg.clone(),
+                        false,
+                        false,
+                        true,
+                    )
+                    .await;
+                    if !self.start_surface_fanout(ws, msg.clone()) {
+                        publish(
+                            &self.topics,
+                            &self.host_sessions,
+                            ws,
+                            msg,
+                            false,
+                            true,
+                            false,
+                        )
+                        .await;
+                    }
                 } else {
-                    true
-                };
-                publish(
-                    &self.topics,
-                    &self.host_sessions,
-                    ws,
-                    msg,
-                    false,
-                    gossip_fallback,
-                )
-                .await;
+                    publish(
+                        &self.topics,
+                        &self.host_sessions,
+                        ws,
+                        msg,
+                        false,
+                        true,
+                        true,
+                    )
+                    .await;
+                }
             }
             Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
                 self.publish_workspace_control(ws, msg, route).await;
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
-                publish(&self.topics, &self.host_sessions, ws, msg, true, true).await;
+                publish(&self.topics, &self.host_sessions, ws, msg, true, true, true).await;
             }
             Some(NetCmd::PublishPersonalFabric {
                 ws,
@@ -1002,7 +1075,11 @@ impl ActorState {
     /// currently-known direct participant was reached; otherwise the caller
     /// retains gossip as a compatibility fallback. The workspace host is
     /// still published to separately.
-    async fn publish_surface_direct(&mut self, ws: WorkspaceId, msg: &NeighbourMsg) -> bool {
+    fn start_surface_fanout(&mut self, ws: WorkspaceId, msg: NeighbourMsg) -> bool {
+        if self.surface_fanout_tasks.contains_key(&ws) {
+            self.pending_surface_frames.insert(ws, msg);
+            return true;
+        }
         let wire = SurfaceWireFrame {
             workspace: ws,
             message: msg.clone(),
@@ -1025,37 +1102,76 @@ impl ActorState {
             .filter(|addr| self.peers_seen.contains_key(&(ws, addr.id)))
             .cloned()
             .collect();
-        let mut sent = 0usize;
-        for addr in targets {
-            let peer = addr.id;
-            let connection = if let Some(connection) = self.surface_connections.get(&peer) {
-                connection.clone()
-            } else {
-                let Ok(Ok(connection)) = tokio::time::timeout(
-                    Duration::from_millis(300),
-                    self.endpoint.connect(addr, SURFACE_STREAM_ALPN),
-                )
-                .await
-                else {
-                    continue;
-                };
-                self.surface_connections.insert(peer, connection.clone());
-                connection
-            };
-            let send_frame = async {
-                let mut stream = connection.open_uni().await.map_err(|_| ())?;
-                stream.write_all(&bytes).await.map_err(|_| ())?;
-                stream.finish().map_err(|_| ())?;
-                Ok::<(), ()>(())
-            };
-            match tokio::time::timeout(Duration::from_millis(40), send_frame).await {
-                Ok(Ok(())) => sent = sent.saturating_add(1),
-                _ => {
-                    self.surface_connections.remove(&peer);
-                }
+        // Each viewer is an independent QUIC route. Dial/write them
+        // concurrently so one unreachable peer cannot add 300ms in front of
+        // every healthy viewer (or block later collaboration commands once
+        // per peer). The wall-clock bound stays one dial timeout plus one
+        // write timeout regardless of room size.
+        let cached = self.surface_connections.clone();
+        let endpoint = self.endpoint.clone();
+        let internal_tx = self.internal_tx.clone();
+        let task = tokio::spawn(async move {
+            let mut pending = FuturesUnordered::new();
+            for addr in targets {
+                let peer = addr.id;
+                let cached = cached.get(&peer).cloned();
+                let endpoint = endpoint.clone();
+                let bytes = bytes.clone();
+                pending.push(async move {
+                    let connection = if let Some(connection) = cached {
+                        Some(connection)
+                    } else {
+                        tokio::time::timeout(
+                            Duration::from_millis(300),
+                            endpoint.connect(addr, SURFACE_STREAM_ALPN),
+                        )
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                    };
+                    let Some(connection) = connection else {
+                        return SurfaceFanoutOutcome {
+                            peer,
+                            connection: None,
+                            delivered: false,
+                        };
+                    };
+                    let send_frame = async {
+                        let mut stream = connection.open_uni().await.map_err(|_| ())?;
+                        stream.write_all(&bytes).await.map_err(|_| ())?;
+                        stream.finish().map_err(|_| ())?;
+                        Ok::<(), ()>(())
+                    };
+                    let delivered = matches!(
+                        tokio::time::timeout(Duration::from_millis(40), send_frame).await,
+                        Ok(Ok(()))
+                    );
+                    SurfaceFanoutOutcome {
+                        peer,
+                        connection: Some(connection),
+                        delivered,
+                    }
+                });
             }
-        }
-        workspace_peer_count > 0 && sent == workspace_peer_count
+            let mut outcomes = Vec::new();
+            let mut sent = 0usize;
+            while let Some(outcome) = pending.next().await {
+                if outcome.delivered {
+                    sent = sent.saturating_add(1);
+                }
+                outcomes.push(outcome);
+            }
+            let _ = internal_tx
+                .send(InternalEvent::SurfaceFanoutComplete {
+                    ws,
+                    msg,
+                    outcomes,
+                    all_delivered: workspace_peer_count > 0 && sent == workspace_peer_count,
+                })
+                .await;
+        });
+        self.surface_fanout_tasks.insert(ws, task);
+        true
     }
 
     async fn publish_personal_fabric(
@@ -1548,6 +1664,53 @@ impl ActorState {
                             msg,
                         })
                         .await;
+                }
+            }
+            Some(InternalEvent::SurfaceFanoutComplete {
+                ws,
+                msg,
+                outcomes,
+                all_delivered,
+            }) => {
+                self.surface_fanout_tasks.remove(&ws);
+                if !self.subscribers.contains_key(&ws) {
+                    self.pending_surface_frames.remove(&ws);
+                    return true;
+                }
+                for outcome in outcomes {
+                    if outcome.delivered && self.peers_seen.contains_key(&(ws, outcome.peer)) {
+                        if let Some(connection) = outcome.connection {
+                            self.surface_connections.insert(outcome.peer, connection);
+                        }
+                    } else {
+                        self.surface_connections.remove(&outcome.peer);
+                    }
+                }
+                if !all_delivered {
+                    publish(
+                        &self.topics,
+                        &self.host_sessions,
+                        ws,
+                        msg,
+                        false,
+                        true,
+                        false,
+                    )
+                    .await;
+                }
+                if let Some(next) = self.pending_surface_frames.remove(&ws)
+                    && !self.start_surface_fanout(ws, next.clone())
+                {
+                    publish(
+                        &self.topics,
+                        &self.host_sessions,
+                        ws,
+                        next,
+                        false,
+                        true,
+                        false,
+                    )
+                    .await;
                 }
             }
             Some(InternalEvent::PersonalFabric {
@@ -2261,6 +2424,7 @@ async fn run(
     mut cmd_rx: mpsc::Receiver<NetCmd>,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
+    let (input_tx, mut input_rx) = mpsc::channel(64);
     let gossip = Gossip::builder()
         .max_message_size(MAX_GOSSIP_MESSAGE_BYTES)
         .spawn(endpoint.clone());
@@ -2270,6 +2434,7 @@ async fn run(
             SURFACE_STREAM_ALPN,
             SurfaceStreamProtocol {
                 internal_tx: internal_tx.clone(),
+                input_tx,
             },
         )
         .accept(
@@ -2300,6 +2465,8 @@ async fn run(
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
         surface_connections: HashMap::new(),
+        surface_fanout_tasks: HashMap::new(),
+        pending_surface_frames: HashMap::new(),
         personal_fabric_connections: HashMap::new(),
         active_personal_media: HashMap::new(),
         next_personal_media_generation: 0,
@@ -2316,6 +2483,12 @@ async fn run(
 
     loop {
         tokio::select! {
+            biased;
+            input = input_rx.recv() => {
+                if !state.handle_internal(input).await {
+                    break;
+                }
+            }
             command = cmd_rx.recv() => {
                 if !state.handle_command(command).await {
                     break;
@@ -2338,6 +2511,9 @@ async fn run(
     for (_, host) in state.host_sessions {
         host.pump.abort();
     }
+    for (_, task) in state.surface_fanout_tasks {
+        task.abort();
+    }
     let _ = router.shutdown().await;
 }
 
@@ -2348,8 +2524,8 @@ async fn publish(
     msg: NeighbourMsg,
     shell_checkpoint: bool,
     broadcast_gossip: bool,
+    publish_hosts: bool,
 ) {
-    let Some(topic) = topics.get(&ws) else { return };
     if let NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. } = &msg
         && snapshot.len() > MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES
     {
@@ -2367,25 +2543,45 @@ async fn publish(
             return;
         }
     };
-    if broadcast_gossip && let Err(error) = topic.sender.broadcast(Bytes::from(bytes.clone())).await
-    {
-        tracing::warn!(ws, %error, "iroh gossip publish failed");
-    }
-    for ((session_ws, _), runtime) in host_sessions {
-        if *session_ws != ws {
-            continue;
-        }
-        let result = match retention(&msg, shell_checkpoint) {
-            Some((channel, Retention::Checkpoint)) => {
-                runtime.session.publish_checkpoint(channel, bytes.clone())
+    let retention = retention(&msg, shell_checkpoint);
+
+    // Host clients enqueue synchronously into their already-authenticated
+    // QUIC pumps. Do that before awaiting gossip: a slow or reconnecting
+    // direct mesh must not add its delay to the independent hosted path.
+    // This also keeps collaboration live through a transient failure to join
+    // the gossip topic, provided an authenticated workspace host is ready.
+    if publish_hosts {
+        for ((session_ws, _), runtime) in host_sessions {
+            if *session_ws != ws {
+                continue;
             }
-            Some((channel, Retention::Delta)) => runtime
-                .session
-                .publish_retained_delta(channel, bytes.clone()),
-            None => runtime.session.publish_presence(bytes.clone()),
-        };
-        if let Err(error) = result {
-            tracing::warn!(ws, %error, "workspace host publish failed");
+            let result = match retention {
+                Some((channel, Retention::Checkpoint)) => {
+                    runtime.session.publish_checkpoint(channel, bytes.clone())
+                }
+                Some((channel, Retention::Delta)) => runtime
+                    .session
+                    .publish_retained_delta(channel, bytes.clone()),
+                None => runtime.session.publish_presence(bytes.clone()),
+            };
+            if let Err(error) = result {
+                tracing::warn!(ws, %error, "workspace host publish failed");
+            }
+        }
+    }
+    if broadcast_gossip {
+        if let Some(topic) = topics.get(&ws) {
+            if let Err(error) = topic.sender.broadcast(Bytes::from(bytes)).await {
+                tracing::warn!(ws, %error, "iroh gossip publish failed");
+            }
+        } else if host_sessions
+            .keys()
+            .all(|(session_ws, _)| *session_ws != ws)
+        {
+            tracing::warn!(
+                ws,
+                "collaboration publish has no direct topic or workspace host"
+            );
         }
     }
 }
@@ -3005,6 +3201,47 @@ mod tests {
         (endpoint, lookup)
     }
 
+    #[tokio::test]
+    async fn remote_input_bypasses_a_saturated_surface_frame_queue() {
+        let (endpoint, _lookup) = endpoint().await;
+        let peer = endpoint.id();
+        let (media_tx, mut media_rx) = mpsc::channel(1);
+        let (input_tx, mut input_rx) = mpsc::channel(1);
+        media_tx
+            .send(InternalEvent::Closed { ws: 7 })
+            .await
+            .unwrap();
+
+        let queued = enqueue_surface_event(
+            &media_tx,
+            &input_tx,
+            InternalEvent::SurfaceFrame {
+                ws: 7,
+                peer,
+                fingerprint: [0; 32],
+                msg: NeighbourMsg::RemoteInput {
+                    peer: 9,
+                    surface: 11,
+                    event: vec![1],
+                },
+            },
+        )
+        .await;
+
+        assert!(queued);
+        assert!(matches!(
+            input_rx.try_recv(),
+            Ok(InternalEvent::SurfaceFrame {
+                msg: NeighbourMsg::RemoteInput { surface: 11, .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            media_rx.try_recv(),
+            Ok(InternalEvent::Closed { ws: 7 })
+        ));
+    }
+
     #[test]
     fn nearby_transfer_frame_round_trips_exact_binding_and_bounded_chunk() {
         let wire = PersonalFabricWireFrame {
@@ -3165,6 +3402,92 @@ mod tests {
                 > dedicated_before,
             "surface frame should arrive through the dedicated QUIC ALPN"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn dead_surface_viewer_does_not_stall_later_collaboration_messages() {
+        let (a, lookup_a) = endpoint().await;
+        let (b, lookup_b) = endpoint().await;
+        let (c, lookup_c) = endpoint().await;
+        let source_peer = crate::network::behaviour::peer_liveness_handle(&a.id());
+        let b_addr = b.addr();
+        let c_addr = c.addr();
+        let (cmd_a, task_a) = Actor::spawn(a, lookup_a);
+        let (cmd_b, task_b) = Actor::spawn(b, lookup_b);
+        let (cmd_c, task_c) = Actor::spawn(c, lookup_c);
+        let (event_a, mut rx_a) = mpsc::channel(32);
+        let (event_b, _rx_b) = mpsc::channel(32);
+        let (event_c, mut rx_c) = mpsc::channel(32);
+        for (command, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
+            command
+                .send(NetCmd::JoinWorkspace {
+                    ws: 44,
+                    on_event: events,
+                })
+                .await
+                .unwrap();
+        }
+        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+        cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
+        let mut joined = HashSet::new();
+        while joined.len() < 2 {
+            if let NetEvent::PeerJoined { peer, .. } = timeout(Duration::from_secs(10), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                joined.insert(peer);
+            }
+        }
+
+        // Leave A's authenticated membership evidence intact while making B's
+        // dedicated media address unreachable. A direct dial may consume the
+        // full media timeout, but it must happen outside the actor loop.
+        task_b.abort();
+        let _ = task_b.await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let started = Instant::now();
+        cmd_a
+            .send(NetCmd::Publish {
+                ws: 44,
+                msg: NeighbourMsg::SurfaceFrame {
+                    surface: 9,
+                    source_peer,
+                    encoded_h264: vec![0, 0, 0, 1, 0x65],
+                    ts: 1,
+                },
+            })
+            .await
+            .unwrap();
+        cmd_a
+            .send(NetCmd::Publish {
+                ws: 44,
+                msg: NeighbourMsg::SyncReq {
+                    since: vec![],
+                    room: "responsive".into(),
+                    invite_id: None,
+                },
+            })
+            .await
+            .unwrap();
+        loop {
+            let event = timeout(Duration::from_millis(250), rx_c.recv())
+                .await
+                .expect("dead media viewer stalled the collaboration actor")
+                .unwrap();
+            if matches!(
+                event,
+                NetEvent::Msg {
+                    msg: NeighbourMsg::SyncReq { ref room, .. },
+                    ..
+                } if room == "responsive"
+            ) {
+                break;
+            }
+        }
+        assert!(started.elapsed() < Duration::from_millis(250));
+        task_a.abort();
+        task_c.abort();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

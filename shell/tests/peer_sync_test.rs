@@ -10,12 +10,12 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
 use shell::network::{
-    Actor, NeighbourMsg, NetCmd, NetEvent,
+    Actor, NeighbourMsg, NetCmd, NetEvent, WorkspaceControlRoute,
     invite::{make_invite_token, validate_invite_token},
 };
 use shell::shell::state::{PeerOrigin, WorkspaceTree};
@@ -69,6 +69,29 @@ async fn wait_peer_joined(events: &mut mpsc::Receiver<NetEvent>) {
     })
     .await
     .expect("Iroh gossip mesh formed");
+}
+
+async fn wait_remote_input(events: &mut mpsc::Receiver<NetEvent>, surface: u64, expected: u8) {
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(NetEvent::Msg {
+                msg:
+                    NeighbourMsg::RemoteInput {
+                        surface: received_surface,
+                        event,
+                        ..
+                    },
+                ..
+            }) = events.recv().await
+                && received_surface == surface
+                && event.as_slice() == [expected]
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("exact-target input arrived");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -154,6 +177,49 @@ async fn presence_round_trips_over_iroh() {
     })
     .await
     .expect("presence arrived");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn warm_exact_target_input_stays_below_the_interactive_p95_budget() {
+    const SURFACE: u64 = 77;
+    const SAMPLES: usize = 24;
+
+    let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
+    let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
+    let target = addr_b.id;
+    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+    wait_peer_joined(&mut events_a).await;
+    wait_peer_joined(&mut events_b).await;
+
+    let send = |sequence: u8| NetCmd::PublishWorkspaceControl {
+        ws: WS,
+        msg: NeighbourMsg::RemoteInput {
+            peer: 7,
+            surface: SURFACE,
+            event: vec![sequence],
+        },
+        route: WorkspaceControlRoute::Direct { target },
+    };
+    // The first publication may establish the authenticated QUIC connection;
+    // interactive latency is the steady-state path after collaboration has
+    // started, so warm it outside the sample distribution.
+    cmd_a.send(send(u8::MAX)).await.expect("warm input queued");
+    wait_remote_input(&mut events_b, SURFACE, u8::MAX).await;
+
+    let mut latencies = Vec::with_capacity(SAMPLES);
+    for sequence in 0..u8::try_from(SAMPLES).expect("sample count fits u8") {
+        let started = Instant::now();
+        cmd_a.send(send(sequence)).await.expect("input queued");
+        wait_remote_input(&mut events_b, SURFACE, sequence).await;
+        latencies.push(started.elapsed());
+    }
+    latencies.sort_unstable();
+    let p95 = latencies[latencies.len().saturating_mul(95) / 100];
+    eprintln!("warm exact-target Iroh input p95: {p95:?}");
+    assert!(
+        p95 < Duration::from_millis(50),
+        "warm authenticated input p95 must stay below 50 ms, got {p95:?}; samples={latencies:?}"
+    );
 }
 
 #[test]

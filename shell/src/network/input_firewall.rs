@@ -285,6 +285,17 @@ impl RemoteInputFirewall {
         &self.view
     }
 
+    /// Re-resolve a participant's last accepted surface-local pointer
+    /// position against the current compositor view. Button events carry no
+    /// coordinates, so the shared Wayland pointer must be restored here when
+    /// another participant moved it in the meantime.
+    pub fn peer_cursor_global(&self, peer: PeerId, surface: SurfaceId) -> Option<(f64, f64)> {
+        let (cursor_surface, local) = self.peers.get(&peer)?.cursor?;
+        (cursor_surface == surface)
+            .then(|| self.locate(surface, local).ok())
+            .flatten()
+    }
+
     /// Record that the host used their own keyboard or pointer.
     pub fn note_local_input(&mut self, now: Instant) {
         self.last_local_input = Some(now);
@@ -357,16 +368,25 @@ impl RemoteInputFirewall {
         }
 
         let outcome = self.check(peer, surface, event, now);
-        if outcome.is_ok()
-            && let InputEvent::PointerMotion { x, y } = event
-        {
-            // Keep the coordinate in the same surface-local space it arrived
-            // in. The accepted event is translated to output space for seat
-            // delivery, but a later coordinate-less button has to be checked
-            // with `locate` again against the current tile position/z-order.
-            // Caching the translated coordinate made every click fail as soon
-            // as a real app's tile had a non-zero origin.
-            self.peer_mut(peer).cursor = Some((surface, (*x, *y)));
+        if outcome.is_ok() {
+            match event {
+                InputEvent::PointerMotion { x, y } => {
+                    // Keep the coordinate in the same surface-local space it
+                    // arrived in. A later coordinate-less button is checked
+                    // against the current tile placement again.
+                    self.peer_mut(peer).cursor = Some((surface, (*x, *y)));
+                }
+                InputEvent::PointerLeave { .. } => {
+                    // A leave invalidates this peer's coordinate. Another
+                    // participant may still keep the shared wl_pointer over a
+                    // client, but this peer must move again before clicking.
+                    self.peer_mut(peer).cursor = None;
+                }
+                InputEvent::PointerButton { .. }
+                | InputEvent::PointerEnter { .. }
+                | InputEvent::KeyboardFocus { .. }
+                | InputEvent::Key { .. } => {}
+            }
         }
         outcome
     }
@@ -398,7 +418,9 @@ impl RemoteInputFirewall {
                     return Err(Denial::SurfaceMismatch);
                 }
                 self.locate(surface, local)?;
-                self.spend_budget(peer, now, *pressed)?;
+                if *pressed {
+                    self.spend_budget(peer, now, true)?;
+                }
                 Ok(InputEvent::PointerButton {
                     button: *button,
                     pressed: *pressed,
@@ -419,7 +441,6 @@ impl RemoteInputFirewall {
                 if *target != surface {
                     return Err(Denial::SurfaceMismatch);
                 }
-                self.spend_budget(peer, now, false)?;
                 Ok(event.clone())
             }
             InputEvent::KeyboardFocus {
@@ -432,7 +453,9 @@ impl RemoteInputFirewall {
                 if *focused && self.view.rect(surface).is_none() {
                     return Err(Denial::NotOnScreen);
                 }
-                self.spend_budget(peer, now, false)?;
+                if *focused {
+                    self.spend_budget(peer, now, false)?;
+                }
                 Ok(event.clone())
             }
             InputEvent::Key {
@@ -442,7 +465,9 @@ impl RemoteInputFirewall {
             } => {
                 let verdict = self.scrub_key(peer, surface, *keysym, *pressed, *modifiers);
                 verdict?;
-                self.spend_budget(peer, now, false)?;
+                if *pressed {
+                    self.spend_budget(peer, now, false)?;
+                }
                 Ok(event.clone())
             }
         }
@@ -709,6 +734,39 @@ mod tests {
                 Instant::now()
             ),
             Err(Denial::NoPointerPosition),
+        );
+    }
+
+    #[test]
+    fn pointer_leave_invalidates_the_peers_click_coordinate() {
+        let mut fw = firewall();
+        let now = Instant::now();
+        fw.review(
+            PEER,
+            SHARED,
+            &InputEvent::PointerMotion { x: 10.0, y: 20.0 },
+            now,
+        )
+        .expect("accepted motion");
+        fw.review(
+            PEER,
+            SHARED,
+            &InputEvent::PointerLeave { surface: SHARED },
+            now + Duration::from_millis(1),
+        )
+        .expect("accepted leave");
+
+        assert_eq!(
+            fw.review(
+                PEER,
+                SHARED,
+                &InputEvent::PointerButton {
+                    button: 272,
+                    pressed: true,
+                },
+                now + Duration::from_millis(2),
+            ),
+            Err(Denial::NoPointerPosition)
         );
     }
 
@@ -1516,6 +1574,76 @@ mod production_path {
 
         assert_eq!(verdict, Err(Denial::PhysicalPriority));
         assert_eq!(pointer_at(&state), before);
+    }
+
+    #[test]
+    fn physical_priority_mutes_new_actions_but_allows_held_input_cleanup() {
+        const SHIFT: u32 = 42;
+        const A: u32 = 30;
+        const LEFT: u32 = 272;
+        let mut state = staged();
+        establish_cursor(&mut state);
+        state
+            .review_remote_input(
+                PEER,
+                SHARED,
+                InputEvent::Key {
+                    keysym: SHIFT,
+                    pressed: true,
+                    modifiers: 0,
+                },
+            )
+            .expect("remote Shift press before host takeover");
+        state
+            .review_remote_input(
+                PEER,
+                SHARED,
+                InputEvent::PointerButton {
+                    button: LEFT,
+                    pressed: true,
+                },
+            )
+            .expect("remote drag before host takeover");
+
+        state
+            .remote_input_firewall
+            .note_local_input(std::time::Instant::now());
+        assert_eq!(
+            state.review_remote_input(
+                PEER,
+                SHARED,
+                InputEvent::Key {
+                    keysym: A,
+                    pressed: true,
+                    modifiers: 0,
+                },
+            ),
+            Err(Denial::PhysicalPriority),
+            "new remote actions remain muted"
+        );
+        state
+            .review_remote_input(
+                PEER,
+                SHARED,
+                InputEvent::Key {
+                    keysym: SHIFT,
+                    pressed: false,
+                    modifiers: 0,
+                },
+            )
+            .expect("key release is cleanup, not a new action");
+        state
+            .review_remote_input(
+                PEER,
+                SHARED,
+                InputEvent::PointerButton {
+                    button: LEFT,
+                    pressed: false,
+                },
+            )
+            .expect("button release is cleanup, not a new action");
+        assert!(!key_is_down(&state, SHIFT));
+        assert!(!state.remote_seats.button_transition(PEER, LEFT, false));
     }
 
     /// Kill switch: one press stops every peer, and keeps them stopped.

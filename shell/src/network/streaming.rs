@@ -156,6 +156,19 @@ impl ShareRegistry {
             .collect()
     }
 
+    /// Stable disclosure rows for trusted chrome and semantic inspection.
+    /// Sorted so a refresh changes only when the authority changes, never
+    /// because `HashMap` iteration happened to move.
+    pub fn disclosure(&self) -> Vec<(PeerId, SurfaceId, bool)> {
+        let mut rows = self
+            .shares
+            .iter()
+            .map(|(&(peer, surface), share)| (peer, surface, !share.read_only))
+            .collect::<Vec<_>>();
+        rows.sort_unstable();
+        rows
+    }
+
     /// Flip the `read_only` flag on an existing share; no-op if absent — callers needing creation-on-toggle should `insert` first.
     pub fn set_read_only(&mut self, peer: PeerId, surface: SurfaceId, read_only: bool) {
         if let Some(share) = self.shares.get_mut(&(peer, surface)) {
@@ -294,6 +307,18 @@ mod tests {
     }
 
     // `StreamingThrottle` unit tests moved into the `tilo_callstream` crate's `throttle` module.
+
+    #[test]
+    fn disclosure_reports_view_and_control_authority_stably() {
+        let mut registry = ShareRegistry::new();
+        registry.insert(9, 42, StreamingShare::new());
+        registry.insert(3, 77, StreamingShare { read_only: true });
+
+        assert_eq!(registry.disclosure(), vec![(3, 77, false), (9, 42, true)]);
+
+        registry.remove(9, 42);
+        assert_eq!(registry.disclosure(), vec![(3, 77, false)]);
+    }
 
     /// A synthesised `RemoteInput` reaches the seat when read/write; dropped when the owner flips `read_only`.
     #[test]
