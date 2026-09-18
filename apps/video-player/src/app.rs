@@ -95,6 +95,7 @@ struct LibraryRowHit {
 #[derive(Clone)]
 struct SharedRowHit {
     id: String,
+    jump: Option<Rect>,
     remove: Rect,
     annotation: bool,
 }
@@ -334,6 +335,9 @@ pub struct PlayerApp {
     actions: ui::ActionHost,
     shared_library: crate::shared::SharedLibrary,
     shot_shared: bool,
+    /// Opaque source identity for durable shared playlists and markers. It
+    /// survives reopening the same local media, unlike the per-open source ID.
+    current_media_ref: Option<String>,
     current_source_id: Option<String>,
     source_generation: u64,
     search_cache: RefCell<Option<SearchCache>>,
@@ -372,6 +376,7 @@ impl PlayerApp {
             media: crate::actions::MediaAvailability {
                 has_media: self.player.has_media(),
                 source_id: self.current_source_id.clone(),
+                media_ref: self.current_media_ref.clone(),
                 can_control_transport: self
                     .collab
                     .as_ref()
@@ -558,6 +563,7 @@ impl PlayerApp {
             media: crate::actions::MediaAvailability {
                 has_media: false,
                 source_id: None,
+                media_ref: None,
                 can_control_transport: true,
             },
             settings: crate::actions::PlaybackSettingsState {
@@ -616,6 +622,7 @@ impl PlayerApp {
             actions: ui::ActionHost::new(),
             shared_library: crate::shared::SharedLibrary::default(),
             shot_shared: false,
+            current_media_ref: None,
             current_source_id: None,
             source_generation: 0,
             search_cache: RefCell::new(None),
@@ -798,13 +805,13 @@ impl PlayerApp {
                     annotations: vec![
                         crate::shared::TimestampAnnotation {
                             id: "opening".into(),
-                            media_ref: self.current_source_id.clone().unwrap_or_default(),
+                            media_ref: self.current_media_ref.clone().unwrap_or_default(),
                             time_ms: 8_000,
                             text: "Opening detail".into(),
                         },
                         crate::shared::TimestampAnnotation {
                             id: "bookmark".into(),
-                            media_ref: self.current_source_id.clone().unwrap_or_default(),
+                            media_ref: self.current_media_ref.clone().unwrap_or_default(),
                             time_ms: 45_000,
                             text: String::new(),
                         },
@@ -1019,6 +1026,7 @@ impl PlayerApp {
         })?;
         self.source_generation = generation;
         self.current_source_id = Some(local_source_token(source, generation));
+        self.current_media_ref = Some(local_source_token(source, 0));
         Ok(())
     }
 
@@ -1055,6 +1063,7 @@ impl PlayerApp {
         self.player = player;
         self.title = "No media".into();
         self.current_source_id = None;
+        self.current_media_ref = None;
         self.current_queue_id = None;
         self.invalidate_search_cache();
         self.dirty = true;
@@ -1138,6 +1147,25 @@ impl PlayerApp {
         }
     }
 
+    /// Route marker navigation through the same canonical resource action used
+    /// by global search and agents. Shared marker resources live in the
+    /// document, so this resolves them against the active document rather than
+    /// manufacturing a local playback closure.
+    fn request_annotation_jump(&mut self, doc: &AutoCommit, annotation_id: &str) {
+        let (audio, subtitles, chapters) = self.decoder_metadata();
+        let context = self.action_context(&audio, &subtitles, &chapters);
+        let resource_id = crate::actions::annotation_resource_id(annotation_id);
+        let Some(resource) = crate::actions::resource(&context, doc, &resource_id) else {
+            return;
+        };
+        let Ok(binding) = tilo_actions::ActionBinding::unit_for(&resource, "jump") else {
+            return;
+        };
+        if let Ok(invocation) = binding.invoke(()) {
+            self.library_control_invocations.push_back(invocation);
+        }
+    }
+
     fn dispatch_shared(&mut self, doc: &mut AutoCommit, action: &crate::shared::SharedAction) {
         let context = crate::shared::history_context(action);
         self.actions
@@ -1148,7 +1176,7 @@ impl PlayerApp {
     }
 
     fn add_current_to_watch_later(&mut self, doc: &mut AutoCommit) {
-        let Some(media_ref) = self.current_source_id.clone() else {
+        let Some(media_ref) = self.current_media_ref.clone() else {
             return;
         };
         let playlist_id = "watch-later".to_string();
@@ -1201,7 +1229,7 @@ impl PlayerApp {
     }
 
     fn bookmark_current_time(&mut self, doc: &mut AutoCommit) {
-        let Some(media_ref) = self.current_source_id.clone() else {
+        let Some(media_ref) = self.current_media_ref.clone() else {
             return;
         };
         let time_ms = self.player.position_ms();
@@ -1416,6 +1444,10 @@ impl PlayerApp {
             | PlayerOperation::JumpToChapter { seconds, .. } => {
                 self.player.seek_to_ms((seconds.max(0.0) * 1000.0) as u64);
             }
+            PlayerOperation::JumpToAnnotation { time_ms, .. } => {
+                self.player.seek_to_ms(time_ms);
+                self.player.reveal_controls();
+            }
             PlayerOperation::SeekBySeconds(seconds) => {
                 let current = self.player.position_ms() as f64;
                 let duration = self.player.duration_ms() as f64;
@@ -1555,6 +1587,13 @@ impl PlayerApp {
                 }) =>
             {
                 return Err("the chapter changed; refresh search and try again".into());
+            }
+            PlayerOperation::JumpToAnnotation { media_ref, .. }
+                if self.current_media_ref.as_deref() != Some(media_ref) =>
+            {
+                return Err(
+                    "this review marker belongs to a different video on this device".into(),
+                );
             }
             _ => {}
         }
@@ -2449,6 +2488,7 @@ impl PlayerApp {
             );
             self.shared_row_hits.push(SharedRowHit {
                 id: playlist.id.clone(),
+                jump: None,
                 remove,
                 annotation: false,
             });
@@ -2499,6 +2539,14 @@ impl PlayerApp {
                 panel.x1 - 12.0,
                 *row_y + row_h - 4.0,
             );
+            let matching_media = self.player.has_media()
+                && self.current_media_ref.as_deref() == Some(annotation.media_ref.as_str());
+            let jump = matching_media.then_some(Rect::new(
+                remove.x0 - 6.0 - remove_w,
+                *row_y + 4.0,
+                remove.x0 - 6.0,
+                *row_y + row_h - 4.0,
+            ));
             let text = if annotation.text.is_empty() {
                 format!("Bookmark · {:.1}s", annotation.time_ms as f64 / 1000.0)
             } else {
@@ -2538,7 +2586,7 @@ impl PlayerApp {
                 Rect::new(
                     panel.x0 + 18.0,
                     *row_y + 4.0,
-                    remove.x0 - 8.0,
+                    jump.map_or(remove.x0, |jump| jump.x0) - 8.0,
                     *row_y + row_h - 4.0,
                 ),
                 &text,
@@ -2556,8 +2604,25 @@ impl PlayerApp {
                     .text_size(11.0)
                     .hovered(remove.contains(self.last_cursor)),
             );
+            if let Some(jump) = jump {
+                Button::paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &ButtonFace::new(jump, "Jump")
+                        .primary()
+                        .text_size(11.0)
+                        .focused(
+                            self.library_focus_id.as_deref()
+                                == Some(format!("shared-jump-{}", annotation.id).as_str()),
+                        )
+                        .hovered(jump.contains(self.last_cursor)),
+                );
+            }
             self.shared_row_hits.push(SharedRowHit {
                 id: annotation.id.clone(),
+                jump,
                 remove,
                 annotation: true,
             });
@@ -2583,6 +2648,14 @@ impl PlayerApp {
                 && self.shared_bookmark_rect.contains(self.last_cursor)
             {
                 self.bookmark_current_time(state);
+            } else if self.library_tab == LibraryTab::Shared
+                && let Some(row) = self
+                    .shared_row_hits
+                    .iter()
+                    .find(|row| row.jump.is_some_and(|jump| jump.contains(self.last_cursor)))
+                    .cloned()
+            {
+                self.request_annotation_jump(state, &row.id);
             } else if self.library_tab == LibraryTab::Shared
                 && let Some(row) = self
                     .shared_row_hits
@@ -2692,6 +2765,33 @@ impl PlayerApp {
     }
 }
 
+fn shared_accessibility_targets(app: &PlayerApp) -> Vec<(String, String, Rect)> {
+    let mut targets = Vec::new();
+    for row in &app.shared_row_hits {
+        if row.annotation {
+            if let Some(jump) = row.jump {
+                targets.push((
+                    format!("shared-jump-{}", row.id),
+                    format!("video-player.shared.jump.annotation.{}", row.id),
+                    jump,
+                ));
+            }
+            targets.push((
+                format!("shared-delete-{}", row.id),
+                format!("video-player.shared.delete.annotation.{}", row.id),
+                row.remove,
+            ));
+        } else {
+            targets.push((
+                format!("shared-delete-{}", row.id),
+                format!("video-player.shared.delete.playlist.{}", row.id),
+                row.remove,
+            ));
+        }
+    }
+    targets
+}
+
 fn shared_accessibility_nodes(app: &PlayerApp) -> Vec<ui::a11y::AccessNode> {
     use ui::a11y::{AccessNode, AccessState, Role};
     let mut nodes = vec![
@@ -2716,27 +2816,28 @@ fn shared_accessibility_nodes(app: &PlayerApp) -> Vec<ui::a11y::AccessNode> {
                 ..Default::default()
             }),
     ];
-    nodes.extend(app.shared_row_hits.iter().map(|row| {
-        let kind = if row.annotation {
-            "annotation"
-        } else {
-            "playlist"
-        };
-        AccessNode::new(Role::Button)
-            .with_name(if row.annotation {
-                "Delete timestamp annotation"
-            } else {
-                "Delete shared playlist"
-            })
-            .with_action_target(format!("video-player.shared.delete.{kind}.{}", row.id))
-            .with_bounds(row.remove)
-            .with_state(AccessState {
-                focusable: true,
-                focused: app.library_focus_id.as_deref()
-                    == Some(format!("shared-delete-{}", row.id).as_str()),
-                ..Default::default()
-            })
-    }));
+    nodes.extend(
+        shared_accessibility_targets(app)
+            .into_iter()
+            .map(|(focus, target, rect)| {
+                let is_jump = focus.starts_with("shared-jump-");
+                AccessNode::new(Role::Button)
+                    .with_name(if is_jump {
+                        "Jump to timestamp annotation"
+                    } else if target.contains(".annotation.") {
+                        "Delete timestamp annotation"
+                    } else {
+                        "Delete shared playlist"
+                    })
+                    .with_action_target(target)
+                    .with_bounds(rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: app.library_focus_id.as_deref() == Some(focus.as_str()),
+                        ..Default::default()
+                    })
+            }),
+    );
     nodes
 }
 
@@ -2863,7 +2964,7 @@ impl Widget for PlayerApp {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if kind == tilo_actions::OperationKind::Document {
@@ -2876,6 +2977,25 @@ impl Widget for PlayerApp {
             return Err("open a video before using this playback control".into());
         }
         self.validate_dynamic_target(&operation)?;
+        if let PlayerOperation::JumpToAnnotation {
+            id,
+            media_ref,
+            time_ms,
+        } = &operation
+        {
+            let annotation_is_current =
+                crate::shared::read(doc)
+                    .annotations
+                    .iter()
+                    .any(|annotation| {
+                        annotation.id == *id
+                            && annotation.media_ref == *media_ref
+                            && annotation.time_ms == *time_ms
+                    });
+            if !annotation_is_current {
+                return Err("the review marker changed; refresh search and try again".into());
+            }
+        }
         if self
             .collab
             .as_ref()
@@ -2890,6 +3010,7 @@ impl Widget for PlayerApp {
                     | crate::actions::PlayerOperation::SetLoop(_)
                     | crate::actions::PlayerOperation::SetPlaybackRate(_)
                     | crate::actions::PlayerOperation::JumpToChapter { .. }
+                    | crate::actions::PlayerOperation::JumpToAnnotation { .. }
             )
         {
             return Err("this player is following the collaborative host".into());
@@ -3354,10 +3475,11 @@ impl Widget for PlayerApp {
             [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
                 Some(self.shared_bookmark_rect)
             }
-            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => self
-                .shared_row_hits
-                .get(index.saturating_sub(8))
-                .map(|row| row.remove),
+            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                shared_accessibility_targets(self)
+                    .get(index.saturating_sub(8))
+                    .map(|(_, _, rect)| *rect)
+            }
             [index] => {
                 let library_index = index.saturating_sub(6);
                 let play_count = self.library_row_hits.len();
@@ -3440,10 +3562,13 @@ impl Widget for PlayerApp {
                 true
             }
             [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                let Some(row) = self.shared_row_hits.get(index.saturating_sub(8)) else {
+                let Some((focus, _, _)) = shared_accessibility_targets(self)
+                    .get(index.saturating_sub(8))
+                    .cloned()
+                else {
                     return false;
                 };
-                self.library_focus_id = Some(format!("shared-delete-{}", row.id));
+                self.library_focus_id = Some(focus);
                 self.dirty = true;
                 true
             }
@@ -3531,6 +3656,11 @@ impl Widget for PlayerApp {
         {
             self.bookmark_current_time(state);
             true
+        } else if let Some(rest) = target.strip_prefix("video-player.shared.jump.annotation.")
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.request_annotation_jump(state, rest);
+            true
         } else if let Some(rest) = target.strip_prefix("video-player.shared.delete.annotation.")
             && matches!(action, ui::a11y::Action::Activate)
         {
@@ -3615,6 +3745,14 @@ impl Widget for PlayerApp {
             && self.library_clear_rect.contains(self.last_cursor)
         {
             Some("Clear recent videos from this device")
+        } else if self.library_visible
+            && self.library_tab == LibraryTab::Shared
+            && self
+                .shared_row_hits
+                .iter()
+                .any(|row| row.jump.is_some_and(|jump| jump.contains(self.last_cursor)))
+        {
+            Some("Jump to this timestamp in the current video")
         } else if self.library_row_hits.iter().any(|row| {
             row.remove
                 .is_some_and(|rect| rect.contains(self.last_cursor))
@@ -3797,6 +3935,87 @@ mod tests {
         assert!(source_id.starts_with("local-media-"));
         assert!(!source_id.contains("/home/alice"));
         assert!(!source_id.contains("launch-cut"));
+    }
+
+    #[test]
+    fn durable_marker_media_reference_survives_a_reopen_but_source_actions_stay_fresh() {
+        let mut app = synth_app();
+        let path = Path::new("/tmp/review-cut.mp4");
+        app.open_path(path).expect("first source identity");
+        let first_source_id = app.current_source_id.clone();
+        let media_ref = app.current_media_ref.clone();
+        app.open_path(path).expect("reopened source identity");
+        assert_ne!(app.current_source_id, first_source_id);
+        assert_eq!(app.current_media_ref, media_ref);
+        assert!(
+            !app.current_media_ref
+                .as_deref()
+                .unwrap_or_default()
+                .contains("review-cut"),
+            "the durable reference remains opaque"
+        );
+    }
+
+    #[test]
+    fn marker_jump_control_uses_its_canonical_resource_action() {
+        let mut app = synth_app();
+        app.open_path(Path::new("/tmp/review-cut.mp4"))
+            .expect("source identity");
+        let mut doc = AutoCommit::new();
+        app.dispatch_shared(
+            &mut doc,
+            &crate::shared::SharedAction::CreateAnnotation {
+                id: "review-marker".into(),
+                media_ref: app.current_media_ref.clone().unwrap(),
+                time_ms: 12_500,
+                text: "Tighten this cut".into(),
+            },
+        );
+        app.request_annotation_jump(&doc, "review-marker");
+        let invocation = Widget::take_control_invocation(&mut app).expect("marker jump intent");
+        assert_eq!(
+            invocation.address.resource,
+            crate::actions::annotation_resource_id("review-marker")
+        );
+        assert_eq!(invocation.address.action, "jump");
+    }
+
+    #[test]
+    fn marker_jump_refuses_a_stale_document_target_before_seeking() {
+        let mut app = synth_app();
+        app.open_path(Path::new("/tmp/review-cut.mp4"))
+            .expect("source identity");
+        let media_ref = app.current_media_ref.clone().expect("durable media ref");
+        let mut doc = AutoCommit::new();
+        app.dispatch_shared(
+            &mut doc,
+            &crate::shared::SharedAction::CreateAnnotation {
+                id: "review-marker".into(),
+                media_ref: media_ref.clone(),
+                time_ms: 12_500,
+                text: String::new(),
+            },
+        );
+        let encoded = tilo_actions::EncodedAction::encode_operation(
+            crate::actions::OPERATION_TYPE,
+            &PlayerOperation::JumpToAnnotation {
+                id: "review-marker".into(),
+                media_ref,
+                time_ms: 14_000,
+            },
+        )
+        .expect("operation encodes");
+        let error = Widget::invoke_resource_operation(
+            &mut app,
+            tilo_actions::OperationKind::View,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &root(),
+        )
+        .expect_err("changed timestamp must be refused");
+        assert!(error.contains("review marker changed"));
+        assert_ne!(app.player.position_ms(), 14_000);
     }
 
     #[test]
