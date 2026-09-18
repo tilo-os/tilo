@@ -11,7 +11,7 @@ pub(super) struct CallerPalette {
 }
 
 impl FrameHarness {
-    fn caller_resources(&self) -> Vec<qos_actions::Resource> {
+    pub(super) fn caller_resources(&self) -> Vec<qos_actions::Resource> {
         let mut resources = self.caller_palette.resources.clone();
         resources.extend(self.root.caller_view_resources(&self.state.doc).into_iter().filter(|resource| {
             resource.actions.iter().all(|action| action.kind == qos_actions::OperationKind::View)
@@ -26,6 +26,7 @@ impl FrameHarness {
         if let Some(palette) = &mut self.caller_palette.palette {
             palette.refresh_visible_resources(&resources);
         }
+        self.refresh_system_search();
         self.relayout();
     }
 
@@ -33,7 +34,7 @@ impl FrameHarness {
     /// recovery; this frame never acknowledges an effect or mutates its document.
     /// Browser-owned command search opens the same authoritative palette.
     pub fn open_caller_search(&mut self, query: &str) -> Result<(), String> {
-        if self.root.modal_capture().is_some() || self.focus_trap_active || self.caller_palette.pending.is_some() { return Err("Finish the current dialog or command first".into()); }
+        if self.global_search_query().is_some() || self.global_search_pending() || self.root.modal_capture().is_some() || self.focus_trap_active || self.caller_palette.pending.is_some() { return Err("Finish the current dialog or command first".into()); }
         let mut palette = ActionPalette::with_host_text(self.text.font_system.locale().to_owned());
         palette.load_open_resources(&self.caller_resources());
         palette.open();
@@ -56,6 +57,7 @@ impl FrameHarness {
                 && self.root.modal_capture().is_none()
                 && !self.focus_trap_active
                 && self.caller_palette.pending.is_none()
+                && !self.global_search_pending()
             {
                 let mut palette =
                     ActionPalette::with_host_text(self.text.font_system.locale().to_owned());

@@ -424,9 +424,11 @@ pub struct FrameOutput<'a> {
 }
 
 mod caller_palette;
+pub mod system_search;
 
 pub struct FrameHarness {
     caller_palette: caller_palette::CallerPalette,
+    system_search: system_search::SystemSearch,
     component_wake: Option<ComponentRunnerWakeState>,
     state: State,
     root: Box<dyn Widget>,
@@ -793,6 +795,7 @@ impl FrameHarness {
         }
         let mut d = Self {
             caller_palette: Default::default(),
+            system_search: Default::default(),
             component_wake,
             state,
             root,
@@ -1081,7 +1084,7 @@ impl FrameHarness {
             device_size: ((f64::from(self.viewport.0) * self.input_scale).ceil() as u32,
                           (f64::from(self.viewport.1) * self.input_scale).ceil() as u32),
             semantics: self.inspection(),
-            ime: self.caller_palette.palette.as_ref().and_then(|p| crate::ime::ImeWindowState::from_widget(p.presentation_widgets().0)).or_else(|| self.focused.and_then(|id| self.inspect_node(id, crate::ime::ImeWindowState::from_widget).ok().flatten())),
+            ime: self.system_search_ime().or_else(|| self.caller_palette.palette.as_ref().and_then(|p| crate::ime::ImeWindowState::from_widget(p.presentation_widgets().0))).or_else(|| self.focused.and_then(|id| self.inspect_node(id, crate::ime::ImeWindowState::from_widget).ok().flatten())),
             needs_animation_frame: self.presentation_roots().iter().any(|root| root.needs_animation_frame()),
             next_wake_deadline: self.presentation_roots().iter().filter_map(|root| root.next_wake_deadline()).min(),
             needs_redraw: self.presentation_roots().iter().any(|root| root.needs_redraw()) || !self.bound_invocations.is_empty() || !self.pending_control_invocations.is_empty() || self.component_wake.as_ref().is_some_and(|wake| wake.dirty.get()),
@@ -1421,6 +1424,8 @@ impl FrameHarness {
         }
 
         self.draw_caller_palette();
+        self.refresh_system_search();
+        self.draw_system_search();
 
         // One `relayout` is one rendered frame; commit it, folding in any
         // `handle_event` time banked by a preceding `send`.
@@ -1650,6 +1655,7 @@ impl FrameHarness {
     /// current frame — the exact `(NodeId, Node)` list that reaches AT-SPI2 /
     /// Orca and the built-in screen reader, with the driver's focus marked.
     pub fn a11y_nodes(&self) -> Vec<(accesskit::NodeId, accesskit::Node)> {
+        if let Some(update) = self.system_search_a11y() { return update.nodes; }
         self.drain_component_wakes();
         let exported = self.bindings.exported_nodes(&self.node_map);
         if self.history.is_none() { return build_tree_update_bound(self.root.as_ref(), &exported.nodes, exported.focus(self.focused), 1.0).nodes; }
@@ -1676,6 +1682,7 @@ impl FrameHarness {
     /// element inside it, not the widget, so a test can assert where the user
     /// actually is.
     pub fn a11y_focus(&self) -> Option<(accesskit::NodeId, accesskit::Node)> {
+        if let Some(update) = self.system_search_a11y() { return update.nodes.into_iter().find(|(id, _)| *id == update.focus); }
         self.drain_component_wakes();
         let exported = self.bindings.exported_nodes(&self.node_map);
         let update = build_presentation_tree_bound(&self.presentation_roots(), &exported.nodes, exported.focus(self.focused), 1.0);
@@ -1707,6 +1714,11 @@ impl FrameHarness {
     ) -> Result<(), String> {
         use crate::accesskit_bridge::A11yTarget;
         self.pump_component_wakes();
+        if self.global_search_query().is_some() {
+            let handled = self.perform_system_search_a11y(target, action);
+            self.finish_system_search(); self.relayout();
+            return if handled { Ok(()) } else { Err("system search owns input".into()) };
+        }
         let exported = self.bindings.exported_nodes(&self.node_map);
         let resolved = self.presentation_roots().into_iter().find_map(|root| exported.resolve(root, target))
             .ok_or_else(|| format!("no accessibility node {target:?} in the current frame"))?;
@@ -1810,6 +1822,7 @@ impl FrameHarness {
     /// rect it currently occupies.
     fn presentation_roots(&self) -> Vec<&dyn Widget> {
         let mut roots = Vec::new();
+        if let Some(search) = self.system_search_presentation() { roots.push(search); }
         if let Some(history) = &self.history { roots.push(history.as_ref() as &dyn Widget); }
         if self.history.as_ref().is_none_or(|history| history.live_interactive()) { roots.push(self.root.as_ref()); }
         roots
@@ -1858,6 +1871,11 @@ impl FrameHarness {
         use automerge::transaction::Transactable;
         self.pump_component_wakes();
 
+        if self.global_search_query().is_some() {
+            let handled = self.perform_system_search_semantic(name, semantic_target, action);
+            self.finish_system_search(); self.relayout();
+            return if handled { Ok(()) } else { Err("system search owns input".into()) };
+        }
         if self.caller_palette.palette.is_some() {
             let handled = self.perform_caller_palette_semantic(name, semantic_target, action);
             self.finish_caller_palette(); self.relayout();
@@ -2148,7 +2166,7 @@ impl FrameHarness {
     pub fn inspection(&self) -> InspectionSnapshot {
         self.drain_component_wakes();
         let mut sibling_counts = HashMap::new();
-        let root = if let Some(palette) = self.caller_palette_inspection() { palette } else if let Some(history) = &self.history {
+        let root = if let Some(search) = self.system_search_inspection() { search } else if let Some(palette) = self.caller_palette_inspection() { palette } else if let Some(history) = &self.history {
             let mut presentation = collect_inspection(history.as_ref(), "", &mut sibling_counts);
             if history.live_visible() { presentation.children.push(collect_inspection(self.root.as_ref(), "", &mut sibling_counts)); }
             presentation
@@ -2159,7 +2177,7 @@ impl FrameHarness {
         }
         // Use the same admitted retained-owner resolution as semantic dispatch,
         // never a DOM ordering heuristic or a pointer from another component.
-        let keyboard_focus_owner = if self.caller_palette.palette.is_some() {
+        let keyboard_focus_owner = if self.global_search_query().is_some() { Some("system-search".into()) } else if self.caller_palette.palette.is_some() {
             // The caller palette routes keyboard events to its private search
             // field, outside the document's retained focus tree. Use the field
             // from this exact palette inspection, not the background owner.
@@ -2310,6 +2328,7 @@ impl FrameHarness {
             || matches!(event, WindowEvent::KeyboardInput { .. })
                 && crate::history_mode::embedded::keyboard_captured(self.root.as_ref(), self.focused, &self.taffy);
         if history_input { self.send(event); return; }
+        if self.system_search_event(event) { return; }
         if self.caller_palette_event(event) { return; }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed {
@@ -2363,6 +2382,7 @@ impl FrameHarness {
         let embedded = crate::history_mode::embedded::observe_event(self.root.as_mut(), event, self.input_scale, self.focused, &self.taffy);
         let history_input = self.framework_input.get() || embedded || self.history.as_ref().is_some_and(|history| history.controls_event(event, self.input_scale));
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, history_input);
+        if !history_input && self.system_search_event(event) { return; }
         self.pump_component_wakes();
         let detected = if self.dispatching_touch_pointer {
             None
