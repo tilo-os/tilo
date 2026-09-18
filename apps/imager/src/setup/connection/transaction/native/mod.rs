@@ -211,6 +211,8 @@ pub(in crate::setup::connection) struct VerifiedComparison<'a> {
 }
 #[cfg(target_os = "linux")]
 trait CompletionEvidence {
+    #[cfg(test)]
+    fn revoke_for_test(&mut self);
     fn fresh(
         &mut self,
         store: &crate::setup::connection::store::ConnectionStore,
