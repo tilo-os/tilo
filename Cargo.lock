@@ -12387,6 +12387,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-connected"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tilo-connected-protocol",
+]
+
+[[package]]
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
@@ -14863,6 +14871,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+]
+
+[[package]]
+name = "tilo-connected-protocol"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
