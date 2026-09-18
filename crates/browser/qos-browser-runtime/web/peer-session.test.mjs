@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import {createConnectPeer,pendingPeerRecoveryCount,retryPendingPeerRecovery} from './peer-session.mjs';
 import {recoverableClose,settleComponentClose} from './close-recovery.mjs';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
-function fixture({enroll}={}){
+function fixture({enroll,recoveryClock}={}){
  let next=0,held=0,storageRefs=0,failConnect=false,failClose=false,failCommit=false,pendingWrite=false,attempts=0,gate;
+ const mountGates=[],mountSignals=[];
  const peers=new Set(),mounts=new Set(),closed=[],rebound=[],suspended=new Set();let componentOwners=0,durableRecord,statusCallback,publishFailure=false,failMount=false;
  const locks={request:async(_name,_opts,fn)=>{held++;try{return await fn({});}finally{held--;}}};
  const runtime={identity_request:()=>'{public}',identity_complete:()=>'{proof}',bind_identity:()=> 'opaque-key',peer_enrollment:()=>JSON.stringify({profile:'p',device:'d',room:'r'}),refresh_storage_lease(){},
@@ -16,9 +17,10 @@ function fixture({enroll}={}){
   rebind_peer(old,id){rebound.push([old,id]);for(const mount of mounts)mount.id=id;suspended.delete(old);},
  };
  const storage={fresh:true,hydrate:async()=>[],commit:async()=>{if(failCommit)throw Error('durable write failed');},release:async()=>{storageRefs--;}};
- const connect=createConnectPeer({init:async()=>{},runtime,acquireIdentity:async()=>{held++;return{material:'opaque-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:enroll??(async()=>({ok:true,text:async()=>'{raw}'})),acquireStorage:async()=>{storageRefs++;return storage;},mountDesktop:async(_target,options)=>{
+ const connect=createConnectPeer({init:async()=>{},runtime,recoveryClock,acquireIdentity:async()=>{held++;return{material:'opaque-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:enroll??(async()=>({ok:true,text:async()=>'{raw}'})),acquireStorage:async()=>{storageRefs++;return storage;},mountDesktop:async(_target,options)=>{
+  mountSignals.push(options.signal);const mountGate=mountGates.shift();if(mountGate)await mountGate.promise;
   if(failMount)throw Error('initial fonts unavailable');
-  const mount={id:next,cleanupCalls:0,flushCalls:0,async flush(){mount.flushCalls++;},state:()=>({phase:'presented',gpuGeneration:1}),recover(){options.onStatus({phase:'gpu-pending',gpuGeneration:2});},present(gpuGeneration){options.onStatus({phase:'presented',gpuGeneration});},failRenderer(){options.onStatus({phase:'failed',gpuGeneration:1,error:'GPU device lost'});},input(){if(!suspended.has(mount.id)){assert(peers.has(mount.id),'input addressed removed peer');}},setSuspended(){}};
+  const mount={id:next,cleanupCalls:0,flushCalls:0,async flush(){mount.flushCalls++;},state:()=>({phase:'presented',gpuGeneration:1}),recover(){options.onStatus({phase:'gpu-pending',gpuGeneration:2});},status(value){options.onStatus(value);},present(gpuGeneration){options.onStatus({phase:'presented',gpuGeneration});},failRenderer(){options.onStatus({phase:'failed',gpuGeneration:1,error:'GPU device lost'});},input(){if(!suspended.has(mount.id)){assert(peers.has(mount.id),'input addressed removed peer');}},setSuspended(){}};
   componentOwners++;
   const componentRuntime={prepare_close:()=>JSON.stringify({writes:[{revision:7,bytes:[1,4,9]}],errors:[]}),acknowledge_storage(){},finish_close(){componentOwners--;}};
   mount.cleanup=recoverableClose({begin:()=>{mount.cleanupCalls++;},settle:async()=>{
@@ -26,7 +28,7 @@ function fixture({enroll}={}){
   }});
   mounts.add(mount);return mount;
  }});
- return{connect,peers,mounts,closed,rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
+ return{connect,peers,mounts,closed,mountSignals,queueMount:gate=>mountGates.push(gate),rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
 }
 test('failed reconnect retains durable owner; next retry rebinds same mount and disposes',async()=>{
  const f=fixture(),peer=await f.connect();const mount=await peer.mountDesktop({});
@@ -107,4 +109,65 @@ test('aborting a failed initial mount prevents recovery from resurrecting its ta
  const f=fixture(),peer=await f.connect();f.setFailMount(true);const abort=new AbortController();let surface;
  await assert.rejects(peer.mountDesktop({}, {signal:abort.signal,onSurface:id=>surface=id}));abort.abort();f.setFailMount(false);
  await assert.rejects(peer.recover({kind:'retry-desktop',surfaceId:surface}),/Unknown/);assert.equal(f.mounts.size,0);await peer.dispose();
+});
+
+const drain=async()=>{for(let i=0;i<50;i++)await Promise.resolve();};
+function clock(){
+ let time=0,id=0;const timers=new Map();
+ return{now:()=>time,setTimeout:(fn,delay)=>{timers.set(++id,{fn,at:time+delay});return id;},clearTimeout:id=>timers.delete(id),async tick(ms){time+=ms;for(const [id,timer] of [...timers])if(timer.at<=time&&timers.delete(id))timer.fn();await drain();}};
+}
+const record={roomId:'r',appId:'dev.qos.word-processor',recordId:'tab:1'};
+const otherRecord={...record,recordId:'tab:2'};
+function admissionStatus(admitted=false,records=[record]){
+ return{phase:admitted?'ready':'incomplete',health:{admission:{phase:admitted?'ready':'failed',requiredRecords:records,pendingPrerequisites:admitted?0:1},records:records.map(record=>({record,admission:admitted?'admitted':'unavailable',current:admitted?{heads:['h']}:null,editing:{mode:admitted?'online':'blocked'},failureIds:[]})),failures:admitted?[]:[{id:'runtime:admission',code:'prerequisite-missing',scope:{kind:'admission'},severity:'error'}]}};
+}
+const operation=(peer,result)=>peer.getSnapshot().health.recoveryOperations.find(op=>op.id===result.operationId);
+test('checkpoint retry waits beyond transport join for actual admission; connection retry stays transport-only',async()=>{
+ const f=fixture({recoveryClock:clock()}),peer=await f.connect();f.status(admissionStatus());await drain();
+ const transport=await peer.recover({kind:'retry-connection'});assert.equal(operation(peer,transport).state,'succeeded');
+ let done=false;const recovery=peer.recover({kind:'refresh-checkpoint'}).then(result=>{done=true;return result;});await drain();
+ assert.equal(done,false);assert.equal(peer.getSnapshot().health.recoveryOperations.at(-1).state,'pending');
+ f.status(admissionStatus(true));const result=await recovery;assert.equal(operation(peer,result).state,'succeeded');await peer.dispose();
+});
+test('checkpoint retry binds completion to the requested record even when global admission is ready',async()=>{
+ const f=fixture({recoveryClock:clock()}),peer=await f.connect();f.status(admissionStatus(true,[otherRecord]));await drain();
+ let done=false;const recovery=peer.recover({kind:'refresh-checkpoint',record}).then(result=>{done=true;return result;});await drain();assert.equal(done,false);
+ f.status(admissionStatus(true,[otherRecord]));await drain();assert.equal(done,false);
+ f.status(admissionStatus(true));assert.equal(operation(peer,await recovery).state,'succeeded');await peer.dispose();
+});
+test('checkpoint timeout fails the still-missing requested record after unrelated admission succeeds',async()=>{
+ const time=clock(),f=fixture({recoveryClock:time}),peer=await f.connect();f.status(admissionStatus());await drain();
+ const recovery=peer.recover({kind:'refresh-checkpoint',record});await drain();f.status(admissionStatus(true,[otherRecord]));await drain();await time.tick(10000);
+ const op=operation(peer,await recovery);assert.equal(op.state,'failed');assert(peer.getSnapshot().health.failures.some(f=>f.id===op.failureId&&f.code==='admission-timeout'));await peer.dispose();
+});
+test('checkpoint retry settles failed on terminal admission error or disposal and ignores later success',async()=>{
+ for(const terminal of [true,false]){
+  const f=fixture({recoveryClock:clock()}),peer=await f.connect();f.status(admissionStatus());await drain();const recovery=peer.recover({kind:'refresh-checkpoint'});await drain();
+  if(terminal){const status=admissionStatus();status.health.failures=[{id:'runtime:revoked',code:'identity-revoked',scope:{kind:'connection'},severity:'error'}];f.status(status);}else await peer.dispose();
+  const op=operation(peer,await recovery);assert.equal(op.state,'failed');if(terminal){assert.equal(op.failureId,'runtime:revoked');f.status(admissionStatus(true));await drain();assert.equal(op.state,'failed');await peer.dispose();}
+ }
+});
+test('superseded mount is cancelled and its late rejection cannot publish stale failure or retry',async()=>{
+ const f=fixture(),peer=await f.connect(),target={},gate=deferred(),oldStatuses=[];let oldSurface;
+ f.queueMount(gate);const old=peer.mountDesktop(target,{onSurface:id=>oldSurface=id,onStatus:status=>oldStatuses.push(status)});const rejected=assert.rejects(old,/old allocation/);
+ const replacement=await peer.mountDesktop(target);assert.equal(f.mountSignals[0].aborted,true);const count=oldStatuses.length;
+ gate.reject(Error('old allocation failed'));await rejected;assert.equal(oldStatuses.length,count);assert(!peer.getSnapshot().health.failures.some(f=>f.scope.surfaceId===oldSurface));
+ assert.equal(peer.getSnapshot().health.surfaces.find(s=>s.id===oldSurface)?.phase,'closed');await assert.rejects(peer.recover({kind:'retry-desktop',surfaceId:oldSurface}),/Unknown/);assert.equal(replacement.cleanupCalls,0);await peer.dispose();
+});
+test('superseding a presented mount retires its running renderer recovery',async()=>{
+ const f=fixture(),peer=await f.connect(),target={},old=await peer.mountDesktop(target);old.failRenderer();const surface=peer.getSnapshot().health.surfaces[0].id;
+ const recovery=peer.recover({kind:'retry-desktop',surfaceId:surface});await drain();await peer.mountDesktop(target);assert.equal(operation(peer,await recovery).state,'failed');old.present(2);assert(!peer.getSnapshot().health.failures.some(f=>f.scope.surfaceId===surface));await peer.dispose();
+});
+
+test('partial renderer status after device loss does not fail recovery before a new presentation',async()=>{
+ const f=fixture(),peer=await f.connect(),mount=await peer.mountDesktop({});mount.failRenderer();mount.recover=()=>mount.status({initialSurfaceSize:{width:800,height:600}});
+ const surface=peer.getSnapshot().health.surfaces[0].id;let done=false;const recovery=peer.recover({kind:'retry-desktop',surfaceId:surface}).then(result=>{done=true;return result;});await drain();assert.equal(done,false);
+ mount.present(2);assert.equal(operation(peer,await recovery).state,'succeeded');await peer.dispose();
+});
+
+test('checkpoint retry can recover after a prior timeout and rejects a failed transport attempt',async()=>{
+ const time=clock(),f=fixture({recoveryClock:time}),peer=await f.connect();f.status(admissionStatus());await drain();
+ const first=peer.recover({kind:'refresh-checkpoint'});await drain();await time.tick(10000);assert.equal(operation(peer,await first).state,'failed');
+ let done=false;const retry=peer.recover({kind:'refresh-checkpoint'}).then(result=>{done=true;return result;});await drain();f.status(admissionStatus());await drain();assert.equal(done,false);
+ f.status(admissionStatus(true));assert.equal(operation(peer,await retry).state,'succeeded');f.setFailConnect(true);assert.equal(operation(peer,await peer.recover({kind:'refresh-checkpoint'})).state,'failed');await peer.dispose();
 });

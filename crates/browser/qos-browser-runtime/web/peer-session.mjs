@@ -11,11 +11,12 @@ return async function connectPeer(options={}){
   let lease;
   let id,closed=false,closing=false,snapshot={phase:'authenticating',records:[]},connection,storage,namespace,raw,flush=Promise.resolve(),failed=false,generation=0;
   const subscribers=new Set(),mounts=new Set(),failedMounts=new Set(),pendingMounts=new Set(),mountControllers=new Set();
-  let reconnecting,closePromise,setup,operationId=0,surfaceId=0,healthRevision=0n,saving,admissionTimer=null,admissionDeadline=null;
+  let reconnecting,closePromise,setup,operationId=0,surfaceId=0,healthRevision=0n,saving,admissionTimer=null,admissionDeadline=null,admissionRevision=0;
+  const admissionWaiters=new Set();
   const operations=new Map(),surfaces=new Map(),surfaceWaiters=new Map(),surfaceAttempts=new Map(),surfaceTargets=new WeakMap();
   let health={version:1,generation:'0',transport:{phase:'connecting',authenticated:false,lastRelayContactAtMs:null,lastSessionPeerContactAtMs:null,retry:{attempt:0,nextAttemptAtMs:null,inFlight:false}},admission:{phase:'waiting',requiredRecords:[],pendingPrerequisites:0,deadlineAtMs:null},records:[],surfaces:[],capabilities:{automaticRecovery:true,retrySaving:true,recoverRenderer:true,durablePeerAcknowledgement:false},failures:[],recoveryOperations:[]};
   const timerSet=recoveryClock.setTimeout??globalThis.setTimeout,timerClear=recoveryClock.clearTimeout??globalThis.clearTimeout,now=recoveryClock.now??Date.now;
-  const report=next=>{if(next.health){health={...health,...next.health,transport:{...health.transport,...next.health.transport,retry:health.transport.retry},failures:[...health.failures.filter(f=>!f.id.startsWith('runtime:')),...(next.health.failures??[])]};}health={...health,generation:String(++healthRevision),admission:{...health.admission,deadlineAtMs:admissionDeadline}};snapshot={...snapshot,...next,health};options.onStatus?.(snapshot);for(const listener of subscribers)listener(snapshot);};
+  const report=next=>{if(next.health){if(next.health.admission||next.health.records)admissionRevision++;health={...health,...next.health,transport:{...health.transport,...next.health.transport,retry:health.transport.retry},failures:[...health.failures.filter(f=>!f.id.startsWith('runtime:')),...(next.health.failures??[])]};}health={...health,generation:String(++healthRevision),admission:{...health.admission,deadlineAtMs:admissionDeadline}};snapshot={...snapshot,...next,health};options.onStatus?.(snapshot);for(const listener of subscribers)listener(snapshot);for(const waiter of admissionWaiters)waiter.check();};
   async function persist(publish=true){
     if(id===undefined||!storage||closed||failed)return;
     flush=flush.catch(()=>{}).then(async()=>{
@@ -92,7 +93,7 @@ return async function connectPeer(options={}){
       const asset=status.asset==='unavailable';const failureId=asset?`asset:${surface}:${status.assetId}`:`surface:${surface}`;health={...health,failures:[...health.failures.filter(f=>f.id!==failureId),{id:failureId,code,scope:asset?{kind:'asset',surfaceId:surface,assetId:status.assetId}:{kind:'renderer',surfaceId:surface},severity:'error',message:asset?'An image could not be loaded.':'The desktop could not be displayed. Your work is retained.',recovery:[asset?{kind:'retry-asset',surfaceId:surface,assetId:status.assetId}:{kind:'retry-desktop',surfaceId:surface}],occurredAtMs:Date.now()}]};
     }
     const waiter=surfaceWaiters.get(surface);
-    if(phase==='failed'&&waiter&&BigInt(generation)>=waiter.generation){surfaceWaiters.delete(surface);waiter.reject(Error('Desktop recovery failed'));}
+    if(status.phase==='failed'&&waiter&&BigInt(generation)>=waiter.generation){surfaceWaiters.delete(surface);waiter.reject(Error('Desktop recovery failed'));}
     if(phase==='presented'&&waiter&&BigInt(generation)>waiter.generation){surfaceWaiters.delete(surface);health={...health,failures:health.failures.filter(f=>f.id!==`surface:${surface}`)};waiter.resolve();}
     if(status.persistence==='failed')setFailure('storage',Error('Local storage transaction failed'));
     health={...health,surfaces:health.surfaces.map(row=>row.id===surface?{...row,phase,generation,failureIds:health.failures.filter(f=>f.scope.surfaceId===surface).map(f=>f.id)}:row)};report({});
@@ -107,6 +108,7 @@ return async function connectPeer(options={}){
     if(closePromise)return closePromise;
     closing=true;if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;coordinator.dispose();events?.removeEventListener?.('online',online);
     closePromise=(async()=>{
+      for(const waiter of admissionWaiters)waiter.reject(Error('Session closed'));
       for(const waiter of surfaceWaiters.values())waiter.reject(Error('Session closed'));surfaceWaiters.clear();
       for(const entry of surfaceAttempts.values())entry.cancelled=true;
       for(const controller of mountControllers)controller.abort();surfaceAttempts.clear();
@@ -130,6 +132,36 @@ return async function connectPeer(options={}){
     reconnecting=coordinator.retry().finally(()=>{reconnecting=undefined;});return reconnecting;
   }
   function retryPersistence(){if(saving)return saving;saving=(async()=>{await settleMounts(failedMounts);failed=false;for(const mount of mounts)await mount.flush?.();await persist(!reconnecting);})().finally(()=>{saving=undefined;});return saving;}
+  const sameRecord=(a,b)=>a&&b&&a.roomId===b.roomId&&a.appId===b.appId&&a.recordId===b.recordId;
+  function refreshCheckpoint(request,operation){
+    // A transport join may precede the authoritative checkpoint. Observe a fresh
+    // admission projection, then settle only the resource named by this request.
+    const revision=admissionRevision;
+    health={...health,failures:health.failures.filter(f=>!(f.code==='admission-timeout'&&!f.id.startsWith('runtime:')&&(!request.record||!f.scope.record||sameRecord(f.scope.record,request.record))))};
+    return new Promise((resolve,reject)=>{
+      let joined=false,settled=false,timeout;
+      const finish=error=>{if(settled)return;settled=true;timerClear(timeout);admissionWaiters.delete(waiter);error?reject(error):resolve();};
+      const waiter={reject:finish,check:()=>{
+        if(admissionRevision<=revision)return;
+        const row=request.record?health.records.find(row=>sameRecord(row.record,request.record)):null;
+        const relevant=health.failures.filter(f=>f.severity==='error'&&(
+          f.scope.kind==='connection'||(['admission','permission'].includes(f.scope.kind)&&(!request.record||!f.scope.record||sameRecord(f.scope.record,request.record)))||row?.failureIds.includes(f.id)));
+        const terminal=relevant.find(f=>['identity-revoked','certificate-rejected','certificate-expired','signature-rejected','permission-required','crypto-unavailable','admission-timeout'].includes(f.code));
+        if(terminal){finish(Object.assign(Error('Checkpoint admission failed'),{failureId:terminal.id}));return;}
+        const ready=row=>row?.admission==='admitted'&&row.current&&row.editing.mode!=='blocked';
+        const admitted=request.record?ready(row):health.admission.phase==='ready'&&health.admission.pendingPrerequisites===0&&health.admission.requiredRecords.every(record=>ready(health.records.find(row=>sameRecord(row.record,record))));
+        if(joined&&admitted&&!relevant.some(f=>f.scope.kind!=='connection'))finish();
+      }};
+      timeout=timerSet(()=>{
+        const failureId=`recovery:admission:${operation.id}`;
+        const failure={id:failureId,code:'admission-timeout',scope:{kind:'admission',...(request.record?{record:request.record}:{})},severity:'error',message:'Shared state is taking longer to load.',recovery:[request],occurredAtMs:now()};
+        finish(Object.assign(Error('Checkpoint recovery timed out'),{failureId}));
+        health={...health,failures:[...health.failures,failure]};if(!closed&&!closing)report({});
+      },10000);
+      admissionWaiters.add(waiter);
+      reconnect().then(()=>{joined=true;waiter.check();},finish);
+    });
+  }
   function recover(request){
     if(closed||closing)return Promise.reject(Error('Session closed'));
     if(!['retry-connection','refresh-checkpoint','reauthenticate','retry-saving','retry-desktop','retry-asset','review-permissions'].includes(request?.kind))return Promise.reject(Error('Unsupported recovery request'));
@@ -139,7 +171,8 @@ return async function connectPeer(options={}){
     health={...health,recoveryOperations:[...health.recoveryOperations,operation]};report({});
     const task=Promise.resolve().then(async()=>{
       switch(request.kind){
-        case 'retry-connection':case 'refresh-checkpoint':case 'reauthenticate':await reconnect();break;
+        case 'retry-connection':case 'reauthenticate':await reconnect();break;
+        case 'refresh-checkpoint':await refreshCheckpoint(request,operation);break;
         case 'retry-saving':await retryPersistence();break;
         case 'retry-desktop':{
           const mount=surfaces.get(request.surfaceId);if(!mount){await surfaceAttempts.get(request.surfaceId).run();break;}
@@ -155,7 +188,7 @@ return async function connectPeer(options={}){
         default:throw Error('Unsupported recovery request');
       }
       if(operation.state==='pending')operation.state='succeeded';
-    }).catch(error=>{operation.state='failed';operation.failureId=health.failures.at(-1)?.id;}).then(()=>{if(!closed&&!closing)report({});return{operationId:operation.id};}).finally(()=>operations.delete(key));
+    }).catch(error=>{operation.state='failed';operation.failureId=error?.failureId??health.failures.at(-1)?.id;}).then(()=>{if(!closed&&!closing)report({});return{operationId:operation.id};}).finally(()=>operations.delete(key));
     operations.set(key,task);return task;
   }
   try{
@@ -172,14 +205,16 @@ return async function connectPeer(options={}){
         const app=mountOptions.app??'writer';
         const record=snapshot.records.find(row=>row.app_id===(app==='writer'?'dev.qos.word-processor':'dev.qos.chat'));
         if(!record)throw Error('Canonical record missing');
+        surfaceAttempts.get(surfaceTargets.get(target))?.cancel();
         const controller=new AbortController();mountControllers.add(controller);
         const surface=String(++surfaceId);let allocation=0;
-        const entry={cancelled:false,pending:null,mounted:null,run:null};surfaceAttempts.set(surface,entry);surfaceTargets.set(target,surface);
+        const entry={cancelled:false,pending:null,mounted:null,run:null,cancel:null};surfaceAttempts.set(surface,entry);surfaceTargets.set(target,surface);
         const abort=()=>{
-          if(entry.cancelled)return;entry.cancelled=true;controller.abort(mountOptions.signal?.reason);surfaceAttempts.delete(surface);mountControllers.delete(controller);
+          if(entry.cancelled)return;entry.cancelled=true;mountOptions.signal?.removeEventListener('abort',abort);controller.abort(mountOptions.signal?.reason);surfaceAttempts.delete(surface);mountControllers.delete(controller);
           surfaceWaiters.get(surface)?.reject(Error('Desktop attempt cancelled'));surfaceWaiters.delete(surface);health={...health,failures:health.failures.filter(f=>f.scope.surfaceId!==surface),surfaces:health.surfaces.map(row=>row.id===surface?{...row,phase:'closed',failureIds:[]}:row)};if(!closed&&!closing)report({});
           if(entry.mounted)void entry.mounted.cleanup().catch(()=>{});
         };
+        entry.cancel=abort;
         mountOptions.signal?.addEventListener('abort',abort,{once:true});if(mountOptions.signal?.aborted)abort();
         health={...health,surfaces:[...health.surfaces,{id:surface,record:{roomId:namespace.room,appId:record.app_id,recordId:record.record_id},phase:'initializing',generation:'0',failureIds:[]}]};
         mountOptions.onSurface?.(surface);mountOptions.onStatus?.({phase:'gpu-pending',surfaceId:surface});report({});
@@ -200,7 +235,7 @@ return async function connectPeer(options={}){
             health={...health,failures:health.failures.filter(f=>f.id!==`surface:${surface}`)};
             surfaceStatus(surface,mounted.state?.()??{phase:'presented'});mountOptions.onMount?.(mounted);return mounted;
           }).catch(error=>{
-            if(!entry.cancelled&&!closed&&!closing){surfaceStatus(surface,{phase:'failed',error:String(error)});mountOptions.onStatus?.({phase:'failed',surfaceId:surface,error:String(error)});}throw error;
+            if(!entry.cancelled&&current===allocation&&!closed&&!closing&&surfaceTargets.get(target)===surface){surfaceStatus(surface,{phase:'failed',error:String(error)});mountOptions.onStatus?.({phase:'failed',surfaceId:surface,error:String(error)});}throw error;
           }).finally(()=>{pendingMounts.delete(pending);entry.pending=null;});
           return entry.pending;
         };

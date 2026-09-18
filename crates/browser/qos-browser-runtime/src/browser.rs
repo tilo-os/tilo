@@ -543,15 +543,23 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
             })
         }
         .await;
-        MOUNTS.with_borrow_mut(|mounts|{
-            let Some(m)=mounts.get_mut(&id).filter(|m|m.generation==generation) else{return;};
+        let installed = MOUNTS.with_borrow_mut(|mounts|{
+            let Some(m)=mounts.get_mut(&id).filter(|m|m.generation==generation) else{return false;};
             match result{Ok(gpu)=>{
                 emit(&m.status,serde_json::json!({"initialSurfaceSize":[gpu.surface.config.width,gpu.surface.config.height]}));
                 m.gpu=Some(gpu);
                 if let Err(e)=m.resize(){m.error=Some(e);}
                 m.pending=true;m.window.request_redraw();
-            },Err(e)=>{m.error=Some(format!("WebGPU unavailable: {e}"));m.publish(id);}}
+                true
+            },Err(e)=>{m.error=Some(format!("WebGPU unavailable: {e}"));m.publish(id);false}}
         });
+        // GPU setup completes outside Winit dispatch. Wake an idle loop after
+        // releasing the mount borrow so the new generation actually presents.
+        if installed {
+            if let Ok(wake) = proxy() {
+                let _ = wake.send_event(id);
+            }
+        }
     });
 }
 impl Mount {
