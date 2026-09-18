@@ -3906,7 +3906,10 @@ impl PhotosApp {
         true
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the toolkit event contract to retained collection paging controls"
+    )]
     fn handle_collection_page_event(
         &mut self,
         event: &winit::event::WindowEvent,
