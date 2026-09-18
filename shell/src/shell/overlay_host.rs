@@ -7661,11 +7661,12 @@ impl ShellOverlayHost {
     /// one-frame headless scene doesn't land at alpha 0 — which is
     /// indistinguishable from no overlay at all. Test-only.
     pub fn force_palette_settled(&mut self) {
-        if !self.palette_visible {
-            return;
-        }
-        self.palette_was_visible = true;
-        self.palette_transition = ui::Transition::open();
+        self.palette_was_visible = self.palette_visible;
+        self.palette_transition = if self.palette_visible {
+            ui::Transition::open()
+        } else {
+            ui::Transition::closed()
+        };
     }
 
     /// See [`Self::force_palette_settled`].
@@ -15424,7 +15425,9 @@ impl Widget for ShellOverlayHost {
         let mut out: Vec<&dyn Widget> =
             Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
         out.push(self.content.as_ref());
-        out.push(&self.palette);
+        if self.palette_visible {
+            out.push(&self.palette);
+        }
         if let Some(s) = self.sidebar.as_ref() {
             out.push(s.as_ref());
         }
@@ -15447,7 +15450,9 @@ impl Widget for ShellOverlayHost {
         let mut out: Vec<&mut (dyn Widget + '_)> =
             Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
         out.push(self.content.as_mut());
-        out.push(&mut self.palette);
+        if self.palette_visible {
+            out.push(&mut self.palette);
+        }
         if let Some(s) = self.sidebar.as_mut() {
             out.push(s.as_mut());
         }
@@ -16623,11 +16628,12 @@ impl ShellOverlayHost {
     }
 
     fn shortcut_help_panel_rect(&self) -> Rect {
-        // The guide is a desktop reference, not only a binding editor.  The
-        // wider card leaves room for the fixed launch/capture actions without
-        // turning six navigation pairs into a tall, clipped single column.
-        let width = (self.rect.width() - 40.0).clamp(0.0, 1040.0);
-        let height = (self.rect.height() - 40.0).clamp(0.0, 620.0);
+        // Keep the desktop visible around the guide: it is a contextual
+        // reference, not a replacement screen.  The compact height is sized
+        // to the complete two-column reference at 800x600 without relying on
+        // a clipped footer or an unexplained scrollbar.
+        let width = (self.rect.width() - 64.0).clamp(0.0, 960.0);
+        let height = (self.rect.height() - 64.0).clamp(0.0, 560.0);
         Rect::new(
             self.rect.center().x - width / 2.0,
             self.rect.center().y - height / 2.0,
@@ -16639,9 +16645,9 @@ impl ShellOverlayHost {
     fn shortcut_help_done_rect(&self) -> Rect {
         let panel = self.shortcut_help_panel_rect();
         Rect::new(
-            panel.x1 - 88.0,
-            panel.y0 + 16.0,
-            panel.x1 - 20.0,
+            panel.x1 - 80.0,
+            panel.y0 + 18.0,
+            panel.x1 - 24.0,
             panel.y0 + 50.0,
         )
     }
@@ -16675,16 +16681,16 @@ impl ShellOverlayHost {
             "Desktop help",
             title_size,
             colors.text_primary,
-            transform.pre_translate((panel.x0 + 28.0, panel.y0 + 22.0).into()),
+            transform.pre_translate((panel.x0 + 24.0, panel.y0 + 20.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 140.0)),
             TextWeight::Semibold,
         );
         text_renderer.draw_text(
             scene,
-            "F1 opens this desktop guide anywhere. Super+/ is the configurable shortcut for the same guide.",
+            "Press F1 anywhere · Select a navigation shortcut below to change it",
             theme.tokens.typography.scale.sm,
             colors.text_dim,
-            transform.pre_translate((panel.x0 + 28.0, panel.y0 + 58.0).into()),
+            transform.pre_translate((panel.x0 + 24.0, panel.y0 + 54.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 56.0)),
         );
 
@@ -16733,12 +16739,12 @@ impl ShellOverlayHost {
             .interaction
             .controller
             .unwrap_or(ui::ControllerFamily::Generic);
-        let compact_panel = panel.height() < 560.0;
+        let compact_panel = panel.height() <= 536.0;
         let body = Rect::new(
-            panel.x0 + 28.0,
-            panel.y0 + if compact_panel { 104.0 } else { 112.0 },
-            panel.x1 - 28.0,
-            panel.y1 - if compact_panel { 36.0 } else { 28.0 },
+            panel.x0 + 24.0,
+            panel.y0 + if compact_panel { 88.0 } else { 98.0 },
+            panel.x1 - 24.0,
+            panel.y1 - 22.0,
         );
         self.shortcut_binding_rects.clear();
         self.shortcut_reset_rects.clear();
@@ -16766,7 +16772,7 @@ impl ShellOverlayHost {
                     &feedback,
                     theme.tokens.typography.scale.sm,
                     colors.text_primary,
-                    transform.pre_translate((body.x0, panel.y0 + 92.0).into()),
+                    transform.pre_translate((body.x0, panel.y0 + 76.0).into()),
                     Some(f64_to_f32_lossy(body.width())),
                 );
             }
@@ -16948,19 +16954,22 @@ impl ShellOverlayHost {
                         ShortcutAction::ResizeWider,
                     ),
                 ];
-                let compact = body.height() < 390.0;
-                // At compact height this first page teaches the layout model and the few
-                // recovery actions needed to keep using it. Compressing the complete reference
-                // into five tiny columns made every action technically visible but none of it
-                // comfortably readable; the full reference remains available at normal height
-                // and through command search.
-                let reference_columns = if compact { 2 } else { 4 };
-                let navigation_step = if compact { 47.0 } else { 62.0 };
+                let compact = body.height() < 450.0;
+                let navigation_step = if compact { 48.0 } else { 50.0 };
+                text_renderer.draw_text_weighted(
+                    scene,
+                    "NAVIGATE & ARRANGE",
+                    theme.tokens.typography.scale.xs,
+                    colors.text_dim,
+                    transform.pre_translate((body.x0, body.y0).into()),
+                    None,
+                    TextWeight::Semibold,
+                );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
                     let column = index % 2;
                     let row = index / 2;
                     let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
-                    let y = body.y0 + usize_to_f64_lossy(row) * navigation_step;
+                    let y = body.y0 + 22.0 + usize_to_f64_lossy(row) * navigation_step;
                     text_renderer.draw_text(
                         scene,
                         label,
@@ -17052,30 +17061,21 @@ impl ShellOverlayHost {
                         self.shortcut_reset_rects.push((*previous, *next, reset));
                     }
                 }
-                let essentials_y = body.y0 + if compact { 148.0 } else { 196.0 };
+                let essentials_y = body.y0 + 22.0 + 3.0 * navigation_step + 6.0;
                 text_renderer.draw_text_weighted(
                     scene,
-                    "Essential desktop actions",
-                    theme.tokens.typography.scale.sm,
-                    colors.text_primary,
+                    "OPEN, FIND & RECOVER",
+                    theme.tokens.typography.scale.xs,
+                    colors.text_dim,
                     transform.pre_translate((body.x0, essentials_y).into()),
                     None,
                     TextWeight::Semibold,
                 );
                 let references = shortcut_reference_rows(shortcuts);
-                let visible_references = if compact {
-                    references.get(..8).unwrap_or(references.as_slice())
-                } else {
-                    references.as_slice()
-                };
-                // Action names and their keycaps are the point of this
-                // surface, so never turn the complete reference into a
-                // low-contrast footnote merely to preserve the mouse hint.
-                // Four columns still fit the full desktop reference at a
-                // normal panel width; the taller cadence gives every row a
-                // readable label and a distinct keycap line.
-                let reference_step = 46.0;
-                let reference_offset = if compact { 22.0 } else { 28.0 };
+                let visible_references = references.as_slice();
+                let reference_columns = 4;
+                let reference_step = if compact { 37.0 } else { 41.0 };
+                let reference_offset = 18.0;
                 for (index, (label, chord)) in visible_references.iter().enumerate() {
                     let reference_columns = reference_columns.max(1);
                     let column = index.checked_rem(reference_columns).unwrap_or_default();
@@ -17122,8 +17122,8 @@ impl ShellOverlayHost {
                 let pointer_y = essentials_y
                     + reference_offset
                     + usize_to_f64_lossy(reference_rows) * reference_step
-                    + 6.0;
-                if pointer_y + 30.0 <= body.y1 {
+                    + 2.0;
+                if pointer_y + 18.0 <= body.y1 {
                     scene.fill(
                         Fill::NonZero,
                         transform,
@@ -17133,10 +17133,10 @@ impl ShellOverlayHost {
                     );
                     text_renderer.draw_text(
                         scene,
-                        "Mouse · click a window · drag tabs or groups to reorder · drag an edge to resize · horizontal scroll moves the view",
+                        "Pointer: click to focus · drag tabs or groups to reorder · drag an edge to resize",
                         theme.tokens.typography.scale.xs,
                         colors.text_dim,
-                        transform.pre_translate((body.x0, pointer_y + 18.0).into()),
+                        transform.pre_translate((body.x0, pointer_y + 14.0).into()),
                         Some(f64_to_f32_lossy(body.width())),
                     );
                     if settings_store::hardware::DesktopControlsConfig::load().vim_mode
@@ -22436,25 +22436,24 @@ mod palette_dispatch_tests {
     }
 
     #[test]
-    fn compact_shortcut_reference_prioritises_recovery_actions() {
+    fn compact_shortcut_reference_keeps_the_complete_action_set_visible() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
-        let body_height = 360.0;
-        let essentials_y = 158.0;
-        let reference_offset = 24.0;
-        let reference_step = 46.0;
-        let visible = &rows[..rows.len().min(8)];
-        let final_row = visible.len().div_ceil(2).saturating_sub(1);
+        let body_height = 422.0;
+        let essentials_y = 22.0 + 3.0 * 48.0 + 6.0;
+        let reference_offset = 18.0;
+        let reference_step = 37.0;
+        let final_row = rows.len().div_ceil(4).saturating_sub(1);
         let final_pill_bottom =
             essentials_y + reference_offset + usize_to_f64_lossy(final_row) * reference_step + 35.0;
 
         assert_eq!(
             rows.len(),
             19,
-            "the complete reference remains available outside compact presentation"
+            "the guide must retain every documented desktop action"
         );
         assert!(
             final_pill_bottom <= body_height,
-            "the final shortcut pill must remain inside a 960×540 guide body"
+            "the final shortcut pill must remain inside an 800×600 guide body"
         );
         for essential in [
             "Screenshot",
@@ -22462,7 +22461,7 @@ mod palette_dispatch_tests {
             "Close tab",
             "Change workspace",
         ] {
-            assert!(visible.iter().any(|(label, _)| *label == essential));
+            assert!(rows.iter().any(|(label, _)| *label == essential));
         }
     }
 
@@ -22471,10 +22470,10 @@ mod palette_dispatch_tests {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         let mut renderer = TextRenderer::new();
         let chord_size = Theme::dark().tokens.typography.scale.sm;
-        // A 960-wide viewport yields a 920-wide panel and 864-wide body. The
-        // compact guide uses two readable columns and shows its first eight recovery actions.
-        let available_text_width = 864.0 / 2.0 - 26.0;
-        for (_, chord) in rows.into_iter().take(8) {
+        // An 800-wide viewport yields a 736-wide panel and 688-wide body. The
+        // compact guide uses four columns without truncating key labels.
+        let available_text_width = 688.0 / 4.0 - 26.0;
+        for (_, chord) in rows {
             let (width, _) = renderer.measure(&chord, chord_size, None);
             assert!(
                 f64::from(width) <= available_text_width,
@@ -25132,20 +25131,34 @@ mod overlay_event_absorb_tests {
 
     #[test]
     fn compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset() {
-        let h = build_harness_sized(960.0, 540.0);
+        let h = build_harness_sized(800.0, 600.0);
         let panel = h.host.shortcut_help_panel_rect();
         let done = h.host.shortcut_help_done_rect();
-        assert_eq!(panel.y0, 20.0);
-        assert_eq!(panel.y1, 520.0);
+        assert_eq!(panel.x0, 32.0);
+        assert_eq!(panel.x1, 768.0);
+        assert_eq!(panel.y0, 32.0);
+        assert_eq!(panel.y1, 568.0);
         assert!(done.y0 >= panel.y0 + 16.0);
-        assert!(done.y1 <= panel.y1 - 20.0);
+        assert!(done.y1 <= panel.y1 - 18.0);
 
-        let body_bottom = panel.y1 - 36.0;
-        let compact_final_pill_bottom = panel.y0 + 104.0 + 148.0 + 22.0 + 3.0 * 42.0 + 31.0;
+        let body_bottom = panel.y1 - 22.0;
+        let body_top = panel.y0 + 88.0;
+        let essentials_y = body_top + 22.0 + 3.0 * 48.0 + 6.0;
+        let compact_final_pill_bottom = essentials_y + 18.0 + 4.0 * 37.0 + 35.0;
         assert!(
             compact_final_pill_bottom <= body_bottom,
             "compact help's final recovery shortcut must fit without clipping: pill={compact_final_pill_bottom}, body={body_bottom}"
         );
+    }
+
+    #[test]
+    fn wide_shortcut_help_remains_a_contextual_card() {
+        let h = build_harness_sized(1280.0, 800.0);
+        let panel = h.host.shortcut_help_panel_rect();
+        assert_eq!(panel.width(), 960.0);
+        assert_eq!(panel.height(), 560.0);
+        assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
+        assert!(panel.y0 >= 100.0 && panel.y1 <= 700.0);
     }
 
     #[test]
