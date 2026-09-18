@@ -363,6 +363,15 @@ enum Error {
     },
     #[error("the .qpkg is for {found}, but {wanted} was asked for")]
     WrongPackage { wanted: String, found: String },
+    #[error(
+        "local update for {package} changed publisher from ed25519:{installed} to ed25519:{candidate}; \
+         require the new identity explicitly with --require-publisher {candidate}"
+    )]
+    LocalUpdatePublisherChanged {
+        package: String,
+        installed: String,
+        candidate: String,
+    },
     #[error("fetching {app_id} from the configured registries: {detail}")]
     Fetch { app_id: String, detail: String },
     #[error("starting the async runtime for a registry fetch: {0}")]
@@ -652,6 +661,17 @@ fn ingest(bytes: &[u8], trust: &TrustFlags) -> Result<Ingested, Error> {
         ..
     } = app_registry::qpkg::load(bytes).map_err(|error| Error::Parse(error.to_string()))?;
     let (manifest, publisher_key_hex, attested_by) = verify_and_gate(pkg_id, &store, trust)?;
+
+    if !pkg::qpkg_size_allowed(
+        manifest.package.kind,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+    ) {
+        return Err(Error::Policy(format!(
+            "application .qpkg is {} bytes; the {}-byte limit keeps apps instant and moves shared dependencies into runtime bundles",
+            bytes.len(),
+            pkg::MAX_APP_QPKG_BYTES
+        )));
+    }
 
     // A signature says who wrote the manifest, not that its contents are
     // reasonable — a package naming its own filesystem paths is refused
@@ -1023,6 +1043,27 @@ fn update_one(
             found: ingested.id().to_string(),
         });
     }
+    // A local file has no signed registry index authorising a publisher-key
+    // rotation. Keep the identity recorded at install time unless the user
+    // explicitly pins the candidate key on this command line. Registry-backed
+    // updates have their own owner-signed publisher authorisation chain in
+    // `resolve_and_fetch`, so legitimate rotations remain possible there.
+    if from.is_some()
+        && !entry.publisher_key_hex.is_empty()
+        && !entry
+            .publisher_key_hex
+            .eq_ignore_ascii_case(&ingested.publisher_key_hex)
+        && trust
+            .require_publisher
+            .as_deref()
+            .is_none_or(|required| !required.eq_ignore_ascii_case(&ingested.publisher_key_hex))
+    {
+        return Err(Error::LocalUpdatePublisherChanged {
+            package: entry.id.clone(),
+            installed: entry.publisher_key_hex.clone(),
+            candidate: ingested.publisher_key_hex.clone(),
+        });
+    }
 
     // 2. Is it actually newer? Non-semver versions are compared as strings
     //    for equality only — not evidence of an upgrade.
@@ -1070,19 +1111,42 @@ fn update_one(
 
     satisfy_runtime(&ingested, runtime)?;
 
+    let data_root = data_root()?;
+    let layout = UpdateLayout::new(entry, &ingested, &data_root)?;
+    let journal = UpdateJournal::begin(
+        &data_root,
+        UpdateIntent {
+            package_id: entry.id.clone(),
+            owner_pid: std::process::id(),
+            new_package_id_hex: hex_of(ingested.pkg_id.as_bytes()),
+            payload_live: layout.payload_live.clone(),
+            payload_staging: layout.payload_staging.clone(),
+            payload_retired: layout.payload_retired.clone(),
+            integrity_live: layout.integrity_live.clone(),
+            integrity_retired: layout.integrity_retired.clone(),
+            old_commands: entry.cli_commands.clone(),
+            new_commands: ingested
+                .manifest
+                .cli
+                .as_ref()
+                .map(|cli| cli.commands.clone())
+                .unwrap_or_default(),
+        },
+    )?;
+
     // 3. Swap: the new payload is built beside the old one and moved into
     //    place, so a mid-failure leaves the old version working, not half-replaced.
-    swap_payload(&ingested, &entry.payload_root)?;
+    let payload_swap = swap_payload(&ingested, &layout)?;
 
     // 4. Records: integrity first, since a registry entry claiming a
     //    version whose evidence isn't written yet would fail its own `verify`.
-    let data_root = data_root()?;
-    install::integrity::record(
+    let integrity_swap = IntegritySwap::record(
         &data_root,
         &entry.id,
         &ingested.signed_root,
         &ingested.manifest_bytes,
         &ingested.collection_bytes,
+        &layout.integrity_retired,
     )?;
 
     // The new version may publish a different set of commands, so the
@@ -1091,21 +1155,52 @@ fn update_one(
         let bin_dir = bin_root()?;
         let _ = shim::remove_shims(&bin_dir, &entry.cli_commands);
     }
-    let cli_commands = write_cli_shims(&ingested.manifest, &entry.id)?;
+    let candidate_commands = ingested
+        .manifest
+        .cli
+        .as_ref()
+        .map(|cli| cli.commands.clone())
+        .unwrap_or_default();
+    let cli_commands = match write_cli_shims(&ingested.manifest, &entry.id) {
+        Ok(commands) => commands,
+        Err(error) => {
+            restore_cli_shims(&entry.id, &candidate_commands, &entry.cli_commands);
+            return Err(error);
+        }
+    };
 
-    let mut reg = load_registry()?;
-    if let Some(slot) = reg.entry.iter_mut().find(|e| e.id == entry.id) {
-        slot.version = ingested.version().to_string();
-        slot.package_id_hex = hex_of(ingested.pkg_id.as_bytes());
-        slot.publisher_key_hex
-            .clone_from(&ingested.publisher_key_hex);
-        slot.attested_by.clone_from(&ingested.attested_by);
-        slot.installed_at = now();
-        slot.cli_commands = cli_commands;
-        slot.runtime = ingested.runtime_ref().unwrap_or_default().to_string();
-        slot.source.clone_from(&source);
+    let mut reg = match load_registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            restore_cli_shims(&entry.id, &cli_commands, &entry.cli_commands);
+            return Err(error);
+        }
+    };
+    let Some(slot) = reg.entry.iter_mut().find(|e| e.id == entry.id) else {
+        restore_cli_shims(&entry.id, &cli_commands, &entry.cli_commands);
+        return Err(Error::NotInstalled(entry.id.clone()));
+    };
+    slot.version = ingested.version().to_string();
+    slot.package_id_hex = hex_of(ingested.pkg_id.as_bytes());
+    slot.publisher_key_hex
+        .clone_from(&ingested.publisher_key_hex);
+    slot.attested_by.clone_from(&ingested.attested_by);
+    slot.installed_at = now();
+    slot.cli_commands.clone_from(&cli_commands);
+    slot.runtime = ingested.runtime_ref().unwrap_or_default().to_string();
+    slot.source.clone_from(&source);
+    if let Err(error) = save_registry(&reg) {
+        restore_cli_shims(&entry.id, &cli_commands, &entry.cli_commands);
+        return Err(error);
     }
-    save_registry(&reg)?;
+
+    // The atomic registry replacement is the commit point: launchers now
+    // agree that the new payload and integrity evidence are current. Until
+    // this line, both guards restore the previous working installation on
+    // every ordinary error path.
+    integrity_swap.commit();
+    payload_swap.commit();
+    journal.finish()?;
 
     println!(
         "updated: {} {} -> {}",
@@ -1129,41 +1224,419 @@ fn update_one(
 /// directory, so the old tree moves aside first and is removed only
 /// once the new one is live — failure modes are "old still installed"
 /// or "new installed", never "neither".
-fn swap_payload(ingested: &Ingested, live: &Path) -> Result<(), Error> {
-    let parent = live
-        .parent()
-        .ok_or_else(|| Error::Swap {
-            package: ingested.id().to_string(),
-            detail: format!("{} has no parent directory", live.display()),
-        })?
-        .to_path_buf();
+#[derive(Debug)]
+struct UpdateLayout {
+    payload_live: PathBuf,
+    payload_staging: PathBuf,
+    payload_retired: PathBuf,
+    integrity_live: PathBuf,
+    integrity_retired: PathBuf,
+}
+
+impl UpdateLayout {
+    fn new(entry: &RegistryEntry, ingested: &Ingested, data_root: &Path) -> Result<Self, Error> {
+        let parent = entry.payload_root.parent().ok_or_else(|| Error::Swap {
+            package: entry.id.clone(),
+            detail: format!("{} has no parent directory", entry.payload_root.display()),
+        })?;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let token = format!("{}-{nonce}", std::process::id());
+        let integrity_live = install::integrity::record_dir(data_root, &entry.id);
+        let integrity_parent = integrity_live
+            .parent()
+            .ok_or_else(|| Error::Swap {
+                package: entry.id.clone(),
+                detail: format!("{} has no parent directory", integrity_live.display()),
+            })?
+            .to_path_buf();
+        let integrity_leaf = integrity_live
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("package")
+            .to_string();
+        Ok(Self {
+            payload_live: entry.payload_root.clone(),
+            payload_staging: parent.join(format!(".staging-{}-{token}", ingested.id())),
+            payload_retired: parent.join(format!(".retiring-{}-{token}", ingested.id())),
+            integrity_live,
+            integrity_retired: integrity_parent
+                .join(format!(".retiring-{integrity_leaf}-integrity-{token}")),
+        })
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UpdateIntent {
+    package_id: String,
+    owner_pid: u32,
+    new_package_id_hex: String,
+    payload_live: PathBuf,
+    payload_staging: PathBuf,
+    payload_retired: PathBuf,
+    integrity_live: PathBuf,
+    integrity_retired: PathBuf,
+    old_commands: Vec<String>,
+    new_commands: Vec<String>,
+}
+
+struct UpdateJournal {
+    path: PathBuf,
+    finished: bool,
+}
+
+impl UpdateJournal {
+    fn begin(data_root: &Path, intent: UpdateIntent) -> Result<Self, Error> {
+        let dir = data_root.join("update-journal");
+        fs::create_dir_all(&dir)?;
+        let key = hex::encode(blake3::hash(intent.package_id.as_bytes()).as_bytes());
+        let path = dir.join(format!("{key}.toml"));
+        let bytes = toml::to_string(&intent)
+            .map(String::into_bytes)
+            .map_err(|error| Error::Swap {
+                package: intent.package_id.clone(),
+                detail: format!("encoding update recovery journal: {error}"),
+            })?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| Error::Swap {
+                package: intent.package_id.clone(),
+                detail: format!("creating update recovery journal: {error}"),
+            })?;
+        use std::io::Write as _;
+        if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+            let _ = fs::remove_file(&path);
+            return Err(Error::Swap {
+                package: intent.package_id,
+                detail: format!("persisting update recovery journal: {error}"),
+            });
+        }
+        if let Err(error) = fs::File::open(&dir).and_then(|directory| directory.sync_all()) {
+            let _ = fs::remove_file(&path);
+            return Err(Error::Swap {
+                package: intent.package_id,
+                detail: format!("persisting update recovery journal directory: {error}"),
+            });
+        }
+        Ok(Self {
+            path,
+            finished: false,
+        })
+    }
+
+    fn finish(mut self) -> Result<(), Error> {
+        fs::remove_file(&self.path)?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for UpdateJournal {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn update_path_is_scoped(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+}
+
+fn recover_update_directories(
+    intent: &UpdateIntent,
+    committed: bool,
+    payload_root: &Path,
+    integrity_root: &Path,
+) -> Result<(), Error> {
+    let payload_paths = [
+        &intent.payload_live,
+        &intent.payload_staging,
+        &intent.payload_retired,
+    ];
+    let integrity_paths = [&intent.integrity_live, &intent.integrity_retired];
+    if payload_paths
+        .iter()
+        .any(|path| !update_path_is_scoped(path, payload_root))
+        || integrity_paths
+            .iter()
+            .any(|path| !update_path_is_scoped(path, integrity_root))
+    {
+        return Err(Error::Swap {
+            package: intent.package_id.clone(),
+            detail: "recovery journal contains a path outside the package stores".to_string(),
+        });
+    }
+    if committed {
+        if !intent.payload_live.exists() {
+            return Err(Error::Swap {
+                package: intent.package_id.clone(),
+                detail: "registry committed the update but its payload is missing".to_string(),
+            });
+        }
+        let _ = fs::remove_dir_all(&intent.payload_staging);
+        let _ = fs::remove_dir_all(&intent.payload_retired);
+        let _ = fs::remove_dir_all(&intent.integrity_retired);
+        return Ok(());
+    }
+
+    let _ = fs::remove_dir_all(&intent.payload_staging);
+    if intent.payload_retired.exists() {
+        let _ = fs::remove_dir_all(&intent.payload_live);
+        fs::rename(&intent.payload_retired, &intent.payload_live).map_err(|error| Error::Swap {
+            package: intent.package_id.clone(),
+            detail: format!("restoring payload after interrupted update: {error}"),
+        })?;
+    }
+    if intent.integrity_retired.exists() {
+        let _ = fs::remove_dir_all(&intent.integrity_live);
+        fs::rename(&intent.integrity_retired, &intent.integrity_live).map_err(|error| {
+            Error::Swap {
+                package: intent.package_id.clone(),
+                detail: format!("restoring integrity evidence after interrupted update: {error}"),
+            }
+        })?;
+    }
+    Ok(())
+}
+
+/// Resolve journals left by process termination or power loss. The atomic
+/// registry is the commit record: if it names the candidate content hash,
+/// cleanup finishes; otherwise the retired payload and evidence are restored.
+fn recover_interrupted_updates() -> Result<(), Error> {
+    let data_root = data_root()?;
+    let journal_dir = data_root.join("update-journal");
+    if !journal_dir.exists() {
+        return Ok(());
+    }
+    let payload_root = payloads_root()?;
+    let integrity_root = data_root.join("integrity");
+    let registry = load_registry()?;
+    for entry in fs::read_dir(&journal_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let text = fs::read_to_string(entry.path()).map_err(|error| Error::Swap {
+            package: "unknown".to_string(),
+            detail: format!("reading update recovery journal: {error}"),
+        })?;
+        let intent: UpdateIntent = toml::from_str(&text).map_err(|error| Error::Swap {
+            package: "unknown".to_string(),
+            detail: format!("decoding update recovery journal: {error}"),
+        })?;
+        if process_is_alive(intent.owner_pid) {
+            return Err(Error::Swap {
+                package: intent.package_id,
+                detail: format!(
+                    "another installer process ({}) is updating this package",
+                    intent.owner_pid
+                ),
+            });
+        }
+        let installed = registry
+            .entry
+            .iter()
+            .find(|installed| installed.id == intent.package_id);
+        let committed = installed.is_some_and(|installed| {
+            installed
+                .package_id_hex
+                .eq_ignore_ascii_case(&intent.new_package_id_hex)
+        });
+        let desired_commands = installed
+            .map(|installed| installed.cli_commands.as_slice())
+            .unwrap_or_default();
+        recover_update_directories(&intent, committed, &payload_root, &integrity_root)?;
+        if committed {
+            let mut all_commands = intent.old_commands.clone();
+            all_commands.extend(intent.new_commands.clone());
+            all_commands.sort();
+            all_commands.dedup();
+            restore_cli_shims(&intent.package_id, &all_commands, desired_commands);
+        } else {
+            let mut all_commands = intent.old_commands.clone();
+            all_commands.extend(intent.new_commands.clone());
+            all_commands.sort();
+            all_commands.dedup();
+            restore_cli_shims(&intent.package_id, &all_commands, desired_commands);
+        }
+        fs::remove_file(entry.path())?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn process_is_alive(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).exists()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_is_alive(_pid: u32) -> bool {
+    false
+}
+
+fn swap_payload(ingested: &Ingested, layout: &UpdateLayout) -> Result<DirectorySwap, Error> {
+    let live = &layout.payload_live;
+    let parent = live.parent().ok_or_else(|| Error::Swap {
+        package: ingested.id().to_string(),
+        detail: format!("{} has no parent directory", live.display()),
+    })?;
     fs::create_dir_all(&parent)?;
-    let pid = std::process::id();
-    let staging = parent.join(format!(".staging-{}-{pid}", ingested.id()));
-    let retired = parent.join(format!(".retiring-{}-{pid}", ingested.id()));
+    let staging = &layout.payload_staging;
+    let retired = &layout.payload_retired;
 
     place_payload(ingested, &staging)?;
 
-    if live.exists() {
-        fs::rename(live, &retired).map_err(|e| Error::Swap {
+    let had_live = live.exists();
+    if had_live {
+        fs::rename(live, retired).map_err(|e| Error::Swap {
             package: ingested.id().to_string(),
             detail: format!("moving the installed payload aside: {e}"),
         })?;
     }
-    if let Err(e) = fs::rename(&staging, live) {
+    if let Err(e) = fs::rename(staging, live) {
         // Restore the working install before reporting — leaving no payload at
         // all is the one outcome this exists to prevent.
         if retired.exists() {
-            let _ = fs::rename(&retired, live);
+            let _ = fs::rename(retired, live);
         }
-        let _ = fs::remove_dir_all(&staging);
+        let _ = fs::remove_dir_all(staging);
         return Err(Error::Swap {
             package: ingested.id().to_string(),
             detail: format!("moving the new payload into place: {e}"),
         });
     }
-    let _ = fs::remove_dir_all(&retired);
-    Ok(())
+    Ok(DirectorySwap {
+        live: live.clone(),
+        retired: had_live.then(|| retired.clone()),
+        committed: false,
+    })
+}
+
+/// A directory replacement that remains reversible until the registry—the
+/// launcher's authority—has been atomically published.
+struct DirectorySwap {
+    live: PathBuf,
+    retired: Option<PathBuf>,
+    committed: bool,
+}
+
+impl DirectorySwap {
+    fn commit(mut self) {
+        if let Some(retired) = &self.retired {
+            let _ = fs::remove_dir_all(retired);
+        }
+        self.committed = true;
+    }
+
+    fn rollback(&mut self) {
+        if self.committed {
+            return;
+        }
+        let _ = fs::remove_dir_all(&self.live);
+        if let Some(retired) = &self.retired {
+            let _ = fs::rename(retired, &self.live);
+        }
+        self.committed = true;
+    }
+}
+
+impl Drop for DirectorySwap {
+    fn drop(&mut self) {
+        self.rollback();
+    }
+}
+
+/// Integrity evidence participates in the same update transaction as the
+/// payload. `integrity::record` replaces three files; moving the old record
+/// aside first means a later shim/registry error can restore the complete old
+/// chain instead of leaving old registry metadata pointed at new evidence.
+struct IntegritySwap {
+    directory: DirectorySwap,
+}
+
+impl IntegritySwap {
+    fn record(
+        data_root: &Path,
+        package_id: &str,
+        signed_root: &[u8],
+        manifest_bytes: &[u8],
+        collection_bytes: &[u8],
+        retired: &Path,
+    ) -> Result<Self, Error> {
+        let live = install::integrity::record_dir(data_root, package_id);
+        let parent = live.parent().ok_or_else(|| Error::Swap {
+            package: package_id.to_string(),
+            detail: format!("{} has no parent directory", live.display()),
+        })?;
+        fs::create_dir_all(parent)?;
+        let had_live = live.exists();
+        if had_live {
+            fs::rename(&live, retired).map_err(|error| Error::Swap {
+                package: package_id.to_string(),
+                detail: format!("moving the installed integrity record aside: {error}"),
+            })?;
+        }
+        if let Err(error) = install::integrity::record(
+            data_root,
+            package_id,
+            signed_root,
+            manifest_bytes,
+            collection_bytes,
+        ) {
+            let _ = fs::remove_dir_all(&live);
+            if had_live {
+                let _ = fs::rename(retired, &live);
+            }
+            return Err(error.into());
+        }
+        Ok(Self {
+            directory: DirectorySwap {
+                live,
+                retired: had_live.then(|| retired.to_path_buf()),
+                committed: false,
+            },
+        })
+    }
+
+    fn commit(self) {
+        self.directory.commit();
+    }
+}
+
+/// Best-effort compensation for a registry commit failure. Shims contain only
+/// the package id, so recreating the old command set restores their complete
+/// semantics; the payload and integrity guards handle the authoritative data.
+fn restore_cli_shims(package_id: &str, new: &[String], old: &[String]) {
+    let Ok(bin_dir) = bin_root() else {
+        return;
+    };
+    let _ = shim::remove_shims(&bin_dir, new);
+    if old.is_empty() {
+        return;
+    }
+    let shim_source = shim::locate_shim_source();
+    if !shim_source.exists() {
+        return;
+    }
+    let launcher_override_owned = std::env::var_os("TILO_LAUNCHER_PATH").map(PathBuf::from);
+    let spec = shim::ShimInstall {
+        package_id,
+        commands: old,
+        shim_source: &shim_source,
+        bin_dir: &bin_dir,
+        launcher_override: launcher_override_owned.as_deref(),
+    };
+    let _ = shim::write_shims(&spec);
 }
 
 /// Compare two version strings as semver; `None` when either isn't
@@ -1902,7 +2375,7 @@ fn runtime_verify(version: &str) -> Result<(), Error> {
 
 fn main() {
     let cli = Cli::parse();
-    let result = match cli.cmd {
+    let result = recover_interrupted_updates().and_then(|()| match cli.cmd {
         Cmd::Install {
             qpkg,
             pinned,
@@ -1985,7 +2458,7 @@ fn main() {
             RuntimeCmd::Path { version } => runtime_path(&version),
             RuntimeCmd::Verify { version } => runtime_verify(&version),
         },
-    };
+    });
     if let Err(e) = result {
         eprintln!("tilo-install: {e}");
         std::process::exit(1);
@@ -2051,4 +2524,153 @@ fn which_launcher() -> PathBuf {
         }
     }
     PathBuf::from("tilo-launcher")
+}
+
+#[cfg(test)]
+mod installer_tests {
+    use super::{DirectorySwap, UpdateIntent, UpdateJournal, recover_update_directories};
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn recovery_intent(root: &std::path::Path) -> (UpdateIntent, PathBuf, PathBuf) {
+        let payload_root = root.join("payloads");
+        let integrity_root = root.join("data/integrity");
+        let intent = UpdateIntent {
+            package_id: "dev.tilo.Test".to_string(),
+            owner_pid: 0,
+            new_package_id_hex: "ab".repeat(32),
+            payload_live: payload_root.join("dev.tilo.Test"),
+            payload_staging: payload_root.join(".staging-dev.tilo.Test-1"),
+            payload_retired: payload_root.join(".retiring-dev.tilo.Test-1"),
+            integrity_live: integrity_root.join("dev.tilo.Test"),
+            integrity_retired: integrity_root.join(".retiring-dev.tilo.Test-1"),
+            old_commands: Vec::new(),
+            new_commands: Vec::new(),
+        };
+        (intent, payload_root, integrity_root)
+    }
+
+    #[test]
+    fn local_install_uses_the_shared_thin_app_limit() {
+        assert!(pkg::qpkg_size_allowed(
+            pkg::Kind::App,
+            pkg::MAX_APP_QPKG_BYTES
+        ));
+        assert!(!pkg::qpkg_size_allowed(
+            pkg::Kind::App,
+            pkg::MAX_APP_QPKG_BYTES + 1
+        ));
+    }
+
+    #[test]
+    fn uncommitted_directory_swap_restores_the_working_payload() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let live = temp.path().join("live");
+        let retired = temp.path().join("retired");
+        fs::create_dir(&live).expect("old payload");
+        fs::write(live.join("version"), "old").expect("old marker");
+        fs::rename(&live, &retired).expect("retire old payload");
+        fs::create_dir(&live).expect("new payload");
+        fs::write(live.join("version"), "new").expect("new marker");
+
+        drop(DirectorySwap {
+            live: live.clone(),
+            retired: Some(retired.clone()),
+            committed: false,
+        });
+
+        assert_eq!(fs::read_to_string(live.join("version")).unwrap(), "old");
+        assert!(!retired.exists());
+    }
+
+    #[test]
+    fn committed_directory_swap_keeps_new_payload_and_reaps_old() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let live = temp.path().join("live");
+        let retired = temp.path().join("retired");
+        fs::create_dir(&live).expect("new payload");
+        fs::write(live.join("version"), "new").expect("new marker");
+        fs::create_dir(&retired).expect("old payload");
+        fs::write(retired.join("version"), "old").expect("old marker");
+
+        DirectorySwap {
+            live: live.clone(),
+            retired: Some(retired.clone()),
+            committed: false,
+        }
+        .commit();
+
+        assert_eq!(fs::read_to_string(live.join("version")).unwrap(), "new");
+        assert!(!retired.exists());
+    }
+
+    #[test]
+    fn restart_before_registry_commit_restores_payload_and_evidence() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (intent, payload_root, integrity_root) = recovery_intent(temp.path());
+        for (path, marker) in [
+            (&intent.payload_live, "new"),
+            (&intent.payload_retired, "old"),
+            (&intent.payload_staging, "partial"),
+            (&intent.integrity_live, "new-evidence"),
+            (&intent.integrity_retired, "old-evidence"),
+        ] {
+            fs::create_dir_all(path).unwrap();
+            fs::write(path.join("version"), marker).unwrap();
+        }
+
+        recover_update_directories(&intent, false, &payload_root, &integrity_root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(intent.payload_live.join("version")).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            fs::read_to_string(intent.integrity_live.join("version")).unwrap(),
+            "old-evidence"
+        );
+        assert!(!intent.payload_retired.exists());
+        assert!(!intent.payload_staging.exists());
+        assert!(!intent.integrity_retired.exists());
+    }
+
+    #[test]
+    fn restart_after_registry_commit_finishes_cleanup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (intent, payload_root, integrity_root) = recovery_intent(temp.path());
+        for path in [
+            &intent.payload_live,
+            &intent.payload_retired,
+            &intent.payload_staging,
+            &intent.integrity_live,
+            &intent.integrity_retired,
+        ] {
+            fs::create_dir_all(path).unwrap();
+        }
+        fs::write(intent.payload_live.join("version"), "new").unwrap();
+
+        recover_update_directories(&intent, true, &payload_root, &integrity_root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(intent.payload_live.join("version")).unwrap(),
+            "new"
+        );
+        assert!(!intent.payload_retired.exists());
+        assert!(!intent.payload_staging.exists());
+        assert!(!intent.integrity_retired.exists());
+    }
+
+    #[test]
+    fn durable_journal_excludes_a_second_update_of_the_same_package() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (first, _, _) = recovery_intent(temp.path());
+        let (second, _, _) = recovery_intent(temp.path());
+        let journal = UpdateJournal::begin(temp.path(), first).expect("first journal");
+
+        assert!(UpdateJournal::begin(temp.path(), second).is_err());
+
+        drop(journal);
+        let (third, _, _) = recovery_intent(temp.path());
+        assert!(UpdateJournal::begin(temp.path(), third).is_ok());
+    }
 }

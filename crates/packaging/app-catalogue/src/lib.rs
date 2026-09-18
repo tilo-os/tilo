@@ -104,11 +104,22 @@ pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueA
     if !v.trust.is_offerable() {
         return None;
     }
-    // Registries list versions newest-first; the newest is what "open this" means.
-    let newest = v.entry.versions.first()?;
-    if newest.qpkg_url.trim().is_empty() {
-        return None;
-    }
+    // Version strings may be SemVer or CalVer, so the publisher-signed
+    // release timestamp is the common ordering authority. Never trust JSON
+    // array order: an otherwise valid registry rewrite could put an older
+    // qpkg first. The remaining fields make timestamp ties deterministic.
+    let newest = v
+        .entry
+        .versions
+        .iter()
+        .filter(|version| !version.qpkg_url.trim().is_empty())
+        .max_by(|a, b| {
+            (a.released_at_unix, &a.version, &a.qpkg_root_hash_hex).cmp(&(
+                b.released_at_unix,
+                &b.version,
+                &b.qpkg_root_hash_hex,
+            ))
+        })?;
     let display_name = if v.entry.name.trim().is_empty() {
         launcher::registry::display_name_for_package_id(&v.entry.package_id)
     } else {
@@ -319,6 +330,33 @@ mod tests {
             &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]),
         );
         assert!(entry_to_app(&verified(blank), "main").is_none());
+    }
+
+    #[test]
+    fn catalogue_selects_latest_release_independent_of_registry_array_order() {
+        let mut e = entry("dev.tilo.timeline", "Timeline", vec![]);
+        e.versions = vec![
+            RegistryVersion {
+                version: "1.0.0".into(),
+                qpkg_url: "https://apps.example/timeline-1.qpkg".into(),
+                qpkg_root_hash_hex: "11".repeat(32),
+                qpkg_size_bytes: 10,
+                released_at_unix: 100,
+            },
+            RegistryVersion {
+                version: "2027.01".into(),
+                qpkg_url: "https://apps.example/timeline-new.qpkg".into(),
+                qpkg_root_hash_hex: "22".repeat(32),
+                qpkg_size_bytes: 20,
+                released_at_unix: 200,
+            },
+        ];
+        sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+
+        let app = entry_to_app(&verified(e), "main").expect("offerable latest release");
+        assert_eq!(app.version, "2027.01");
+        assert_eq!(app.download_url, "https://apps.example/timeline-new.qpkg");
+        assert_eq!(app.qpkg_size_bytes, 20);
     }
 
     #[test]
