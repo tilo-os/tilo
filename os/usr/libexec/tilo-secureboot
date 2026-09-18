@@ -797,7 +797,25 @@ cmd_enroll() {
     esac
   done
   need tilo-crypto
+  need flock
   validate_keydir
+
+  # Enrollment is a three-variable transaction whose ordering is load-bearing.
+  # Share the signer's key-store -> ESP lock order so artifact verification,
+  # firmware writes, and optional key retirement cannot observe another
+  # maintenance operation halfway through publication. Lock efivarfs itself as
+  # well: firmware policy is global even when an administrator selected a
+  # different key-store path for another invocation.
+  exec 9<"$KEYDIR"
+  flock -x 9
+  [ -d "$ESP" ] && [ ! -L "$ESP" ] \
+    || die "ESP is not a real directory: $ESP"
+  exec 8<"$ESP"
+  flock -x 8
+  [ -d "$EFIVARS" ] && [ ! -L "$EFIVARS" ] \
+    || die "EFI variable store is not a real directory: $EFIVARS"
+  exec 7<"$EFIVARS"
+  flock -x 7
 
   [ "$yes" -eq 1 ] || die "enroll changes what the firmware will boot; pass --yes"
   local enrollment_key
