@@ -10,8 +10,8 @@ use taffy::{NodeId, TaffyTree};
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Button, Card, Column, Container, Element, ModelView, ProgressBar, Row, Scrollable, Spacer,
-    Text, TextInput, TextInputKind, TimePicker, TimeValue, ToggleGroup, Widget,
+    Button, Card, CardGrid, Column, Container, Element, ModelView, ProgressBar, Row, Scrollable,
+    Spacer, Text, TextInput, TextInputKind, TimePicker, TimeValue, ToggleGroup, Widget,
 };
 use ui::{presence::PresenceCtx, text_render::TextRenderer, theme::Theme};
 use uuid::Uuid;
@@ -212,28 +212,56 @@ fn world_screen(state: &ui::LocalState<ClockState>) -> Element {
     });
     Box::new(
         Column::new()
-            .with_gap(14.0)
+            .with_gap(18.0)
             .push(Box::new(
                 Text::new("World clocks")
-                    .with_size(24.0)
+                    .with_size(32.0)
                     .with_heading_level(2),
             ))
-            .push(Box::new(Card::titled(
-                "Local time",
-                Box::new(
-                    Text::new(&chrono::Local::now().format("%H:%M, %A, %-d %B").to_string())
-                        .with_size(32.0),
-                ),
-            )))
-            .push(Box::new(list))
-            .push(Box::new(Text::new("Add a city").with_heading_level(3)))
             .push(Box::new(
-                TextInput::from_state(&city_query)
-                    .with_id("clocks.world.search")
-                    .with_kind(TextInputKind::Search)
-                    .with_placeholder("Search cities or time zones"),
+                Text::new("Keep the people and places that matter in view.").dimmed(),
             ))
-            .push(Box::new(choices)),
+            .push(Box::new(
+                CardGrid::content_sized(vec![
+                    Box::new(Card::titled(
+                        "Here",
+                        Box::new(
+                            Column::new()
+                                .with_no_padding()
+                                .with_intrinsic_height()
+                                .with_gap(6.0)
+                                .push(Box::new(
+                                    Text::new(&chrono::Local::now().format("%H:%M").to_string())
+                                        .with_size(52.0),
+                                ))
+                                .push(Box::new(
+                                    Text::new(
+                                        &chrono::Local::now().format("%A, %-d %B").to_string(),
+                                    )
+                                    .dimmed(),
+                                )),
+                        ),
+                    )),
+                    Box::new(Card::titled(
+                        "Add a city",
+                        Box::new(
+                            Column::new()
+                                .with_no_padding()
+                                .with_intrinsic_height()
+                                .with_gap(10.0)
+                                .push(Box::new(
+                                    TextInput::from_state(&city_query)
+                                        .with_id("clocks.world.search")
+                                        .with_kind(TextInputKind::Search)
+                                        .with_placeholder("Search cities or time zones"),
+                                ))
+                                .push(Box::new(choices)),
+                        ),
+                    )),
+                ])
+                .with_min_card_width(390.0),
+            ))
+            .push(Box::new(list)),
     )
 }
 
@@ -254,10 +282,7 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
             .with_gap(10.0);
         if s.alarms.is_empty() {
             col = col.push(Box::new(
-                Text::new(
-                    "No alarms. Create one and it will ring while Clocks is running, even when its window is hidden.",
-                )
-                .dimmed(),
+                Text::new("No alarms yet. Set one for a future time.").dimmed(),
             ));
         }
         for alarm in &s.alarms {
@@ -299,9 +324,12 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
     });
     Box::new(
         Column::new()
-            .with_gap(14.0)
+            .with_gap(18.0)
             .push(Box::new(
-                Text::new("Alarms").with_size(24.0).with_heading_level(2),
+                Text::new("Alarms").with_size(32.0).with_heading_level(2),
+            ))
+            .push(Box::new(
+                Text::new("A reliable nudge, exactly when you need it.").dimmed(),
             ))
             .push(Box::new(list))
             .push(Box::new(Card::titled(
@@ -317,12 +345,16 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
                                 .with_kind(TextInputKind::Name)
                                 .with_placeholder("What is this alarm for?"),
                         ))
+                        .push(Box::new(Text::new("Wake-up time").with_heading_level(3)))
                         .push(Box::new(
                             TimePicker::from_state(&draft)
                                 .with_id("clocks.alarm.time")
                                 .with_accessible_name("Alarm time"),
                         ))
-                        .push(Box::new(Text::new("Repeat").with_heading_level(3)))
+                        .push(Box::new(
+                            Text::new("Use the arrows, scroll, or type two digits.").dimmed(),
+                        ))
+                        .push(Box::new(Text::new("Repeat days").with_heading_level(3)))
                         .push(Box::new(ModelView::from_state(
                             &draft_repeat,
                             move |selected| {
@@ -428,9 +460,7 @@ fn timers_screen(
             .with_intrinsic_height()
             .with_gap(10.0);
         if s.timers.is_empty() {
-            col = col.push(Box::new(
-                Text::new("No timers running. Choose a preset or set an exact duration.").dimmed(),
-            ));
+            return Box::new(Spacer::new());
         }
         for timer in &s.timers {
             let id = timer.id;
@@ -454,7 +484,7 @@ fn timers_screen(
                         .with_gap(12.0)
                         .push(Box::new(
                             Row::new()
-                                .push(Box::new(Text::new(&duration(remaining_ms)).with_size(48.0)))
+                                .push(Box::new(Text::new(&duration(remaining_ms)).with_size(64.0)))
                                 .push(Box::new(Spacer::new()))
                                 .push(Box::new(
                                     Text::new(if running { "Running" } else { "Paused" }).dimmed(),
@@ -567,7 +597,7 @@ fn timers_screen(
                 ),
             )));
         }
-        Box::new(col)
+        Box::new(Card::titled("Active timers", Box::new(col)))
     });
     let add_state = state.clone();
     let add_custom = custom.clone();
@@ -584,63 +614,78 @@ fn timers_screen(
             },
         )
     });
+    let setup = CardGrid::content_sized(vec![
+        Box::new(Card::titled(
+            "Quick starts",
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_gap(10.0)
+                    .push(Box::new(
+                        Text::new("A focused timer is one tap away.").dimmed(),
+                    ))
+                    .push(Box::new(presets)),
+            ),
+        )),
+        Box::new(Card::titled(
+            "Custom timer",
+            Box::new(
+                Column::new()
+                    .with_gap(12.0)
+                    .push(Box::new(
+                        TextInput::from_state(&custom_label)
+                            .with_id("clocks.timer.custom.label")
+                            .with_kind(TextInputKind::Name)
+                            .with_placeholder("What is this timer for?"),
+                    ))
+                    .push(Box::new(Text::new("Hours, minutes, seconds").dimmed()))
+                    .push(Box::new(
+                        TimePicker::from_state(&custom)
+                            .with_id("clocks.timer.custom.duration")
+                            .with_accessible_name("Timer duration"),
+                    ))
+                    .push(primary_button(
+                        "clocks.timer.custom.add",
+                        "Start timer",
+                        move || {
+                            let v = add_custom.get();
+                            let secs = u64::from(v.hours) * 3600
+                                + u64::from(v.minutes) * 60
+                                + u64::from(v.seconds.unwrap_or(0));
+                            if secs > 0 {
+                                let mut t = Timer::new(
+                                    timer_label(&add_label.get()),
+                                    Duration::from_secs(secs),
+                                );
+                                t.start(Utc::now());
+                                add_state.update(|s| s.timers.push(t));
+                                add_label.set(String::new());
+                                add_error.set(None);
+                            } else {
+                                add_error.set(Some(
+                                    "Choose a duration greater than zero before starting a timer."
+                                        .into(),
+                                ));
+                            }
+                        },
+                    ))
+                    .push(Box::new(error)),
+            ),
+        )),
+    ])
+    .with_min_card_width(390.0);
     Box::new(
         Column::new()
             .with_gap(18.0)
             .push(Box::new(
-                Text::new("Timers").with_size(28.0).with_heading_level(2),
+                Text::new("Timers").with_size(32.0).with_heading_level(2),
             ))
             .push(Box::new(
-                Text::new("Start quickly, or dial in an exact duration.").dimmed(),
+                Text::new("Keep pace with your day, without losing your place.").dimmed(),
             ))
-            .push(Box::new(Text::new("Quick starts").with_heading_level(3)))
-            .push(Box::new(presets))
             .push(Box::new(list))
-            .push(Box::new(Card::titled(
-                "Custom timer",
-                Box::new(
-                    Column::new()
-                        .with_gap(12.0)
-                        .push(Box::new(
-                            TextInput::from_state(&custom_label)
-                                .with_id("clocks.timer.custom.label")
-                                .with_kind(TextInputKind::Name)
-                                .with_placeholder("What is this timer for?"),
-                        ))
-                        .push(Box::new(Text::new("Hours, minutes, seconds").dimmed()))
-                        .push(Box::new(
-                            TimePicker::from_state(&custom)
-                                .with_id("clocks.timer.custom.duration")
-                                .with_accessible_name("Timer duration"),
-                        ))
-                        .push(primary_button(
-                            "clocks.timer.custom.add",
-                            "Start timer",
-                            move || {
-                                let v = add_custom.get();
-                                let secs = u64::from(v.hours) * 3600
-                                    + u64::from(v.minutes) * 60
-                                    + u64::from(v.seconds.unwrap_or(0));
-                                if secs > 0 {
-                                    let mut t = Timer::new(
-                                        timer_label(&add_label.get()),
-                                        Duration::from_secs(secs),
-                                    );
-                                    t.start(Utc::now());
-                                    add_state.update(|s| s.timers.push(t));
-                                    add_label.set(String::new());
-                                    add_error.set(None);
-                                } else {
-                                    add_error.set(Some(
-                                        "Choose a duration greater than zero before starting a timer."
-                                            .into(),
-                                    ));
-                                }
-                            },
-                        ))
-                        .push(Box::new(error)),
-                ),
-            ))),
+            .push(Box::new(setup)),
     )
 }
 
@@ -766,7 +811,7 @@ fn surface(
         .push(Box::new(
             Container::new()
                 .with_no_padding()
-                .with_max_width(620.0)
+                .with_max_width(760.0)
                 .filling()
                 .with_child(Box::new(nav)),
         ))
@@ -800,9 +845,9 @@ fn surface(
     let header = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(4.0)
+        .with_gap(6.0)
         .push(Box::new(
-            Text::new("Clocks").with_size(34.0).with_heading_level(1),
+            Text::new("Clocks").with_size(40.0).with_heading_level(1),
         ))
         .push(Box::new(
             Text::new("World time, alarms, timers and focus tools.").dimmed(),
@@ -823,7 +868,7 @@ fn surface(
             .push(Box::new(
                 Container::new()
                     .with_no_padding()
-                    .with_max_width(880.0)
+                    .with_max_width(1120.0)
                     .filling()
                     .with_child(Box::new(content)),
             ))
