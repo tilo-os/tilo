@@ -1254,68 +1254,6 @@ impl Widget for MainPanel {
                 }
             }
 
-            self.backlink_hit_rects.clear();
-            if !self.backlinks.is_empty() {
-                let y = self.title_rect.y1 + self.tag_row_height() + 5.0 * self.text_scale;
-                let font = 12.0;
-                let label = "Linked from";
-                let (label_w, _) = text_renderer.measure(label, font, None);
-                text_renderer.draw_text(
-                    scene,
-                    label,
-                    font,
-                    tokens.colors.text_dim,
-                    transform * Affine::translate((self.title_rect.x0, y + 4.0 * self.text_scale)),
-                    None,
-                );
-                let mut x = self.title_rect.x0 + f64::from(label_w) + 10.0 * self.text_scale;
-                for backlink in self.backlinks.iter().take(3) {
-                    let excerpt = backlink.excerpt.trim();
-                    let preview = if excerpt.is_empty() {
-                        backlink.source_title.clone()
-                    } else {
-                        let clipped = excerpt.chars().take(48).collect::<String>();
-                        format!("{} · {}", backlink.source_title, clipped)
-                    };
-                    let (text_w, _) = text_renderer.measure(&preview, font, None);
-                    let width = f64::from(text_w) + 18.0 * self.text_scale;
-                    if x + width > self.title_rect.x1 {
-                        break;
-                    }
-                    let rect = Rect::new(x, y, x + width, y + 22.0 * self.text_scale);
-                    let hovered = rect.contains(self.last_pointer);
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        if hovered {
-                            tokens.colors.surface_white_10
-                        } else {
-                            tokens.colors.neutral[3]
-                        },
-                        None,
-                        &RoundedRect::from_rect(rect, 11.0 * self.text_scale),
-                    );
-                    text_renderer.draw_text(
-                        scene,
-                        &preview,
-                        font,
-                        tokens.colors.text_primary,
-                        transform
-                            * Affine::translate((
-                                x + 9.0 * self.text_scale,
-                                y + 4.0 * self.text_scale,
-                            )),
-                        None,
-                    );
-                    self.backlink_hit_rects.push((
-                        rect,
-                        backlink.source,
-                        backlink.block_id.clone(),
-                    ));
-                    x += width + 6.0 * self.text_scale;
-                }
-            }
-
             // Clip the editor body to the panel's scrollable viewport so
             // blocks past the bottom don't bleed onto the status bar.
             let body_clip = Rect::new(
