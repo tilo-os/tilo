@@ -12,6 +12,7 @@ function Get-TiloWindowsAppName {
         'db-client' { 'Database Client' }
         'git-client' { 'Git Client' }
         'pdf-viewer' { 'PDF Viewer' }
+        'video-player' { 'Video Player' }
         'ebook' { 'Books' }
         'totp' { 'Authenticator' }
         'typst-editor' { 'Typst' }
