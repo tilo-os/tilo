@@ -16,7 +16,6 @@
 )]
 
 use std::fs;
-use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,15 +29,6 @@ use pkg::trust::{
 };
 use pkg::{MemoryBlobStore, PackageId, Verification, unpack, verify_with_trust};
 use serde::{Deserialize, Serialize};
-
-/// Mirrors tilo-pkg-cli's `QpkgHeader` (kept local to avoid a circular dep).
-#[derive(Debug, Deserialize)]
-struct QpkgHeader {
-    /// `qpkg:<hex>` form of the `PackageId`.
-    package_id: String,
-    #[allow(dead_code)]
-    format: u32,
-}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -656,7 +646,11 @@ impl Ingested {
 /// `--allow-self-signed` decides *whose* signature is acceptable, never
 /// whether one is required.
 fn ingest(bytes: &[u8], trust: &TrustFlags) -> Result<Ingested, Error> {
-    let (pkg_id, store) = read_qpkg_bytes(bytes)?;
+    let app_registry::qpkg::QpkgMeta {
+        package_id: pkg_id,
+        store,
+        ..
+    } = app_registry::qpkg::load(bytes).map_err(|error| Error::Parse(error.to_string()))?;
     let (manifest, publisher_key_hex, attested_by) = verify_and_gate(pkg_id, &store, trust)?;
 
     // A signature says who wrote the manifest, not that its contents are
@@ -1996,58 +1990,6 @@ fn main() {
         eprintln!("tilo-install: {e}");
         std::process::exit(1);
     }
-}
-
-/// Read a .qpkg tar → [`MemoryBlobStore`] + `PackageId`. Mirrors
-/// (deliberately duplicated) tilo-pkg-cli::read_qpkg so this crate
-/// stays independent.
-#[allow(dead_code)]
-fn read_qpkg(path: &Path) -> Result<(PackageId, MemoryBlobStore), Error> {
-    read_qpkg_bytes(&fs::read(path)?)
-}
-
-/// Same, from bytes already in memory — what a registry fetch returns,
-/// enabling verify-before-write.
-fn read_qpkg_bytes(bytes: &[u8]) -> Result<(PackageId, MemoryBlobStore), Error> {
-    let mut ar = tar::Archive::new(std::io::Cursor::new(bytes));
-    let mut header: Option<QpkgHeader> = None;
-    let mut store = MemoryBlobStore::new();
-    for entry in ar.entries().map_err(|e| Error::Parse(e.to_string()))? {
-        let mut entry = entry.map_err(|e| Error::Parse(e.to_string()))?;
-        let entry_path = entry.path().map(|p| p.to_path_buf()).unwrap_or_default();
-        let name = entry_path.to_string_lossy().to_string();
-        let mut buf = Vec::new();
-        entry
-            .read_to_end(&mut buf)
-            .map_err(|e| Error::Parse(e.to_string()))?;
-        match name.as_str() {
-            "qpkg.toml" => {
-                let s = String::from_utf8(buf)
-                    .map_err(|e| Error::Parse(format!("qpkg.toml not UTF-8: {e}")))?;
-                header =
-                    Some(toml::from_str(&s).map_err(|e| Error::Parse(format!("qpkg.toml: {e}")))?);
-            }
-            n if n.starts_with("blobs/") => {
-                store
-                    .put(&buf)
-                    .map_err(|e| Error::Parse(format!("blob store: {e}")))?;
-            }
-            // signed-root/manifest.toml/collection.qcl are also duplicated under
-            // blobs/<hex>; ingest defensively in case a packager omitted the duplicate.
-            "signed-root" | "manifest.toml" | "collection.qcl" => {
-                store
-                    .put(&buf)
-                    .map_err(|e| Error::Parse(format!("blob store: {e}")))?;
-            }
-            _ => {}
-        }
-    }
-    let header = header.ok_or_else(|| Error::Parse(".qpkg is missing qpkg.toml".into()))?;
-    let id: PackageId = header
-        .package_id
-        .parse()
-        .map_err(|e| Error::Parse(format!("qpkg.toml package_id: {e:?}")))?;
-    Ok((id, store))
 }
 
 /// Best-effort publisher key extraction: reads the signed-root blob by
