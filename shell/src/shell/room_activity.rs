@@ -2049,9 +2049,11 @@ impl RoomActivityPane {
                 self.layout(self.viewport);
             }
         }
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        // Panel role (HIG §9.1): the sheet's corner is the Panel radius.
+        // Panel role (HIG §9.1/§9.2/§9.5): the sheet's corner is the Panel
+        // radius and its material is the same as every other floating
+        // Panel — `panel_ground` with the derived Panel border — rather than
+        // a raised fill under a declared border that vanishes on the dark
+        // preset.
         let card = RoundedRect::from_rect(
             self.sheet,
             ui::chrome::ChromeRole::Panel.radius(theme, self.sheet.height()),
@@ -2059,14 +2061,14 @@ impl RoomActivityPane {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surfaces.raised,
+            ui::chrome::shell::panel_ground(theme),
             None,
             &card,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
             &card,
         );
@@ -2537,38 +2539,21 @@ impl RoomActivityPane {
             }
             let rect = Rect::new(x, y, x + button_width, y + 28.0);
             let is_active = action == DetailAction::Compare && compared;
-            let shape = RoundedRect::from_rect(rect, 6.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if is_active {
-                    theme.tokens.colors.accent[5].with_alpha_factor(0.28)
-                } else {
-                    theme.tokens.colors.lift(0.35)
-                },
-                None,
-                &shape,
+            // Control role (HIG §9.1/§9.3): a chip at the Control radius. The
+            // one that is "on" (Compare, while a comparison shows) is a lift
+            // with the tier's hairline; idle chips rest on the lift floor with
+            // an edge derived from that floor — never an accent wash or a
+            // declared border.
+            let shape = RoundedRect::from_rect(
+                rect,
+                ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
             );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                if is_active {
-                    theme.tokens.colors.accent[4]
-                } else {
-                    theme.tokens.colors.border_standard
-                },
-                None,
-                &shape,
-            );
+            paint_control_chip(scene, transform, theme, &shape, is_active);
             tr.draw_text(
                 scene,
                 label,
                 type_size(tr, theme.tokens.typography.scale.sm),
-                if is_active {
-                    theme.tokens.colors.accent[4]
-                } else {
-                    theme.tokens.colors.text_primary
-                },
+                theme.tokens.colors.text_primary,
                 at(transform, rect.x0 + 8.0, rect.y0 + 7.0),
                 None,
             );
@@ -2710,20 +2695,12 @@ impl RoomActivityPane {
         y: f64,
     ) {
         let card = Rect::new(bounds.x0 + 12.0, y, bounds.x1 - 12.0, y + 92.0);
-        let shape = RoundedRect::from_rect(card, 8.0);
-        scene.fill(
-            Fill::NonZero,
+        ui::surface::card(
+            scene,
             transform,
+            card,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.lift(0.35),
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
         );
         tr.draw_text_weighted(
             scene,
@@ -2764,13 +2741,22 @@ impl RoomActivityPane {
         }
         let rect = Rect::new(bounds.x0 + 6.0, *y, bounds.x1 - 6.0, *y + 28.0);
         if self.lens == *lens {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.accent[5],
-                None,
-                &RoundedRect::from_rect(rect, 6.0),
-            );
+            // Selection is a lift (HIG §9.3), never an accent fill: the
+            // accent is reserved for live state (§9.4).
+            let radius = ui::chrome::ChromeRole::Control.radius(theme, rect.height());
+            let shape = RoundedRect::from_rect(rect, radius);
+            let tier =
+                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true));
+            scene.fill(Fill::NonZero, transform, tier.fill, None, &shape);
+            if let Some(border) = tier.border {
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    border,
+                    None,
+                    &ui::surface::edge_outline(rect, radius),
+                );
+            }
         }
         tr.draw_text(
             scene,
@@ -3081,6 +3067,11 @@ impl RoomActivityPane {
             self.replay_play_rect.x1 + 42.0,
             controls.y1,
         );
+        // Control role: transport chips at the Control radius. Playing is
+        // live state (HIG §9.4), so the accent stays on the active Pause
+        // chip; idle chips derive their edge from the lift floor (§9.5).
+        let floor = theme.tokens.colors.lift(PILL_FLOOR_LIFT_T);
+        let idle_edge = ui::surface::edge_on(floor);
         for (rect, label, active) in [
             (self.replay_back_rect, "←", false),
             (
@@ -3090,14 +3081,15 @@ impl RoomActivityPane {
             ),
             (self.replay_forward_rect, "→", false),
         ] {
-            let shape = RoundedRect::from_rect(rect, 7.0);
+            let radius = ui::chrome::ChromeRole::Control.radius(theme, rect.height());
+            let shape = RoundedRect::from_rect(rect, radius);
             scene.fill(
                 Fill::NonZero,
                 transform,
                 if active {
                     theme.tokens.colors.accent[5].with_alpha_factor(0.28)
                 } else {
-                    theme.tokens.colors.lift(0.35)
+                    floor
                 },
                 None,
                 &shape,
@@ -3108,10 +3100,10 @@ impl RoomActivityPane {
                 if active {
                     theme.tokens.colors.accent[4]
                 } else {
-                    theme.tokens.colors.border_standard
+                    idle_edge
                 },
                 None,
-                &shape,
+                &ui::surface::edge_outline(rect, radius),
             );
             let (tw, th) = tr.measure(label, type_size(tr, theme.tokens.typography.scale.sm), None);
             tr.draw_text(
@@ -3152,19 +3144,14 @@ impl RoomActivityPane {
             self.sheet.x1 - 12.0,
             (self.sheet.y1 - info_h - 20.0).max(controls.y1 + 80.0),
         );
-        scene.fill(
-            Fill::NonZero,
+        // The replay canvas is a card on the sheet: `radii.lg` (10 was off
+        // the radius scale) with an edge derived from its base fill.
+        ui::surface::card(
+            scene,
             transform,
+            canvas,
+            f64::from(theme.tokens.radii.lg),
             theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(canvas, 10.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(canvas, 10.0),
         );
         draw_replay_layout(scene, transform, tr, theme, canvas, frame);
         draw_replay_pointers(scene, transform, tr, theme, canvas, frame, self.sheet);
@@ -5869,20 +5856,12 @@ fn draw_replay_layout(
             };
             let rect = Rect::new(x, groups.y0, x1 - 4.0, groups.y1);
             if rect.width() > 6.0 {
-                let group_card = RoundedRect::from_rect(rect, 6.0);
-                scene.fill(
-                    Fill::NonZero,
+                ui::surface::card(
+                    scene,
                     transform,
+                    rect,
+                    f64::from(theme.tokens.radii.md),
                     theme.tokens.colors.lift(0.35),
-                    None,
-                    &group_card,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.tokens.colors.border_standard,
-                    None,
-                    &group_card,
                 );
                 let title = group
                     .tabs
@@ -6212,6 +6191,36 @@ fn paint_selector_pill(
     shape: &RoundedRect,
     active: bool,
 ) {
+    paint_tiered(scene, transform, theme, shape, active, None);
+}
+
+/// A Control chip inside the sheet (detail actions): the chosen one is
+/// `selection_tier`; an idle one rests on the lift floor with an edge
+/// derived from that floor (HIG §9.5), so it registers on every palette.
+fn paint_control_chip(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    shape: &RoundedRect,
+    active: bool,
+) {
+    let floor = theme.tokens.colors.lift(PILL_FLOOR_LIFT_T);
+    let idle_edge = ui::surface::edge_on(floor);
+    paint_tiered(scene, transform, theme, shape, active, Some(idle_edge));
+}
+
+/// The one recipe behind both: the chosen state is `selection_tier`, an
+/// idle one rests on the lift floor, and whichever edge applies is stroked
+/// on the shape's outermost pixel row (`ui::surface::edge_outline`) so it
+/// lands on the same row as every `ui::surface::card` edge on the sheet.
+fn paint_tiered(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    shape: &RoundedRect,
+    active: bool,
+    idle_edge: Option<vello::peniko::Color>,
+) {
     let tier = ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(active));
     let fill = if active {
         tier.fill
@@ -6219,8 +6228,14 @@ fn paint_selector_pill(
         theme.tokens.colors.lift(PILL_FLOOR_LIFT_T)
     };
     scene.fill(Fill::NonZero, transform, fill, None, shape);
-    if let Some(border) = tier.border {
-        scene.stroke(&Stroke::new(1.0), transform, border, None, shape);
+    let border = if active {
+        tier.border
+    } else {
+        tier.border.or(idle_edge)
+    };
+    if let Some(border) = border {
+        let outline = ui::surface::edge_outline(shape.rect(), shape.radii().top_left);
+        scene.stroke(&Stroke::new(1.0), transform, border, None, &outline);
     }
 }
 
@@ -6909,6 +6924,39 @@ mod tests {
     use automerge::transaction::{CommitOptions, Transactable};
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     use ui::widget::op_class_is_revertible;
+
+    /// HIG §9.5 rest edges: the sheet's Panel border on its Panel ground,
+    /// and the derived edge of every card class the sheet paints (lift-floor
+    /// chips and group cards, the base-filled replay canvas) must register
+    /// on every shipped palette, measured as the composite over the fill.
+    #[test]
+    fn sheet_and_card_edges_register_on_every_palette() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let colors = &theme.tokens.colors;
+            let ground = ui::chrome::shell::panel_ground(&theme);
+            let probes = [
+                ("panel border", ui::chrome::shell::panel_border(&theme), ground),
+                (
+                    "lift-floor chip",
+                    ui::surface::edge_on(colors.lift(PILL_FLOOR_LIFT_T)),
+                    colors.lift(PILL_FLOOR_LIFT_T),
+                ),
+                (
+                    "replay canvas",
+                    ui::surface::edge_on(colors.surfaces.base),
+                    colors.surfaces.base,
+                ),
+            ];
+            for (what, edge, fill) in probes {
+                let delta = ui::surface::edge_delta(edge, fill);
+                assert!(
+                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
+                    theme.name
+                );
+            }
+        }
+    }
 
     /// A plausible half-hour: owner, one grant, one revoke, one rename,
     /// one window opened.
