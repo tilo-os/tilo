@@ -38,7 +38,7 @@ def unique(pairs):
     return result
 
 
-def read_pinned(path, expected):
+def read_pinned(path, expected, *, raw_bytes=False):
     require(HEX.fullmatch(expected or ''), 'independent exact receipt SHA256 required')
     path = Path(path)
     require(not any(p.is_symlink() or getattr(p, 'is_junction', lambda: False)()
@@ -54,7 +54,8 @@ def read_pinned(path, expected):
         require((before.st_size, before.st_mtime_ns, before.st_ctime_ns) ==
                 (after.st_size, after.st_mtime_ns, after.st_ctime_ns), 'receipt changed while reading')
     require(len(raw) <= 1024 * 1024 and sha(raw) == expected, 'receipt bytes differ from independent pin')
-    return json.loads(raw, object_pairs_hook=unique)
+    value = json.loads(raw, object_pairs_hook=unique)
+    return raw if raw_bytes else value
 
 
 def git(repo, *args):
@@ -99,7 +100,8 @@ def trusted_inputs(source, helper_repo, helper_revision, rpms, wpe, wpe_sha):
     exec(compile(helper, 'pinned-native-resume.py', 'exec'), module.__dict__)
     material = {'recipe': blob(source, SOURCE, 'os/Containerfile'),
                 'driver': blob(source, SOURCE, 'os/dev/build-image.sh'), 'helper': helper,
-                'producer': blob(helper_repo, helper_revision, 'os/dev/resume-native-payload.py')}
+                'producer': blob(helper_repo, helper_revision, 'os/dev/resume-native-payload.py'),
+                'source_root': source}
     return native.REQUIRED, inputs, module, material
 
 
@@ -127,7 +129,7 @@ def checkpoint_union(checkpoints, required):
 
 
 def approve(receipt, receipt_sha, checkpoints, required, inputs, resume, material,
-            helper_revision, run_id, attempt):
+            helper_revision, run_id, attempt, *, extensions=None):
     require(HEX.fullmatch(receipt_sha) and run_id.isdecimal() and attempt.isdecimal(), 'exact receipt and run pins required')
     require(1 <= len(checkpoints) <= 4, 'bounded independent checkpoints required')
     expected_fields = {'schema', 'purpose', 'inputs', 'reference', 'config_digest', 'metadata_sha256',
@@ -142,8 +144,14 @@ def approve(receipt, receipt_sha, checkpoints, required, inputs, resume, materia
     require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-reconstructed-native-aarch64@sha256:[0-9a-f]{64}', receipt['reference'])
             and DIGEST.fullmatch(receipt['config_digest']) and HEX.fullmatch(receipt['metadata_sha256']),
             'reconstructed immutable identity differs')
-    union = checkpoint_union(checkpoints, required)
-    recipe, missing = resume.derive_recipe(material['recipe'].decode(), union, required)
+    if extensions is None:
+        union = checkpoint_union(checkpoints, required)
+        extra, recipe_args = {}, {}
+    else:
+        from reconstruction_cache_approval import reproduce_extensions
+        api = types.SimpleNamespace(require=require, sha=sha, canonical=canonical, checkpoint_union=checkpoint_union)
+        union, extra, recipe_args = reproduce_extensions(api, checkpoints, required, resume, material, extensions)
+    recipe, missing = resume.derive_recipe(material['recipe'].decode(), union, required, **recipe_args)
     parameters = {key: receipt['reconstruction'][key] for key in ('source_path', 'derived_recipe_path', 'seed_image_id')}
     for key in ('source_path', 'derived_recipe_path'):
         path = parameters[key]
@@ -158,7 +166,7 @@ def approve(receipt, receipt_sha, checkpoints, required, inputs, resume, materia
         'checkpoints': checkpoints, 'reused_inventory': union, 'missing_targets': missing,
         'run_id': run_id, 'attempt': attempt,
         'remaining_phases': ['thin-app-shared-graph', 'elf-hardening', 'runtime-bundle', 'app-store'],
-        'original_recipe_executed_verbatim': False}
+        'original_recipe_executed_verbatim': False, **extra}
     require(canonical(receipt['reconstruction']) == canonical(expected), 'independent reconstruction reproduction differs')
     approved = sha(canonical(expected))
     require(receipt['reconstruction_sha256'] == approved, 'remote reconstruction digest differs from independent result')
@@ -177,14 +185,29 @@ def main():
                  'wpe-receipt-sha256', 'run-id', 'attempt', 'output'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--checkpoint', nargs=2, action='append', required=True, metavar=('PATH', 'SHA256'))
+    for name in ('partial-admission', 'thin-cache-admission', 'thin-cache-receipt', 'source-metadata'):
+        parser.add_argument('--' + name, nargs=2, metavar=('PATH', 'SHA256'))
+    parser.add_argument('--partial-metadata', nargs=2, action='append', default=[], metavar=('RECEIPT_SHA256', 'PATH'))
     args = parser.parse_args()
     receipt = read_pinned(args.receipt, args.receipt_sha256)
     require(1 <= len(args.checkpoint) <= 4, 'bounded checkpoints required')
     checkpoints = [{'receipt_sha256': digest, 'receipt': read_pinned(path, digest)} for path, digest in args.checkpoint]
     required, inputs, resume, material = trusted_inputs(args.source, args.helper_repo, args.helper_revision,
         args.rpms, args.wpe_reference, args.wpe_receipt_sha256)
+    extensions = None
+    options = (args.partial_admission, args.thin_cache_admission, args.thin_cache_receipt, args.source_metadata)
+    if any(options) or args.partial_metadata:
+        require(all(options), 'cache reconstruction requires all independent admission inputs')
+        extensions = {name: (pair[1], read_pinned(*pair)) for name, pair in zip(
+            ('partial_admission', 'thin_admission', 'thin_receipt', 'source_metadata'), options)}
+        by_sha = {c['receipt_sha256']: c['receipt'] for c in checkpoints}
+        require(len({digest for digest, _ in args.partial_metadata}) == len(args.partial_metadata),
+                'duplicate partial metadata input')
+        extensions['partial_metadata'] = {digest: read_pinned(path, by_sha[digest]['metadata_sha256'], raw_bytes=True)
+                                          for digest, path in args.partial_metadata}
+        material['restore_helper'] = blob(args.helper_repo, args.helper_revision, 'os/dev/restore-thin-cache.py')
     result = approve(receipt, args.receipt_sha256, checkpoints, required, inputs, resume, material,
-        args.helper_revision, args.run_id, args.attempt)
+        args.helper_revision, args.run_id, args.attempt, extensions=extensions)
     with Path(args.output).open('xb') as stream:
         stream.write(canonical(result) + b'\n')
     print(json.dumps(result, sort_keys=True))
