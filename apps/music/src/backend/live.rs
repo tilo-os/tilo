@@ -17,7 +17,7 @@
 //!   `PoToken`** (see [`crate::backend::potoken`]).
 //!
 //! Search and metadata stay pure Rust through rustypipe. Stream resolution
-//! first queries the keyless Android VR InnerTube client directly, then falls
+//! first queries the keyless Android VR `InnerTube` client directly, then falls
 //! back to rustypipe's direct player response.
 
 #![cfg(feature = "live")]
