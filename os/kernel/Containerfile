@@ -292,6 +292,9 @@ RUN set -eux; \
         CONFIG_ZRAM_DEF_COMP_LZ4=y \
         CONFIG_DEBUG_INFO_NONE=y \
         '# CONFIG_DEBUG_INFO is not set' \
+        CONFIG_KALLSYMS=y \
+        '# CONFIG_KALLSYMS_ALL is not set' \
+        CONFIG_KALLSYMS_BASE_RELATIVE=y \
         CONFIG_STRICT_KERNEL_RWX=y \
         CONFIG_STACKPROTECTOR_STRONG=y \
         CONFIG_FORTIFY_SOURCE=y \
