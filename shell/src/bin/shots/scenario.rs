@@ -4190,3 +4190,6 @@ mod tests {
         assert!(json.contains("\"palette_visible\":true"));
     }
 }
+
+#[allow(unused_imports)]
+use shell::shell::state::WorkspaceExt as _;

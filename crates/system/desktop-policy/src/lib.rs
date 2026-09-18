@@ -19,12 +19,14 @@
 )]
 
 pub mod defaults;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod storage;
 
 pub use defaults::{
     AppCandidate, DefaultAppError, DefaultAppResolver, DefaultAppSelection, PersonalDefaults,
     ResourceKind, UserWorkspaceChoice, WorkspaceDefaultPolicy, WorkspaceDefaults,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use storage::{
     CleanupError, CleanupItem, CleanupKind, CleanupPreview, CleanupReport, StorageCategory,
     StorageEntry, StorageRoots, StorageSnapshot, apply_cleanup, preview_cache_cleanup,

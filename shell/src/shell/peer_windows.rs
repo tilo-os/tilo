@@ -306,8 +306,11 @@ mod tests {
         ws.strips = vec![strip];
         let ws_id = ws.id;
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, tab_id)
@@ -537,3 +540,6 @@ mod tests {
         );
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

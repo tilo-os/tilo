@@ -1,0 +1,21 @@
+[package]
+name = "qos-desktop"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+uuid.workspace = true
+parking_lot.workspace = true
+collab-types = { path = "../../collab/collab-types" }
+qos-actions = { path = "../../collab/actions" }
+desktop-policy = { path = "../../system/desktop-policy" }
+ui = { path = "../../../ui" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

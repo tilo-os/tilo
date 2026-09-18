@@ -44,7 +44,6 @@ use ui::widget::{
 use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
-use crate::shell::{TabMenuAction, build_tab_context_menu};
 use crate::shell::collaborators_overlay::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay,
 };
@@ -74,6 +73,7 @@ pub use crate::shell::workspace_settings_overlay::GrantComposerRects;
 use crate::shell::workspace_settings_overlay::{
     EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
 };
+use crate::shell::{TabMenuAction, build_tab_context_menu};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum HistoryTargetAddress {
@@ -1486,10 +1486,22 @@ fn draw_filter_chip(
     let shape = RoundedRect::from_rect(rect, radius);
     let tier = ui::chrome::selection_tier(theme, state);
     if tier.fill.components[3] > 0.0 {
-        scene.fill(vello::peniko::Fill::NonZero, transform, tier.fill, None, &shape);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tier.fill,
+            None,
+            &shape,
+        );
     }
     if let Some(border) = tier.border {
-        scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, border, None, &shape);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            border,
+            None,
+            &shape,
+        );
     }
     if let Some(glow) = tier.inner_glow {
         scene.stroke(
@@ -11451,7 +11463,9 @@ impl ShellOverlayHost {
                     return false;
                 };
                 let placement = match action {
-                    TabMenuAction::SplitRight => crate::shell::window_actions::SplitPlacement::Right,
+                    TabMenuAction::SplitRight => {
+                        crate::shell::window_actions::SplitPlacement::Right
+                    }
                     _ => crate::shell::window_actions::SplitPlacement::StripEnd,
                 };
                 // Tree first: cache + replicated document + chrome bump, so
@@ -11463,10 +11477,7 @@ impl ShellOverlayHost {
                     match crate::shell::window_actions::split_tab(&mut st, target.tab, placement) {
                         Ok(id) => id,
                         Err(err) => {
-                            st.push_warning_notification(
-                                "Can't move this tab",
-                                err.user_message(),
-                            );
+                            st.push_warning_notification("Can't move this tab", err.user_message());
                             return false;
                         }
                     }
@@ -14626,7 +14637,13 @@ impl ShellOverlayHost {
             panel_radius,
             &theme.tokens.elevation.e4,
         );
-        scene.fill(Fill::NonZero, transform, role.surface(theme), None, &panel_shape);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            role.surface(theme),
+            None,
+            &panel_shape,
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
@@ -15567,7 +15584,13 @@ impl ShellOverlayHost {
             scene.fill(Fill::NonZero, transform, tier.fill, None, &rr);
         }
         if let Some(border) = tier.border {
-            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, border, None, &rr);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                border,
+                None,
+                &rr,
+            );
         }
         if let Some(glow) = tier.inner_glow {
             scene.stroke(
@@ -15585,10 +15608,7 @@ impl ShellOverlayHost {
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 transform,
-                ui::tokens::colors::Colors::hairline_on(
-                    ground,
-                    ui::chrome::shell::HAIRLINE_ALPHA,
-                ),
+                ui::tokens::colors::Colors::hairline_on(ground, ui::chrome::shell::HAIRLINE_ALPHA),
                 None,
                 &rr,
             );
@@ -15681,7 +15701,13 @@ impl ShellOverlayHost {
         let m = self.overview_metrics;
         // A Panel (HIG §9.1): `radii.xl`, and a shadow that follows its own
         // rounded outline rather than a square field.
-        ui::surface::shadow(scene, transform, panel, m.panel_radius, &tokens.elevation.e4);
+        ui::surface::shadow(
+            scene,
+            transform,
+            panel,
+            m.panel_radius,
+            &tokens.elevation.e4,
+        );
         let card_rr = RoundedRect::from_rect(panel, m.panel_radius);
         scene.fill(Fill::NonZero, transform, ground, None, &card_rr);
         scene.stroke(
@@ -16985,10 +17011,22 @@ impl ShellOverlayHost {
             let radius = ui::chrome::ChromeRole::Selector.radius(theme, seg.height());
             let shape = RoundedRect::from_rect(seg, radius);
             if tier.fill.components[3] > 0.0 {
-                scene.fill(vello::peniko::Fill::NonZero, transform, tier.fill, None, &shape);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    tier.fill,
+                    None,
+                    &shape,
+                );
             }
             if let Some(border) = tier.border {
-                scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, border, None, &shape);
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    border,
+                    None,
+                    &shape,
+                );
             }
             if let Some(glow) = tier.inner_glow {
                 scene.stroke(
@@ -17965,11 +18003,14 @@ mod tab_context_menu_tests {
         let mut active_group = StdHashMap::new();
         active_group.insert(strip_id, GROUP);
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
-            collaborators: vec![],
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, strip_id)
@@ -22486,13 +22527,20 @@ mod overlay_event_absorb_tests {
             colors.text_primary,
             ui::tokens::colors::ON_FILL_MIN_CONTRAST,
         );
-        let idle_ink = colors.ink_on(ground, colors.text_dim, ui::tokens::colors::ON_FILL_MIN_CONTRAST);
-        assert!(contrast_ratio(chosen_ink, chosen.fill) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+        let idle_ink = colors.ink_on(
+            ground,
+            colors.text_dim,
+            ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+        );
+        assert!(
+            contrast_ratio(chosen_ink, chosen.fill) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST
+        );
         assert!(contrast_ratio(idle_ink, ground) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         // And the same holds on the light and high-contrast presets.
         for theme in [Theme::light(), Theme::high_contrast()] {
             let colors = &theme.tokens.colors;
-            let chosen = ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
+            let chosen =
+                ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
             let ink = colors.ink_on(
                 chosen.fill,
                 colors.text_primary,
@@ -25386,11 +25434,14 @@ mod maximize_harvest_tests {
         let mut active_group = StdHashMap::new();
         active_group.insert(strip_id, group_id);
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
-            collaborators: vec![],
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, strip_id, group_id)
@@ -25634,11 +25685,14 @@ mod resync_strips_tests {
         let mut active_group = StdHashMap::new();
         active_group.insert(strip_id, group_id);
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
-            collaborators: vec![],
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, strip_id, group_id)
@@ -26690,8 +26744,11 @@ mod peer_cursor_tests {
         let mut ws = Workspace::test_default(ws_id, "Work");
         ws.strips = vec![strip];
         let mut tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                ..Default::default()
+            },
             ..Default::default()
         };
         // Both are per-parent maps, not single pointers: one active strip
@@ -26975,6 +27032,7 @@ mod peer_cursor_tests {
 #[cfg(test)]
 mod roster_rows {
     use super::{collaborator_roster_rows, quick_settings_settled_bounds};
+    use crate::shell::state::WorkspaceExt as _;
     use crate::shell::state::{
         CapOverride, Collaborator, Subject, Verb, Workspace, WorkspaceId, WorkspaceTree,
     };
@@ -27104,3 +27162,6 @@ mod roster_rows {
         );
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

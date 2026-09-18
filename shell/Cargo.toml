@@ -58,6 +58,7 @@ hevc-codec-tests = ["hdr-decode"]
 dev-session = []
 
 [dependencies]
+qos-desktop = { path = "../crates/session/qos-desktop" }
 qos-peer-state = { path = "../crates/collab/qos-peer-state" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../crates/system/atomic-file" }

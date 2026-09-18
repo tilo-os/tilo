@@ -2145,7 +2145,12 @@ impl RoomActivityPane {
             transform,
             tr,
             theme,
-            Rect::new(self.sheet.x0 + 12.0, y, self.sheet.x1 - 12.0, y + MIN_TARGET),
+            Rect::new(
+                self.sheet.x0 + 12.0,
+                y,
+                self.sheet.x1 - 12.0,
+                y + MIN_TARGET,
+            ),
             &items,
             |pane| *pane == selected,
         );
@@ -2861,7 +2866,12 @@ impl RoomActivityPane {
             transform,
             tr,
             theme,
-            Rect::new(self.sheet.x0 + 12.0, y, self.sheet.x1 - 12.0, y + MIN_TARGET),
+            Rect::new(
+                self.sheet.x0 + 12.0,
+                y,
+                self.sheet.x1 - 12.0,
+                y + MIN_TARGET,
+            ),
             &items,
             |view| *view == selected,
         );
@@ -3705,7 +3715,9 @@ impl RoomActivityPane {
             .map(|labels| {
                 let widths = labels
                     .iter()
-                    .map(|label| (f64::from(tr.measure(label, size, None).0) + 16.0).max(MIN_TARGET))
+                    .map(|label| {
+                        (f64::from(tr.measure(label, size, None).0) + 16.0).max(MIN_TARGET)
+                    })
                     .collect::<Vec<_>>();
                 let total = widths.iter().sum::<f64>() + 4.0;
                 (labels, widths, total)
@@ -3715,7 +3727,9 @@ impl RoomActivityPane {
                 let labels = &label_sets[2];
                 let widths = labels
                     .iter()
-                    .map(|label| (f64::from(tr.measure(label, size, None).0) + 12.0).max(MIN_TARGET))
+                    .map(|label| {
+                        (f64::from(tr.measure(label, size, None).0) + 12.0).max(MIN_TARGET)
+                    })
                     .collect::<Vec<_>>();
                 let total = widths.iter().sum::<f64>() + 4.0;
                 (labels, widths, total)
@@ -6091,7 +6105,12 @@ fn draw_brief_card(
         &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
     );
     let width = text_width(rect.width() - 24.0);
-    let title_lines = tr.clamp_to_lines(&brief.title, type_size(tr, theme.tokens.typography.scale.base), width, 2);
+    let title_lines = tr.clamp_to_lines(
+        &brief.title,
+        type_size(tr, theme.tokens.typography.scale.base),
+        width,
+        2,
+    );
     // Every line sits where `BriefCardMetrics` says it does — the same
     // arithmetic that sized the card in `draw_catch_up`, so the lines and
     // the card they are in cannot disagree at any text scale.
@@ -6116,13 +6135,21 @@ fn draw_brief_card(
         brief.detail,
         format_relative_time(brief.last_at, now)
     );
-    let byline = tr.elide_to_width(&byline, type_size(tr, theme.tokens.typography.scale.sm), width);
+    let byline = tr.elide_to_width(
+        &byline,
+        type_size(tr, theme.tokens.typography.scale.sm),
+        width,
+    );
     tr.draw_text(
         scene,
         &byline,
         type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
-        at(transform, rect.x0 + 12.0, rect.y0 + m.byline_top(title_count)),
+        at(
+            transform,
+            rect.x0 + 12.0,
+            rect.y0 + m.byline_top(title_count),
+        ),
         None,
     );
     let mut provenance = brief.apps.join(", ");
@@ -6139,13 +6166,21 @@ fn draw_brief_card(
             format!("{} underlying actions", brief.changes)
         };
     }
-    let provenance = tr.elide_to_width(&provenance, type_size(tr, theme.tokens.typography.scale.sm), width);
+    let provenance = tr.elide_to_width(
+        &provenance,
+        type_size(tr, theme.tokens.typography.scale.sm),
+        width,
+    );
     tr.draw_text(
         scene,
         &provenance,
         type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
-        at(transform, rect.x0 + 12.0, rect.y0 + m.provenance_top(title_count)),
+        at(
+            transform,
+            rect.x0 + 12.0,
+            rect.y0 + m.provenance_top(title_count),
+        ),
         None,
     );
     if expanded {
@@ -8966,14 +9001,23 @@ mod tests {
         let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut pane = RoomActivityPane::new();
         pane.layout(viewport);
-        assert!((pane.header_h() - HEADER_H).abs() < 1e-9, "1× keeps the authored band");
+        assert!(
+            (pane.header_h() - HEADER_H).abs() < 1e-9,
+            "1× keeps the authored band"
+        );
         let rows_at_1x = pane.timeline.get_rect().y0;
 
         let large = Theme::dark().with_text_scale(2.0);
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
         let mut scene = Scene::new();
-        pane.draw(&mut scene, Affine::IDENTITY, &mut tr, &large, &PresenceCtx::default());
+        pane.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &large,
+            &PresenceCtx::default(),
+        );
         let expected = HEADER_TOP + pane.title_line_h() + 2.0 * pane.sub_line_h() + HEADER_BOTTOM;
         assert!(pane.header_h() > HEADER_H);
         assert!((pane.header_h() - expected).abs() < 1e-9);
@@ -9255,3 +9299,6 @@ mod tests {
         assert_eq!(merged[0].end, Some(entries[3].id));
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

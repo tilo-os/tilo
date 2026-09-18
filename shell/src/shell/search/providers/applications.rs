@@ -2161,3 +2161,6 @@ mod native_application_tests {
         );
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

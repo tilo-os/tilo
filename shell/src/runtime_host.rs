@@ -115,3 +115,6 @@ impl Session {
 #[cfg(test)]
 #[path = "runtime_host/daemon_process_tests.rs"]
 mod daemon_process_tests;
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

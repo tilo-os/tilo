@@ -1688,11 +1688,14 @@ fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
     ];
     let ws_id = ws.id;
     let mut tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
+        desktop: qos_desktop::WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     tree.active = ws_id;
@@ -2091,3 +2094,6 @@ fn draw_data_word_table_accounts_for_the_whole_stream() {
          after it is suspect"
     );
 }
+
+#[allow(unused_imports)]
+use shell::shell::state::WorkspaceExt as _;

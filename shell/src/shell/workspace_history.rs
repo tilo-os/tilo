@@ -796,8 +796,11 @@ mod tests {
         let workspace = Workspace::new(WorkspaceId::new(), "Research");
         let room = workspace.room;
         let mut tree = WorkspaceTree {
-            active: workspace.id,
-            workspaces: vec![workspace],
+            desktop: qos_desktop::WorkspaceTree {
+                active: workspace.id,
+                workspaces: vec![workspace],
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         };
         tree.doc.put(&ROOT, "name", "Research").unwrap();

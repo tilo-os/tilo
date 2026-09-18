@@ -11350,6 +11350,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-desktop"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "desktop-policy",
+ "parking_lot",
+ "qos-actions",
+ "serde",
+ "serde_json",
+ "ui",
+ "uuid",
+]
+
+[[package]]
 name = "qos-desktop-entry"
 version = "0.1.0"
 dependencies = [
@@ -13659,6 +13673,7 @@ dependencies = [
  "qos-actions",
  "qos-bluez",
  "qos-callstream",
+ "qos-desktop",
  "qos-desktop-entry",
  "qos-peer-state",
  "qos-power-mgmt",

@@ -205,3 +205,6 @@ fn execute() -> Result<bool, String> {
     );
     Ok(report.passed)
 }
+
+#[allow(unused_imports)]
+use shell::shell::state::WorkspaceExt as _;

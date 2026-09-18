@@ -2248,3 +2248,6 @@ mod tests {
         );
     }
 }
+
+#[allow(unused_imports)]
+use shell::shell::state::WorkspaceExt as _;

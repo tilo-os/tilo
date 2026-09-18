@@ -571,24 +571,27 @@ impl Shell {
         // a scratch state tree and copy the result back out.
         let active_ws = self.tree.active;
         let mut scratch = state::WorkspaceTree {
-            workspaces: self
-                .tree
-                .workspaces
-                .iter()
-                .map(|w| {
-                    let mut s = state::Workspace::new(w.id, &w.name);
-                    s.strips = w
-                        .strips
-                        .iter()
-                        .map(|st| state::Strip::new(st.id, &st.name))
-                        .collect();
-                    s
-                })
-                .collect(),
-            active: active_ws,
-            active_strip: std::collections::HashMap::default(),
-            active_group: std::collections::HashMap::default(),
-            collaborators: vec![],
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: self
+                    .tree
+                    .workspaces
+                    .iter()
+                    .map(|w| {
+                        let mut s = state::Workspace::new(w.id, &w.name);
+                        s.strips = w
+                            .strips
+                            .iter()
+                            .map(|st| state::Strip::new(st.id, &st.name))
+                            .collect();
+                        s
+                    })
+                    .collect(),
+                active: active_ws,
+                active_strip: std::collections::HashMap::default(),
+                active_group: std::collections::HashMap::default(),
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         // Seed the active-strip entry for the active workspace.
@@ -636,11 +639,14 @@ impl Shell {
         use ui::widget::toast::ToastKind;
         // Scratch state tree, same reason as `simulate_sidebar_wheel`.
         let mut scratch = state::WorkspaceTree {
-            workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
-            active: state::WorkspaceId::from(0),
-            active_strip: std::collections::HashMap::default(),
-            active_group: std::collections::HashMap::default(),
-            collaborators: vec![],
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
+                active: state::WorkspaceId::from(0),
+                active_strip: std::collections::HashMap::default(),
+                active_group: std::collections::HashMap::default(),
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         if let Some(w) = scratch.workspaces.first() {
@@ -668,11 +674,14 @@ impl Shell {
         use ui::widget::toast::ToastKind;
         // Scratch state tree, same reason as `simulate_sidebar_wheel`.
         let mut scratch = state::WorkspaceTree {
-            workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
-            active: state::WorkspaceId::from(0),
-            active_strip: std::collections::HashMap::default(),
-            active_group: std::collections::HashMap::default(),
-            collaborators: vec![],
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
+                active: state::WorkspaceId::from(0),
+                active_strip: std::collections::HashMap::default(),
+                active_group: std::collections::HashMap::default(),
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         if let Some(w) = scratch.workspaces.first() {

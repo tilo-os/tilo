@@ -2131,7 +2131,11 @@ pub(crate) struct TabStripPlan {
 /// and decided icons per pill, so at 200 % text the active "General"
 /// pill elided while its neighbours did not and one pill out of five kept
 /// an icon. Elision is the last resort, applied uniformly, never the first.
-pub(crate) fn tab_strip_plan(text_renderer: &mut TextRenderer, size: f32, pill_w: f64) -> TabStripPlan {
+pub(crate) fn tab_strip_plan(
+    text_renderer: &mut TextRenderer,
+    size: f32,
+    pill_w: f64,
+) -> TabStripPlan {
     let mut widest = |labels: &[&str]| -> f64 {
         labels
             .iter()
@@ -2274,11 +2278,9 @@ mod tests {
         overlay.force_settled();
         // The lens opens and closes over the motion token's `base` (HIG §9.7).
         let open_ms = u64::from(Theme::dark().tokens.motion.durations.base_ms);
-        overlay.transition.set_open(
-            false,
-            Duration::from_millis(open_ms),
-            ui::Curve::EaseOut,
-        );
+        overlay
+            .transition
+            .set_open(false, Duration::from_millis(open_ms), ui::Curve::EaseOut);
         let now = Instant::now();
         assert!(overlay.transition.is_visible(now));
         assert!(
@@ -2509,3 +2511,6 @@ mod general_scroll_tests {
         assert_eq!(overlay.name_rect(), name);
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

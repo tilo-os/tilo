@@ -441,8 +441,11 @@ mod room_tests {
     fn tree_with(workspaces: Vec<Workspace>) -> WorkspaceTree {
         let active = workspaces.first().map(|w| w.id).unwrap_or_default();
         WorkspaceTree {
-            workspaces,
-            active,
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces,
+                active,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         }
     }
@@ -717,3 +720,6 @@ mod room_tests {
         assert!(tab.people.iter().all(|person| !person.is_you));
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

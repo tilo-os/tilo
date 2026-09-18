@@ -50,8 +50,8 @@ impl SharedSurfaces {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Workspace, WorkspaceId};
     use super::*;
+    use crate::{Workspace, WorkspaceId};
 
     #[test]
     fn sharing_is_additive_and_idempotent() {

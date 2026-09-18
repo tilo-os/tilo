@@ -306,7 +306,10 @@ impl GrantStoreHandle {
     pub fn test_with_workspace(ws: Workspace) -> (Self, WorkspaceId) {
         let ws_id = ws.id;
         let mut tree = WorkspaceTree {
-            active: ws_id,
+            desktop: qos_desktop::WorkspaceTree {
+                active: ws_id,
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.workspaces.push(ws);
@@ -1546,7 +1549,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("consents.json");
         let mut tree = WorkspaceTree {
-            active: WorkspaceId(31),
+            desktop: qos_desktop::WorkspaceTree {
+                active: WorkspaceId(31),
+                ..Default::default()
+            },
             ..Default::default()
         };
         tree.workspaces.push(empty_ws(31));
@@ -1629,3 +1635,6 @@ mod tests {
         assert!(m.lookup(":1.43").is_none());
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

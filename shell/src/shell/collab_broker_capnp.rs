@@ -8330,3 +8330,6 @@ pub(crate) mod tests {
         assert_eq!(invocation_target_peer(7, 41), 7);
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

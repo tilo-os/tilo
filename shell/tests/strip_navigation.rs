@@ -103,11 +103,14 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
     active_group.insert(strip_id, groups[0]);
 
     let tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: qos_desktop::WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     (tree, strip_id, groups, tabs)

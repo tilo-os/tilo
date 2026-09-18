@@ -1385,3 +1385,6 @@ mod tests {
         assert_ne!(digest, [0; 32]);
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

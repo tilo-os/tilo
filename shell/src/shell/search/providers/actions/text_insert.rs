@@ -174,7 +174,6 @@ pub fn apply(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::ReadDoc as _;
     use crate::shell::chrome_state::Chrome;
     use crate::shell::notes_app::BODY_KEY;
     use crate::shell::search::action_api::ArgValue;
@@ -183,6 +182,7 @@ mod tests {
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
     };
     use crate::shell::tab_documents::tab_body;
+    use automerge::ReadDoc as _;
     use parking_lot::RwLock;
     use std::collections::HashMap as StdMap;
     use std::sync::Arc;
@@ -221,10 +221,13 @@ mod tests {
         let mut active_group = StdMap::new();
         active_group.insert(strip_id, group_id);
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         }));
         let chrome = crate::shell::chrome_state::ChromeState::new_with_handle(handle);
@@ -592,3 +595,6 @@ mod tests {
         );
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

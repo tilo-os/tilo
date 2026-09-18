@@ -8222,3 +8222,6 @@ mod external_floating_security_tests {
         );
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

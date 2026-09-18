@@ -427,3 +427,6 @@ fn _suppress_unused() {
     let _ = Duration::from_secs(1);
     let _: VecDeque<u8> = VecDeque::new();
 }
+
+#[allow(unused_imports)]
+use shell::shell::state::WorkspaceExt as _;

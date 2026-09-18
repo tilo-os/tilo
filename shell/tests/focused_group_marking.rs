@@ -85,11 +85,14 @@ fn tree() -> (WorkspaceTree, StripId, StripId) {
     active_group.insert(s_b, G_B1);
 
     let t = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: qos_desktop::WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     (t, s_a, s_b)

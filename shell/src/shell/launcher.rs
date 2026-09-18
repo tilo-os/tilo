@@ -3499,3 +3499,6 @@ pub fn spawn_launch(
     }
     .to_string())
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

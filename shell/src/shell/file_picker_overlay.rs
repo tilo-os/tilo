@@ -313,3 +313,6 @@ mod tests {
         assert_eq!(constrain_selection(None, false), None);
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;
