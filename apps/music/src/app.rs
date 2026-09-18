@@ -311,6 +311,9 @@ pub struct MusicApp {
     /// double-click word, Shift+Arrow selection, word navigation. The app reads
     /// the live query via `search_input.value()`.
     search_input: TextInput,
+    open_file_button: ui::widget::Button,
+    open_file_layout_visible: Option<bool>,
+    open_file_gap: f64,
     /// The search pill's full rect, captured during draw so a press inside it
     /// routes to `search_input` (caret placement / drag-select).
     search_pill_rect: Rect,
@@ -356,6 +359,7 @@ pub struct MusicApp {
     /// The lifecycle invocation waiting for one exact stream-resolution id.
     /// This never represents ordinary in-window playback actions.
     resource_stream_invocation: Option<(tilo_actions::InvocationId, u64, u64, Instant)>,
+    resource_stream_resume: Option<String>,
     /// Terminal updates are retained per invocation until the host consumes
     /// them. A new operation must never overwrite an earlier terminal result
     /// just because the host polls on a later frame.
@@ -379,6 +383,10 @@ pub struct MusicApp {
     /// hands over a stable track resource, never its signed decoder URL.
     handoff: media::handoff::AppPlaybackHandle,
     pending_media_handoff: Option<PendingMediaHandoff>,
+    local_file: Option<crate::local_file::LocalFile>,
+    local_file_pick: Option<(tilo_actions::InvocationId, PortalChannel)>,
+    #[cfg(test)]
+    test_local_file_pick: Option<PortalOutcome>,
 
     /// A playlist-cover file-portal pick in flight: the receiver the frame loop
     /// drains, plus the playlist it targets. `None` when no picker is open.
@@ -716,6 +724,9 @@ impl MusicApp {
             view,
             nav_back: Vec::new(),
             search_input,
+            open_file_button: Self::make_open_file_button(),
+            open_file_layout_visible: None,
+            open_file_gap: 0.0,
             search_pill_rect: Rect::ZERO,
             audio: AudioEngine::new(),
             worker: None,
@@ -731,6 +742,7 @@ impl MusicApp {
             next_request_id: 0,
             active_resolve_request: None,
             resource_stream_invocation: None,
+            resource_stream_resume: None,
             resource_stream_results: Vec::new(),
             active_search_request: None,
             active_search_more: HashMap::new(),
@@ -739,6 +751,10 @@ impl MusicApp {
             mpris: MprisHandle::disabled(),
             handoff: media::handoff::AppPlaybackHandle::new(),
             pending_media_handoff: None,
+            local_file: device_profile.local_file,
+            local_file_pick: None,
+            #[cfg(test)]
+            test_local_file_pick: None,
             cover_pick: None,
             cover_pick_for: None,
             cover_embed: None,
@@ -1141,9 +1157,10 @@ impl MusicApp {
                 self.pb.queue = vec![current];
                 self.pb.queue_index = 0;
             }
-            self.playhead_ms = self
-                .playhead_ms
-                .clamp(0.0, self.current_duration_ms() as f64);
+            let duration = self.current_duration_ms();
+            if duration > 0 {
+                self.playhead_ms = self.playhead_ms.clamp(0.0, duration as f64);
+            }
         } else {
             self.pb.playing = false;
             self.pb.queue_index = 0;
@@ -1162,6 +1179,7 @@ impl MusicApp {
             // Do not persist a marker for media bytes we do not own. Playback
             // resume remains durable, device-local state.
             cache: BTreeMap::new(),
+            local_file: self.local_file.clone(),
             playback: self.pb.clone(),
         })
         .map_err(|error| format!("could not save local Music state: {error}"))
@@ -1273,6 +1291,7 @@ impl MusicApp {
                 })
                 .collect(),
             membership: None,
+            local_file: self.local_file_resource(),
             queue: self
                 .pb
                 .queue
@@ -1340,9 +1359,13 @@ impl MusicApp {
             });
         }
         let mut ctx = crate::actions::MusicResourceCtx {
+            local_file: self.local_file_resource(),
             playback: self.pb.clone(),
             ..Default::default()
         };
+        if id == crate::actions::LOCAL_FILE_RESOURCE_ID {
+            return Some(ctx);
+        }
         if id == "music.player:player" {
             ctx.tracks = self.catalog_track_resources();
             return Some(ctx);
@@ -1445,7 +1468,7 @@ impl MusicApp {
 
     /// A one-line "Title — Artist" label for a track id, for the palette.
     fn track_label(&self, track_id: &str) -> String {
-        match self.lib.track(track_id) {
+        match self.playback_track(track_id) {
             Some(t) => {
                 let artist = self.lib.artist_name(&t.artist_id);
                 if artist.is_empty() {
@@ -1459,10 +1482,17 @@ impl MusicApp {
     }
 
     fn current_duration_ms(&self) -> u64 {
+        if self
+            .local_file
+            .as_ref()
+            .is_some_and(|file| self.pb.current.as_deref() == Some(&file.track.id))
+        {
+            return self.audio.duration_ms().unwrap_or(0);
+        }
         self.pb
             .current
             .as_ref()
-            .and_then(|id| self.lib.track(id))
+            .and_then(|id| self.playback_track(id))
             .map_or(0, super::model::Track::duration_ms)
     }
 
@@ -1547,12 +1577,12 @@ impl MusicApp {
             ..PlayerSnapshot::default()
         };
         if let Some(id) = self.pb.current.clone() {
-            if let Some(t) = self.lib.track(&id) {
+            if let Some(t) = self.playback_track(&id) {
                 snap.track_id.clone_from(&id);
                 snap.title.clone_from(&t.title);
                 snap.artist = self.lib.artist_name(&t.artist_id).to_string();
                 snap.album = self.lib.album_title(&t.album_id).to_string();
-                snap.length_us = t.duration_ms() as i64 * 1000;
+                snap.length_us = self.current_duration_ms() as i64 * 1000;
                 let cover = self.best_cover_id(&id, &t.album_id);
                 if let Some(url) = self.art_urls.get(&cover) {
                     snap.art_url.clone_from(url);
@@ -2006,6 +2036,8 @@ impl MusicApp {
         if index < self.pb.queue_index {
             self.pb.queue_index = self.pb.queue_index.saturating_sub(1);
         } else if index == self.pb.queue_index {
+            self.pb.position_ms = 0;
+            self.playhead_ms = 0.0;
             // The current track was dropped: clamp and re-bind to whatever now
             // sits at this slot (or stop if the queue emptied).
             if self.pb.queue.is_empty() {
@@ -2015,7 +2047,6 @@ impl MusicApp {
             } else {
                 self.pb.queue_index = self.pb.queue_index.min(self.pb.queue.len() - 1);
                 self.pb.current = self.pb.queue.get(self.pb.queue_index).cloned();
-                self.playhead_ms = 0.0;
             }
         }
         self.bound_track = self.pb.current.clone();
@@ -2420,7 +2451,11 @@ impl MusicApp {
         }
         self.pb.playing = !self.pb.playing;
         if self.pb.playing {
-            self.audio.play();
+            if self.audio.has_stream() {
+                self.audio.play();
+            } else if let Some(id) = self.pb.current.clone() {
+                self.start_stream(&id);
+            }
         } else {
             self.audio.pause();
         }
@@ -2500,8 +2535,7 @@ impl MusicApp {
     fn on_add_to_queue(&mut self, id: &str, state: &mut AutoCommit) {
         self.pb.queue.push(id.to_string());
         let label = self
-            .lib
-            .track(id)
+            .playback_track(id)
             .map(|t| t.title.clone())
             .unwrap_or_default();
         self.toast = Some((
@@ -2514,8 +2548,7 @@ impl MusicApp {
     fn on_play_next(&mut self, id: &str, state: &mut AutoCommit) {
         self.queue_play_next(id.to_string());
         let label = self
-            .lib
-            .track(id)
+            .playback_track(id)
             .map(|t| t.title.clone())
             .unwrap_or_default();
         self.toast = Some((
@@ -2720,6 +2753,22 @@ impl MusicApp {
     /// selected id (for example an old bundled/demo entry), it reports a clear
     /// failure and stops transport rather than simulating playback.
     fn start_stream(&mut self, track_id: &str) -> Option<u64> {
+        if self
+            .local_file
+            .as_ref()
+            .is_some_and(|file| file.track.id == track_id)
+        {
+            return match self.start_local_file() {
+                Ok(request) => Some(request),
+                Err(error) => {
+                    self.playback_error = Some(error.clone());
+                    self.toast = Some((error, Instant::now()));
+                    self.pb.playing = false;
+                    self.audio.stop();
+                    None
+                }
+            };
+        }
         if self.play_cached_track_if_available(track_id) {
             return None;
         }
@@ -2790,6 +2839,12 @@ impl MusicApp {
                 return false;
             }
         };
+        self.fail_resource_stream(
+            "music.stream_start_superseded",
+            "A cached source replaced the pending playback request.",
+            None,
+            true,
+        );
         self.audio.load(&uri);
         if self.pb.playing {
             self.audio.play();
@@ -2874,10 +2929,19 @@ impl MusicApp {
         invocation: tilo_actions::InvocationId,
         request_id: u64,
     ) {
+        self.resource_stream_resume = None;
         self.resource_stream_invocation = Some((
             invocation,
             request_id,
-            self.audio.frames_rendered(),
+            if self
+                .local_file
+                .as_ref()
+                .is_some_and(|file| self.pb.current.as_deref() == Some(&file.track.id))
+            {
+                0
+            } else {
+                self.audio.frames_rendered()
+            },
             Instant::now() + STREAM_START_TIMEOUT,
         ));
     }
@@ -2892,6 +2956,7 @@ impl MusicApp {
         details: Option<serde_json::Value>,
         retryable: bool,
     ) {
+        self.resource_stream_resume = None;
         if let Some((invocation, _, _, _)) = self.resource_stream_invocation.take() {
             self.resource_stream_results
                 .push(tilo_actions::InvocationUpdate::Failed {
@@ -2965,7 +3030,7 @@ impl MusicApp {
             || playback
                 .queue
                 .iter()
-                .any(|id| !self.lib.tracks.contains_key(id))
+                .any(|id| self.playback_track(id).is_none())
         {
             return Err("invalid local playback request".into());
         }
@@ -2976,28 +3041,43 @@ impl MusicApp {
             Some(current)
                 if playback.queue.get(playback.queue_index).map(String::as_str)
                     != Some(current)
-                    || self.lib.track(current).is_none() =>
+                    || self.playback_track(current).is_none() =>
             {
                 return Err("current playback track does not match the queue".into());
             }
             Some(current)
-                if playback.position_ms
-                    > self
-                        .lib
-                        .track(current)
-                        .map_or(0, crate::model::Track::duration_ms) =>
+                if {
+                    let duration = if self.pb.current.as_deref() == Some(current) {
+                        self.current_duration_ms()
+                    } else {
+                        self.playback_track(current)
+                            .map_or(0, crate::model::Track::duration_ms)
+                    };
+                    let pending_local_duration = duration == 0
+                        && self
+                            .local_file
+                            .as_ref()
+                            .is_some_and(|file| file.track.id == current);
+                    !pending_local_duration && playback.position_ms > duration
+                } =>
             {
                 return Err("playback position exceeds the selected track duration".into());
             }
             _ => {}
         }
+        let requested_playing = playback.playing;
         let changed_track = self.pb.current != playback.current;
+        let changed_position = self.pb.position_ms != playback.position_ms;
         self.pb = playback;
         self.playhead_ms = self.pb.position_ms as f64;
         self.bound_track.clone_from(&self.pb.current);
         self.shuffle_order.clear();
         self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
-        let request = if changed_track && self.pb.playing {
+        if changed_track && !self.pb.playing {
+            self.retire_replaced_playback();
+        }
+        let needs_source = (changed_track || !self.audio.has_stream()) && self.pb.playing;
+        let request = if needs_source {
             self.pb
                 .current
                 .clone()
@@ -3010,12 +3090,37 @@ impl MusicApp {
             }
             None
         };
-        self.persist_device_profile()?;
+        if requested_playing && request.is_none() && !self.audio.has_stream() {
+            return Err(self
+                .playback_error
+                .clone()
+                .unwrap_or_else(|| "Audio source could not start".into()));
+        }
+        if changed_position || (needs_source && self.pb.position_ms > 0) {
+            self.audio.seek_ms(self.pb.position_ms);
+        }
+        if let Err(error) = self.persist_device_profile() {
+            self.audio.stop();
+            self.pb.playing = false;
+            return Err(error);
+        }
         Ok(request)
     }
 
+    fn retire_replaced_playback(&mut self) {
+        self.audio.stop();
+        self.active_resolve_request = None;
+        self.resolve_in_flight = 0;
+        self.fail_resource_stream(
+            "music.stream_start_superseded",
+            "The selected audio source changed.",
+            None,
+            true,
+        );
+    }
+
     pub(crate) fn apply_resource_play_track(&mut self, id: &str) -> Result<Option<u64>, String> {
-        if !self.lib.tracks.contains_key(id) {
+        if self.playback_track(id).is_none() {
             return Err("track is no longer in the library".into());
         }
         self.pb.queue = vec![id.to_string()];
@@ -3072,16 +3177,13 @@ impl MusicApp {
         if self.pb.queue.get(index).map(String::as_str) != Some(track) {
             return Err("queue item is no longer at that position".into());
         }
-        let previous = self.pb.current.clone();
+        let removed_current = index == self.pb.queue_index;
         let keep_playing = self.pb.playing;
         self.queue_remove(index);
-        if previous != self.pb.current {
-            if keep_playing {
-                if let Some(current) = self.pb.current.clone() {
-                    let _ = self.start_stream(&current);
-                } else {
-                    self.audio.stop();
-                }
+        if removed_current {
+            self.retire_replaced_playback();
+            if keep_playing && let Some(current) = self.pb.current.clone() {
+                let _ = self.start_stream(&current);
             }
         }
         self.persist_device_profile()
@@ -3397,9 +3499,14 @@ impl MusicApp {
     #[cfg(feature = "audio")]
     fn settle_resource_stream_after_rendered_frames(&mut self, rendered_frames: u64) {
         if let Some((invocation, _, frames_before, _)) = self.resource_stream_invocation
-            && rendered_frames > frames_before
+            && (rendered_frames > frames_before
+                || (rendered_frames > 0
+                    && self.resource_stream_resume.is_some()
+                    && self.resource_stream_resume == self.pb.current
+                    && self.audio.is_playing_confirmed()))
         {
             self.resource_stream_invocation = None;
+            self.resource_stream_resume = None;
             self.resource_stream_results
                 .push(tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
@@ -4454,37 +4561,40 @@ impl MusicApp {
         );
         self.push_menu("Play next", Action::PlayNext(track.clone()));
         self.push_menu("Add to queue", Action::AddToQueue(track.clone()));
-        self.context.push(MenuItem::separator());
-        self.menu_actions.push(Action::Back); // separator placeholder, never fired
-        self.push_menu(
-            "Add to playlist\u{2026}",
-            Action::OpenAddToPlaylist(track.clone()),
-        );
-        if let Some(pl) = in_playlist {
+        if self.lib.tracks.contains_key(&track) {
+            self.context.push(MenuItem::separator());
+            self.menu_actions.push(Action::Back); // separator placeholder, never fired
             self.push_menu(
-                "Remove from this playlist",
-                Action::RemoveFromPlaylist {
-                    playlist: pl.to_string(),
-                    track: track.clone(),
-                },
+                "Add to playlist\u{2026}",
+                Action::OpenAddToPlaylist(track.clone()),
             );
-        }
-        if let Some(qi) = queue_index {
+            if let Some(pl) = in_playlist {
+                self.push_menu(
+                    "Remove from this playlist",
+                    Action::RemoveFromPlaylist {
+                        playlist: pl.to_string(),
+                        track: track.clone(),
+                    },
+                );
+            }
+            if let Some(qi) = queue_index {
+                self.push_menu("Remove from queue", Action::RemoveFromQueue(qi));
+            }
+            self.context.push(MenuItem::separator());
+            self.menu_actions.push(Action::Back);
+            if let Some(al) = album_id {
+                self.push_menu("Go to album", Action::Nav(View::Album(al)));
+            }
+            if let Some(ar) = artist_id {
+                self.push_menu("Go to artist", Action::Nav(View::Artist(ar)));
+            }
+            self.push_menu(
+                if liked { "Unlike" } else { "Like" },
+                Action::ToggleLike(track),
+            );
+        } else if let Some(qi) = queue_index {
             self.push_menu("Remove from queue", Action::RemoveFromQueue(qi));
         }
-        self.context.push(MenuItem::separator());
-        self.menu_actions.push(Action::Back);
-        if let Some(al) = album_id {
-            self.push_menu("Go to album", Action::Nav(View::Album(al)));
-        }
-        if let Some(ar) = artist_id {
-            self.push_menu("Go to artist", Action::Nav(View::Artist(ar)));
-        }
-        self.push_menu(
-            if liked { "Unlike" } else { "Like" },
-            Action::ToggleLike(track),
-        );
-
         // ContextMenu owns placement: it flips above the anchor when
         // appropriate, clamps to the app viewport, and scrolls internally if
         // the complete action list cannot fit. Keeping geometry in the shared
@@ -5086,6 +5196,7 @@ fn image_fetcher() -> ui::Fetcher {
     Arc::new(embedded_cover_bytes)
 }
 
+mod local_files;
 mod render;
 
 #[cfg(test)]
