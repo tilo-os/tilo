@@ -121,3 +121,30 @@ validation claim. Its new recipe requires a correspondingly updated WPE
 consumer receipt: only the reviewed recipe hash and canonical audit hash may
 change. Original native inputs continue to use the original recipe and WPE
 receipt. Authenticated source checkout needs depth five.
+
+## Reviewed cache and SSH dependency correction chain
+
+The `tilo-reviewed-cache-source-compatibility` schema2 envelope is deliberately
+restricted to these exact reviewed commits, in order:
+
+1. `344257f56275919abc63181d8954e838f9b5303e`: previously admitted runtime-test source.
+2. `e5241775387c6afb39d2e6bf8350a59a8aa478b3`: move volatile public trust after reusable runtime layers; only Containerfile changes.
+3. `f6881005fc62dd54cba7dbe7c241149151adfd74`: guarded raw-layer timestamp API; only build-image.sh changes.
+4. `a89fe484328ff4206c35f842c07c3824b9df18ef`: retain SSH client dependency closure for virt-viewer; only Containerfile changes.
+
+The envelope embeds the exact prior schema1 approval JSON and its independent
+SHA256 plus the updated WPE consumer bridge. Verification repeats the original
+five-hop admission, checks the complete clean final checkout, validates the exact
+three added parents and one-path diffs, and pins all correction bytes through the
+commit identities. This is not a general build-script-change allowlist.
+
+Native8544 inputs and epoch remain original. The assembly source epoch comes from
+the final commit; optional layer normalization explicitly anchors to344257 (1789753377).
+Historical-blob hydration includes these three corrections before offline verification.
+The updated WPE bridge changes only the consumer Containerfile hash and derived
+audit hash; the retained WPE payload reference is unchanged.
+
+Cache hits remain an observation for the next run. The SSH cleanup correction
+changes an early rootfs RUN, so following layers from8921 cannot all hit. Independent
+provider stages and unchanged rootfs prefix may still reuse layers; subsequent
+same-source generic/Lenovo builds can share more after the volatile trust relocation.
