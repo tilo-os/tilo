@@ -259,6 +259,11 @@ else
   bad 'standalone relay runtime does not enforce its OpenSSL-free minimal surface'
 fi
 
+grep -Fq -- "-o -name 'libshout.so*'" "$repo/os/Containerfile" \
+  && grep -Fq -- "-o -name 'libshout.so*'" "$repo/os/usr/libexec/tilo-security-audit" \
+  && ok 'orphaned OpenSSL-linked Shoutcast library payload is removed and audited' \
+  || bad 'orphaned Shoutcast library remains executable after its plugin is removed'
+
 grep -Fq 'tilo-crypto sign-module' "$repo/os/kernel/Containerfile" \
   && grep -Fq 'tilo-crypto verify-module' "$repo/os/kernel/Containerfile" \
   || bad 'kernel modules are not signed and verified by tilo-crypto'
