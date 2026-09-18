@@ -81,6 +81,9 @@ case "$1" in
   durable-rename)
     [[ ${TILO_TEST_DURABLE_RENAME_FAIL:-0} != 1 ]] || exit 1
     mv -- "$2" "$3"
+    if [[ ${TILO_TEST_CORRUPT_DURABLE_RENAME:-0} == 1 ]]; then
+      printf 'corrupt published artifact\n' >"$3"
+    fi
     ;;
   durable-unlink)
     rm -- "$2"
@@ -123,6 +126,19 @@ target="$work/boot/EFI/systemd/systemd-bootx64.efi"
 grep -Fq 'signed 1 artefact(s)' "$work/first.log" "$work/second.log"
 grep -Fq '1 already signed' "$work/first.log" "$work/second.log"
 grep -Fqx 'untrusted predictable sidecar' "$target.tilo-signed"
+
+# Verification must cover the final pathname, not only the temporary output.
+# Model storage/publisher corruption after rename and require a failed pass.
+cp "$target" "$work/valid-signed.efi"
+printf 'unsigned fixture\n' >"$target"
+if TILO_TEST_CORRUPT_DURABLE_RENAME=1 run_sign \
+    >"$work/corrupt-publish.out" 2>"$work/corrupt-publish.err"; then
+  echo 'Secure Boot signer accepted a corrupt durably published artefact' >&2
+  exit 1
+fi
+grep -Fq 'installed artefact did not verify after durable publication' \
+  "$work/corrupt-publish.err"
+cp "$work/valid-signed.efi" "$target"
 
 # A missing/unmounted ESP must not turn the update or shutdown signer into a
 # successful no-op. Otherwise an enrolled machine can acknowledge an unsigned
