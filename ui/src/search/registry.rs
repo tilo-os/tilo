@@ -314,7 +314,7 @@ mod tests {
             observed: Rc<Cell<usize>>,
         }
         impl SearchProvider for Bounded {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "Bounded"
             }
             fn search(&self, _query: &str) -> Vec<SearchResult> {
