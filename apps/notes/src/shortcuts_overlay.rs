@@ -54,6 +54,7 @@ const GROUPS: &[Group] = &[
         rows: &[
             ("Jump to page", "Cmd-K / Ctrl-K"),
             ("Move selection up / down", "↑ / ↓"),
+            ("Collapse / expand page", "← / →"),
             ("Open shortcuts overlay", "?"),
             ("Close overlay / popover", "Esc"),
         ],
@@ -76,6 +77,7 @@ const GROUPS: &[Group] = &[
             ("Italic", "*text* or Ctrl-I"),
             ("Inline code", "`text` or Ctrl-E"),
             ("Heading 1 / 2 / 3", "# / ## / ###"),
+            ("Quote", "> "),
         ],
     },
     Group {
@@ -83,8 +85,12 @@ const GROUPS: &[Group] = &[
         rows: &[
             ("New page", "+ button"),
             ("New child of selected", "Cmd-N / Ctrl-N"),
+            ("Indent / outdent page", "Tab / Shift-Tab"),
             ("Reorder page up / down", "Alt-↑ / Alt-↓"),
             ("Rename page", "double-click / F2"),
+            ("Page actions", "Menu / Shift-F10"),
+            ("Link a page", "[[Page]]"),
+            ("Embed a page", "![[Page]]"),
             ("Delete page", "Delete"),
         ],
     },
