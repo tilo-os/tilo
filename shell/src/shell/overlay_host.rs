@@ -2432,7 +2432,11 @@ fn should_reveal_activity_on_entry(
 }
 
 fn enter_activity_workspace(last_workspace: &mut Option<u64>, workspace: u64) -> bool {
-    let entering = *last_workspace != Some(workspace);
+    // Restoring the initial workspace is not a user-initiated workspace
+    // transition. Its unread history belongs in the passive glance badge;
+    // otherwise startup can raise a modal before a newly mapped application
+    // receives its first keyboard focus.
+    let entering = last_workspace.is_some_and(|previous| previous != workspace);
     *last_workspace = Some(workspace);
     entering
 }
@@ -24963,7 +24967,10 @@ mod tests {
         let overlays = crate::shell::chrome_state::OverlayFlags::default();
 
         let entering = enter_activity_workspace(&mut presented_workspace, 7);
-        assert!(should_reveal_activity_on_entry(entering, 3, overlays));
+        assert!(
+            !should_reveal_activity_on_entry(entering, 3, overlays),
+            "restoring the initial workspace leaves unread history passive"
+        );
 
         // Closing the sheet must stick: subsequent frames in the same
         // workspace cannot continuously reopen it.
