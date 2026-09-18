@@ -68,6 +68,22 @@ class ResumeRecipe(unittest.TestCase):
         loaded['seed_image_id'] = 'sha256:' + 'b' * 64
         self.assertNotEqual(hashlib.sha256(resume.derive_driver(original, **loaded).encode()).hexdigest(), expected)
 
+    def test_native_driver_does_not_need_a_kernel_and_full_image_still_does(self):
+        original = subprocess.check_output(['git', '-C', str(ROOT), 'show', resume.SOURCE + ':os/dev/build-image.sh']).decode()
+        derived = resume.derive_driver(original, '/work/repo', '/work/Containerfile.resumed', 'sha256:' + 'a' * 64)
+        start = derived.index('if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then\n  KERNEL_RPMS_REF=scratch')
+        block = derived[start:derived.index('# Pre-flight: every host-side COPY source exists.', start)]
+        common = 'TILO_OS_DIR=/nonexistent-native-resume-fixture\nuname() { echo aarch64; }\ndie() { exit 1; }\n'
+        for mode, kernel, expected in [('1', '', 'scratch'), ('0', 'pinned-kernel', 'pinned-kernel')]:
+            result = subprocess.run(['bash', '-euc', common + 'TILO_NATIVE_BUILDER_ONLY=' + mode +
+                '\nKERNEL_RPMS_REF=' + kernel + '\n' + block + '\nprintf "%s" "$KERNEL_RPMS_REF"'],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, expected)
+        missing = subprocess.run(['bash', '-euc', common + 'TILO_NATIVE_BUILDER_ONLY=0\nKERNEL_RPMS_REF=\n' + block],
+                                 capture_output=True)
+        self.assertNotEqual(missing.returncode, 0)
+
 
 if __name__ == '__main__':
     unittest.main()

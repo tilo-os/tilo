@@ -121,3 +121,8 @@ reconstruction plan even on a partial failure. Exact owned Docker resources are
 removed on exit/cancellation. No full target directory is promised to survive.
 Success requires the complete reconstructed immutable publication receipt;
 there is no automatic retry or fallback to the old full native build.
+
+Native reconstruction does not consume a kernel artifact. Pin selection omits
+the kernel entirely in this mode. The reproducibly derived shell driver uses
+`scratch` for its unused kernel stage, without reading a kernel pin or inventing
+an artifact digest. Full-image kernel selection and validation remain intact.
