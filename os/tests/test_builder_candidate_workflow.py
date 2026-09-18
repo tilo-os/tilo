@@ -63,6 +63,9 @@ class BuilderCandidates(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             (work / 'rust-toolchain.toml').write_text('channel = "1.97.1"\n')
+            helper = work / 'os/dev/configure-cosign-kms.sh'
+            helper.parent.mkdir(parents=True)
+            helper.symlink_to(ROOT / 'os/dev/configure-cosign-kms.sh')
             # Shell function intercepts the actual promotion invocation. No
             # registry client, signing key, build or network call is executed.
             stub = '''python3() {
