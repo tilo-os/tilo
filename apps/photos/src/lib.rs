@@ -155,6 +155,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "opened",
     "library",
     "selection",
+    "selection-many-albums",
     "album-manage",
     "metadata-edit",
     "cropping",
@@ -318,7 +319,7 @@ pub fn seed_scenario(
         // different light treatments make thumbnail, selection and metadata
         // hierarchy legible in the gallery instead of simulating a library
         // with repeated placeholder art.
-        "library" | "selection" | "album-manage" | "metadata-edit" => {
+        "library" | "selection" | "selection-many-albums" | "album-manage" | "metadata-edit" => {
             let mut library = PhotosDoc::library(doc);
             let mut travel = Vec::new();
             for (variant, name) in [
@@ -366,9 +367,21 @@ pub fn seed_scenario(
                 name: "Travel".into(),
                 photo_ids: travel,
             });
+            if scenario == "selection-many-albums" {
+                for number in 1..=17 {
+                    library.albums.push(crate::model::Album {
+                        id: format!("photos.album:destination-{number}"),
+                        name: format!("Destination album {number}"),
+                        photo_ids: Vec::new(),
+                    });
+                }
+            }
             PhotosDoc::set_library(doc, &library);
-            if scenario == "selection" {
-                app.show_selection_for_shot();
+            if matches!(scenario, "selection" | "selection-many-albums") {
+                app.show_selection_for_shot(doc);
+                if scenario == "selection-many-albums" {
+                    app.show_selection_destination_chooser_for_shot(doc);
+                }
             } else if scenario == "album-manage" {
                 app.show_album_editor_for_shot(doc);
             } else if scenario == "metadata-edit" {

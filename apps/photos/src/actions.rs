@@ -1242,16 +1242,37 @@ pub(crate) fn album_resource_from_fields(id: &str, name: &str, photo_count: usiz
 }
 
 fn membership_ids(args: &ActionArgs) -> Vec<String> {
-    args.text("photo_ids")
+    args.array("photo_ids")
+        .unwrap_or_default()
+        .iter()
+        // The parameter schema makes every item a non-empty string before
+        // this builder runs. Keep an unexpected value as an invalid id rather
+        // than dropping it and accidentally changing a caller's request.
         .map(|value| {
             value
-                .split(',')
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_owned)
-                .collect()
+                .as_str()
+                .map_or_else(|| "\u{0}".to_owned(), str::to_owned)
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+fn photo_ids_param(required: bool, description: &'static str, min_items: usize) -> ActionParam {
+    let param = if required {
+        ActionParam::required("photo_ids", ParamType::Array, description)
+    } else {
+        ActionParam::optional("photo_ids", ParamType::Array, description)
+    };
+    param.with_schema(serde_json::json!({
+        "type": "array",
+        "minItems": min_items,
+        "maxItems": MAX_BATCH_PHOTOS,
+        "uniqueItems": true,
+        "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_RESOURCE_ID_CHARS
+        }
+    }))
 }
 
 fn create_album_spec() -> ActionSpec {
@@ -1267,11 +1288,7 @@ fn create_album_spec() -> ActionSpec {
                 "stable album id, for example photos.album:holiday",
             ),
             ActionParam::required("name", ParamType::Text, "visible album name"),
-            ActionParam::optional(
-                "photo_ids",
-                ParamType::Text,
-                "comma-separated stable photo ids",
-            ),
+            photo_ids_param(false, "JSON array of stable photo ids", 0),
         ],
         |args| {
             encode(&PhotosAction::SaveAlbum {
@@ -1296,10 +1313,10 @@ fn set_favorites_spec() -> ActionSpec {
         "Photograph ids and desired favorite state",
         ExecutionLocus::ClientLocal,
         vec![
-            ActionParam::required(
-                "photo_ids",
-                ParamType::Text,
-                "comma-separated stable photograph resource ids",
+            photo_ids_param(
+                true,
+                "non-empty JSON array of stable photograph resource ids",
+                1,
             ),
             ActionParam::required("favorite", ParamType::Boolean, "whether to mark favorite"),
         ],
@@ -1323,11 +1340,7 @@ fn album_save_spec(album_id: &str) -> ActionSpec {
         ExecutionLocus::ClientLocal,
         vec![
             ActionParam::required("name", ParamType::Text, "visible album name"),
-            ActionParam::optional(
-                "photo_ids",
-                ParamType::Text,
-                "comma-separated stable photo ids",
-            ),
+            photo_ids_param(false, "JSON array of stable photo ids", 0),
         ],
         move |args| {
             encode(&PhotosAction::SaveAlbum {
@@ -1370,28 +1383,17 @@ fn album_membership_spec(album_id: &str) -> ActionSpec {
     ActionSpec::typed(
         "set-membership",
         "Set album membership",
-        "photos.photo:… , photos.photo:… (empty clears the album)",
+        "JSON array of photos.photo:… ids (an empty array clears the album)",
         ExecutionLocus::ClientLocal,
-        vec![ActionParam::required(
-            "photo_ids",
-            ParamType::Text,
-            "comma-separated stable photo ids; empty clears the album",
+        vec![photo_ids_param(
+            true,
+            "JSON array of stable photo ids; an empty array clears the album",
+            0,
         )],
         move |args: &ActionArgs| {
-            let ids = args
-                .text("photo_ids")
-                .map(|value| {
-                    value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|id| !id.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default();
             encode(&PhotosAction::SetAlbumMembership {
                 album_id: album_id.clone(),
-                photo_ids: ids,
+                photo_ids: membership_ids(args),
             })
         },
     )
@@ -2211,6 +2213,31 @@ mod tests {
             .expect("the library publishes the batch operation agents and selection use");
         assert!(batch.contract.reversible);
         assert_eq!(batch.params().len(), 2);
+        assert_eq!(batch.params()[0].ty, ParamType::Array);
+        assert!(
+            batch
+                .build_args([
+                    (
+                        "photo_ids".into(),
+                        tilo_actions::ArgValue::Array(Vec::new())
+                    ),
+                    ("favorite".into(), tilo_actions::ArgValue::Boolean(true)),
+                ])
+                .is_err(),
+            "an empty batch is rejected by the public action contract"
+        );
+        assert!(
+            batch
+                .build_args([
+                    (
+                        "photo_ids".into(),
+                        tilo_actions::ArgValue::Array(vec![serde_json::Value::from(7)]),
+                    ),
+                    ("favorite".into(), tilo_actions::ArgValue::Boolean(true)),
+                ])
+                .is_err(),
+            "an invalid array item is refused rather than disappearing from the request"
+        );
     }
 
     #[test]
@@ -2228,7 +2255,7 @@ mod tests {
         );
         let initial = PhotosDoc::library(&doc);
         let batch = PhotosAction::SetFavorites {
-            photo_ids: vec![first.id.clone(), second.id.clone()],
+            photo_ids: vec![first.id.clone(), second.id],
             favorite: true,
         };
         batch
