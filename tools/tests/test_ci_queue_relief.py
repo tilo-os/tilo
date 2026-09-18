@@ -39,8 +39,7 @@ class QueueReliefTests(unittest.TestCase):
             with self.subTest(job=name):
                 job = section(workflow("check"), name, 2)
                 self.assertEqual(section(job, "container", 4), expected)
-                if name != "select":
-                    self.assertIn("runs-on: runner-quality", job)
+                self.assertIn("runs-on: runner-quality", job)
 
     def test_every_main_commit_keeps_checks_without_serializing_revisions(self):
         for name in ("check", "lint"):
