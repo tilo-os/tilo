@@ -15,11 +15,12 @@ toolkit, and filesystem.
 | `format/` | Format-provider interfaces and host |
 | `hosting/` | Relay and home-peer services |
 | `identity/` | User identity |
-| `media/`, `text/`, `thumbnail/` | Shared media, OCR, spelling, and thumbnail libraries |
+| `media/` | Shared media primitives, OCR, thumbnail generation, and vision libraries |
 | `packaging/` | Package format, registry, installation, sandboxed launch, and app hosting |
 | `runtime/` | App-facing service clients, CLI helpers, and optional dynamic SDK |
 | `session/` | Greeter, installer, unlock helper, and power entrypoints |
 | `system/` | OS integration, policy, settings, device services, and system tools |
+| `text/` | Shared text services such as spellchecking |
 | `windows/` | Windows compatibility catalogue and services |
 
 ## Developer tools and fixtures
