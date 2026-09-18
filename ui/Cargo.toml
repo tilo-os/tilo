@@ -51,16 +51,11 @@ portal = ["dep:ashpd"]
 
 [dependencies]
 tilo-ui-graph = { path = "../crates/dev/ui-graph" }
-# Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../crates/system/atomic-file" }
-# Shared appearance path used for startup theme resolution and live reload.
 settings-store = { path = "../crates/system/settings-store" }
-# XDG Desktop Portal client for `portal` (feature `portal`).
 ashpd = { workspace = true, optional = true }
-# Parses the portal's returned file URIs. Non-optional:
-# `portal::to_local_path` is the file-access rule — a URI naming a remote
-# host must not resolve to a local path — and must be testable in every
-# build configuration.
+# Required without `portal` so every build can test rejection of remote-host
+# file URIs in `portal::to_local_path`.
 url.workspace = true
 # The two halves of `uri`: RFC 3986 percent-decoding and the
 # x-www-form-urlencoded dialect that also reads `+` as a space.
@@ -72,27 +67,14 @@ tilo-startup-metrics = { path = "../crates/system/tilo-startup-metrics" }
 # EasyList→WebKit-content-blocker conversion; blocking then runs inside
 # WebKit's network process, not in Rust.
 adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
-# runtime-collab is the Tilo collab broker Cap'n Proto SDK.
-# `CollaborationManager` delegates to it via a shovel thread.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
 capnp.workspace = true
 capnp-rpc.workspace = true
 runtime-portal = { path = "../crates/runtime/runtime-portal" }
-# Load the launcher-bound identity and certified device presentation used to
-# authenticate collaboration joins and sign document mutations. Without the
-# identity service or a device certificate, collaboration stays disabled.
-# The canonical per-package Automerge store. Living here rather than in
-# each app is what makes persistence a three-line change in an app's `main`
-# instead of a bespoke storage module per app.
 app-state = { path = "../crates/system/app-state" }
 automerge.workspace = true
 spellcheck = { path = "../crates/text/spellcheck" }
-# Diagnostic event/handler tracing. Off by default at WARN; turn up with
-# `RUST_LOG=ui=debug` to see every MouseInput, CursorMoved, KeyboardInput
-# entering App::window_event + dispatch results. Lets a maintainer
-# diagnose interaction bugs in hosted mode without source-reading.
 tracing.workspace = true
-# Standard app startup installs the workspace's logging subscriber once.
 tracing-subscriber.workspace = true
 zeroize.workspace = true
 rustls.workspace = true
@@ -103,9 +85,8 @@ cosmic-text = { version = "0.19.0", default-features = false, features = ["fontc
 skrifa = "0.40.0"
 pollster.workspace = true
 
-# Raw-Vulkan interop for the WebView DMA-BUF zero-copy import (feature
-# `webview-wpe`). Version tracks what wgpu-hal 29 resolves so the `vk::*`
-# handles passed through `create_texture_from_hal` are ABI-identical.
+# Match wgpu-hal's ash version so Vulkan handles can pass through
+# `create_texture_from_hal`.
 ash = { version = "0.38", optional = true }
 taffy = { workspace = true, features = ["content_size"] }
 tokio = { workspace = true, features = ["full"] }
@@ -113,10 +94,6 @@ vello.workspace = true
 libc.workspace = true
 wgpu.workspace = true
 winit.workspace = true
-# Resolves the user's real, *localized* XDG user directories
-# (`~/.config/user-dirs.dirs`) for `sysdirs` — so a "Places" list (file
-# manager sidebar, file picker) shows the machine's own folder names
-# (Dokumente / Bilder) instead of hard-coded English ones.
 dirs.workspace = true
 fluent.workspace = true
 tilo-headless-schema = { path = "../crates/dev/headless-schema" }
@@ -137,14 +114,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 png.workspace = true
-# Multi-format decode (JPEG/PNG/WebP) for the async remote-image cache
-# (`image_store`): system apps display real CDN artwork. Default features are
-# off so we pull only the decoders we need, not the whole codec zoo.
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
-# Date / time picker widgets (`widget::date_picker`, `widget::time_picker`) use
-# `chrono` for NaiveDate arithmetic. shell already pulls chrono
-# transitively but this is a direct dep so the picker widgets compile in
-# isolation.
 chrono = { workspace = true, features = ["clock", "std"] }
 # VideoPlayer widget (`widget::video_player`) decodes H.264 NAL units in-process.
 # `source` feature compiles the pure-C reference implementation so we don't
