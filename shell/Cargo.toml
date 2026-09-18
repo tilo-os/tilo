@@ -217,7 +217,7 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../crates/system/deskt
 # expect the remote to present its device pubkey + cert; we validate
 # the cert against the workspace owner's root key and cross-check
 # the revocation list before accepting any of the peer's CRDT ops.
-tilo-user-identity = { path = "../crates/identity/tilo-user-identity" }
+tilo-user-identity = { path = "../crates/collab/tilo-user-identity" }
 tilo-relay = { path = "../crates/hosting/tilo-relay" }
 # `network::identity` verifies raw Ed25519 signatures directly
 # against a peer's device pubkey (as recovered from their

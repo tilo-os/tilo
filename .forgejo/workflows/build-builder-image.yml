@@ -17,6 +17,7 @@ on:
       - "os/dev/promote-native-index.py"
       - "os/dev/builder-canary-inputs.py"
       - "rust-toolchain.toml"
+      - "crates/system/atomic-file/**"
       - "tools/check-build-env.sh"
       - ".forgejo/workflows/build-builder-image.yml"
   workflow_dispatch:
