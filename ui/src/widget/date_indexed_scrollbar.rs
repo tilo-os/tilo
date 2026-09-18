@@ -30,7 +30,13 @@ use crate::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 pub const MAX_PROJECTED_MARKERS: usize = 28;
 /// Wider than the visible track, allowing a calm label preview when hovering
 /// beside the bar while keeping the actual thumb target precise.
+/// Generous invisible pointer lane: the date rail stays easy to acquire
+/// without reserving a visible sidebar over the content.
 pub const PREVIEW_LANE_WIDTH: f64 = 156.0;
+/// The visible date bubble is deliberately much narrower than its hit lane.
+/// A timeline index should name the nearby day, not occlude a column of
+/// photographs while the pointer travels near the edge.
+pub const PREVIEW_BUBBLE_MAX_WIDTH: f64 = 96.0;
 /// The marker hit size is independent of its one-pixel visual tick.
 pub const MARKER_HIT_RADIUS: f64 = 12.0;
 /// A compact but touch-reachable date-index track.
@@ -705,7 +711,7 @@ impl DateIndexedScrollbar {
             return;
         };
         let label_w = (f64_of_usize(preview.label.chars().count()) * 7.2 + 22.0)
-            .clamp(72.0, PREVIEW_LANE_WIDTH - 8.0);
+            .clamp(64.0, PREVIEW_BUBBLE_MAX_WIDTH);
         let label_h = 26.0;
         let x1 = self.rect.x0 - 10.0;
         let label = Rect::new(
