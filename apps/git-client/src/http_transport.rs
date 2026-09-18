@@ -292,26 +292,36 @@ impl Session {
 }
 
 fn network_error(error: reqwest::Error) -> git2::Error {
-    use std::error::Error;
-    let mut source = error.source();
-    while let Some(cause) = source {
-        if matches!(
-            cause.downcast_ref::<rustls::Error>(),
-            Some(rustls::Error::InvalidCertificate(_) | rustls::Error::NoCertificatesPresented)
-        ) {
-            return git2::Error::new(
-                git2::ErrorCode::Certificate,
-                git2::ErrorClass::Net,
-                "Git HTTPS certificate verification failed",
-            );
-        }
-        source = cause.source();
+    if is_certificate_error(&error) {
+        return git2::Error::new(
+            git2::ErrorCode::Certificate,
+            git2::ErrorClass::Net,
+            "Git HTTPS certificate verification failed",
+        );
     }
     failure(if error.is_timeout() {
         "Git HTTP request timed out"
     } else {
         "Git HTTP request failed"
     })
+}
+
+fn is_certificate_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    if matches!(
+        error.downcast_ref::<rustls::Error>(),
+        Some(rustls::Error::InvalidCertificate(_) | rustls::Error::NoCertificatesPresented)
+    ) {
+        return true;
+    }
+    // io::Error::source delegates to its boxed error's source, which can omit
+    // the Rustls error itself. Inspect get_ref before continuing the chain.
+    if let Some(error) = error.downcast_ref::<io::Error>()
+        && let Some(inner) = error.get_ref()
+        && is_certificate_error(inner)
+    {
+        return true;
+    }
+    error.source().is_some_and(is_certificate_error)
 }
 
 fn offers_basic(value: &str) -> bool {
@@ -637,6 +647,23 @@ mod tests {
         assert!(!offers_basic("Digest realm=\"git\", Basic=\"parameter\""));
         assert!(!offers_basic("Digest realm=\"git\", Basic =\"parameter\""));
     }
+
+    #[test]
+    fn boxed_tls_certificate_errors_keep_their_classification() {
+        let error = io::Error::new(
+            io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+        );
+        assert!(is_certificate_error(&error));
+        assert!(!is_certificate_error(&io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "refused"
+        )));
+        assert!(!is_certificate_error(&io::Error::new(
+            io::ErrorKind::TimedOut,
+            "timeout"
+        )));
+    }
 }
 
 #[derive(Clone)]
@@ -697,7 +724,9 @@ impl Helper {
                 Err(bounded_command::Error::Process(error))
                     if error.kind() == io::ErrorKind::NotFound && !command.starts_with('!') =>
                 {
-                    let mut parts = executable.split_whitespace();
+                    let parts = shlex::split(&executable)
+                        .ok_or_else(|| failure("invalid quoting in Git credential helper"))?;
+                    let mut parts = parts.iter().map(String::as_str);
                     let program = parts
                         .next()
                         .ok_or_else(|| failure("empty Git credential helper"))?;
