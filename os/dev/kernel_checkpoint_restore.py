@@ -191,12 +191,40 @@ def read_capture_receipt(path, approval):
     return receipt
 
 
+def source_corrections(directory, approval):
+    """Read only explicitly approved patches; absent approval means no correction."""
+    entries=approval.get('source_corrections', [])
+    require(isinstance(entries,list), 'source corrections must be a list')
+    paths=[]; names=set()
+    for entry in entries:
+        require(isinstance(entry,dict) and set(entry)=={'name','sha256'}, 'source correction record differs')
+        name=entry['name']; digest=entry['sha256']
+        require(isinstance(name,str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*\.patch',name), 'source correction filename invalid')
+        require(name not in names, 'duplicate source correction'); names.add(name)
+        require(isinstance(digest,str) and re.fullmatch('[0-9a-f]{64}',digest), 'source correction hash invalid')
+        path=Path(directory)/name
+        require(path.is_file() and not path.is_symlink() and sha(path)==digest, 'source correction bytes differ')
+        paths.append(path)
+    return paths
+
+
+def apply_source_corrections(root, directory, approval):
+    paths=source_corrections(directory,approval)
+    if paths:
+        # Check the entire series before writing. Replaying an already-applied
+        # correction fails instead of silently accepting an unexpected source.
+        subprocess.run(['git','apply','--check',*[str(p.resolve()) for p in paths]],cwd=root,check=True)
+        subprocess.run(['git','apply',*[str(p.resolve()) for p in paths]],cwd=root,check=True)
+    return approval.get('source_corrections', [])
+
+
 def restore(directory, approval_sha):
     approval=read_json(directory/'approval.json',approval_sha)
     require(approval['purpose']=='tilo-kbuild-reconstruction-admission' and approval['source_revision']==SOURCE,'wrong approval purpose/source')
     for field in ('writer_mapping_complete','dependency_invalidation_reviewed','toolchain_identity_required','excluded_selftests_not_build_inputs'):
         require(approval.get(field) is True,'unresolved admission: '+field)
     require(approval['restore_helper_sha256']==sha(__file__), 'restore helper differs')
+    source_corrections(directory/'source-corrections',approval)
     toolchain=read_json(directory/'toolchain.json',approval['toolchain_evidence_sha256'])
     verify_toolchain(toolchain['toolchain'])
     scan=read_json(directory/'scan.json',approval['scan_sha256'])
@@ -217,6 +245,8 @@ def restore(directory, approval_sha):
         removed=invalidations(replacement,scan['capture']['invalidated']+approval['additional_invalidations'])
         # Original prepared tree is retained until the entire replacement validates.
         replace_prepared(root, replacement)
+    corrections=apply_source_corrections(root,directory/'source-corrections',approval)
+    (Path('/work')/'kernel-source-corrections.json').write_text(json.dumps(corrections))
     (Path('/work')/'kernel-reconstruction-invalidations.json').write_text(json.dumps(removed))
     # Root and captured source remain separate from this new private identity.
     with tempfile.TemporaryDirectory(prefix='module-fresh-',dir='/work') as temporary:
@@ -243,6 +273,8 @@ def assert_embedded(work=Path('/work'), root=None):
                   invalidations_sha256=sha(invalidations_path), invalidated_paths=len(removed),
                   module_certificate_der_sha256=hashlib.sha256(cert).hexdigest(),
                   regenerated_certificate_matches=True, embedded_certificate_verified=True)
+    corrections_path=work/'kernel-source-corrections.json'
+    evidence['source_corrections']=json.loads(corrections_path.read_bytes()) if corrections_path.exists() else []
     (work/'kernel-reconstruction-evidence.json').write_text(json.dumps(evidence,sort_keys=True,indent=2)+'\n')
 
 EXPORT_STAGE = b'''\n# Public reconstruction evidence only; original publish and packaging stay intact.
