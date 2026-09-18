@@ -9022,6 +9022,150 @@ pub(crate) mod tests {
         }
 
         #[tokio::test(flavor = "current_thread")]
+        async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    // Both legacy directions matter: a caller can reserve a future
+                    // numeric UUID, or attempt to reuse a previously delivered one.
+                    for scenario in [
+                        "cross-device",
+                        "caller-before-legacy",
+                        "legacy-before-caller",
+                    ] {
+                        let root = tempfile::tempdir().unwrap();
+                        let (mut fixture, caller, mut request) = durable_fixture(root.path(), None);
+                        let other = fixture
+                            .state
+                            .verify_action_caller(
+                                &fixture.cluster_id,
+                                &certified_join(
+                                    &fixture.cluster_id,
+                                    &SigningKey::from_bytes(&[51; 32]),
+                                    &SigningKey::from_bytes(&[53; 32]),
+                                )
+                                .encode()
+                                .unwrap(),
+                            )
+                            .unwrap();
+                        if scenario == "caller-before-legacy" {
+                            request.invocation =
+                                qos_actions::InvocationId(uuid::Uuid::from_u128(2));
+                        }
+                        let wire_id = if scenario == "legacy-before-caller" {
+                            let job = fixture
+                                .state
+                                .start_invocation(
+                                    71,
+                                    &request.resource,
+                                    &request.action,
+                                    None,
+                                    &caller.admitted.principal_id,
+                                )
+                                .unwrap();
+                            request.invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(
+                                u128::from(job.id),
+                            ));
+                            job.id
+                        } else {
+                            fixture
+                                .state
+                                .start_verified_invocation(&caller, &request, None)
+                                .unwrap()
+                                .wire_id
+                        };
+                        let (_, empty_rx) = mpsc::unbounded_channel();
+                        let rx = Rc::new(AsyncMutex::new(std::mem::replace(
+                            &mut fixture.invocation_rx,
+                            empty_rx,
+                        )));
+                        let stream: invocation_stream::Client =
+                            capnp_rpc::new_client(InvocationStreamServer { rx: rx.clone() });
+                        let response = stream.read_request().send().promise.await.unwrap();
+                        assert_eq!(response.get().unwrap().get_id(), wire_id);
+                        assert_eq!(
+                            response.get().unwrap().get_invocation_uuid().unwrap(),
+                            request.invocation.0.as_bytes()
+                        );
+                        effect(root.path());
+                        let conflict = if scenario == "caller-before-legacy" {
+                            fixture
+                                .state
+                                .start_invocation(
+                                    71,
+                                    &request.resource,
+                                    &request.action,
+                                    None,
+                                    &caller.admitted.principal_id,
+                                )
+                                .map(|_| ())
+                        } else {
+                            fixture
+                                .state
+                                .start_verified_invocation(&other, &request, None)
+                                .map(|_| ())
+                        };
+                        assert!(
+                            conflict
+                                .err()
+                                .unwrap()
+                                .contains("action_invocation_identity_conflict"),
+                            "{scenario}: conflicting UUID must fail before app dispatch"
+                        );
+                        assert!(
+                            rx.lock().await.try_recv().is_err(),
+                            "only one application delivery"
+                        );
+                        assert!(
+                            fixture
+                                .state
+                                .verified_invocation_status(&other, request.invocation)
+                                .unwrap()
+                                .is_none()
+                        );
+                        assert!(
+                            fixture
+                                .state
+                                .cancel_verified_invocation(&other, request.invocation)
+                                .is_err()
+                        );
+                        let channel = fixture.invocation_channel();
+                        let terminal = qos_actions::InvocationUpdate::Succeeded {
+                            invocation: request.invocation,
+                            output: qos_actions::ActionOutput::default(),
+                        };
+                        update_app(&channel, wire_id, &terminal).await.unwrap();
+                        if scenario != "legacy-before-caller" {
+                            let duplicate = fixture
+                                .state
+                                .start_verified_invocation(&caller, &request, None)
+                                .unwrap();
+                            assert_eq!(duplicate.wire_id, wire_id);
+                            assert_eq!(duplicate.update, terminal);
+                        }
+                        let membership = fixture.state.membership.as_ref().unwrap().clone();
+                        drop(channel);
+                        drop(fixture);
+                        let (mut reopened, _, mut again) =
+                            durable_fixture(root.path(), Some(membership));
+                        again.invocation = request.invocation;
+                        assert!(
+                            reopened
+                                .state
+                                .start_verified_invocation(&other, &again, None)
+                                .is_err(),
+                            "{scenario}: UUID reservation survives terminal completion and restart"
+                        );
+                        assert!(reopened.invocation_rx.try_recv().is_err());
+                        assert_eq!(
+                            std::fs::read_to_string(root.path().join("effect-counter")).unwrap(),
+                            "1"
+                        );
+                    }
+                })
+                .await;
+        }
+
+        #[tokio::test(flavor = "current_thread")]
         async fn invocation_journal_real_effect_once_across_concurrent_duplicate_response_loss_and_restart()
          {
             tokio::task::LocalSet::new()

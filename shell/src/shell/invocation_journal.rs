@@ -69,6 +69,15 @@ impl InvocationJournal {
     const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
     pub fn open(root: &Path) -> Result<Self, String> {
+        Self::open_with_parent_barrier(root, |parent| {
+            File::open(parent).and_then(|file| file.sync_all())
+        })
+    }
+
+    fn open_with_parent_barrier(
+        root: &Path,
+        parent_barrier: impl FnOnce(&Path) -> std::io::Result<()>,
+    ) -> Result<Self, String> {
         let created = match std::fs::DirBuilder::new().mode(0o700).create(root) {
             Ok(()) => true,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
@@ -120,12 +129,14 @@ impl InvocationJournal {
         }
         let mut keys = HashSet::new();
         let mut handles = HashSet::new();
+        let mut invocations = HashSet::new();
         for record in &snapshot.records {
             if record.key.host != snapshot.host
                 || record.key.invocation != record.update.invocation()
                 || record.wire_id == 0
                 || !keys.insert(record.key.clone())
                 || !handles.insert(record.wire_id)
+                || !invocations.insert(record.key.invocation)
             {
                 return Err("invocation journal contains inconsistent identities".into());
             }
@@ -149,11 +160,10 @@ impl InvocationJournal {
         if created || recovered {
             journal.persist()?;
         }
-        if created {
-            File::open(root.parent().ok_or("invocation journal needs a parent")?)
-                .and_then(|file| file.sync_all())
-                .map_err(|_| "invocation journal parent barrier failed")?;
-        }
+        // A failed initialization may leave a valid snapshot. Its existence
+        // does not prove the directory entry was durable: retry on every open.
+        parent_barrier(root.parent().ok_or("invocation journal needs a parent")?)
+            .map_err(|_| "invocation journal parent barrier failed")?;
         Ok(journal)
     }
 
@@ -194,6 +204,17 @@ impl InvocationJournal {
                 return Err("invocation identity reused with different intent".into());
             }
             return Ok(false);
+        }
+        // Application lifecycle routing and internal dedup use the full UUID
+        // without the owner. Permanently reserve it for one durable key so a
+        // different device, room, or legacy caller can never alias that state.
+        if self
+            .snapshot
+            .records
+            .iter()
+            .any(|r| r.key.invocation == key.invocation)
+        {
+            return Err("action_invocation_identity_conflict: UUID already reserved".into());
         }
         if key.host != self.host()
             || wire_id == 0
@@ -352,6 +373,64 @@ mod tests {
                 0xa5a5_a5a5_0000_0000_0000_0000_0000_0001,
             )),
         }
+    }
+
+    #[test]
+    fn invocation_journal_initialization_parent_barrier_must_succeed_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("journal");
+        let attempts = std::cell::Cell::new(0);
+        for expected in 1..=2 {
+            let opened = InvocationJournal::open_with_parent_barrier(&root, |parent| {
+                assert_eq!(parent, dir.path());
+                attempts.set(attempts.get() + 1);
+                Err(std::io::Error::other("injected parent sync failure"))
+            });
+            assert!(
+                opened.is_err(),
+                "no writer or dispatch permit before parent sync"
+            );
+            assert_eq!(
+                attempts.get(),
+                expected,
+                "reopen retries the failed barrier"
+            );
+            assert!(
+                root.join("records.json").is_file(),
+                "failure leaves a valid store"
+            );
+        }
+        let mut journal = InvocationJournal::open_with_parent_barrier(&root, |parent| {
+            attempts.set(attempts.get() + 1);
+            File::open(parent)?.sync_all()
+        })
+        .unwrap();
+        assert_eq!(attempts.get(), 3);
+        let mut k = key();
+        k.host = journal.host();
+        assert!(journal.admit(k, serde_json::json!({}), 1).unwrap());
+    }
+
+    #[test]
+    fn invocation_journal_rejects_preexisting_cross_owner_uuid_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("journal");
+        let mut journal = InvocationJournal::open(&root).unwrap();
+        let mut k = key();
+        k.host = journal.host();
+        journal.admit(k, serde_json::json!({}), 1).unwrap();
+        let mut conflicting = journal.snapshot.records[0].clone();
+        conflicting.key.owner = InvocationOwner::Local {
+            actor: "other".into(),
+        };
+        conflicting.wire_id = 2;
+        journal.snapshot.records.push(conflicting);
+        journal.persist().unwrap();
+        drop(journal);
+        assert!(
+            InvocationJournal::open(&root).is_err(),
+            "an older ambiguous store cannot authorize either application UUID owner"
+        );
     }
 
     #[test]

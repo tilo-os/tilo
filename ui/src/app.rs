@@ -3195,6 +3195,32 @@ impl App {
         let invocation = invocation.unwrap_or_else(|| {
             qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)))
         });
+        // The broker permanently reserves UUIDs across caller identities.
+        // Also fail closed here before a malformed/repeated delivery can invoke
+        // a second handler or replace an active completion/cancellation route.
+        if let Some(pending) = self.directed_invocations.get(&invocation) {
+            if pending.wire_id == id {
+                return;
+            }
+        }
+        if self.directed_invocations.contains_key(&invocation)
+            || self.bound_invocations.contains_key(&invocation)
+            || self.local_invocations.contains_key(&invocation)
+        {
+            self.collab_manager.send(CollabRequest::UpdateInvocation {
+                id,
+                update: qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "action_invocation_identity_conflict".into(),
+                        message: "Invocation UUID already has an active operation".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+            return;
+        }
         let result = self.invoke_resource_action(
             &address,
             argument,
@@ -13542,6 +13568,80 @@ mod semantic_tree_app_tests {
             publication_attempts.saturating_add(1),
             "the broker event batch republishes without waiting for native window input"
         );
+    }
+
+    #[test]
+    fn broker_invocation_uuid_collision_preserves_original_operation_route() {
+        for (legacy_collision, conflicting_action) in [
+            (false, "bump"),
+            (false, "async-bump"),
+            (true, "bump"),
+            (true, "async-bump"),
+        ] {
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CounterCard::with_async_post_bump_reset()),
+            );
+            app.action_registry_mut()
+                .register::<CounterAction>(COUNTER_TYPE);
+            app.init_layout();
+            let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(if legacy_collision {
+                44
+            } else {
+                0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b
+            }));
+            app.invoke_published_action(
+                43,
+                Some(invocation),
+                "test.counter".into(),
+                "async-bump".into(),
+                None,
+                "device:first",
+                None,
+            );
+            // A conflicting caller or the numeric legacy path must never replace
+            // the active operation's cancellation/completion route or run a second effect.
+            app.invoke_published_action(
+                44,
+                if legacy_collision {
+                    None
+                } else {
+                    Some(invocation)
+                },
+                "test.counter".into(),
+                conflicting_action.into(),
+                None,
+                "device:second",
+                None,
+            );
+            assert_eq!(
+                counter(&app),
+                0,
+                "conflicting invocation was rejected before its effect"
+            );
+            assert_eq!(
+                app.directed_invocations.get(&invocation).unwrap().wire_id,
+                43
+            );
+            app.request_invocation_cancellation(44);
+            assert!(
+                !app.directed_invocations
+                    .get(&invocation)
+                    .unwrap()
+                    .cancellation_requested
+            );
+            app.request_invocation_cancellation(43);
+            assert!(
+                app.directed_invocations
+                    .get(&invocation)
+                    .unwrap()
+                    .cancellation_requested
+            );
+            app.refresh_focus_order();
+            assert_eq!(counter(&app), 1, "only the first operation ran");
+            assert!(app.poll_directed_invocations());
+            assert!(app.directed_invocations.is_empty());
+        }
     }
 
     #[test]
