@@ -13,8 +13,8 @@
       {"kind": "target_size", "target": "semantic:Night Light", "min": [32, 32]},
       {"kind": "target_size", "target": "semantic:Change power profile", "min": [32, 32]},
       {"kind": "aligned", "first": "semantic:Settings", "second": "semantic:Power", "axis": "y", "tolerance": 1},
-      {"kind": "gap", "first": "semantic:Settings", "second": "semantic:Privacy", "axis": "x", "min": 4, "max": 12},
-      {"kind": "gap", "first": "semantic:Privacy", "second": "semantic:History", "axis": "x", "min": 4, "max": 12},
+      {"kind": "gap", "first": "semantic:Settings", "second": "semantic:Privacy", "axis": "x", "min": 10, "max": 15},
+      {"kind": "gap", "first": "semantic:Privacy", "second": "semantic:History", "axis": "x", "min": 10, "max": 15},
       {"kind": "no_overlap", "first": "semantic:Edit controls", "second": "semantic:Settings"},
       {"kind": "no_overlap", "first": "semantic:Edit controls", "second": "semantic:Power"},
       {"kind": "aligned", "first": "semantic:Brightness", "second": "semantic:Volume", "axis": "x", "tolerance": 1},
@@ -22,7 +22,7 @@
       {"kind": "target_size", "target": "semantic:Volume", "min": [32, 32]},
       {"kind": "no_overlap", "first": "semantic:Brightness", "second": "semantic:Volume"},
       {"kind": "no_overlap", "first": "semantic:Volume", "second": "semantic:Night Light"},
-      {"kind": "gap", "first": "semantic:Night Light", "second": "semantic:Change power profile", "axis": "y", "min": 4, "max": 12},
+      {"kind": "gap", "first": "semantic:Night Light", "second": "semantic:Change power profile", "axis": "y", "min": 14, "max": 20},
       {"kind": "no_overlap", "first": "semantic:Night Light", "second": "semantic:Change power profile"}
     ]}
   ]
