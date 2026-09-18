@@ -157,6 +157,7 @@ pub struct MainPanel {
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
     editor: BlockEditor,
+    image_store: Option<ui::ImageStore>,
     /// Last markdown body the panel was loaded with. Used to detect
     /// whether the editor's current state still matches the loaded
     /// document — if so we skip the `to_markdown` serialisation.
@@ -229,6 +230,7 @@ impl MainPanel {
             focused_backlink: None,
             hovered_backlink: None,
             editor: notes_editor(),
+            image_store: None,
             body: String::new(),
             rect: Rect::ZERO,
             editor_node: None,
@@ -290,7 +292,7 @@ impl MainPanel {
         self.set_title_value(title);
         let specs = crate::markdown::parse(&body);
         let blocks = crate::markdown::specs_to_blocks(&specs);
-        self.editor = notes_editor();
+        self.editor = self.fresh_editor();
         self.editor.set_blocks(blocks);
         // Focus the editor's first block so the user can start
         // typing immediately. The App will route keystrokes through
@@ -328,7 +330,7 @@ impl MainPanel {
         let mut specs = crate::markdown::parse(&body);
         crate::markdown::resolve_link_ids(&mut specs, resolver);
         let blocks = crate::markdown::specs_to_blocks(&specs);
-        self.editor = notes_editor();
+        self.editor = self.fresh_editor();
         self.editor.set_blocks(blocks);
         self.editor.set_focus(true);
         self.editor
@@ -366,7 +368,7 @@ impl MainPanel {
             .iter()
             .map(|block| block.line.marks().to_vec())
             .collect::<Vec<_>>();
-        self.editor = notes_editor();
+        self.editor = self.fresh_editor();
         self.editor.set_blocks(blocks);
         self.editor.set_local_author(self.local_author.clone());
         self.editor.set_action_interception(true);
@@ -398,7 +400,7 @@ impl MainPanel {
         if crate::doc::NotesDoc::page_blocks_list(doc, page).as_ref() != Some(&blocks) {
             return Err("block list does not belong to the requested page".into());
         }
-        let mut editor = notes_editor();
+        let mut editor = self.fresh_editor();
         editor.set_local_author(self.local_author.clone());
         editor
             .bind_existing_blocks(doc, blocks)
@@ -426,6 +428,7 @@ impl MainPanel {
         workspace: &crate::Workspace,
     ) -> Result<Self, String> {
         let mut panel = Self::new();
+        panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
         if let Some(page) = workspace.selected() {
             let title = &workspace.get(page).ok_or("selected page missing")?.title;
@@ -556,6 +559,32 @@ impl MainPanel {
     /// Drain a request to reveal the source of a canonical incoming link.
     pub fn take_backlink_open(&mut self) -> Option<PageId> {
         self.pending_backlink_open.take()
+    }
+
+    pub fn set_transclusion_previews(
+        &mut self,
+        previews: HashMap<PageId, ui::widget::TransclusionPreview>,
+    ) {
+        self.editor.set_transclusion_previews(previews);
+    }
+
+    pub fn set_image_store(&mut self, store: Option<ui::ImageStore>) {
+        self.image_store.clone_from(&store);
+        self.editor.set_image_store(store);
+    }
+
+    fn fresh_editor(&self) -> BlockEditor {
+        let mut editor = notes_editor();
+        editor.set_image_store(self.image_store.clone());
+        editor
+    }
+
+    pub fn take_transclusion_open(&mut self) -> Option<PageId> {
+        self.editor.take_transclusion_open()
+    }
+
+    pub fn take_external_link_open(&mut self) -> Option<String> {
+        self.editor.take_external_link_open()
     }
 
     pub fn set_bottom_inset(&mut self, inset: f64) {
@@ -1225,6 +1254,68 @@ impl Widget for MainPanel {
                 }
             }
 
+            self.backlink_hit_rects.clear();
+            if !self.backlinks.is_empty() {
+                let y = self.title_rect.y1 + self.tag_row_height() + 5.0 * self.text_scale;
+                let font = 12.0;
+                let label = "Linked from";
+                let (label_w, _) = text_renderer.measure(label, font, None);
+                text_renderer.draw_text(
+                    scene,
+                    label,
+                    font,
+                    tokens.colors.text_dim,
+                    transform * Affine::translate((self.title_rect.x0, y + 4.0 * self.text_scale)),
+                    None,
+                );
+                let mut x = self.title_rect.x0 + f64::from(label_w) + 10.0 * self.text_scale;
+                for backlink in self.backlinks.iter().take(3) {
+                    let excerpt = backlink.excerpt.trim();
+                    let preview = if excerpt.is_empty() {
+                        backlink.source_title.clone()
+                    } else {
+                        let clipped = excerpt.chars().take(48).collect::<String>();
+                        format!("{} · {}", backlink.source_title, clipped)
+                    };
+                    let (text_w, _) = text_renderer.measure(&preview, font, None);
+                    let width = f64::from(text_w) + 18.0 * self.text_scale;
+                    if x + width > self.title_rect.x1 {
+                        break;
+                    }
+                    let rect = Rect::new(x, y, x + width, y + 22.0 * self.text_scale);
+                    let hovered = rect.contains(self.last_pointer);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        if hovered {
+                            tokens.colors.surface_white_10
+                        } else {
+                            tokens.colors.neutral[3]
+                        },
+                        None,
+                        &RoundedRect::from_rect(rect, 11.0 * self.text_scale),
+                    );
+                    text_renderer.draw_text(
+                        scene,
+                        &preview,
+                        font,
+                        tokens.colors.text_primary,
+                        transform
+                            * Affine::translate((
+                                x + 9.0 * self.text_scale,
+                                y + 4.0 * self.text_scale,
+                            )),
+                        None,
+                    );
+                    self.backlink_hit_rects.push((
+                        rect,
+                        backlink.source,
+                        backlink.block_id.clone(),
+                    ));
+                    x += width + 6.0 * self.text_scale;
+                }
+            }
+
             // Clip the editor body to the panel's scrollable viewport so
             // blocks past the bottom don't bleed onto the status bar.
             let body_clip = Rect::new(
@@ -1814,6 +1905,20 @@ mod tests {
         assert_eq!(p.page_id(), Some(id));
         assert_eq!(p.editor().blocks().len(), 2);
         assert!(matches!(p.editor().blocks()[0].kind, BlockKind::Heading(1)));
+    }
+
+    #[test]
+    fn load_page_preserves_external_link_presentation() {
+        let mut panel = MainPanel::new();
+        panel.load_page(
+            fresh_page_id(),
+            "Links",
+            "Read [the guide](https://example.test/guide).\n".into(),
+        );
+        assert!(matches!(
+            &panel.editor().blocks()[0].line.marks()[0].mark,
+            ui::widget::Mark::ExternalLink(url) if url == "https://example.test/guide"
+        ));
     }
 
     #[test]

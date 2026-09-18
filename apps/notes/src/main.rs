@@ -51,16 +51,23 @@ const SHOT_SCENARIOS: &[&str] = &[
     "slash",
     "slash_applied",
     "heading",
+    "quote",
     "title_edit",
     "recipes",
     "formula",
+    "transclusion",
+    "external_link",
+    "table",
+    "image",
     "status",
     "saving",
     "save_error",
+    "import_success",
     "presence",
     "shortcuts",
     "tag_palette",
     "scrolled",
+    "sidebar_scroll",
 ];
 
 /// # Errors
