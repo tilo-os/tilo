@@ -83,7 +83,8 @@ const MIN_TARGET: f64 = 32.0;
 const EXPLORER_LEFT_W: f64 = 180.0;
 const EXPLORER_DETAIL_W: f64 = 240.0;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ActivityView {
     /// Outcome-first summaries since this device's last completed visit.
     #[default]
@@ -416,6 +417,7 @@ pub struct RoomActivityPane {
     /// contribution to the workspace-wide multi-document index.
     scoped_tree_rows: Vec<HistoryEntry>,
     history_index: WorkspaceHistoryIndex,
+    detached_records: Vec<super::index::DetachedRecordHistory>,
     projected_origins: HashMap<HistoryEntryId, WorkspaceHistoryId>,
     /// One app-native event supplied by an explicit handoff (for example a
     /// signed Files version). It remains visible while underlying indexes
@@ -603,6 +605,7 @@ impl RoomActivityPane {
             derived: Vec::new(),
             scoped_tree_rows: Vec::new(),
             history_index: WorkspaceHistoryIndex::new(),
+            detached_records: Vec::new(),
             projected_origins: HashMap::new(),
             external_entry: None,
             feed_coverage: FeedCoverage::default(),
@@ -899,6 +902,7 @@ impl RoomActivityPane {
         let range = self.timeline.selection()?;
         let mut detail = HistorySelectionDetail::from_range(self.timeline.entries(), range)?;
         let mut origin = None;
+        let mut app_origins = BTreeSet::new();
         for id in &detail.entry_ids {
             let next = self
                 .projected_origins
@@ -906,12 +910,23 @@ impl RoomActivityPane {
                 .map_or(super::index::HistoryOrigin::WorkspaceTree, |address| {
                     address.origin.clone()
                 });
+            if matches!(next, super::index::HistoryOrigin::AppRecord { .. }) { app_origins.insert(next.clone()); }
             if origin.as_ref().is_some_and(|current| current != &next) {
                 detail.can_compare = false;
                 detail.can_undo = false;
-                break;
             }
-            origin = Some(next);
+            origin.get_or_insert(next);
+        }
+        if !app_origins.is_empty() {
+            detail.resources = app_origins.into_iter().filter_map(|origin| {
+                let super::index::HistoryOrigin::AppRecord { app, id, kind } = &origin else { return None; };
+                detail.can_compare &= self.detached_records.iter().any(|record| record.origin() == origin && record.document.as_ref().is_some_and(|doc| doc.pending_ops() == 0));
+                Some(ui::HistoryResourceTarget {
+                    app_label: self.host.app_display_name(app), app_id: Some(app.clone()),
+                    id: id.as_str().into(), kind: kind.as_str().into(), label: id.as_str().into(),
+                })
+            }).collect();
+            detail.can_undo = false;
         }
         Some(detail)
     }
@@ -944,6 +959,7 @@ impl RoomActivityPane {
             Some(super::index::HistoryOrigin::Record { id, .. }) => {
                 step.record.is_empty() || id.as_str() == step.record
             }
+            Some(super::index::HistoryOrigin::AppRecord { .. }) => false,
             Some(super::index::HistoryOrigin::WorkspaceTree) | None => {
                 indexed.source_record.is_none()
             }
@@ -1209,6 +1225,11 @@ impl RoomActivityPane {
         match &first.origin {
             super::index::HistoryOrigin::WorkspaceTree => {
                 ui::compare_entries(tree.document_mut(), &ids).ok()
+            }
+            super::index::HistoryOrigin::AppRecord { .. } => {
+                let mut doc = self.detached_records.iter().find(|record| record.origin() == first.origin)?.document.clone()?;
+                if doc.pending_ops() > 0 { return None; }
+                ui::compare_entries(&mut doc, &ids).ok()
             }
             super::index::HistoryOrigin::Record { id, .. } => records?
                 .with(id, |doc| ui::compare_entries(doc, &ids).ok())
@@ -1621,6 +1642,33 @@ impl RoomActivityPane {
         self.refresh_records_inner(tree, records, Some(local));
     }
 
+    /// Refresh one coherent admission of detached, app-qualified record owners.
+    pub fn refresh_detached_records(&mut self, tree: &mut impl ActivityTree, records: Vec<super::index::DetachedRecordHistory>) {
+        if tree.document().pending_ops() > 0 { self.defer_pending_tree(tree); return; }
+        self.history_index.set_authors(self.source.authors().clone());
+        let query = tree.active_workspace().map(|w| WorkspaceHistoryQuery::for_room(w.room)).unwrap_or_default();
+        let changed = self.history_index.refresh_detached(tree, query, &self.scoped_tree_rows, &records);
+        self.detached_records = records;
+        self.feed_coverage = self.history_index.coverage().clone();
+        if changed {
+            self.projected_origins.clear();
+            let rows = self.history_index.entries().iter().map(|row| {
+                let projected = row.timeline_entry();
+                self.projected_origins.insert(projected.id, row.id.clone());
+                projected
+            }).collect();
+            self.install_rows(rows);
+            self.timeline.set_named_ranges(self.history_index.origin_safe_named_ranges(&self.named));
+        }
+        let passive = self.seen_frontiers.get(&tree.active.raw()).cloned().unwrap_or_default();
+        let rows = self.history_index.unseen_detached(&passive, tree, &self.detached_records).into_iter().map(WorkspaceHistoryEntry::timeline_entry).collect::<Vec<_>>();
+        self.passive_unread = rows.len();
+        self.passive_digest = ActivityDigest::from_entries(&rows, SystemTime::UNIX_EPOCH, 5);
+        let rows = self.history_index.unseen_detached(&self.catchup_frontier, tree, &self.detached_records).into_iter().map(WorkspaceHistoryEntry::timeline_entry).collect::<Vec<_>>();
+        self.digest = ActivityDigest::from_entries(&rows, SystemTime::UNIX_EPOCH, 5);
+        if changed { self.reset_narrative(); }
+    }
+
     #[allow(clippy::too_many_lines)]
     fn refresh_records_inner<T: ActivityTree>(
         &mut self,
@@ -1796,6 +1844,8 @@ impl RoomActivityPane {
         indexed.dedup_by(|a, b| a.source_record == b.source_record && a.run.id == b.run.id);
         self.agent_runs = indexed;
     }
+
+    pub fn set_excluded_apps(&mut self, apps: Vec<String>) { self.feed_coverage.excluded_apps = apps; }
 
     pub fn feed_coverage(&self) -> &FeedCoverage {
         &self.feed_coverage
@@ -3583,6 +3633,9 @@ impl RoomActivityPane {
             subtitle.push_str(" · Waiting for current edits to finish");
         }
         if !self.feed_coverage.is_complete() {
+            if !self.feed_coverage.excluded_apps.is_empty() {
+                let _ = write!(subtitle, " · History unavailable for {}", self.feed_coverage.excluded_apps.join(", "));
+            }
             let missing = self.feed_coverage.unavailable_records.len();
             let capped = self.feed_coverage.capped_records;
             if missing > 0 {
@@ -5321,6 +5374,7 @@ impl RoomActivityPane {
             return false;
         }
         let origin = self.projected_origins.get(id).cloned();
+        if origin.as_ref().is_some_and(|address| matches!(address.origin, super::index::HistoryOrigin::AppRecord { .. })) { return false; }
         if let Some(WorkspaceHistoryId {
             origin: super::index::HistoryOrigin::Record { id: record, .. },
             change,
@@ -5407,6 +5461,7 @@ impl RoomActivityPane {
             (Some(first), Some(last)) if first.origin == last.origin => {
                 let run = ChangeRun::new(first.change, last.change);
                 match first.origin {
+                    super::index::HistoryOrigin::AppRecord { .. } => UndoApply::default(),
                     super::index::HistoryOrigin::WorkspaceTree => {
                         let Ok(outcome) =
                             ui::revert_run(tree.document_mut(), &run, None, self.source.authors())

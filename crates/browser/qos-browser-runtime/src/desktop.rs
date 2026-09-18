@@ -21,6 +21,7 @@ pub(crate) struct Requirement {
     pub record_id: String,
 }
 pub(crate) struct Admission {
+    pub admitted_room: automerge::AutoCommit,
     pub source_heads: Vec<[u8; 32]>,
     pub tree: WorkspaceTree,
     pub routes: BTreeMap<u64, String>,
@@ -115,6 +116,7 @@ pub(crate) fn admission(state: &StatePeer) -> Result<Admission, String> {
         }
     }
     Ok(Admission {
+        admitted_room: doc.clone(),
         source_heads: doc.clone().get_heads().into_iter().map(|head| head.0).collect(),
         tree,
         routes,
@@ -242,5 +244,7 @@ mod tests {
         let admission = super::admission(&peer).unwrap();
         assert!(admission.complete());
         assert!(admission.required.is_empty());
+        assert_eq!(admission.admitted_room.clone().get_heads(), peer.admitted_room().unwrap().clone().get_heads());
+        assert_eq!(admission.source_heads, admission.admitted_room.clone().get_heads().iter().map(|head| head.0).collect::<Vec<_>>());
     }
 }

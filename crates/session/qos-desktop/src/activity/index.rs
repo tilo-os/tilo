@@ -37,7 +37,15 @@ pub trait PersistedRecordHistory {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HistoryOrigin {
     WorkspaceTree,
-    Record { id: RecordId, kind: RecordKind },
+    Record {
+        id: RecordId,
+        kind: RecordKind,
+    },
+    AppRecord {
+        app: String,
+        id: RecordId,
+        kind: RecordKind,
+    },
 }
 
 impl HistoryOrigin {
@@ -45,12 +53,18 @@ impl HistoryOrigin {
         match self {
             Self::WorkspaceTree => "workspace-tree".to_string(),
             Self::Record { id, .. } => format!("record:{id}"),
+            Self::AppRecord { app, id, kind } => format!(
+                "app-record:{}",
+                serde_json::to_string(&(app, id.as_str(), kind.as_str()))
+                    .expect("string tuple encodes")
+            ),
         }
     }
 
     pub fn label(&self) -> String {
         match self {
             Self::WorkspaceTree => "Workspace".to_string(),
+            Self::AppRecord { app, id, .. } => format!("{app}: {id}"),
             Self::Record { id, .. } => id.file_path().map_or_else(
                 || id.as_str().to_string(),
                 |path| {
@@ -60,6 +74,24 @@ impl HistoryOrigin {
                         .to_string()
                 },
             ),
+        }
+    }
+}
+
+/// One current-admission record, captured through a read-only owner borrow.
+/// Missing and unsettled owners carry no document; clones must be settled.
+#[derive(Clone)]
+pub struct DetachedRecordHistory {
+    pub app: String,
+    pub checkout: RecordCheckout,
+    pub document: Option<AutoCommit>,
+}
+impl DetachedRecordHistory {
+    pub fn origin(&self) -> HistoryOrigin {
+        HistoryOrigin::AppRecord {
+            app: self.app.clone(),
+            id: self.checkout.id.clone(),
+            kind: self.checkout.kind.clone(),
         }
     }
 }
@@ -220,11 +252,15 @@ pub struct FeedCoverage {
     pub indexed_records: usize,
     pub unavailable_records: Vec<RecordCheckout>,
     pub capped_records: usize,
+    pub excluded_apps: Vec<String>,
 }
 
 impl FeedCoverage {
     pub fn is_complete(&self) -> bool {
-        !self.pending_tree && self.unavailable_records.is_empty() && self.capped_records == 0
+        !self.pending_tree
+            && self.unavailable_records.is_empty()
+            && self.capped_records == 0
+            && self.excluded_apps.is_empty()
     }
 }
 
@@ -493,6 +529,147 @@ impl WorkspaceHistoryIndex {
         self.refresh_inner(tree, records, query, Some(workspace_entries), Some(local))
     }
 
+    /// Replaces the entire admitted multi-owner input atomically. Never borrows
+    /// a live RecordStore mutably or closes a producer transaction.
+    pub fn refresh_detached(
+        &mut self,
+        tree: &mut impl ActivityTree,
+        query: WorkspaceHistoryQuery,
+        tree_rows: &[HistoryEntry],
+        records: &[DetachedRecordHistory],
+    ) -> bool {
+        let limit = query.bounded_limit();
+        let mut by_id = BTreeMap::new();
+        let mut coverage = FeedCoverage {
+            pending_tree: tree.document().pending_ops() > 0,
+            referenced_records: records.len(),
+            ..Default::default()
+        };
+        let mut documents = BTreeMap::new();
+        if !coverage.pending_tree {
+            insert_rows(
+                &mut by_id,
+                &HistoryOrigin::WorkspaceTree,
+                tree_rows.to_vec(),
+            );
+            documents.insert("workspace-tree".into(), tree.document_mut().get_heads());
+        }
+        let mut ordered = records.iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|record| record.origin());
+        for (i, record) in ordered.into_iter().enumerate() {
+            if i >= MAX_INDEXED_RECORDS {
+                coverage.capped_records += 1;
+                continue;
+            }
+            let Some(mut doc) = record
+                .document
+                .as_ref()
+                .filter(|doc| doc.pending_ops() == 0)
+                .cloned()
+            else {
+                coverage.unavailable_records.push(record.checkout.clone());
+                // Keep the last settled rendering while this admitted owner is
+                // busy, but never carry rows from an owner absent from the new
+                // admission. Unavailable documents cannot establish seen heads.
+                for row in self
+                    .entries
+                    .iter()
+                    .filter(|row| row.id.origin == record.origin())
+                {
+                    by_id.insert(row.id.clone(), row.clone());
+                }
+                continue;
+            };
+            let origin = record.origin();
+            documents.insert(origin.key(), doc.get_heads());
+            let rows = HistorySource::new()
+                .with_authors(self.authors.clone())
+                .with_artifact_kind(artifact_kind(&record.checkout.kind))
+                .with_max_entries(limit)
+                .entries(&mut doc);
+            insert_rows(&mut by_id, &origin, rows);
+            coverage.indexed_records += 1;
+        }
+        let mut entries = by_id.into_values().collect::<Vec<_>>();
+        entries.sort_by(|a, b| {
+            a.entry
+                .timestamp
+                .cmp(&b.entry.timestamp)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        if entries.len() > limit {
+            entries.drain(..entries.len() - limit);
+        }
+        let changed = self.entries != entries
+            || self.coverage != coverage
+            || self.document_heads != documents
+            || self.query.as_ref() != Some(&query);
+        self.entries = entries;
+        self.coverage = coverage;
+        self.document_heads = documents;
+        self.query = Some(query);
+        self.fingerprint = None;
+        if changed {
+            self.generation = self.generation.wrapping_add(1);
+        }
+        changed
+    }
+
+    pub fn unseen_detached<'a>(
+        &'a self,
+        frontier: &WorkspaceSeenFrontier,
+        tree: &mut impl ActivityTree,
+        records: &[DetachedRecordHistory],
+    ) -> Vec<&'a WorkspaceHistoryEntry> {
+        let mut after = BTreeMap::<String, HashSet<HistoryEntryId>>::new();
+        for (key, state) in &frontier.documents {
+            let heads = state
+                .heads
+                .iter()
+                .map(|h| h.parse::<ChangeHash>())
+                .collect::<Result<Vec<_>, _>>();
+            let Ok(heads) = heads else {
+                continue;
+            };
+            if heads.is_empty() {
+                continue;
+            }
+            let doc = if key == "workspace-tree" {
+                Some(tree.document().clone())
+            } else {
+                records
+                    .iter()
+                    .find(|r| r.origin().key() == *key)
+                    .and_then(|r| r.document.clone())
+            };
+            let Some(mut doc) = doc.filter(|d| d.pending_ops() == 0) else {
+                continue;
+            };
+            if !doc.get_missing_deps(&heads).is_empty() {
+                continue;
+            }
+            after.insert(
+                key.clone(),
+                doc.get_changes(&heads)
+                    .iter()
+                    .map(|c| ui::history_source::entry_id_from_hash(&c.hash().to_string()))
+                    .collect(),
+            );
+        }
+        self.entries
+            .iter()
+            .filter(|row| {
+                let key = row.id.origin.key();
+                !frontier.documents.get(&key).is_some_and(|s| {
+                    s.exceptions
+                        .contains(&ui::widget::history_group::hex16(&row.id.change))
+                }) && after
+                    .get(&key)
+                    .is_none_or(|changes| changes.contains(&row.id.change))
+            })
+            .collect()
+    }
+
     fn refresh_inner(
         &mut self,
         tree: &mut impl ActivityTree,
@@ -742,6 +919,7 @@ impl WorkspaceHistoryIndex {
             indexed_records: indexed.included.len(),
             unavailable_records,
             capped_records: indexed.capped_records,
+            excluded_apps: Vec::new(),
         };
         self.entries = entries;
         self.query = Some(query);

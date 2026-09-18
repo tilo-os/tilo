@@ -418,6 +418,7 @@ pub struct ChromeState {
     /// into or replicated with [`WorkspaceTree`].
     pub activity_glance: ActivityGlance,
     activity_focus_request: Option<ActivityFocus>,
+    workspace_view_request: Option<(WorkspaceId, qos_desktop::activity::WorkspaceViewRequest)>,
     /// The portal D-Bus backend's prompt queue drains onto the back
     /// every frame; the overlay host renders `front()` and drains it
     /// on click. Entries carry the portal's reply channel when a D-Bus
@@ -583,6 +584,7 @@ impl ChromeState {
             revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
+            workspace_view_request: None,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
             local_user_id,
@@ -921,6 +923,33 @@ impl ChromeState {
             self.activity_glance = next;
             self.bump();
         }
+    }
+
+    /// Private presentation requests share the portable descriptor contract.
+    pub fn request_workspace_view(&mut self, request: qos_desktop::activity::WorkspaceViewRequest) -> Result<(), String> {
+        use qos_desktop::activity::WorkspaceViewRequest;
+        request.validate(&self.tree())?;
+        let previous = self.tree().active;
+        match &request {
+            WorkspaceViewRequest::Select { workspace } => {
+                self.tree_mut().active = *workspace;
+                self.overlays.room_activity = false;
+            }
+            WorkspaceViewRequest::OpenActivity { workspace, .. } => {
+                if self.tree().active != *workspace { return Err("Workspace is no longer active".into()); }
+                self.open_room_activity(None);
+            }
+            WorkspaceViewRequest::CloseActivity { workspace } => {
+                if previous != *workspace { return Err("Workspace is no longer active".into()); }
+                self.overlays.room_activity = false;
+            },
+        }
+        self.workspace_view_request = Some((previous, request));
+        self.bump();
+        Ok(())
+    }
+    pub fn take_workspace_view_request(&mut self) -> Option<(WorkspaceId, qos_desktop::activity::WorkspaceViewRequest)> {
+        self.workspace_view_request.take()
     }
 
     pub fn open_room_activity(&mut self, focus: Option<ActivityFocus>) {
