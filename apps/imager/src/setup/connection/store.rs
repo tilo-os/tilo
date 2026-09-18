@@ -5966,3 +5966,17 @@ impl ConnectionStore {
         self.overlay_bytes = 9 * 1024 * 1024;
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+impl ConnectionStore {
+    pub(super) fn native_budget_for_test(
+        &self,
+        id: OperationId,
+    ) -> Result<(u8, u64, u64), StoreError> {
+        let budget = self
+            .operation(id)?
+            .native_budget
+            .ok_or(StoreError::RecoveryRequired)?;
+        Ok((budget.version, budget.reserved, budget.sequence))
+    }
+}
