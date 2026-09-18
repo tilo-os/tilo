@@ -10,7 +10,7 @@ function domOffset(value,index){
   }
   return value.length;
 }
-export function semanticBridge(root,invoke,report) {
+export function semanticBridge(root,invoke,report,shortcuts) {
   const elements=new Map();
   const recoverySurfaces=new Set();
   const recoveries=new Map();
@@ -143,6 +143,13 @@ export function semanticBridge(root,invoke,report) {
     });
     element.addEventListener('click',()=>act(element,'activate'));
     if(editable){
+      element.addEventListener('keydown',event=>{
+        const state=element.qosState;
+        if(!state.active||elements.get(state.key)!==element||!element.route||state.disabled||state.readOnly)return;
+        shortcuts?.keydown?.(event,state.composing);
+      });
+      element.addEventListener('keyup',event=>shortcuts?.keyup?.(event));
+      element.addEventListener('blur',()=>shortcuts?.blur?.());
       element.addEventListener('input',event=>{
         const state=element.qosState;
         if(state.composing||event.isComposing)return;

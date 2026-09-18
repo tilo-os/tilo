@@ -75,6 +75,46 @@ test('modifier transitions include key release and blur reset', () => {
   assert.deepEqual(modifiers({}),[false,false,false,false]);
 });
 
+test('semantic native editors forward only canonical history shortcuts', () => {
+  const route=hostCore.semanticKeyboardRoute;
+  assert.equal(typeof route,'function');
+  assert.equal(route({key:'z',metaKey:true},false,true),'forward');
+  assert.equal(route({key:'z',metaKey:true,shiftKey:true},false,true),'forward');
+  assert.equal(route({key:'y',ctrlKey:true},false,false),'forward');
+  for(const event of [
+    {key:'a',metaKey:true},
+    {key:'c',metaKey:true},
+    {key:'v',metaKey:true},
+    {key:'x',metaKey:true},
+    {key:'r',metaKey:true},
+    {key:'Backspace'},
+    {key:'Enter'},
+    {key:'é'},
+  ])assert.equal(route(event,false,true),'native',event.key);
+  assert.equal(route({key:'z',metaKey:true,isComposing:true},true,true),'native');
+});
+
+test('shared key forwarder sends one paired event and clears modifiers on blur', () => {
+  const dispatched=[];const modifiers=[];let clears=0;
+  const forwarder=hostCore.createKeyboardForwarder({
+    route:hostCore.semanticKeyboardRoute,
+    dispatch:(type,event)=>dispatched.push([type,event.key,event.shiftKey]),
+    publishModifiers:event=>modifiers.push(hostCore.modifierSnapshot(event)),
+    clearModifiers:()=>{clears++;},
+  });
+  const down={key:'z',code:'KeyZ',metaKey:true,shiftKey:true,defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};
+  const up={key:'z',code:'KeyZ',metaKey:false,shiftKey:false,defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};
+  assert.equal(forwarder.keydown(down,false,true),true);
+  assert.equal(forwarder.keyup(up),true);
+  assert.equal(forwarder.keyup(up),false,'a repeated keyup cannot dispatch twice');
+  forwarder.blur();
+  assert.deepEqual(dispatched,[['keydown','z',true],['keyup','z',false]]);
+  assert.deepEqual(modifiers,[[false,false,true,true],[false,false,false,false],[false,false,false,false]]);
+  assert.equal(clears,1);
+  assert.equal(down.defaultPrevented,true);
+  assert.equal(up.defaultPrevented,true);
+});
+
 test('beforeinput covers soft-keyboard edits without duplicating composition or paste', () => {
   const route=hostCore.beforeInputRoute;
   assert.equal(typeof route,'function');

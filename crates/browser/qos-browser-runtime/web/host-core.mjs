@@ -31,6 +31,7 @@ export function wheelPixels(x,y,mode,width,height) {
 }
 const applicationCommands=new Set(['a','b','f','i','u','y','z']);
 const clipboardCommands=new Set(['c','v','x']);
+const historyCommands=new Set(['y','z']);
 export function keyboardRoute(event,composing,mac) {
   if(composing||event.isComposing)return 'composition';
   const key=String(event.key??'');
@@ -46,6 +47,26 @@ export function keyboardRoute(event,composing,mac) {
 }
 export function modifierSnapshot(event) {
   return [Boolean(event.ctrlKey),Boolean(event.altKey),Boolean(event.shiftKey),Boolean(event.metaKey)];
+}
+export function semanticKeyboardRoute(event,composing,mac) {
+  const route=keyboardRoute(event,composing,mac);
+  return route==='forward'&&historyCommands.has(String(event.key??'').toLowerCase())?'forward':'native';
+}
+export function createKeyboardForwarder({route,dispatch,publishModifiers=()=>{},clearModifiers=()=>{},report=()=>{},mac=false}) {
+  const forwarded=new Set();
+  return {
+    keydown(event,composing,platformMac=mac) {
+      publishModifiers(event);
+      if(route(event,composing,platformMac)!=='forward')return false;
+      event.preventDefault();dispatch('keydown',event);forwarded.add(event.code||event.key);report();return true;
+    },
+    keyup(event) {
+      publishModifiers(event);
+      if(!forwarded.delete(event.code||event.key))return false;
+      event.preventDefault();dispatch('keyup',event);return true;
+    },
+    blur() { clearModifiers();forwarded.clear(); },
+  };
 }
 export function beforeInputRoute(event,composing) {
   if(composing||event.isComposing)return {kind:'ignore'};

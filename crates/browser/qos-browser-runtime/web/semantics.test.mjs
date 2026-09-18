@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {semanticBridge} from './semantics.mjs';
+import {createKeyboardForwarder,modifierSnapshot,semanticKeyboardRoute} from './host-core.mjs';
 class Element {
   constructor(tag){this.localName=tag;this.dataset={};this.attributes=new Map();this.children=[];this.tabIndex=-1;this.value='';this.selectionStart=0;this.selectionEnd=0;this.scrollTop=0;this.scrollLeft=0;this.listeners=new Map();this.style={cssText:''};}
   setAttribute(name,value){this.attributes.set(name,String(value));}
@@ -68,6 +69,67 @@ test('editable input immediately updates the canonical value and selection in gr
     ['value','A👨‍👩‍👧‍👦中\nB',0,0],
     ['selection','',1,4],
   ]);
+});
+
+test('semantic editor forwards canonical history keys once and releases modifiers',()=>{
+  const dispatched=[];const modifiers=[];let clears=0;
+  const shortcuts=createKeyboardForwarder({
+    route:semanticKeyboardRoute,
+    mac:true,
+    dispatch:(type,keyEvent)=>dispatched.push([type,keyEvent.key,keyEvent.shiftKey]),
+    publishModifiers:keyEvent=>modifiers.push(modifierSnapshot(keyEvent)),
+    clearModifiers:()=>{clears++;},
+  });
+  const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{},shortcuts);
+  bridge.update(snapshot({role:'MultilineTextInput',name:'Message composer',action_target:'chat.composer',value:'draft',state:{focusable:true,multiline:true},text_selection:{anchor:5,focus:5}}));
+  const editor=root.children[0];document.activeElement=editor;
+  const down=event('keydown',{key:'z',code:'KeyZ',metaKey:true,shiftKey:true});
+  const up=event('keyup',{key:'z',code:'KeyZ'});
+  editor.dispatchEvent(down);editor.dispatchEvent(up);editor.dispatchEvent(up);
+  editor.dispatchEvent(event('blur'));
+  assert.deepEqual(dispatched,[['keydown','z',true],['keyup','z',undefined]]);
+  assert.deepEqual(modifiers,[[false,false,true,true],[false,false,false,false],[false,false,false,false]]);
+  assert.equal(clears,1);
+  assert.equal(down.defaultPrevented,true);
+  assert.equal(up.defaultPrevented,true);
+});
+
+test('semantic editor keeps native text, selection, clipboard, browser, and IME keys native',()=>{
+  const dispatched=[];
+  const shortcuts=createKeyboardForwarder({route:semanticKeyboardRoute,mac:true,dispatch:(...args)=>dispatched.push(args)});
+  const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{},shortcuts);
+  bridge.update(snapshot({role:'TextInput',name:'Title',action_target:'title',value:'draft',state:{focusable:true},text_selection:{anchor:5,focus:5}}));
+  const editor=root.children[0];document.activeElement=editor;
+  for(const keyEvent of [
+    event('keydown',{key:'a',metaKey:true}),
+    event('keydown',{key:'c',metaKey:true}),
+    event('keydown',{key:'v',metaKey:true}),
+    event('keydown',{key:'r',metaKey:true}),
+    event('keydown',{key:'Backspace'}),
+    event('keydown',{key:'é'}),
+  ]){
+    editor.dispatchEvent(keyEvent);
+    assert.equal(keyEvent.defaultPrevented,false,keyEvent.key);
+  }
+  editor.dispatchEvent(event('compositionstart'));
+  const composingUndo=event('keydown',{key:'z',metaKey:true,isComposing:true});
+  editor.dispatchEvent(composingUndo);
+  assert.equal(composingUndo.defaultPrevented,false);
+  assert.deepEqual(dispatched,[]);
+});
+
+test('disabled read-only and stale semantic editors cannot forward history mutations',()=>{
+  const dispatched=[];
+  const shortcuts=createKeyboardForwarder({route:semanticKeyboardRoute,mac:true,dispatch:(...args)=>dispatched.push(args)});
+  const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{},shortcuts);
+  const view=state=>snapshot({role:'TextInput',name:'Title',action_target:'title',value:'draft',state:{focusable:true,...state},text_selection:{anchor:5,focus:5}});
+  bridge.update(view({disabled:true}));
+  const disabled=root.children[0];disabled.dispatchEvent(event('keydown',{key:'z',metaKey:true}));
+  bridge.update(view({read_only:true}));
+  const readOnly=root.children[0];readOnly.dispatchEvent(event('keydown',{key:'z',metaKey:true}));
+  bridge.update({root:{path:'chat',children:[]}});
+  readOnly.dispatchEvent(event('keydown',{key:'z',metaKey:true}));
+  assert.deepEqual(dispatched,[]);
 });
 
 test('CJK preedit commits once and ignores the trailing input event',()=>{

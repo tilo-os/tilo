@@ -1,7 +1,7 @@
 import {commitPeerBatches} from './peer-persistence.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import init,* as runtime from './pkg/qos_browser_runtime.js';
-import {MountRegistry,beforeInputRoute,keyboardRoute,modifierSnapshot,wheelPixels} from './host-core.mjs';
+import {MountRegistry,beforeInputRoute,createKeyboardForwarder,keyboardRoute,modifierSnapshot,semanticKeyboardRoute,wheelPixels} from './host-core.mjs';
 import {acquireStorage} from './storage.mjs';
 import {semanticBridge} from './semantics.mjs';
 import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
@@ -30,7 +30,12 @@ export async function mountDesktop(target,options={}) {
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
   delete config.onStatus;delete config.signal;delete config.loadAsset;
-  const semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report);
+  let semanticKeys;
+  const semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report,{
+    keydown:(...args)=>active()&&semanticKeys?.keydown(...args),
+    keyup:event=>active()&&semanticKeys?.keyup(event),
+    blur:()=>{if(active())semanticKeys?.blur();},
+  });
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
   function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined;}
   function update(raw){
@@ -151,21 +156,20 @@ export async function mountDesktop(target,options={}) {
         catch(error){report({clipboard:'failed',error:String(error)});}
       });
     }
-    const forwardedKeys=new Set();
+    const dispatchKey=(type,event)=>canvas.dispatchEvent(new KeyboardEvent(type,event));
+    const hiddenKeys=createKeyboardForwarder({route:keyboardRoute,mac:config.mac,dispatch:dispatchKey,clearModifiers,report:()=>report({lastInput:'keyboard'})});
+    semanticKeys=createKeyboardForwarder({route:semanticKeyboardRoute,mac:config.mac,dispatch:dispatchKey,publishModifiers,clearModifiers,report:()=>report({lastInput:'keyboard'})});
     const dispatchCanvasKey=key=>{canvas.dispatchEvent(new KeyboardEvent('keydown',{key}));canvas.dispatchEvent(new KeyboardEvent('keyup',{key}));};
     on(editor,'keydown',event=>{
-      const route=keyboardRoute(event,composing,config.mac);
-      if(route!=='forward')return;
-      event.preventDefault();canvas.dispatchEvent(new KeyboardEvent('keydown',event));report({lastInput:'keyboard'});
-      forwardedKeys.add(event.code||event.key);
+      hiddenKeys.keydown(event,composing);
     });
-    on(editor,'keyup',event=>{const key=event.code||event.key;if(forwardedKeys.delete(key)){event.preventDefault();canvas.dispatchEvent(new KeyboardEvent('keyup',event));}});
+    on(editor,'keyup',event=>hiddenKeys.keyup(event));
     on(editor,'compositionstart',()=>{composing=true;runtime.ime(id,'start','');report({lastInput:'compositionstart'});});
     on(editor,'compositionupdate',event=>{runtime.ime(id,'preedit',event.data);});
     on(editor,'compositionend',event=>{runtime.ime(id,'preedit','');runtime.ime(id,'commit',event.data);composing=false;editor.value='';report({lastInput:'compositioncommit'});});
     on(editor,'beforeinput',event=>{const route=beforeInputRoute(event,composing);if(route.kind==='ignore')return;event.preventDefault();if(route.kind==='commit'){runtime.ime(id,'commit',route.text);editor.value='';report({lastInput:'beforeinput'});}else if(route.kind==='key'){dispatchCanvasKey(route.key);report({lastInput:'beforeinput-key'});}});
     on(editor,'focus',()=>{canvas.dispatchEvent(new FocusEvent('focus'));if(active())runtime.ime(id,'start','');});
-    on(editor,'blur',()=>{if(active()){if(composing){runtime.ime(id,'preedit','');composing=false;report({lastInput:'compositioncancel'});}clearModifiers();forwardedKeys.clear();runtime.ime(id,'end','');canvas.dispatchEvent(new FocusEvent('blur'));}});
+    on(editor,'blur',()=>{if(active()){if(composing){runtime.ime(id,'preedit','');composing=false;report({lastInput:'compositioncancel'});}hiddenKeys.blur();runtime.ime(id,'end','');canvas.dispatchEvent(new FocusEvent('blur'));}});
     on(canvas,'blur',()=>{if(active())clearModifiers();});
     on(canvas,'pointerdown',()=>report({lastInput:'pointer'}));
     on(canvas,'wheel',event=>{
