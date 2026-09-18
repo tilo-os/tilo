@@ -7693,6 +7693,129 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_policy_transition_clears_imports_and_never_reauthors_them() {
+        use crate::compositor::selection::{
+            SelectionStore, Target, clipboard_history, pin_history_item, set_mirror_text,
+        };
+
+        let policy = |clipboard| {
+            let document = serde_json::json!({"continuity": {
+                "enabled": true,
+                "clipboard": clipboard,
+                "notifications": true,
+                "wifi_settings": true,
+                "media": true,
+                "display_input": true,
+                "file_transfer": true,
+                "realtime_sessions": true,
+                "typed_gamepad": true,
+                "app_continuations": true
+            }});
+            ContinuityPolicySnapshot::from_document(document.as_object().unwrap())
+        };
+        let local = DeviceId::new("local-clipboard-device").unwrap();
+        let remote = DeviceId::new("remote-clipboard-device").unwrap();
+        let selection = std::sync::Arc::new(std::sync::Mutex::new(SelectionStore::default()));
+        assert!(set_mirror_text(
+            &selection,
+            Target::Clipboard,
+            "keep this local copy"
+        ));
+        let local_id = clipboard_history(&selection)[0].id;
+        assert!(pin_history_item(&selection, local_id, true));
+
+        let mut imported = ClipboardEntry::shareable(
+            ClipboardPayload::Text("remote private copy".into()),
+            remote.clone(),
+            42,
+            FabricStamp {
+                counter: 7,
+                device: remote.clone(),
+            },
+        )
+        .unwrap();
+        imported.pinned = true;
+        merge_shared_clipboard_history(&selection, std::slice::from_ref(&imported));
+        assert_eq!(clipboard_history(&selection).len(), 2);
+
+        let (network, _commands) = crate::shell::network::shell_network_for_test(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            1,
+        );
+        let mut runtime = DeviceFabricRuntime::new(&network, NotificationBridge::new());
+        let enabled = policy(true);
+        runtime.enforce_policy(&network, &selection, enabled);
+        let stamp = FabricStamp {
+            counter: 10,
+            device: local.clone(),
+        };
+        let capabilities = LocalFabricCapabilities {
+            display: None,
+            pointer: false,
+            keyboard: false,
+            audio_output: false,
+        };
+        let enabled_snapshot = build_local_snapshot(
+            &local,
+            "Local".into(),
+            capabilities,
+            &selection,
+            None,
+            &BTreeMap::new(),
+            &stamp,
+            enabled,
+        );
+        assert_eq!(enabled_snapshot.clipboard.len(), 1);
+        assert_eq!(enabled_snapshot.clipboard[0].origin, local);
+
+        let disabled = policy(false);
+        runtime.enforce_policy(&network, &selection, disabled);
+        let history = clipboard_history(&selection);
+        assert_eq!(
+            history.len(),
+            1,
+            "remote history must be revoked immediately"
+        );
+        assert_eq!(
+            history[0].id, local_id,
+            "local pinned history is device-private"
+        );
+        assert!(history[0].pinned);
+        let disabled_snapshot = build_local_snapshot(
+            &local,
+            "Local".into(),
+            capabilities,
+            &selection,
+            Some(&enabled_snapshot),
+            &BTreeMap::new(),
+            &stamp,
+            disabled,
+        );
+        assert!(disabled_snapshot.clipboard.is_empty());
+        assert!(!disabled_snapshot.presence.capabilities.clipboard);
+
+        runtime.enforce_policy(&network, &selection, enabled);
+        merge_shared_clipboard_history(&selection, std::slice::from_ref(&imported));
+        assert_eq!(clipboard_history(&selection).len(), 2);
+        let reenabled_snapshot = build_local_snapshot(
+            &local,
+            "Local".into(),
+            capabilities,
+            &selection,
+            Some(&disabled_snapshot),
+            &BTreeMap::new(),
+            &stamp,
+            enabled,
+        );
+        assert_eq!(reenabled_snapshot.clipboard.len(), 1);
+        assert_eq!(reenabled_snapshot.clipboard[0].origin, local);
+        assert_ne!(
+            reenabled_snapshot.clipboard[0].id, imported.id,
+            "an imported entry must not be re-authored after policy re-enable"
+        );
+    }
+
+    #[test]
     fn nearby_drop_never_overwrites_and_rejects_a_symlinked_destination() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("nearby");
