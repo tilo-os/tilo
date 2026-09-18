@@ -120,6 +120,8 @@ impl ContinuityPolicySnapshot {
         match action {
             PersonalFabricAction::ResumeMedia { .. }
             | PersonalFabricAction::MediaAccepted { .. }
+            | PersonalFabricAction::MediaRejected { .. }
+            | PersonalFabricAction::MediaCancelled { .. }
             | PersonalFabricAction::RemoteAudioOffer { .. }
             | PersonalFabricAction::RemoteAudioDecision { .. }
             | PersonalFabricAction::RemoteAudioFrame { .. }

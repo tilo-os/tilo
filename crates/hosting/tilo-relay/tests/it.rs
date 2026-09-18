@@ -21,6 +21,8 @@ mod auth_reject;
 mod client_owns_its_endpoint;
 #[path = "coedit_through_host.rs"]
 mod coedit_through_host;
+#[path = "compute_session.rs"]
+mod compute_session;
 #[path = "cross_user_workspace_host.rs"]
 mod cross_user_workspace_host;
 #[path = "durable_host_restart.rs"]

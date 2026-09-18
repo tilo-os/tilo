@@ -39,12 +39,22 @@ ARG RPMS_REF
 
 FROM ${RPMS_REF} AS rpms
 
+FROM scratch AS external-assets
+COPY --from=github-assets / /
+
 
 # ---- Stage 1: kernel builder ----------------------------------------------
 # SAME base as os/Containerfile — one BASE_REF for both — so the produced
 # modules link against the exact glibc + userspace the OS image ships.  A drift
 # here would show up as "invalid module format" at boot.
 FROM ${BASE_REF} AS build
+
+COPY --from=external-assets /v4l2loopback-0.15.3-a7e4a4d.tar.gz /work/v4l2loopback-0.15.3-a7e4a4d.tar.gz
+RUN echo '1efa0d3535523df1d45da00ec09bba0b5fdbf44c3efd775dd480fa7c803c3034  /work/v4l2loopback-0.15.3-a7e4a4d.tar.gz' \
+      | sha256sum --check --strict \
+    && tar -xzf /work/v4l2loopback-0.15.3-a7e4a4d.tar.gz -C /work \
+    && mv /work/v4l2loopback-a7e4a4dea36187ad3550c797d647bcc50faced42 /work/v4l2loopback-0.15.3 \
+    && test -f /work/v4l2loopback-0.15.3/COPYING
 
 # Toolchain for a kernel RPM build.  All from the frozen repo.
 #   kernel-devel / kernel-headers  — matched headers so external module
@@ -365,6 +375,7 @@ RUN set -eux; \
     JOBS="${KERNEL_BUILD_JOBS:-$(nproc)}"; \
     case "$JOBS" in ''|*[!0-9]*|0) echo "KERNEL_BUILD_JOBS must be a positive integer" >&2; exit 1;; esac; \
     make -j"$JOBS" all; \
+    make -C "$KSRC" M=/work/v4l2loopback-0.15.3 -j"$JOBS" modules; \
     KVER="$(make -s kernelrelease)"; \
     printf 'KVER=%s\n' "$KVER" > /work/kver.env; \
     STAGE=/work/stage; \
@@ -386,6 +397,16 @@ RUN set -eux; \
     # Install and strip before signing. Automatic Kbuild signing is disabled
     # because its host utility links libcrypto.
     make INSTALL_MOD_PATH="$STAGE" INSTALL_MOD_STRIP=1 modules_install; \
+    install -Dm0644 /work/v4l2loopback-0.15.3/v4l2loopback.ko \
+      "$STAGE/lib/modules/$KVER/extra/v4l2loopback.ko"; \
+    strip --strip-debug "$STAGE/lib/modules/$KVER/extra/v4l2loopback.ko"; \
+    test "$(modinfo -F name "$STAGE/lib/modules/$KVER/extra/v4l2loopback.ko")" = v4l2loopback; \
+    case "$(modinfo -F vermagic "$STAGE/lib/modules/$KVER/extra/v4l2loopback.ko")" in \
+      "$KVER "*) ;; \
+      *) echo "v4l2loopback was not built for $KVER" >&2; exit 1 ;; \
+    esac; \
+    install -Dm0644 /work/v4l2loopback-0.15.3/COPYING \
+      "$STAGE/usr/share/licenses/tilo-kernel-core/v4l2loopback-COPYING"; \
     find "$STAGE/lib/modules/$KVER" -name '*.ko.zst' -type f -print0 \
       | while IFS= read -r -d '' compressed; do \
           module="${compressed%.zst}"; \

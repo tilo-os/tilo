@@ -138,8 +138,11 @@ def verify_prediction(root, public_bundle, manifest_sha256, architecture, genera
             raise ValueError('target UKI changed after EFI verification')
         key = scratch / 'pcr-public.pem'
         boot.loader.snapshot(public_bundle / 'tpm2-pcr-signing.public.pem', key, 65536)
-        der = boot.loader.command(['/usr/bin/openssl', 'pkey', '-pubin', '-in', str(key), '-outform', 'DER'])
-        key_digest = hashlib.sha256(der).hexdigest()
+        key_info = boot.loader.command(
+            ['/usr/local/bin/tilo-crypto', 'rsa-public-key-info', str(key)]).decode().split()
+        if len(key_info) != 2 or not key_info[0].isdigit() or not re.fullmatch(r'[0-9a-f]{64}', key_info[1]):
+            raise ValueError('Rust-native crypto returned invalid PCR public-key metadata')
+        key_digest = key_info[1]
         if key_digest != metadata['identities']['tpm2-pcr-signing.public.pem']:
             raise ValueError('PCR public key changed after independent bundle verification')
         relative = Path(f'boot/tilo-target/predictions/generation-{generation}.json')
@@ -154,8 +157,8 @@ def verify_prediction(root, public_bundle, manifest_sha256, architecture, genera
         if not 256 <= len(detached_data) <= 1024:
             raise ValueError('invalid detached target signature size')
         for message, signed in ((scratch / 'policy-message', scratch / 'policy-signature'), (target, detached)):
-            boot.loader.command(['/usr/bin/openssl', 'dgst', '-sha256', '-verify', str(key),
-                                 '-sigopt', 'rsa_padding_mode:pkcs1', '-signature', str(signed), str(message)])
+            boot.loader.command(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
+                                 str(key), str(message), str(signed)])
         sections = measurement_sections(data, architecture)
         check_systemd_version(stub_metadata(data), systemd_version, boot.loader.command([MEASURE, '--version']))
         argv = [MEASURE, 'policy-digest', '--json=short', '--bank=sha256', '--phase=enter-initrd']

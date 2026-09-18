@@ -719,8 +719,7 @@ def main(argv=None):
     write_receipt('base-installation-tooling.json', installation_tooling(pins['BASE_REF']))
     write_receipt('tools.json', {name: run(*command) for name, command in {
         'podman': ('podman', '--version'), 'cargo': ('cargo', '--version'),
-        'rustc': ('rustc', '--version'), 'cosign': ('cosign', 'version'),
-        'openssl': ('openssl', 'version')}.items()})
+        'rustc': ('rustc', '--version'), 'cosign': ('cosign', 'version')}.items()})
     metadata = json.loads(run('cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1'))
     write_receipt('workspace.json', {'packages': sorted(package['name'] for package in metadata['packages'])})
     run('cargo', 'build', '--locked', '--release', '-p', 'tilo-crypto')

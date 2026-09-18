@@ -12,16 +12,10 @@ exclude = [
     "vendor/genawaiter-proc-macro",
     "vendor/winit",
 ]
-# `runtime-dylib` is a workspace member (so it shares the lockfile,
-# target dir, and crate SVHs with the apps that link it) but is kept
-# OUT of `default-members`: a bare `cargo build` / `cargo test` never
-# compiles it. It carries `crate-type = ["dylib"]`, which requires
-# `panic = "unwind"` — incompatible with the workspace's default
-# `panic = "abort"` release profile. It is built only, and explicitly,
-# under `--profile thin-app` (`cargo build -p runtime-dylib --profile
-# thin-app`). See its Cargo.toml for the full rationale.
-# Keep bare developer builds on the load-bearing spine. CI's affected-package
-# selector and nightly full-workspace gate cover every member explicitly.
+# Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
+# it requires unwind support, unlike the default release profile.
+# Default builds cover core crates. CI checks affected packages and runs
+# the full workspace nightly.
 default-members = [
     "crates/doc/qdoc",
     "fs",
@@ -245,11 +239,6 @@ resolver = "2"
 license = "AGPL-3.0-only"
 publish = false
 
-# Shared dependencies are pinned here and inherited with `dep.workspace = true`.
-# This is the one file to edit when bumping a shared version.
-#
-# Workspace dependency versions are floors. Features are additive, and a member
-# may re-enable default features when needed.
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 # `nursery` is unstable and includes documented false positives, so its lints
@@ -268,7 +257,7 @@ panic_in_result_fn = "deny"
 panic = "deny"
 exit = "deny"
 
-# Nursery lints kept individually: each catches a defect, not a style.
+# Selected nursery lints.
 redundant_clone = "deny"                    # allocations that are never needed
 significant_drop_tightening = "deny"        # lock held longer than necessary
 significant_drop_in_scrutinee = "deny"      # lock held across a match arm
@@ -311,11 +300,8 @@ must_use_candidate = "allow"
 # ---------------------------------------------------------------------------
 # UI toolkit stack
 #
-# `ui` re-exports vello, taffy, winit and automerge (see `ui/src/lib.rs`). An
-# app should reach for `ui::vello` rather than declaring its own copy: two vello
-# versions in one process means two incompatible `Scene` types, and a widget
-# tree that cannot be handed a scene it can draw into. These entries exist so
-# the crates that legitimately need a direct dependency all get the same one.
+# Prefer the re-exports in `ui/src/lib.rs`. Direct dependencies must use
+# compatible versions to share types such as `vello::Scene`.
 # ---------------------------------------------------------------------------
 vello = "0.9"
 vello_encoding = "0.9"
@@ -328,9 +314,6 @@ pollster = "0.4.0"
 # ---------------------------------------------------------------------------
 # Async runtime and networking
 # ---------------------------------------------------------------------------
-# tokio declares `default = []`, so there is nothing to switch off; members
-# carry their own runtime features (`rt`, `net`, `macros`, ...) since those
-# genuinely differ per crate.
 tokio = "1.52.3"
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
@@ -351,8 +334,6 @@ url = "2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 serde_bytes = "0.11"
-# Canonical wire encoding for everything that gets signed — little-endian,
-# varint, no field-reorder leeway, so signatures reproduce byte-for-byte.
 postcard = "1.1.3"
 toml = "0.8"
 quick-xml = "0.41.0"
@@ -372,14 +353,8 @@ tar = "0.4"
 # ---------------------------------------------------------------------------
 # Cryptography and identity
 #
-# The Ed25519 stack is deliberately conservative. Every Tilo signing path
-# (`collab-types`, `tilo-user-identity`, `threshold-identity`, `app-registry`,
-# `pkg`, `runtime-identity`) is on ed25519-dalek 2.x, which consumes `rand_core`
-# 0.6 — and `rand` 0.8 is the only release that hands out a 0.6-shaped `OsRng`.
-# That is why `rand` is pinned to 0.8 rather than the current 0.10: bumping it
-# would not typecheck against `SigningKey::generate`. iroh drags in a *second*
-# Ed25519 implementation (ed25519-dalek 3.x) for its own node identity; that is
-# iroh's business and must not become ours.
+# ed25519-dalek 2.x requires rand_core 0.6 for `SigningKey::generate`.
+# Keep rand at 0.8 for a compatible `OsRng`.
 # ---------------------------------------------------------------------------
 ed25519-dalek = "2"
 rand = "0.8"
@@ -399,9 +374,7 @@ bip39 = "2"
 # ---------------------------------------------------------------------------
 iroh = "1.0.3"
 iroh-base = "1.0.3"
-# The default `rpc` feature enables Noq's platform certificate verifier and
-# its `openssl-probe` path discovery helper.  Tilo uses the blob protocol and
-# stores directly, never iroh-blobs RPC, so keep that unnecessary edge out.
+# Disable unused RPC support and its platform certificate dependencies.
 iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 iroh-gossip = "0.101.0"
 iroh-mdns-address-lookup = "0.5.0"
@@ -442,7 +415,7 @@ open = "5.3.5"
 libc = "0.2.186"
 
 # ---------------------------------------------------------------------------
-# Diagnostics, CLI and the long tail
+# Diagnostics and utilities
 # ---------------------------------------------------------------------------
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -474,7 +447,6 @@ proptest = "1"
 [profile.dev]
 debug = "line-tables-only"
 
-# Test binaries are the bulk of the count, so they get the same treatment.
 [profile.test]
 debug = "line-tables-only"
 

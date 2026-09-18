@@ -22,6 +22,8 @@ use tilo_user_identity::{
 
 use crate::auth::{self, Hello, HelloAck2, PeerRole};
 use crate::client::RelayClient;
+use crate::compute_session::ComputeProtocol;
+use crate::compute_transport::COMPUTE_ALPN;
 use crate::config::{PeerRelayConfig, RelayConfig};
 use crate::metrics::Metrics;
 use crate::peer::{
@@ -270,10 +272,18 @@ impl Relay {
             full_replica_status: cfg.full_replica_status.clone(),
             state_root: cfg.state_root.clone(),
         };
+        let compute = ComputeProtocol::new(
+            workspaces.clone(),
+            identity.user_public_key,
+            identity.device_cert.clone(),
+            identity.device_signing_key.clone(),
+            revocations.clone(),
+        );
         let router = Router::builder(endpoint.clone())
             .accept(ALPN, handler)
             .accept(DISCOVERY_ALPN, discovery)
             .accept(MANAGEMENT_ALPN, management)
+            .accept(COMPUTE_ALPN, compute)
             .spawn();
 
         let peer_relay_tasks = spawn_background_tasks(
