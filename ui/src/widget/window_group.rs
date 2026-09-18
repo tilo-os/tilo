@@ -1,7 +1,8 @@
-use crate::text_metrics::renderer_type_size;
+use crate::clock::{Duration, Instant};
 use crate::color_compat::ColorCompat;
 use crate::icons;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -9,7 +10,6 @@ use crate::widget::tabs::CLOSE_FADE_MS;
 use crate::widget::{TabBar, TabDescriptor, TileContent, TileHost, Widget};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use crate::clock::{Duration, Instant};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -175,6 +175,7 @@ impl WindowWidth {
     reason = "independent UI flags on a widely-shared pub struct; not a state bitset"
 )]
 pub struct WindowGroup {
+    close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
     hosts: Vec<(u64, TileHost)>,
@@ -270,13 +271,29 @@ impl WindowGroup {
         active_id: u64,
         width: WindowWidth,
     ) -> Self {
-        let descs: Vec<TabDescriptor> = tabs_with_content.iter().map(|(d, _)| d.clone()).collect();
-        let hosts: Vec<(u64, TileHost)> = tabs_with_content
-            .into_iter()
-            .map(|(d, c)| (d.id, TileHost::new(c)))
-            .collect();
+        Self::from_hosts(
+            id,
+            tabs_with_content
+                .into_iter()
+                .map(|(d, c)| (d, TileHost::new(c)))
+                .collect(),
+            active_id,
+            width,
+        )
+    }
+
+    /// Mount prepared hosts without unwrapping checked component custody.
+    pub fn from_hosts(
+        id: u64,
+        tabs: Vec<(TabDescriptor, TileHost)>,
+        active_id: u64,
+        width: WindowWidth,
+    ) -> Self {
+        let descs = tabs.iter().map(|(d, _)| d.clone()).collect();
+        let hosts = tabs.into_iter().map(|(d, h)| (d.id, h)).collect();
         Self {
             id,
+            close_reports: vec![],
             bar: TabBar::new(&format!("g{id}"), descs, active_id),
             hosts,
             width,
@@ -608,6 +625,7 @@ impl WindowGroup {
         let tab_id = desc.id;
         Self {
             id,
+            close_reports: vec![],
             bar: TabBar::new(&format!("g{id}"), vec![desc], active_id),
             hosts: vec![(tab_id, host)],
             width,
@@ -671,6 +689,23 @@ impl WindowGroup {
         self.bar.drop_index_for(release_point)
     }
 
+    /// Update chrome metadata without replacing the document/component owner.
+    pub fn update_tab_descriptor(&mut self, descriptor: TabDescriptor) -> bool {
+        let Some(tab) = self
+            .bar
+            .tabs_mut()
+            .iter_mut()
+            .find(|tab| tab.id == descriptor.id)
+        else {
+            return false;
+        };
+        if tab.title == descriptor.title && tab.app_kind == descriptor.app_kind {
+            return false;
+        }
+        *tab = descriptor;
+        self.style_dirty = true;
+        true
+    }
     pub fn tabs(&self) -> &[TabDescriptor] {
         self.bar.tabs()
     }
@@ -988,7 +1023,8 @@ impl WindowGroup {
         for id in expired {
             self.closing_hosts.remove(&id);
             if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == id) {
-                self.hosts.remove(idx);
+                let (_, mut host) = self.hosts.remove(idx);
+                self.close_reports.extend(host.close_components());
             }
             self.bar.finalize_close(id);
         }
@@ -1424,6 +1460,140 @@ impl WindowGroup {
 }
 
 impl Widget for WindowGroup {
+    // Modal capture and presentation polling follow visible content, never inactive tabs.
+    fn modal_capture(&self) -> Option<Rect> {
+        self.children().into_iter().find_map(Widget::modal_capture)
+    }
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.children()
+            .into_iter()
+            .filter_map(Widget::next_wake_deadline)
+            .min()
+    }
+
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        self.bar.set_platform_conventions(conventions);
+        for child in self
+            .hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+        {
+            child.set_platform_conventions(conventions);
+        }
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.bar.set_interaction_environment(environment);
+        for child in self
+            .hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+        {
+            child.set_interaction_environment(environment);
+        }
+    }
+
+    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        self.bar.mount_native_views(host);
+        for child in self
+            .hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+        {
+            child.mount_native_views(host);
+        }
+    }
+
+    fn unmount_native_views(&mut self) {
+        self.bar.unmount_native_views();
+        for child in self
+            .hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+        {
+            child.unmount_native_views();
+        }
+    }
+
+    fn native_view_frame_start(&mut self) {
+        self.bar.native_view_frame_start();
+        for child in self
+            .hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+        {
+            child.native_view_frame_start();
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut children: Vec<&dyn Widget> = Vec::new();
+        if !self.maximized {
+            children.push(&self.bar);
+        }
+        if let Some(host) = self.active_host() {
+            children.push(host);
+        }
+        children
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let active = self.bar.active_id();
+        let mut children: Vec<&mut dyn Widget> = Vec::new();
+        if !self.maximized {
+            children.push(&mut self.bar);
+        }
+        if let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
+            children.push(host);
+        }
+        children
+    }
+
+    // Read-only resource discovery follows retained owners, including inactive tabs.
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for (_, host) in &self.hosts {
+            visitor(host);
+        }
+    }
+
+    #[allow(private_interfaces, reason = "toolkit-only checked custody traversal")]
+    fn visit_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::ComponentRequest<'_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        for child in self.hosts.iter_mut().map(|(_, host)| host) {
+            child.visit_components(request)?;
+        }
+        Ok(())
+    }
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        for child in self.hosts.iter_mut().map(|(_, host)| host) {
+            self.close_reports.extend(child.close_components());
+        }
+        self.take_component_close_reports()
+    }
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.close_reports);
+        for child in self.hosts.iter_mut().map(|(_, host)| host) {
+            reports.extend(child.take_component_close_reports());
+        }
+        reports
+    }
+    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+        self.hosts
+            .iter_mut()
+            .map(|(_, host)| host)
+            .flat_map(Widget::take_collab_requests)
+            .collect()
+    }
+    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
+        for child in self.hosts.iter_mut().map(|(_, host)| host) {
+            child.handle_collab_event(event);
+        }
+    }
+
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
         if let Some(h) = self.active_host_mut() {
             h.sync(s, p);
@@ -1800,8 +1970,7 @@ impl Widget for WindowGroup {
         bar || hosts || style || active_switched
     }
     fn needs_animation_frame(&self) -> bool {
-        // `WindowGroup::children()` uses the default (empty) impl, so
-        // ancestors wouldn't otherwise see the bar's drag/spawn signals.
+        // Include group and inactive closing-host animations beyond the active presentation.
         let spawn_in_flight = self
             .spawned_at
             .is_some_and(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS));

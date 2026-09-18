@@ -22,3 +22,11 @@ mod topology;
 pub use model::*;
 pub use shared_surfaces::SharedSurfaces;
 pub use topology::TabMove;
+
+pub mod backdrop;
+pub mod chrome;
+pub mod composition;
+pub mod intents;
+pub mod records;
+pub mod resolver;
+pub mod topbar;

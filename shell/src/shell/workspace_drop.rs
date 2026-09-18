@@ -17,11 +17,7 @@ use std::path::Path;
 use crate::shell::state::{
     AppKind, GroupId, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
 };
-use crate::shell::tile::{
-    Strip as RuntimeStrip, Tab as RuntimeTab, TileContent as RuntimeTile,
-    WindowGroup as RuntimeGroup, WorkspaceTree as RuntimeTree,
-};
-use ui::widget::AppKind as UiAppKind;
+use qos_desktop::WorkspaceTree as RuntimeTree;
 
 /// `is_folder` collapses the concept's `'folder' | 'file'` drag data
 /// to a bool, since the shell only branches on that one bit.
@@ -166,18 +162,6 @@ pub fn apply_workspace_drop_at_from_path(
     apply_workspace_drop_at(tree, item, strip_id, group_id)
 }
 
-/// Folds `"Editor"` (and every other `Other` kind) onto
-/// `UiAppKind::Settings` as a temporary parking spot until an `Editor`
-/// variant lands on the UI enum.
-fn state_kind_to_ui(kind: &AppKind) -> UiAppKind {
-    match kind {
-        AppKind::Terminal => UiAppKind::Terminal,
-        AppKind::FileExplorer => UiAppKind::Files,
-        AppKind::Browser => UiAppKind::Browser,
-        AppKind::Settings | AppKind::Other(_) => UiAppKind::Settings,
-    }
-}
-
 /// Appends a Stub tile, not a live `Box<dyn AppWidget>` — materialising
 /// one synchronously could spawn subprocesses; content hydrates on focus.
 #[allow(
@@ -188,14 +172,11 @@ fn state_kind_to_ui(kind: &AppKind) -> UiAppKind {
 pub fn apply_runtime_workspace_drop(tree: &mut RuntimeTree, item: DraggedItem) -> Option<u64> {
     let kind = decide_app_for_drop(&item);
     let label = tab_label_for(&item, &kind);
-    let ui_kind = state_kind_to_ui(&kind);
-    let tab = RuntimeTab::new(
-        &label,
-        RuntimeTile::Stub {
-            kind: ui_kind,
-            label: label.clone(),
-        },
-    );
+    let tab = crate::shell::state::Tab {
+        id: crate::shell::state::next_id(),
+        title: label.clone(),
+        tile: crate::shell::state::TileContent::Stub { kind, label },
+    };
     let tab_id = tab.id;
 
     let ws = tree.workspaces.iter_mut().find(|w| w.id == tree.active)?;
@@ -204,7 +185,13 @@ pub fn apply_runtime_workspace_drop(tree: &mut RuntimeTree, item: DraggedItem) -
         group.tabs.push(tab);
         group.active_tab = tab_id;
     } else {
-        let group = RuntimeGroup::with_tabs(vec![tab], WindowWidth::Normal);
+        let group = crate::shell::state::WindowGroup {
+            id: crate::shell::state::next_id(),
+            tabs: vec![tab],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        };
         strip.window_groups.push(group);
         let Some(group) = strip.window_groups.last_mut() else {
             // Unreachable — the line above just pushed one — but a
@@ -226,11 +213,6 @@ pub fn apply_workspace_drop_from_path(tree: &mut WorkspaceTree, path: &Path) -> 
     let item = DraggedItem::from_path(path)?;
     apply_workspace_drop(tree, item)
 }
-
-/// Silence the unused-import warning when `RuntimeStrip` is only used
-/// in doctests / docs (above). Keeps the symbol available so future
-/// reworks of the module don't have to re-add the import.
-fn _use_runtime_strip(_s: &RuntimeStrip) {}
 
 /// Pick a tab label for a dropped item: folders get "Files — <name>",
 /// code files keep their filename, others get "Files — <name>" too.
@@ -357,10 +339,21 @@ mod tests {
     }
 
     fn runtime_tree_with_empty_workspace() -> RuntimeTree {
-        let group = RuntimeGroup::with_tabs(vec![], WindowWidth::Normal);
-        let strip = RuntimeStrip::new("Main", vec![group]);
-        let ws = crate::shell::tile::Workspace::new("Home", vec![strip]);
-        RuntimeTree::new(vec![ws])
+        let mut workspace = qos_desktop::Workspace::new(qos_desktop::WorkspaceId::new(), "Home");
+        let mut strip = qos_desktop::Strip::new(qos_desktop::StripId::new(), "Main");
+        strip.window_groups.push(qos_desktop::WindowGroup {
+            id: 1,
+            tabs: vec![],
+            active_tab: 0,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        workspace.strips = vec![strip];
+        RuntimeTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -377,13 +370,12 @@ mod tests {
         assert_eq!(group.tabs.len(), 1);
         assert_eq!(group.tabs[0].id, tab_id);
         assert_eq!(group.tabs[0].title, "main.ts");
-        // Editor-routed drops map onto UiAppKind::Settings today (see
-        // `state_kind_to_ui`'s doc-comment for the rationale).
+        // Runtime sidecars use the same canonical application identity.
         match &group.tabs[0].tile {
-            RuntimeTile::Stub { kind, .. } => {
-                assert_eq!(*kind, UiAppKind::Settings);
+            crate::shell::state::TileContent::Stub { kind, .. } => {
+                assert_eq!(*kind, AppKind::Other("Editor".into()));
             }
-            RuntimeTile::App(_) => panic!("expected Stub tile"),
+            _ => panic!("expected Stub tile"),
         }
     }
 
@@ -406,9 +398,8 @@ mod tests {
 
     #[test]
     fn runtime_drop_creates_group_when_strip_is_empty() {
-        let strip = RuntimeStrip::new("Main", vec![]);
-        let ws = crate::shell::tile::Workspace::new("Home", vec![strip]);
-        let mut tree = RuntimeTree::new(vec![ws]);
+        let mut tree = runtime_tree_with_empty_workspace();
+        tree.workspaces[0].strips[0].window_groups.clear();
         let tab_id =
             apply_runtime_workspace_drop(&mut tree, DraggedItem::folder("src")).expect("tab_id");
         let ws = tree

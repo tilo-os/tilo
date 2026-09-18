@@ -261,7 +261,7 @@ impl<'de> Deserialize<'de> for WindowWidth {
 /// What a tile holds. Persistence only carries `Stub` and a symbolic
 /// `AppPlaceholder` for native apps, whose concrete widgets are
 /// constructed at shell boot.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TileContent {
     AppPlaceholder {
         kind: AppKind,

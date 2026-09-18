@@ -4,9 +4,9 @@
 //! `pending_detach`, splices the tab + `TileHost` into a matching sibling.
 //! Within-group reorder still lives in `TabBar` / `WindowGroup`.
 
+use crate::clock::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use crate::clock::{Duration, Instant};
 use taffy::{Dimension, Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -133,6 +133,7 @@ pub struct CrossStripDetach {
               any call site clearer"
 )]
 pub struct GroupRow {
+    close_reports: Vec<crate::application::ComponentCloseReport>,
     pub groups: Vec<WindowGroup>,
     /// One resize handle per gap: `max(0, groups.len() - 1)`.
     handles: Vec<ResizeHandle>,
@@ -284,6 +285,7 @@ impl GroupRow {
     pub fn new(groups: Vec<WindowGroup>) -> Self {
         Self {
             groups,
+            close_reports: vec![],
             handles: Vec::new(),
             handle_node_ids: Vec::new(),
             rect: Rect::ZERO,
@@ -531,6 +533,9 @@ impl GroupRow {
 
     pub fn remove_group_by_id(&mut self, id: u64) -> bool {
         let before = self.groups.len();
+        if let Some(group) = self.groups.iter_mut().find(|g| g.id == id) {
+            self.close_reports.extend(group.close_components());
+        }
         self.groups.retain(|g| g.id != id);
         let removed = self.groups.len() != before;
         if removed {
@@ -1197,6 +1202,130 @@ impl GroupRow {
 }
 
 impl Widget for GroupRow {
+    // Modal capture and presentation polling follow visible content, never inactive tabs.
+    fn modal_capture(&self) -> Option<Rect> {
+        self.children().into_iter().find_map(Widget::modal_capture)
+    }
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.children()
+            .into_iter()
+            .filter_map(Widget::next_wake_deadline)
+            .min()
+    }
+
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
+            child.set_platform_conventions(conventions);
+        }
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
+            child.set_interaction_environment(environment);
+        }
+    }
+
+    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
+            child.mount_native_views(host);
+        }
+    }
+
+    fn unmount_native_views(&mut self) {
+        for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
+            child.unmount_native_views();
+        }
+    }
+
+    fn native_view_frame_start(&mut self) {
+        for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
+            child.native_view_frame_start();
+        }
+    }
+
+    // Presentation traversal exposes only visible groups; resources/lifecycle retain all owners.
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.hidden {
+            return vec![];
+        }
+        if let Some(index) = self
+            .fullscreen_idx()
+            .or_else(|| self.groups.iter().position(|g| g.maximized))
+        {
+            return vec![&self.groups[index]];
+        }
+        self.groups
+            .iter()
+            .map(|group| group as &dyn Widget)
+            .collect()
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.hidden {
+            return vec![];
+        }
+        if let Some(index) = self
+            .fullscreen_idx()
+            .or_else(|| self.groups.iter().position(|g| g.maximized))
+        {
+            return vec![&mut self.groups[index]];
+        }
+        self.groups
+            .iter_mut()
+            .map(|group| group as &mut dyn Widget)
+            .collect()
+    }
+
+    // Read-only resource discovery follows retained owners, including inactive tabs.
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for group in &self.groups {
+            visitor(group);
+        }
+    }
+
+    #[allow(private_interfaces, reason = "toolkit-only checked custody traversal")]
+    fn visit_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::ComponentRequest<'_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        for child in self.groups.iter_mut() {
+            child.visit_components(request)?;
+        }
+        Ok(())
+    }
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        for child in self.groups.iter_mut() {
+            self.close_reports.extend(child.close_components());
+        }
+        self.take_component_close_reports()
+    }
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.close_reports);
+        for child in self.groups.iter_mut() {
+            reports.extend(child.take_component_close_reports());
+        }
+        reports
+    }
+    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+        self.groups
+            .iter_mut()
+            .flat_map(Widget::take_collab_requests)
+            .collect()
+    }
+    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
+        for child in self.groups.iter_mut() {
+            child.handle_collab_event(event);
+        }
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         for g in &mut self.groups {
             g.sync(state, root);
@@ -1556,18 +1685,7 @@ impl Widget for GroupRow {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
 
-        let mut children = Vec::new();
-        for group in &self.groups {
-            let Some(host) = group.active_host() else {
-                continue;
-            };
-            collect_accessibility(host, &mut children);
-        }
-        Some(
-            AccessNode::new(Role::Group)
-                .with_name("Hosted applications")
-                .with_children(children),
-        )
+        Some(AccessNode::new(Role::Group).with_name("Hosted applications"))
     }
 
     fn get_rect(&self) -> Rect {
@@ -1666,10 +1784,8 @@ impl Widget for GroupRow {
             .find_map(|group| group.cursor_shape(point))
     }
 
-    /// Neither this nor [`WindowGroup`] exposes `children()` (groups lay
-    /// out outside taffy), so any rect a test needs has to be republished
-    /// here. Each affordance is keyed by group id, plus the bare name for
-    /// the leftmost, so a single-group scenario can stay unqualified.
+    /// Publish qualified affordances by group id, plus bare aliases for
+    /// the leftmost group, so single-group scenarios stay unqualified.
     fn test_rects(&self) -> Vec<(String, Rect)> {
         let mut out = Vec::new();
         for g in &self.groups {
@@ -1740,9 +1856,8 @@ impl Widget for GroupRow {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Must bubble up child groups explicitly: the default
-        // `children()` returns empty, so a TabBar drop-zone curve would
-        // otherwise never reach the shell's overlay host.
+        // The row owns drag animations outside its presentation children;
+        // propagate them alongside child animation requests.
         self.snap_in_flight()
             || self.shift_in_flight()
             || self.groups.iter().any(super::Widget::needs_animation_frame)
@@ -2129,7 +2244,8 @@ impl GroupRow {
         let prune_count = prune.len();
         prune.sort_unstable_by(|a, b| b.cmp(a));
         for i in prune {
-            self.groups.remove(i);
+            let mut group = self.groups.remove(i);
+            self.close_reports.extend(group.close_components());
         }
         debug_assert_eq!(
             self.node_ids.len(),
@@ -2425,22 +2541,6 @@ fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
     }
     for child in w.children() {
         collect_named_rects(child, out);
-    }
-}
-
-/// Hosted app widgets are deliberately not retained as `GroupRow::children`
-/// because resize handles are interleaved with groups in the taffy child list.
-/// Publish their real semantic subtrees explicitly, attaching each retained
-/// widget's laid-out bounds while preserving any more precise synthetic bounds.
-fn collect_accessibility(w: &dyn Widget, out: &mut Vec<crate::a11y::AccessNode>) {
-    if let Some(mut node) = w.accessibility() {
-        if node.bounds.is_none() {
-            node.bounds = Some(w.get_rect().into());
-        }
-        out.push(node);
-    }
-    for child in w.children() {
-        collect_accessibility(child, out);
     }
 }
 

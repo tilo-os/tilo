@@ -388,7 +388,7 @@ fn editor_app_is_bootstrapped_as_fifth_demo_tab() {
         .find(|t| t.title == "Editor")
         .expect("Editor tab");
     assert!(
-        matches!(editor_tab.tile, RuntimeTile::App(_)),
+        matches!(shell.runtime_tile(editor_tab.id), Some(RuntimeTile::App(_))),
         "expected Editor to be a live App, got {:?}",
         editor_tab.tile
     );
@@ -752,7 +752,8 @@ fn topbar_with_overview_btn_hit() -> (
         "precondition: overview starts closed"
     );
 
-    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    let mut bar = TopBarChrome::from_tree(&tree)
+        .with_chrome(shell::shell::topbar_chrome::native_source(chrome.clone()));
 
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -904,7 +905,8 @@ fn probe_overview_btn_hit(tree: &WorkspaceTree, w: f32, h: f32) -> vello::kurbo:
     use vello::kurbo::{Affine, Point};
 
     let probe_chrome = ChromeState::new(tree.clone());
-    let mut probe = TopBarChrome::from_tree(tree).with_chrome(probe_chrome);
+    let mut probe = TopBarChrome::from_tree(tree)
+        .with_chrome(shell::shell::topbar_chrome::native_source(probe_chrome));
     let theme = Theme::dark();
     let mut probe_taffy: TaffyTree<()> = TaffyTree::new();
     let mut probe_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();

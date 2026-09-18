@@ -761,10 +761,10 @@ pub struct ShellOverlayHost {
     shortcut_help_drawn_rect: Rect,
     shortcut_config: settings_store::hardware::ShortcutConfig,
     content: Box<dyn Widget>,
+    desktop_close_reports: Vec<ui::application::ComponentCloseReport>,
     /// Exact production root layers, supplied only by `build_workspace_root`. This is a
     /// capability, not an invalidation hint: section drawing invokes these same widgets in their
     /// established backdrop → topbar → workspace order.
-    workspace_scene_parts: Option<crate::shell::WorkspaceSceneParts>,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
     /// stay unreachable until a real identity has been provisioned and the
@@ -917,17 +917,9 @@ pub struct ShellOverlayHost {
     palette_was_visible: bool,
     /// Interruptible open/close driver for the command palette.
     palette_transition: ui::Transition,
-    /// Per-strip raw pointers to the [`GroupRow`] widgets inside
-    /// `content`, so the per-frame reconcilers reach them without
-    /// downcasting `&dyn Widget`. Empty until
-    /// [`Self::with_group_row_ptrs`] is called.
-    ///
-    /// SAFETY: each pointer is the heap address of a `GroupRow` owned by
-    /// the chrome's content tree. `Box<T>` -> `Box<dyn Widget>` unsizing
-    /// keeps the heap allocation at the same address, and the host owns
-    /// the content for the rest of the process lifetime, so the pointer
-    /// remains valid as long as `&mut self` does.
-    group_row_ptrs: HashMap<StripId, *mut GroupRow>,
+    /// Stable strip identities resolved through the owned shared desktop surface.
+    /// Empty for custom content roots that do not contain desktop rows.
+    group_row_ids: HashMap<StripId, StripId>,
     /// Workspace id the current `content` was built for.
     /// [`Self::resync_workspace_content`] rebuilds when this disagrees
     /// with `tree.active`. `None` means unbuilt/test stub: the
@@ -996,11 +988,6 @@ pub struct ShellOverlayHost {
     /// [`GroupRow`] widgets need the new strip contents. `u64::MAX` at
     /// construction so the first poll always rebuilds.
     last_chrome_revision: u64,
-    /// What each live tab was last built to show, keyed by tab id — the
-    /// revision counter says something moved, this says which tabs, so a
-    /// tab whose content changed without its id changing still gets
-    /// rebuilt.
-    tab_tiles: std::collections::HashMap<u64, String>,
     /// Session-local bindings from `(owner, surface)` to the peer-window tab
     /// whose runtime content was replaced by a `PeerView`. These never enter
     /// `ChromeState` or its replicated workspace document.
@@ -1653,27 +1640,6 @@ pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 /// by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
 pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
 
-/// A cheap value that changes exactly when a tab's content changes: the
-/// serialised tile, since that's the whole of what
-/// [`crate::shell::to_ui_tile`] reads.
-fn tile_signature(tile: &crate::shell::state::TileContent) -> String {
-    serde_json::to_string(tile).unwrap_or_default()
-}
-
-/// Whether `tile`, about to replace a tab's contents, is a client window
-/// that hasn't drawn anything yet — only a foreign surface can answer
-/// yes, since everything else is on screen the moment it's built. Looser
-/// than the window group's own paint-time check, because the tab's rect
-/// only reaches the client once this swap has happened.
-fn window_is_still_starting(tile: &crate::shell::state::TileContent) -> bool {
-    match tile {
-        crate::shell::state::TileContent::Foreign { surface_id, .. } => {
-            crate::shell::foreign::store().frame_seq(*surface_id) == 0
-        }
-        _ => false,
-    }
-}
-
 /// `(strip_id, groups)` where each group is `(group_id, tab_ids)` — the
 /// per-strip snapshot [`ShellOverlayHost::groups_per_strip`] returns for
 /// tests.
@@ -1750,11 +1716,10 @@ impl ShellOverlayHost {
             presence,
         );
         self.draw_desktop_extras(&mut workspace, transform, text_renderer, theme, presence);
-        let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
+        let rows: Vec<_> = self.group_row_ids.values().copied().collect();
         for row in rows {
-            // SAFETY: identical sequential traversal to `Widget::draw` above.
-            unsafe {
-                (&mut *row).draw_floating_surfaces(
+            {
+                crate::shell::desktop_row_mut(self.content.as_mut(), row).draw_floating_surfaces(
                     &mut workspace,
                     transform,
                     text_renderer,
@@ -2068,7 +2033,7 @@ impl ShellOverlayHost {
             shortcut_config: inputs.shortcut_config,
             desktop_controls: inputs.desktop_controls,
             content,
-            workspace_scene_parts: None,
+            desktop_close_reports: vec![],
             onboarding: None,
             onboarding_released: false,
             onboarding_focus_reset: false,
@@ -2120,7 +2085,7 @@ impl ShellOverlayHost {
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
-            group_row_ptrs: HashMap::new(),
+            group_row_ids: HashMap::new(),
             content_built_for_ws: None,
             content_built_empty: None,
             workspace_content_layout_dirty: false,
@@ -2139,7 +2104,6 @@ impl ShellOverlayHost {
             peer_sync_overlay: PeerSyncOverlay::default(),
             notification_stack: None,
             last_chrome_revision: u64::MAX,
-            tab_tiles: std::collections::HashMap::new(),
             peer_stream_tabs: std::collections::HashMap::new(),
             // User intent is durable, while the root filters it against the
             // live hardware snapshot when it paints.  Tests that construct a
@@ -2491,23 +2455,22 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Vec<Rect> {
-        let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
+        let rows: Vec<_> = self.group_row_ids.values().copied().collect();
         let mut rects = Vec::new();
         for row in rows {
-            // SAFETY: the pointers reference boxed rows owned by `content`;
-            // this exclusive host borrow and sequential traversal prevent
-            // aliasing, matching the existing capture-target/read paths.
-            unsafe {
-                rects.extend((&mut *row).draw_capture_targets(
-                    target_ids,
-                    extent,
-                    complete_semantic_content,
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
-                ));
+            {
+                rects.extend(
+                    crate::shell::desktop_row_mut(self.content.as_mut(), row).draw_capture_targets(
+                        target_ids,
+                        extent,
+                        complete_semantic_content,
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        presence,
+                    ),
+                );
             }
         }
         rects
@@ -2766,12 +2729,10 @@ impl ShellOverlayHost {
     }
 
     pub fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.group_row_ptrs
+        self.group_row_ids
             .values()
             .flat_map(|ptr| {
-                // SAFETY: stable Box<GroupRow> contract; this is a shared
-                // read and cannot race a workspace reconciliation sweep.
-                let row: &GroupRow = unsafe { &**ptr };
+                let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), *ptr);
                 Widget::active_floating_surface_ids(row)
             })
             .collect()
@@ -2781,10 +2742,8 @@ impl ShellOverlayHost {
         &mut self,
         message: &ui::floating_surface::FloatingSurfaceHostMessage,
     ) {
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: same stable Box<GroupRow> contract as the request
-            // harvesters; the host owns exclusive access for dispatch.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             Widget::on_floating_surface_host_message(row, message);
         }
     }
@@ -3255,29 +3214,10 @@ impl ShellOverlayHost {
             .collect()
     }
 
-    /// Register the per-strip [`GroupRow`] raw pointers harvested at
-    /// build time, used each frame to feed the reconciler without
-    /// re-walking the widget tree.
-    ///
-    /// SAFETY: every pointer in `ptrs` must address a `GroupRow` owned by
-    /// the content subtree this host wraps. The caller (currently
-    /// [`build_nirios_overlay_host_with_chrome`]) is responsible for
-    /// upholding that invariant by capturing the pointer immediately after
-    /// `Box::new(strip_row)` and passing the same `Box` into the content
-    /// tree — the `Box<T>` -> `Box<dyn Widget>` unsizing coercion keeps
-    /// the heap address stable.
+    /// Register stable strip identities for the owned shared desktop rows.
     #[must_use]
-    pub fn with_group_row_ptrs(mut self, ptrs: HashMap<StripId, *mut GroupRow>) -> Self {
-        self.group_row_ptrs = ptrs;
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn with_workspace_scene_parts(
-        mut self,
-        parts: crate::shell::WorkspaceSceneParts,
-    ) -> Self {
-        self.workspace_scene_parts = Some(parts);
+    pub fn with_group_row_ids(mut self, ptrs: HashMap<StripId, StripId>) -> Self {
+        self.group_row_ids = ptrs;
         self
     }
 
@@ -3300,9 +3240,8 @@ impl ShellOverlayHost {
     }
 
     /// Swaps the workspace-scoped content when the active workspace changes
-    /// or grows a strip with no row. Content root and pointer map rebuild
-    /// TOGETHER via [`crate::shell::build_workspace_root`], so no
-    /// reconciler ever observes a pointer into a freed row. A new strip has
+    /// or changes its room/strip identity. The owned surface and stable strip
+    /// lookup rebuild together via [`crate::shell::build_workspace_root`]. A new strip has
     /// no incremental path — [`Self::resync_strips_from_tree`] splices by
     /// strip id and skips strips it has no row for — so a rebuild (costing
     /// scroll offsets, not focus, which lives in the tree) is the only
@@ -3342,14 +3281,14 @@ impl ShellOverlayHost {
             tree.clone()
         };
         let records = chrome.borrow().records().clone();
-        let (root, ptrs, scene_parts) =
-            crate::shell::build_workspace_root_with_scene_parts(&snapshot, &records, &chrome);
-        // Replace content and pointer map in one step: dropping the old
-        // root frees every old GroupRow, and the map must never outlive
-        // the rows it points into.
+        let (root, ptrs) = crate::shell::build_workspace_root(&snapshot, &records, &chrome);
+        // Settle outgoing components before replacing the owned surface and strip identities.
+        self.desktop_close_reports
+            .extend(self.content.close_components());
+        self.desktop_close_reports
+            .extend(self.content.take_component_close_reports());
         self.content = root;
-        self.workspace_scene_parts = Some(scene_parts);
-        self.group_row_ptrs = ptrs;
+        self.group_row_ids = ptrs;
         self.content_built_for_ws = Some(snapshot.active.raw());
         self.content_built_empty = snapshot.active_workspace().map(|workspace| {
             workspace
@@ -3370,11 +3309,14 @@ impl ShellOverlayHost {
         let Some(ws) = tree.active_workspace() else {
             return true;
         };
-        ws.strips.len() == self.group_row_ptrs.len()
-            && ws
-                .strips
-                .iter()
-                .all(|s| self.group_row_ptrs.contains_key(&s.id))
+        self.content
+            .as_any()
+            .and_then(|value| value.downcast_ref::<qos_desktop::composition::DesktopSurface>())
+            .is_some_and(|surface| {
+                surface.workspace_context() == Some((ws.id, ws.room))
+                    && surface.strip_ids()
+                        == ws.strips.iter().map(|strip| strip.id).collect::<Vec<_>>()
+            })
     }
 
     /// Test hook for the workspace-content reconcile — mirrors the
@@ -3389,12 +3331,8 @@ impl ShellOverlayHost {
     /// actually painted — what the compositor needs to size the client at.
     pub fn foreign_surface_rect(&mut self, surface_id: u64) -> Option<Rect> {
         let wanted = format!("foreign-surface-{surface_id}");
-        for &row_ptr in self.group_row_ptrs.values() {
-            // SAFETY: same contract as every other `group_row_ptrs`
-            // accessor — the pointer comes from a `Box<GroupRow>` owned by
-            // the content tree, the host outlives the content, and
-            // `&mut self` gives us unaliased access for this call.
-            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+        for &row_ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), row_ptr);
             for group in &mut row.groups {
                 let Some(host) = group.active_host_mut() else {
                     continue;
@@ -3432,10 +3370,9 @@ impl ShellOverlayHost {
     ) -> bool {
         let key = (source_peer, surface_id);
         if let Some(tab_id) = self.peer_stream_tabs.get(&key).copied() {
-            for &row_ptr in self.group_row_ptrs.values() {
-                // SAFETY: rows are boxed by this host and `&mut self` makes
-                // the traversal exclusive, as in `foreign_surface_rect`.
-                let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            for &row_ptr in self.group_row_ids.values() {
+                let row: &mut GroupRow =
+                    crate::shell::desktop_row_mut(self.content.as_mut(), row_ptr);
                 for group in &mut row.groups {
                     let Some(host) = group.host_for_tab_mut(tab_id) else {
                         continue;
@@ -3492,10 +3429,8 @@ impl ShellOverlayHost {
             hdr_static_metadata,
         );
         peer_view.set_input_sink(input_sink);
-        for &row_ptr in self.group_row_ptrs.values() {
-            // SAFETY: identical to `foreign_surface_rect`: rows are boxed by
-            // this host and `&mut self` makes this traversal exclusive.
-            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+        for &row_ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), row_ptr);
             for group in &mut row.groups {
                 if let Some(host) = group.host_for_tab_mut(tab_id) {
                     host.replace_content(ui::widget::TileContent::App(Box::new(peer_view)));
@@ -3523,9 +3458,8 @@ impl ShellOverlayHost {
         else {
             return false;
         };
-        for &row_ptr in self.group_row_ptrs.values() {
-            // SAFETY: same row ownership invariant as `mount_peer_stream`.
-            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+        for &row_ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), row_ptr);
             for group in &mut row.groups {
                 let Some(host) = group.host_for_tab_mut(tab_id) else {
                     continue;
@@ -3575,9 +3509,8 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
-        for &row_ptr in self.group_row_ptrs.values() {
-            // SAFETY: same row ownership invariant as `mount_peer_stream`.
-            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+        for &row_ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), row_ptr);
             for group in &mut row.groups {
                 if let Some(host) = group.host_for_tab_mut(tab_id) {
                     host.replace_content(crate::shell::to_ui_tile_with_inputs(
@@ -3598,12 +3531,8 @@ impl ShellOverlayHost {
     /// the outside; this method is how a caller waiting for the tree to go
     /// quiet tells them apart.
     pub fn any_tile_opening(&mut self) -> bool {
-        for &row_ptr in self.group_row_ptrs.values() {
-            // SAFETY: same contract as every other `group_row_ptrs`
-            // accessor — the pointer comes from a `Box<GroupRow>` owned by
-            // the content tree, the host outlives the content, and
-            // `&mut self` gives us unaliased access for this call.
-            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+        for &row_ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), row_ptr);
             if row
                 .groups
                 .iter()
@@ -3620,10 +3549,8 @@ impl ShellOverlayHost {
     /// Activity does not depend on a file's current path or display label.
     fn drain_app_host_intents(&mut self) {
         let mut intents = Vec::new();
-        for &row_ptr in self.group_row_ptrs.values() {
-            // SAFETY: `group_row_ptrs` points into `self.content`; `&mut self`
-            // makes this walk exclusive, matching the other row accessors.
-            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+        for &row_ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), row_ptr);
             for group in &mut row.groups {
                 let Some(host) = group.active_host_mut() else {
                     continue;
@@ -3663,194 +3590,34 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Diffs the live `WorkspaceTree` against every `GroupRow`'s children,
-    /// splicing via `insert_group`/`remove_group_by_id` to preserve
-    /// untouched rows' host state (scroll, tab selection). Without this
-    /// poll, rows would keep painting the boot-time snapshot as the
-    /// persisted tree grows. Cheap on the no-op path — one u64 compare
-    /// against `last_chrome_revision`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "The ordered tree-to-row reconciliation shares raw row pointers and retained tile state; splitting it would obscure its alias and ordering invariants."
-    )]
+    /// Apply the canonical shared reconciliation while native services retain their refusal/readiness policy.
     fn resync_strips_from_tree(&mut self) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
         chrome.borrow_mut().retry_new_tab_records();
-        let current_rev = chrome.borrow().revision;
-        if current_rev == self.last_chrome_revision {
+        let state = chrome.borrow();
+        if state.revision == self.last_chrome_revision {
             return false;
         }
-        let mut any_change = false;
-        // Moved out for the walk below: the rows are reached through raw
-        // pointers taken from `&mut self`, so a field borrowed across them
-        // would alias. Put back before returning.
-        let mut tab_tiles = std::mem::take(&mut self.tab_tiles);
-        let st = chrome.borrow();
-        let records = st.records().clone();
-        let tree = st.tree();
-        let creation_failures = st.record_creation_errors(&tree);
-        if let Some(ws) = tree.active_workspace() {
-            for strip in &ws.strips {
-                let Some(&row_ptr) = self.group_row_ptrs.get(&strip.id) else {
-                    continue;
-                };
-                // SAFETY: same contract as the other `group_row_ptrs`
-                // accessors — pointer captured from a `Box<GroupRow>`
-                // owned by the content tree; host outlives content;
-                // `&mut self` → unaliased mutable access.
-                let row: &mut GroupRow = unsafe { &mut *row_ptr };
-                let live_ids: std::collections::HashSet<u64> =
-                    row.group_ids().into_iter().collect();
-                let tree_ids: std::collections::HashSet<u64> =
-                    strip.window_groups.iter().map(|g| g.id).collect();
-                // Splice in new groups without rebuilding the vector, so
-                // existing rows keep their host state.
-                for (idx, g) in strip.window_groups.iter().enumerate() {
-                    if !live_ids.contains(&g.id) {
-                        let mut fresh = crate::shell::to_ui_window_group_with_inputs(
-                            g,
-                            &records,
-                            &chrome.borrow().hosted_inputs,
-                        );
-                        // Same spawn fade the row's own splice paths use,
-                        // so an opened window arrives the same way.
-                        crate::shell::tab_documents::apply_creation_failures(
-                            &mut fresh,
-                            &creation_failures,
-                        );
-                        fresh.start_spawn_animation();
-                        row.insert_group(fresh, idx);
-                        any_change = true;
-                    }
-                }
-                // Drop any groups the tree no longer carries.
-                for id in live_ids.difference(&tree_ids) {
-                    if row.remove_group_by_id(*id) {
-                        any_change = true;
-                    }
-                }
-                // A row can already contain every group while its order no
-                // longer matches the document (for example, an Automerge
-                // revision from another device reorders two existing
-                // windows). Splicing alone misses that case and leaves the
-                // screen disagreeing with the durable layout until restart.
-                for (idx, group) in strip.window_groups.iter().enumerate() {
-                    if row.reorder_group_by_id(group.id, idx) {
-                        any_change = true;
-                    }
-                }
-                // Reconcile tabs inside groups that already exist — the
-                // group-level splice above only fires for whole new
-                // groups, so a tab adopted into an existing one (an
-                // external toplevel) needs its own path here.
-                for g in &strip.window_groups {
-                    let Some(live) = row.groups.iter_mut().find(|lg| lg.id == g.id) else {
-                        continue;
-                    };
-                    let live_tab_ids: std::collections::HashSet<u64> =
-                        live.tabs().iter().map(|t| t.id).collect();
-                    let tree_tab_ids: std::collections::HashSet<u64> =
-                        g.tabs.iter().map(|t| t.id).collect();
-                    for (idx, tab) in g.tabs.iter().enumerate() {
-                        let signature = tile_signature(&tab.tile);
-                        if live_tab_ids.contains(&tab.id) {
-                            // A placeholder becoming the real window: held
-                            // off by `window_is_still_starting` until the
-                            // surface has drawn, so a swap doesn't replace
-                            // an "opening" card with a blank frame — the
-                            // signature is left unrecorded so it retries.
-                            let resource_replaced = !creation_failures.contains_key(&tab.id)
-                                && live
-                                    .host_for_tab_mut(tab.id)
-                                    .is_some_and(|host| host.record_creation_refused());
-                            if (tab_tiles.get(&tab.id) != Some(&signature) || resource_replaced)
-                                && !window_is_still_starting(&tab.tile)
-                                && let Some(host) = live.host_for_tab_mut(tab.id)
-                            {
-                                host.replace_content(crate::shell::to_ui_tile_for_tab_with_inputs(
-                                    &tab.tile,
-                                    tab.id,
-                                    &chrome.borrow().hosted_inputs,
-                                ));
-                                host.bind_record(
-                                    records.clone(),
-                                    crate::shell::tab_documents::scratch_tab_record(tab.id),
-                                );
-                                tab_tiles.insert(tab.id, signature);
-                                any_change = true;
-                            }
-                            if let Some(host) = live.host_for_tab_mut(tab.id) {
-                                if let Some(reason) = creation_failures.get(&tab.id) {
-                                    host.refuse_record_binding(reason.clone());
-                                } else {
-                                    // Owner replacement invalidates an old pending binding too.
-                                    // This is always Existing-only, never a creation retry.
-                                    host.bind_record(
-                                        records.clone(),
-                                        crate::shell::tab_documents::scratch_tab_record(tab.id),
-                                    );
-                                }
-                            }
-                            continue;
-                        }
-                        let desc = ui::widget::TabDescriptor {
-                            id: tab.id,
-                            title: tab.title.clone(),
-                            app_kind: Some(crate::shell::tile_app_kind(&tab.tile)),
-                        };
-                        // Gets its own document too, same as any tab
-                        // present at boot.
-                        let mut host = ui::widget::TileHost::new(
-                            crate::shell::to_ui_tile_for_tab_with_inputs(
-                                &tab.tile,
-                                tab.id,
-                                &chrome.borrow().hosted_inputs,
-                            ),
-                        );
-                        host.bind_record(
-                            records.clone(),
-                            crate::shell::tab_documents::scratch_tab_record(tab.id),
-                        );
-                        if let Some(reason) = creation_failures.get(&tab.id) {
-                            host.refuse_record_binding(reason.clone());
-                        }
-                        live.insert_detached_tab(idx.min(live.tab_count()), desc, host);
-                        tab_tiles.insert(tab.id, signature);
-                        any_change = true;
-                    }
-                    for stale in live_tab_ids.difference(&tree_tab_ids) {
-                        if live.detach_tab(*stale).is_some() {
-                            tab_tiles.remove(stale);
-                            any_change = true;
-                        }
-                    }
-                    // As with groups, a replicated tab reorder changes no
-                    // membership and therefore needs an explicit ordering
-                    // pass. `WindowGroup::reorder_tab` moves its matching
-                    // host at the same time, preserving the pill/content
-                    // identity invariant.
-                    for (idx, tab) in g.tabs.iter().enumerate() {
-                        let Some(from) = live
-                            .tabs()
-                            .iter()
-                            .position(|live_tab| live_tab.id == tab.id)
-                        else {
-                            continue;
-                        };
-                        if live.reorder_tab(from, idx) {
-                            any_change = true;
-                        }
-                    }
-                }
-            }
-        }
-        drop(tree);
-        drop(st);
-        self.tab_tiles = tab_tiles;
-        self.last_chrome_revision = current_rev;
-        any_change
+        let tree = state.tree();
+        let failures = state.record_creation_errors(&tree);
+        let changed = self
+            .content
+            .as_any_mut()
+            .and_then(|v| v.downcast_mut::<qos_desktop::composition::DesktopSurface>())
+            .is_some_and(|surface| {
+                surface.reconcile(
+                    &tree.desktop,
+                    state.records(),
+                    &mut crate::shell::NativeTileResolver {
+                        inputs: &state.hosted_inputs,
+                        failures: &failures,
+                    },
+                ) == qos_desktop::composition::ReconcileOutcome::Updated
+            });
+        self.last_chrome_revision = state.revision;
+        changed
     }
 
     /// Pushes the compositor's transient fullscreen state onto every
@@ -3859,7 +3626,7 @@ impl ShellOverlayHost {
     /// [`Widget::build_layout`], and `FrameBuilder::relayout` *before* the
     /// structure-dirty check, so a promotion/restore triggers the rebuild.
     pub fn sync_fullscreen_from_chrome(&mut self) {
-        if self.group_row_ptrs.is_empty() {
+        if self.group_row_ids.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
@@ -3875,18 +3642,14 @@ impl ShellOverlayHost {
         // so a fullscreen id we don't host must count as "no fullscreen"
         // — otherwise every strip hides around a group that isn't here.
         let owned = fs_group.is_some_and(|gid| {
-            self.group_row_ptrs
-                .values()
-                // SAFETY: see the per-row note below — same `group_row_ptrs`
-                // contract; here we only read `group_ids()`.
-                .any(|&p| unsafe { (*p).group_ids().contains(&gid) })
+            self.group_row_ids.values().any(|&p| {
+                crate::shell::desktop_row(self.content.as_ref(), p)
+                    .group_ids()
+                    .contains(&gid)
+            })
         });
-        for &row_ptr in self.group_row_ptrs.values() {
-            // SAFETY: same contract as every other `group_row_ptrs` accessor —
-            // the pointer comes from a `Box<GroupRow>` owned by the content
-            // tree, the host outlives the content, and `&mut self` gives us
-            // unaliased access for the duration of this call.
-            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+        for &row_ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), row_ptr);
             match fs_group {
                 Some(gid) if owned && row.group_ids().contains(&gid) => {
                     row.set_fullscreen(Some(gid), false);
@@ -3898,7 +3661,7 @@ impl ShellOverlayHost {
     }
 
     fn reconcile_active_group_off_closing(&self) {
-        if self.group_row_ptrs.is_empty() {
+        if self.group_row_ids.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
@@ -3908,13 +3671,9 @@ impl ShellOverlayHost {
         // mutable reconcile borrow below — avoids RefCell aliasing if any
         // reconciler step ever calls into a chrome-borrowing helper.
         let mut closing_per_strip: Vec<(StripId, Vec<GroupId>)> =
-            Vec::with_capacity(self.group_row_ptrs.len());
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: pointer was captured from a `Box<GroupRow>` we own
-            // through the content tree (see `with_group_row_ptrs`). The
-            // host outlives the content, and this is a read-only deref,
-            // so the pointer is valid regardless of aliasing.
-            let row: &GroupRow = unsafe { &*ptr };
+            Vec::with_capacity(self.group_row_ids.len());
+        for (&strip_id, &ptr) in &self.group_row_ids {
+            let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
             let closing: Vec<GroupId> = row
                 .groups
                 .iter()
@@ -3940,8 +3699,8 @@ impl ShellOverlayHost {
     /// [`crate::shell::state::WorkspaceTree`] — without this the toggle
     /// lives only on the widget and resets on the next restart. Idempotent;
     /// the chrome borrow is only taken when a flip needs writing.
-    fn harvest_pending_maximize_changes(&self) {
-        if self.group_row_ptrs.is_empty() {
+    fn harvest_pending_maximize_changes(&mut self) {
+        if self.group_row_ids.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
@@ -3950,14 +3709,14 @@ impl ShellOverlayHost {
         // Snapshot first so the mutable widget borrow drops before the
         // chrome borrow.
         let mut changes: Vec<(StripId, GroupId, bool)> = Vec::new();
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: see field doc on `group_row_ptrs` — pointer was
-            // captured from a `Box<GroupRow>` owned through the content
-            // tree, the host outlives the content, and reconcile sweeps
-            // run sequentially so no other path is aliasing this row.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for (&strip_id, &ptr) in &self.group_row_ids {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             for g in &mut row.groups {
-                if let Some(new_value) = g.take_pending_maximize_change() {
+                if let Some(qos_desktop::intents::LocalViewIntent::Maximized {
+                    maximized: new_value,
+                    ..
+                }) = qos_desktop::intents::take_maximize(g)
+                {
                     changes.push((strip_id, g.id, new_value));
                 }
             }
@@ -3994,7 +3753,7 @@ impl ShellOverlayHost {
     /// it, a tab click flips visible content but leaves search-scope
     /// helpers pointing at the group's initial tab. Runs every frame; the
     /// O(groups × tabs) walk stays cheap enough to skip a dirty bit.
-    fn harvest_active_tab_writeback(&self) {
+    fn harvest_active_tab_writeback(&mut self) {
         // Widgets and chrome can't be borrowed at once, so collect the
         // tuples first and apply under one chrome borrow.
         struct Writeback {
@@ -4002,19 +3761,15 @@ impl ShellOverlayHost {
             group: GroupId,
             tab: crate::shell::state::TabId,
         }
-        if self.group_row_ptrs.is_empty() {
+        if self.group_row_ids.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
         let mut writes: Vec<Writeback> = Vec::new();
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: same contract as every other `group_row_ptrs`
-            // accessor — captured from a `Box<GroupRow>` owned through
-            // the content tree, host outlives the content; this is a
-            // read-only deref.
-            let row: &GroupRow = unsafe { &*ptr };
+        for (&strip_id, &ptr) in &self.group_row_ids {
+            let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
             for g in &row.groups {
                 writes.push(Writeback {
                     strip: strip_id,
@@ -4092,9 +3847,8 @@ impl ShellOverlayHost {
     /// on the widget. Returns the ids touched.
     pub fn set_group_widths(&mut self, permille: u16) -> Vec<u64> {
         let mut touched: Vec<u64> = Vec::new();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             for g in &mut row.groups {
                 g.set_width(ui::widget::WindowWidth::Fraction(permille));
                 touched.push(g.id);
@@ -4140,9 +3894,8 @@ impl ShellOverlayHost {
     /// Close `tab` (or the active tab, when `tab` is `None`) in the group
     /// with id `gid`. Shared by the chord and the tab context menu.
     pub fn close_tab_in_group(&mut self, gid: GroupId, tab: Option<u64>) -> bool {
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             for g in &mut row.groups {
                 if g.id != gid {
                     continue;
@@ -4197,22 +3950,25 @@ impl ShellOverlayHost {
     /// the input dispatch that produced the request, not on a later frame.
     #[allow(
         clippy::needless_pass_by_ref_mut,
-        reason = "Exclusive access prevents aliases while raw row pointers are materialized as mutable rendered rows."
+        reason = "Exclusive access is required to drain requests from the owned desktop rows."
     )]
     fn harvest_pending_tab_closes(&mut self) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
         let mut requests = Vec::new();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             for group in &mut row.groups {
                 requests.extend(
-                    group
-                        .take_pending_close_commits()
+                    qos_desktop::intents::take_closes(group)
                         .into_iter()
-                        .map(|tab| (group.id, tab)),
+                        .filter_map(|intent| match intent {
+                            qos_desktop::intents::SessionIntent::CloseTab { group, tab } => {
+                                Some((group, tab))
+                            }
+                            _ => None,
+                        }),
                 );
             }
         }
@@ -4221,19 +3977,22 @@ impl ShellOverlayHost {
         })
     }
 
-    fn harvest_pending_width_changes(&self) {
-        if self.group_row_ptrs.is_empty() {
+    fn harvest_pending_width_changes(&mut self) {
+        if self.group_row_ids.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
         let mut changes: Vec<(StripId, GroupId, u16)> = Vec::new();
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for (&strip_id, &ptr) in &self.group_row_ids {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             for g in &mut row.groups {
-                if let Some(new_value) = g.take_pending_width_change() {
+                if let Some(qos_desktop::intents::LocalViewIntent::Width {
+                    width: crate::shell::state::WindowWidth::Fraction(new_value),
+                    ..
+                }) = qos_desktop::intents::take_width(g)
+                {
                     changes.push((strip_id, g.id, new_value));
                 }
             }
@@ -4260,18 +4019,22 @@ impl ShellOverlayHost {
     /// mirrors into the automerge doc for peer-sync) — without this a
     /// group-drag resets to the persisted order on restart. Mirrors
     /// [`Self::harvest_pending_width_changes`] in shape.
-    fn harvest_pending_group_reorder(&self) {
-        if self.group_row_ptrs.is_empty() {
+    fn harvest_pending_group_reorder(&mut self) {
+        if self.group_row_ids.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
         let mut changes: Vec<(StripId, u64, usize)> = Vec::new();
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            if let Some((group_id, new_index)) = row.take_pending_group_reorder() {
+        for (&strip_id, &ptr) in &self.group_row_ids {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
+            if let Some(qos_desktop::intents::SessionIntent::ReorderGroup {
+                group: group_id,
+                to: new_index,
+                ..
+            }) = qos_desktop::intents::take_group_reorder(strip_id, row)
+            {
                 changes.push((strip_id, group_id, new_index));
             }
         }
@@ -4287,19 +4050,20 @@ impl ShellOverlayHost {
 
     /// Same as [`Self::harvest_pending_group_reorder`], for an
     /// *intra-group* tab reorder via [`WorkspaceTree::reorder_tab_within_group`].
-    fn harvest_pending_tab_reorder(&self) {
-        if self.group_row_ptrs.is_empty() {
+    fn harvest_pending_tab_reorder(&mut self) {
+        if self.group_row_ids.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
         let mut changes: Vec<(GroupId, usize, usize)> = Vec::new();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             for g in &mut row.groups {
-                if let Some((from, to)) = g.take_pending_tab_reorder() {
+                if let Some(qos_desktop::intents::SessionIntent::ReorderTab { from, to, .. }) =
+                    qos_desktop::intents::take_tab_reorder(g)
+                {
                     changes.push((g.id, from, to));
                 }
             }
@@ -4319,13 +4083,12 @@ impl ShellOverlayHost {
     /// same entry point Ctrl+K uses. The palette lives on the host, not
     /// the group.
     fn harvest_pending_search_open(&mut self) {
-        if self.group_row_ptrs.is_empty() {
+        if self.group_row_ids.is_empty() {
             return;
         }
         let mut requested = false;
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             for g in &mut row.groups {
                 if g.take_pending_search_open().is_some() {
                     requested = true;
@@ -4346,15 +4109,16 @@ impl ShellOverlayHost {
     /// assumed tab type. [`OpenTarget::Here`] pins the result to this
     /// group even when the placement rule would open beside it.
     fn harvest_pending_new_tab(&mut self) -> bool {
-        if self.group_row_ptrs.is_empty() {
+        if self.group_row_ids.is_empty() {
             return false;
         }
         let mut requested: Option<u64> = None;
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             for g in &mut row.groups {
-                if let Some(id) = g.take_pending_new_tab() {
+                if let Some(qos_desktop::intents::SessionIntent::OpenTab { group: id, .. }) =
+                    qos_desktop::intents::take_open(ptr, g)
+                {
                     requested = Some(id);
                 }
             }
@@ -4443,7 +4207,7 @@ impl ShellOverlayHost {
     /// `active_group` pointer so free wheel-scrolling isn't fought by a
     /// per-frame snap-back.
     fn scroll_active_group_into_view(&mut self) {
-        if self.group_row_ptrs.is_empty() {
+        if self.group_row_ids.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
@@ -4452,7 +4216,7 @@ impl ShellOverlayHost {
         let active: Vec<(StripId, GroupId)> = {
             let st = chrome.borrow();
             let tree = st.tree();
-            self.group_row_ptrs
+            self.group_row_ids
                 .keys()
                 .filter_map(|&sid| tree.active_group_for(sid).map(|gid| (sid, gid)))
                 .collect()
@@ -4462,9 +4226,8 @@ impl ShellOverlayHost {
             if !changed {
                 continue;
             }
-            if let Some(&ptr) = self.group_row_ptrs.get(&strip_id) {
-                // SAFETY: see field doc on `group_row_ptrs`.
-                let row: &mut GroupRow = unsafe { &mut *ptr };
+            if let Some(&ptr) = self.group_row_ids.get(&strip_id) {
+                let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
                 // A group focused the same frame it appeared has no rect yet
                 // (no layout pass); leave the memo and retry once it does.
                 if !row.group_is_laid_out(group_id) {
@@ -4481,8 +4244,8 @@ impl ShellOverlayHost {
     /// non-overlapping windows have no z-order to infer it from. Runs every
     /// frame as a pure function of the tree (not edge-triggered) so focus
     /// can't stay latched on a group a resync moved or removed.
-    fn mark_focused_group(&self) {
-        if self.group_row_ptrs.is_empty() {
+    fn mark_focused_group(&mut self) {
+        if self.group_row_ids.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
@@ -4491,11 +4254,10 @@ impl ShellOverlayHost {
         // Closing groups aren't focus candidates — lighting one mid-fade
         // would tell the user their keystrokes go somewhere gone.
         let closing: std::collections::HashSet<GroupId> = self
-            .group_row_ptrs
+            .group_row_ids
             .values()
             .flat_map(|&ptr| {
-                // SAFETY: see field doc on `group_row_ptrs`.
-                let row: &GroupRow = unsafe { &*ptr };
+                let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
                 row.groups
                     .iter()
                     .filter(|g| g.is_closing())
@@ -4524,18 +4286,16 @@ impl ShellOverlayHost {
         // A lone window needs no marker; it's a workspace-wide count so
         // three strips holding one window each still disambiguate.
         let disambiguating = self
-            .group_row_ptrs
+            .group_row_ids
             .values()
             .map(|&ptr| {
-                // SAFETY: see field doc on `group_row_ptrs`.
-                let row: &GroupRow = unsafe { &*ptr };
+                let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
                 row.groups.len()
             })
             .sum::<usize>()
             > 1;
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for (&strip_id, &ptr) in &self.group_row_ids {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             for g in &mut row.groups {
                 g.set_focused(disambiguating && focused == Some((strip_id, g.id)));
             }
@@ -4562,9 +4322,8 @@ impl ShellOverlayHost {
             })
         };
         let viewport = strip_id.and_then(|sid| {
-            let &ptr = self.group_row_ptrs.get(&sid)?;
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &GroupRow = unsafe { &*ptr };
+            let &ptr = self.group_row_ids.get(&sid)?;
+            let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
             let (visible_x0, visible_x1) = row.visible_canvas_span();
             Some(crate::shell::placement::StripViewport {
                 strip: sid,
@@ -4586,25 +4345,17 @@ impl ShellOverlayHost {
     /// source strip when none matches — returning to source avoids
     /// mutating the persisted tree outside the explicit strip-creation UI.
     ///
-    /// SAFETY: each pointer addresses a `GroupRow` owned by the content
-    /// tree, the host outlives the content, and each row is only ever
-    /// touched by one reconcile sweep at a time — the frame loop runs
-    /// them sequentially, never re-entrantly.
-    fn dispatch_cross_strip_detaches(&self) {
-        if self.group_row_ptrs.is_empty() {
+    fn dispatch_cross_strip_detaches(&mut self) {
+        if self.group_row_ids.is_empty() {
             return;
         }
         // Drain sources first: a later `accept_cross_strip_drop` borrows
         // the destination row mutably, conflicting with a held source
         // payload reference.
         let mut detaches: Vec<(StripId, CrossStripDetach)> = Vec::new();
-        let mut strip_rects: Vec<(StripId, Rect)> = Vec::with_capacity(self.group_row_ptrs.len());
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: see field doc on `group_row_ptrs` — pointer was
-            // captured from a `Box<GroupRow>` owned through the content
-            // tree, the host outlives the content, and reconcile sweeps
-            // run sequentially so no other path is aliasing.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        let mut strip_rects: Vec<(StripId, Rect)> = Vec::with_capacity(self.group_row_ids.len());
+        for (&strip_id, &ptr) in &self.group_row_ids {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             strip_rects.push((strip_id, row.get_rect()));
             if let Some(payload) = row.take_pending_cross_strip_detach() {
                 detaches.push((strip_id, payload));
@@ -4633,9 +4384,7 @@ impl ShellOverlayHost {
                     *sid != src_strip_id && release.y >= rect.y0 && release.y <= rect.y1
                 })
                 .map_or(src_strip_id, |(sid, _)| *sid);
-            // SAFETY: same contract as the drain above. We're mutating a
-            // single row at a time and never aliasing across rows.
-            let Some(&dest_ptr) = self.group_row_ptrs.get(&dest_strip_id) else {
+            let Some(&dest_ptr) = self.group_row_ids.get(&dest_strip_id) else {
                 continue;
             };
             // One globally unique id is shared by the rendered group, the
@@ -4644,7 +4393,8 @@ impl ShellOverlayHost {
             // identify the group the person had just moved.
             let new_group_id = crate::shell::state::next_id();
             let destination = {
-                let dest_row: &GroupRow = unsafe { &*dest_ptr };
+                let dest_row: &GroupRow =
+                    crate::shell::desktop_row(self.content.as_ref(), dest_ptr);
                 dest_row
                     .gap_index_for(release)
                     .unwrap_or(dest_row.groups.len())
@@ -4666,18 +4416,20 @@ impl ShellOverlayHost {
                     )
                 });
             if committed {
-                let Some(&target_ptr) = self.group_row_ptrs.get(&dest_strip_id) else {
+                let Some(&target_ptr) = self.group_row_ids.get(&dest_strip_id) else {
                     continue;
                 };
-                let target_row: &mut GroupRow = unsafe { &mut *target_ptr };
+                let target_row: &mut GroupRow =
+                    crate::shell::desktop_row_mut(self.content.as_mut(), target_ptr);
                 target_row.accept_cross_strip_drop(
                     new_group_id,
                     payload.desc,
                     payload.host,
                     release,
                 );
-            } else if let Some(&source_ptr) = self.group_row_ptrs.get(&src_strip_id) {
-                let source_row: &mut GroupRow = unsafe { &mut *source_ptr };
+            } else if let Some(&source_ptr) = self.group_row_ids.get(&src_strip_id) {
+                let source_row: &mut GroupRow =
+                    crate::shell::desktop_row_mut(self.content.as_mut(), source_ptr);
                 source_row.restore_cross_strip_detach(payload);
             }
         }
@@ -4959,17 +4711,13 @@ impl ShellOverlayHost {
     /// Test-only: mutable access to the [`UiWindowGroup`] at
     /// `(strip_id, group_idx)`.
     ///
-    /// SAFETY mirrors [`Self::with_group_row_ptrs`]: the pointer is valid
-    /// for the host's lifetime, and the `&mut self` borrow on this method
-    /// keeps any other reconcile path from aliasing.
     pub fn group_at_for_tests(
         &mut self,
         strip_id: StripId,
         group_idx: usize,
     ) -> Option<&mut UiWindowGroup> {
-        let &ptr = self.group_row_ptrs.get(&strip_id)?;
-        // SAFETY: see field doc on `group_row_ptrs`.
-        let row: &mut GroupRow = unsafe { &mut *ptr };
+        let &ptr = self.group_row_ids.get(&strip_id)?;
+        let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
         row.groups.get_mut(group_idx)
     }
 
@@ -5052,9 +4800,8 @@ impl ShellOverlayHost {
     }
 
     pub fn group_row_mut_for_tests(&mut self, strip_id: StripId) -> Option<&mut GroupRow> {
-        let &ptr = self.group_row_ptrs.get(&strip_id)?;
-        // SAFETY: see field doc on `group_row_ptrs`.
-        Some(unsafe { &mut *ptr })
+        let &ptr = self.group_row_ids.get(&strip_id)?;
+        Some(crate::shell::desktop_row_mut(self.content.as_mut(), ptr))
     }
 
     /// Selects `tab` inside `group` on the live widget tree (the
@@ -5062,11 +4809,10 @@ impl ShellOverlayHost {
     /// the persisted tree each frame). Used by the compositor's Alt+Shift
     /// wheel jump.
     pub fn focus_window_widget(&mut self, strip_id: StripId, group: GroupId, tab: u64) -> bool {
-        let Some(&ptr) = self.group_row_ptrs.get(&strip_id) else {
+        let Some(&ptr) = self.group_row_ids.get(&strip_id) else {
             return false;
         };
-        // SAFETY: see field doc on `group_row_ptrs`.
-        let row: &mut GroupRow = unsafe { &mut *ptr };
+        let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
         row.set_group_active_tab(group, tab)
     }
 
@@ -5214,9 +4960,8 @@ impl ShellOverlayHost {
             drop(st);
             result
         };
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             if let Some(group) = row.groups.iter_mut().find(|group| group.id == group_id) {
                 group.set_width(ui::widget::WindowWidth::Fraction(width));
                 break;
@@ -5522,12 +5267,10 @@ impl ShellOverlayHost {
     /// row is registered for the strip, `Rect::ZERO` if not yet laid out.
     /// Used by cross-strip drag tests to pick a release point in another
     /// strip's band without re-walking the taffy tree. Mirrors the
-    /// SAFETY contract on [`Self::groups_per_strip`].
     #[cfg(any(test, debug_assertions))]
     pub fn group_row_rect_for_tests(&self, strip_id: StripId) -> Option<Rect> {
-        let &ptr = self.group_row_ptrs.get(&strip_id)?;
-        // SAFETY: see field doc on `group_row_ptrs`.
-        let row: &GroupRow = unsafe { &*ptr };
+        let &ptr = self.group_row_ids.get(&strip_id)?;
+        let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
         Some(row.get_rect())
     }
 
@@ -5537,11 +5280,9 @@ impl ShellOverlayHost {
     /// position into a foreign toplevel's surface-local coordinates,
     /// since the group's active tile rect *is* the surface's rect.
     ///
-    /// SAFETY mirrors [`Self::groups_per_strip`].
     pub fn active_tile_rect(&self, group_id: u64) -> Option<Rect> {
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &GroupRow = unsafe { &*ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
             if let Some(group) = row.groups.iter().find(|g| g.id == group_id) {
                 return group.active_host().map(ui::Widget::get_rect);
             }
@@ -5549,15 +5290,10 @@ impl ShellOverlayHost {
         None
     }
 
-    /// SAFETY mirrors the rest of the `group_row_ptrs` accessors: pointers
-    /// were captured from a `Box<GroupRow>` we own through the content
-    /// tree, the host outlives the content, and `&self` here keeps the
-    /// reconcile sweeps from racing the read.
     pub fn groups_per_strip(&self) -> GroupsPerStrip {
-        let mut out = Vec::with_capacity(self.group_row_ptrs.len());
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &GroupRow = unsafe { &*ptr };
+        let mut out = Vec::with_capacity(self.group_row_ids.len());
+        for (&strip_id, &ptr) in &self.group_row_ids {
+            let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
             let snapshot: Vec<(u64, Vec<u64>)> = row
                 .groups
                 .iter()
@@ -5932,8 +5668,8 @@ impl ShellOverlayHost {
                   `strip_tree_ids` (built from them) is handed back; nothing to tighten \
                   without cloning the tree out for no real gain"
     )]
-    fn harvest_widget_only_groups_into_tree(&self) {
-        if self.group_row_ptrs.is_empty() {
+    fn harvest_widget_only_groups_into_tree(&mut self) {
+        if self.group_row_ids.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
@@ -5959,7 +5695,7 @@ impl ShellOverlayHost {
         let mut live_active: std::collections::HashMap<GroupId, u64> =
             std::collections::HashMap::new();
         // Snapshot each strip's known tab ids under one read borrow, then
-        // drop it — the unsafe row-pointer walk below doesn't touch the
+        // drop it — the owned row traversal below doesn't touch the
         // tree, so there's no reason to hold the lock across it.
         let strip_tree_ids: Vec<(StripId, std::collections::HashSet<u64>)> = {
             let st = chrome.borrow();
@@ -5973,12 +5709,10 @@ impl ShellOverlayHost {
                 .collect()
         };
         for (strip_id, tree_ids) in strip_tree_ids {
-            let Some(&ptr) = self.group_row_ptrs.get(&strip_id) else {
+            let Some(&ptr) = self.group_row_ids.get(&strip_id) else {
                 continue;
             };
-            // SAFETY: same contract as every other `group_row_ptrs`
-            // accessor.
-            let row: &GroupRow = unsafe { &*ptr };
+            let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
             for (idx, wg) in row.groups.iter().enumerate() {
                 live_active.insert(wg.id, wg.active_tab_id());
                 if !tree_ids.contains(&wg.id) {
@@ -6054,12 +5788,8 @@ impl ShellOverlayHost {
     /// pointer coordinate through the same post-layout geometry.
     fn group_hit_candidates(&self) -> Vec<(StripId, GroupId, Rect)> {
         let mut candidates: Vec<(StripId, GroupId, Rect)> = Vec::new();
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: same contract as every other `group_row_ptrs`
-            // accessor — captured from a `Box<GroupRow>` owned through
-            // the content tree, host outlives the content, and the `&self`
-            // borrow keeps any reconcile sweep from aliasing the read.
-            let row: &GroupRow = unsafe { &*ptr };
+        for (&strip_id, &ptr) in &self.group_row_ids {
+            let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
             for g in &row.groups {
                 candidates.push((strip_id, g.id, g.get_rect()));
             }
@@ -6073,10 +5803,8 @@ impl ShellOverlayHost {
     fn capture_targets(&self) -> Vec<ui::widget::CaptureTarget> {
         let viewport = self.get_rect();
         let mut targets = Vec::new();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: same stable Box<GroupRow> contract as
-            // `group_hit_candidates` above.
-            let row: &GroupRow = unsafe { &*ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
             for group in &row.groups {
                 let Some(_) = group.active_host() else {
                     continue;
@@ -6115,10 +5843,8 @@ impl ShellOverlayHost {
     /// apps retain their own live call/navigation state; this queue only
     /// transfers presentation ownership to the shell compositor.
     fn harvest_floating_surface_requests(&mut self) {
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: same stable `Box<GroupRow>` contract as
-            // `capture_targets`; update holds exclusive access to the host.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             if let Some(request) = Widget::take_floating_surface_request(row) {
                 let already_queued = self
                     .pending_floating_surfaces
@@ -6132,9 +5858,8 @@ impl ShellOverlayHost {
     }
 
     fn harvest_floating_surface_source_updates(&mut self) {
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: same stable Box<GroupRow> contract as request harvest.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             for update in Widget::take_floating_surface_source_updates(row) {
                 if let Some(existing) = self
                     .pending_floating_surface_updates
@@ -6154,10 +5879,8 @@ impl ShellOverlayHost {
     /// still pending and remains wholly shell/user owned.
     fn harvest_capture_studio_requests(&mut self) {
         let mut requested = None;
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: same stable Box<GroupRow> contract as the floating
-            // surface harvester immediately above.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for &ptr in self.group_row_ids.values() {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             requested = requested.or_else(|| Widget::take_capture_studio_request(row));
         }
         if let Some(mode) = requested {
@@ -6173,7 +5896,7 @@ impl ShellOverlayHost {
     }
 
     fn stamp_active_group_from_click(&mut self, p: Point) {
-        if self.group_row_ptrs.is_empty() {
+        if self.group_row_ids.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
@@ -6575,13 +6298,10 @@ impl ShellOverlayHost {
     /// anything.
     pub fn strip_scroll_offsets(&self) -> Vec<(u64, f64, f64)> {
         let mut out: Vec<(u64, f64, f64)> = self
-            .group_row_ptrs
+            .group_row_ids
             .iter()
             .map(|(sid, &ptr)| {
-                // SAFETY: same contract as every other `group_row_ptrs`
-                // accessor — the pointer is captured from a `Box<GroupRow>`
-                // owned through the content tree, and the host outlives it.
-                let row: &GroupRow = unsafe { &*ptr };
+                let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
                 (sid.0, row.scroll_x(), row.max_scroll_x())
             })
             .collect();
@@ -7307,7 +7027,7 @@ impl ShellOverlayHost {
             .active_group_for(strip_id)
             .and_then(|g| order.iter().position(|&id| id == g))
             .unwrap_or(0);
-        let Some(&ptr) = self.group_row_ptrs.get(&strip_id) else {
+        let Some(&ptr) = self.group_row_ids.get(&strip_id) else {
             return ui::chrome::shell::StripRail {
                 content,
                 count: order.len(),
@@ -7315,8 +7035,7 @@ impl ShellOverlayHost {
                 visible: Vec::new(),
             };
         };
-        // SAFETY: see field doc on `group_row_ptrs`.
-        let row: &GroupRow = unsafe { &*ptr };
+        let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
         let onscreen = row.onscreen_group_ids();
         let visible = order
             .iter()
@@ -8539,7 +8258,7 @@ impl ShellOverlayHost {
     /// `DroppedFile` carries no coordinate, so route by `last_cursor`
     /// through the same hit-test click-focus uses. A drop over empty
     /// space is a no-op, not dumped into an arbitrary window.
-    fn route_dropped_file_event(&self, event: &WindowEvent, handled: &mut bool) -> bool {
+    fn route_dropped_file_event(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
         let WindowEvent::DroppedFile(path) = event else {
             return false;
         };
@@ -11210,7 +10929,7 @@ impl ShellOverlayHost {
     /// request, so the menu is up — and in the accessibility tree — when
     /// that event returns; `update` runs it again as a fallback.
     fn harvest_pending_tab_context_menus(&mut self) {
-        if self.group_row_ptrs.is_empty() {
+        if self.group_row_ids.is_empty() {
             return;
         }
         // Every bar is drained (a request left behind would open a menu on
@@ -11219,9 +10938,8 @@ impl ShellOverlayHost {
         // at the pointer's current position is the one just made, and the
         // rest are dropped — deterministic, not HashMap order.
         let mut requests: Vec<(TabMenuTarget, usize, Point, String)> = Vec::new();
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
+        for (&strip_id, &ptr) in &self.group_row_ids {
+            let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
             for g in &mut row.groups {
                 if let Some((tab_id, point)) = g.take_tab_context_menu() {
                     let title = g
@@ -11294,9 +11012,8 @@ impl ShellOverlayHost {
             self.tab_menu.target = None;
             return;
         }
-        let alive = self.group_row_ptrs.get(&target.strip).is_some_and(|&ptr| {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &GroupRow = unsafe { &*ptr };
+        let alive = self.group_row_ids.get(&target.strip).is_some_and(|&ptr| {
+            let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
             row.groups
                 .iter()
                 .any(|g| g.id == target.group && g.tabs().iter().any(|t| t.id == target.tab))
@@ -11488,9 +11205,9 @@ impl ShellOverlayHost {
                 // (terminal scrollback, open document) instead of building a
                 // fresh host. If the host cannot be moved the resync builds
                 // one — correct, just colder.
-                if let Some(&ptr) = self.group_row_ptrs.get(&target.strip) {
-                    // SAFETY: see field doc on `group_row_ptrs`.
-                    let row: &mut GroupRow = unsafe { &mut *ptr };
+                if let Some(&ptr) = self.group_row_ids.get(&target.strip) {
+                    let row: &mut GroupRow =
+                        crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
                     let src = row.groups.iter().position(|g| g.id == target.group);
                     let detached = src
                         .and_then(|i| row.groups.get_mut(i))
@@ -11923,6 +11640,14 @@ fn shortcut_guide_chord(chord: &settings_store::hardware::KeyChord) -> String {
 }
 
 impl Widget for ShellOverlayHost {
+    fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.desktop_close_reports);
+        for child in self.children_mut() {
+            reports.extend(child.take_component_close_reports());
+        }
+        reports
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -12010,7 +11735,7 @@ impl Widget for ShellOverlayHost {
                         doc_root: path,
                     });
         }
-        // Workspace switch before anything walking `group_row_ptrs` (it
+        // Workspace switch before anything walking `group_row_ids` (it
         // replaces the whole row set), then splice the tree's structural
         // changes into the rows — both before the children's own `update`
         // so freshly-spliced groups join this frame's sync pass.
@@ -12173,12 +11898,10 @@ impl Widget for ShellOverlayHost {
             .as_ref()
             .is_some_and(|c| c.borrow().is_fullscreen());
         let spans = self.strip_output_spans();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: same contract as every other `group_row_ptrs`
-            // accessor — pointer captured from a `Box<GroupRow>` we own
-            // through the content tree; host outlives content; `&mut self`
-            // → unaliased mutable access.
-            unsafe { (&mut *ptr).set_output_spans(&spans) };
+        for &ptr in self.group_row_ids.values() {
+            {
+                crate::shell::desktop_row_mut(self.content.as_mut(), ptr).set_output_spans(&spans)
+            };
         }
         let content_node = self.content.build_layout(taffy, theme, node_map);
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
@@ -12354,13 +12077,9 @@ impl Widget for ShellOverlayHost {
         // `build_layout` had no viewport yet. A no-op once the
         // compositor has pushed real output geometry.
         let settled_spans = self.strip_output_spans();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: same contract as the other group_row_ptrs
-            // accessors — pointer captured from a `Box<GroupRow>` we
-            // own through the content tree; host outlives content;
-            // &mut self → unaliased mutable access.
-            unsafe {
-                let row = &mut *ptr;
+        for &ptr in self.group_row_ids.values() {
+            {
+                let row = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
                 row.set_leading_inset(wheel_w);
                 row.set_output_spans(&settled_spans);
                 // App-owned call/navigation surfaces cross into this same
@@ -12384,7 +12103,7 @@ impl Widget for ShellOverlayHost {
         if let (Some(sidebar), Some(sidebar_child)) = (self.sidebar.as_mut(), children.get(2)) {
             // The wheel disc lives in the overlay layer, not as a sibling
             // of GroupRow, so it pans in lock-step by shifting its origin
-            // with the active strip's `scroll_x`. `group_row_ptrs` is a
+            // with the active strip's `scroll_x`. `group_row_ids` is a
             // HashMap, so take the topmost strip in tree order rather
             // than whatever "first" iterates to.
             let top_strip: Option<StripId> = self.chrome.as_ref().and_then(|c| {
@@ -12396,20 +12115,15 @@ impl Widget for ShellOverlayHost {
             let scroll_of = |id: Option<StripId>| -> Option<f64> {
                 let ptr = {
                     let id = id?;
-                    self.group_row_ptrs.get(&id)?
+                    self.group_row_ids.get(&id)?
                 };
-                // SAFETY: same contract as the other group_row_ptrs
-                // accessors — pointer captured from a `Box<GroupRow>`
-                // we own through the content tree, host outlives
-                // content, &mut self → unaliased read.
-                Some(unsafe { (&**ptr).scroll_x() })
+                Some(crate::shell::desktop_row(self.content.as_ref(), *ptr).scroll_x())
             };
             let active_scroll_x: f64 = scroll_of(top_strip)
                 .or_else(|| {
-                    self.group_row_ptrs
-                        .values()
-                        .next()
-                        .map(|&ptr| unsafe { (&*ptr).scroll_x() })
+                    self.group_row_ids.values().next().map(|&ptr| {
+                        crate::shell::desktop_row(self.content.as_ref(), ptr).scroll_x()
+                    })
                 })
                 .unwrap_or(0.0);
             // A summoned wheel places itself around the pointer in screen
@@ -12481,13 +12195,10 @@ impl Widget for ShellOverlayHost {
         // content and owns its controls; only presentation ownership changes.
         // Keeping this as a second pass avoids a texture/snapshot hand-off and
         // therefore preserves the exact frame across the detach boundary.
-        let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
+        let rows: Vec<_> = self.group_row_ids.values().copied().collect();
         for row in rows {
-            // SAFETY: `group_row_ptrs` points into the boxed content tree
-            // owned by this host. Drawing is sequential and `&mut self`
-            // prevents another traversal from aliasing these rows.
-            unsafe {
-                (&mut *row).draw_floating_surfaces(
+            {
+                crate::shell::desktop_row_mut(self.content.as_mut(), row).draw_floating_surfaces(
                     scene,
                     transform,
                     text_renderer,
@@ -13956,27 +13667,24 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Option<Rect> {
-        let Some(parts) = self.workspace_scene_parts else {
-            self.content
-                .draw(backdrop_scene, transform, text_renderer, theme, presence);
-            return None;
-        };
-        // SAFETY: `WorkspaceSceneParts` points into boxes owned by `content` and is replaced
-        // with that root on rebuild. Each part is drawn once in Container → Stack → Column order.
-        unsafe {
-            (&mut *parts.backdrop).draw(backdrop_scene, transform, text_renderer, theme, presence);
-            let topbar = &mut *parts.topbar;
-            let rect = topbar.get_rect();
-            topbar.draw(topbar_scene, transform, text_renderer, theme, presence);
-            (&mut *parts.workspace).draw(
+        if let Some(surface) = self
+            .content
+            .as_any_mut()
+            .and_then(|v| v.downcast_mut::<qos_desktop::composition::DesktopSurface>())
+        {
+            return surface.draw_sections(
+                backdrop_scene,
+                topbar_scene,
                 workspace_scene,
                 transform,
                 text_renderer,
                 theme,
                 presence,
             );
-            Some(Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + 28.0))
         }
+        self.content
+            .draw(backdrop_scene, transform, text_renderer, theme, presence);
+        None
     }
 
     /// The two legacy full-panel modals: the room overview panel and the
@@ -18378,7 +18086,7 @@ mod tab_context_menu_tests {
         assert_eq!(live[1], [active], "the resync built the new group around the tab");
         assert!(!live[0].contains(&active), "and took it out of the source");
         // The refusal path: a single-tab group is not split, and says why.
-        let mut single = harness(1);
+        let single = harness(1);
         let err = {
             let mut st = single.chrome.borrow_mut();
             crate::shell::window_actions::split_active_tab(

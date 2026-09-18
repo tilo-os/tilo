@@ -780,6 +780,7 @@ pub trait Widget {
     /// Lets a screenshot harness hold an animation at a chosen millisecond
     /// and render the real `draw` at that instant. Default `None`; a widget
     /// opts in with `Some(self)`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> { None }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
     }

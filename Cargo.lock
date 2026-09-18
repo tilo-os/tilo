@@ -11353,14 +11353,23 @@ dependencies = [
 name = "qos-desktop"
 version = "0.1.0"
 dependencies = [
+ "automerge",
+ "chat",
  "collab-types",
  "desktop-policy",
+ "notes",
  "parking_lot",
  "qos-actions",
  "serde",
  "serde_json",
+ "taffy",
+ "tracing",
  "ui",
  "uuid",
+ "vello",
+ "vello_encoding",
+ "winit",
+ "word-processor",
 ]
 
 [[package]]

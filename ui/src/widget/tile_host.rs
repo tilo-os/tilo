@@ -440,6 +440,18 @@ impl TileHost {
         }
     }
 
+    /// Bind a prepared component's wake lifetime before mounting it in a group.
+    /// Setup failure retains the component's record and recovery reports.
+    pub fn mount_component(
+        mut component: crate::application::AppComponent,
+        sink: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        if let Err(error) = component.mount(sink) {
+            return Err(component.setup_error(error));
+        }
+        Ok(Self::from_component(component))
+    }
+
     pub fn from_component(mut component: crate::application::AppComponent) -> Self {
         let registration = component.history.take();
         let mut tile = Self::new(TileContent::App(Box::new(crate::widget::app_widget::BoundAppWidget { component })));
