@@ -76,11 +76,24 @@ At 21:48 UTC, the coordinating task recorded the actual `e0c6484e6` check run
 does not upgrade those observations to green. Main can advance while they run;
 match each run's full commit SHA before reporting its result.
 
-The lean CI image and additional quality-job isolation are under development,
-not deployed by the revisions above. An image recipe on disk is not a published,
-qualified image. Last-green selection and broader scheduling/release qualification
-also remain separate work. Retain explicit manual hardware runs while pursuing
-these improvements.
+Infrastructure `a30e1c8` deploys a separate `runner-quality` lane, reserving one
+total on-prem capacity slot from heavy CI. Its private canary passed and the idle
+reserve replenished. Native compilation stays on its existing architecture lanes.
+
+The lean image `code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a`
+passed the complete lint workflow on that lane in [run 9253](https://code.sandbox.example/qos/qos/actions/runs/9253).
+Its compressed layers total 393 MB versus 1.694 GB for the source builder.
+The successful run took 3m49s end-to-end, including about 93s pull/unpack and
+76s dependency-usage analysis. An earlier pull measured 36s; network/worker
+variation remains material. Lint now uses this pinned image and reserved lane;
+the final check aggregate and receipt jobs also use the lane. Selection and
+native compilation still use the full builder.
+
+The first image pilot lost its runner heartbeat and was marked failed without
+a final step result. That failure is not attributed to the image or OOM without
+evidence. Private-builder prewarming, isolated disk-cache clones, last-green
+selection and broader scheduling/release qualification remain separate work.
+Retain explicit manual hardware runs while pursuing these improvements.
 
 The later product checkpoint `e279fbf35` is now live:
 
