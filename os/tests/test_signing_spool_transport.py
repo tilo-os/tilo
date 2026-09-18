@@ -43,12 +43,22 @@ class TransportTests(unittest.TestCase):
         self.events = []
         self.client = transfer.Transport('existing-context', self.binding, self.runner)
         self.mutate_after = None
+        self.nested = None
+        self.mutate_nested_after = None
 
     def runner(self, argv, sink, limit, source=None, **kwargs):
         if 'get' in argv:
             self.events.append('check')
             data = spool.canonical(self.pod)
+        elif 'inspect' in argv:
+            self.events.append('docker-check')
+            self.assertEqual(argv[-1], self.binding['docker']['id'])
+            self.assertNotIn('Config', argv[argv.index('--format') + 1])
+            data = spool.canonical(self.nested)
         else:
+            if self.nested:
+                index = argv.index('docker')
+                self.assertEqual(argv[index:index + 4], ['docker', 'exec', '-i', self.binding['docker']['id']])
             index = argv.index('/trusted/signing-spool-endpoint.py')
             operation = argv[index + 1]
             self.events.append(operation)
@@ -59,6 +69,8 @@ class TransportTests(unittest.TestCase):
             data = output.getvalue()
             if self.mutate_after == operation:
                 self.pod['status']['containerStatuses'][0]['restartCount'] += 1
+            if self.mutate_nested_after == operation:
+                self.nested['State']['StartedAt'] = 'replacement-start'
         if len(data) > limit:
             raise ValueError('fixture transfer exceeds byte admission')
         sink.write(data)
@@ -127,6 +139,45 @@ class TransportTests(unittest.TestCase):
         self.assertFalse((self.remote / 'output').exists())
         self.assertFalse((self.remote / 'response.json').exists())
 
+    def enable_nested(self):
+        self.binding['docker'] = {'id': 'c' * 64, 'image_id': 'sha256:' + 'd' * 64,
+                                  'started_at': '2026-09-18T00:00:00Z', 'restart_count': 0}
+        self.nested = {'Id': 'c' * 64, 'Image': 'sha256:' + 'd' * 64, 'RestartCount': 0,
+                       'State': {'StartedAt': '2026-09-18T00:00:00Z', 'Status': 'running',
+                                 'Running': True, 'Paused': False, 'Restarting': False, 'Dead': False}}
+        self.client = transfer.Transport('existing-context', self.binding, self.runner)
+
+    def test_nested_docker_transfer_checks_both_runtime_identities(self):
+        self.enable_nested()
+        self.client.fetch(self.nonce, self.root / 'received')
+        self.assertEqual(self.events, ['check', 'docker-check', 'request', 'check', 'docker-check',
+                                      'check', 'docker-check', 'input', 'check', 'docker-check'])
+
+    def test_nested_restart_after_input_quarantines_request(self):
+        self.enable_nested()
+        self.mutate_nested_after = 'input'
+        local = self.root / 'received'
+        with self.assertRaisesRegex(ValueError, 'nested Docker'):
+            self.client.fetch(self.nonce, local)
+        self.assertFalse((local / 'request.json').exists())
+
+    def test_nested_identity_and_state_substitution_rejected(self):
+        self.enable_nested()
+        original = copy.deepcopy(self.nested)
+        for field, value in (('Id', 'e' * 64), ('Image', 'sha256:' + 'e' * 64),
+                             ('RestartCount', 1), ('Paused', True), ('Running', False),
+                             ('Restarting', True), ('Dead', True), ('StartedAt', 'new')):
+            self.nested = copy.deepcopy(original)
+            (self.nested if field in original else self.nested['State'])[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'nested Docker'):
+                self.client.transfer('list')
+
+    def test_nested_container_names_and_short_ids_rejected(self):
+        self.enable_nested()
+        for identifier in ('worker-name', 'abc123', '--privileged'):
+            self.binding['docker']['id'] = identifier
+            with self.assertRaisesRegex(ValueError, 'nested Docker'):
+                transfer.Transport('existing-context', self.binding, self.runner)
+
 if __name__ == '__main__':
     unittest.main()
-
