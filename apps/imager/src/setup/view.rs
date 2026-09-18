@@ -27,6 +27,8 @@ use super::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
 use super::desktop_flow::{DesktopFailureKind, DesktopFlow, DesktopFlowState, DesktopSelection};
 use super::folders::{self, FolderScan, SkipReason, SkippedEntry};
 use super::import_view::ImportApp;
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+use super::internal_download_flow::InternalDownloadFlow;
 use super::known_folders::{self, KnownFolder, KnownFolderKind};
 use super::model::{Capabilities, Experience, FolderMode, HostOs};
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
@@ -62,6 +64,19 @@ enum SetupCommand {
     InstallDesktop,
     CancelDesktopDownload,
     RetryDesktop,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    StartInternalDownload,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    PauseInternalDownload,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    ResumeInternalDownload,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    CancelInternalDownload,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    DiscardInternalDownload,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    ReleaseInternalDownload,
+    InternalInstallUnavailable,
 }
 
 #[derive(Debug)]
@@ -108,6 +123,12 @@ pub struct SetupApp {
     import_app: Option<ImportApp>,
     desktop_flow: DesktopFlow,
     desktop_revision: u64,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    internal_download_flow: Option<InternalDownloadFlow>,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    internal_download_error: Option<String>,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    internal_download_revision: u64,
 }
 
 impl Default for SetupApp {
@@ -156,6 +177,19 @@ impl SetupApp {
     ) -> Self {
         let (worker_tx, worker_rx) = mpsc::channel();
         let desktop_flow = fixture_desktop_flow(capabilities.platform.desktop_session);
+        #[cfg(all(any(target_os = "linux", windows, unix), test))]
+        let (internal_download_flow, internal_download_error) = (
+            Some(InternalDownloadFlow::unavailable_fixture(
+                capabilities.platform,
+            )),
+            None,
+        );
+        #[cfg(all(any(target_os = "linux", windows), not(test)))]
+        let (internal_download_flow, internal_download_error) =
+            match InternalDownloadFlow::new(capabilities.platform) {
+                Ok(flow) => (Some(flow), None),
+                Err(error) => (None, Some(error)),
+            };
         Self {
             controller: Rc::new(RefCell::new(SetupController::new(capabilities.platform))),
             capabilities,
@@ -179,6 +213,12 @@ impl SetupApp {
             import_app: None,
             desktop_flow,
             desktop_revision: 0,
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            internal_download_flow,
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            internal_download_error,
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            internal_download_revision: 0,
         }
     }
 
@@ -380,8 +420,94 @@ impl SetupApp {
                     self.status_is_error = true;
                 }
             },
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            SetupCommand::StartInternalDownload => {
+                let on_full_os_review = {
+                    let controller = self.controller.borrow();
+                    controller.page() == SetupPage::Review
+                        && controller.plan().experience == Experience::FullOs
+                };
+                let result = if on_full_os_review {
+                    self.internal_download_flow
+                        .as_mut()
+                        .ok_or_else(|| "Full qOS download is unavailable.".to_string())
+                        .and_then(|flow| {
+                            let key = flow
+                                .offered_selection()
+                                .ok_or("No Full qOS download is currently offered.")?;
+                            flow.start_selected(key)
+                        })
+                } else {
+                    Err("Full qOS downloads can start only from the Full qOS review.".into())
+                };
+                self.apply_internal_command_result(result, "Downloading qOS…");
+            }
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            SetupCommand::PauseInternalDownload => {
+                let result = self
+                    .internal_download_flow
+                    .as_mut()
+                    .ok_or_else(|| "Full qOS download is unavailable.".to_string())
+                    .and_then(InternalDownloadFlow::pause);
+                self.apply_internal_command_result(result, "Pausing download…");
+            }
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            SetupCommand::ResumeInternalDownload => {
+                let result = self
+                    .internal_download_flow
+                    .as_mut()
+                    .ok_or_else(|| "No saved download is available.".to_string())
+                    .and_then(InternalDownloadFlow::resume);
+                self.apply_internal_command_result(result, "Downloading qOS…");
+            }
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            SetupCommand::CancelInternalDownload => {
+                let result = self
+                    .internal_download_flow
+                    .as_mut()
+                    .ok_or_else(|| "Full qOS download is unavailable.".to_string())
+                    .and_then(InternalDownloadFlow::cancel);
+                self.apply_internal_command_result(result, "Cancelling download…");
+            }
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            SetupCommand::DiscardInternalDownload => {
+                let result = self
+                    .internal_download_flow
+                    .as_mut()
+                    .ok_or_else(|| "No unfinished download data is available.".to_string())
+                    .and_then(InternalDownloadFlow::discard);
+                self.apply_internal_command_result(result, "Discarding unfinished download data…");
+            }
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            SetupCommand::ReleaseInternalDownload => {
+                let result = self
+                    .internal_download_flow
+                    .as_mut()
+                    .ok_or_else(|| "No verified download is held.".to_string())
+                    .and_then(InternalDownloadFlow::release);
+                self.apply_internal_command_result(result, "Keeping download for later…");
+            }
+            SetupCommand::InternalInstallUnavailable => {
+                self.status =
+                    "Installation has not started. Protected staging is not available yet.".into();
+                self.status_is_error = true;
+            }
         }
         self.structure_dirty = true;
+    }
+
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    fn apply_internal_command_result(&mut self, result: Result<(), String>, pending: &str) {
+        match result {
+            Ok(()) => {
+                self.status = pending.into();
+                self.status_is_error = false;
+            }
+            Err(error) => {
+                self.status = error;
+                self.status_is_error = true;
+            }
+        }
     }
 
     fn start_scan(&mut self, source: PathBuf) {
@@ -577,6 +703,22 @@ impl SetupApp {
             }
             self.structure_dirty = true;
             changed = true;
+        }
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        if let Some(flow) = &mut self.internal_download_flow {
+            changed |= flow.poll();
+            if self.internal_download_revision != flow.revision() {
+                self.internal_download_revision = flow.revision();
+                if self.controller.borrow().page() == SetupPage::Review {
+                    self.status.clone_from(&flow.presentation().title);
+                    self.status_is_error = matches!(
+                        flow.presentation().phase,
+                        Some(super::internal_cache::coordinator::Phase::Failed)
+                    );
+                }
+                self.structure_dirty = true;
+                changed = true;
+            }
         }
         changed
     }
@@ -1061,6 +1203,80 @@ impl SetupApp {
         )
     }
 
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    fn internal_download_card(&self) -> Card {
+        let mut content = stack();
+        if let Some(flow) = &self.internal_download_flow {
+            let presentation = flow.presentation();
+            let mut detail = format!("{}\n{}", presentation.title, presentation.details);
+            if presentation.phase.is_none()
+                && let Some(error) = flow.catalog_error()
+            {
+                detail.push('\n');
+                detail.push_str(error);
+            }
+            content = content.push(Box::new(
+                Text::new(&detail)
+                    .with_id("setup.internal.status")
+                    .with_live(Politeness::Polite),
+            ));
+            let mut actions = Row::new().no_wrap();
+            if flow.can_start() {
+                actions = actions.push(Box::new(self.button(
+                    "setup.internal.start",
+                    "Download qOS",
+                    SetupCommand::StartInternalDownload,
+                )));
+            }
+            if flow.can_pause() {
+                actions = actions.push(Box::new(self.button(
+                    "setup.internal.pause",
+                    "Pause download",
+                    SetupCommand::PauseInternalDownload,
+                )));
+            }
+            if flow.can_cancel() {
+                actions = actions.push(Box::new(self.button(
+                    "setup.internal.cancel",
+                    "Cancel download",
+                    SetupCommand::CancelInternalDownload,
+                )));
+            }
+            if flow.can_resume() {
+                actions = actions.push(Box::new(self.button(
+                    "setup.internal.resume",
+                    "Resume download",
+                    SetupCommand::ResumeInternalDownload,
+                )));
+            }
+            if flow.can_release() {
+                actions = actions.push(Box::new(self.button(
+                    "setup.internal.release",
+                    "Keep for later",
+                    SetupCommand::ReleaseInternalDownload,
+                )));
+            }
+            if flow.can_discard() {
+                actions = actions.push(Box::new(self.button(
+                    "setup.internal.discard",
+                    "Discard unfinished download data",
+                    SetupCommand::DiscardInternalDownload,
+                )));
+            }
+            content = content.push(Box::new(actions));
+        } else {
+            let detail = self.internal_download_error.as_deref().unwrap_or(
+                "Full qOS download is unavailable on this computer. Installation has not started.",
+            );
+            content = content.push(Box::new(
+                Text::new(&format!("Full qOS download\n{detail}"))
+                    .with_id("setup.internal.status")
+                    .with_live(Politeness::Assertive),
+            ));
+        }
+        Card::titled("Full qOS download", Box::new(content))
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one declarative review composition keeps its card order and accessibility labels visible"
@@ -1162,6 +1378,10 @@ impl SetupApp {
         if plan.experience == Experience::Desktop {
             body = body.push(Box::new(self.desktop_install_card()));
         }
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        if plan.experience == Experience::FullOs {
+            body = body.push(Box::new(self.internal_download_card()));
+        }
         body = body.push(Box::new(Card::titled(
                     "Operating systems",
                     Box::new(Text::new(&format!(
@@ -1238,9 +1458,9 @@ impl SetupApp {
             let experience = self.controller().plan().experience;
             let (id, label, command, enabled) = if experience == Experience::FullOs {
                 (
-                    "setup.install",
-                    "Install qOS",
-                    SetupCommand::InstallDesktop,
+                    "setup.internal.install-unavailable",
+                    "Installation has not started",
+                    SetupCommand::InternalInstallUnavailable,
                     false,
                 )
             } else {
@@ -1701,6 +1921,18 @@ impl Widget for SetupApp {
             || self.pending_scans > 0
             || self.picker_rx.is_some()
             || self.desktop_flow.has_pending_operation()
+            || {
+                #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+                {
+                    self.internal_download_flow
+                        .as_ref()
+                        .is_some_and(InternalDownloadFlow::has_pending_operation)
+                }
+                #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
+                {
+                    false
+                }
+            }
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1736,7 +1968,11 @@ mod tests {
 
     use super::*;
     use crate::setup::folders::{FolderScan, SkipReason, SkippedEntry};
+    use crate::setup::internal_bundle;
+    use crate::setup::internal_cache::coordinator::{Phase as InternalPhase, Worker};
+    use crate::setup::internal_download::tests::{Server, response};
     use crate::setup::model::{Capabilities, Experience, FolderMode, HostOs};
+    use std::time::{Duration, Instant};
 
     #[cfg(windows)]
     const TEST_SOURCE_ROOT: &str = r"C:\setup-source";
@@ -1850,6 +2086,146 @@ mod tests {
         assert_eq!(app.controller().plan().experience, Experience::FullOs);
         assert_eq!(app.controller().default_mode(), FolderMode::Copy);
         assert_eq!(app.controller().folders().len(), 1);
+    }
+
+    // Catches routing Full qOS through the Desktop installer or implying installation is ready.
+    #[test]
+    fn full_os_review_has_a_distinct_download_surface_and_no_install_action() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+        app.apply_command(SetupCommand::Next);
+        app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+        app.apply_command(SetupCommand::Next);
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (960, 720));
+
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.internal.status")
+                    .name_contains("Full qOS download"),
+            )
+            .unwrap();
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.internal.install-unavailable")
+                    .name_contains("Installation has not started")
+                    .enabled(false),
+            )
+            .unwrap();
+    }
+
+    // Catches a Full qOS button dispatching the Desktop installer instead of the internal worker.
+    #[test]
+    fn full_os_download_command_routes_to_the_real_internal_worker_only() {
+        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let server = Server::new(vec![
+            response(200, "", &bytes),
+            response(200, "", &vec![b'E'; 4096]),
+            response(200, "", &vec![b'R'; 8192]),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let preference = tempfile::tempdir().unwrap();
+        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+            Err("Protected staging is unavailable.".into())
+        });
+        let mut app = supported_fixture();
+        app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
+            app.capabilities.platform,
+            preference.path().join("selection.json"),
+            worker,
+            vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
+            "x86_64",
+        ));
+        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+        app.apply_command(SetupCommand::Next);
+        app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+        app.apply_command(SetupCommand::Next);
+
+        app.apply_command(SetupCommand::StartInternalDownload);
+        assert!(matches!(
+            app.desktop_flow.state(),
+            DesktopFlowState::Ready(_)
+        ));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_background();
+            if app
+                .internal_download_flow
+                .as_ref()
+                .is_some_and(|flow| flow.presentation().phase == Some(InternalPhase::Ready))
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "internal download timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(app.status, "Download ready");
+        assert!(!app.needs_idle_sync());
+        let mut ready = FrameHarness::new(
+            ui::State::new(),
+            Box::new(app.internal_download_card()),
+            (640, 320),
+        );
+        ready
+            .expect(
+                &SemanticExpectation::named("setup.internal.release")
+                    .name_contains("Keep for later")
+                    .enabled(true),
+            )
+            .unwrap();
+
+        app.apply_command(SetupCommand::ReleaseInternalDownload);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_background();
+            if app
+                .internal_download_flow
+                .as_ref()
+                .is_some_and(|flow| flow.presentation().phase == Some(InternalPhase::Released))
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "internal release timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(app.status, "Kept for later");
+    }
+
+    // Catches a forged or stale command starting a Full qOS download away from its review.
+    #[test]
+    fn full_os_download_command_is_refused_outside_full_os_review() {
+        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let server = Server::new(vec![
+            response(200, "", &bytes),
+            response(200, "", &vec![b'E'; 4096]),
+            response(200, "", &vec![b'R'; 8192]),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let preference = tempfile::tempdir().unwrap();
+        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
+            Err("Protected staging is unavailable.".into())
+        });
+        let mut app = supported_fixture();
+        app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
+            app.capabilities.platform,
+            preference.path().join("selection.json"),
+            worker,
+            vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
+            "x86_64",
+        ));
+
+        app.apply_command(SetupCommand::StartInternalDownload);
+
+        assert!(app.status_is_error);
+        assert_eq!(
+            app.status,
+            "Full qOS downloads can start only from the Full qOS review."
+        );
+        assert!(
+            app.internal_download_flow
+                .as_ref()
+                .is_some_and(|flow| flow.presentation().phase.is_none())
+        );
+        assert!(server.requests().is_empty());
     }
 
     // Catches treating the setup plan's suggested qOS path as a mounted target
