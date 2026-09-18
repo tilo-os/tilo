@@ -1465,6 +1465,17 @@ impl StoreApp {
         self.roomy_desktop() && !self.readable_type_layout()
     }
 
+    /// Minimum width for a discovery card at the current layout mode. The
+    /// bounded desktop surface intentionally resolves to two comparison
+    /// columns; intermediate widths retain the shared grid's denser reflow.
+    fn catalogue_card_min_width(&self) -> f64 {
+        if self.desktop_browse_layout() {
+            500.0
+        } else {
+            330.0
+        }
+    }
+
     /// Idle browsing benefits from the explicit "ready" and "discover"
     /// decision groups when the viewport can show a complete row. At the
     /// medium desktop breakpoint those groups commonly contain an odd count,
@@ -3378,6 +3389,16 @@ impl StoreApp {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .with_gap(0.0);
+            // The catalogue canvas is deliberately capped at 1120px on a
+            // desktop.  A 330px grid minimum nevertheless allowed three
+            // columns there, leaving each app with only enough room for a
+            // thumbnail and a clipped-looking decision area.  Discovery is
+            // a comparison task, not a density contest: two substantial
+            // cards give the app name, provenance, summary, and one clear
+            // action a stable visual hierarchy.  The medium breakpoint keeps
+            // its smaller minimum so it can still make useful use of a
+            // laptop-sized, full-width catalogue.
+            let desktop_card_min_width = self.catalogue_card_min_width();
             let make_section = |title: &str,
                                 caption: &str,
                                 cards: Vec<Box<dyn Widget>>,
@@ -3409,10 +3430,11 @@ impl StoreApp {
                             CardGrid::new(cards)
                                 .with_min_card_width(min_card_width)
                                 // Desktop cards are an editorial two-column
-                                // layout (or one column inside each browse
-                                // lane), never the cramped three-column
-                                // catalogue that allowed artwork and copy to
-                                // compete for the same pixels.
+                                // layout on the bounded desktop canvas (or
+                                // reflow naturally at the medium breakpoint),
+                                // never the cramped three-column catalogue
+                                // that made artwork and copy compete for the
+                                // same pixels.
                                 .with_card_height(card_height)
                                 .with_gap(16.0),
                         )),
@@ -3425,7 +3447,7 @@ impl StoreApp {
                     "Open or update apps already on this device.",
                     ready_cards,
                     104.0,
-                    330.0,
+                    desktop_card_min_width,
                 ));
                 if !discover_cards.is_empty() {
                     recommended = recommended.push(Box::new(
@@ -3457,7 +3479,7 @@ impl StoreApp {
                     },
                     remaining_cards,
                     if group_by_availability { 190.0 } else { 174.0 },
-                    330.0,
+                    desktop_card_min_width,
                 ));
             }
             // At a medium desktop width the header deliberately becomes a
@@ -5033,6 +5055,23 @@ mod tests {
             !app.group_catalogue_by_availability(),
             "search results remain a single relevance-ranked sequence"
         );
+    }
+
+    #[test]
+    fn bounded_desktop_catalogue_keeps_a_two_column_card_measure() {
+        let mut app = seeded_app();
+        app.set_layout_width_hint(1_440.0);
+        assert!((app.catalogue_card_min_width() - 500.0).abs() < f64::EPSILON);
+        assert_eq!(
+            ui::widget::card_columns(1_120.0, app.catalogue_card_min_width(), 16.0),
+            2
+        );
+
+        app.set_layout_width_hint(1_024.0);
+        assert!((app.catalogue_card_min_width() - 330.0).abs() < f64::EPSILON);
+
+        app.text_scale = 2.0;
+        assert!((app.catalogue_card_min_width() - 330.0).abs() < f64::EPSILON);
     }
 
     #[test]
