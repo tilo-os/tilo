@@ -173,6 +173,7 @@ install -Dpm 0755 bin/tilo-launcher          %{buildroot}%{_bindir}/tilo-launche
 # it anywhere else means a session that can be locked and never unlocked.
 install -Dpm 0755 libexec/tilo-unlock-helper %{buildroot}%{_libexecdir}/tilo-unlock-helper
 install -Dpm 0755 libexec/tilo-session       %{buildroot}%{_libexecdir}/tilo-session
+install -Dpm 0755 libexec/tilo-session-runner %{buildroot}%{_libexecdir}/tilo-session-runner
 install -Dpm 0644 pam/tilo-unlock            %{buildroot}%{_sysconfdir}/pam.d/tilo-unlock
 install -Dpm 0644 wayland-sessions/tilo.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/tilo.desktop
@@ -234,17 +235,11 @@ done
 test -x %{buildroot}%{_libexecdir}/tilo-unlock-helper
 # And the production session wrapper must not be redirectable.
 grep -q '^TILO_SHELL=/usr/bin/tilo-shell$' %{buildroot}%{_libexecdir}/tilo-session
-# A host has no unit that runs the one-time setup, so the wrappers have to.
-for wrapper in tilo-session tilo-session-dev; do
-    grep -q -- '--firstboot' "%{buildroot}%{_libexecdir}/$wrapper" || {
-        echo "$wrapper does not pass --firstboot; the identity would never be provisioned" >&2
-        exit 1
-    }
-    grep -q -- '--host-desktop-session' "%{buildroot}%{_libexecdir}/$wrapper" || {
-        echo "$wrapper does not identify itself as a host desktop session" >&2
-        exit 1
-    }
-done
+grep -q '^SESSION_RUNNER=/usr/libexec/tilo-session-runner$' %{buildroot}%{_libexecdir}/tilo-session
+# A host has no unit that runs the one-time setup, so the shared lifecycle has
+# to supply both declarations regardless of which entry wrapper selected it.
+grep -q -- '--firstboot' %{buildroot}%{_libexecdir}/tilo-session-runner
+grep -q -- '--host-desktop-session' %{buildroot}%{_libexecdir}/tilo-session-runner
 # The portal backend is only reachable if something claims the session's name.
 grep -q '^UseIn=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/portals/tilo.portal
 grep -q '^default=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/tilo-portals.conf
@@ -278,6 +273,7 @@ done
 %{_bindir}/tilo-launcher
 %{_libexecdir}/tilo-unlock-helper
 %{_libexecdir}/tilo-session
+%{_libexecdir}/tilo-session-runner
 %config(noreplace) %{_sysconfdir}/pam.d/tilo-unlock
 %{_datadir}/wayland-sessions/tilo.desktop
 %{_datadir}/xdg-desktop-portal/portals/tilo.portal

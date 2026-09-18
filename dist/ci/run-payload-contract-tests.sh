@@ -60,6 +60,7 @@ for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" \
     install -m755 "$true_bin" "$target"
 done
 install -m755 "$repo_root/dist/session/tilo-session" "$fhs/usr/libexec/tilo-session"
+install -m755 "$repo_root/dist/session/tilo-session-runner" "$fhs/usr/libexec/tilo-session-runner"
 install -m755 "$repo_root/dist/session/tilo-session-dev" "$fhs/usr/libexec/tilo-session-dev"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$fhs/usr/share/wayland-sessions/tilo.desktop"
 install -m644 "$repo_root/dist/session/tilo-dev.desktop" "$fhs/usr/share/wayland-sessions/tilo-dev.desktop"
@@ -87,6 +88,7 @@ for target in "$nix/bin/tilo-shell" "$nix/bin/tilo-launcher" \
     install -m755 "$true_bin" "$target"
 done
 install -m755 "$repo_root/dist/session/tilo-session" "$nix/libexec/tilo-session"
+install -m755 "$repo_root/dist/session/tilo-session-runner" "$nix/libexec/tilo-session-runner"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$nix/share/wayland-sessions/tilo.desktop"
 install -m644 "$repo_root/os/etc/pam.d/tilo-unlock" "$nix/etc/pam.d/tilo-unlock"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" \
@@ -98,10 +100,13 @@ install -m644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target"
 install -m644 "$repo_root/LICENSE" "$nix/share/licenses/tilo-session/LICENSE"
 sed -i \
     -e "s#TILO_SHELL=/usr/bin/tilo-shell#TILO_SHELL=$nix/bin/tilo-shell#" \
+    -e "s#SESSION_RUNNER=/usr/libexec/tilo-session-runner#SESSION_RUNNER=$nix/libexec/tilo-session-runner#" \
+    "$nix/libexec/tilo-session"
+sed -i \
     -e 's#SYSTEMCTL=/usr/bin/systemctl#SYSTEMCTL=/nix/store/fixture-systemd/bin/systemctl#' \
     -e 's#SYSTEMD_CAT=/usr/bin/systemd-cat#SYSTEMD_CAT=/nix/store/fixture-systemd/bin/systemd-cat#' \
     -e 's#DBUS_UPDATE=/usr/bin/dbus-update-activation-environment#DBUS_UPDATE=/nix/store/fixture-dbus/bin/dbus-update-activation-environment#' \
-    "$nix/libexec/tilo-session"
+    "$nix/libexec/tilo-session-runner"
 sed -i \
     -e "s#Exec=/usr/libexec/tilo-session#Exec=$nix/libexec/tilo-session#" \
     -e "s#TryExec=/usr/bin/tilo-shell#TryExec=$nix/bin/tilo-shell#" \
