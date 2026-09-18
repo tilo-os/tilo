@@ -17,22 +17,22 @@ git -C "$work/source" remote add origin "$work/origin.git"
 git -C "$work/source" push -q -u origin main
 sha=$(git -C "$work/source" rev-parse HEAD)
 
-(cd "$work/source" && "$tool" record "$sha" 42 success success origin >/dev/null)
+(cd "$work/source" && "$tool" record "$sha" 42 success success success origin >/dev/null)
 (cd "$work/source" && "$tool" verify "$sha" origin)
 
 receipt=$(git -C "$work/source" notes --ref=tilo-check-ci show "$sha")
-[[ $receipt == "select=success affected=success run=42 sha=$sha" ]]
+[[ $receipt == "select=success security=success affected=success run=42 sha=$sha" ]]
 
-if (cd "$work/source" && "$tool" record "$sha" nope success success origin 2>/dev/null); then
+if (cd "$work/source" && "$tool" record "$sha" nope success success success origin 2>/dev/null); then
   echo 'receipt tool accepted a non-numeric workflow run id' >&2
   exit 1
 fi
-if (cd "$work/source" && "$tool" record "$sha" 43 unknown success origin 2>/dev/null); then
+if (cd "$work/source" && "$tool" record "$sha" 43 unknown success success origin 2>/dev/null); then
   echo 'receipt tool accepted an unknown job result' >&2
   exit 1
 fi
 
-(cd "$work/source" && "$tool" record "$sha" 44 failure success origin >/dev/null)
+(cd "$work/source" && "$tool" record "$sha" 44 success failure success origin >/dev/null)
 if (cd "$work/source" && "$tool" verify "$sha" origin 2>/dev/null); then
   echo 'receipt tool accepted a failed check result' >&2
   exit 1

@@ -129,18 +129,6 @@ jobs:
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
-      # The image may lag a newly required check tool.
-      - name: Ensure invariant test tooling
-        run: |
-          command -v jq >/dev/null || dnf install -y jq
-          python3 -c 'import PIL' 2>/dev/null || dnf install -y python3-pillow
-
-      # These boundaries are mostly shell, image configuration, and workflow
-      # policy, so Cargo's affected-package graph cannot select them. Keep the
-      # Executable invariants run on every PR instead of waiting for a release.
-      - name: Security boundary invariants
-        run: bash tools/run-security-boundary-invariants.sh
-
       - name: Select and balance affected packages
         id: plan
         shell: bash
@@ -172,6 +160,33 @@ jobs:
             cat ci-plan.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Shell, image-configuration, and workflow policy cannot be selected through
+  # Cargo's dependency graph. Keep these checks mandatory, but run them beside
+  # selection so they do not delay the affected-package matrix.
+  security:
+    needs: builder
+    runs-on: runner
+    timeout-minutes: 30
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout security boundary inputs
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      # The image may lag a newly required check tool.
+      - name: Ensure invariant test tooling
+        run: |
+          command -v jq >/dev/null || dnf install -y jq
+          python3 -c 'import PIL' 2>/dev/null || dnf install -y python3-pillow
+
+      - name: Security boundary invariants
+        run: bash tools/run-security-boundary-invariants.sh
 
   affected:
     needs: [builder, select]
@@ -288,11 +303,12 @@ jobs:
       always() &&
       (github.ref == 'refs/heads/main' ||
        github.ref == 'refs/heads/codex/package-desktop-release')
-    needs: [select, affected]
+    needs: [select, security, affected]
     runs-on: runner
     timeout-minutes: 10
     env:
       SELECT_RESULT: ${{ needs.select.result }}
+      SECURITY_RESULT: ${{ needs.security.result }}
       AFFECTED_RESULT: ${{ needs.affected.result }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -302,4 +318,4 @@ jobs:
       - name: Record an observable CI receipt without touching a branch
         run: >-
           tools/ci-receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"
-          "$SELECT_RESULT" "$AFFECTED_RESULT" origin
+          "$SELECT_RESULT" "$SECURITY_RESULT" "$AFFECTED_RESULT" origin
