@@ -106,6 +106,9 @@ const LIBRARY_PAGE_SIZE: usize = 24;
 /// favourite, and removal targets at the 44px touch minimum.
 const LIBRARY_TWO_COLUMN_MAX_W: f64 = 720.0;
 const LIBRARY_ONE_COLUMN_MAX_W: f64 = 460.0;
+/// The full masthead needs room for destinations, density and selection.
+/// Tablets retain photo density but use the compact masthead below this width.
+const LIBRARY_DESKTOP_MASTHEAD_MIN_W: f64 = 960.0;
 /// The gallery controls use the shared 44px minimum target with a little
 /// breathing room. Keeping this one value in both paint and test geometry
 /// prevents a visual refinement from silently shrinking an accessible hit.
@@ -4707,7 +4710,7 @@ impl PhotosApp {
             ((bounds.width() - f64::from(PAD * 2.0) - gap * columns.saturating_sub(1) as f64)
                 / columns as f64)
                 .max(1.0);
-        let desktop_library = !large_text && bounds.width() >= LIBRARY_TWO_COLUMN_MAX_W;
+        let desktop_library = !large_text && bounds.width() >= LIBRARY_DESKTOP_MASTHEAD_MIN_W;
         // Compact library navigation is photo-first. Collections remain
         // canonical/searchable, while their dense chip rail moves out of the
         // small viewport instead of pushing the first date below the fold.
@@ -4800,12 +4803,11 @@ impl PhotosApp {
             format!("{} photographs · shared library", self.library_total)
         } else if large_text {
             format!("{} photos", self.library_total)
-        } else if self.library_total == 0 {
-            "0".to_owned()
         } else {
-            let first = self.library_offset + 1;
-            let last = (self.library_offset + self.library_items.len()).min(self.library_total);
-            format!("{first}–{last} / {}", self.library_total)
+            // Compact layouts state selection progress in the contextual bar
+            // and keep the masthead free for density controls. A duplicate
+            // right-aligned range would sit directly behind the expand button.
+            String::new()
         };
         let count_width = if desktop_library {
             260.0
@@ -6588,7 +6590,10 @@ impl PhotosApp {
         // Album editing remains available through its canonical resource
         // action; it does not occupy a permanent New/Edit row in front of
         // every first photo.
-        if !self.album_editor && (theme.text_scale > 1.25 || self.canvas_rect.width() < 620.0) {
+        if !self.album_editor
+            && (theme.text_scale > 1.25
+                || self.canvas_rect.width() < LIBRARY_DESKTOP_MASTHEAD_MIN_W)
+        {
             return;
         }
         if self.album_editor && theme.text_scale > 1.25 {
@@ -6663,7 +6668,7 @@ impl PhotosApp {
         let desktop_header_actions = !self.album_editor
             && !narrow
             && theme.text_scale <= 1.25
-            && bounds.width() >= LIBRARY_TWO_COLUMN_MAX_W;
+            && bounds.width() >= LIBRARY_DESKTOP_MASTHEAD_MIN_W;
         let panel = if desktop_header_actions {
             // The normal wide masthead already reserves its right side for
             // destination, selection and density controls. Album management
