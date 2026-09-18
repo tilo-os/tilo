@@ -91,8 +91,8 @@ exit {BUILD_INTERCEPTED}
         }
 
     def development_inputs(self):
-        # Crypto/parser behavior is exercised with real OpenSSL by the public
-        # bundle suite; this stub isolates host argument and disk-stage control.
+        # Crypto/parser behavior is exercised by the Rust-native public-bundle
+        # suite; this stub isolates host argument and disk-stage control.
         self.write("os/dev/development-trust.py", 'import json; print(json.dumps({"identities":{"registry-owner.pub":"' + 'a' * 64 + '"}}))\n')
         public = self.root / "public bundle"
         public.mkdir()
