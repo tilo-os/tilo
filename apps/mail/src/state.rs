@@ -499,6 +499,12 @@ impl MailState {
     /// the person no longer sees selected.
     pub fn set_bulk_selecting(&mut self, selecting: bool) {
         self.bulk_selecting = selecting;
+        if selecting {
+            // The selection toolbar replaces the search field visually and in
+            // hit testing; do not leave an invisible editor claiming focus.
+            self.search_focused = false;
+            self.focus_search_request = false;
+        }
         if !selecting {
             self.bulk_selection.clear();
         }
@@ -556,6 +562,20 @@ impl MailState {
     pub fn apply_bulk_action(&mut self, doc: &mut AutoCommit, action: BulkAction) -> usize {
         let ids = self.selected_bulk_ids();
         if ids.is_empty() {
+            return 0;
+        }
+        // Keep the visible path as atomic as the canonical reducer: a mixed
+        // selection is not an instruction to quietly purge the subset already
+        // in Trash. The user can either move the other messages first or make
+        // an explicit all-Trash selection. Check before registering targets so
+        // a refusal creates no document mutation at all.
+        if action == BulkAction::Purge
+            && ids.iter().any(|id| {
+                self.mailbox
+                    .get(*id)
+                    .is_none_or(|message| message.folder != Folder::Trash)
+            })
+        {
             return 0;
         }
         for id in &ids {
@@ -630,38 +650,23 @@ impl MailState {
                 move_to_trash.len()
             }
             BulkAction::Purge => {
-                // Only persisted Trash rows can be purged. This checks the
-                // current hydrated projection for immediate feedback; the
-                // MailAction reducer performs the same folder guard against a
-                // stale or remotely-authored payload.
-                let purge: Vec<MessageId> = ids
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        self.mailbox
-                            .get(*id)
-                            .is_some_and(|mail| mail.folder == Folder::Trash)
-                    })
-                    .collect();
-                let sources: Vec<Message> = purge
+                // `ids` passed the all-Trash preflight above. The action
+                // reducer repeats it against the document to cover a stale
+                // remotely-authored envelope.
+                let sources: Vec<Message> = ids
                     .iter()
                     .filter_map(|id| self.mailbox.get(*id).cloned())
                     .collect();
-                if !purge.is_empty() {
-                    for id in &purge {
-                        self.mailbox.purge(*id);
-                    }
-                    self.dispatch_action(
-                        doc,
-                        &purge_action(purge.iter().map(ToString::to_string).collect()),
-                    );
+                for id in &ids {
+                    self.mailbox.purge(*id);
                 }
+                self.dispatch_action(doc, &purge_action(encoded_ids));
                 for source in sources {
                     self.sync_purge_to_server(source);
                 }
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
-                purge.len()
+                ids.len()
             }
         };
         self.dirty = true;
@@ -1089,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn bulk_purge_filters_nontrash_and_stale_rows_before_the_atomic_action() {
+    fn bulk_purge_refuses_mixed_or_stale_rows_without_a_partial_mutation() {
         let mut st = state();
         let mut doc = AutoCommit::new();
         let ids: Vec<MessageId> = st
@@ -1106,13 +1111,15 @@ mod tests {
         // A stale id can never be materialized into a later batch.
         st.bulk_selection.push(uuid::Uuid::new_v4());
 
-        assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::Purge), 1);
-        assert!(st.mailbox.get(trash).is_none());
+        let heads_before = doc.get_heads();
+        assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::Purge), 0);
+        assert!(st.mailbox.get(trash).is_some());
         assert!(st.mailbox.get(inbox).is_some());
-        let last = st.actions.last_dispatched().expect("one purge action");
         assert_eq!(
-            last.payload,
-            crate::actions::encode(&purge_action(vec![trash.to_string()])).payload
+            doc.get_heads(),
+            heads_before,
+            "a rejected mixed/stale purge never creates a partial document mutation"
         );
+        assert!(st.actions.last_dispatched().is_none());
     }
 }
