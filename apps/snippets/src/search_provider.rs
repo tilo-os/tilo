@@ -225,7 +225,7 @@ mod tests {
         let mut snippet = Snippet::blank("");
         snippet.title = "Before title".into();
         let id = snippet.id;
-        before.insert(snippet.clone());
+        before.insert(snippet);
         let provider = SnippetSearchProvider::new(&before);
         let palette_handle = provider.clone();
         let generation = provider.stats().generation;
