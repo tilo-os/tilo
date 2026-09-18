@@ -13,20 +13,27 @@ set -euo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 vm="$dev_dir/vm.sh"
-medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside|--guided-alongside] [--software-tpm]}"
+medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside|--guided-alongside] [--software-tpm] [--graphics gl|software]}"
 shift
 out=""
 install_mode=erase
 software_tpm=0
+graphics=gl
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="${2:-}"; shift 2;;
     --prepared-alongside) install_mode=prepared-alongside; shift;;
     --guided-alongside) install_mode=guided-alongside; shift;;
     --software-tpm) software_tpm=1; shift;;
+    --graphics) graphics="${2:-}"; [ "$#" -ge 2 ] || exit 2; shift 2;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 2;;
   esac
 done
+case "$graphics" in
+  gl) display_arg=--gl ;;
+  software) display_arg=--2d ;;
+  *) printf 'graphics must be gl or software\n' >&2; exit 2 ;;
+esac
 [ -f "$medium" ] || { printf 'installer medium not found: %s\n' "$medium" >&2; exit 1; }
 if [ "$software_tpm" -eq 1 ]; then
   case "${TILO_SECBOOT_KEYS:-none}" in
@@ -355,14 +362,14 @@ rm -f -- "$profiled_raw"
 [ "$(sha256sum "$medium" | awk '{print $1}')" = "$source_hash_before" ] \
   || die "customization modified the released installer medium"
 export TILO_INSTALLER_DISK="$profiled_medium"
-printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycle-tilo\nunlock=%s\ninstall_mode=%s\nstorage=%s\n' \
-  "$medium" "$profiled_medium" "$TILO_VM_ARCH" "$TILO_USER" "$unlock" "$install_mode" "$storage" \
+printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycle-tilo\nunlock=%s\ninstall_mode=%s\nstorage=%s\ngraphics=%s\n' \
+  "$medium" "$profiled_medium" "$TILO_VM_ARCH" "$TILO_USER" "$unlock" "$install_mode" "$storage" "$graphics" \
   > "$out/scenario.txt"
 
 if [ "$software_tpm" -eq 1 ]; then
-  "$vm" boot-installer --gl --tpm
+  "$vm" boot-installer "$display_arg" --tpm
 else
-  "$vm" boot-installer --gl --no-tpm
+  "$vm" boot-installer "$display_arg" --no-tpm
 fi
 wait_screen 01-disk 'Install[[:space:]]+Tilo' 120 5 \
   || die "profiled live installer did not start at Disk"
@@ -433,9 +440,9 @@ fi
 phase=target
 target_boot_started="$(date +%s)"
 if [ "$software_tpm" -eq 1 ]; then
-  "$vm" boot-target --gl --tpm
+  "$vm" boot-target "$display_arg" --tpm
 else
-  "$vm" boot-target --gl --no-tpm
+  "$vm" boot-target "$display_arg" --no-tpm
 fi
 
 # The sealed boot has no serial-console test instrumentation. Type only after
