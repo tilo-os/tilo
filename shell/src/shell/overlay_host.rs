@@ -84,6 +84,12 @@ enum HistoryTargetAddress {
     App,
 }
 
+#[derive(Debug)]
+struct SessionActionResult {
+    action: os_actions::SessionAction,
+    result: Result<(), String>,
+}
+
 #[cfg(test)]
 mod clipboard_manager_tests {
     use super::*;
@@ -2017,6 +2023,12 @@ pub struct ShellOverlayHost {
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
+    /// Results from session helpers run off the frame thread. Failures must
+    /// return to chrome instead of disappearing into the journal.
+    session_action_channel: (
+        std::sync::mpsc::Sender<SessionActionResult>,
+        std::sync::mpsc::Receiver<SessionActionResult>,
+    ),
     /// Portal session-operation inhibitors shared with the backend serving
     /// `org.freedesktop.portal.Inhibit`. A logout/user switch must consult
     /// this exact registry before any irreversible OS action is spawned.
@@ -3309,6 +3321,7 @@ impl ShellOverlayHost {
             qs_selected_remote_capture: None,
             qs_selected_display_mirror: false,
             power_menu: PowerMenu::default(),
+            session_action_channel: std::sync::mpsc::channel(),
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
@@ -6188,6 +6201,43 @@ impl ShellOverlayHost {
                     .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
             );
             st.bump();
+            posted = true;
+        }
+        posted
+    }
+
+    fn drain_session_action_results(&mut self) -> bool {
+        let mut posted = false;
+        while let Ok(outcome) = self.session_action_channel.1.try_recv() {
+            let Err(error) = outcome.result else {
+                continue;
+            };
+            tracing::warn!(
+                target: "tilo::os_actions",
+                action = ?outcome.action,
+                error = %error,
+                "session action failed"
+            );
+            let Some(chrome) = self.chrome.as_ref() else {
+                continue;
+            };
+            let label = match outcome.action {
+                os_actions::SessionAction::Lock => "lock the session",
+                os_actions::SessionAction::Logout => "log out",
+                os_actions::SessionAction::SwitchUser => "switch users",
+                os_actions::SessionAction::Suspend => "suspend",
+                os_actions::SessionAction::Restart => "restart",
+                os_actions::SessionAction::ShutDown => "shut down",
+            };
+            chrome.borrow_mut().push_notification_full(
+                crate::shell::notification::Notification::new(
+                    "Session action failed",
+                    format!("Couldn’t {label}. Check the session log and try again."),
+                )
+                .with_severity(crate::shell::notification::NotificationSeverity::Error)
+                .with_app_name("System")
+                .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
+            );
             posted = true;
         }
         posted
@@ -11842,11 +11892,10 @@ impl ShellOverlayHost {
                     }
                     return true;
                 }
+                let results = self.session_action_channel.0.clone();
                 std::thread::spawn(move || {
-                    os_actions::log_result(
-                        "session_action",
-                        os_actions::perform_session_action(action),
-                    );
+                    let result = os_actions::perform_session_action(action);
+                    let _ = results.send(SessionActionResult { action, result });
                 });
                 true
             }
@@ -14367,6 +14416,7 @@ impl Widget for ShellOverlayHost {
         let dialog_dirty = self.pump_portal_dialogs();
         self.pump_permission_prompt();
         let launch_dirty = self.drain_launch_events() | self.retire_notices_for_opened_windows();
+        let session_action_dirty = self.drain_session_action_results();
         // Also driven by the widget's own `update`, but routed here too so
         // chrome stays consistent for tests that never call the widget.
         let notifications_dropped = if let Some(chrome) = self.chrome.as_ref() {
@@ -14388,6 +14438,7 @@ impl Widget for ShellOverlayHost {
             || sidebar_dirty
             || notifications_dropped
             || launch_dirty
+            || session_action_dirty
             || chrome_dirty
             || portal_dirty
             || picker_dirty
@@ -23230,6 +23281,25 @@ mod palette_dispatch_tests {
         // reaches the real narrow OS wrapper. The registry assertion proves
         // the scope separation without invoking a host session action.
         assert!(chrome.borrow().notifications().is_empty());
+    }
+
+    #[test]
+    fn failed_session_action_is_reported_in_chrome() {
+        let (mut host, chrome) = host_with_chrome();
+        host.session_action_channel
+            .0
+            .send(SessionActionResult {
+                action: os_actions::SessionAction::Suspend,
+                result: Err("logind refused suspend".into()),
+            })
+            .unwrap();
+
+        assert!(host.drain_session_action_results());
+        let notifications = chrome.borrow().notifications().to_vec();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].title, "Session action failed");
+        assert!(notifications[0].body.contains("suspend"));
+        assert!(!notifications[0].body.contains("logind"));
     }
 
     #[test]
