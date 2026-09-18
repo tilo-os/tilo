@@ -92,6 +92,8 @@ has "$workflow" 'needs: signing-preflight' \
   'expensive native snapshot builds wait for signing-authority preflight'
 has "$workflow" 'python3 os/dev/promote-native-index.py' \
   'snapshot promotion verifies signed native children'
+has "$workflow" 'git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"' \
+  'snapshot promotion rejects source-input changes during native builds'
 has "$workflow" 'driver = "vfs"' \
   'snapshot promotion isolates Podman storage from the runner overlay'
 has "$workflow" 'rm -f -- "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' \

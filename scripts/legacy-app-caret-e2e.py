@@ -293,6 +293,11 @@ def preflight_toolkit_runtime(
     preflight_env.pop("WAYLAND_DISPLAY", None)
     preflight_env.pop("DISPLAY", None)
     if case.name == "qt6":
+        # The copied plugin tree is needed only for the Wayland run on hosts
+        # whose checkout is virtiofs.  Loading the offscreen backend from that
+        # tmpfs copy aborts in Qt before it can produce diagnostics, so let the
+        # compositor-independent health check use the installed plugin tree.
+        preflight_env.pop("QT_PLUGIN_PATH", None)
         preflight_env["QT_QPA_PLATFORM"] = "offscreen"
         command = [executable, *case.args]
     else:
@@ -325,23 +330,6 @@ def preflight_toolkit_runtime(
             )
     finally:
         terminate(process)
-
-
-def stage_qt_plugins(root: Path, env: dict[str, str]) -> None:
-    """Put Qt plugins on mmap-capable storage for virtiofs test hosts.
-
-    Qt maps plugin metadata before `dlopen`. Some VM virtiofs mounts permit
-    executable mappings but reject that metadata mapping, making every Qt
-    backend appear absent. Copying the installed files unchanged into the
-    case's private tmpfs keeps this a real toolkit/app test.
-    """
-    candidates = (Path("/usr/lib64/qt6/plugins"), Path("/usr/lib/qt6/plugins"))
-    source = next((candidate for candidate in candidates if candidate.is_dir()), None)
-    if source is None:
-        raise Failure("qt6: installed Qt plugin directory was not found")
-    destination = root / "qt-plugins"
-    shutil.copytree(source, destination)
-    env["QT_PLUGIN_PATH"] = str(destination)
 
 
 def run_case(shell: Path, case: Case, artifacts: Path) -> None:
@@ -384,9 +372,6 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
         })
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("DISPLAY", None)
-        if case.name == "qt6":
-            stage_qt_plugins(root, env)
-
         compositor = None
         app = None
         try:

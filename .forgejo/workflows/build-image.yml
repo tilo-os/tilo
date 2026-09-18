@@ -118,6 +118,7 @@ jobs:
 
   signing-preflight:
     needs: plan
+    if: needs.plan.outputs.publish == 'true'
     runs-on: runner
     timeout-minutes: 5
     enable-openid-connect: true
@@ -158,6 +159,7 @@ jobs:
 
   build-and-push:
     needs: [plan, signing-preflight]
+    if: ${{ always() && needs.plan.result == 'success' && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') }}
     strategy:
       fail-fast: true
       matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}

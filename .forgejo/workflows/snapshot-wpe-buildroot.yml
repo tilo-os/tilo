@@ -212,7 +212,7 @@ jobs:
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m 'os: refresh WPE buildroot snapshots'
+          git commit -m 'build(os): refresh WPE buildroot snapshots'
           git pull --rebase origin main
           if ! git diff --quiet "$GITHUB_SHA..origin/main" -- "${snapshot_inputs[@]}"; then
             printf 'WPE buildroot inputs changed during promotion; refusing stale push\n' >&2
