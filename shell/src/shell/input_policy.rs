@@ -1699,6 +1699,7 @@ mod tests {
             caller: crate::portal::PortalCaller::new(workspace, "dev.qos.tests"),
             title: "Insert image".into(),
             save: false,
+            directory: false,
             multiple: false,
             accept_label: None,
             current_name: None,
