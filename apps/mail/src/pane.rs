@@ -307,7 +307,7 @@ impl Pane {
     /// under its actions at large text sizes.
     fn list_content_y(&self) -> f64 {
         let selecting = self.role == Role::List && self.shared.borrow().bulk_selecting;
-        self.rect.y0 + self.header_h() + if selecting { 44.0 * self.scale() } else { 0.0 }
+        self.rect.y0 + self.header_h() + if selecting { 140.0 * self.scale() } else { 0.0 }
     }
 
     fn list_row_h(&self) -> f64 {
@@ -361,31 +361,65 @@ impl Pane {
         Rect::new(x0, r.y0 + 12.0 * s, x0 + 32.0 * s, r.y0 + 44.0 * s)
     }
 
-    /// The six small actions presented when local selection mode is active:
-    /// select visible, archive, move to Trash, explicitly purge, mark read,
-    /// and mark unread. Keeping
+    /// The five labelled actions presented when local selection mode is active.
+    /// Permanent deletion replaces (never sits beside) Move to Trash only for
+    /// an all-Trash selection; virtual mixed views therefore cannot suggest
+    /// that one click might mean two destructive things. Keeping
     /// their order and hit geometry in one helper ensures painting and event
     /// routing cannot drift.
-    fn bulk_action_rects(&self) -> [(Rect, Hit); 6] {
+    fn bulk_action_rects(&self) -> Vec<(Rect, Hit, &'static str)> {
         let r = self.rect;
         let s = self.scale();
-        let h = 32.0 * s;
-        let gap = 7.0 * s;
-        let right = r.x1 - 12.0 * s;
-        let mut x = right - (h * 6.0 + gap * 5.0);
-        let y = r.y0 + self.header_h() + 6.0 * s;
-        let next = |x0: &mut f64, hit| {
-            let rect = Rect::new(*x0, y, *x0 + h, y + h);
-            *x0 += h + gap;
-            (rect, hit)
+        let h = 38.0 * s;
+        let gap = 8.0 * s;
+        let left = r.x0 + 14.0 * s;
+        let right = r.x1 - 14.0 * s;
+        let pair_w = (right - left - gap) / 2.0;
+        let y0 = r.y0 + self.header_h() + 6.0 * s;
+        let y1 = y0 + h + 7.0 * s;
+        let y2 = y1 + h + 7.0 * s;
+        let all_trash = {
+            let state = self.shared.borrow();
+            let ids = state.selected_bulk_ids();
+            !ids.is_empty()
+                && ids.iter().all(|id| {
+                    state
+                        .mailbox
+                        .get(*id)
+                        .is_some_and(|message| message.folder == Folder::Trash)
+                })
         };
-        [
-            next(&mut x, Hit::SelectAllVisible),
-            next(&mut x, Hit::Bulk(BulkAction::Archive)),
-            next(&mut x, Hit::Bulk(BulkAction::Delete)),
-            next(&mut x, Hit::Bulk(BulkAction::Purge)),
-            next(&mut x, Hit::Bulk(BulkAction::MarkRead)),
-            next(&mut x, Hit::Bulk(BulkAction::MarkUnread)),
+        let destructive = if all_trash {
+            (Hit::Bulk(BulkAction::Purge), "Delete permanently")
+        } else {
+            (Hit::Bulk(BulkAction::Delete), "Move to Trash")
+        };
+        vec![
+            (
+                Rect::new(left, y0, left + pair_w, y0 + h),
+                Hit::SelectAllVisible,
+                "Select all",
+            ),
+            (
+                Rect::new(left + pair_w + gap, y0, right, y0 + h),
+                Hit::Bulk(BulkAction::Archive),
+                "Archive",
+            ),
+            (
+                Rect::new(left, y1, left + pair_w, y1 + h),
+                Hit::Bulk(BulkAction::MarkRead),
+                "Mark read",
+            ),
+            (
+                Rect::new(left + pair_w + gap, y1, right, y1 + h),
+                Hit::Bulk(BulkAction::MarkUnread),
+                "Mark unread",
+            ),
+            (
+                Rect::new(left, y2, right, y2 + h),
+                destructive.0,
+                destructive.1,
+            ),
         ]
     }
 
@@ -499,7 +533,11 @@ impl Pane {
             }
         }
         if st.bulk_selecting {
-            hits.extend(self.bulk_action_rects());
+            hits.extend(
+                self.bulk_action_rects()
+                    .into_iter()
+                    .map(|(rect, hit, _)| (rect, hit)),
+            );
         }
         let mut ly = self.list_content_y();
         for (id, _len) in st.list_rows() {
@@ -528,7 +566,7 @@ impl Pane {
     /// available room. Part of [`Self::rebuild_hits`].
     fn rebuild_reader_hits(&self, st: &MailState, hits: &mut Vec<(Rect, Hit)>) {
         let r = self.rect;
-        if st.selected.is_none() {
+        if st.selected.is_none() || st.bulk_selecting {
             return;
         }
         let inset = if st.narrow && st.detail_pushed {
@@ -892,6 +930,10 @@ impl Pane {
 
     /// The list pane's header: folder title (+ count) and the search box, plus
     /// the manual sync/refresh button beside it. Part of [`Self::draw_list`].
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the header and its contextual selection replacement share measured geometry and must remain visually synchronized"
+    )]
     fn draw_list_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         let st = self.shared.borrow();
@@ -1058,26 +1100,8 @@ impl Pane {
     ) {
         let c = &theme.tokens.colors;
         let s = self.scale();
-        let label = format!("{} selected", state.selected_bulk_ids().len());
         let actions = self.bulk_action_rects();
-        let label_x = self.rect.x0 + 14.0 * s;
-        let label_right = actions[0].0.x0 - 10.0 * s;
-        let (label_w, _) = tr.measure_weighted(&label, 12.0, None, TextWeight::Semibold);
-        // At 200% text the compact toolbar intentionally prioritizes its
-        // full-size controls. The count is already stated in the header, so
-        // omit a clipped duplicate rather than rendering "2 sel…".
-        if label_x + f64::from(label_w) <= label_right {
-            tr.draw_text_weighted(
-                scene,
-                &label,
-                12.0,
-                c.text_primary,
-                t * Affine::translate((label_x, self.rect.y0 + self.header_h() + 15.0 * s)),
-                None,
-                TextWeight::Semibold,
-            );
-        }
-        for (rect, hit) in actions {
+        for (rect, hit, label) in actions {
             let hover = rect.contains(state.last_mouse);
             fill_round(
                 scene,
@@ -1096,7 +1120,30 @@ impl Pane {
                 Hit::Bulk(BulkAction::MarkUnread) => (Icon::Undo2, c.neutral[8]),
                 _ => continue,
             };
-            icon.draw(scene, t, rect.inset(-8.0 * s), color);
+            icon.draw(
+                scene,
+                t,
+                Rect::new(
+                    rect.x0 + 10.0 * s,
+                    rect.y0 + 10.0 * s,
+                    rect.x0 + 26.0 * s,
+                    rect.y0 + 26.0 * s,
+                ),
+                color,
+            );
+            tr.draw_text_weighted(
+                scene,
+                label,
+                11.5,
+                if matches!(hit, Hit::Bulk(BulkAction::Delete | BulkAction::Purge)) {
+                    color
+                } else {
+                    c.text_primary
+                },
+                t * Affine::translate((rect.x0 + 32.0 * s, rect.y0 + 12.0 * s)),
+                None,
+                TextWeight::Semibold,
+            );
         }
     }
 
@@ -1582,6 +1629,34 @@ impl Pane {
         let c = &theme.tokens.colors;
         let rr = self.rect;
         fill_rect(scene, t, rr, c.surfaces.raised);
+
+        if self.shared.borrow().bulk_selecting {
+            let count = self.shared.borrow().selected_bulk_ids().len();
+            let title = format!(
+                "{count} message{} selected",
+                if count == 1 { "" } else { "s" }
+            );
+            tr.draw_text_weighted(
+                scene,
+                &title,
+                20.0,
+                c.text_primary,
+                t * Affine::translate((rr.x0 + 28.0, rr.y0 + 38.0)),
+                None,
+                TextWeight::Bold,
+            );
+            tr.draw_text(
+                scene,
+                "Choose a batch action in the message list. Individual message actions are paused while selecting.",
+                13.0,
+                c.text_dim,
+                t * Affine::translate((rr.x0 + 28.0, rr.y0 + 68.0)),
+                None,
+            );
+            self.html_view_rect = None;
+            self.html_toggle_rect = None;
+            return;
+        }
 
         // Thread cards deliberately pack several independent lines into a
         // compact desktop rhythm. At accessibility scales that density stops
@@ -2646,6 +2721,13 @@ impl Pane {
                     *handled = true;
                 }
                 Hit::Bulk(action) => {
+                    if action == BulkAction::Purge {
+                        self.shared
+                            .borrow_mut()
+                            .push_intent(Intent::ConfirmBulkPurge);
+                        *handled = true;
+                        return;
+                    }
                     let affected = self.shared.borrow_mut().apply_bulk_action(doc, action);
                     if affected > 0 {
                         self.shared.borrow_mut().status = Some(format!(
