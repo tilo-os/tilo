@@ -966,7 +966,7 @@ mod tests {
             ));
         }
         let provider = PhotosSearchProvider::from_library(&doc, &library).unwrap();
-        let expected_records = library.photos.len() + 2; // library + People roots
+        let expected_records = library.photos.len() + 3; // library + People + analysis roots
         assert_eq!(provider.stats().records, expected_records);
         let page = provider.search_page("needle-beyond-100k-夏", None, 2, 1);
         assert_eq!(page.results.len(), 1);
