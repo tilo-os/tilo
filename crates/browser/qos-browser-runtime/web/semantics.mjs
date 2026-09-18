@@ -1,5 +1,6 @@
 const roles={Window:'group',Group:'group',Generic:'group',Toolbar:'toolbar',TabBar:'tablist',Tab:'tab',TabPanel:'tabpanel',List:'list',ListItem:'listitem',Table:'table',Row:'row',Cell:'cell',Tree:'tree',TreeItem:'treeitem',Menu:'menu',MenuItem:'menuitem',Button:'button',ToggleButton:'button',Checkbox:'checkbox',RadioButton:'radio',Switch:'switch',Slider:'slider',SpinButton:'spinbutton',ComboBox:'combobox',TextInput:'textbox',MultilineTextInput:'textbox',Link:'link',ProgressBar:'progressbar',Spinner:'status',Tooltip:'tooltip',Image:'img',Document:'document',Paragraph:'paragraph',Dialog:'dialog'};
 const segments=new Intl.Segmenter(undefined,{granularity:'grapheme'});
+let bridgeSequence=0;
 const graphemeIndex=(value,offset)=>[...segments.segment(value.slice(0,offset))].length;
 function domOffset(value,index){
   if(index<=0)return 0;
@@ -11,6 +12,27 @@ function domOffset(value,index){
 }
 export function semanticBridge(root,invoke,report) {
   const elements=new Map();
+  const recoverySurfaces=new Set();
+  const bridgeId=++bridgeSequence;
+  let elementSequence=0;
+  let activeDescendantHost;
+  let previousActiveDescendant;
+  let previousOwns;
+  function clearActiveDescendant(){
+    if(!activeDescendantHost)return;
+    if(previousActiveDescendant===null)activeDescendantHost.removeAttribute('aria-activedescendant');else activeDescendantHost.setAttribute('aria-activedescendant',previousActiveDescendant);
+    if(previousOwns===null)activeDescendantHost.removeAttribute('aria-owns');else activeDescendantHost.setAttribute('aria-owns',previousOwns);
+    activeDescendantHost=undefined;previousActiveDescendant=undefined;previousOwns=undefined;
+  }
+  function setActiveDescendant(host,element){
+    if(activeDescendantHost===host&&host.getAttribute('aria-activedescendant')===element.id)return;
+    clearActiveDescendant();
+    activeDescendantHost=host;
+    previousActiveDescendant=host.getAttribute('aria-activedescendant');
+    previousOwns=host.getAttribute('aria-owns');
+    host.setAttribute('aria-activedescendant',element.id);
+    host.setAttribute('aria-owns',[previousOwns,element.id].filter(Boolean).join(' '));
+  }
   function act(element,action,value='',anchor=0,focus=0){
     const state=element.qosState;
     if(!state?.active||elements.get(state.key)!==element||!element.route){
@@ -43,14 +65,63 @@ export function semanticBridge(root,invoke,report) {
     if(!act(element,'value',element.value)){restoreCanonical(element);return false;}
     element.qosState.canonicalValue=element.value;
     element.qosState.lastSelection=null;
-    return dispatchSelection(element);
+    dispatchSelection(element);return true;
+  }
+  function retainedComposition(base,current,data){
+    if(typeof data==='string'&&data.length)return data;
+    let prefix=0;
+    while(prefix<base.length&&prefix<current.length&&base[prefix]===current[prefix])prefix++;
+    let suffix=0;
+    while(suffix<base.length-prefix&&suffix<current.length-prefix&&base[base.length-1-suffix]===current[current.length-1-suffix])suffix++;
+    return current.slice(prefix,current.length-suffix);
+  }
+  function clearRecovery(element){
+    const state=element.qosState;
+    state.recoveryText='';
+    if(state.recoverySurface){recoverySurfaces.delete(state.recoverySurface);state.recoverySurface.remove();state.recoverySurface=null;}
+  }
+  function recoverComposition(element){
+    const state=element.qosState;
+    if(!state.recoveryText)return false;
+    const value=state.canonicalValue;
+    const focus=state.canonicalSelection?.[1]??graphemeIndex(value,value.length);
+    const offset=domOffset(value,focus);
+    element.value=`${value.slice(0,offset)}${state.recoveryText}${value.slice(offset)}`;
+    const caret=focus+graphemeIndex(state.recoveryText,state.recoveryText.length);
+    element.setSelectionRange?.(domOffset(element.value,caret),domOffset(element.value,caret));
+    if(!dispatchValue(element))return false;
+    clearRecovery(element);return true;
+  }
+  function presentRecovery(element,text){
+    if(!text)return;
+    const state=element.qosState;
+    state.recoveryText+=text;
+    if(!state.recoverySurface){
+      const surface=document.createElement('div');
+      const explanation=document.createElement('span');
+      const retained=document.createElement('textarea');
+      const recover=document.createElement('button');
+      surface.dataset.qosCompositionRecovery=state.key;
+      surface.setAttribute('role','alert');
+      surface.style.cssText='position:absolute;left:12px;bottom:12px;z-index:2147483647;box-sizing:border-box;max-width:calc(100% - 24px);padding:10px 12px;border:1px solid #64748b;border-radius:8px;background:#0f172a;color:#f8fafc;font:13px system-ui;box-shadow:0 4px 18px #0008;';
+      explanation.textContent='Input changed elsewhere. Your composed text was retained.';
+      retained.readOnly=true;retained.setAttribute('aria-label','Retained composed text');
+      retained.style.cssText='display:block;box-sizing:border-box;width:100%;margin:8px 0;padding:6px;color:#0f172a;background:#f8fafc;';
+      recover.type='button';recover.textContent='Insert retained text';
+      recover.addEventListener('click',()=>recoverComposition(element));
+      surface.append(explanation,retained,recover);
+      (root.parentNode??root).append(surface);
+      state.recoverySurface=surface;recoverySurfaces.add(surface);
+    }
+    state.recoverySurface.children[1].value=state.recoveryText;
   }
   function createElement(editable,key,role){
     const element=document.createElement(editable?'textarea':role==='Button'?'button':'div');
+    element.id=`qos-semantic-${bridgeId}-${++elementSequence}`;
     element.dataset.qosSemantic=key;
     element.qosEditable=editable;
-    element.qosState={key,active:true,disabled:false,readOnly:false,composing:false,canonicalValue:'',compositionBase:null,suppressInput:null,canonicalSelection:null,lastSelection:null};
-    element.addEventListener('focus',()=>act(element,'focus'));
+    element.qosState={key,active:true,disabled:false,readOnly:false,composing:false,canonicalValue:'',compositionBase:null,suppressInput:null,canonicalSelection:null,lastSelection:null,reconcilingFocus:false,recoveryText:'',recoverySurface:null};
+    element.addEventListener('focus',()=>{if(!element.qosState.reconcilingFocus)act(element,'focus');});
     element.addEventListener('click',()=>act(element,'activate'));
     if(editable){
       element.addEventListener('input',event=>{
@@ -67,10 +138,12 @@ export function semanticBridge(root,invoke,report) {
         const state=element.qosState;
         state.composing=true;state.compositionBase=element.value;state.suppressInput=null;
       });
-      element.addEventListener('compositionend',()=>{
+      element.addEventListener('compositionend',event=>{
         const state=element.qosState;state.composing=false;
         if(state.canonicalValue!==state.compositionBase){
+          const retained=retainedComposition(state.compositionBase,element.value,event.data);
           restoreCanonical(element);
+          presentRecovery(element,retained);
           report({semanticAction:'value',semanticResult:'composition-cancelled-after-canonical-edit'});
         }else if(dispatchValue(element))state.suppressInput=element.value;
         state.compositionBase=null;
@@ -84,6 +157,8 @@ export function semanticBridge(root,invoke,report) {
   }
   function update(snapshot){
     const live=new Set();
+    const activeBeforeUpdate=document.activeElement;
+    let canonicalFocus;
     function semantic(node,owner,parent,index){
       const key=JSON.stringify([owner,node.semantic_key??node.action_target??index]);live.add(key);
       let element=elements.get(key);
@@ -97,6 +172,7 @@ export function semanticBridge(root,invoke,report) {
       element.route={owner,target:node.action_target};
       element.qosState.disabled=Boolean(node.state?.disabled);
       element.qosState.readOnly=Boolean(node.state?.read_only);
+      if(node.state?.focused&&!canonicalFocus)canonicalFocus=element;
       if(element.parentNode!==parent)parent.append(element);
       const role=node.role&&typeof node.role==='object'?(node.role.Heading?'heading':undefined):roles[node.role];
       if(role)element.setAttribute('role',role);else element.removeAttribute('role');
@@ -136,7 +212,22 @@ export function semanticBridge(root,invoke,report) {
     }
     walk(snapshot.root,root);
     for(const [key,element] of elements)if(!live.has(key)){element.qosState.active=false;element.route=undefined;element.remove();elements.delete(key);}
+    for(const element of elements.values())element.dataset.qosFocused=String(element===canonicalFocus);
+    const active=document.activeElement;
+    const focusWasManaged=Boolean(activeBeforeUpdate?.qosState);
+    const focusInMount=Boolean(root.parentNode?.contains?.(active));
+    const focusInRecovery=[...recoverySurfaces].some(surface=>surface.contains?.(active));
+    if(canonicalFocus&&active!==canonicalFocus&&focusInMount&&!focusWasManaged&&!focusInRecovery){
+      setActiveDescendant(active,canonicalFocus);
+    }else if(canonicalFocus&&active!==canonicalFocus&&(!active||active===document.body||focusWasManaged)){
+      clearActiveDescendant();
+      canonicalFocus.qosState.reconcilingFocus=true;
+      try{canonicalFocus.focus();}finally{canonicalFocus.qosState.reconcilingFocus=false;}
+    }else{
+      clearActiveDescendant();
+      if(!canonicalFocus&&active?.qosState&&active.qosState.active)active.blur?.();
+    }
     root.dataset.nodeCount=String(elements.size);
   }
-  return {update,close(){for(const element of elements.values()){element.qosState.active=false;element.route=undefined;}root.replaceChildren();elements.clear();}};
+  return {update,close(){clearActiveDescendant();for(const element of elements.values()){element.qosState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();root.replaceChildren();elements.clear();}};
 }
