@@ -1,5 +1,6 @@
 //! Git — standard Tilo application entry point.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -98,6 +99,9 @@ pub fn main() {
             .shot_viewport(|_| WIDE_VIEWPORT)
             .allowed_live_options(&["--stage-commit", "--shots-narrow"])
             .command_handler(command)
-            .configure_app(|app| git_client::actions::register(app.action_registry_mut())),
+            .configure_app(|app| {
+                app.set_window_title(Some("Git Client".into()));
+                git_client::actions::register(app.action_registry_mut());
+            }),
     );
 }
