@@ -802,6 +802,16 @@ if [ "$ENCRYPT" -eq 1 ]; then
   TARGET_UKI="$(find "$ENC_MNT/boot/efi/EFI/Linux" -type f \
     -path '*/bootc/bootc_composefs-*.efi' -print -quit)"
   [ -n "$TARGET_UKI" ] || die "installed target has no bootc UKI on its ESP"
+  # bootc 1.16.4 copies recognized live UKIs, not arbitrary /boot sidecars.
+  # Recover the authority-signed target bundle from the same offline image used
+  # above, never from a network update tag or a mutable live ESP. This changes
+  # only ESP files and therefore does not alter the sealed composefs digest.
+  [ ! -e "$ENC_MNT/boot/efi/tilo-target" ] \
+    || die "target ESP already contains a target boot bundle"
+  podman run --rm --network=none --cap-drop=ALL \
+    --security-opt label=type:unconfined_t \
+    -v "$ENC_MNT/boot/efi:/target-esp" \
+    --entrypoint /usr/bin/cp "$LOCAL_IMG" -R /boot/tilo-target /target-esp/
   TARGET_VARIANT="$ENC_MNT/boot/efi/tilo-target/tilo-target.efi"
   [ -f "$TARGET_VARIANT" ] || die "installed image has no deterministic target UKI"
   /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw root=tilo-auto \
