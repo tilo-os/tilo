@@ -13,6 +13,7 @@ function Get-TiloWindowsAppName {
         'git-client' { 'Git Client' }
         'pdf-viewer' { 'PDF Viewer' }
         'ebook' { 'Books' }
+        'totp' { 'Authenticator' }
         default { (Get-Culture).TextInfo.ToTitleCase($Application) }
     }
 }
