@@ -121,10 +121,24 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn('needs: [build, images, cache-cold, cache-warm]', BUILD)
         self.assertIn('runner: runner-arm64', BUILD)
         self.assertIn('name: builder-index-${{ github.sha }}', BUILD)
-        self.assertEqual(CHECK.count('image: ${{ needs.builder.outputs.image }}'), 3)
+        # Native acceptance consumers must honor the resolved builder override.
+        # Selection only reads Cargo metadata and uses the qualified lean image.
+        security_job = CHECK.split('  security:\n', 1)[1].split('\n  affected:\n', 1)[0]
+        select_job = CHECK.split('  select:\n', 1)[1].split('\n  security:\n', 1)[0]
+        self.assertIn('image: ${{ needs.builder.outputs.image }}', security_job)
+        self.assertRegex(select_job, r'image: code\.podesta\.ai/qos/ci-fast@sha256:[0-9a-f]{64}\n')
+        qualified_image = next(line.strip() for line in
+                               (ROOT / '.forgejo/workflows/lint.yml').read_text().splitlines()
+                               if line.strip().startswith('image: '))
+        self.assertIn(qualified_image, select_job)
+        self.assertIn('runs-on: runner-quality', select_job)
+        self.assertIn('run: ./scripts/check-workspace-complete.sh', select_job)
+        self.assertIn('run: python3 tools/check_repository_layout.py', select_job)
+        self.assertIn('python3 tools/ci_select.py --base "$base" --shards 2', select_job)
         self.assertIn('  select:\n    needs: builder', CHECK)
         self.assertIn('  security:\n    needs: builder', CHECK)
         affected_job = CHECK.split('  affected:\n', 1)[1].split('\n  checks:\n', 1)[0]
+        self.assertIn('image: ${{ needs.builder.outputs.image }}', affected_job)
         self.assertIn('    needs: [builder, select]', affected_job)
         builder_job = CHECK.split('  builder:\n', 1)[1].split('  select:\n', 1)[0]
         self.assertIn('DOCKER_BUILDKIT: "1"', builder_job)
