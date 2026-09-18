@@ -944,7 +944,8 @@ fn pairing_code(device_public_key: [u8; 32], relay_service_node_id: [u8; 32]) ->
     input.extend(device_public_key);
     input.extend(relay_service_node_id);
     let digest = blake3::hash(&input);
-    let number = u32::from_le_bytes(digest.as_bytes()[..4].try_into().expect("four bytes"));
+    let [first, second, third, fourth, ..] = *digest.as_bytes();
+    let number = u32::from_le_bytes([first, second, third, fourth]);
     format!("{:06}", number % 1_000_000)
 }
 
@@ -972,12 +973,13 @@ fn bind_pair_listener() -> anyhow::Result<UdpSocket> {
 fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
     let socket = bind_pair_listener()?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    let deadline = std::time::Instant::now() + socket_timeout(timeout);
-    let mut packet = [0_u8; MAX_PACKET];
+    let deadline = deadline_after(socket_timeout(timeout))?;
+    let mut packet = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         match socket.recv_from(&mut packet) {
             Ok((len, _)) => {
-                let Ok(solicitation) = postcard::from_bytes::<PairSolicitation>(&packet[..len])
+                let Ok(solicitation) =
+                    postcard::from_bytes::<PairSolicitation>(received_packet(&packet, len)?)
                 else {
                     continue;
                 };
@@ -1340,6 +1342,18 @@ fn socket_timeout(seconds: u64) -> Duration {
     Duration::from_secs(seconds.clamp(1, 300))
 }
 
+fn deadline_after(duration: Duration) -> anyhow::Result<std::time::Instant> {
+    std::time::Instant::now()
+        .checked_add(duration)
+        .context("enrollment timeout exceeds the platform clock range")
+}
+
+fn received_packet(buffer: &[u8], received: usize) -> anyhow::Result<&[u8]> {
+    buffer
+        .get(..received)
+        .context("socket reported a packet larger than its receive buffer")
+}
+
 fn validate_requester(lease: Option<tilo_relay::ProcessLease>) -> anyhow::Result<()> {
     if let Some(lease) = lease {
         lease
@@ -1418,15 +1432,15 @@ fn join_with_token(
     let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let deadline = std::time::Instant::now() + socket_timeout(timeout);
+    let deadline = deadline_after(socket_timeout(timeout))?;
     let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, PORT);
-    let mut reply = [0_u8; MAX_PACKET];
+    let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         validate_requester(requester_lease)?;
         socket.send_to(&bytes, destination)?;
         match socket.recv_from(&mut reply) {
             Ok((len, sender)) => {
-                let response_bytes = reply[..len].to_vec();
+                let response_bytes = received_packet(&reply, len)?.to_vec();
                 validate_requester(requester_lease)?;
                 let Ok(response) = decrypt_response(
                     &response_bytes,
@@ -1483,14 +1497,14 @@ fn join_with_token(
                 };
                 let ack = make_ack(&response_bytes, token.nonce, &device)?;
                 socket.set_read_timeout(Some(Duration::from_millis(300)))?;
-                let completion_deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let completion_deadline = deadline_after(Duration::from_secs(10))?;
                 while std::time::Instant::now() < completion_deadline {
                     validate_requester(requester_lease)?;
                     socket.send_to(&ack, sender)?;
                     match socket.recv_from(&mut reply) {
                         Ok((final_len, final_sender)) if final_sender == sender => {
                             if verify_finalized(
-                                &reply[..final_len],
+                                received_packet(&reply, final_len)?,
                                 &response_bytes,
                                 token.nonce,
                                 device.verifying_key().to_bytes(),
@@ -1554,10 +1568,11 @@ fn join_with_token(
                                             &response.payload.cert.user_public_key,
                                         )
                                         .parent(),
-                                ] {
-                                    if let Some(directory) = directory {
-                                        restore_owner_from_directory(directory, &identity_root)?;
-                                    }
+                                ]
+                                .into_iter()
+                                .flatten()
+                                {
+                                    restore_owner_from_directory(directory, &identity_root)?;
                                 }
                                 for output in [
                                     &paths.user_pubkey,
@@ -1661,14 +1676,15 @@ fn pair(
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
     let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, PORT);
-    let deadline = std::time::Instant::now() + socket_timeout(timeout);
-    let mut reply = [0_u8; MAX_PACKET];
+    let deadline = deadline_after(socket_timeout(timeout))?;
+    let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         validate_requester(requester_lease)?;
         socket.send_to(&solicitation, destination)?;
         match socket.recv_from(&mut reply) {
             Ok((len, _sender)) => {
-                let Ok(token_text) = decrypt_pair_offer(&reply[..len], &device) else {
+                let Ok(token_text) = decrypt_pair_offer(received_packet(&reply, len)?, &device)
+                else {
                     continue;
                 };
                 let Ok(token) = decode_enrollment_token(token_text.trim()) else {
@@ -1770,8 +1786,8 @@ fn approve(
     if let Some(ready) = ready {
         let _ = ready.send(());
     }
-    let mut packet = [0_u8; MAX_PACKET];
-    let request_deadline = std::time::Instant::now() + socket_timeout(timeout);
+    let mut packet = vec![0_u8; MAX_PACKET];
+    let request_deadline = deadline_after(socket_timeout(timeout))?;
     let mut selected_nearby: Option<(PairSolicitation, String, Vec<u8>)> = None;
     let (request, request_ephemeral_public_key, token, sender) = loop {
         if std::time::Instant::now() >= request_deadline {
@@ -1789,7 +1805,8 @@ fn approve(
             }
             Err(error) => return Err(error.into()),
         };
-        if let Ok(solicitation) = postcard::from_bytes::<PairSolicitation>(&packet[..len]) {
+        let packet_bytes = received_packet(&packet, len)?;
+        if let Ok(solicitation) = postcard::from_bytes::<PairSolicitation>(packet_bytes) {
             if !valid_solicitation(&solicitation)
                 || solicitation.kind != kind
                 || expected.is_some_and(|(device, service)| {
@@ -1840,7 +1857,7 @@ fn approve(
             }
             continue;
         }
-        let Ok((request, request_ephemeral_public_key)) = decrypt_request(&packet[..len], &device)
+        let Ok((request, request_ephemeral_public_key)) = decrypt_request(packet_bytes, &device)
         else {
             continue;
         };
@@ -1949,14 +1966,14 @@ fn approve(
         request_ephemeral_public_key,
     )?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    let ack_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let ack_deadline = deadline_after(Duration::from_secs(10))?;
     let mut acked = false;
     while std::time::Instant::now() < ack_deadline {
         socket.send_to(&response, sender)?;
         match socket.recv_from(&mut packet) {
             Ok((len, ack_sender)) if ack_sender == sender => {
                 if verify_ack(
-                    &packet[..len],
+                    received_packet(&packet, len)?,
                     &response,
                     token.nonce,
                     request.device_public_key,
