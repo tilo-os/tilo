@@ -75,7 +75,7 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     // Live and headless launches restore the same persistent image content.
     configure_blob_store();
     photos::strings::install();
-    let mut app = photos::PhotosApp::new();
+    let mut app = photos::PhotosApp::new_persistent();
     if args.value("--import-directory").is_some() || args.has("--library") {
         app.show_library();
     }
@@ -100,7 +100,7 @@ fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persis
     configure_blob_store();
     let (mut state, autosave) = ui::persist::open(app_id);
     if let Some(path) = requested_path(args) {
-        let mut opener = photos::PhotosApp::new();
+        let mut opener = photos::PhotosApp::new_persistent();
         photos::strings::install();
         opener.open_path(&mut state.doc, path);
     }
@@ -219,7 +219,11 @@ fn render_scenario(
     // necessary. A library shot gets a few more *offscreen-only* frames so
     // its real background thumbnail worker can settle; the live UI never
     // waits for a decode.
-    let settle_frames = if matches!(
+    let settle_frames = if matches!(scenario, "people" | "people-detail") {
+        // People cards intentionally use real library thumbnails rather than
+        // avatar placeholders, so let the bounded decoder queue settle.
+        20
+    } else if matches!(
         scenario,
         "library"
             | "places"
