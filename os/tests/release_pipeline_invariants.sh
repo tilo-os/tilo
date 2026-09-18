@@ -169,16 +169,20 @@ grep -Fq 'with_browser=0' "$os" \
 if [ "$(grep -Fc '      - "shell/**"' "$os")" -eq 2 ] \
   && [ "$(grep -Fc '      - "ui/**"' "$os")" -eq 2 ] \
   && [ "$(grep -Fc '      - "apps/file-explorer/tests/atspi_smoke.sh"' "$os")" -eq 2 ] \
+  && [ "$(grep -Fc '      - "tools/atspi_external_client.py"' "$os")" -eq 2 ] \
   && [ "$(grep -Fc '      - "tools/check_atspi_endpoint_contract.py"' "$os")" -eq 2 ] \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
+  && grep -Fq 'installed-atspi-apps.sh' "$os" \
   && grep -Fq 'org.a11y.atspi.Action.GetActions' "$repo/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Component.GrabFocus' "$repo/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.EditableText.SetTextContents' "$repo/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Text.GetText 0 -1' "$repo/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'wait_for_names "New Folder"' "$repo/apps/file-explorer/tests/atspi_smoke.sh" \
-  && grep -Fq 'at-spi2-core' "$repo/os/Containerfile"; then
-  ok 'OS release VM and shared-app contract prove AT-SPI actions, focus, text values, and its session bus provider'
+  && grep -Fq 'at-spi2-core' "$repo/os/Containerfile" \
+  && grep -Fq 'atspi-external-client.py' "$repo/os/Containerfile" \
+  && grep -Fq 'accessibility.atspi_acceptance' "$repo/apps/settings/tilo-app.toml"; then
+  ok 'OS release VM drives compositor and manifest-certified app AT-SPI actions over its session bus'
 else
   bad 'AT-SPI release gate can ship an app outside the readable, action-capable desktop endpoint'
 fi
