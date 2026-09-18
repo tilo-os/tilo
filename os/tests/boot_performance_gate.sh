@@ -4,7 +4,7 @@
 # not a customer's UEFI implementation.
 set -euo pipefail
 
-budget_seconds="${TILO_BOOT_USERSPACE_BUDGET_SEC:-30}"
+budget_seconds="${TILO_BOOT_USERSPACE_BUDGET_SEC:-20}"
 case "$budget_seconds" in ''|*[!0-9]*) echo 'invalid boot budget' >&2; exit 2 ;; esac
 if [ "${#budget_seconds}" -gt 3 ] \
    || [ "$budget_seconds" -lt 1 ] \

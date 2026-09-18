@@ -47,24 +47,24 @@ fi
 EOF
 chmod +x "$work/systemctl" "$work/systemd-analyze" "$work/swapon"
 
-PATH="$work:$PATH" TILO_TEST_ACTIVE_US=29999000 \
+PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/pass"
-grep -Fq 'kernel+userspace reached usable greeter in 29.999s (budget: 30s)' "$work/pass"
+grep -Fq 'kernel+userspace reached usable greeter in 19.999s (budget: 20s)' "$work/pass"
 
-if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=30000001 \
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=20000001 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/fail.out" 2>"$work/fail.err"; then
   echo 'boot performance gate accepted an over-budget boot' >&2
   exit 1
 fi
-grep -Fq '30.000s (budget: 30s)' "$work/fail.err"
+grep -Fq '20.000s (budget: 20s)' "$work/fail.err"
 grep -Fq 'mock critical chain' "$work/fail.err"
 
-if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=10000000 TILO_TEST_GREETD_US=30000001 \
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=10000000 TILO_TEST_GREETD_US=20000001 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/late-greeter.out" 2>"$work/late-greeter.err"; then
   echo 'boot performance gate accepted a greeter that became usable over budget' >&2
   exit 1
 fi
-grep -Fq 'usable greeter in 30.000s (budget: 30s)' "$work/late-greeter.err"
+grep -Fq 'usable greeter in 20.000s (budget: 20s)' "$work/late-greeter.err"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=invalid \
   "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/invalid"; then
@@ -150,7 +150,7 @@ if grep -Eq '^(After|Wants)=.*network-online.target|^Before=.*(greetd|graphical)
   exit 1
 fi
 grep -Fq 'After=local-fs.target network.target systemd-tmpfiles-setup.service' "$fs_unit"
-grep -Fq "TILO_BOOT_USERSPACE_BUDGET_SEC=30 /usr/libexec/tilo/boot-performance-gate.sh" \
+grep -Fq "TILO_BOOT_USERSPACE_BUDGET_SEC=20 /usr/libexec/tilo/boot-performance-gate.sh" \
   "$repo/.forgejo/workflows/build-image.yml"
 
 # Native Tilo performs personal setup in the compositor OOBE. The old system
