@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn encrypted_backup_rejects_wrong_password_tampering_and_weak_passwords() {
         let item = SecretItem::login("Mail", "ada", "strong secret");
-        assert!(export_encrypted_backup(&[item.clone()], "short").is_err());
+        assert!(export_encrypted_backup(std::slice::from_ref(&item), "short").is_err());
         let mut backup = export_encrypted_backup(&[item], "a sufficiently long password").unwrap();
         assert!(import_encrypted_backup(&backup, "a different long password").is_err());
         let last = backup.len() - 1;
