@@ -25,6 +25,24 @@ CACHE = driver.cache_configuration(CACHE_ENV)
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_native_payload_never_reads_or_exports_a_kernel_pin(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            (repo / 'os').mkdir()
+            for name, filename in (('BASE_REF', 'base-snapshot.env'), ('RPMS_REF', 'rpms-snapshot.env')):
+                (repo / 'os' / filename).write_text(name + '=' + WPE + '\n')
+            # No kernel-snapshot.env exists, reproducing the real missing ARM
+            # input without mocking the pin reader that previously hid it.
+            with patch.object(driver, 'REPO', repo):
+                for architecture in ('aarch64', 'x86_64'):
+                    pins = driver.selected_pins(architecture, require_kernel=False)
+                    self.assertEqual(pins, {'BASE_REF': WPE, 'RPMS_REF': WPE})
+                    env = driver.build_environment(WPE, '7', REVISION, 'c' * 64,
+                                                   '/signer', CACHE, architecture, pins)
+                    self.assertNotIn('KERNEL_RPMS_REF', env)
+                with self.assertRaises(ValueError):
+                    driver.selected_pins('aarch64')
+
     def test_kernel_pin_selects_native_architecture_and_explicit_candidate(self):
         x86 = 'code.podesta.ai/qos/qos-kernel@sha256:' + '1' * 64
         arm = 'code.podesta.ai/qos/qos-kernel@sha256:' + '2' * 64

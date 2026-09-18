@@ -174,6 +174,11 @@ RPMS_REF="${_tilo_rpms_ref_override:-${RPMS_REF:-}}"
 # tilo-kernel-core out of it.  Cross-time reproducible.
 # An explicit digest is useful while validating a newly published kernel, but
 # it is held to the same repository and signature policy as the tracked pin.
+if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
+  # This target does not depend on the kernel stage. An inert scratch stage
+  # avoids requiring or fabricating an unrelated architecture-specific pin.
+  KERNEL_RPMS_REF=scratch
+else
 _tilo_kernel_ref_override="${KERNEL_RPMS_REF:-}"
 # shellcheck disable=SC1091
 [ -f "$TILO_OS_DIR/kernel-snapshot.env" ] && . "$TILO_OS_DIR/kernel-snapshot.env"
@@ -184,6 +189,7 @@ case "$(uname -m)" in
 esac
 KERNEL_RPMS_REF="${_tilo_kernel_ref_override:-$_tilo_native_kernel_ref}"
 [ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run the build-kernel CI job (or podman build -f os/kernel/Containerfile) first"
+fi
 # Pre-flight: every host-side COPY source exists. Decidable in a second, and the
 # alternative is finding out ~20 minutes in from a message naming a path with a
 # leading slash that exists nowhere — which is how a stale `COPY docs/secure-boot.md`
