@@ -3182,6 +3182,7 @@ impl App {
     fn invoke_published_action(
         &mut self,
         id: u64,
+        invocation: Option<qos_actions::InvocationId>,
         resource: String,
         action: String,
         argument: Option<&str>,
@@ -3191,7 +3192,9 @@ impl App {
         let address = qos_actions::ActionAddress::new(resource, action);
         // Arrival on this directed stream means the broker already performed
         // permission and one-use confirmation-token checks.
-        let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let invocation = invocation.unwrap_or_else(|| {
+            qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)))
+        });
         let result = self.invoke_resource_action(
             &address,
             argument,
@@ -5177,6 +5180,7 @@ impl App {
                     self.apply_document_scrollback(ops, &decrypted_payloads);
                 }
                 CollabEvent::Invocation {
+                    invocation,
                     id,
                     resource,
                     action,
@@ -5186,6 +5190,7 @@ impl App {
                 } => {
                     self.invoke_published_action(
                         id,
+                        invocation,
                         resource,
                         action,
                         argument.as_deref(),
@@ -5340,6 +5345,7 @@ impl App {
                 self.apply_collab_context(collaborators);
             }
             CollabEvent::Invocation {
+                invocation,
                 id,
                 resource,
                 action,
@@ -5348,6 +5354,7 @@ impl App {
                 context,
             } => self.invoke_published_action(
                 id,
+                invocation,
                 resource,
                 action,
                 argument.as_deref(),
@@ -13514,6 +13521,7 @@ mod semantic_tree_app_tests {
         let publication_attempts = app.action_surface_publication_attempts;
 
         app.apply_collab_event_for_test(CollabEvent::Invocation {
+            invocation: None,
             id: 42,
             resource: "test.counter".into(),
             action: "bump".into(),
@@ -13546,8 +13554,11 @@ mod semantic_tree_app_tests {
             .register::<CounterAction>(COUNTER_TYPE);
         app.init_layout();
 
-        let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(43));
+        let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(
+            0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b,
+        ));
         app.apply_collab_event_for_test(CollabEvent::Invocation {
+            invocation: Some(invocation),
             id: 43,
             resource: "test.counter".into(),
             action: "async-bump".into(),
@@ -16431,7 +16442,7 @@ mod bound_component_tests {
         }
         fixture
             .app
-            .invoke_published_action(41, resource, action, None, &actor, None);
+            .invoke_published_action(41, None, resource, action, None, &actor, None);
         assert!(
             fixture
                 .records
@@ -16716,6 +16727,7 @@ mod bound_component_tests {
             assert_eq!(fixture.app.next_broker_request_id, next_id);
             fixture.app.invoke_published_action(
                 50,
+                None,
                 alias.clone(),
                 "follow-up".into(),
                 None,

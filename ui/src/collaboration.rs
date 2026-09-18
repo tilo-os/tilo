@@ -429,6 +429,7 @@ pub enum CollabEvent {
     /// connection by the session action broker.
     Invocation {
         id: u64,
+        invocation: Option<qos_actions::InvocationId>,
         resource: String,
         action: String,
         argument: Option<String>,
@@ -2889,7 +2890,7 @@ async fn spawn_invocation_stream(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &InboundBridge,
 ) {
-    if let Ok(stream) = channel.subscribe_invocations().await {
+    if let Ok(stream) = channel.subscribe_stable_invocations().await {
         let tx = inbound_tx.clone();
         let cancellation_channel = channel.clone();
         tokio::task::spawn_local(async move {
@@ -2898,6 +2899,8 @@ async fn spawn_invocation_stream(
                 let context = parse_invocation_context(id, &invocation.context_json);
                 if !tx.send_durable(CollabEvent::Invocation {
                     id,
+                    invocation: invocation.invocation_uuid
+                        .map(|bytes| qos_actions::InvocationId(uuid::Uuid::from_bytes(bytes))),
                     resource: invocation.resource,
                     action: invocation.action,
                     argument: invocation.argument,

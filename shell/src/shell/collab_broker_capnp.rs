@@ -13,6 +13,11 @@
 //! exhausted-but-empty batch triggers no fallback push, callers repeat the
 //! fetch instead.
 
+#[path = "invocation_journal.rs"]
+mod invocation_journal;
+pub(crate) use invocation_journal::DurableInvocation;
+use invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
@@ -380,6 +385,7 @@ pub struct PublishedSurface {
 #[derive(Clone, Debug)]
 struct InvocationEnvelope {
     id: u64,
+    invocation: qos_actions::InvocationId,
     resource: String,
     action: String,
     argument: Option<String>,
@@ -428,6 +434,7 @@ pub struct InvocationJob {
 }
 
 struct PendingInvocation {
+    journal_key: Option<InvocationKey>,
     peer_id: u64,
     tx: std::sync::mpsc::Sender<InvocationCompletion>,
     update: qos_actions::InvocationUpdate,
@@ -445,6 +452,331 @@ struct PendingInvocation {
     last_activity: std::time::Instant,
     /// Starts the shorter acknowledgement deadline for cooperative cancel.
     cancellation_requested_at: Option<std::time::Instant>,
+}
+
+/// An opaque certified person admission. Its root/device are never accepted
+/// from action payload strings; the existing certificate/proof verifier owns
+/// construction and every operation rechecks current certificate/membership.
+#[derive(Clone)]
+pub(crate) struct VerifiedActionCaller {
+    room: String,
+    presentation: Vec<u8>,
+    admitted: AdmittedJoinIdentity,
+}
+
+impl VerifiedActionCaller {
+    fn owner(&self) -> InvocationOwner {
+        InvocationOwner::Certified {
+            root: self.admitted.verified.user_public_key,
+            device: self.admitted.verified.device_public_key,
+        }
+    }
+}
+
+/// Inert transport-neutral request. `host` is the durable broker authority,
+/// not an actor supplied by the remote caller. Task4c must also bind this to
+/// the certified recipient device before entering this API.
+#[derive(Clone, Debug)]
+pub(crate) struct CallerInvocation {
+    pub invocation: qos_actions::InvocationId,
+    pub host: uuid::Uuid,
+    pub peer_id: u64,
+    pub app_id: String,
+    pub record_id: String,
+    pub resource: String,
+    pub action: String,
+    pub argument: Option<String>,
+}
+
+impl CallerInvocation {
+    fn intent(&self) -> serde_json::Value {
+        serde_json::json!({ "peer_id": self.peer_id, "app_id": self.app_id,
+            "record_id": self.record_id, "resource": self.resource,
+            "action": self.action, "argument": self.argument })
+    }
+}
+
+impl PendingInvocation {
+    fn completion_owner(&self) -> String {
+        match self.journal_key.as_ref().map(|key| &key.owner) {
+            Some(InvocationOwner::Certified { device, .. }) => {
+                format!("certified-device:{}", hex::encode(device))
+            }
+            _ => self.actor.clone(),
+        }
+    }
+    fn is_certified(&self) -> bool {
+        self.journal_key
+            .as_ref()
+            .is_some_and(|key| matches!(key.owner, InvocationOwner::Certified { .. }))
+    }
+}
+
+impl CapnpBrokerState {
+    pub(crate) fn invocation_host(&self) -> Result<uuid::Uuid, String> {
+        self.journal
+            .lock()
+            .map_err(|_| "invocation journal unavailable")?
+            .as_ref()
+            .map_err(Clone::clone)?
+            .as_ref()
+            .map(InvocationJournal::host)
+            .ok_or_else(|| "durable admission unavailable".into())
+    }
+
+    pub(crate) fn verify_action_caller(
+        &self,
+        room: &str,
+        presentation: &[u8],
+    ) -> Result<VerifiedActionCaller, String> {
+        // The local certified presentation format also binds the exact room.
+        // No caller-controlled `is_agent` or principal string enters this door.
+        if uuid::Uuid::parse_str(room).is_err() || presentation.len() > 16 * 1024 {
+            return Err("invalid certified invocation caller".into());
+        }
+        let admitted = verify_join_identity(
+            &CrdtRoute::cluster(room),
+            presentation,
+            self.membership.as_ref(),
+            self.trusted_devices.as_deref().map(Vec::as_slice),
+        )?;
+        Ok(VerifiedActionCaller {
+            room: room.into(),
+            presentation: presentation.into(),
+            admitted,
+        })
+    }
+
+    fn current_action_caller(
+        &self,
+        caller: &VerifiedActionCaller,
+    ) -> Result<AdmittedJoinIdentity, String> {
+        let current = self.verify_action_caller(&caller.room, &caller.presentation)?;
+        if current.owner() != caller.owner() {
+            return Err("certified caller changed".into());
+        }
+        Ok(current.admitted)
+    }
+
+    fn caller_key(
+        &self,
+        caller: &VerifiedActionCaller,
+        invocation: qos_actions::InvocationId,
+    ) -> Result<InvocationKey, String> {
+        Ok(InvocationKey {
+            room: caller.room.clone(),
+            host: self.invocation_host()?,
+            owner: caller.owner(),
+            invocation,
+        })
+    }
+
+    fn authorize_durable_result(
+        &self,
+        caller: &VerifiedActionCaller,
+        record: &DurableInvocation,
+    ) -> Result<(), String> {
+        let current = self.current_action_caller(caller)?;
+        let contract: qos_actions::ActionContract =
+            serde_json::from_value(record.intent["contract"].clone())
+                .map_err(|_| "journal action contract invalid")?;
+        let app = record.intent["app_id"]
+            .as_str()
+            .ok_or("journal app invalid")?;
+        let action = record.intent["action"]
+            .as_str()
+            .ok_or("journal action invalid")?;
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?;
+        let tree = membership.read();
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|w| w.room.to_string() == caller.room)
+            .ok_or("workspace no longer hosted")?;
+        let actor = workspace.actor_for_person(&current.principal_id);
+        let verb = match contract.permission {
+            qos_actions::PermissionRequirement::None => None,
+            qos_actions::PermissionRequirement::Read => Some(Verb::Read),
+            qos_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+            qos_actions::PermissionRequirement::Write => Some(Verb::Write),
+            qos_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+            qos_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+        };
+        if verb.is_some_and(|verb| {
+            workspace.decide(
+                &actor,
+                &ResourceRef::Action {
+                    app: app.into(),
+                    action: action.into(),
+                },
+                verb,
+            ) != CapDecision::Allow
+        }) {
+            return Err("caller no longer authorized for invocation".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verified_invocation_status(
+        &self,
+        caller: &VerifiedActionCaller,
+        invocation: qos_actions::InvocationId,
+    ) -> Result<Option<DurableInvocation>, String> {
+        self.current_action_caller(caller)?;
+        self.expire_stale_invocations();
+        let key = self.caller_key(caller, invocation)?;
+        let record = self
+            .journal
+            .lock()
+            .map_err(|_| "invocation journal unavailable")?
+            .as_ref()
+            .map_err(Clone::clone)?
+            .as_ref()
+            .ok_or("durable admission unavailable")?
+            .lookup(&key)?;
+        if let Some(record) = &record {
+            self.authorize_durable_result(caller, record)?;
+        }
+        Ok(record)
+    }
+
+    pub(crate) fn start_verified_invocation(
+        &self,
+        caller: &VerifiedActionCaller,
+        request: &CallerInvocation,
+        confirmation: Option<&str>,
+    ) -> Result<DurableInvocation, String> {
+        let _admission = self
+            .admission_lock
+            .lock()
+            .map_err(|_| "invocation admission unavailable")?;
+        let admitted = self.current_action_caller(caller)?;
+        if request.host != self.invocation_host()?
+            || request.invocation.0.is_nil()
+            || request.peer_id == ui::collaboration::CURRENT_CONNECTION_PEER_ID
+            || [
+                &request.app_id,
+                &request.record_id,
+                &request.resource,
+                &request.action,
+            ]
+            .iter()
+            .any(|s| s.len() > 512)
+            || request
+                .argument
+                .as_ref()
+                .is_some_and(|s| s.len() > 256 * 1024)
+        {
+            return Err("invalid invocation target or bounds".into());
+        }
+        if let Some(record) = self.verified_invocation_status(caller, request.invocation)? {
+            if record.intent["request"] != request.intent() {
+                return Err("invocation identity reused with different intent".into());
+            }
+            return Ok(record);
+        }
+        let offered = self
+            .surfaces
+            .lock()
+            .map_err(|_| "action catalogue unavailable")?
+            .get(&request.peer_id)
+            .cloned()
+            .filter(|surface| {
+                surface.live
+                    && surface.route.cluster_id == caller.room
+                    && surface.app_id == request.app_id
+                    && surface.route.record_id == request.record_id
+            })
+            .and_then(|surface| {
+                let action = surface
+                    .actions
+                    .iter()
+                    .find(|a| a.resource == request.resource && a.action == request.action)?
+                    .clone();
+                Some((surface, action))
+            })
+            .ok_or("action no longer offered in this exact room/app/record")?;
+        self.dispatch_invocation_from_offered(
+            request.peer_id,
+            offered,
+            request.argument.as_deref(),
+            &admitted.broker_actor(),
+            confirmation,
+            None,
+            Some((caller, request)),
+            None,
+        )?;
+        self.verified_invocation_status(caller, request.invocation)?
+            .ok_or_else(|| "admitted invocation missing".into())
+    }
+
+    pub(crate) fn cancel_verified_invocation(
+        &self,
+        caller: &VerifiedActionCaller,
+        invocation: qos_actions::InvocationId,
+    ) -> Result<DurableInvocation, String> {
+        let record = self
+            .verified_invocation_status(caller, invocation)?
+            .ok_or("unknown invocation")?;
+        let mut registry = self
+            .pending_invocations
+            .lock()
+            .map_err(|_| "invocation registry unavailable")?;
+        let pending = registry
+            .get_mut(&record.wire_id)
+            .filter(|p| p.journal_key.as_ref() == Some(&record.key))
+            .ok_or("invocation is not running")?;
+        if !pending.cancellable {
+            return Err("action did not declare cancellation".into());
+        }
+        self.persist_cancellation(pending)?;
+        pending
+            .cancellation_requested_at
+            .get_or_insert_with(std::time::Instant::now);
+        self.cancellation_requests
+            .lock()
+            .map_err(|_| "cancellation registry unavailable")?
+            .insert(record.wire_id);
+        drop(registry);
+        self.verified_invocation_status(caller, invocation)?
+            .ok_or_else(|| "invocation missing".into())
+    }
+
+    fn persist_cancellation(&self, pending: &PendingInvocation) -> Result<(), String> {
+        if let Some(key) = &pending.journal_key {
+            self.journal
+                .lock()
+                .map_err(|_| "invocation journal unavailable")?
+                .as_mut()
+                .map_err(|e| e.clone())?
+                .as_mut()
+                .ok_or("durable admission unavailable")?
+                .cancel(key)?;
+        }
+        Ok(())
+    }
+
+    fn persist_invocation(
+        &self,
+        pending: &PendingInvocation,
+        update: qos_actions::InvocationUpdate,
+        uncertain: bool,
+    ) -> Result<(), String> {
+        if let Some(key) = &pending.journal_key {
+            self.journal
+                .lock()
+                .map_err(|_| "invocation journal unavailable")?
+                .as_mut()
+                .map_err(|e| e.clone())?
+                .as_mut()
+                .ok_or("durable admission unavailable")?
+                .update(key, update, uncertain)?;
+        }
+        Ok(())
+    }
 }
 
 /// A live application's pull-only directory.  Keeping the certified route
@@ -1015,6 +1347,11 @@ pub struct CapnpBrokerState {
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
+    /// Admission serialization covers policy, one-use confirmation, the durable
+    /// barrier and the single application delivery. Never held across awaits.
+    admission_lock: Mutex<()>,
+    journal: Mutex<Result<Option<InvocationJournal>, String>>,
+    stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
     completed_invocations: Mutex<HashMap<u64, (String, qos_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
@@ -1098,7 +1435,7 @@ impl CapnpBrokerState {
                 message: message.into(),
             };
             let update = qos_actions::InvocationUpdate::Failed {
-                invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+                invocation: pending.update.invocation(),
                 error: qos_actions::ActionFailure {
                     code: completion.code.clone(),
                     message: completion.message.clone(),
@@ -1106,12 +1443,28 @@ impl CapnpBrokerState {
                     retryable: pending.retryable_on_disconnect,
                 },
             };
-            self.record_effect_receipt(&pending, &update);
-            self.record_completion(id, pending.actor.clone(), update);
+            let (update, completion) = if pending.journal_key.is_some() {
+                let update = invocation_journal::unknown(pending.update.invocation());
+                let completion = InvocationCompletion {
+                    code: "action_outcome_unknown".into(),
+                    message: "application outcome unknown after silence".into(),
+                };
+                (update, completion)
+            } else {
+                (update, completion)
+            };
+            if self
+                .persist_invocation(&pending, update.clone(), pending.journal_key.is_some())
+                .is_err()
+            {
+                continue;
+            }
+            self.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = self.cancellation_requests.lock() {
                 requests.remove(&id);
             }
             let _ = pending.tx.send(completion);
+            self.record_effect_receipt(&pending, &update);
         }
     }
 
@@ -1177,6 +1530,20 @@ impl CapnpBrokerState {
     ) {
         let (bridge_tx, bridge_rx) =
             std::sync::mpsc::sync_channel(ActionDirectoryRequestQueue::CAPACITY);
+        let journal = membership
+            .as_ref()
+            .and_then(|tree| tree.read().persist_path.clone())
+            .map(|path| {
+                let mut name = path.into_os_string();
+                name.push(".invocations");
+                InvocationJournal::open(&PathBuf::from(name))
+            })
+            .transpose();
+        let next_invocation = journal
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .map_or(1, InvocationJournal::next_wire_id);
         (
             Arc::new(Self {
                 channels: Mutex::new(HashMap::new()),
@@ -1194,13 +1561,16 @@ impl CapnpBrokerState {
                 invocation_subscribers: Mutex::new(HashMap::new()),
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
+                admission_lock: Mutex::new(()),
+                journal: Mutex::new(journal),
+                stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
                 task_subscribers: Mutex::new(HashMap::new()),
                 pending_task_runs: Mutex::new(HashMap::new()),
                 task_run_id: AtomicU64::new(1),
-                invocation_id: AtomicU64::new(1),
+                invocation_id: AtomicU64::new(next_invocation),
                 workspace_control_network: Mutex::new(None),
             }),
             bridge_rx,
@@ -1701,6 +2071,7 @@ impl CapnpBrokerState {
                 actor,
                 confirmation_token.as_deref(),
                 None,
+                Some(revision),
             )
             .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
         let initial_update = self
@@ -2171,6 +2542,7 @@ impl CapnpBrokerState {
             actor,
             confirmation_token,
             context,
+            None,
         )
     }
 
@@ -2191,6 +2563,35 @@ impl CapnpBrokerState {
         actor: &BrokerActor,
         confirmation_token: Option<&str>,
         context: Option<qos_actions::ActionContext>,
+        revision: Option<&str>,
+    ) -> Result<InvocationJob, String> {
+        let _admission = self
+            .admission_lock
+            .lock()
+            .map_err(|_| "invocation admission unavailable")?;
+        self.dispatch_invocation_from_offered(
+            peer_id,
+            offered,
+            argument,
+            actor,
+            confirmation_token,
+            context,
+            None,
+            revision,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_invocation_from_offered(
+        &self,
+        peer_id: u64,
+        offered: (PublishedSurface, PublishedAction),
+        argument: Option<&str>,
+        actor: &BrokerActor,
+        confirmation_token: Option<&str>,
+        context: Option<qos_actions::ActionContext>,
+        durable: Option<(&VerifiedActionCaller, &CallerInvocation)>,
+        revision: Option<&str>,
     ) -> Result<InvocationJob, String> {
         let sender = self
             .invocation_subscribers
@@ -2237,6 +2638,24 @@ impl CapnpBrokerState {
             return Err("the caller is not allowed to invoke that application action".into());
         }
         drop(tree);
+        if durable.is_some()
+            && !self
+                .stable_invocation_subscribers
+                .lock()
+                .map_err(|_| "application capability unavailable")?
+                .contains(&peer_id)
+        {
+            return Err("application_stable_identity_unavailable".into());
+        }
+        // A configured but unreadable/corrupt journal disables every new admission.
+        let mut journal_guard = self
+            .journal
+            .lock()
+            .map_err(|_| "invocation journal unavailable")?;
+        let journal = journal_guard.as_mut().map_err(|error| error.clone())?;
+        if durable.is_some() && journal.is_none() {
+            return Err("durable admission unavailable".into());
+        }
         if !matches!(
             offered.1.contract.confirmation,
             qos_actions::ConfirmationPolicy::None
@@ -2263,7 +2682,14 @@ impl CapnpBrokerState {
                 );
             }
         }
-        let id = self.invocation_id.fetch_add(1, Ordering::Relaxed);
+        let id = self
+            .invocation_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| "invocation handle space exhausted")?;
+        let invocation = durable.map_or_else(
+            || qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+            |(_, request)| request.invocation,
+        );
         let (tx, rx) = std::sync::mpsc::channel();
         let mut receipt_context = qos_actions::ActionContext::for_resource(
             &offered.1.action_label,
@@ -2275,19 +2701,44 @@ impl CapnpBrokerState {
         if let Some(ambient) = &context {
             receipt_context = receipt_context.enriched_by(ambient);
         }
+        let journal_key = if let Some(journal) = journal.as_mut() {
+            let key = InvocationKey {
+                room: offered.0.route.cluster_id.clone(),
+                host: journal.host(),
+                invocation,
+                owner: durable.map_or_else(
+                    || InvocationOwner::Local {
+                        actor: actor.id.clone(),
+                    },
+                    |(caller, _)| caller.owner(),
+                ),
+            };
+            let request = durable.map_or_else(|| serde_json::json!({
+                "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
+                "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
+            }), |(_, request)| request.intent());
+            let intent = serde_json::json!({ "request": request,
+                "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
+                "context": receipt_context, "app_id": offered.0.app_id,
+                "action": offered.1.action, "revision": revision });
+            if !journal.admit(key.clone(), intent, id)? {
+                return Err("invocation already admitted".into());
+            }
+            Some(key)
+        } else {
+            None
+        };
+        drop(journal_guard);
         self.pending_invocations
             .lock()
             .map_err(|_| "the invocation registry is unavailable".to_string())?
             .insert(
                 id,
                 PendingInvocation {
+                    journal_key: journal_key.clone(),
                     peer_id,
                     tx,
-                    update: qos_actions::InvocationUpdate::Accepted {
-                        invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(
-                            id,
-                        ))),
-                    },
+                    update: qos_actions::InvocationUpdate::Accepted { invocation },
                     last_sequence: 0,
                     actor: actor.id.clone(),
                     cancellable: matches!(
@@ -2315,6 +2766,7 @@ impl CapnpBrokerState {
         if sender
             .send(InvocationEnvelope {
                 id,
+                invocation,
                 resource: offered.1.resource.clone(),
                 action: offered.1.action.clone(),
                 argument: argument.map(str::to_string),
@@ -2323,11 +2775,19 @@ impl CapnpBrokerState {
             })
             .is_err()
         {
-            let _ = self
+            if let Some(pending) = self
                 .pending_invocations
                 .lock()
-                .map(|mut pending| pending.remove(&id));
-            return Err("the application invocation stream closed".into());
+                .ok()
+                .and_then(|mut jobs| jobs.remove(&id))
+            {
+                let _ = self.persist_invocation(
+                    &pending,
+                    invocation_journal::unknown(invocation),
+                    true,
+                );
+            }
+            return Err("the application invocation stream closed; outcome unknown".into());
         }
         Ok(InvocationJob { id, completion: rx })
     }
@@ -2354,7 +2814,7 @@ impl CapnpBrokerState {
             .map(|pending| {
                 pending
                     .iter()
-                    .filter(|(_, job)| job.actor == actor)
+                    .filter(|(_, job)| job.actor == actor && !job.is_certified())
                     .map(|(id, job)| (*id, job.update.clone()))
                     .collect::<Vec<_>>()
             })
@@ -2385,7 +2845,7 @@ impl CapnpBrokerState {
         let job = pending
             .get(&id)
             .ok_or_else(|| "the invocation is not running".to_string())?;
-        if job.actor != actor {
+        if job.actor != actor || job.is_certified() {
             return Err("only the invocation owner may cancel it".into());
         }
         if !job.cancellable {
@@ -2394,6 +2854,7 @@ impl CapnpBrokerState {
         let job = pending
             .get_mut(&id)
             .ok_or_else(|| "the invocation is not running".to_string())?;
+        self.persist_cancellation(job)?;
         job.cancellation_requested_at
             .get_or_insert_with(std::time::Instant::now);
         drop(pending);
@@ -2412,7 +2873,7 @@ impl CapnpBrokerState {
             .and_then(|pending| {
                 pending
                     .get(&id)
-                    .map(|job| job.cancellable && job.actor == actor)
+                    .map(|job| job.cancellable && job.actor == actor && !job.is_certified())
             })
             .unwrap_or(false)
     }
@@ -2726,6 +3187,9 @@ impl CapnpBrokerState {
             roots.remove(&peer_id);
         }
         self.refresh_action_directory_root_snapshot();
+        if let Ok(mut capabilities) = self.stable_invocation_subscribers.lock() {
+            capabilities.remove(&peer_id);
+        }
         if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
@@ -2747,9 +3211,7 @@ impl CapnpBrokerState {
                         message: "application disconnected before completing the action".into(),
                     };
                     let update = qos_actions::InvocationUpdate::Failed {
-                        invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(
-                            id,
-                        ))),
+                        invocation: invocation.update.invocation(),
                         error: qos_actions::ActionFailure {
                             code: completion.code.clone(),
                             message: completion.message.clone(),
@@ -2757,12 +3219,33 @@ impl CapnpBrokerState {
                             retryable: invocation.retryable_on_disconnect,
                         },
                     };
-                    self.record_effect_receipt(&invocation, &update);
-                    self.record_completion(id, invocation.actor.clone(), update);
+                    let (update, completion) = if invocation.journal_key.is_some() {
+                        (
+                            invocation_journal::unknown(invocation.update.invocation()),
+                            InvocationCompletion {
+                                code: "action_outcome_unknown".into(),
+                                message: "application outcome unknown after disconnect".into(),
+                            },
+                        )
+                    } else {
+                        (update, completion)
+                    };
+                    if self
+                        .persist_invocation(
+                            &invocation,
+                            update.clone(),
+                            invocation.journal_key.is_some(),
+                        )
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    self.record_completion(id, invocation.completion_owner(), update.clone());
                     if let Ok(mut requests) = self.cancellation_requests.lock() {
                         requests.remove(&id);
                     }
                     let _ = invocation.tx.send(completion);
+                    self.record_effect_receipt(&invocation, &update);
                 }
             }
         }
@@ -4079,7 +4562,7 @@ impl channel_handle::Server for CapnpChannelHandle {
 
     fn subscribe_invocations(
         self: Rc<Self>,
-        _params: channel_handle::SubscribeInvocationsParams,
+        params: channel_handle::SubscribeInvocationsParams,
         mut results: channel_handle::SubscribeInvocationsResults,
     ) -> Promise<(), capnp::Error> {
         if let Err(error) = self
@@ -4087,6 +4570,21 @@ impl channel_handle::Server for CapnpChannelHandle {
             .revalidate_admission(&self.route(), &self.verified_identity)
         {
             return Promise::err(error);
+        }
+        let stable = match params.get() {
+            Ok(request) => request.get_stable_invocation_ids(),
+            Err(error) => return Promise::err(error),
+        };
+        if let Ok(mut capabilities) = self.state.stable_invocation_subscribers.lock() {
+            if stable {
+                capabilities.insert(self.peer_id);
+            } else {
+                capabilities.remove(&self.peer_id);
+            }
+        } else {
+            return Promise::err(capnp::Error::failed(
+                "application capability registry unavailable".into(),
+            ));
         }
         let (tx, rx) = mpsc::unbounded_channel();
         if let Ok(mut subscribers) = self.state.invocation_subscribers.lock() {
@@ -4308,9 +4806,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                     })?;
             }
             let pending = registry
-                .remove(&id)
+                .get(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
-            let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+            let invocation = pending.update.invocation();
             let update = if completion.code.is_empty() {
                 qos_actions::InvocationUpdate::Succeeded {
                     invocation,
@@ -4327,13 +4825,19 @@ impl channel_handle::Server for CapnpChannelHandle {
                     },
                 }
             };
+            state
+                .persist_invocation(pending, update.clone(), false)
+                .map_err(capnp::Error::failed)?;
+            let pending = registry
+                .remove(&id)
+                .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
             drop(registry);
-            state.record_effect_receipt(&pending, &update);
-            state.record_completion(id, pending.actor.clone(), update);
+            state.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
             }
             let _ = pending.tx.send(completion);
+            state.record_effect_receipt(&pending, &update);
             Ok(())
         })
     }
@@ -4357,12 +4861,6 @@ impl channel_handle::Server for CapnpChannelHandle {
                 serde_json::from_str(json).map_err(|error| {
                     capnp::Error::failed(format!("invalid invocation update: {error}"))
                 })?;
-            let expected = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-            if update.invocation() != expected {
-                return Err(capnp::Error::failed(
-                    "invocation update identity mismatch".into(),
-                ));
-            }
             let mut registry = state
                 .pending_invocations
                 .lock()
@@ -4371,7 +4869,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .get_mut(&id)
                 .filter(|pending| pending.peer_id == peer_id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
-            pending.last_activity = std::time::Instant::now();
+            if update.invocation() != pending.update.invocation() {
+                return Err(capnp::Error::failed(
+                    "invocation update identity mismatch".into(),
+                ));
+            }
+            let mut next_sequence = pending.last_sequence;
             if matches!(&update, qos_actions::InvocationUpdate::Accepted { .. }) {
                 return Err(capnp::Error::failed(
                     "invocation acceptance is owned by the broker".into(),
@@ -4408,7 +4911,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         "invocation progress cannot exceed its total".into(),
                     ));
                 }
-                pending.last_sequence = *sequence;
+                next_sequence = *sequence;
             }
             if let qos_actions::InvocationUpdate::Item {
                 sequence, value, ..
@@ -4430,7 +4933,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         "streamed item violated its published contract: {error}"
                     ))
                 })?;
-                pending.last_sequence = *sequence;
+                next_sequence = *sequence;
             }
             if let qos_actions::InvocationUpdate::Succeeded { output, .. } = &update {
                 pending.result.validate(output).map_err(|error| {
@@ -4458,6 +4961,11 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "non-cancellable action reported cancellation".into(),
                 ));
             }
+            state
+                .persist_invocation(pending, update.clone(), false)
+                .map_err(capnp::Error::failed)?;
+            pending.last_activity = std::time::Instant::now();
+            pending.last_sequence = next_sequence;
             pending.update = update.clone();
             if update.is_terminal() {
                 let completion = match &update {
@@ -4485,12 +4993,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                     .remove(&id)
                     .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
                 drop(registry);
-                state.record_effect_receipt(&pending, &update);
-                state.record_completion(id, pending.actor.clone(), update);
+                state.record_completion(id, pending.completion_owner(), update.clone());
                 if let Ok(mut requests) = state.cancellation_requests.lock() {
                     requests.remove(&id);
                 }
                 let _ = pending.tx.send(completion);
+                state.record_effect_receipt(&pending, &update);
             }
             Ok(())
         })
@@ -6020,6 +6528,7 @@ impl invocation_stream::Server for InvocationStreamServer {
             drop(guard);
             let mut result = results.get();
             result.set_id(invocation.id);
+            result.set_invocation_uuid(invocation.invocation.0.as_bytes());
             result.set_resource(&invocation.resource);
             result.set_action(&invocation.action);
             result.set_argument(invocation.argument.as_deref().unwrap_or(""));
@@ -6243,7 +6752,6 @@ pub fn spawn(
     workspace_control_network: Option<Arc<crate::shell::network::ShellNetwork>>,
     quit: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
-    let _ = std::fs::remove_file(&socket_path);
     let wired = publisher.is_wired();
     let (state, bridge_rx) = CapnpBrokerState::new(
         fanout,
@@ -6252,6 +6760,16 @@ pub fn spawn(
         membership,
         trusted_devices,
     );
+    {
+        let journal = state
+            .journal
+            .lock()
+            .map_err(|_| std::io::Error::other("invocation journal unavailable"))?;
+        journal
+            .as_ref()
+            .map_err(|error| std::io::Error::other(error.clone()))?;
+    }
+    let _ = std::fs::remove_file(&socket_path);
     if let Some(network) = workspace_control_network.as_ref() {
         state.attach_workspace_control_network(network);
     }
@@ -6730,13 +7248,8 @@ pub(crate) mod tests {
             self.directory_state.borrow_mut().result = result;
         }
 
-        /// Exercise the production peer-bound update RPC, including result-contract validation.
-        pub(crate) async fn complete_invocation(
-            &self,
-            id: u64,
-            update: &qos_actions::InvocationUpdate,
-        ) -> Result<(), capnp::Error> {
-            let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+        fn invocation_channel(&self) -> channel_handle::Client {
+            capnp_rpc::new_client(CapnpChannelHandle {
                 state: Arc::clone(&self.state),
                 directories: Rc::clone(&self.directories),
                 channel_id: self.route.channel_key(),
@@ -6751,7 +7264,16 @@ pub(crate) mod tests {
                     role: CapRole::Editor,
                     agent_id: None,
                 },
-            });
+            })
+        }
+
+        /// Exercise the production peer-bound update RPC, including result-contract validation.
+        pub(crate) async fn complete_invocation(
+            &self,
+            id: u64,
+            update: &qos_actions::InvocationUpdate,
+        ) -> Result<(), capnp::Error> {
+            let client = self.invocation_channel();
             let mut request = client.update_invocation_request();
             request.get().set_id(id);
             request
@@ -6812,6 +7334,14 @@ pub(crate) mod tests {
         membership: crate::shell::state::WorkspaceTreeHandle,
         peer_id: Option<u64>,
     ) -> LocalDirectoryFixture {
+        local_directory_fixture_with_devices(membership, peer_id, None)
+    }
+
+    fn local_directory_fixture_with_devices(
+        membership: crate::shell::state::WorkspaceTreeHandle,
+        peer_id: Option<u64>,
+        trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+    ) -> LocalDirectoryFixture {
         let cluster_id = membership
             .read()
             .active_workspace()
@@ -6825,7 +7355,7 @@ pub(crate) mod tests {
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
             Some(Arc::clone(&membership)),
-            None,
+            trusted_devices,
         );
         let peer_id = peer_id.unwrap_or_else(|| state.next_peer_id());
         let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
@@ -7092,6 +7622,57 @@ pub(crate) mod tests {
         let after_disconnect = fixture.state.action_directory_root_page(Some(128), 1);
         assert!(after_disconnect.roots.is_empty());
         assert!(after_disconnect.generation > second.generation);
+    }
+
+    #[test]
+    fn invocation_journal_admission_precedes_real_application_delivery() {
+        let root = tempfile::tempdir().expect("private test root");
+        let base = local_directory_fixture();
+        let membership = base.state.membership.as_ref().unwrap().clone();
+        membership.write().persist_path = Some(root.path().join("state.json"));
+        drop(base);
+        let mut fixture = local_directory_fixture_with_membership(membership);
+        let offered = PublishedSurface {
+            peer_id: fixture.peer_id,
+            app_id: fixture.route.app_id.clone(),
+            route: fixture.route.clone(),
+            actions: vec![
+                published_directory_action(&fixture.directory_state.borrow().row()).unwrap(),
+            ],
+            live: true,
+        };
+        fixture
+            .state
+            .surfaces
+            .lock()
+            .unwrap()
+            .insert(fixture.peer_id, offered);
+        let actor = fixture
+            .state
+            .membership
+            .as_ref()
+            .unwrap()
+            .read()
+            .active_workspace()
+            .unwrap()
+            .owner
+            .clone()
+            .unwrap();
+        let job = fixture
+            .state
+            .start_invocation(fixture.peer_id, "workspace:atlas", "open", None, &actor)
+            .unwrap();
+        let delivered = fixture
+            .invocation_rx
+            .try_recv()
+            .expect("actual app invocation stream");
+        assert_eq!(delivered.id, job.id);
+        let bytes = std::fs::read(root.path().join("state.json.invocations/records.json")).expect(
+            "the real broker must persist admission before delivering an application effect",
+        );
+        let snapshot: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(snapshot["records"].as_array().unwrap().len(), 1);
+        assert_eq!(snapshot["records"][0]["wire_id"], job.id);
     }
 
     #[test]
@@ -8232,6 +8813,7 @@ pub(crate) mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let invocation = qos_actions::InvocationId::new();
         let pending = PendingInvocation {
+            journal_key: None,
             peer_id: 7,
             tx,
             update: qos_actions::InvocationUpdate::Accepted { invocation },
@@ -8328,6 +8910,766 @@ pub(crate) mod tests {
             41
         );
         assert_eq!(invocation_target_peer(7, 41), 7);
+    }
+    mod durable_admission_tests {
+        use super::super::invocation_journal::BarrierFailure;
+        use super::*;
+
+        async fn update_app(
+            client: &channel_handle::Client,
+            id: u64,
+            update: &qos_actions::InvocationUpdate,
+        ) -> Result<(), capnp::Error> {
+            let mut request = client.update_invocation_request();
+            request.get().set_id(id);
+            request
+                .get()
+                .set_update_json(&serde_json::to_string(update).unwrap());
+            request.send().promise.await?;
+            Ok(())
+        }
+
+        const FULL_ID: u128 = 0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b;
+
+        fn durable_fixture(
+            root: &std::path::Path,
+            membership: Option<WorkspaceTreeHandle>,
+        ) -> (
+            LocalDirectoryFixture,
+            VerifiedActionCaller,
+            CallerInvocation,
+        ) {
+            let root_key = SigningKey::from_bytes(&[51; 32]);
+            let device = SigningKey::from_bytes(&[52; 32]);
+            let membership = membership.unwrap_or_else(|| {
+                let mut tree = WorkspaceTree::default();
+                let mut workspace = crate::shell::state::Workspace::test_default(
+                    crate::shell::state::WorkspaceId(71),
+                    "Durable room",
+                );
+                workspace.set_owner(&principal_id_for_root(root_key.verifying_key().to_bytes()));
+                tree.workspaces.push(workspace);
+                tree.set_active(crate::shell::state::WorkspaceId(71));
+                tree.persist_path = Some(root.join("state.json"));
+                tree.shared()
+            });
+            let fixture = local_directory_fixture_with_devices(
+                membership,
+                Some(71),
+                Some(Arc::new(vec![
+                    device.verifying_key().to_bytes(),
+                    SigningKey::from_bytes(&[53; 32]).verifying_key().to_bytes(),
+                ])),
+            );
+            let mut action =
+                published_directory_action(&fixture.directory_state.borrow().row()).unwrap();
+            action.operation_kind = qos_actions::OperationKind::Effect;
+            action.contract = qos_actions::ActionContract {
+                execution: qos_actions::ExecutionMode::Background { cancellable: true },
+                result: qos_actions::ResultSpec::Job,
+                ..qos_actions::ActionContract::default()
+            };
+            assert!(action.contract.validate_declaration().is_empty());
+            fixture.state.surfaces.lock().unwrap().insert(
+                71,
+                PublishedSurface {
+                    peer_id: 71,
+                    app_id: fixture.route.app_id.clone(),
+                    route: fixture.route.clone(),
+                    actions: vec![action],
+                    live: true,
+                },
+            );
+            fixture
+                .state
+                .stable_invocation_subscribers
+                .lock()
+                .unwrap()
+                .insert(71);
+            let caller = fixture
+                .state
+                .verify_action_caller(
+                    &fixture.cluster_id,
+                    &certified_join(&fixture.cluster_id, &root_key, &device)
+                        .encode()
+                        .unwrap(),
+                )
+                .unwrap();
+            let request = CallerInvocation {
+                invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID)),
+                host: fixture.state.invocation_host().unwrap(),
+                peer_id: 71,
+                app_id: fixture.route.app_id.clone(),
+                record_id: fixture.route.record_id.clone(),
+                resource: "workspace:atlas".into(),
+                action: "open".into(),
+                argument: None,
+            };
+            (fixture, caller, request)
+        }
+
+        fn effect(root: &std::path::Path) {
+            use std::io::Write;
+            let path = root.join("effect-counter");
+            let before = std::fs::read_to_string(&path)
+                .ok()
+                .map(|s| s.parse::<u64>().unwrap())
+                .unwrap_or(0);
+            let mut file = std::fs::File::create(path).unwrap();
+            write!(file, "{}", before + 1).unwrap();
+            file.sync_all().unwrap();
+            std::fs::File::open(root).unwrap().sync_all().unwrap();
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn invocation_journal_real_effect_once_across_concurrent_duplicate_response_loss_and_restart()
+         {
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let root = tempfile::tempdir().unwrap();
+                    let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+                    fixture
+                        .state
+                        .surfaces
+                        .lock()
+                        .unwrap()
+                        .get_mut(&71)
+                        .unwrap()
+                        .actions[0]
+                        .contract
+                        .result = qos_actions::ResultSpec::Json {
+                        schema: serde_json::json!({"type":"object"}),
+                    };
+                    let requests = (0..8)
+                        .map(|_| {
+                            let state = fixture.state.clone();
+                            let caller = caller.clone();
+                            let request = request.clone();
+                            std::thread::spawn(move || {
+                                state
+                                    .start_verified_invocation(&caller, &request, None)
+                                    .unwrap()
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let admitted = requests
+                        .into_iter()
+                        .map(|t| t.join().unwrap())
+                        .collect::<Vec<_>>();
+                    assert!(
+                        admitted
+                            .iter()
+                            .all(|row| row.wire_id == admitted[0].wire_id)
+                    );
+                    let (_, empty_rx) = mpsc::unbounded_channel();
+                    let rx = Rc::new(AsyncMutex::new(std::mem::replace(
+                        &mut fixture.invocation_rx,
+                        empty_rx,
+                    )));
+                    let stream: invocation_stream::Client =
+                        capnp_rpc::new_client(InvocationStreamServer { rx: rx.clone() });
+                    let response = stream.read_request().send().promise.await.unwrap();
+                    let delivered = response.get().unwrap();
+                    let delivered_id = delivered.get_id();
+                    assert_eq!(
+                        delivered.get_invocation_uuid().unwrap(),
+                        request.invocation.0.as_bytes()
+                    );
+                    assert!(
+                        rx.lock().await.try_recv().is_err(),
+                        "one actual Cap'n Proto application delivery"
+                    );
+                    effect(root.path());
+                    let terminal = qos_actions::InvocationUpdate::Succeeded {
+                        invocation: request.invocation,
+                        output: qos_actions::ActionOutput {
+                            value: Some(
+                                serde_json::json!({"counter":1,"private":"private-result-token"}),
+                            ),
+                            resources: vec![],
+                        },
+                    };
+                    // Force receipt persistence to fail independently of the already opened journal.
+                    fixture
+                        .state
+                        .membership
+                        .as_ref()
+                        .unwrap()
+                        .write()
+                        .persist_path = Some(root.path().to_owned());
+                    fixture
+                        .complete_invocation(delivered_id, &terminal)
+                        .await
+                        .unwrap();
+                    // Discard the original response and retry under freshly verified caller custody.
+                    let duplicate = fixture
+                        .state
+                        .start_verified_invocation(&caller, &request, None)
+                        .unwrap();
+                    assert_eq!(duplicate.update, terminal);
+                    assert!(
+                        fixture
+                            .state
+                            .invocation_statuses(&caller.admitted.principal_id)
+                            .is_empty(),
+                        "legacy principal-only lookup cannot reveal certified terminal output"
+                    );
+                    let mut changed = request.clone();
+                    changed.argument = Some(String::new());
+                    assert!(
+                        fixture
+                            .state
+                            .start_verified_invocation(&caller, &changed, None)
+                            .is_err()
+                    );
+                    let membership = fixture.state.membership.clone().unwrap();
+                    {
+                        let mut tree = membership.write();
+                        assert_eq!(tree.workspaces[0].effect_receipts.len(), 1);
+                        assert!(
+                            !serde_json::to_string(&tree.workspaces[0].effect_receipts)
+                                .unwrap()
+                                .contains("private-result-token")
+                        );
+                        tree.persist_path = Some(root.path().join("state.json"));
+                    }
+                    drop(fixture);
+                    let (mut restarted, caller, _) = durable_fixture(root.path(), Some(membership));
+                    assert_eq!(
+                        restarted
+                            .state
+                            .start_verified_invocation(&caller, &request, None)
+                            .unwrap()
+                            .update,
+                        terminal
+                    );
+                    assert!(restarted.invocation_rx.try_recv().is_err());
+                    assert_eq!(
+                        std::fs::read_to_string(root.path().join("effect-counter")).unwrap(),
+                        "1"
+                    );
+                })
+                .await;
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn invocation_journal_crash_boundaries_never_repeat_real_effect() {
+            tokio::task::LocalSet::new().run_until(async {
+                for boundary in [BarrierFailure::File, BarrierFailure::AfterAdmission, BarrierFailure::Terminal] {
+                    let root = tempfile::tempdir().unwrap();
+                    let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+                    if boundary != BarrierFailure::Terminal {
+                        fixture.state.journal.lock().unwrap().as_mut().unwrap().as_mut().unwrap().fail_at = Some(boundary);
+                        assert!(fixture.state.start_verified_invocation(&caller, &request, None).is_err());
+                        assert!(fixture.invocation_rx.try_recv().is_err());
+                    } else {
+                        fixture.state.start_verified_invocation(&caller, &request, None).unwrap();
+                        let delivered = fixture.invocation_rx.try_recv().unwrap();
+                        effect(root.path());
+                        fixture.state.journal.lock().unwrap().as_mut().unwrap().as_mut().unwrap().fail_at = Some(BarrierFailure::File);
+                        assert!(fixture.complete_invocation(delivered.id, &qos_actions::InvocationUpdate::Succeeded { invocation: request.invocation, output: qos_actions::ActionOutput::default() }).await.is_err());
+                    }
+                    let membership = fixture.state.membership.clone().unwrap();
+                    drop(fixture);
+                    let (mut restarted, caller, _) = durable_fixture(root.path(), Some(membership));
+                    if boundary == BarrierFailure::File {
+                        assert!(restarted.state.verified_invocation_status(&caller, request.invocation).unwrap().is_none());
+                        assert!(!root.path().join("effect-counter").exists());
+                    } else {
+                        let result = restarted.state.start_verified_invocation(&caller, &request, None).unwrap();
+                        assert!(result.uncertain);
+                        assert!(matches!(result.update, qos_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown" && !error.retryable));
+                        assert!(restarted.invocation_rx.try_recv().is_err());
+                        if boundary == BarrierFailure::Terminal {
+                            assert_eq!(std::fs::read_to_string(root.path().join("effect-counter")).unwrap(), "1");
+                        } else { assert!(!root.path().join("effect-counter").exists()); }
+                    }
+                }
+            }).await;
+        }
+
+        #[test]
+        fn invocation_journal_owner_is_device_scoped_and_live_authority_precedes_duplicate_disclosure()
+         {
+            let root = tempfile::tempdir().unwrap();
+            let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+            fixture
+                .state
+                .start_verified_invocation(&caller, &request, None)
+                .unwrap();
+            fixture.invocation_rx.try_recv().unwrap();
+            let other_device = SigningKey::from_bytes(&[53; 32]);
+            let other = fixture
+                .state
+                .verify_action_caller(
+                    &fixture.cluster_id,
+                    &certified_join(
+                        &fixture.cluster_id,
+                        &SigningKey::from_bytes(&[51; 32]),
+                        &other_device,
+                    )
+                    .encode()
+                    .unwrap(),
+                )
+                .unwrap();
+            assert!(
+                fixture
+                    .state
+                    .verified_invocation_status(&other, request.invocation)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                fixture
+                    .state
+                    .cancel_verified_invocation(&other, request.invocation)
+                    .is_err()
+            );
+            assert!(
+                fixture
+                    .state
+                    .invocation_statuses(&caller.admitted.principal_id)
+                    .is_empty(),
+                "legacy root-scoped queries must not disclose another device's private results"
+            );
+            let mut bad = request.clone();
+            bad.invocation = qos_actions::InvocationId::new();
+            bad.record_id = "different-record".into();
+            assert!(
+                fixture
+                    .state
+                    .start_verified_invocation(&caller, &bad, None)
+                    .is_err()
+            );
+            fixture
+                .state
+                .membership
+                .as_ref()
+                .unwrap()
+                .write()
+                .workspaces[0]
+                .set_owner("new-owner");
+            assert!(
+                fixture
+                    .state
+                    .start_verified_invocation(&caller, &request, None)
+                    .is_err()
+            );
+            assert!(
+                fixture
+                    .state
+                    .verified_invocation_status(&caller, request.invocation)
+                    .is_err()
+            );
+            assert!(fixture.invocation_rx.try_recv().is_err());
+        }
+
+        #[test]
+        fn invocation_journal_old_apps_wrong_rooms_and_silence_fail_safely() {
+            for disconnected in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+                fixture
+                    .state
+                    .stable_invocation_subscribers
+                    .lock()
+                    .unwrap()
+                    .clear();
+                assert!(
+                    fixture
+                        .state
+                        .start_verified_invocation(&caller, &request, None)
+                        .unwrap_err()
+                        .contains("stable_identity_unavailable")
+                );
+                assert!(fixture.invocation_rx.try_recv().is_err());
+                fixture
+                    .state
+                    .stable_invocation_subscribers
+                    .lock()
+                    .unwrap()
+                    .insert(71);
+                let original_room = fixture
+                    .state
+                    .surfaces
+                    .lock()
+                    .unwrap()
+                    .get(&71)
+                    .unwrap()
+                    .route
+                    .cluster_id
+                    .clone();
+                fixture
+                    .state
+                    .surfaces
+                    .lock()
+                    .unwrap()
+                    .get_mut(&71)
+                    .unwrap()
+                    .route
+                    .cluster_id = uuid::Uuid::new_v4().to_string();
+                assert!(
+                    fixture
+                        .state
+                        .start_verified_invocation(&caller, &request, None)
+                        .is_err()
+                );
+                fixture
+                    .state
+                    .surfaces
+                    .lock()
+                    .unwrap()
+                    .get_mut(&71)
+                    .unwrap()
+                    .route
+                    .cluster_id = original_room;
+                let admitted = fixture
+                    .state
+                    .start_verified_invocation(&caller, &request, None)
+                    .unwrap();
+                fixture.invocation_rx.try_recv().unwrap();
+                fixture
+                    .state
+                    .cancel_verified_invocation(&caller, request.invocation)
+                    .unwrap();
+                if disconnected {
+                    fixture.state.remove_connection(71);
+                } else {
+                    fixture.state.expire_stale_invocations_at(
+                        std::time::Instant::now(),
+                        Duration::ZERO,
+                        Duration::ZERO,
+                    );
+                }
+                let status = fixture
+                    .state
+                    .verified_invocation_status(&caller, request.invocation)
+                    .unwrap()
+                    .unwrap();
+                assert!(status.uncertain);
+                assert!(
+                    matches!(status.update, qos_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown")
+                );
+                assert_eq!(
+                    fixture
+                        .state
+                        .start_verified_invocation(&caller, &request, None)
+                        .unwrap()
+                        .wire_id,
+                    admitted.wire_id
+                );
+                assert!(fixture.invocation_rx.try_recv().is_err());
+            }
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn invocation_journal_native_stream_negotiates_uuid_capability_explicitly() {
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let root = tempfile::tempdir().unwrap();
+                    let (fixture, caller, request) = durable_fixture(root.path(), None);
+                    let client: channel_handle::Client =
+                        capnp_rpc::new_client(CapnpChannelHandle {
+                            state: fixture.state.clone(),
+                            directories: fixture.directories.clone(),
+                            channel_id: fixture.route.channel_key(),
+                            peer_id: fixture.peer_id,
+                            verified_identity: caller.admitted.clone(),
+                        });
+                    let legacy = client
+                        .subscribe_invocations_request()
+                        .send()
+                        .promise
+                        .await
+                        .unwrap();
+                    let _legacy_stream = legacy.get().unwrap().get_stream().unwrap();
+                    assert!(
+                        fixture
+                            .state
+                            .start_verified_invocation(&caller, &request, None)
+                            .unwrap_err()
+                            .contains("stable_identity_unavailable")
+                    );
+                    let mut subscription = client.subscribe_invocations_request();
+                    subscription.get().set_stable_invocation_ids(true);
+                    let capable = subscription.send().promise.await.unwrap();
+                    let stream = capable.get().unwrap().get_stream().unwrap();
+                    fixture
+                        .state
+                        .start_verified_invocation(&caller, &request, None)
+                        .unwrap();
+                    let reply = stream.read_request().send().promise.await.unwrap();
+                    assert_eq!(
+                        reply.get().unwrap().get_invocation_uuid().unwrap(),
+                        request.invocation.0.as_bytes()
+                    );
+                })
+                .await;
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn invocation_journal_invalid_updates_never_persist_and_legacy_completion_still_works()
+         {
+            tokio::task::LocalSet::new().run_until(async {
+                let root = tempfile::tempdir().unwrap();
+                let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+                let channel = fixture.invocation_channel();
+                let admitted = fixture.state.start_verified_invocation(&caller, &request, None).unwrap();
+                fixture.invocation_rx.try_recv().unwrap();
+                let foreign: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+                    state: fixture.state.clone(), directories: fixture.directories.clone(),
+                    channel_id: fixture.route.channel_key(), peer_id: 999,
+                    verified_identity: caller.admitted.clone(),
+                });
+                assert!(update_app(&foreign, admitted.wire_id, &qos_actions::InvocationUpdate::Succeeded {
+                    invocation: request.invocation, output: qos_actions::ActionOutput::default(),
+                }).await.is_err());
+                let invalid = [
+                    qos_actions::InvocationUpdate::Accepted { invocation: request.invocation },
+                    qos_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: "".into(), completed: None, total: None, message: None },
+                    qos_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: "working".into(), completed: Some(2), total: Some(1), message: None },
+                    qos_actions::InvocationUpdate::Item { invocation: request.invocation, sequence: 1, value: serde_json::json!({"private":"value"}) },
+                    qos_actions::InvocationUpdate::Failed { invocation: request.invocation, error: qos_actions::ActionFailure { code: "bad".into(), message: "failed".into(), details: None, retryable: true } },
+                    qos_actions::InvocationUpdate::Succeeded { invocation: request.invocation, output: qos_actions::ActionOutput { value: Some(serde_json::json!("undeclared")), resources: vec![] } },
+                ];
+                for update in invalid {
+                    assert!(update_app(&channel, admitted.wire_id, &update).await.is_err());
+                    assert!(matches!(fixture.state.verified_invocation_status(&caller, request.invocation).unwrap().unwrap().update, qos_actions::InvocationUpdate::Accepted { .. }));
+                }
+                let mut complete = channel.complete_invocation_request();
+                complete.get().set_id(admitted.wire_id);
+                complete.get().set_code(""); complete.get().set_message("");
+                complete.send().promise.await.unwrap();
+                assert!(matches!(fixture.state.verified_invocation_status(&caller, request.invocation).unwrap().unwrap().update, qos_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == request.invocation));
+
+                // The legacy numeric local caller still receives and completes its original handle.
+                let legacy = fixture.state.start_invocation(71, &request.resource, &request.action, None, &caller.admitted.principal_id).unwrap();
+                let delivered = fixture.invocation_rx.try_recv().unwrap();
+                assert_eq!(delivered.invocation.0.as_u128(), u128::from(legacy.id));
+                let mut complete = channel.complete_invocation_request();
+                complete.get().set_id(legacy.id); complete.get().set_code(""); complete.get().set_message("");
+                complete.send().promise.await.unwrap();
+                assert!(legacy.completion.recv().unwrap().code.is_empty());
+            }).await;
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn invocation_journal_immediate_progress_and_malformed_stream_items_are_rejected() {
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    for streaming in [false, true] {
+                        let root = tempfile::tempdir().unwrap();
+                        let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+                        let channel = fixture.invocation_channel();
+                        fixture
+                            .state
+                            .surfaces
+                            .lock()
+                            .unwrap()
+                            .get_mut(&71)
+                            .unwrap()
+                            .actions[0]
+                            .contract
+                            .execution = if streaming {
+                            qos_actions::ExecutionMode::Streaming {
+                                cancellable: true,
+                                item_schema: serde_json::json!({"type":"integer"}),
+                            }
+                        } else {
+                            qos_actions::ExecutionMode::Immediate
+                        };
+                        if !streaming {
+                            fixture
+                                .state
+                                .surfaces
+                                .lock()
+                                .unwrap()
+                                .get_mut(&71)
+                                .unwrap()
+                                .actions[0]
+                                .contract
+                                .result = qos_actions::ResultSpec::None;
+                        }
+                        let admitted = fixture
+                            .state
+                            .start_verified_invocation(&caller, &request, None)
+                            .unwrap();
+                        fixture.invocation_rx.try_recv().unwrap();
+                        let bad = if streaming {
+                            qos_actions::InvocationUpdate::Item {
+                                invocation: request.invocation,
+                                sequence: 1,
+                                value: serde_json::json!("wrong type"),
+                            }
+                        } else {
+                            qos_actions::InvocationUpdate::Progress {
+                                invocation: request.invocation,
+                                sequence: 1,
+                                phase: "working".into(),
+                                completed: None,
+                                total: None,
+                                message: None,
+                            }
+                        };
+                        assert!(update_app(&channel, admitted.wire_id, &bad).await.is_err());
+                        assert!(matches!(
+                            fixture
+                                .state
+                                .verified_invocation_status(&caller, request.invocation)
+                                .unwrap()
+                                .unwrap()
+                                .update,
+                            qos_actions::InvocationUpdate::Accepted { .. }
+                        ));
+                        if streaming {
+                            let item = qos_actions::InvocationUpdate::Item {
+                                invocation: request.invocation,
+                                sequence: 1,
+                                value: serde_json::json!(7),
+                            };
+                            update_app(&channel, admitted.wire_id, &item).await.unwrap();
+                            assert!(update_app(&channel, admitted.wire_id, &item).await.is_err());
+                            assert_eq!(
+                                fixture
+                                    .state
+                                    .verified_invocation_status(&caller, request.invocation)
+                                    .unwrap()
+                                    .unwrap()
+                                    .update,
+                                item
+                            );
+                        }
+                    }
+                })
+                .await;
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn invocation_journal_confirmation_uuid_and_lifecycle_remain_authoritative() {
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let root = tempfile::tempdir().unwrap();
+                    let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+                    let channel = fixture.invocation_channel();
+                    fixture
+                        .state
+                        .surfaces
+                        .lock()
+                        .unwrap()
+                        .get_mut(&71)
+                        .unwrap()
+                        .actions[0]
+                        .contract
+                        .confirmation = qos_actions::ConfirmationPolicy::Phrase {
+                        phrase: "erase exactly".into(),
+                    };
+                    let actor = &caller.admitted.principal_id;
+                    assert!(
+                        fixture
+                            .state
+                            .start_verified_invocation(&caller, &request, None)
+                            .is_err()
+                    );
+                    assert!(
+                        fixture
+                            .state
+                            .prepare_confirmation(
+                                71,
+                                &request.resource,
+                                &request.action,
+                                None,
+                                actor,
+                                Some("erase")
+                            )
+                            .is_err()
+                    );
+                    let token = fixture
+                        .state
+                        .prepare_confirmation(
+                            71,
+                            &request.resource,
+                            &request.action,
+                            None,
+                            actor,
+                            Some("erase exactly"),
+                        )
+                        .unwrap();
+                    let admitted = fixture
+                        .state
+                        .start_verified_invocation(&caller, &request, Some(&token))
+                        .unwrap();
+                    fixture
+                        .state
+                        .start_verified_invocation(&caller, &request, None)
+                        .unwrap();
+                    let delivered = fixture.invocation_rx.try_recv().unwrap();
+                    assert_eq!(delivered.invocation, request.invocation);
+                    let mut new = request.clone();
+                    new.invocation = qos_actions::InvocationId::new();
+                    assert!(
+                        fixture
+                            .state
+                            .start_verified_invocation(&caller, &new, Some(&token))
+                            .is_err()
+                    );
+                    let progress = qos_actions::InvocationUpdate::Progress {
+                        invocation: request.invocation,
+                        sequence: 1,
+                        phase: "working".into(),
+                        completed: Some(0),
+                        total: Some(1),
+                        message: None,
+                    };
+                    update_app(&channel, delivered.id, &progress).await.unwrap();
+                    assert!(update_app(&channel, delivered.id, &progress).await.is_err());
+                    assert!(
+                        update_app(
+                            &channel,
+                            delivered.id,
+                            &qos_actions::InvocationUpdate::Succeeded {
+                                invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(
+                                    u128::from(delivered.id)
+                                )),
+                                output: qos_actions::ActionOutput::default()
+                            }
+                        )
+                        .await
+                        .is_err()
+                    );
+                    fixture
+                        .state
+                        .cancel_verified_invocation(&caller, request.invocation)
+                        .unwrap();
+                    assert!(
+                        !fixture
+                            .state
+                            .verified_invocation_status(&caller, request.invocation)
+                            .unwrap()
+                            .unwrap()
+                            .update
+                            .is_terminal(),
+                        "request is not acknowledgement"
+                    );
+                    let cancelled = qos_actions::InvocationUpdate::Cancelled {
+                        invocation: request.invocation,
+                        message: None,
+                    };
+                    update_app(&channel, delivered.id, &cancelled)
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        fixture
+                            .state
+                            .verified_invocation_status(&caller, request.invocation)
+                            .unwrap()
+                            .unwrap()
+                            .update,
+                        cancelled
+                    );
+                    assert_eq!(admitted.wire_id, delivered.id);
+                })
+                .await;
+        }
     }
 }
 

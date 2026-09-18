@@ -162,7 +162,9 @@ interface ChannelHandle {
   # The session performs its capability check before anything reaches
   # this stream, which is also why an app must not treat arrival as
   # authority for anything beyond the operation named.
-  subscribeInvocations @14 () -> (stream :InvocationStream);
+  # Opt in only when the app carries invocationUuid through dispatch and
+  # typed lifecycle updates. Old callers retain the numeric-only path.
+  subscribeInvocations @14 (stableInvocationIds :Bool = false) -> (stream :InvocationStream);
 
   # Report what became of an invocation. `id` echoes
   # `InvocationStream.read`'s.
@@ -427,9 +429,11 @@ interface InvocationStream {
   # attributed in the document's history exactly like one somebody
   # typed. An attribution, not an authority — the session has already
   # decided this invocation may happen.
+  # invocationUuid is the complete 16-byte logical identity. id remains the
+  # local completion/cancellation handle. An absent UUID denotes a legacy broker.
   read @0 () -> (id :UInt64, resource :Text, action :Text,
                  argument :Text, hasArgument :Bool, actor :Text,
-                 contextJson :Text);
+                 contextJson :Text, invocationUuid :Data);
 }
 
 # Agent-only task work sent by the broker after live-session admission.

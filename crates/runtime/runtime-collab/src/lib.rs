@@ -761,7 +761,24 @@ impl ChannelHandle {
     /// Returns [`NotAvailable`] if the broker connection is unavailable or
     /// drops during the call.
     pub async fn subscribe_invocations(&self) -> Result<InvocationStream, NotAvailable> {
-        let req = self.inner.subscribe_invocations_request();
+        self.subscribe_invocations_with_identity(false).await
+    }
+
+    /// Subscribe with full UUID support. Callers must preserve `invocation_uuid`
+    /// through application dispatch and every typed lifecycle update.
+    ///
+    /// # Errors
+    /// Returns [`NotAvailable`] when the broker or stream is unavailable.
+    pub async fn subscribe_stable_invocations(&self) -> Result<InvocationStream, NotAvailable> {
+        self.subscribe_invocations_with_identity(true).await
+    }
+
+    async fn subscribe_invocations_with_identity(
+        &self,
+        stable: bool,
+    ) -> Result<InvocationStream, NotAvailable> {
+        let mut req = self.inner.subscribe_invocations_request();
+        req.get().set_stable_invocation_ids(stable);
         let reply = req.send().promise.await?;
         let stream = reply.get()?.get_stream()?;
         Ok(InvocationStream {
@@ -1598,6 +1615,8 @@ pub fn decode_action_directory_resolution(
 /// One invocation off an [`InvocationStream`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation {
+    /// Full logical identity. Absent only from a legacy broker.
+    pub invocation_uuid: Option<[u8; 16]>,
     /// Echoed back on [`ChannelHandle::complete_invocation`], so the
     /// session can match an answer to the question it asked.
     pub id: u64,
@@ -1650,6 +1669,12 @@ impl InvocationStream {
             None
         };
         Ok(Invocation {
+            invocation_uuid: match r.get_invocation_uuid()? {
+                [] => None,
+                bytes => Some(bytes.try_into().map_err(|_| {
+                    capnp::Error::failed("invocation UUID must contain exactly 16 bytes".into())
+                })?),
+            },
             id: r.get_id(),
             resource,
             action,
