@@ -14,6 +14,7 @@ function Get-TiloWindowsAppName {
         'pdf-viewer' { 'PDF Viewer' }
         'ebook' { 'Books' }
         'totp' { 'Authenticator' }
+        'typst-editor' { 'Typst' }
         default { (Get-Culture).TextInfo.ToTitleCase($Application) }
     }
 }
