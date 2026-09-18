@@ -36,5 +36,8 @@ zeroize.workspace = true
 uuid.workspace = true
 url.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
 [lints]
 workspace = true
