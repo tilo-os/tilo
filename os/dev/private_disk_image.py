@@ -102,6 +102,12 @@ class PrivateDiskImage:
         self.validate()
         self._keep = True
 
+    def file_identity(self):
+        """Return identity from the held descriptor after pathname validation."""
+        self.validate()
+        info = os.fstat(self._fd)
+        return {'device': info.st_dev, 'inode': info.st_ino, 'size': info.st_size}
+
     def _finish(self, *, remove):
         try:
             if remove and self._created is not None and self._directory_fd is not None:
