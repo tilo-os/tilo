@@ -87,6 +87,7 @@ concurrency:
 
 jobs:
   signing-preflight:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
     runs-on: runner
     timeout-minutes: 5
     enable-openid-connect: true
@@ -127,6 +128,7 @@ jobs:
 
   build-and-push:
     needs: signing-preflight
+    if: ${{ always() && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') }}
     runs-on: runner
     timeout-minutes: 120
     enable-openid-connect: true

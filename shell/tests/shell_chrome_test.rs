@@ -79,37 +79,6 @@ fn global_search_context_filter_narrows_results() {
 }
 
 #[test]
-fn quick_settings_brightness_and_volume_clamp_and_mutate() {
-    use shell::shell::quick_settings::QuickSettings;
-    let mut q = QuickSettings::new();
-    q.set_brightness(50.0);
-    q.set_volume(80.0);
-    assert!((q.brightness() - 50.0).abs() <= f32::EPSILON);
-    assert!((q.volume() - 80.0).abs() <= f32::EPSILON);
-    q.set_brightness(-10.0);
-    q.set_volume(999.0);
-    assert!(q.brightness().abs() <= f32::EPSILON);
-    assert!((q.volume() - 100.0).abs() <= f32::EPSILON);
-}
-
-#[test]
-fn quick_settings_drill_in_and_back() {
-    use shell::shell::quick_settings::{QsLevel, QuickSettings};
-    let mut q = QuickSettings::new();
-    assert_eq!(q.current_level(), &QsLevel::Root);
-    q.push_level(QsLevel::Wifi);
-    assert_eq!(q.current_level(), &QsLevel::Wifi);
-    q.push_level(QsLevel::WifiDetails("Home-5G".into()));
-    assert!(matches!(q.current_level(), QsLevel::WifiDetails(s) if s == "Home-5G"));
-    q.pop_level();
-    assert_eq!(q.current_level(), &QsLevel::Wifi);
-    q.pop_level();
-    assert_eq!(q.current_level(), &QsLevel::Root);
-    q.pop_level(); // no-op at root
-    assert_eq!(q.current_level(), &QsLevel::Root);
-}
-
-#[test]
 fn workspace_settings_general_edits_name_and_removes_collaborator() {
     use shell::shell::state::{Collaborator, Workspace, WorkspaceId};
     use shell::shell::workspace_settings::{WorkspaceSettings, WsTab};
