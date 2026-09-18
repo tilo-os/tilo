@@ -232,7 +232,7 @@ impl PowerMenu {
             "Session",
             theme.tokens.typography.scale.lg,
             colors.text_primary,
-            at(transform, (panel.x0 + 22.0, panel.y0 + 20.0)),
+            at(transform, (panel.x0 + 16.0, panel.y0 + 18.0)),
             None,
             TextWeight::Semibold,
         );
@@ -248,12 +248,12 @@ impl PowerMenu {
                     colors.neutral[2]
                 },
                 None,
-                &RoundedRect::from_rect(row, 14.0),
+                &RoundedRect::from_rect(row, 12.0),
             );
             ui::icons::draw_icon(
                 scene,
                 transform,
-                Rect::new(row.x0 + 14.0, row.y0 + 14.0, row.x0 + 36.0, row.y0 + 36.0),
+                Rect::new(row.x0 + 12.0, row.y0 + 13.0, row.x0 + 30.0, row.y0 + 31.0),
                 *icon,
                 colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
@@ -263,7 +263,7 @@ impl PowerMenu {
                 label,
                 theme.tokens.typography.scale.sm,
                 colors.text_primary,
-                at(transform, (row.x0 + 50.0, row.y0 + 8.0)),
+                at(transform, (row.x0 + 42.0, row.y0 + 7.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -272,7 +272,7 @@ impl PowerMenu {
                 detail,
                 theme.tokens.typography.scale.xs,
                 colors.text_dim,
-                at(transform, (row.x0 + 50.0, row.y0 + 28.0)),
+                at(transform, (row.x0 + 42.0, row.y0 + 25.0)),
                 None,
             );
         }
@@ -325,15 +325,13 @@ const ACTIONS: [(PowerMenuAction, &str, &str, ui::icons::Icon); 6] = [
 ];
 
 fn panel_rect(viewport: Rect) -> Rect {
-    let width = 420.0_f64.min(viewport.width() - 48.0);
-    let height = 446.0_f64.min(viewport.height() - 48.0);
-    // This menu is launched from the top-right system status area. Keep the
-    // actions beside that origin instead of making the pointer cross the
-    // whole display to a modal in the centre. The same 24px edge inset is
-    // used on narrow displays, where the sheet naturally becomes nearly
-    // full-width without losing its anchor.
-    let right = viewport.x1 - 24.0;
-    let top = viewport.y0 + 60.0;
+    // This is a system-menu flyout, not a confirmation dialog. It shares the
+    // Quick Settings top-right anchor so choosing Power does not send the
+    // pointer across the display or open an oversized detached sheet.
+    let width = 336.0_f64.min((viewport.width() - 32.0).max(1.0));
+    let height = 350.0_f64.min((viewport.height() - 64.0).max(1.0));
+    let right = viewport.x1 - 16.0;
+    let top = viewport.y0 + 48.0;
     Rect::new(
         right - width,
         top,
@@ -344,12 +342,12 @@ fn panel_rect(viewport: Rect) -> Rect {
 
 fn action_rect(viewport: Rect, index: usize) -> Rect {
     let panel = panel_rect(viewport);
-    let y0 = panel.y0 + 62.0 + small_count_to_f64(index) * 58.0;
-    Rect::new(panel.x0 + 18.0, y0, panel.x1 - 18.0, y0 + 50.0)
+    let y0 = panel.y0 + 52.0 + small_count_to_f64(index) * 48.0;
+    Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + 44.0)
 }
 
 /// Widens a row index to `f64` for draw-time row-position math. Every
-/// call site is a row index into the fixed 5-entry [`ACTIONS`] table, so
+/// call site is a row index into the fixed [`ACTIONS`] table, so
 /// the integer is exactly representable.
 fn small_count_to_f64(n: usize) -> f64 {
     #[allow(
@@ -435,9 +433,9 @@ mod tests {
     fn menu_is_anchored_below_the_top_right_status_area() {
         for viewport in [VIEWPORT, Rect::new(0.0, 0.0, 960.0, 540.0)] {
             let panel = panel_rect(viewport);
-            assert_eq!(panel.x1, viewport.x1 - 24.0);
-            assert_eq!(panel.y0, viewport.y0 + 60.0);
-            assert!(panel.y1 <= viewport.y1 - 24.0);
+            assert_eq!(panel.x1, viewport.x1 - 16.0);
+            assert_eq!(panel.y0, viewport.y0 + 48.0);
+            assert!(panel.y1 <= viewport.y1 - 16.0);
             for index in 0..ACTIONS.len() {
                 assert!(
                     panel.contains(action_rect(viewport, index).center()),
@@ -445,6 +443,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn compact_flyout_is_materially_smaller_than_the_old_modal_sheet() {
+        let panel = panel_rect(Rect::new(0.0, 0.0, 960.0, 540.0));
+        assert_eq!(panel.width(), 336.0);
+        assert_eq!(panel.height(), 350.0);
+        assert!(panel.area() < 420.0 * 446.0 * 0.65);
     }
 
     #[test]

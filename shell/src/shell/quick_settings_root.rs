@@ -96,15 +96,20 @@ impl QuickSettingsRoot {
     // discover and visually disconnected from the controls they affect.
     // The compact icon-over-label treatment keeps their meaning visible
     // without turning them into a second dashboard.
-    const ACTIONS: f64 = 58.0;
-    const ACTION_COUNT: usize = 6;
-    const ACTION_GAP: f64 = 4.0;
-    const SLIDER_FOCUS_START: usize = 7;
-    const CONTROL_FOCUS_START: usize = 9;
-    const SLIDERS: f64 = 72.0;
-    const CARD: f64 = 70.0;
+    const ACTIONS: f64 = 56.0;
+    // The root surface deliberately keeps only the four destinations people
+    // need when opening system controls.  Adding every shell destination to
+    // this row made each labelled target too narrow to scan or hit. Clipboard
+    // and device management remain available through their own entry points,
+    // rather than competing with immediate system controls here.
+    const ACTION_COUNT: usize = 4;
+    const ACTION_GAP: f64 = 8.0;
+    const SLIDER_FOCUS_START: usize = Self::ACTION_COUNT + 1;
+    const CONTROL_FOCUS_START: usize = Self::SLIDER_FOCUS_START + 2;
+    const SLIDERS: f64 = 68.0;
+    const CARD: f64 = 66.0;
     const GAP: f64 = 8.0;
-    const POWER: f64 = 50.0;
+    const POWER: f64 = 48.0;
     const EDIT_ROW: f64 = 46.0;
     const EDIT_HELP: f64 = 28.0;
     const EDIT_FOOTER: f64 = 38.0;
@@ -234,7 +239,19 @@ impl QuickSettingsRoot {
                 // Powered off and unavailable are distinct states. Only
                 // BlueZ's successful adapter read may expose this switch.
                 QuickSettingsControl::Bluetooth => state.bluetooth_available,
-                QuickSettingsControl::NightLight | QuickSettingsControl::AirplaneMode => true,
+                QuickSettingsControl::NightLight => true,
+                // Airplane mode is only meaningful with a radio, except for
+                // a person who explicitly kept it in their saved layout. In
+                // that migration case retain it so it can be removed rather
+                // than silently changing their configuration.
+                QuickSettingsControl::AirplaneMode => {
+                    state.radios.wifi_available
+                        || state.radios.wwan_available
+                        || self
+                            .config
+                            .controls
+                            .contains(&QuickSettingsControl::AirplaneMode)
+                }
                 QuickSettingsControl::Vpn => !state.vpns.is_empty(),
                 QuickSettingsControl::MobileData => state.radios.wwan_available,
             })
@@ -263,7 +280,12 @@ impl QuickSettingsRoot {
                 QuickSettingsControl::Bluetooth => state.bluetooth_available,
                 QuickSettingsControl::Vpn => !state.vpns.is_empty(),
                 QuickSettingsControl::AirplaneMode => {
-                    state.radios.wifi_available || state.radios.wwan_available
+                    state.radios.wifi_available
+                        || state.radios.wwan_available
+                        || self
+                            .config
+                            .controls
+                            .contains(&QuickSettingsControl::AirplaneMode)
                 }
                 QuickSettingsControl::MobileData => state.radios.wwan_available,
             })
@@ -606,7 +628,9 @@ impl QuickSettingsRoot {
             self.edit_controls(state).len().saturating_add(2)
         } else {
             // Edit, labeled destinations, Brightness, Volume, controls, power.
-            10_usize.saturating_add(self.visible_controls(state).len())
+            Self::CONTROL_FOCUS_START
+                .saturating_add(self.visible_controls(state).len())
+                .saturating_add(1)
         };
         if count == 0 {
             return false;
@@ -675,15 +699,13 @@ impl QuickSettingsRoot {
             1 => Some(RootAction::OpenSettings),
             2 => Some(RootAction::Privacy),
             3 => Some(RootAction::OpenNotifications),
-            4 => Some(RootAction::OpenClipboard),
-            5 => Some(RootAction::OpenDevices),
-            6 => Some(RootAction::OpenPowerMenu),
+            4 => Some(RootAction::OpenPowerMenu),
             _ => None,
         } {
             return action;
         }
         let controls = self.visible_controls(state);
-        if matches!(i, 7 | 8) {
+        if i == Self::SLIDER_FOCUS_START || i == Self::SLIDER_FOCUS_START + 1 {
             return RootAction::None;
         }
         if let Some(c) = i
@@ -750,8 +772,8 @@ impl QuickSettingsRoot {
         direction: f32,
     ) -> Option<SliderCommit> {
         let value = match self.keyboard_focus? {
-            7 => &mut state.brightness,
-            8 => &mut state.volume,
+            Self::SLIDER_FOCUS_START => &mut state.brightness,
+            i if i == Self::SLIDER_FOCUS_START + 1 => &mut state.volume,
             _ => return None,
         };
         *value = (*value + direction * 0.05).clamp(0., 1.);
@@ -794,8 +816,6 @@ impl QuickSettingsRoot {
                     0 => RootAction::OpenSettings,
                     1 => RootAction::Privacy,
                     2 => RootAction::OpenNotifications,
-                    3 => RootAction::OpenClipboard,
-                    4 => RootAction::OpenDevices,
                     _ => RootAction::OpenPowerMenu,
                 };
             }
@@ -1085,16 +1105,6 @@ impl QuickSettingsRoot {
             (ui::icons::Icon::Settings2, "Open Settings", "Settings"),
             (ui::icons::Icon::Shield, "Privacy controls", "Privacy"),
             (ui::icons::Icon::History, "Notification history", "History"),
-            (
-                ui::icons::Icon::ClipboardPaste,
-                "Clipboard history",
-                "Clipboard",
-            ),
-            (
-                ui::icons::Icon::Monitor,
-                "Connected certified devices and media outputs",
-                "Devices",
-            ),
             (ui::icons::Icon::Power, "Power menu", "Power"),
         ]
         .into_iter()
@@ -1153,7 +1163,7 @@ impl QuickSettingsRoot {
                 transform.pre_translate(
                     (
                         r.center().x - f64::from(label_width) / 2.,
-                        r.y0 + self.scaled(46.),
+                        r.y0 + self.scaled(43.),
                     )
                         .into(),
                 ),
@@ -1353,7 +1363,7 @@ impl QuickSettingsRoot {
             Self::rendered_label(c, s),
             theme.tokens.typography.scale.sm,
             colors.text_primary,
-            transform.pre_translate((r.x0 + self.scaled(14.), r.y0 + self.scaled(40.)).into()),
+            transform.pre_translate((r.x0 + self.scaled(14.), r.y0 + self.scaled(38.)).into()),
             None,
             TextWeight::Semibold,
         );
@@ -1371,7 +1381,7 @@ impl QuickSettingsRoot {
             &sub,
             theme.tokens.typography.scale.xs,
             colors.text_dim,
-            transform.pre_translate((r.x0 + self.scaled(14.), r.y0 + self.scaled(55.)).into()),
+            transform.pre_translate((r.x0 + self.scaled(14.), r.y0 + self.scaled(53.)).into()),
             None,
         );
         if (matches!(c, QuickSettingsControl::Wifi) && s.radios.wifi_available)
@@ -1764,14 +1774,7 @@ impl QuickSettingsRoot {
             );
         }
         if !self.edit_mode {
-            for name in [
-                "Settings",
-                "Privacy",
-                "History",
-                "Clipboard",
-                "Devices",
-                "Power",
-            ] {
+            for name in ["Settings", "Privacy", "History", "Power"] {
                 root.children.push(
                     AccessNode::new(Role::Button)
                         .with_name(name)
@@ -1873,6 +1876,29 @@ mod tests {
         assert_eq!(root.control_count(&state), 3);
     }
     #[test]
+    fn saved_airplane_choice_remains_removable_without_current_radio_hardware() {
+        let root = QuickSettingsRoot::with_config(QuickSettingsConfig {
+            controls: vec![
+                QuickSettingsControl::Wifi,
+                QuickSettingsControl::AirplaneMode,
+                QuickSettingsControl::NightLight,
+            ],
+        });
+        let state = QuickSettingsState::default();
+
+        // Do not surface a dead default tile, but never strand a persisted
+        // explicit choice where a person cannot remove it after hardware
+        // changes.
+        assert!(
+            root.visible_controls(&state)
+                .contains(&QuickSettingsControl::AirplaneMode)
+        );
+        assert!(
+            root.edit_controls(&state)
+                .contains(&QuickSettingsControl::AirplaneMode)
+        );
+    }
+    #[test]
     fn network_slot_is_hardware_truthful_and_unifies_wired() {
         let root = QuickSettingsRoot::default();
         let mut state = QuickSettingsState::default();
@@ -1968,9 +1994,7 @@ mod tests {
             (1, RootAction::OpenSettings),
             (2, RootAction::Privacy),
             (3, RootAction::OpenNotifications),
-            (4, RootAction::OpenClipboard),
-            (5, RootAction::OpenDevices),
-            (6, RootAction::OpenPowerMenu),
+            (4, RootAction::OpenPowerMenu),
         ] {
             assert!(root.focus_accessibility_path(&[path], &state));
             assert!(root.accessibility_rect_for_path(&[path]).is_some());
@@ -2166,16 +2190,42 @@ mod tests {
                 assert!(overlap.width() <= 0. || overlap.height() <= 0.);
             }
         }
+        // Four labeled destinations leave a 86px target at the standard
+        // 400px panel width: comfortably above the 44px minimum and wide
+        // enough that the label does not collide with its neighbour.
+        assert_eq!(actions[0].width(), 86.0);
+    }
+
+    #[test]
+    fn compact_root_reclaims_space_without_clipping_the_power_profile() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+        state.radios.wifi_available = true;
+        state.bluetooth_available = true;
+        state.vpns.push(os_actions::VpnConnectionInfo {
+            name: "Test VPN".into(),
+            uuid: "test-vpn".into(),
+            active: false,
+            kind: "vpn".into(),
+        });
+        let height = root.preferred_height(&state);
+        assert!(
+            height <= 416.0,
+            "root should not retain the old 432px sheet"
+        );
+        let panel = Rect::new(0.0, 48.0, 400.0, 48.0 + height);
+        root.panel = panel;
+        assert!(root.power_geometry(panel, &state).y1 <= panel.y1);
     }
     #[test]
-    fn devices_utility_opens_the_certified_device_pane() {
+    fn power_utility_keeps_a_clear_root_target() {
         let mut root = QuickSettingsRoot::default();
         let mut state = QuickSettingsState::default();
         let panel = Rect::new(0., 48., 400., 520.);
         root.panel = panel;
         assert_eq!(
-            root.handle_click(root.action(4).center(), panel, &mut state),
-            RootAction::OpenDevices
+            root.handle_click(root.action(3).center(), panel, &mut state),
+            RootAction::OpenPowerMenu
         );
     }
     #[test]
