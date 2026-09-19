@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read a recorded demo back from its pixels.
 
-`scripts/yc-demo.py --record` writes a run directory and composes
+`scripts/demo/run.py --record` writes a run directory and composes
 `tilo-demo.mp4` from it. This script finds where each beat lives in the
 finished video and extracts the corresponding frames for inspection.
 
@@ -15,7 +15,7 @@ It changes nothing and it re-derives everything from artifacts:
 The transcript supplies the clock. Run the recorder through a stamper so
 each line carries the wall-clock second it was printed:
 
-    python3 -u scripts/yc-demo.py --record 2>&1 \
+    python3 -u scripts/demo/run.py --record 2>&1 \
       | python3 -c 'import sys,time
 for line in sys.stdin:
     sys.stdout.write(f"{time.time():.3f} {line}"); sys.stdout.flush()' \
@@ -23,7 +23,7 @@ for line in sys.stdin:
 
 then
 
-    scripts/demo-verify.py <record-dir> --log run.log --out frames-out
+    scripts/demo/verify.py <record-dir> --log run.log --out frames-out
 
 Beat windows come from matching those stamps against frame mtimes, so a
 frame attributed to beat 7 is a frame that was captured while beat 7 was
@@ -39,7 +39,7 @@ import re
 import subprocess
 import sys
 
-BAND_H = 66            # must match yc-demo.py
+BAND_H = 66            # must match run.py
 VIDEO_W, VIDEO_H = 1920, 1080
 
 BEAT_RE = re.compile(r"^\s*([1-9])\.\s{2}(.+?)\s*$")

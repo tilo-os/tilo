@@ -2,9 +2,9 @@
 # A local app registry for the "search → the app is not here → it opens"
 # palette flow (docs/demo-script.md, beat 3; crates/session/shell/src/shell/catalogue.rs).
 #
-#   scripts/demo-registry.sh up      # build, pack, sign, configure, serve (foreground)
-#   scripts/demo-registry.sh down    # restore registries.toml, stop a background server
-#   scripts/demo-registry.sh reset   # forget the installed word processor so the beat repeats
+#   scripts/demo/registry.sh up      # build, pack, sign, configure, serve (foreground)
+#   scripts/demo/registry.sh down    # restore registries.toml, stop a background server
+#   scripts/demo/registry.sh reset   # forget the installed word processor so the beat repeats
 #
 # What `up` does, all in userspace, nothing on the host:
 #   1. builds tilo-pkg, tilo-install, tilo-launcher, tilo-catalogue and the word processor;
@@ -124,7 +124,7 @@ configure() {
         say "backed up $REGISTRIES -> $BACKUP"
     fi
     cat > "$REGISTRIES" <<EOF
-# Written by scripts/demo-registry.sh — \`demo-registry.sh down\` restores the backup.
+# Written by scripts/demo/registry.sh — \`registry.sh down\` restores the backup.
 [[registry]]
 name = "demo"
 base_url = "$BASE_URL"
@@ -164,7 +164,7 @@ down() {
     if [ -f "$BACKUP" ]; then
         mv "$BACKUP" "$REGISTRIES"
         say "restored $REGISTRIES"
-    elif [ -f "$REGISTRIES" ] && grep -q 'demo-registry.sh' "$REGISTRIES"; then
+    elif [ -f "$REGISTRIES" ] && grep -q 'scripts/demo/registry.sh' "$REGISTRIES"; then
         rm -f "$REGISTRIES"
         say "removed the demo registries.toml (there was none before)"
     fi
