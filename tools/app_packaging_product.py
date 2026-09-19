@@ -22,7 +22,14 @@ REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
                   'tools/app_packaging_qualification.py', 'tools/app_release.py',
                   'dist/apps/app-collections.toml',
                   'tools/resolve_ci_builder.py', 'dist/apps/package-apps.sh',
-                  'os/scripts/build-thin-apps.sh'}
+                  'os/scripts/build-thin-apps.sh', 'tools/ci_select.py',
+                  'tools/app_package_isa.py', 'tools/create_app_receipt.py',
+                  'tools/assemble_verified_apps.py', 'tools/final_app_receipt.py',
+                  'tools/app_channel_manifest.py', 'tools/canonical_app_verifier.py',
+                  'dist/apps/assemble-collection.sh', 'tools/assemble_app_collection.py',
+                  'tools/rustc-thin-app-wrapper.sh', 'os/scripts/bake-runtime-bundle.sh',
+                  'os/scripts/verify-elf-hardening.sh', 'tools/ci-sccache.sh',
+                  '.forgejo/actions/restore-cargo-downloads/action.yml'}
 
 
 def require(value, message):

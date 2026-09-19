@@ -196,6 +196,32 @@ class ProductTests(unittest.TestCase):
             core.accept_run(self.store, intent['id'], other, self.api.validate_run)
         self.assertEqual(self.store.read()['active']['run_id'], 1)
 
+    def test_qualification_rejects_missing_or_changed_assembly_helpers(self):
+        import base64
+        import hashlib
+        content = b'reviewed-helper'
+        files = {path: hashlib.sha256(content).hexdigest() for path in product.REQUIRED_PATHS}
+        for helper in ('tools/assemble_verified_apps.py', 'tools/final_app_receipt.py',
+                       'tools/app_channel_manifest.py', 'dist/apps/assemble-collection.sh',
+                       'tools/assemble_app_collection.py', 'tools/ci_select.py'):
+            with self.subTest(helper=helper):
+                self.assertIn(helper, files)
+                incomplete = dict(files)
+                del incomplete[helper]
+                api = product.ProductForgejo(dict(POLICY, trusted_files=incomplete))
+                api.call = lambda *_: self.fail('incomplete trust policy reached network')
+                with self.assertRaises(ValueError):
+                    api.qualify_receipt(dict(desired(), policy_sha256=api.policy_sha))
+                api = product.ProductForgejo(dict(POLICY, trusted_files=files))
+                def read(path):
+                    if path == 'repos/' + product.REPO:
+                        return {'id': 23, 'full_name': product.REPO}
+                    value = b'changed-helper' if '/contents/' + helper + '?' in path else content
+                    return {'content': base64.b64encode(value).decode()}
+                api.call = read
+                with self.assertRaises(ValueError):
+                    api.qualify_receipt(dict(desired(), policy_sha256=api.policy_sha))
+
     def test_concurrent_reconciliation_cannot_overwrite_attached_run(self):
         self.start()
         def competing_accept(*args):
