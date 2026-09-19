@@ -341,6 +341,11 @@ class CanaryIdentity(unittest.TestCase):
                         BUILD.index('name: Retain only successful cold acceptance'))
         self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh warm'),
                         BUILD.index('name: Retain only successful warm acceptance'))
+        replication = BUILD.split('name: Replicate the promoted builder beside Oregon runners', 1)[1]
+        self.assertIn("if: github.ref == 'refs/heads/main'", replication)
+        self.assertIn('replicate-builder-index.py', replication)
+        self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder', replication)
+        self.assertIn('podesta-burst-usw2-qos-builder-replication', replication)
 
     def test_reuse_never_reaches_signing_or_promotion(self):
         signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]
