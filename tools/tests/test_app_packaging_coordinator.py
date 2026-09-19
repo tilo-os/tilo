@@ -7,6 +7,7 @@ import subprocess
 import sys
 import unittest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 SPEC = importlib.util.spec_from_file_location('coordinator', Path(__file__).parents[1] / 'app_packaging_coordinator.py')
 c = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(c)
