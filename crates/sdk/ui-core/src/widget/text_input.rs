@@ -4014,13 +4014,13 @@ impl Widget for TextInput {
         self.is_dragging
     }
 
-    fn needs_animation_frame(&self) -> bool {
-        self.checks_spelling()
-            && self.spell_active
-            && self.is_focused
-            && self
-                .last_edit_time
-                .is_some_and(|edited| edited.elapsed() < SPELL_EDIT_SETTLE)
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        if !self.checks_spelling() || !self.spell_active || !self.is_focused {
+            return None;
+        }
+        self.last_edit_time
+            .map(|edited| edited + SPELL_EDIT_SETTLE)
+            .filter(|deadline| *deadline > Instant::now())
     }
 
     fn needs_commit(&self) -> bool {
@@ -5985,7 +5985,8 @@ mod tests {
         assert_eq!(ti.spell_spans, vec![(0, 3), (4, 9)]);
         assert!(ti.spelling_span_is_visible(0, 3));
         assert!(!ti.spelling_span_is_visible(4, 9));
-        assert!(Widget::needs_animation_frame(&ti));
+        assert!(!Widget::needs_animation_frame(&ti));
+        assert!(Widget::next_wake_deadline(&ti).is_some());
     }
 
     #[test]
@@ -6041,7 +6042,8 @@ mod tests {
             ti.spell_cache_key,
             Some(("de_DE".to_string(), "alt".to_string()))
         );
-        assert!(Widget::needs_animation_frame(&ti));
+        assert!(!Widget::needs_animation_frame(&ti));
+        assert!(Widget::next_wake_deadline(&ti).is_some());
     }
 
     #[test]

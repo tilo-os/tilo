@@ -466,6 +466,11 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# libspa-sys 0.10.1 lets bindgen discover newer PipeWire inline functions
+# through transitive headers, but its emitted C wrapper includes only the
+# narrower wrapper.h. Keep the missing direct includes locally until upstream
+# ships the same fix; clean Fedora 44 builds otherwise fail in static_fns.c.
+libspa-sys = { path = "vendor/libspa-sys" }
 # Pinned DX12 compiled-shader import/export; see vendor/wgpu-hal/TILO-PATCH.md.
 wgpu-hal = { path = "vendor/wgpu-hal" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
