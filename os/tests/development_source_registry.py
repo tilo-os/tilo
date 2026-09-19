@@ -69,12 +69,8 @@ def main():
                 raise RuntimeError('disposable registry did not become ready')
             key = root / 'cosign'
             run('cosign', 'generate-key-pair', '--output-key-prefix', str(key), env=env)
-            pcr_certificate = root / 'pcr.crt'
-            run('/usr/local/bin/tilo-crypto', 'generate-secure-boot-cert',
-                'Tilo Disposable PCR Fixture', str(root / 'pcr.key'), str(pcr_certificate))
-            run('/usr/local/bin/tilo-crypto', 'rsa-public-key',
+            run('/usr/local/bin/tilo-crypto', 'generate-tpm-authority-key',
                 str(root / 'pcr.key'), str(root / 'pcr.pub'))
-            pcr_certificate.unlink()
             run('/usr/local/bin/tilo-crypto', 'generate-secure-boot-cert',
                 'Tilo Disposable Fixture', str(root / 'efi.key'), str(root / 'efi.crt'))
             (root / 'owner.pub').write_text('ab' * 32 + '\n')
