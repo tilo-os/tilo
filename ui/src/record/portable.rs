@@ -92,7 +92,7 @@ impl RecordSet {
             let key = key(&self.package_id, &self.home, id);
             let actor = doc.get_actor().to_bytes().to_vec();
             if let Err(e) = cache
-                .put(key.clone(), doc.save(), Some(actor))
+                .put_document(key.clone(), doc, Some(actor))
                 .and_then(|()| cache.flush(&key))
             {
                 errors.push(format!("{id}: {e}"));
@@ -231,13 +231,13 @@ pub(super) fn save_status(
     if doc.pending_ops() != 0 {
         return RecordSaveStatus::Saving;
     }
-    let Some(value) = cache.get(&key) else {
+    let Some(heads) = cache.document_heads(&key) else {
         return RecordSaveStatus::Saving;
     };
-    let Ok(mut stored) = AutoCommit::load(&value.bytes) else {
+    let Ok(heads) = heads else {
         return RecordSaveStatus::Failed("cached document is corrupt".into());
     };
-    if stored.get_heads() != doc.base_heads() {
+    if heads != doc.base_heads() {
         return RecordSaveStatus::Saving;
     }
     match cache.flush(&key) {
@@ -252,6 +252,33 @@ pub(super) fn save_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cached_heads_save_status_tracks_current_document_and_durability() {
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let id = RecordId::minted();
+        let storage_key = key("test", "room", &id);
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "value", 1).unwrap();
+        cache.put(storage_key.clone(), doc.save(), None).unwrap();
+        let older = cache.pending_writes().remove(0);
+        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Saving);
+        cache.acknowledge(&older, Ok(())).unwrap();
+        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Saved);
+        doc.put(automerge::ROOT, "value", 2).unwrap();
+        let pending = doc.pending_ops();
+        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Saving);
+        assert_eq!(doc.pending_ops(), pending, "status must not commit typing");
+        cache.put(storage_key.clone(), doc.save(), None).unwrap();
+        cache.acknowledge(&older, Ok(())).unwrap();
+        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Saving);
+        let newer = cache.pending_writes().remove(0);
+        cache.acknowledge(&newer, Err("quota".into())).unwrap();
+        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Failed("quota".into()));
+        cache.acknowledge(&newer, Ok(())).unwrap();
+        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Saved);
+        cache.put(storage_key, vec![1,2,3], None).unwrap();
+        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Failed("cached document is corrupt".into()));
+    }
     #[test]
     fn separate_registries_share_one_cache_owner() {
         let cache = PortableStorage::new("profile", "device").unwrap();

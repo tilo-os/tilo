@@ -10,6 +10,8 @@ pub type RoomGovernance = (
     BTreeMap<String, Vec<u8>>,
     Option<Vec<u8>>,
 );
+#[cfg(test)]
+thread_local! { pub(crate) static POLICY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 pub fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
     let Some(doc) = doc else {
@@ -74,6 +76,8 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
 pub fn extract_governed_fields(
     candidate: &AutoCommit,
 ) -> (Option<String>, Option<String>, Vec<CapOverride>) {
+    #[cfg(test)]
+    POLICY_READS.with(|count| count.set(count.get() + 1));
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
     let name = match candidate.get(&ROOT, "name").ok().flatten() {
         Some((Value::Scalar(s), _)) => match s.as_ref() {

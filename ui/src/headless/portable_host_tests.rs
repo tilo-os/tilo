@@ -186,11 +186,17 @@ fn portable_frame_hides_live_overlay_with_compact_history_surface() {
     );
 }
 struct Scheduled {
+    inspections: Rc<Cell<usize>>,
     animate: Rc<Cell<bool>>,
     deadline: Rc<Cell<Option<Instant>>>,
     updates: Rc<Cell<usize>>,
 }
 impl Widget for Scheduled {
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        self.inspections.set(self.inspections.get() + 1);
+        None
+    }
+
     fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn update(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
         self.updates.set(self.updates.get() + 1);
@@ -244,6 +250,7 @@ fn portable_review_clean_animation_and_delayed_wake_drive_frames() {
     let deadline = Rc::new(Cell::new(None));
     let updates = Rc::new(Cell::new(0));
     let mut frame = frame(Box::new(Scheduled {
+        inspections: Rc::new(Cell::new(0)),
         animate: animate.clone(),
         deadline: deadline.clone(),
         updates: updates.clone(),
@@ -575,4 +582,18 @@ fn portable_review_scrollbar_hold_clears_damage_and_sleeps_until_deadline() {
         !frame.poll_frame().unwrap(),
         "opaque hold sleeps until its fade deadline"
     );
+}
+
+#[test]
+fn idle_frame_poll_does_not_materialize_accessibility_tree() {
+    let inspections=Rc::new(Cell::new(0));
+    let mut frame=frame(Box::new(Scheduled {
+        inspections: inspections.clone(), animate: Rc::new(Cell::new(false)),
+        deadline: Rc::new(Cell::new(None)), updates: Rc::new(Cell::new(0)),
+    }));
+    inspections.set(0);
+    for _ in 0..100 { assert!(!frame.poll_frame().unwrap()); }
+    assert_eq!(inspections.get(),0,"a scheduling query must not construct the accessibility snapshot");
+    let _=frame.frame_output();
+    assert_eq!(inspections.get(),1,"explicit output still supplies current semantics");
 }
