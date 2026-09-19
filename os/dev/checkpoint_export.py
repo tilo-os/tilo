@@ -216,3 +216,80 @@ def materialize(operation, directory, purpose, request_directory, local_spool, *
     return {'directory': str(destination), 'purpose': purpose, 'request_id': request['request_id'],
             'input_sha256': request['input_sha256'], 'input_bytes': request['input_bytes'],
             'materialized': True, 'signing_authorized': False}
+
+
+def admit_composefs_recompute(directory, request, binding, request_sha256,
+                              exporter, local_spool, *, legacy=False):
+    """Admit the sequential live/target checkpoint state for recomputation.
+
+    The live UKI must already have crossed the authenticated signing spool.  The
+    target receipt deliberately remains metadata-only because its signing request
+    is issued only after the live signature is delivered.  Both receipts are
+    revalidated by the pinned exporter before their common image/seal chain is
+    returned.
+    """
+    directory = local_spool.private_directory(directory)
+    checkpoints = (directory if legacy else
+                   local_spool.private_directory(directory / 'checkpoints'))
+    context = local_spool.document(directory / 'signing-context.json')
+    context_sha256 = local_spool.context(context)
+    if binding.get('context_sha256') != context_sha256:
+        raise ValueError('checkpoint recomputation context differs')
+
+    values = {}
+    for purpose in ('live-uki', 'target-uki'):
+        checkpoint = local_spool.private_directory(
+            checkpoints / (('checkpoint-' + purpose) if legacy else purpose))
+        receipt_path = checkpoint / 'receipt.json'
+        if hasattr(local_spool, 'signer'):
+            receipt_path = local_spool.signer.trusted(receipt_path)
+        value = local_spool.document(receipt_path)
+        exporter.validate_metadata(
+            value, request, binding, purpose, request_sha256, local_spool)
+        if value.get('transport_context_sha256') != context_sha256:
+            raise ValueError('checkpoint metadata bridge context differs')
+        values[purpose] = value
+
+    live = checkpoints / ('checkpoint-live-uki' if legacy else 'live-uki')
+    live_input = local_spool.snapshot(live / 'input.efi', local_spool.MAX_INPUT)
+    materialization = local_spool.document(live / 'materialization.json')
+    request_id = materialization.get('request_id')
+    expected_materialization = {
+        'schema': 1, 'purpose': 'live-uki', 'request_id': request_id,
+        'context_sha256': context_sha256,
+        'input_sha256': values['live-uki']['input_sha256'],
+        'input_bytes': values['live-uki']['input_bytes'],
+        'signing_authorized': False,
+    }
+    if (not isinstance(request_id, str)
+            or re.fullmatch(r'[0-9a-f]{32}', request_id) is None
+            or materialization != expected_materialization
+            or len(live_input) != values['live-uki']['input_bytes']
+            or local_spool.digest(live_input) != values['live-uki']['input_sha256']):
+        raise ValueError('live checkpoint materialization differs')
+
+    received = None
+    for parent in (directory / 'received', directory.parent / 'received'):
+        candidate = parent / request_id
+        if candidate.is_dir():
+            if received is not None:
+                raise ValueError('ambiguous live checkpoint receive source')
+            received = candidate
+    if received is None:
+        raise ValueError('live checkpoint receive source missing')
+    received_request = local_spool.request_metadata(
+        local_spool.document(received / 'request.json'))
+    if (received_request.get('request_id') != request_id
+            or received_request.get('operation') != 'sign-efi'
+            or received_request.get('context_sha256') != context_sha256
+            or received_request.get('input_sha256') != values['live-uki']['input_sha256']
+            or received_request.get('input_bytes') != values['live-uki']['input_bytes']):
+        raise ValueError('live checkpoint receive metadata differs')
+
+    target = checkpoints / ('checkpoint-target-uki' if legacy else 'target-uki')
+    if ((target / 'input.efi').exists()
+            or (target / 'materialization.json').exists()):
+        raise ValueError('target checkpoint must remain metadata-only')
+    if values['live-uki']['checkpoint_chain'] != values['target-uki']['checkpoint_chain']:
+        raise ValueError('live and target checkpoint chains differ')
+    return values['live-uki'], values['target-uki']
