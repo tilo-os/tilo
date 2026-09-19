@@ -9,7 +9,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SPEC = importlib.util.spec_from_file_location("ci_merge_pr", ROOT / "tools/ci_merge_pr.py")
+SPEC = importlib.util.spec_from_file_location("ci_merge_pr", ROOT / "tools/ci/merge_pr.py")
 merge_pr = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(merge_pr)
 
