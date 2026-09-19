@@ -799,7 +799,10 @@ fn append_resource_nodes(
 // The walk threads three accumulators (nodes, the parent's child list, the
 // active descendant) alongside the tree it is reading; bundling them would only
 // move the arity into a struct.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the DFS threads traversal state and output accumulators together"
+)]
 fn visit<const BOUND: bool>(
     w: &dyn Widget,
     ptr_to_taffy: &WidgetNodeMap,
