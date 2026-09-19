@@ -12374,7 +12374,10 @@ mod action_palette_tests {
             _: NodeId,
             _: &TaffyTree<()>,
         ) {
-            if matches!(event, WindowEvent::KeyboardInput { .. }) {
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            ) {
                 doc.put(&ROOT, "escaped_keyboard", true).unwrap();
                 *handled = true;
             }
@@ -12635,6 +12638,18 @@ mod action_palette_tests {
                     }
                 }
                 assert_eq!(app.focused_node, Some(target), "Tab reaches host control");
+                let ime = WindowEvent::Ime(winit::event::Ime::Commit("composed text".into()));
+                let mut handled = false;
+                let mut focus = None;
+                assert!(app.presentation_handle_event(&ime, 1.0, &mut handled, &mut focus));
+                assert!(
+                    app.state
+                        .doc
+                        .get(&ROOT, "escaped_keyboard")
+                        .unwrap()
+                        .is_none(),
+                    "IME input focused on host chrome must never reach app content"
+                );
                 let mut event = synth_enter();
                 if let WindowEvent::KeyboardInput { event, .. } = &mut event {
                     event.logical_key = Key::Named(key);
@@ -12668,6 +12683,21 @@ mod action_palette_tests {
                 let mut handled = false;
                 app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus);
                 assert!(handled);
+                assert_eq!(
+                    app.state
+                        .doc
+                        .get(&ROOT, "escaped_keyboard")
+                        .unwrap()
+                        .and_then(|(value, _)| value.to_bool()),
+                    Some(true)
+                );
+                app.state.doc.delete(&ROOT, "escaped_keyboard").unwrap();
+                let mut handled = false;
+                app.presentation_handle_event(&ime, 1.0, &mut handled, &mut focus);
+                assert!(
+                    handled,
+                    "app-focused IME reaches the same consuming fixture"
+                );
                 assert_eq!(
                     app.state
                         .doc
