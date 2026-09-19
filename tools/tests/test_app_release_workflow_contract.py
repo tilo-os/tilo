@@ -11,12 +11,13 @@ ROOT = Path(__file__).resolve().parents[2]
 class AppReleaseWorkflowContract(unittest.TestCase):
     def test_every_main_pr_plans_but_never_packages(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+        self.assertIn('- "tools/apps/**"', source)
         pr = source.split('  pull_request:\n', 1)[1].split('\n  push:', 1)[0]
         self.assertRegex(pr, r'(?m)^    branches: \[main\]$')
         self.assertNotRegex(pr, r'(?m)^    (?:paths|paths-ignore):')
         plan = source.split('\n  plan:\n', 1)[1].split('\n  build:\n', 1)[0]
         self.assertNotRegex(plan, r'(?m)^    if:')
-        self.assertIn('python3 tools/app_release.py "${args[@]}"', plan)
+        self.assertIn('python3 tools/apps/app_release.py "${args[@]}"', plan)
         build = source.split('\n  build:\n', 1)[1].split('\n  publish:\n', 1)[0]
         condition = re.search(r'(?m)^    if: (.+)$', build).group(1)
         # Execute the production predicate, including both nonzero/zero plans.

@@ -30,11 +30,11 @@ class AppArtifactHandoffTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         for relative in (
             "dist/apps/package-apps.sh", "dist/apps/assemble-collection.sh",
-            "os/scripts/bake-runtime-bundle.sh", "tools/app_release.py",
+            "os/scripts/bake-runtime-bundle.sh", "tools/apps/app_release.py",
             "tools/ci/__init__.py", "tools/ci/affected_packages.py",
-            "tools/assemble_app_collection.py",
+            "tools/apps/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
-            "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/app_package_isa.py",
+            "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/apps/app_package_isa.py",
         ):
             self.write(relative, (ROOT / relative).read_text())
         self.write("bin/cargo", """#!/usr/bin/env python3
@@ -179,7 +179,7 @@ exit 99
                 with self.subTest(arch=arch, replacement=replacement):
                     config.write_text(original.replace(f'"-C", "target-cpu={cpu}",', replacement))
                     result = subprocess.run([
-                        "python3", "tools/app_package_isa.py", "flags", "--root", str(self.root),
+                        "python3", "tools/apps/app_package_isa.py", "flags", "--root", str(self.root),
                         "--arch", arch], cwd=self.root, env=self.env,
                         text=True, capture_output=True, timeout=10)
                     self.assertNotEqual(result.returncode, 0)
@@ -190,7 +190,7 @@ exit 99
         config = tomllib.loads((self.root / ".cargo/config.toml").read_text())
         for arch in ("x86_64", "aarch64"):
             with self.subTest(arch=arch):
-                result = self.command("python3", "tools/app_package_isa.py", "flags",
+                result = self.command("python3", "tools/apps/app_package_isa.py", "flags",
                                       "--root", str(self.root), "--arch", arch)
                 flags = result.stdout.removesuffix("\n").split("\x1f")
                 key = f'cfg(all(target_arch = "{arch}", target_os = "linux"))'

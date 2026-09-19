@@ -1,6 +1,6 @@
 # Real app publication receipts and pinned channel consumption
 
-`tools/app_channel_manifest.py` supplies the schema/adapter and reader for the
+`tools/apps/app_channel_manifest.py` supplies the schema/adapter and reader for the
 production transition. The release build now generates and uploads unpublished
 receipts using its already-built canonical Rust verifiers. **Channel consumption
 and promotion remain inactive; no channel is written.**
@@ -91,10 +91,10 @@ authorization; the production package trust boundary remains required.
 ## Commands
 
 ```sh
-python tools/app_channel_manifest.py --trust-policy trusted-policy.json select \
+python tools/apps/app_channel_manifest.py --trust-policy trusted-policy.json select \
   --manifest app-channel.json --manifest-sha256 TRUSTED_MANIFEST_SHA256 \
   --resolved-commit RESOLVED_CHANNEL_COMMIT --architecture x86_64
-python tools/app_channel_manifest.py --trust-policy trusted-policy.json create-receipt \
+python tools/apps/app_channel_manifest.py --trust-policy trusted-policy.json create-receipt \
   --archive tilo-apps-x86_64.tar.gz --tree verified-collection \
   --archive-sha256 TRUSTED_ARCHIVE_SHA256 --source-sha SOURCE_COMMIT \
   --architecture x86_64 --verifier reviewed-verifier.py \
@@ -109,7 +109,7 @@ no global package is installed, and no publication is performed by this tool.
 
 ## Staged canonical build receipts
 
-`release-apps.yml` invokes `tools/create_app_receipt.py` after packaging, including
+`release-apps.yml` invokes `tools/apps/create_app_receipt.py` after packaging, including
 manual `publish=false` runs. It calls `tilo-pkg verify` with explicit trusted keys
 and `tilo-runtime-bundle verify` with required publisher, signature and architecture.
 The Python adapter uses the standard library; production receipt generation does
@@ -158,7 +158,7 @@ An enabled qualification failure is fatal; there is no fallback to unverified mo
 The readback establishes availability at that moment, not permanent retention or
 protection against a registry administrator replacing bytes later.
 
-`tools/final_app_receipt.py verify` performs final canonical verification;
+`tools/apps/final_app_receipt.py verify` performs final canonical verification;
 `bind-readback` binds its pinned receipt to the caller's authenticated download of
 the exact URL. The latter is a trusted uploader operation: merely supplying an
 arbitrary local file and URL cannot independently establish network provenance.
