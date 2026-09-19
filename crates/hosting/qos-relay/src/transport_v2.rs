@@ -184,10 +184,27 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
 
 pub(crate) fn encode_state(env: &Envelope, v2: bool) -> Result<Vec<u8>, postcard::Error> {
     if v2 {
-        encode(&EnvelopeV2::State(env.clone()))
+        let payload = state_payload(env)?;
+        if payload.len() > MAX_FRAME_BYTES + 1 {
+            return Err(postcard::Error::SerializeBufferFull);
+        }
+        let mut out = Vec::with_capacity(payload.len() + 4);
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&payload);
+        Ok(out)
     } else {
         crate::transport::encode(env)
     }
+}
+
+/// Same zero-valued State discriminant as EnvelopeV2, borrowing its payload so
+/// the replay allocation permit covers every live representation during writes.
+pub(crate) fn state_payload(env: &Envelope) -> Result<Vec<u8>, postcard::Error> {
+    #[derive(serde::Serialize)]
+    enum BorrowedState<'a> {
+        State(&'a Envelope),
+    }
+    postcard::to_allocvec(&BorrowedState::State(env))
 }
 
 #[cfg(test)]

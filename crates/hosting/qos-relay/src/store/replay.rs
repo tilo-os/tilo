@@ -188,6 +188,7 @@ pub(crate) struct ReplayBuild {
     next_pin: u64,
 }
 impl ReplayBuild {
+    #[cfg(test)]
     pub(crate) fn stats(&self) -> Option<&WorkStats> {
         self.sorter.as_ref().map(|s| &s.stats)
     }
@@ -272,13 +273,21 @@ impl ReplaySnapshot {
         // The final framed Vec coexists with that payload during encoding.
         let encoded =
             postcard::to_allocvec(&envelope).map_err(|_| invalid("replay re-encoding failed"))?;
-        let charge = frame_charge(&envelope, bytes.len(), &encoded, encoded.capacity())?;
+        let v1_charge = frame_charge(&envelope, bytes.len(), &encoded, encoded.capacity())?;
         self.stats.peak_frame_bytes = self
             .stats
             .peak_frame_bytes
             .max(bytes.capacity() + decoded + encoded.capacity());
         let coverage = !meta.pending && retained && encoded == bytes[4..];
         drop(encoded);
+        let v2 = crate::transport_v2::state_payload(&envelope)
+            .map_err(|_| invalid("v2 replay re-encoding failed"))?;
+        let charge = v1_charge.max(frame_charge(&envelope, bytes.len(), &v2, v2.capacity())?);
+        self.stats.peak_frame_bytes = self
+            .stats
+            .peak_frame_bytes
+            .max(bytes.capacity() + decoded + v2.capacity());
+        drop(v2);
         let hash = (self.digest)(&bytes);
         // Pin length is immutable. Store measured output reservation in the
         // ordering key only in the final manifest (ordering is already done).
@@ -707,7 +716,7 @@ fn same_inode(a: &Path, b: &Path) -> Result<bool, StoreError> {
 /// Snapshot/staging-only reclamation. Never execute abandoned cleanup manifests.
 pub(crate) struct WorkDiscard {
     root: PathBuf,
-    outer: DirectoryCursor,
+    outer: Option<DirectoryCursor>,
     child: Option<(PathBuf, DirectoryCursor)>,
     done: bool,
 }
@@ -720,7 +729,11 @@ impl WorkDiscard {
             return Err(invalid("invalid work disposal root"));
         }
         Ok(Self {
-            outer: DirectoryCursor::open(&root)?,
+            outer: match DirectoryCursor::open(&root) {
+                Ok(cursor) => Some(cursor),
+                Err(StoreError::Io(error)) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error),
+            },
             root,
             child: None,
             done: false,
@@ -728,47 +741,79 @@ impl WorkDiscard {
     }
     pub(crate) fn step(&mut self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
         let limit = limit.checked()?;
-        if self.done {
+        if self.done || self.outer.is_none() {
             return Ok(Step::Done(()));
         }
         for _ in 0..limit.record_entries() {
             if let Some((path, entries)) = &mut self.child {
                 if let Some(entry) = entries.peek()? {
-                    if entry.file_type()?.is_file()
+                    if existing_kind(entry)?.is_some_and(|kind| kind.is_file())
                         && owned_work_file(path.file_name().unwrap_or_default(), &entry.file_name())
                     {
-                        fs::remove_file(entry.path())?;
+                        remove_file_if_present(&entry.path())?;
                     }
                     entries.advance();
                 } else {
                     remove_empty(path)?;
                     self.child = None;
                 }
-            } else if let Some(entry) = self.outer.peek()? {
-                let name = entry.file_name();
-                if entry.file_type()?.is_dir()
-                    && ["sort", "pins", "index"].iter().any(|s| name == *s)
-                {
-                    self.child = Some((entry.path(), DirectoryCursor::open(&entry.path())?));
-                } else if entry.file_type()?.is_file()
-                    && (name == "replay.manifest" || name == "cleanup.manifest")
-                {
-                    fs::remove_file(entry.path())?;
-                }
-                self.outer.advance();
             } else {
-                remove_empty(&self.root)?;
-                self.done = true;
-                return Ok(Step::Done(()));
+                let outer = self.outer.as_mut().unwrap();
+                if let Some(entry) = outer.peek()? {
+                    let name = entry.file_name();
+                    if let Some(kind) = existing_kind(entry)? {
+                        if kind.is_dir() && ["sort", "pins", "index"].iter().any(|s| name == *s) {
+                            match DirectoryCursor::open(&entry.path()) {
+                                Ok(cursor) => self.child = Some((entry.path(), cursor)),
+                                Err(StoreError::Io(error))
+                                    if error.kind() == io::ErrorKind::NotFound => {}
+                                Err(error) => return Err(error),
+                            }
+                        } else if kind.is_file()
+                            && (name == "replay.manifest" || name == "cleanup.manifest")
+                        {
+                            remove_file_if_present(&entry.path())?;
+                        }
+                    }
+                    outer.advance();
+                } else {
+                    remove_empty(&self.root)?;
+                    self.done = true;
+                    return Ok(Step::Done(()));
+                }
             }
         }
         Ok(Step::More)
     }
 }
+// These helpers are only for disposal of already selected reserved work. An
+// absent entry is already reclaimed; every other error retains its cursor.
+fn existing_kind(entry: &fs::DirEntry) -> Result<Option<fs::FileType>, StoreError> {
+    match entry.file_type() {
+        Ok(kind) => Ok(Some(kind)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+fn remove_file_if_present(path: &Path) -> Result<(), StoreError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn remove_empty(path: &Path) -> Result<(), StoreError> {
     match fs::remove_dir(path) {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::DirectoryNotEmpty => Ok(()),
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::DirectoryNotEmpty | io::ErrorKind::NotFound
+            ) =>
+        {
+            Ok(())
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -833,7 +878,9 @@ impl WorkReclaimer {
             let Some(entry) = entries.peek()? else {
                 return Ok(Step::Done(()));
             };
-            if entry.file_type()?.is_dir() && owned_work_name(&entry.file_name()) {
+            if existing_kind(entry)?.is_some_and(|kind| kind.is_dir())
+                && owned_work_name(&entry.file_name())
+            {
                 self.current = Some(WorkDiscard::new(entry.path())?);
                 entries.advance();
                 return Ok(Step::More);

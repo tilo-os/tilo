@@ -16,7 +16,9 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::AuthenticatedPeer;
 use crate::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
+use crate::persistence::{ReplayAdvance, ReplayTicket, WrittenBatch};
 use crate::store::StoreError;
+use crate::store::replay::Step;
 use crate::transport::Envelope;
 use crate::transport_v2::{ActionCapability, EnvelopeV2, SessionReader};
 use crate::workspace::{SharedWorkspace, Subscriber};
@@ -242,17 +244,10 @@ where
                     if replaying {
                         pending_replays.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
-                    let mut frames = Vec::new();
-                    let mut cleanup = Vec::new();
+                    let mut ticket = None;
                     let reply = {
-                        let operation = handle_envelope(
-                            &peer,
-                            env,
-                            &session,
-                            &mut subscribed,
-                            &mut frames,
-                            &mut cleanup,
-                        );
+                        let operation =
+                            handle_envelope(&peer, env, &session, &mut subscribed, &mut ticket);
                         tokio::pin!(operation);
                         loop {
                             tokio::select! {
@@ -273,10 +268,9 @@ where
                             }
                         }
                     };
-                    if replaying || reply.is_some() || !frames.is_empty() {
+                    if replaying || reply.is_some() || ticket.is_some() {
                         let sending = reply_tx.send(ReplayWrite {
-                            frames: frames.into(),
-                            cleanup,
+                            ticket,
                             reply,
                             replaying,
                         });
@@ -338,26 +332,16 @@ where
                 private_burst = private_burst.saturating_add(1);
                 continue;
             }
-            if let Some(batch) = &mut active {
-                if let Some(frame) = batch.frames.pop_front() {
-                    authorize_state_frame(&frame, &peer, &session).await?;
-                    write
-                        .write_all(&crate::transport_v2::encode_state(&frame, v2)?)
-                        .await?;
-                } else {
-                    let Some(batch) = active.take() else {
-                        continue;
-                    };
-                    finish_replay_write(
-                        batch,
-                        &peer,
-                        &session,
-                        &pending_replays,
-                        &mut private_rx,
-                        &mut write,
-                    )
-                    .await?;
-                }
+            if let Some(batch) = active.take() {
+                finish_replay_write(
+                    batch,
+                    &peer,
+                    &session,
+                    &pending_replays,
+                    &mut private_rx,
+                    &mut write,
+                )
+                .await?;
                 private_burst = 0;
                 continue;
             }
@@ -413,6 +397,9 @@ where
         result = writing => result,
     };
 
+    if crate::persistence::correlated_diagnostics() {
+        tracing::info!(phase = "peer_end", device = %hex::encode(&peer.device_public_key[..4]), outcome = ?outcome, workspaces = ?subscribed);
+    }
     connection_live
         .0
         .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -485,8 +472,7 @@ fn inbound_bytes(frame: &EnvelopeV2) -> usize {
 }
 
 struct ReplayWrite {
-    frames: std::collections::VecDeque<Envelope>,
-    cleanup: Vec<std::path::PathBuf>,
+    ticket: Option<(u64, ReplayTicket)>,
     reply: Option<Envelope>,
     replaying: bool,
 }
@@ -547,61 +533,99 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
     private_rx: &mut mpsc::Receiver<PrivateOutbound>,
     write: &mut W,
 ) -> Result<(), PeerError> {
-    if let Some(reply) = &batch.reply {
-        authorize_state_frame(reply, peer, session).await?;
-    }
-    if !batch.cleanup.is_empty() {
-        let Some(Envelope::Ready { workspace_id, .. }) = &batch.reply else {
-            return Err(PeerError::Protocol("replay cleanup without Ready".into()));
-        };
+    let mut reply = batch.reply;
+    if let Some((workspace_id, ticket)) = batch.ticket {
         let ws = session
             .workspaces
             .lock()
             .await
-            .get(workspace_id)
+            .get(&workspace_id)
             .cloned()
             .ok_or_else(|| PeerError::Protocol("replay workspace disappeared".into()))?;
         let owner = crate::persistence::handle(&ws).await;
-        let live = {
-            let runtime = ws.lock().await;
-            if !current_session(&runtime, peer, session.outbound) {
-                return Err(PeerError::Protocol("replay subscriber replaced".into()));
-            }
-            runtime
-                .state_sessions
-                .get(&peer.device_public_key)
-                .map(|session| session.live.clone())
-                .ok_or_else(|| PeerError::Protocol("replay session missing".into()))?
-        };
-        let receipt = owner.read(1, move |state| {
-            #[cfg(test)]
-            crate::store::test_barrier::pause(state.store.root(), "replay-cleanup");
-            let _ = state;
-            if !live.load(std::sync::atomic::Ordering::SeqCst) {
-                return Ok(());
-            }
-            for path in batch.cleanup {
-                match std::fs::remove_file(path) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.into()),
-                }
-            }
-            Ok(())
-        })?;
-        let completed = crate::persistence::receipt(receipt);
-        tokio::pin!(completed);
+        let mut written = None;
         loop {
-            tokio::select! {
-                biased;
-                result = &mut completed => { result?; break; }
-                private = private_rx.recv(), if session.v2 => {
-                    if let Some(private) = private { write_private(private, peer, session, write).await?; }
+            let authority = ticket.authority.clone();
+            let source = StateSource::new(peer, session);
+            let workspace = ws.clone();
+            let receipt = owner.submit_prepared(
+                1,
+                async move {
+                    authorize_replay(&workspace, &source, &authority).await?;
+                    Ok(authority)
+                },
+                move |state, authority| state.advance_replay(&authority, written),
+                |result| async { result },
+            )?;
+            match replay_wait(receipt, peer, session, private_rx, write).await? {
+                ReplayAdvance::Preparing => {}
+                ReplayAdvance::Batch(mut frames) => {
+                    while let Some(frame) = frames.front() {
+                        for _ in 0..8 {
+                            let Ok(private) = private_rx.try_recv() else {
+                                break;
+                            };
+                            write_private(private, peer, session, write).await?;
+                        }
+                        authorize_state_frame(frame, peer, session).await?;
+                        let source = StateSource::new(peer, session);
+                        authorize_replay(&ws, &source, &ticket.authority).await?;
+                        write
+                            .write_all(&crate::transport_v2::encode_state(frame, session.v2)?)
+                            .await?;
+                        frames.pop_written();
+                    }
+                    written = Some(WrittenBatch(frames.number));
+                    // No frame or output permit escapes this one outstanding batch.
+                    drop(frames);
+                    continue;
+                }
+                ReplayAdvance::Exhausted(summary) => {
+                    loop {
+                        let authority = ticket.authority.clone();
+                        let source = StateSource::new(peer, session);
+                        let workspace = ws.clone();
+                        let checking_workspace = ws.clone();
+                        let checking_source = source.clone();
+                        let receipt = owner.submit_prepared(
+                            1,
+                            async move {
+                                authorize_replay(&workspace, &source, &authority).await?;
+                                Ok(authority)
+                            },
+                            move |state, authority| {
+                                state.finish_replay(&authority, |store| {
+                                    authorize_replay_now(
+                                        store,
+                                        &checking_workspace,
+                                        &checking_source,
+                                        &authority,
+                                    )
+                                })
+                            },
+                            |result| async { result },
+                        )?;
+                        if matches!(
+                            replay_wait(receipt, peer, session, private_rx, write).await?,
+                            Step::Done(_)
+                        ) {
+                            break;
+                        }
+                    }
+                    authorize_replay(&ws, &StateSource::new(peer, session), &ticket.authority)
+                        .await?;
+                    reply = Some(Envelope::Ready {
+                        workspace_id,
+                        pending_deltas: summary.ready_count(),
+                    });
+                    break;
                 }
             }
+            written = None;
         }
+        // Dropping this ticket schedules specific bounded spool reclamation.
     }
-    if let Some(reply) = batch.reply {
+    if let Some(reply) = reply {
         authorize_state_frame(&reply, peer, session).await?;
         write
             .write_all(&crate::transport_v2::encode_state(&reply, session.v2)?)
@@ -611,6 +635,79 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
         pending.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
     Ok(())
+}
+
+async fn authorize_replay(
+    workspace: &SharedWorkspace,
+    source: &StateSource,
+    authority: &crate::persistence::ReplayAuthority,
+) -> Result<(), StoreError> {
+    let runtime = crate::workspace_io::fresh_membership(workspace).await?;
+    if !source.authorized(&runtime)
+        || !runtime
+            .state_sessions
+            .get(&source.peer.device_public_key)
+            .is_some_and(|session| authority.matches(&session.live))
+    {
+        return Err(crate::persistence::error(
+            "replay subscriber authorization changed",
+        ));
+    }
+    Ok(())
+}
+/// Blocking-worker authority check, immediately before one exact cleanup entry.
+/// Disk I/O precedes the short routing check; no routing guard crosses I/O.
+fn authorize_replay_now(
+    store: &crate::store::WorkspaceStore,
+    workspace: &SharedWorkspace,
+    source: &StateSource,
+    authority: &crate::persistence::ReplayAuthority,
+) -> Result<(), StoreError> {
+    let members = store.load_membership()?;
+    let runtime = workspace.blocking_lock();
+    let member = (members.contains(&source.peer.device_public_key)
+        && runtime
+            .membership_ceiling
+            .as_ref()
+            .is_none_or(|ceiling| ceiling.contains(&source.peer.device_public_key)))
+        || runtime
+            .admitted_users
+            .contains(&source.peer.user_public_key)
+        || (source.peer.role == crate::auth::PeerRole::PeerRelay
+            && runtime
+                .known_peer_relays
+                .contains(&source.peer.device_public_key));
+    if !member
+        || !source.authorized(&runtime)
+        || !runtime
+            .state_sessions
+            .get(&source.peer.device_public_key)
+            .is_some_and(|session| authority.matches(&session.live))
+    {
+        return Err(crate::persistence::error(
+            "replay cleanup authority changed",
+        ));
+    }
+    Ok(())
+}
+async fn replay_wait<T, W: tokio::io::AsyncWrite + Unpin>(
+    receipt: tokio::sync::oneshot::Receiver<Result<T, StoreError>>,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
+    write: &mut W,
+) -> Result<T, PeerError> {
+    let completed = crate::persistence::receipt(receipt);
+    tokio::pin!(completed);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut completed => return Ok(result?),
+            private = private_rx.recv(), if session.v2 => {
+                if let Some(private) = private { write_private(private, peer, session, write).await?; }
+            }
+        }
+    }
 }
 
 /// Periodic membership + revocation re-check for every workspace this
@@ -688,31 +785,24 @@ async fn handle_inbound_frame<W>(
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let mut replay = Vec::new();
-    let mut replay_cleanup = Vec::new();
-    // Named apart from `replay` on purpose — "reply" vs "replay" reads as a
-    // typo at a glance even though they're deliberately distinct concepts.
-    let direct_reply = handle_envelope(
+    let replaying = matches!(env, Envelope::Subscribe { .. });
+    let mut ticket = None;
+    let reply = handle_envelope(peer, env, session, subscribed, &mut ticket).await?;
+    let pending = std::sync::atomic::AtomicUsize::new(usize::from(replaying));
+    let (_tx, mut private_rx) = mpsc::channel(1);
+    finish_replay_write(
+        ReplayWrite {
+            ticket,
+            reply,
+            replaying,
+        },
         peer,
-        env,
         session,
-        subscribed,
-        &mut replay,
-        &mut replay_cleanup,
+        &pending,
+        &mut private_rx,
+        write,
     )
-    .await?;
-    for envelope in replay {
-        let bytes = crate::transport_v2::encode_state(&envelope, session.v2)?;
-        write.write_all(&bytes).await?;
-    }
-    for path in replay_cleanup {
-        std::fs::remove_file(path)?;
-    }
-    if let Some(direct_reply) = direct_reply {
-        let bytes = crate::transport_v2::encode_state(&direct_reply, session.v2)?;
-        write.write_all(&bytes).await?;
-    }
-    Ok(())
+    .await
 }
 
 async fn handle_envelope(
@@ -720,20 +810,11 @@ async fn handle_envelope(
     env: Envelope,
     session: &SessionCtx<'_>,
     subscribed: &mut Vec<u64>,
-    replay: &mut Vec<Envelope>,
-    replay_cleanup: &mut Vec<std::path::PathBuf>,
+    replay: &mut Option<(u64, ReplayTicket)>,
 ) -> Result<Option<Envelope>, PeerError> {
     match env {
         Envelope::Subscribe { workspace_id } => {
-            handle_subscribe(
-                peer,
-                session,
-                subscribed,
-                replay,
-                replay_cleanup,
-                workspace_id,
-            )
-            .await
+            handle_subscribe(peer, session, subscribed, replay, workspace_id).await
         }
         Envelope::Unsubscribe { workspace_id } => {
             handle_unsubscribe(peer, session, subscribed, workspace_id).await
@@ -764,8 +845,7 @@ async fn handle_subscribe(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &mut Vec<u64>,
-    replay: &mut Vec<Envelope>,
-    replay_cleanup: &mut Vec<std::path::PathBuf>,
+    replay: &mut Option<(u64, ReplayTicket)>,
     workspace_id: u64,
 ) -> Result<Option<Envelope>, PeerError> {
     let ws = get_or_autobind_workspace(session.workspaces, session.autobind, workspace_id).await?;
@@ -822,35 +902,19 @@ async fn handle_subscribe(
         .map(|sub| sub.tx.clone());
     drop(wr);
     let owner = crate::persistence::handle(&ws).await;
-    let replay_peer = peer.clone();
     let source = StateSource::new(peer, session);
-    let state_tx = session.state_outbound.cloned();
+    let state_tx = session
+        .state_outbound
+        .cloned()
+        .unwrap_or_else(|| mpsc::channel(1).0);
     let completion_workspace = ws.clone();
-    let rx = owner.submit(
+    let ticket = ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned())?;
+    let capture = ticket.authority.clone();
+    let bind = ticket.authority.clone();
+    let rx = owner.submit_resumable(
         1,
-        move |state| {
-            #[cfg(test)]
-            crate::store::test_barrier::pause(state.store.root(), "replay-prepare");
-            let mut replay = Vec::new();
-            let mut cleanup = Vec::new();
-            let (retained_count, retained) =
-                load_retained_replay(&state.store, workspace_id, &mut replay)
-                    .map_err(|e| crate::persistence::error(e.to_string()))?;
-            let pending_count = load_pending_replay(
-                &state.store,
-                &replay_peer,
-                workspace_id,
-                &retained,
-                &mut replay,
-                &mut cleanup,
-            )
-            .map_err(|e| crate::persistence::error(e.to_string()))?;
-            Ok((
-                replay,
-                cleanup,
-                pending_count.saturating_add(retained_count),
-            ))
-        },
+        async { Ok(()) },
+        move |state, _| state.capture_replay(&capture),
         move |result| async move {
             let result = result?;
             let mut wr = crate::workspace_io::fresh_membership(&completion_workspace).await?;
@@ -871,139 +935,42 @@ async fn handle_subscribe(
                     "replay subscriber authorization changed",
                 ));
             }
+            let live = wr
+                .subscribers
+                .get(&source.peer.device_public_key)
+                .filter(|current| current.tx.same_channel(&source.tx))
+                .and_then(|_| wr.state_sessions.get(&source.peer.device_public_key))
+                .map_or_else(
+                    || Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    |session| session.live.clone(),
+                );
+            // Binding may fail when the waiting connection/receipt was dropped.
+            // It must precede every registration side effect.
+            bind.bind(live.clone())?;
             wr.add_subscriber(Subscriber {
                 device_public_key: source.peer.device_public_key,
                 role: source.peer.role,
                 tx: source.tx,
                 disconnect: source.disconnect,
             });
-            if let Some(tx) = state_tx {
-                let live = wr
-                    .state_sessions
-                    .get(&source.peer.device_public_key)
-                    .map_or_else(
-                        || Arc::new(std::sync::atomic::AtomicBool::new(true)),
-                        |session| session.live.clone(),
-                    );
-                wr.state_sessions.insert(
-                    source.peer.device_public_key,
-                    StateSession {
-                        live,
-                        peer: source.peer,
-                        tx,
-                    },
-                );
-            }
+            wr.state_sessions.insert(
+                source.peer.device_public_key,
+                StateSession {
+                    live,
+                    peer: source.peer,
+                    tx: state_tx,
+                },
+            );
             drop(wr);
             Ok(result)
         },
     )?;
-    let (frames, cleanup, count) = crate::persistence::receipt(rx).await?;
-    replay.extend(frames);
-    replay_cleanup.extend(cleanup);
+    crate::persistence::receipt(rx).await?;
+    *replay = Some((workspace_id, ticket));
     if !subscribed.contains(&workspace_id) {
         subscribed.push(workspace_id);
     }
-    Ok(Some(Envelope::Ready {
-        workspace_id,
-        pending_deltas: count,
-    }))
-}
-
-/// Replay retained document baselines first. Unlike a per-device
-/// pending queue these exist before a newly invited device has ever
-/// connected, which is what makes an offline owner + new guest work.
-fn load_retained_replay(
-    store: &crate::store::WorkspaceStore,
-    workspace_id: u64,
-    replay: &mut Vec<Envelope>,
-) -> Result<(u32, std::collections::HashSet<Vec<u8>>), PeerError> {
-    let retained = store.load_retained()?;
-    let mut retained_bytes = std::collections::HashSet::new();
-    let mut retained_count = 0u32;
-    for raw in retained {
-        let Some(payload) = raw.get(4..) else {
-            tracing::warn!(
-                workspace_id,
-                "retained envelope is shorter than its frame prefix"
-            );
-            continue;
-        };
-        match crate::transport::decode(payload) {
-            Ok(envelope) => {
-                // Only bytes that are actually replayed as retained data
-                // may retire an exact duplicate from a legacy device queue.
-                // Unknown/corrupt retained files are not delivery coverage.
-                if let Envelope::Delta {
-                    workspace_id: actual_workspace,
-                    delta,
-                    ..
-                } = &envelope
-                    && *actual_workspace == workspace_id
-                    && crate::coedit::CoeditPayload::decode(delta).is_some()
-                {
-                    retained_bytes.insert(raw);
-                }
-                replay.push(envelope);
-                retained_count = retained_count.saturating_add(1);
-            }
-            Err(error) => {
-                tracing::warn!(workspace_id, %error, "retained envelope could not be decoded");
-            }
-        }
-    }
-    Ok((retained_count, retained_bytes))
-}
-
-/// Load pending deltas before advertising Ready, but retain their
-/// files until the connection task has written the complete replay.
-/// A write failure therefore leaves the queue intact for reconnect.
-fn load_pending_replay(
-    store: &crate::store::WorkspaceStore,
-    peer: &AuthenticatedPeer,
-    workspace_id: u64,
-    retained: &std::collections::HashSet<Vec<u8>>,
-    replay: &mut Vec<Envelope>,
-    replay_cleanup: &mut Vec<std::path::PathBuf>,
-) -> Result<u32, PeerError> {
-    let pending = store.load_pending(&peer.device_public_key)?;
-    let mut pending_count = 0u32;
-    for entry in pending {
-        // A retained document message may also have been queued while this
-        // already-enrolled device was offline. Replay it once through the
-        // retained baseline and remove the duplicate pending entry only after
-        // that replay has been written successfully.
-        if retained.contains(&entry.bytes) {
-            replay_cleanup.push(entry.path);
-            continue;
-        }
-        // Each pending entry is a full pre-encoded envelope — send it
-        // verbatim.
-        let Some(payload) = entry.bytes.get(4..) else {
-            tracing::warn!(
-                workspace_id,
-                path = %entry.path.display(),
-                "pending envelope is shorter than its frame prefix"
-            );
-            continue;
-        };
-        match crate::transport::decode(payload) {
-            Ok(envelope) => {
-                replay.push(envelope);
-                replay_cleanup.push(entry.path);
-                pending_count = pending_count.saturating_add(1);
-            }
-            Err(error) => {
-                tracing::warn!(
-                    workspace_id,
-                    path = %entry.path.display(),
-                    %error,
-                    "pending envelope could not be decoded"
-                );
-            }
-        }
-    }
-    Ok(pending_count)
+    Ok(None)
 }
 
 /// Handle `Unsubscribe`: drop the live subscriber (if the workspace
@@ -1185,6 +1152,15 @@ async fn enqueue_state_inner(
         return Err(PeerError::Protocol("expected delta".into()));
     };
     let author = *author;
+    if crate::persistence::correlated_diagnostics()
+        && let Envelope::Delta {
+            workspace_id,
+            authored_at_ns,
+            ..
+        } = &envelope
+    {
+        tracing::info!(phase = "server_delta_admit", workspace_id, authored_at_ns);
+    }
     let charge = delta.len().saturating_add(256).saturating_mul(3);
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
     if source
@@ -1202,7 +1178,12 @@ async fn enqueue_state_inner(
     let persist_metrics = metrics.clone();
     let prepare_workspace = workspace.clone();
     let delta_len = delta.len();
-    owner.submit_prepared(
+    let mut envelope = Some(envelope);
+    let mut commit: Option<StateCommit> = None;
+    let mut sequence = None;
+    let mut retained_build: Option<crate::store::retained::RetainBuild> = None;
+    let mut pending_work = None;
+    owner.submit_resumable(
         charge,
         async move {
             let runtime = crate::workspace_io::fresh_membership(&prepare_workspace).await?;
@@ -1248,51 +1229,95 @@ async fn enqueue_state_inner(
             drop(runtime);
             Ok((recipients, sessions, logical_offline_bytes))
         },
-        move |state, (recipients, sessions, logical_offline_bytes)| {
-            if sync {
+        move |state, prepared| {
+            if commit.is_none() {
+                let (recipients, sessions, logical_offline_bytes) =
+                    prepared.take().expect("ordered recipients");
+                let envelope = envelope.take().expect("admitted envelope");
                 let Envelope::Delta { delta, .. } = &envelope else {
                     return Err(crate::persistence::error("expected admitted delta"));
                 };
-                if !state.would_materialize(delta) {
-                    return Ok(StateCommit {
+                let publish = !sync || state.would_materialize(delta);
+                if !publish {
+                    return Ok(Step::Done(StateCommit {
                         envelope: Arc::new(envelope),
                         pending: HashMap::new(),
                         persisted_bytes: 0,
                         sessions,
                         logical_offline_bytes,
-                        publish: false,
+                        publish,
+                    }));
+                }
+                let seq = state.next_sequence()?;
+                sequence = Some(seq);
+                let raw = crate::transport::encode(&envelope)
+                    .map_err(|e| crate::persistence::error(e.to_string()))?;
+                let retention =
+                    crate::coedit::CoeditPayload::decode(delta).map(|payload| match payload {
+                        crate::coedit::CoeditPayload::Checkpoint { channel, .. } => (channel, None),
+                        crate::coedit::CoeditPayload::RetainedDelta { channel, .. } => {
+                            (channel, Some(seq))
+                        }
                     });
+                if let Some((channel, seq)) = retention {
+                    #[cfg(test)]
+                    crate::store::test_barrier::pause(state.store.root(), "state-persist");
+                    let build = state.store.start_retain(&channel, seq, raw)?;
+                    state.retention_scratch = Some(build.scratch().to_owned());
+                    retained_build = Some(build);
+                } else {
+                    pending_work = Some((raw, recipients.into_iter()));
                 }
+                commit = Some(StateCommit {
+                    envelope: Arc::new(envelope),
+                    pending: HashMap::new(),
+                    persisted_bytes: 0,
+                    sessions,
+                    logical_offline_bytes,
+                    publish,
+                });
+                return Ok(Step::More);
             }
-            let seq = state.next_sequence()?;
-            let raw = crate::transport::encode(&envelope)
-                .map_err(|e| crate::persistence::error(e.to_string()))?;
-            let Envelope::Delta { delta, .. } = &envelope else {
-                return Err(crate::persistence::error("expected admitted delta"));
-            };
-            let retained = crate::coedit::CoeditPayload::decode(delta);
-            let mut pending = HashMap::new();
-            let mut persisted_bytes = 0u64;
-            match retained {
-                Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => {
-                    let written = state.store.retain_counted(&channel, None, &raw)?;
-                    persist_metrics.add_bytes_queued(written);
-                    persisted_bytes = persisted_bytes.saturating_add(written);
-                }
-                Some(crate::coedit::CoeditPayload::RetainedDelta { channel, .. }) => {
-                    let written = state.store.retain_counted(&channel, Some(seq), &raw)?;
-                    persist_metrics.add_bytes_queued(written);
-                    persisted_bytes = persisted_bytes.saturating_add(written);
-                }
-                None => {
-                    for recipient in recipients {
-                        let path = state.store.enqueue_pending(&recipient, seq, &raw)?;
-                        pending.insert(recipient, path);
-                        persist_metrics.add_bytes_queued(raw.len() as u64);
-                        persisted_bytes = persisted_bytes.saturating_add(raw.len() as u64);
+            let current = commit.as_mut().unwrap();
+            if let Some(build) = retained_build.as_mut() {
+                match build.step(Default::default())? {
+                    Step::More => return Ok(Step::More),
+                    Step::Done(written) => {
+                        if crate::persistence::diagnostics() {
+                            tracing::info!(
+                                phase = "retention_complete",
+                                preparation_reads = build.stats().preparation_reads,
+                                peak_metadata_entries = build.stats().peak_metadata_entries
+                            );
+                        }
+                        persist_metrics.add_bytes_queued(written);
+                        current.persisted_bytes = written;
+                        retained_build = None;
                     }
                 }
             }
+            if let Some((raw, recipients)) = &mut pending_work {
+                for _ in 0..crate::store::bounded::RUN_ENTRIES {
+                    let Some(recipient) = recipients.next() else {
+                        pending_work = None;
+                        break;
+                    };
+                    let path = state
+                        .store
+                        .enqueue_pending(&recipient, sequence.unwrap(), raw)?;
+                    current.pending.insert(recipient, path);
+                    persist_metrics.add_bytes_queued(raw.len() as u64);
+                    current.persisted_bytes =
+                        current.persisted_bytes.saturating_add(raw.len() as u64);
+                }
+                if pending_work.is_some() {
+                    return Ok(Step::More);
+                }
+            }
+            let seq = sequence.unwrap();
+            let Envelope::Delta { delta, .. } = &*current.envelope else {
+                unreachable!()
+            };
             let _ = state.store.append_log(&crate::store::LogEntry {
                 workspace_id: state.store.workspace_id(),
                 received_at_ns: seq,
@@ -1301,14 +1326,7 @@ async fn enqueue_state_inner(
                 delta_len: delta.len() as u64,
             });
             state.materialize(delta);
-            Ok(StateCommit {
-                envelope: Arc::new(envelope),
-                pending,
-                persisted_bytes,
-                sessions,
-                logical_offline_bytes,
-                publish: true,
-            })
+            Ok(Step::Done(commit.take().unwrap()))
         },
         move |result| async move {
             let result = async {
@@ -1317,6 +1335,7 @@ async fn enqueue_state_inner(
                     return Ok(commit);
                 }
                 metrics.inc_deltas_received();
+                if crate::persistence::correlated_diagnostics() && let Envelope::Delta { workspace_id, authored_at_ns, .. } = &*commit.envelope { tracing::info!(phase="server_delta_committed", workspace_id, authored_at_ns, sessions=commit.sessions.len()); }
                 let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
                 if crate::persistence::diagnostics() {
                     tracing::info!(
@@ -1363,6 +1382,7 @@ async fn enqueue_state_inner(
                         _budget: budget.clone(),
                         live: target.live.clone(),
                     };
+                    if crate::persistence::correlated_diagnostics() && let Envelope::Delta { workspace_id, authored_at_ns, .. } = &*commit.envelope { tracing::info!(phase="server_delta_publication", workspace_id, authored_at_ns, recipient=%hex::encode(&recipient[..4])); }
                     if target.tx.try_send(delivery).is_err() {
                         let _ = sub.disconnect.try_send(());
                         runtime.remove_subscriber_session(&recipient, &original);
@@ -1375,6 +1395,9 @@ async fn enqueue_state_inner(
                 Ok(commit)
             }
             .await;
+            if crate::persistence::correlated_diagnostics() && let Err(error) = &result {
+                tracing::info!(phase = "state_commit_error", error = %error);
+            }
             if result.is_err()
                 && let Some(source) = failure
             {
@@ -1402,6 +1425,15 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
         .get(workspace_id)
         .cloned()
         .ok_or_else(|| PeerError::Protocol("state workspace disappeared".into()))?;
+    if crate::persistence::correlated_diagnostics()
+        && let Envelope::Delta {
+            workspace_id,
+            authored_at_ns,
+            ..
+        } = &*delivery.envelope
+    {
+        tracing::info!(phase="server_delta_writer", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
+    }
     let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
     if !session_peer_authorized(peer, session)
         || !state_member(&runtime, peer)
@@ -1414,6 +1446,15 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
         return Ok(());
     }
     drop(runtime);
+    if crate::persistence::correlated_diagnostics()
+        && let Envelope::Delta {
+            workspace_id,
+            authored_at_ns,
+            ..
+        } = &*delivery.envelope
+    {
+        tracing::info!(phase="server_delta_wire", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
+    }
     write
         .write_all(&crate::transport_v2::encode_state(
             &delivery.envelope,
@@ -2786,33 +2827,64 @@ mod private_transport_tests {
                 .unwrap(),
             4
         );
+        // Finish the old owner's cancelled-ticket disposal before emulating a
+        // new process. Two owners over the same store are not a daemon restart.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if std::fs::read_dir(shared.lock().await.store.root().join("store-work-v1"))
+                    .unwrap()
+                    .next()
+                    .is_none()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("old owner did not release cancelled replay");
         // Emulate a crash during resumable legacy cleanup: write the complete
         // replay, remove only its first duplicate, then reopen before the rest
         // of the cleanup list can be processed.
-        let mut migration_replay = Vec::new();
-        let mut migration_cleanup = Vec::new();
-        {
-            let runtime = shared.lock().await;
-            let (_, retained) =
-                load_retained_replay(&runtime.store, 7, &mut migration_replay).unwrap();
-            load_pending_replay(
-                &runtime.store,
-                &peer,
-                7,
-                &retained,
-                &mut migration_replay,
-                &mut migration_cleanup,
+        let store = shared.lock().await.store.clone();
+        let mut capture = store
+            .start_replay_capture(
+                crate::store::replay::ReplayId(*uuid::Uuid::new_v4().as_bytes()),
+                peer.device_public_key,
             )
             .unwrap();
-        }
-        let mut completed_wire = Vec::new();
-        for envelope in migration_replay {
-            completed_wire
-                .write_all(&crate::transport::encode(&envelope).unwrap())
-                .await
+        let mut snapshot = loop {
+            if let Step::Done(snapshot) = store
+                .capture_replay_step(&mut capture, Default::default())
+                .unwrap()
+            {
+                break snapshot;
+            }
+        };
+        while matches!(
+            store
+                .prepare_replay_step(&mut snapshot, Default::default())
+                .unwrap(),
+            Step::More
+        ) {}
+        let budget = crate::store::replay::ReplayBudget::new(1024 * 1024);
+        loop {
+            let frames = store
+                .read_replay_batch(&mut snapshot, Default::default(), &budget)
                 .unwrap();
+            if frames.eof {
+                break;
+            }
         }
-        std::fs::remove_file(&migration_cleanup[0]).unwrap();
+        store
+            .cleanup_replay_step(
+                &mut snapshot,
+                crate::store::replay::WorkLimit {
+                    entries: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert_eq!(
             shared
                 .lock()
@@ -2822,6 +2894,8 @@ mod private_transport_tests {
                 .unwrap(),
             3
         );
+        drop(snapshot);
+        drop(capture);
         // Reopen the actual disk state after the failed replay.
         *shared.lock().await = crate::workspace::WorkspaceRuntime::open(
             tmp.path(),

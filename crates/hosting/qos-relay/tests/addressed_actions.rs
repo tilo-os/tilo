@@ -441,11 +441,11 @@ async fn addressed_actions_coedit_uses_the_same_demultiplexer() {
     a_session
         .publish_retained_delta([7; 32], doc.save_incremental())
         .unwrap();
-    let Some(Inbound::Delta { data, .. }) =
-        tokio::time::timeout(Duration::from_secs(5), b_session.recv())
-            .await
-            .unwrap()
-    else {
+    let received_delta = tokio::time::timeout(Duration::from_secs(5), b_session.recv()).await;
+    if received_delta.is_err() {
+        crate::common::print_phase_diagnostic();
+    }
+    let Some(Inbound::Delta { data, .. }) = received_delta.unwrap() else {
         panic!("state lane lost edit")
     };
     let mut received = automerge::AutoCommit::new();

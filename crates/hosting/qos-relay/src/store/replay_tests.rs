@@ -705,3 +705,125 @@ fn generation_gc_retries_exact_entry_after_transient_unlink_failure() {
     assert!(obsolete.join("unknown").exists());
     assert!(active.join("0000000000000001.delta").exists());
 }
+
+#[test]
+fn replay_budget_includes_v2_wire_encoding_overlap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    store
+        .enqueue_pending(&[2; 32], 1, &frame(42, 100_000, 1))
+        .unwrap();
+    let mut snapshot = snapshot(&store);
+    prepare(&store, &mut snapshot);
+    let batch = store
+        .read_replay_batch(
+            &mut snapshot,
+            ReplayLimits::default(),
+            &ReplayBudget::new(DEFAULT_OUTPUT_BYTES),
+        )
+        .unwrap();
+    let envelope = batch.front().unwrap();
+    let payload =
+        postcard::to_allocvec(&crate::transport_v2::EnvelopeV2::State(envelope.clone())).unwrap();
+    let wire = crate::transport_v2::encode_state(envelope, true).unwrap();
+    let overlap = heap_bytes(envelope)
+        + std::mem::size_of::<Envelope>()
+        + payload.capacity()
+        + wire.capacity();
+    assert!(
+        batch.charged_bytes >= overlap,
+        "v2 reservation {} omitted known encode overlap {overlap}",
+        batch.charged_bytes
+    );
+}
+
+#[test]
+fn disposable_reclamation_treats_disappeared_recognized_entries_as_completed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let work = store.root().join("store-work-v1");
+    fs::create_dir_all(&work).unwrap();
+    let root = work.join("replay-00000000000000000000000000000001");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("replay.manifest"), b"old metadata").unwrap();
+    let mut discard = WorkDiscard::new(root.clone()).unwrap();
+    let path = discard
+        .outer
+        .as_mut()
+        .unwrap()
+        .peek()
+        .unwrap()
+        .unwrap()
+        .path();
+    fs::remove_file(path).unwrap();
+    let result = discard.step(WorkLimit::default());
+    assert!(
+        matches!(result, Ok(Step::Done(()))),
+        "already absent recognized file remained a retry error: {result:?}"
+    );
+    let mut missing = WorkDiscard::new(root).expect("already absent spool root should be disposed");
+    assert!(matches!(
+        missing.step(WorkLimit::default()).unwrap(),
+        Step::Done(())
+    ));
+}
+
+#[test]
+fn startup_reclamation_treats_disappeared_selected_work_root_as_completed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let root = store
+        .root()
+        .join("store-work-v1/replay-00000000000000000000000000000001");
+    fs::create_dir_all(root.join("pins")).unwrap();
+    fs::write(root.join("pins/0000000000000001.frame"), b"old pin").unwrap();
+    let unknown = root.parent().unwrap().join("unknown");
+    fs::write(&unknown, b"preserve").unwrap();
+    let mut startup = store.start_work_reclamation().unwrap();
+    while startup
+        .entries
+        .as_mut()
+        .unwrap()
+        .peek()
+        .unwrap()
+        .unwrap()
+        .path()
+        != root
+    {
+        startup.entries.as_mut().unwrap().advance();
+    }
+    let mut discard = WorkDiscard::new(root).unwrap();
+    while matches!(discard.step(WorkLimit::default()).unwrap(), Step::More) {}
+    let result = startup.step(WorkLimit::default());
+    assert!(
+        result.is_ok(),
+        "already disposed selected root remained a retry error: {result:?}"
+    );
+    while matches!(startup.step(WorkLimit::default()).unwrap(), Step::More) {}
+    assert!(unknown.exists());
+}
+
+#[test]
+fn disposable_reclamation_finishes_when_selected_child_and_root_disappear() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let root = store
+        .root()
+        .join("store-work-v1/replay-00000000000000000000000000000001");
+    fs::create_dir_all(root.join("pins")).unwrap();
+    fs::write(root.join("pins/0000000000000001.frame"), b"old pin").unwrap();
+    let mut later = WorkDiscard::new(root.clone()).unwrap();
+    later
+        .step(WorkLimit {
+            entries: 1,
+            ..WorkLimit::default()
+        })
+        .unwrap();
+    later.child.as_mut().unwrap().1.peek().unwrap();
+    let mut earlier = WorkDiscard::new(root).unwrap();
+    while matches!(earlier.step(WorkLimit::default()).unwrap(), Step::More) {}
+    assert!(matches!(
+        later.step(WorkLimit::default()).unwrap(),
+        Step::Done(())
+    ));
+}

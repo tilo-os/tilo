@@ -1,5 +1,6 @@
 //! Ordered, bounded state work. The owner awaits publication before dequeuing
 //! its successor; callers only wait on receipts and cannot cancel admitted work.
+use crate::store::replay::{Step, WorkLimit};
 use crate::{
     store::{StoreError, WorkspaceStore},
     workspace::SharedWorkspace,
@@ -10,11 +11,15 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 use tokio::sync::{Semaphore, mpsc, oneshot};
+mod replay;
+pub(crate) use replay::{Authority as ReplayAuthority, ReplayAdvance, ReplayTicket, WrittenBatch};
 
 const QUEUE_MESSAGES: usize = 32;
 const GLOBAL_MESSAGES: usize = 128;
 const GLOBAL_BYTES: usize = 256 * 1024 * 1024;
 const BLOCKING_WORKERS: usize = 4;
+const RECLAIM_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+const RECLAIM_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
 
 type Job = Box<dyn FnOnce(Arc<Mutex<State>>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 #[derive(Clone)]
@@ -25,6 +30,8 @@ pub(crate) struct State {
     pub(crate) store: WorkspaceStore,
     pub(crate) doc: Option<automerge::AutoCommit>,
     sequence: Option<u64>,
+    replays: replay::Replays,
+    pub(crate) retention_scratch: Option<std::path::PathBuf>,
 }
 pub(crate) fn error(message: impl Into<String>) -> StoreError {
     StoreError::Io(std::io::Error::other(message.into()))
@@ -97,30 +104,123 @@ impl State {
     }
 }
 
+// A registry entry owns one runtime for its lifetime: startup bindings are
+// installed before serving, and workspace_io::get_or_initialize uses entry-or-
+// insert under its reservation. There is no live registry eviction/reopen path.
+// Replacing a runtime over an active store is not a supported restart protocol.
 pub(crate) async fn handle(workspace: &SharedWorkspace) -> Persistence {
     let mut runtime = workspace.lock().await;
     runtime.persistence.clone().unwrap_or_else(|| {
-        let (tx, mut rx) = mpsc::channel::<Job>(QUEUE_MESSAGES);
+        let (tx, rx) = mpsc::channel::<Job>(QUEUE_MESSAGES);
         let state = Arc::new(Mutex::new(State {
             store: runtime.store.clone(),
             doc: runtime.doc.take(),
             sequence: None,
+            replays: replay::Replays::default(),
+            retention_scratch: None,
         }));
-        tokio::spawn(async move {
-            while let Some(job) = rx.recv().await {
-                job(state.clone()).await;
-            }
-        });
+        tokio::spawn(run_owner(rx, state));
         let handle = Persistence { tx };
         runtime.persistence = Some(handle.clone());
         handle
     })
 }
 
+async fn run_owner(mut rx: mpsc::Receiver<Job>, state: Arc<Mutex<State>>) {
+    // The startup scan is never reused after a new ticket is admitted.
+    let mut startup = None;
+    loop {
+        let shared = state.clone();
+        let result = blocking(move || {
+            let state = shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let result = (|| {
+                if startup.is_none() {
+                    startup = Some(state.store.start_work_reclamation()?);
+                }
+                startup.as_mut().unwrap().step(WorkLimit::default())
+            })();
+            (startup, result)
+        })
+        .await;
+        let (cursor, result) = result.expect("startup worker panicked");
+        startup = cursor;
+        match result {
+            Ok(Step::Done(())) => break,
+            Ok(Step::More) => tokio::task::yield_now().await,
+            Err(error) => {
+                tracing::warn!(%error, "workspace startup reclamation failed");
+                tokio::time::sleep(RECLAIM_RETRY).await;
+            }
+        }
+    }
+    drop(startup);
+    let mut idle = tokio::time::interval(RECLAIM_INTERVAL);
+    idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            job = rx.recv() => match job { Some(job) => job(state.clone()).await, None => break },
+            _ = idle.tick() => {}
+        }
+        // One retained transaction can leave at most one known scratch
+        // root. Finish its disposal before another mutation can create one.
+        let root = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retention_scratch
+            .take();
+        if let Some(root) = root {
+            let mut discard = None;
+            loop {
+                let path = root.clone();
+                let (next, result) = blocking(move || {
+                    let result = (|| {
+                        if discard.is_none() {
+                            discard = Some(crate::store::replay::WorkDiscard::new(path)?);
+                        }
+                        discard.as_mut().unwrap().step(WorkLimit::default())
+                    })();
+                    (discard, result)
+                })
+                .await
+                .expect("retention disposal worker panicked");
+                discard = next;
+                match result {
+                    Ok(Step::Done(())) => break,
+                    Ok(Step::More) => tokio::task::yield_now().await,
+                    Err(error) => {
+                        tracing::warn!(%error, "retention disposal failed");
+                        tokio::time::sleep(RECLAIM_RETRY).await;
+                    }
+                }
+            }
+        }
+        if state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replays
+            .is_empty()
+        {
+            continue;
+        }
+        let shared = state.clone();
+        let _ = blocking(move || {
+            let mut state = shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Err(error) = state.reclaim_replay_step() {
+                tracing::warn!(%error, "replay reclamation failed");
+            }
+        })
+        .await;
+    }
+}
+
 impl Persistence {
     /// Nonwaiting admission: includes queued and executing work in both bounds.
-    /// `bytes` charges owned input, encoding and decoded coedit body; replay output remains
-    /// the explicitly eager 2c seam, not covered by this input-byte budget.
+    /// `bytes` charges owned input, encoding and decoded coedit body. Replay
+    /// batches retain their separate process-wide output permits through writes.
     pub(crate) fn submit<T, F, C, CF>(
         &self,
         bytes: usize,
@@ -158,9 +258,40 @@ impl Persistence {
         C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
         CF: Future<Output = Result<T, StoreError>> + Send + 'static,
     {
+        let mut operation = Some(operation);
+        self.submit_resumable(
+            bytes,
+            preparation,
+            move |state, prepared| {
+                operation.take().expect("single-step operation")(
+                    state,
+                    prepared.take().expect("preparation"),
+                )
+                .map(Step::Done)
+            },
+            completion,
+        )
+    }
+
+    /// Keep the admitted transaction's owner position across fixed quanta, but
+    /// return the global blocking worker before awaiting the next quantum.
+    pub(crate) fn submit_resumable<P, PF, T, F, C, CF>(
+        &self,
+        bytes: usize,
+        preparation: PF,
+        mut operation: F,
+        completion: C,
+    ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError>
+    where
+        P: Send + 'static,
+        PF: Future<Output = Result<P, StoreError>> + Send + 'static,
+        T: Send + 'static,
+        F: FnMut(&mut State, &mut Option<P>) -> Result<Step<T>, StoreError> + Send + 'static,
+        C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
+        CF: Future<Output = Result<T, StoreError>> + Send + 'static,
+    {
         static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
         static BYTES: OnceLock<Arc<Semaphore>> = OnceLock::new();
-        static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
         let slot = SLOTS
             .get_or_init(|| Arc::new(Semaphore::new(GLOBAL_MESSAGES)))
             .clone()
@@ -181,38 +312,46 @@ impl Persistence {
                     let (_slot, _bytes) = (slot, bytes);
                     let result = match preparation.await {
                         Err(error) => Err(error),
-                        Ok(prepared) => match WORKERS
-                            .get_or_init(|| Arc::new(Semaphore::new(BLOCKING_WORKERS)))
-                            .clone()
-                            .acquire_owned()
-                            .await
-                        {
-                            Ok(permit) => tokio::task::spawn_blocking(move || {
-                                let _permit = permit;
-                                let start = std::time::Instant::now();
-                                let result = operation(
-                                    &mut state
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                                    prepared,
-                                );
-                                if diagnostics() {
-                                    tracing::info!(
-                                        phase = "state_persist",
-                                        charged_bytes = byte_count,
-                                        queue_us =
-                                            u64::try_from(start.duration_since(queued).as_micros())
-                                                .unwrap_or(u64::MAX),
-                                        persist_us = u64::try_from(start.elapsed().as_micros())
-                                            .unwrap_or(u64::MAX)
+                        Ok(prepared) => {
+                            let mut prepared = Some(prepared);
+                            loop {
+                                let shared = state.clone();
+                                let quantum = blocking(move || {
+                                    let start = std::time::Instant::now();
+                                    let result = operation(
+                                        &mut shared
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                                        &mut prepared,
                                     );
+                                    if diagnostics() {
+                                        tracing::info!(
+                                            phase = "state_persist",
+                                            charged_bytes = byte_count,
+                                            queue_us = u64::try_from(
+                                                start.duration_since(queued).as_micros()
+                                            )
+                                            .unwrap_or(u64::MAX),
+                                            persist_us = u64::try_from(start.elapsed().as_micros())
+                                                .unwrap_or(u64::MAX)
+                                        );
+                                    }
+                                    (operation, prepared, result)
+                                })
+                                .await;
+                                let (next_operation, next_prepared, result) = match quantum {
+                                    Ok(value) => value,
+                                    Err(error) => break Err(error),
+                                };
+                                operation = next_operation;
+                                prepared = next_prepared;
+                                match result {
+                                    Ok(Step::More) => tokio::task::yield_now().await,
+                                    Ok(Step::Done(value)) => break Ok(value),
+                                    Err(error) => break Err(error),
                                 }
-                                result
-                            })
-                            .await
-                            .unwrap_or_else(|e| Err(error(e.to_string()))),
-                            Err(e) => Err(error(e.to_string())),
-                        },
+                            }
+                        }
                     };
                     // The owner serializes this asynchronous authorization/publication
                     // step as well as the blocking transaction, even if tx is closed.
@@ -240,6 +379,11 @@ pub(crate) fn diagnostics() -> bool {
     std::env::var_os("QOS_RELAY_PHASE_DIAGNOSTICS").is_some()
 }
 
+/// Low-volume payload-free event correlation, independent of per-quantum logs.
+pub(crate) fn correlated_diagnostics() -> bool {
+    std::env::var_os("QOS_RELAY_CORRELATED_DIAGNOSTICS").is_some()
+}
+
 /// Shared live deliveries charge their single Arc payload once process-wide.
 pub(crate) fn delivery_budget(
     bytes: usize,
@@ -251,4 +395,22 @@ pub(crate) fn delivery_budget(
         .try_acquire_many_owned(bytes)
         .map(Arc::new)
         .map_err(|_| error("live state byte backpressure"))
+}
+
+async fn blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, StoreError> {
+    static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    let permit = WORKERS
+        .get_or_init(|| Arc::new(Semaphore::new(BLOCKING_WORKERS)))
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| error(e.to_string()))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        operation()
+    })
+    .await
+    .map_err(|e| error(e.to_string()))
 }

@@ -579,28 +579,36 @@ async fn subscribe_queued_before_delta_receives_commit_after_its_replay_cut() {
                 private_tx: &private,
                 revocations: &source.revocations,
             };
-            let mut frames = Vec::new();
-            let reply = handle_subscribe(
-                &recipient,
-                &session,
-                &mut Vec::new(),
-                &mut frames,
-                &mut Vec::new(),
-                7,
-            )
-            .await
-            .unwrap();
-            assert_eq!(
-                reply,
-                Some(Envelope::Ready {
-                    workspace_id: 7,
-                    pending_deltas: 0
-                })
-            );
-            assert!(
-                frames.is_empty(),
-                "later delta leaked into the earlier replay cut"
-            );
+            let mut frames = None;
+            let reply = handle_subscribe(&recipient, &session, &mut Vec::new(), &mut frames, 7)
+                .await
+                .unwrap();
+            assert_eq!(reply, None);
+            let (_, ticket) = frames.expect("subscribe did not return a bounded ticket");
+            let workspace = registry.lock().await.get(&7).unwrap().clone();
+            let owner = crate::persistence::handle(&workspace).await;
+            let mut written = None;
+            loop {
+                let authority = ticket.authority.clone();
+                match crate::persistence::receipt(
+                    owner
+                        .read(1, move |state| state.advance_replay(&authority, written))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                {
+                    ReplayAdvance::Preparing => written = None,
+                    ReplayAdvance::Batch(batch) => {
+                        assert_eq!(batch.len(), 0, "later commit leaked into replay cut");
+                        written = Some(WrittenBatch(batch.number));
+                    }
+                    ReplayAdvance::Exhausted(summary) => {
+                        assert_eq!(summary.ready_count(), 0);
+                        break;
+                    }
+                }
+            }
         });
         reached.await.unwrap();
         fixture.enqueue(kind).await;
@@ -615,4 +623,494 @@ async fn subscribe_queued_before_delta_receives_commit_after_its_replay_cut() {
             assert!(delivery.cleanup.as_ref().unwrap().exists());
         }
     }
+}
+
+#[tokio::test]
+async fn owner_reclaims_abandoned_work_before_first_job() {
+    let fixture = Fixture::new();
+    let abandoned = fixture
+        .store
+        .root()
+        .join("store-work-v1/replay-00000000000000000000000000000001");
+    std::fs::create_dir_all(abandoned.join("pins")).unwrap();
+    std::fs::write(abandoned.join("pins/0000000000000001.frame"), b"old pin").unwrap();
+    std::fs::write(abandoned.join("unknown"), b"preserve").unwrap();
+    let owner = crate::persistence::handle(&fixture.workspace).await;
+    let path = abandoned.clone();
+    let remains = crate::persistence::receipt(
+        owner
+            .read(1, move |_| {
+                Ok(path.join("pins/0000000000000001.frame").exists())
+            })
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !remains,
+        "owner admitted fresh work before reclaiming abandoned pins"
+    );
+    assert!(abandoned.join("unknown").exists());
+}
+
+#[tokio::test]
+async fn retained_transactions_release_global_workers_between_quanta() {
+    let fixtures = (0..5).map(|_| Fixture::new()).collect::<Vec<_>>();
+    let mut owners = Vec::new();
+    for fixture in &fixtures {
+        let owner = crate::persistence::handle(&fixture.workspace).await;
+        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+            .await
+            .unwrap();
+        owners.push(owner);
+    }
+    let mut first = Vec::new();
+    let mut second = Vec::new();
+    for fixture in &fixtures[..4] {
+        let (release, reached) =
+            crate::store::test_barrier::install(fixture.store.root(), "state-persist");
+        first.push(release);
+        let (release, _) = crate::store::test_barrier::install(fixture.store.root(), "retain-sort");
+        second.push(release);
+        fixture.enqueue(1).await;
+        reached.await.unwrap();
+    }
+    let (prepared, queued) = tokio::sync::oneshot::channel();
+    let fifth = owners[4]
+        .submit_prepared(
+            1,
+            async move {
+                prepared.send(()).unwrap();
+                Ok(())
+            },
+            |_, ()| Ok(()),
+            |result| async { result },
+        )
+        .unwrap();
+    queued.await.unwrap();
+    // This unrelated transaction is now waiting for the global worker pool.
+    // Each retained write must yield its worker before its later sort phase.
+    drop(first);
+    let progress = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        crate::persistence::receipt(fifth),
+    )
+    .await;
+    drop(second);
+    for fixture in &fixtures {
+        fixture.drained().await;
+    }
+    assert!(
+        matches!(progress, Ok(Ok(()))),
+        "retained continuations monopolized every global worker"
+    );
+}
+
+impl Fixture {
+    async fn subscribe_ticket(&self) -> (u64, ReplayTicket) {
+        let (state_tx, _state_rx) = mpsc::channel(32);
+        let session = SessionCtx {
+            workspaces: &self.registry,
+            autobind: None,
+            outbound: &self.recipient_tx,
+            state_outbound: Some(&state_tx),
+            connection_live: None,
+            own_user_public_key: &self.source.own_user,
+            metrics: &self.metrics,
+            trust_policy: &self.source.policy,
+            disconnect: &self.source.disconnect,
+            v2: true,
+            private_tx: &self.private,
+            revocations: &self.source.revocations,
+        };
+        let mut replay = None;
+        handle_subscribe(&self.recipient, &session, &mut Vec::new(), &mut replay, 7)
+            .await
+            .unwrap();
+        replay.unwrap()
+    }
+}
+
+#[tokio::test]
+async fn cancelled_capture_cannot_register_and_idle_owner_reclaims_it() {
+    let fixture = Arc::new(Fixture::new());
+    fixture
+        .workspace
+        .lock()
+        .await
+        .remove_subscriber(&fixture.recipient.device_public_key);
+    fixture
+        .store
+        .enqueue_pending(
+            &fixture.recipient.device_public_key,
+            1,
+            &crate::transport::encode(&fixture.envelope(0)).unwrap(),
+        )
+        .unwrap();
+    let owner = crate::persistence::handle(&fixture.workspace).await;
+    crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+        .await
+        .unwrap();
+    let workspace = fixture.workspace.clone();
+    let store = fixture.store.clone();
+    let device = fixture.recipient.device_public_key;
+    let (release, reached) = crate::store::test_barrier::install(store.root(), "replay-prepare");
+    let subscribing = fixture.clone();
+    let task = tokio::spawn(async move { subscribing.subscribe_ticket().await });
+    reached.await.unwrap();
+    let (complete, completing) =
+        crate::store::test_barrier::install(store.root(), "membership-read");
+    drop(release);
+    completing.await.unwrap();
+    task.abort();
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    drop(complete);
+    crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+        .await
+        .unwrap();
+    assert!(
+        !workspace.lock().await.subscribers.contains_key(&device),
+        "cancelled capture registered a subscriber"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if std::fs::read_dir(store.root().join("store-work-v1"))
+                .unwrap()
+                .next()
+                .is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("idle owner did not reclaim cancelled capture");
+    assert_eq!(store.count_pending(&device).unwrap(), 1);
+}
+
+impl Fixture {
+    async fn replay_to<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        write: &mut W,
+    ) -> Result<(), PeerError> {
+        let (state_tx, _state_rx) = mpsc::channel(32);
+        let session = SessionCtx {
+            workspaces: &self.registry,
+            autobind: None,
+            outbound: &self.recipient_tx,
+            state_outbound: Some(&state_tx),
+            connection_live: None,
+            own_user_public_key: &self.source.own_user,
+            metrics: &self.metrics,
+            trust_policy: &self.source.policy,
+            disconnect: &self.source.disconnect,
+            v2: true,
+            private_tx: &self.private,
+            revocations: &self.source.revocations,
+        };
+        handle_inbound_frame(
+            Envelope::Subscribe { workspace_id: 7 },
+            &self.recipient,
+            &session,
+            &mut Vec::new(),
+            write,
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn replay_cleanup_rechecks_authority_after_waiting_for_worker() {
+    for change in [0, 1, 2] {
+        let fixture = Arc::new(Fixture::new());
+        let device = fixture.recipient.device_public_key;
+        fixture
+            .store
+            .enqueue_pending(
+                &device,
+                1,
+                &crate::transport::encode(&fixture.envelope(0)).unwrap(),
+            )
+            .unwrap();
+        let (release, reached) =
+            crate::store::test_barrier::install(fixture.store.root(), "replay-cleanup");
+        let writer = fixture.clone();
+        let task = tokio::spawn(async move { writer.replay_to(&mut Vec::new()).await });
+        reached.await.unwrap();
+        match change {
+            0 => {
+                let mut entry = qos_user_identity::RevocationEntry {
+                    user_public_key: fixture.source.own_user,
+                    revoked_device_public_key: device,
+                    revoked_at_ns: 1,
+                    reason: qos_user_identity::RevocationReason::Lost,
+                    signature: [0; 64],
+                };
+                qos_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
+                fixture
+                    .source
+                    .revocations
+                    .write()
+                    .unwrap()
+                    .insert(entry)
+                    .unwrap();
+            }
+            1 => crate::workspace_io::replace_membership(
+                &fixture.workspace,
+                vec![fixture.source.peer.device_public_key],
+            )
+            .await
+            .unwrap(),
+            _ => {
+                let (replacement, _rx) = mpsc::channel(32);
+                fixture.workspace.lock().await.add_subscriber(Subscriber {
+                    device_public_key: device,
+                    role: PeerRole::Device,
+                    tx: replacement,
+                    disconnect: fixture.source.disconnect.clone(),
+                });
+            }
+        }
+        drop(release);
+        assert!(task.await.unwrap().is_err());
+        assert_eq!(
+            fixture.store.count_pending(&device).unwrap(),
+            1,
+            "authority change {change} removed replay sources"
+        );
+    }
+}
+
+#[tokio::test]
+async fn replay_finish_rejects_duplicate_completion_and_outstanding_batches() {
+    let fixture = Fixture::new();
+    let (_, ticket) = fixture.subscribe_ticket().await;
+    let owner = crate::persistence::handle(&fixture.workspace).await;
+    let authority = ticket.authority.clone();
+    assert!(
+        crate::persistence::receipt(
+            owner
+                .read(1, move |state| state.finish_replay(&authority, |_| Ok(())))
+                .unwrap()
+        )
+        .await
+        .is_err()
+    );
+    let batch = loop {
+        let authority = ticket.authority.clone();
+        match crate::persistence::receipt(
+            owner
+                .read(1, move |state| state.advance_replay(&authority, None))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        {
+            ReplayAdvance::Preparing => {}
+            ReplayAdvance::Batch(batch) => break batch,
+            _ => panic!("empty replay bypassed its batch receipt"),
+        }
+    };
+    let authority = ticket.authority.clone();
+    assert!(
+        crate::persistence::receipt(
+            owner
+                .read(1, move |state| state.advance_replay(&authority, None))
+                .unwrap()
+        )
+        .await
+        .is_err()
+    );
+    let authority = ticket.authority.clone();
+    assert!(
+        crate::persistence::receipt(
+            owner
+                .read(1, move |state| state
+                    .advance_replay(&authority, Some(WrittenBatch(99))))
+                .unwrap()
+        )
+        .await
+        .is_err()
+    );
+    let number = batch.number;
+    drop(batch);
+    let authority = ticket.authority.clone();
+    assert!(matches!(
+        crate::persistence::receipt(
+            owner
+                .read(1, move |state| state
+                    .advance_replay(&authority, Some(WrittenBatch(number))))
+                .unwrap()
+        )
+        .await
+        .unwrap(),
+        ReplayAdvance::Exhausted(_)
+    ));
+    let authority = ticket.authority.clone();
+    assert!(matches!(
+        crate::persistence::receipt(
+            owner
+                .read(1, move |state| state.finish_replay(&authority, |_| Ok(())))
+                .unwrap()
+        )
+        .await
+        .unwrap(),
+        Step::Done(_)
+    ));
+    let authority = ticket.authority.clone();
+    assert!(
+        crate::persistence::receipt(
+            owner
+                .read(1, move |state| state.finish_replay(&authority, |_| Ok(())))
+                .unwrap()
+        )
+        .await
+        .is_err(),
+        "completed ticket accepted a duplicate finish"
+    );
+}
+
+struct InterruptWrite {
+    remaining: usize,
+}
+impl tokio::io::AsyncWrite for InterruptWrite {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if self.remaining == 0 {
+            return std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+        }
+        let written = self.remaining.min(bytes.len());
+        self.remaining -= written;
+        std::task::Poll::Ready(Ok(written))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+#[tokio::test]
+async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
+    let fixture = Fixture::new();
+    for i in 0..25 {
+        fixture
+            .store
+            .enqueue_pending(
+                &fixture.recipient.device_public_key,
+                i,
+                &crate::transport::encode(&fixture.envelope(i as u8)).unwrap(),
+            )
+            .unwrap();
+    }
+    let first_batch_bytes: usize = (0..8)
+        .map(|i| {
+            crate::transport_v2::encode_state(&fixture.envelope(i), true)
+                .unwrap()
+                .len()
+        })
+        .sum();
+    assert!(
+        fixture
+            .replay_to(&mut InterruptWrite {
+                remaining: first_batch_bytes + 3
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        fixture
+            .store
+            .count_pending(&fixture.recipient.device_public_key)
+            .unwrap(),
+        25
+    );
+    let mut wire = Vec::new();
+    fixture.replay_to(&mut wire).await.unwrap();
+    let mut reader = SessionReader::new(wire.as_slice(), true);
+    for i in 0..25 {
+        assert_eq!(
+            reader.read_next().await.unwrap(),
+            Some(EnvelopeV2::State(fixture.envelope(i)))
+        );
+    }
+    assert_eq!(
+        reader.read_next().await.unwrap(),
+        Some(EnvelopeV2::State(Envelope::Ready {
+            workspace_id: 7,
+            pending_deltas: 25
+        }))
+    );
+    assert!(reader.read_next().await.unwrap().is_none());
+    assert_eq!(
+        fixture
+            .store
+            .count_pending(&fixture.recipient.device_public_key)
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn dropped_ticket_reclaims_without_abort_admission_on_full_owner_queue() {
+    let fixture = Fixture::new();
+    for i in 0..257 {
+        fixture
+            .store
+            .enqueue_pending(
+                &fixture.recipient.device_public_key,
+                i,
+                &crate::transport::encode(&fixture.envelope(0)).unwrap(),
+            )
+            .unwrap();
+    }
+    let (_, ticket) = fixture.subscribe_ticket().await;
+    let owner = crate::persistence::handle(&fixture.workspace).await;
+    let (release, reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "hold-owner");
+    owner
+        .read(1, |state| {
+            crate::store::test_barrier::pause(state.store.root(), "hold-owner");
+            Ok(())
+        })
+        .unwrap();
+    reached.await.unwrap();
+    let mut admitted = 0;
+    while owner.read(1, |_| Ok(())).is_ok() {
+        admitted += 1;
+    }
+    assert!(admitted > 0);
+    drop(ticket);
+    drop(release);
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if std::fs::read_dir(fixture.store.root().join("store-work-v1"))
+                .unwrap()
+                .next()
+                .is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelled ticket was stranded by a full owner queue");
+    assert_eq!(
+        fixture
+            .store
+            .count_pending(&fixture.recipient.device_public_key)
+            .unwrap(),
+        257
+    );
 }

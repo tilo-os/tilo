@@ -653,6 +653,16 @@ impl RelayClient {
                     ClientEvent::InboundStateFlushed(Ok(())) => {}
                     ClientEvent::InboundStateFlushed(Err(())) => break,
                     ClientEvent::State(Some(env)) => {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if crate::persistence::correlated_diagnostics()
+                            && let Envelope::Delta {
+                                workspace_id,
+                                authored_at_ns,
+                                ..
+                            } = &env
+                        {
+                            tracing::info!(phase = "client_delta_write", workspace_id, authored_at_ns);
+                        }
                         let Ok(bytes) = crate::transport_v2::encode_state(&env, v2) else {
                             break;
                         };
@@ -679,6 +689,16 @@ impl RelayClient {
                     }
                     ClientEvent::Action(None) => break,
                     ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(env)))) => {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if crate::persistence::correlated_diagnostics()
+                            && let Envelope::Delta {
+                                workspace_id,
+                                authored_at_ns,
+                                ..
+                            } = &env
+                        {
+                            tracing::info!(phase = "client_delta_read", workspace_id, authored_at_ns);
+                        }
                         if v2 {
                             if queue_inbound_state(&inbound_tx, &mut schedule, env).is_err() {
                                 break;
@@ -721,6 +741,16 @@ impl RelayClient {
     /// Returns the envelope back to the caller, boxed, if the outbound
     /// channel to the pump task is closed (the connection is gone).
     pub fn send(&self, env: Envelope) -> Result<(), Box<Envelope>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::persistence::correlated_diagnostics()
+            && let Envelope::Delta {
+                workspace_id,
+                authored_at_ns,
+                ..
+            } = &env
+        {
+            tracing::info!(phase = "client_delta_queue", workspace_id, authored_at_ns);
+        }
         let subscription_update = match &env {
             Envelope::Subscribe { workspace_id } => Some((*workspace_id, true)),
             Envelope::Unsubscribe { workspace_id } => Some((*workspace_id, false)),

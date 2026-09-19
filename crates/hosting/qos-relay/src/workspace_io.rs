@@ -27,7 +27,15 @@ fn admit_work() -> Result<OwnedSemaphorePermit, StoreError> {
     authorization_slots()
         .clone()
         .try_acquire_owned()
-        .map_err(|_| io_error("workspace authorization backpressure"))
+        .map_err(|_| {
+            if crate::persistence::correlated_diagnostics() {
+                tracing::info!(
+                    phase = "authorization_backpressure",
+                    capacity = AUTHORIZATION_CAPACITY
+                );
+            }
+            io_error("workspace authorization backpressure")
+        })
 }
 
 async fn authorization_io<T: Send + 'static>(

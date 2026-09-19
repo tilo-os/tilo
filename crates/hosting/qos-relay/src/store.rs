@@ -431,20 +431,7 @@ impl WorkspaceStore {
         self.retain_shared(channel, Some(seq), bytes).map(|_| ())
     }
 
-    /// Logical newly-written envelope bytes; excludes metadata, hardlinks,
-    /// snapshot/audit writes and duplicate publications.
-    pub(crate) fn retain_counted(
-        &self,
-        channel: &[u8; 32],
-        seq: Option<u64>,
-        bytes: &[u8],
-    ) -> Result<u64, StoreError> {
-        #[cfg(test)]
-        test_barrier::pause(&self.root, "state-persist");
-        self.retain_shared(channel, seq, bytes)
-    }
-
-    /// Eager compatibility helper for existing serving/maintenance callers.
+    /// Eager compatibility helper for maintenance callers.
     /// New bounded replay and retention paths never call this method.
     /// Load retained replay coverage: proven raw baselines before uncovered
     /// tails, and opaque checkpoint histories in original receipt order.

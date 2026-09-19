@@ -401,6 +401,13 @@ impl RetainBuild {
         use super::bounded::{Meta, Step, increment, read_meta};
         let limit = limit.checked()?;
         self.sorter.stats.last_step_work = 0;
+        #[cfg(test)]
+        if matches!(self.phase, RetainPhase::Sort) {
+            super::test_barrier::pause(
+                self.scratch.parent().unwrap().parent().unwrap(),
+                "retain-sort",
+            );
+        }
         match &mut self.phase {
             RetainPhase::Scan(entries) => {
                 if self.sorter.spilling() {
@@ -600,8 +607,8 @@ impl WorkspaceStore {
         seq: Option<u64>,
         bytes: &[u8],
     ) -> Result<u64, StoreError> {
-        // Compatibility synchronous driver. 2c2 will yield owner worker permits
-        // between the exact same bounded transaction steps.
+        // Compatibility synchronous driver. Serving owners release worker permits
+        // between these same bounded transaction steps.
         let mut build = self.start_retain(channel, seq, bytes.to_vec())?;
         let written = loop {
             if let super::bounded::Step::Done(written) =
