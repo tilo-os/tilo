@@ -80,6 +80,7 @@ use crate::shell::capture_surface::{
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::collaborators_overlay::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay,
+    collaborator_roster_rows_with_local_user,
 };
 pub use crate::shell::collaborators_overlay::{RosterRow, collaborator_roster_rows};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
@@ -2453,6 +2454,25 @@ type QsFastFields = (
     Option<crate::shell::quick_settings::actions::BatteryInfo>,
 );
 
+/// Construction-time services whose production implementations may read
+/// persisted desktop state or start background work. Keeping them together
+/// makes the fixture boundary explicit: fixture hosts never need to construct
+/// real services merely to overwrite them afterwards.
+struct OverlayHostInputs {
+    search_registry: crate::shell::search::SearchRegistry,
+    room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
+    collaboration_preferences: CollaborationPreferences,
+    shortcut_config: settings_store::hardware::ShortcutConfig,
+    qs_root: QuickSettingsRoot,
+    qs_refresh: crate::shell::quick_settings::refresh::QsRefresh,
+    qs_actions: Box<dyn crate::shell::quick_settings::actions::QsActions>,
+    portal_dialogs: PortalDialogController,
+    room_activity: crate::shell::room_activity::RoomActivityPane,
+    history_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
+    status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
+    projection_overlay: ProjectionOverlay,
+}
+
 impl ShellOverlayHost {
     #[allow(
         clippy::too_many_lines,
@@ -2715,6 +2735,41 @@ impl ShellOverlayHost {
         reason = "constructor explicitly initializes the host's independent interaction surfaces"
     )]
     pub fn new(content: Box<dyn Widget>) -> Self {
+        let (search_registry, room_records) = Self::build_search_registry();
+        Self::from_inputs(
+            content,
+            OverlayHostInputs {
+                search_registry,
+                room_records,
+                collaboration_preferences: CollaborationPreferences::load(),
+                shortcut_config: settings_store::hardware::ShortcutConfig::load(),
+                qs_root: QuickSettingsRoot::load_persisted(),
+                qs_refresh: crate::shell::quick_settings::refresh::QsRefresh::new(),
+                qs_actions: Box::new(crate::shell::quick_settings::actions::RealQsActions),
+                portal_dialogs: PortalDialogController::default(),
+                room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
+                history_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
+                status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
+                projection_overlay: ProjectionOverlay::default(),
+            },
+        )
+    }
+
+    fn from_inputs(content: Box<dyn Widget>, inputs: OverlayHostInputs) -> Self {
+        let OverlayHostInputs {
+            search_registry,
+            room_records,
+            collaboration_preferences,
+            shortcut_config,
+            qs_root,
+            qs_refresh,
+            qs_actions,
+            portal_dialogs,
+            room_activity,
+            history_narrator,
+            status_narrator,
+            projection_overlay,
+        } = inputs;
         // Palette entries come from the search registry on every
         // keystroke. New providers slot in via `SearchRegistry::register`;
         // the palette picks up their resource-kind chips automatically.
@@ -2723,8 +2778,6 @@ impl ShellOverlayHost {
         // The shell paints scope + kind controls into the palette's own
         // reserved filter band, inside the card.
         palette.set_host_filter_strip(true);
-        let (search_registry, room_records) = Self::build_search_registry();
-        let collaboration_preferences = CollaborationPreferences::load();
         Self {
             rect: Rect::ZERO,
             interaction: ui::InteractionEnvironment::default(),
@@ -2734,7 +2787,7 @@ impl ShellOverlayHost {
             shortcut_rebind: None,
             shortcut_rebind_message: None,
             shortcut_guide_focus: None,
-            shortcut_config: settings_store::hardware::ShortcutConfig::load(),
+            shortcut_config,
             content,
             workspace_scene_parts: None,
             onboarding: None,
@@ -2791,7 +2844,7 @@ impl ShellOverlayHost {
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
-            qs_refresh: crate::shell::quick_settings::refresh::QsRefresh::new(),
+            qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
@@ -2805,7 +2858,7 @@ impl ShellOverlayHost {
             permission_prompt: None,
             portal_prompts: None,
             file_picker_overlay: FilePickerOverlay::default(),
-            portal_dialogs: PortalDialogController::default(),
+            portal_dialogs,
             peer_sync_enabled: false,
             peer_sync_bridge: None,
             clipboard_manager_bridge: None,
@@ -2832,24 +2885,24 @@ impl ShellOverlayHost {
             // User intent is durable, while the root filters it against the
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
-            qs_root: QuickSettingsRoot::load_persisted(),
-            qs_actions: Box::new(crate::shell::quick_settings::actions::RealQsActions),
+            qs_root,
+            qs_actions,
             qs_wifi_pane: QuickSettingsWifiPane::default(),
             qs_bluetooth_pane: QuickSettingsBluetoothPane::default(),
             qs_aux_drill_in: DrillInList::default(),
             qs_vpn_pane: QuickSettingsVpnPane::default(),
             status_bridge: None,
             session_audio_policy: None,
-            room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
-            history_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
-            status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
+            room_activity,
+            history_narrator,
+            status_narrator,
             status_narrative_request: None,
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
             activity_awareness_workspace: None,
             activity_pending_reveal: None,
             collaborators_overlay: CollaboratorsOverlay::default(),
-            projection_overlay: ProjectionOverlay::default(),
+            projection_overlay,
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -2871,7 +2924,6 @@ impl ShellOverlayHost {
     }
 
     pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
-        let mut host = Self::new(content);
         let mut search_registry = crate::shell::search::SearchRegistry::new();
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::NotesProvider::new(),
@@ -2880,21 +2932,35 @@ impl ShellOverlayHost {
             crate::shell::search::providers::EditorProvider::new(),
         ));
         let records = crate::shell::search::providers::RecordsProvider::new();
-        host.room_records = records.index();
+        let room_records = records.index();
         search_registry.register(std::rc::Rc::new(records));
-        host.search_registry = search_registry;
-        host.shortcut_config = settings_store::hardware::ShortcutConfig::default();
-        host.qs_root = QuickSettingsRoot::with_config(
-            settings_store::hardware::QuickSettingsConfig::default(),
-        );
-        host.qs_refresh = crate::shell::quick_settings::refresh::QsRefresh::without_os_reads();
-        host.qs_actions = Box::new(crate::shell::quick_settings::actions::UnavailableQsActions);
-        host.room_activity =
-            crate::shell::room_activity::RoomActivityPane::with_local_user("shell-fixture".into());
-        host.projection_overlay = ProjectionOverlay::from_controller(
-            crate::shell::projection::ProjectionController::unavailable(),
-        );
-        host
+        Self::from_inputs(
+            content,
+            OverlayHostInputs {
+                search_registry,
+                room_records,
+                collaboration_preferences: CollaborationPreferences::from_values(
+                    &serde_json::Map::new(),
+                ),
+                shortcut_config: settings_store::hardware::ShortcutConfig::default(),
+                qs_root: QuickSettingsRoot::with_config(
+                    settings_store::hardware::QuickSettingsConfig::default(),
+                ),
+                qs_refresh: crate::shell::quick_settings::refresh::QsRefresh::without_os_reads(),
+                qs_actions: Box::new(crate::shell::quick_settings::actions::UnavailableQsActions),
+                portal_dialogs: PortalDialogController::new(
+                    crate::shell::portal_dialog::PortalDialogQueue::default(),
+                ),
+                room_activity: crate::shell::room_activity::RoomActivityPane::with_local_user(
+                    "shell-fixture".into(),
+                ),
+                history_narrator: crate::shell::history_narrative::LocalHistoryNarrator::disabled(),
+                status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::disabled(),
+                projection_overlay: ProjectionOverlay::from_controller(
+                    crate::shell::projection::ProjectionController::unavailable(),
+                ),
+            },
+        )
     }
 
     /// Gate this host behind the shell-owned identity ceremony.
@@ -6463,7 +6529,8 @@ impl ShellOverlayHost {
         let peer_id = self.followed_peer.as_deref()?;
         let chrome = self.chrome.as_ref()?;
         let state = chrome.borrow();
-        collaborator_roster_rows(&state.tree())
+        let local_user = state.active_local_user();
+        collaborator_roster_rows_with_local_user(&state.tree(), &local_user)
             .into_iter()
             .find(|row| row.id == peer_id && row.followable)
     }
@@ -8681,10 +8748,7 @@ impl ShellOverlayHost {
         let local_ids = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let mut ids = vec![
-                state.local_user_id.clone(),
-                crate::shell::state::local_user_id(),
-            ];
+            let mut ids = vec![state.local_user_id.clone()];
             if let Some(workspace) = tree.active_workspace() {
                 ids.push(state.local_user_for_room(&workspace.room));
             }
@@ -8952,7 +9016,11 @@ impl ShellOverlayHost {
     /// for one set of rooms and painted with another.
     fn overview_cards(&self) -> Vec<crate::shell::overview::RoomCard> {
         match self.chrome.as_ref() {
-            Some(c) => crate::shell::overview::room_cards(&c.borrow().tree()),
+            Some(chrome) => {
+                let state = chrome.borrow();
+                let local_user = state.active_local_user();
+                crate::shell::overview::room_cards_with_local_user(&state.tree(), &local_user)
+            }
             None => Vec::new(),
         }
     }
@@ -11400,7 +11468,11 @@ impl ShellOverlayHost {
             let member_count = self
                 .chrome
                 .as_ref()
-                .map(|chrome| collaborator_roster_rows(&chrome.borrow().tree()).len())
+                .map(|chrome| {
+                    let state = chrome.borrow();
+                    let local_user = state.active_local_user();
+                    collaborator_roster_rows_with_local_user(&state.tree(), &local_user).len()
+                })
                 .unwrap_or_default();
             self.collaborators_overlay
                 .change_people_page(hit == CollaboratorsHit::NextPeople, member_count);
@@ -11410,7 +11482,8 @@ impl ShellOverlayHost {
         if let CollaboratorsHit::ToggleFollow(index) = hit {
             let target = self.chrome.as_ref().and_then(|chrome| {
                 let state = chrome.borrow();
-                collaborator_roster_rows(&state.tree())
+                let local_user = state.active_local_user();
+                collaborator_roster_rows_with_local_user(&state.tree(), &local_user)
                     .get(index)
                     .filter(|row| row.followable)
                     .cloned()
@@ -16244,8 +16317,9 @@ impl ShellOverlayHost {
                 || (Vec::new(), None, None),
                 |chrome| {
                     let state = chrome.borrow();
+                    let local_user = state.active_local_user();
                     (
-                        collaborator_roster_rows(&state.tree()),
+                        collaborator_roster_rows_with_local_user(&state.tree(), &local_user),
                         state.collab_unavailable.clone(),
                         collaborators_screen_exposure(&state),
                     )
@@ -18618,6 +18692,7 @@ impl ShellOverlayHost {
             return Vec::new();
         };
         let state = chrome.borrow();
+        let local_user = state.active_local_user();
         let tree = state.tree();
         let Some(workspace) = tree.active_workspace() else {
             return Vec::new();
@@ -18625,7 +18700,7 @@ impl ShellOverlayHost {
         let key = PresenceKey::Workspace {
             id: workspace.room.to_string(),
         };
-        let rows = collaborator_roster_rows(&tree);
+        let rows = collaborator_roster_rows_with_local_user(&tree, &local_user);
         let Some(pointers) = presence.pointers.get(&key) else {
             return Vec::new();
         };
@@ -18725,13 +18800,16 @@ impl ShellOverlayHost {
         // Scope by the workspace's room, not local `WorkspaceId` — the room
         // is the durable identity apps address collaboration to (stamped in
         // as `TILO_WORKSPACE_ID`); the local id differs per machine.
-        let room = {
+        let (room, local) = {
             let chrome = chrome_rc.borrow();
+            let local = chrome.active_local_user();
             let tree = chrome.tree();
-            tree.workspaces
+            let room = tree
+                .workspaces
                 .iter()
                 .find(|w| w.id == tree.active)
-                .map(|w| w.room.to_string())
+                .map(|w| w.room.to_string());
+            (room, local)
         };
         let Some(room) = room else {
             return Vec::new();
@@ -18744,7 +18822,6 @@ impl ShellOverlayHost {
         // Settle colours over the whole room (including the local user)
         // before filtering to what's on screen, so every host computes
         // the same assignment and a person is one colour everywhere.
-        let local = crate::shell::state::local_user_id();
         let mut room_ids: Vec<&str> = peers.iter().map(|(u, _)| u.0.as_str()).collect();
         room_ids.push(local.as_str());
         let reserved: Vec<(u8, u8, u8)> = presence.color_overrides.values().copied().collect();
