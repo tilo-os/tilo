@@ -7,10 +7,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'Run this check from PowerShell on Windows.' }
-. (Join-Path $PSScriptRoot 'windows-install-path.ps1')
+. (Join-Path $PSScriptRoot 'install-path.ps1')
 $InstalledDirectory = (Resolve-Path -LiteralPath $InstalledDirectory).Path
 Assert-TiloPublicInstallDirectory $InstalledDirectory
-$Repository = Split-Path -Parent $PSScriptRoot
+$Repository = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $fixture = (Resolve-Path -LiteralPath (Join-Path $Repository 'apps/video-player/tests/fixtures/h264-aac.mp4')).Path
 foreach ($app in @('music', 'video-player')) {
     if (-not (Test-Path -LiteralPath (Join-Path $InstalledDirectory "$app.exe") -PathType Leaf)) {

@@ -68,6 +68,11 @@ class RepositoryLayoutTests(unittest.TestCase):
                     "plan/security.md",
                     "release/local-models/recipe.sh",
                     "shell/src/main.rs",
+                    "tools/check-windows-start-apps.ps1",
+                    "tools/gstreamer-licenses/sources.json",
+                    "tools/install-windows-apps.ps1",
+                    "tools/test-windows-gstreamer.ps1",
+                    "tools/windows-install-path.ps1",
                     "ui/src/lib.rs",
                 ]
             ),
@@ -82,6 +87,11 @@ class RepositoryLayoutTests(unittest.TestCase):
                 "tracked file uses retired source root `plan/`; move it under `docs/architecture/`: plan/security.md",
                 "tracked file uses retired source root `release/`; move it under `dist/`: release/local-models/recipe.sh",
                 "tracked file uses retired source root `shell/`; move it under `crates/session/shell/`: shell/src/main.rs",
+                "tracked file uses retired source root `tools/check-windows-`; move it under `tools/windows/check-`: tools/check-windows-start-apps.ps1",
+                "tracked file uses retired source root `tools/gstreamer-licenses/`; move it under `tools/windows/gstreamer-licenses/`: tools/gstreamer-licenses/sources.json",
+                "tracked file uses retired source root `tools/install-windows-`; move it under `tools/windows/install-`: tools/install-windows-apps.ps1",
+                "tracked file uses retired source root `tools/test-windows-`; move it under `tools/windows/test-`: tools/test-windows-gstreamer.ps1",
+                "tracked file uses retired source root `tools/windows-`; move it under `tools/windows/`: tools/windows-install-path.ps1",
                 "tracked file uses retired source root `ui/`; move it under `crates/sdk/ui-core/`: ui/src/lib.rs",
             ],
         )
