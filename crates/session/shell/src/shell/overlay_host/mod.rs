@@ -5649,10 +5649,24 @@ impl ShellOverlayHost {
             }
             match &event.kind {
                 LaunchEventKind::Started { pid } => {
-                    eprintln!("shell: launched {} (pid {pid})", event.package_id);
+                    tracing::info!(
+                        target: "shell::launcher",
+                        package_id = %event.package_id,
+                        display_name = %event.display_name,
+                        pid,
+                        "application process started"
+                    );
                     continue;
                 }
-                LaunchEventKind::Exited => continue,
+                LaunchEventKind::Exited => {
+                    tracing::info!(
+                        target: "shell::launcher",
+                        package_id = %event.package_id,
+                        display_name = %event.display_name,
+                        "application process exited successfully"
+                    );
+                    continue;
+                }
                 LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. } => {}
             }
             event.log_failure();
@@ -14082,6 +14096,13 @@ impl Widget for ShellOverlayHost {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        // MouseInput carries no coordinates. Keep the host's pointer cache
+        // current before any modal can return early, because onboarding and
+        // the other compositor-owned gates hit-test the following button edge
+        // against this value. The normal desktop path used to do this only
+        // below the onboarding return, making a real DRM pointer visibly move
+        // while every onboarding click was evaluated without a position.
+        self.track_cursor_position(event, scale_factor);
         // Print Screen has an explicit arbitration policy. It must run before
         // OOBE, portal and consent gates so Capture Studio can temporarily
         // own input above those preserved workflows instead of being consumed
@@ -14193,8 +14214,6 @@ impl Widget for ShellOverlayHost {
         // the same order this ran inline; a `bool` return means "this
         // gate/stage fully resolved the event, stop here", exactly where
         // the original inline code hit a bare `return`.
-        self.track_cursor_position(event, scale_factor);
-
         if let WindowEvent::Touch(touch) = event {
             let shell_owned_before = self.touch_gestures.shell_owns_current();
             let phase = match touch.phase {
@@ -15435,6 +15454,9 @@ impl Widget for ShellOverlayHost {
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         [
+            self.onboarding
+                .as_ref()
+                .and_then(Widget::next_wake_deadline),
             self.content.next_wake_deadline(),
             self.sidebar
                 .as_ref()
