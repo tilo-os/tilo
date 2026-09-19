@@ -40,6 +40,13 @@ class WorkerContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'fields differ'):
             self.check(request)
 
+    def test_misplaced_native_suffix_fails_at_worker_admission(self):
+        for field in ('target', 'new_target'):
+            request = self.request()
+            request[field] = 'code.sandbox.example/qos/tilo-development:installed-ca33fae89a24-aarch64-9787'
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'matching native architecture'):
+                self.check(request)
+
     def check(self, request, helpers='a' * 40):
         raw = json.dumps(request)
         return worker.request_bytes(raw, hashlib.sha256(raw.encode()).hexdigest(), helpers)
