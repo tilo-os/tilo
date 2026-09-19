@@ -917,9 +917,9 @@ impl VideoDoc {
         let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
             return false;
         };
-        let effects = serde_json::to_string(effects).unwrap_or_else(|_| "[]".to_string());
-        let animation = serde_json::to_string(animation).unwrap_or_else(|_| "{}".to_string());
-        doc.put(&clip, "effects", effects).is_ok() && doc.put(&clip, "anim", animation).is_ok()
+        Self::write_effects(doc, &clip, effects);
+        Self::write_animation(doc, &clip, animation);
+        true
     }
 
     /// Replace one existing clip scalar without materialising a stale clip map.
