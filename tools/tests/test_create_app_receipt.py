@@ -155,7 +155,7 @@ class ReceiptProductionPathTests(unittest.TestCase):
         self.assertIn('fromJSON(needs.plan.outputs.matrix).include[0].runner', publish)
         self.assertIn(
             'image: code.podesta.ai/qos/tilo-release-tools@sha256:'
-            'bb519a7b710e61f7dc9f383dde3b5045f2d3b01145302f6c01e4e0b5f433b67b',
+            '65f353e93781c3c22881078900754d1f7b59c3349f522631e6289ef2838daa70',
             publish,
         )
         self.assertIn('vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256', publish)

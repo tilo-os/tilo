@@ -2,6 +2,15 @@
 set -euo pipefail
 
 image=${1:?usage: release_tools_image.sh IMAGE}
+max_image_bytes=536870912
+
+image_bytes=$(docker image inspect --format '{{.Size}}' "$image")
+[[ $image_bytes =~ ^[0-9]+$ ]]
+(( image_bytes <= max_image_bytes )) || {
+  printf 'release-tools image is unexpectedly large: %s bytes\n' "$image_bytes" >&2
+  exit 1
+}
+printf 'release-tools image size: %s bytes\n' "$image_bytes"
 
 docker run --rm --entrypoint bash "$image" -euo pipefail -c '
   for compiler in cargo rustc cc gcc clang; do

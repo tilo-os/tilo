@@ -34,6 +34,9 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
         self.assertIn("runner: runner-arm64", self.workflow)
         self.assertIn("os/tests/release_tools_image.sh", self.workflow)
         self.assertIn("docker buildx imagetools create", self.workflow)
+        smoke = (ROOT / "os/tests/release_tools_image.sh").read_text()
+        self.assertIn("max_image_bytes=536870912", smoke)
+        self.assertIn("docker image inspect --format '{{.Size}}'", smoke)
 
     def test_pr_code_runs_before_registry_credentials_exist(self) -> None:
         checkout, after_checkout = self.workflow.split(
@@ -57,7 +60,7 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
     def test_credentialed_publisher_uses_the_verified_compiler_free_image(self) -> None:
         expected = (
             "code.podesta.ai/qos/tilo-release-tools@"
-            "sha256:bb519a7b710e61f7dc9f383dde3b5045f2d3b01145302f6c01e4e0b5f433b67b"
+            "sha256:65f353e93781c3c22881078900754d1f7b59c3349f522631e6289ef2838daa70"
         )
         publish = self.release_workflow.split("\n  publish:\n", 1)[1]
         self.assertIn(f"image: {expected}", publish)
