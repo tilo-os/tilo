@@ -133,3 +133,44 @@ the merged archive, and bind its immutable upload receipt before promotion.
 
 See [retained artifact evidence](canonical-app-receipts-20406/README.md) for actual
 canonical verification without recompilation.
+
+## Final merged archive qualification (opt-in)
+
+Manual publishing supports `verify_final_receipt=true` (default false). Before
+using it, provision `TILO_APP_FINAL_RECEIPT_POLICY` and its independently reviewed
+exact-byte SHA256 in `TILO_APP_FINAL_RECEIPT_POLICY_SHA256`. This policy must pin
+the reviewed adapter and native executable hashes, approved app/runtime publisher
+keys, and allowed ISA labels. Do not copy trust automatically from build artifacts.
+The hashes must refer to the first requested architecture's verifier executables;
+that native verifier can cryptographically verify both target architectures.
+The publisher uses the same immutable builder resolved by the plan job.
+
+The workflow transports only the already-built canonical binaries in dedicated
+artifacts. It rejects mismatched independently pinned hashes before execution,
+checks the Python adapter hash before importing it, then verifies the complete
+newly assembled collection, including reused packages. Verifier subprocesses receive
+only PATH and locale variables, excluding publisher tokens and loader overrides.
+It never treats the selected-app build receipt as the merged collection receipt.
+After immutable archive upload it downloads that exact URL and requires matching
+size/SHA256 before producing a published receipt plus upload observation. These
+JSON files are uploaded alongside the collection using architecture-specific names.
+An enabled qualification failure is fatal; there is no fallback to unverified mode.
+The readback establishes availability at that moment, not permanent retention or
+protection against a registry administrator replacing bytes later.
+
+`tools/final_app_receipt.py verify` performs final canonical verification;
+`bind-readback` binds its pinned receipt to the caller's authenticated download of
+the exact URL. The latter is a trusted uploader operation: merely supplying an
+arbitrary local file and URL cannot independently establish network provenance.
+Its resulting receipt is accepted by the existing immutable manifest reader using
+the same independently supplied policy, with exact architecture selection.
+No channel manifest is written, no OS consumer is switched, and continuous main
+packaging remains paused. Enabling production continuous promotion must require
+this final-archive verification and independently pinned policy; the optional
+qualification flag is not a production trust bypass for that future channel.
+
+The collection source identifies assembly; reused package identities retain their
+signed package IDs and digests. Historical package signatures are not per-app Git
+source attestations. Versioned tag URLs without a full source/content identity are
+intentionally refused by binding; this first opt-in qualification uses manual main
+publication's full-SHA package version.
