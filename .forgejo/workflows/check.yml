@@ -332,7 +332,7 @@ jobs:
     if: always()
     needs: [select, security, affected]
     runs-on: runner-quality
-    timeout-minutes: 5
+    timeout-minutes: 10
     container:
       image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
       credentials:
@@ -366,29 +366,24 @@ jobs:
               ;;
           esac
 
-  report-check-result:
-    if: >-
-      always() &&
-      (github.ref == 'refs/heads/main' ||
-       github.ref == 'refs/heads/codex/package-desktop-release')
-    needs: [select, security, checks]
-    runs-on: runner-quality
-    timeout-minutes: 10
-    container:
-      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
-    env:
-      SELECT_RESULT: ${{ needs.select.result }}
-      SECURITY_RESULT: ${{ needs.security.result }}
-      AFFECTED_RESULT: ${{ needs.checks.result }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Reuse this runner for the main-branch receipt, including failed gates.
+      # PRs finish after aggregation without another checkout or note write.
+      - name: Checkout CI receipt tool
+        id: receipt-checkout
+        if: >-
+          always() &&
+          (github.ref == 'refs/heads/main' ||
+           github.ref == 'refs/heads/codex/package-desktop-release')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
       - name: Record an observable CI receipt without touching a branch
+        if: always() && steps.receipt-checkout.outcome == 'success'
+        env:
+          SELECT_RESULT: ${{ needs.select.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          AFFECTED_RESULT: ${{ steps.aggregate.outcome }}
         run: >-
           tools/ci/receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"
           "$SELECT_RESULT" "$SECURITY_RESULT" "$AFFECTED_RESULT" origin
