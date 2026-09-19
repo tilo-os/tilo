@@ -11,6 +11,8 @@
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
+const MAX_DESTINATION_SUFFIX: u32 = 10_000;
+
 /// Accept one portable filesystem leaf name, never a path expression.
 ///
 /// Both action prompts and inline rename reach these operations. In
@@ -198,12 +200,8 @@ pub fn unique_destination(dir: &Path, name: &str) -> Result<PathBuf, String> {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let ext = path.extension().map(|e| e.to_string_lossy().into_owned());
-    for n in 2..10_000 {
-        let trial_name = match &ext {
-            Some(ext) => format!("{stem} {n}.{ext}"),
-            None => format!("{stem} {n}"),
-        };
-        let trial = dir.join(trial_name);
+    for n in 2..MAX_DESTINATION_SUFFIX {
+        let trial = dir.join(suffixed_name(&stem, ext.as_deref(), n));
         if is_free(&trial)? {
             return Ok(trial);
         }
@@ -215,6 +213,13 @@ pub fn unique_destination(dir: &Path, name: &str) -> Result<PathBuf, String> {
             crate::i18n::arg("path", dir.to_string_lossy().into_owned()),
         ],
     ))
+}
+
+fn suffixed_name(stem: &str, extension: Option<&str>, suffix: u32) -> String {
+    match extension {
+        Some(extension) => format!("{stem} {suffix}.{extension}"),
+        None => format!("{stem} {suffix}"),
+    }
 }
 
 /// Create a new folder named `name` (deduplicated) inside `parent`.
@@ -294,46 +299,91 @@ pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
 /// Returns an error if `src` has no file name, or the recursive copy fails
 /// (a read/write/permission error partway through the tree).
 pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
-    ensure_destination_is_outside_source(src, dest_dir)?;
-    let name = src
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .ok_or_else(|| crate::i18n::t("files-source-no-name"))?;
-    let dest = unique_destination(dest_dir, &name)?;
-    copy_recursive(src, &dest).map_err(|e| e.to_string())?;
-    Ok(dest)
+    transfer_into(src, dest_dir, false, |_| {})
 }
 
-/// Move `src` into `dest_dir`. Tries a cheap rename first; on a
-/// cross-device error falls back to copy-then-delete.
+/// Move `src` into `dest_dir` without replacing a concurrent destination.
+/// The source is removed only after its complete type-preserving copy exists.
 ///
 /// # Errors
 ///
-/// Returns an error if `src` has no file name, or if both the rename and
-/// the copy-then-delete fallback fail (a read/write/permission error, or
-/// `src` could not be removed after a successful copy).
+/// Returns an error if `src` has no file name, the copy fails, or `src` could
+/// not be removed after a successful copy.
 pub fn move_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
+    transfer_into(src, dest_dir, true, |_| {})
+}
+
+fn transfer_into(
+    src: &Path,
+    dest_dir: &Path,
+    remove_source: bool,
+    mut before_claim: impl FnMut(&Path),
+) -> Result<PathBuf, String> {
     ensure_destination_is_outside_source(src, dest_dir)?;
     let name = src
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
+        .map(|name| name.to_string_lossy().into_owned())
         .ok_or_else(|| crate::i18n::t("files-source-no-name"))?;
     let source_parent = src
         .parent()
         .and_then(|parent| std::fs::canonicalize(parent).ok());
     let destination_dir = std::fs::canonicalize(dest_dir).ok();
-    if source_parent.is_some() && source_parent == destination_dir {
+    if remove_source && source_parent.is_some() && source_parent == destination_dir {
         return Err("the item is already in this folder".into());
     }
-    let dest = unique_destination(dest_dir, &name)?;
-    if let Ok(()) = std::fs::rename(src, &dest) {
-        Ok(dest)
-    } else {
-        // Likely a cross-filesystem move — copy then remove.
-        copy_recursive(src, &dest).map_err(|e| e.to_string())?;
-        remove_path(src).map_err(|e| e.to_string())?;
-        Ok(dest)
+
+    let path = Path::new(&name);
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let extension = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().into_owned());
+
+    for suffix in 1..MAX_DESTINATION_SUFFIX {
+        let candidate_name = if suffix == 1 {
+            name.clone()
+        } else {
+            suffixed_name(&stem, extension.as_deref(), suffix)
+        };
+        let destination = dest_dir.join(candidate_name);
+        match std::fs::symlink_metadata(&destination) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(destination_inspection_error(&destination, error)),
+        }
+
+        before_claim(&destination);
+        match copy_recursive_exclusive(src, &destination) {
+            Ok(()) => {
+                if remove_source {
+                    remove_path(src).map_err(|error| error.to_string())?;
+                }
+                return Ok(destination);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
     }
+
+    Err(crate::i18n::t_args(
+        "files-destination-names-exhausted",
+        &[
+            crate::i18n::arg("name", name),
+            crate::i18n::arg("path", dest_dir.to_string_lossy().into_owned()),
+        ],
+    ))
+}
+
+fn destination_inspection_error(path: &Path, error: std::io::Error) -> String {
+    crate::i18n::t_args(
+        "files-destination-inspect-failed",
+        &[
+            crate::i18n::arg("path", path.to_string_lossy().into_owned()),
+            crate::i18n::arg("error", error.to_string()),
+        ],
+    )
 }
 
 fn remove_path(p: &Path) -> std::io::Result<()> {
@@ -367,6 +417,44 @@ fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
         std::fs::copy(src, dest)?;
         Ok(())
     }
+}
+
+/// Copy one tree after atomically claiming its root directory entry.
+///
+/// `create_new`, `create_dir`, and symlink creation fail with
+/// `AlreadyExists` instead of replacing a concurrently-created entry. A
+/// failed copy can leave its claimed partial destination for diagnosis; it
+/// never removes a path that another process may have replaced meanwhile.
+fn copy_recursive_exclusive(src: &Path, dest: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(src)?;
+    if metadata.file_type().is_symlink() {
+        return copy_symlink(src, dest);
+    }
+
+    if metadata.is_dir() {
+        std::fs::create_dir(dest)?;
+        let result = (|| {
+            for entry in std::fs::read_dir(src)? {
+                let entry = entry?;
+                copy_recursive(&entry.path(), &dest.join(entry.file_name()))?;
+            }
+            std::fs::set_permissions(dest, metadata.permissions())?;
+            Ok(())
+        })();
+        return result;
+    }
+
+    let mut destination = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)?;
+    let result = (|| {
+        let mut source = std::fs::File::open(src)?;
+        std::io::copy(&mut source, &mut destination)?;
+        destination.set_permissions(metadata.permissions())?;
+        Ok(())
+    })();
+    result
 }
 
 #[cfg(unix)]
