@@ -1068,20 +1068,25 @@ fn route_mouse_input(
         || (matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
             && state.client_input.pointer_focus.is_some())
         || (chrome_drag && !pressed);
+    // Account for every physical edge, including gestures which begin in
+    // chrome. A chrome file drag can later hand that held button to Smithay;
+    // its release must then be recognised as the matching final edge. This
+    // mirrors keyboard routing, where ownership controls forwarding but not
+    // the shared-seat ledger.
+    let local_transition = evdev_button(button).map(|code| {
+        let forward = state.remote_seats.local_button_transition(code, pressed);
+        (code, forward)
+    });
     let consumed = if to_client {
-        match evdev_button(button) {
-            Some(code) => {
-                if state.remote_seats.local_button_transition(code, pressed) {
-                    state.forward_client_pointer_button(code, pressed)
-                } else {
-                    // The shared legacy pointer already has this button in
-                    // the requested state. It still belongs to the client
-                    // grab; do not let the duplicate edge fall through to
-                    // shell chrome.
-                    true
-                }
+        match local_transition {
+            Some((code, true)) => state.forward_client_pointer_button(code, pressed),
+            Some((_, false)) => {
+                // The shared legacy pointer already has this button in the
+                // requested state. It still belongs to the client grab; do
+                // not let the duplicate edge fall through to shell chrome.
+                true
             }
-            None => false,
+            _ => false,
         }
     } else {
         false
