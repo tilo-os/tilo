@@ -63,8 +63,54 @@ def pattern_regex(pattern):
     return re.compile(result + r"\Z")
 
 
+def applicability_wiring(source):
+    """Return jobs with complete gate wiring; reject partial wiring."""
+    lines = source.splitlines()
+    if lines.count("jobs:") != 1:
+        raise ValueError("workflow must have one jobs section")
+    jobs_start = lines.index("jobs:")
+    starts = [i for i in range(jobs_start + 1, len(lines))
+              if re.fullmatch(r"  [A-Za-z0-9_-]+:", lines[i])]
+    wired = set()
+    for index, start in enumerate(starts):
+        name = lines[start].strip()[:-1]
+        if name == "applicability":
+            continue
+        end = starts[index + 1] if index + 1 < len(starts) else len(lines)
+        block = lines[start + 1:end]
+        needs_gate = False
+        guard_gate = False
+        i = 0
+        while i < len(block):
+            line = block[i]
+            if line.startswith("    needs:"):
+                raw = line.split(":", 1)[1].strip()
+                needs_gate = bool(re.search(r"(?:^|[\[, ]\s*)applicability(?:\s*[] ,]|$)", raw))
+            elif line.startswith("    if:"):
+                raw = line.split(":", 1)[1].strip()
+                if raw in (">", ">-", "|", "|-"):
+                    parts = []
+                    i += 1
+                    while i < len(block) and (not block[i].strip() or block[i].startswith("      ")):
+                        if block[i].strip():
+                            parts.append(block[i].strip())
+                        i += 1
+                    raw = " ".join(parts)
+                    i -= 1
+                guard_gate = APPLICABILITY_GUARD in re.sub(r"\s+", " ", raw).strip()
+            i += 1
+        if needs_gate != guard_gate:
+            raise ValueError(f"partial applicability wiring for job {name}")
+        if needs_gate:
+            wired.add(name)
+    if "  applicability:" in lines and not wired:
+        raise ValueError("applicability job does not guard any job")
+    return wired
+
+
 def workflow_contract(source):
     """Project a workflow onto everything that can change build/publication."""
+    applicability_wiring(source)
     lines = source.splitlines()
     if lines.count("on:") != 1 or lines.count("jobs:") != 1:
         raise ValueError("workflow must have one on section and one jobs section")
@@ -100,7 +146,8 @@ def workflow_contract(source):
             else:
                 raise ValueError("unsupported job needs syntax")
             needs = [item for item in needs if item != "applicability"]
-            projected.append("    needs: " + ",".join(needs))
+            if needs:
+                projected.append("    needs: " + ",".join(needs))
             i += 1
             continue
 
@@ -120,7 +167,8 @@ def workflow_contract(source):
             expression = expression.replace(APPLICABILITY_GUARD, "")
             if "needs.applicability" in expression:
                 raise ValueError("unsupported applicability guard")
-            projected.append("    if: " + expression)
+            if expression != "${{ always() && true }}":
+                projected.append("    if: " + expression)
             continue
 
         if line.strip():
@@ -143,7 +191,10 @@ def workflow_contract_changed(repo, base, head, workflow):
                 ["git", "-C", str(repo), "show", f"{ref}:{path}"],
                 stderr=subprocess.PIPE,
             ).decode()
-        return workflow_contract(show(base)) != workflow_contract(show(head))
+        base_source, head_source = show(base), show(head)
+        if not applicability_wiring(base_source).issubset(applicability_wiring(head_source)):
+            return True
+        return workflow_contract(base_source) != workflow_contract(head_source)
     except (OSError, UnicodeError, ValueError, subprocess.CalledProcessError):
         return True
 
