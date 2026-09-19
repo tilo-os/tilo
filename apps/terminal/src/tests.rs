@@ -323,7 +323,7 @@ fn send_key_mods(
 
     // Construct over a zeroed buffer because winit's `KeyEventExtra`
     // is `pub(crate)` — same trick `ui::widget::modal_dialog`'s tests
-    // and `shell/tests/e2e_shell_flows.rs::key_press` use.
+    // and `crates/session/shell/tests/e2e_shell_flows.rs::key_press` use.
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = key;
     ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);

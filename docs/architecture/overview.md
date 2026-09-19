@@ -110,7 +110,7 @@ Peer pointer/keyboard event on a peer_view widget
 
 ## State model
 
-The single source of truth for per-session shell state is `WorkspaceTree` in `shell/src/shell/state.rs`. It uses a **cached materialisation** pattern (see `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`):
+The single source of truth for per-session shell state is `WorkspaceTree` in `crates/session/shell/src/shell/state.rs`. It uses a **cached materialisation** pattern (see `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`):
 
 - A public struct of `Vec<Workspace>`, `HashMap<StripId, GroupId>`, etc. — every existing reader keeps `tree.workspaces.iter()` style access.
 - A backing `automerge::AutoCommit` document mirrors the cache. Every mutator writes through to both sides.
@@ -139,9 +139,9 @@ WorkspaceTree
 
 Three layers cover different parts of the stack:
 
-1. **In-process driver** (`shell/src/bin/shots/`) — `ShellDriver` builds the same widget tree the live binary builds, runs the same paint pass, and exposes a `widget_registry: HashMap<String, Rect>` that walks the live tree via `Widget::test_id(&self) -> Option<&str>` (from `ui::widget::Widget`). Path-fallback (`Parent/Child[index]`) works without opt-in. Used by >100 tests in `shell/tests/*` and by `cargo run --bin shots`.
+1. **In-process driver** (`crates/session/shell/src/bin/shots/`) — `ShellDriver` builds the same widget tree the live binary builds, runs the same paint pass, and exposes a `widget_registry: HashMap<String, Rect>` that walks the live tree via `Widget::test_id(&self) -> Option<&str>` (from `ui::widget::Widget`). Path-fallback (`Parent/Child[index]`) works without opt-in. Used by >100 tests in `crates/session/shell/tests/*` and by `cargo run --bin shots`.
 2. **Offscreen / recording renderer** — `cargo run --bin shots -- --mode offscreen --out target/<dir>` writes PNGs per scenario; `--mode recording --out target/<file>.h264` writes a real H.264 video. Output is identical to the live binary's rendering. **Never** screenshot the user's running session — use the offscreen path.
-3. **Control socket** — when the compositor boots with `TILO_TEST_CONTROL=<sock>` set, it binds an extra Unix socket alongside the Wayland one. `tilo-control` uses its newline-delimited JSON protocol to list and activate semantic targets, inject pointer and keyboard input through the real seat, inspect state, and capture snapshots. The implementation lives in `shell/src/compositor/test_control.rs`; integration coverage is in `shell/tests/control_socket_test.rs`.
+3. **Control socket** — when the compositor boots with `TILO_TEST_CONTROL=<sock>` set, it binds an extra Unix socket alongside the Wayland one. `tilo-control` uses its newline-delimited JSON protocol to list and activate semantic targets, inject pointer and keyboard input through the real seat, inspect state, and capture snapshots. The implementation lives in `crates/session/shell/src/compositor/test_control.rs`; integration coverage is in `crates/session/shell/tests/control_socket_test.rs`.
 
 The control socket is the out-of-process path for covering the seat layer, frame-pacing regressions, and focus-stealing behaviour the in-process driver can't reproduce.
 
@@ -152,7 +152,7 @@ tilo/                            # workspace root
 ├── docs/                                # architecture, testing, security, and specifications
 │   └── architecture/                    # this directory — product and system design
 ├── crates/sdk/ui-core/                  # Internal UI toolkit behind tilo-app
-├── shell/                               # compositor + shell
+├── crates/session/shell/                # compositor + shell
 │   └── src/
 │       ├── compositor/                  # smithay state, backends, frame, tab-binding, test_control
 │       │   └── backend/{winit,drm}/

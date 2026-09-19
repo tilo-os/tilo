@@ -14,7 +14,7 @@ Within `--mode native`, the backend is a trait (`compositor::backend::Backend`) 
 - `--backend winit` — smithay's winit backend. Compositor renders into a winit-managed window on top of an existing parent compositor. Used for dev and for the CI integration test.
 - `--backend drm` — libseat session + udev device enumeration + libinput for input + DRM/GBM for scanout. The path for booting on a bare TTY via greetd.
 
-The `Backend` trait surface (`shell/src/compositor/backend/mod.rs`) is:
+The `Backend` trait surface (`crates/session/shell/src/compositor/backend/mod.rs`) is:
 
 ```rust
 pub trait Backend {
@@ -80,7 +80,7 @@ intervals — rather than growing a queue the display can never drain.
 Resize and DPMS travel the same channel as frames, so a blank cannot
 overtake a frame already queued.
 
-`shell/src/compositor/metrics.rs` instruments all of it
+`crates/session/shell/src/compositor/metrics.rs` instruments all of it
 (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`); `scripts/perf/frame-loop-bench.py`
 drives a measured run and diffs two of them.
 
@@ -113,7 +113,7 @@ hardware to be worth anything.
 
 ## Event loop + state
 
-A single `calloop::EventLoop<state::State>` owns everything. The `State` struct (`shell/src/compositor/state.rs`) holds all smithay globals:
+A single `calloop::EventLoop<state::State>` owns everything. The `State` struct (`crates/session/shell/src/compositor/state.rs`) holds all smithay globals:
 
 ```rust
 pub struct State {
@@ -129,11 +129,11 @@ pub struct State {
 
 Each protocol handler attaches via `delegate_compositor!`, `delegate_xdg_shell!`, `delegate_shm!`, `delegate_seat!`, `delegate_output!`. The main socket is registered via `ListeningSocketSource`; per-workspace bridge sockets register additional sources on the same loop (see `docs/architecture/security.md`).
 
-The Wayland state is decoupled from the graphical backend so the compositor's logic can run in the headless integration test harness (`shell/tests/interaction_test.rs`, `compositor_test.rs`) without a GPU.
+The Wayland state is decoupled from the graphical backend so the compositor's logic can run in the headless integration test harness (`crates/session/shell/tests/interaction_test.rs`, `compositor_test.rs`) without a GPU.
 
 ## Per-frame paint
 
-The frame builder (`shell/src/compositor/frame.rs`) produces one `vello::Scene` per output per frame:
+The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one `vello::Scene` per output per frame:
 
 1. Drive the shell-chrome widget tree (`ShellOverlayHost`) into the scene — top bar, wheel disc, palette, modals.
 2. For each foreign Wayland surface visible in the active workspace, look up its committed buffer (stored on the surface user-data in `CompositorHandler::commit`) and draw it into the scene at the tab's content-area rect. SHM buffers are converted ARGB8888 → RGBA8888 and rendered as `peniko::Image`. dmabuf foreign buffers are also supported via wgpu native textures.
@@ -151,7 +151,7 @@ because you expect a fast path to exist and be disabled, or half-wired,
 or gated behind a flag — it is none of those. Nothing was started.
 
 **What is absent, concretely.** There is no dmabuf→KMS import anywhere in
-`shell/src/compositor/backend/drm/`. `add_framebuffer` is called in
+`crates/session/shell/src/compositor/backend/drm/`. `add_framebuffer` is called in
 exactly one place — `scanout.rs`, on the two dumb buffers the backend
 allocates for itself at modeset — and nowhere else. The compositor never
 hands a client's buffer to KMS. `compositor::gpu_import` does import
@@ -182,7 +182,7 @@ The same `FrameBuilder` is used by `cargo run --bin shots -- --mode offscreen|re
 
 ## Foreign-client adoption
 
-Foreign Wayland clients are placed in the workspace model via app-id matching (`shell/src/compositor/tab_binding.rs`). Rule:
+Foreign Wayland clients are placed in the workspace model via app-id matching (`crates/session/shell/src/compositor/tab_binding.rs`). Rule:
 
 When `XdgShellHandler::new_toplevel` fires:
 
@@ -195,7 +195,7 @@ Tab lifecycle mirrors surface lifecycle:
 - `xdg_toplevel.set_app_id` retroactively triggers adoption if the app-id was previously unset.
 - `xdg_toplevel.destroy` marks the corresponding tab as `closing` (the existing animation runs); after the animation the tab is reaped.
 
-A CI integration test (`shell/tests/compositor_test.rs`) spawns the compositor with `--backend winit` headless, connects a fake `wayland-client`, opens a toplevel, and asserts the toplevel becomes a tab in the active group; then closes the client and asserts the tab is reaped.
+A CI integration test (`crates/session/shell/tests/compositor_test.rs`) spawns the compositor with `--backend winit` headless, connects a fake `wayland-client`, opens a toplevel, and asserts the toplevel becomes a tab in the active group; then closes the client and asserts the tab is reaped.
 
 ## Spatial constraints (invariants)
 
@@ -218,7 +218,7 @@ Backend events (`BackendEvent::Pointer / Key / …`) flow into `smithay::input::
 
 When the env var is set, the compositor binds an additional unix socket alongside the wayland one. Newline-delimited JSON commands dispatch on the calloop main thread via `calloop::ping::Ping`, so seat injection stays single-threaded. Inputs go through `smithay::input::Seat::input` — same focus rules as physical input.
 
-`shell/src/compositor/test_control.rs` implements semantic target listing and activation, pointer and keyboard input, state inspection, and snapshots. `tilo-control` exposes the protocol as a CLI, and `shell/tests/control_socket_test.rs` covers the live socket.
+`crates/session/shell/src/compositor/test_control.rs` implements semantic target listing and activation, pointer and keyboard input, state inspection, and snapshots. `tilo-control` exposes the protocol as a CLI, and `crates/session/shell/tests/control_socket_test.rs` covers the live socket.
 
 ### Keyboard shortcuts (host-only)
 
@@ -269,12 +269,12 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 
 - **Sandboxing protocol details and the per-workspace Wayland bridge socket** — `docs/architecture/security.md`.
 - **Peer sync, foreign-surface streaming, remote input replay** — `docs/architecture/collaboration.md`.
-- **xdg-desktop-portal backend** — `docs/architecture/security.md` and `shell/src/portal/`.
+- **xdg-desktop-portal backend** — `docs/architecture/security.md` and `crates/session/shell/src/portal/`.
 - **WorkspaceTree CRDT shape** — `docs/architecture/overview.md` plus `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`.
 - **Future**: vello → DMA-BUF direct interop, libei input emulation in addition to the control socket, multi-monitor workspace pinning.
 
 ## Where to read first
 
-- `shell/src/compositor/{mod.rs, state.rs, native.rs, hosted.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
-- `shell/src/compositor/backend/{mod.rs, winit.rs, drm/}` — backend implementations.
-- `shell/tests/{compositor_test.rs, interaction_test.rs, drm_backend_boot.rs, control_socket_test.rs}` — the integration coverage.
+- `crates/session/shell/src/compositor/{mod.rs, state.rs, native.rs, hosted.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
+- `crates/session/shell/src/compositor/backend/{mod.rs, winit.rs, drm/}` — backend implementations.
+- `crates/session/shell/tests/{compositor_test.rs, interaction_test.rs, drm_backend_boot.rs, control_socket_test.rs}` — the integration coverage.

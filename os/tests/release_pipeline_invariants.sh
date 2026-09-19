@@ -130,7 +130,7 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   || bad 'a component tag can accidentally release another component'
 
 ! sed -n '/^  push:/,/^  workflow_dispatch:/p' "$desktop" | grep -q '^    branches:' \
-  && [ "$(grep -c '      - "shell/\*\*"' "$desktop")" -eq 1 ] \
+  && [ "$(grep -c '      - "crates/session/shell/\*\*"' "$desktop")" -eq 1 ] \
   && grep -Fq "if: github.event_name != 'pull_request'" "$desktop" \
   && grep -Fq '  schedule:' "$desktop" \
   && grep -Fq 'TILO_DESKTOP_ARM64_RELEASES: "1"' "$desktop" \
@@ -175,11 +175,11 @@ if ! grep -q '^  pull_request:' "$os" \
   && grep -Fq '  workflow_dispatch:' "$os" \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
   && grep -Fq 'installed-atspi-apps.sh' "$os" \
-  && grep -Fq 'org.a11y.atspi.Action.GetActions' "$repo/shell/tests/native_atspi_smoke.sh" \
-  && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/shell/tests/native_atspi_smoke.sh" \
-  && grep -Fq 'org.a11y.atspi.Component.GrabFocus' "$repo/shell/tests/native_atspi_smoke.sh" \
-  && grep -Fq 'org.a11y.atspi.EditableText.SetTextContents' "$repo/shell/tests/native_atspi_smoke.sh" \
-  && grep -Fq 'org.a11y.atspi.Text.GetText 0 -1' "$repo/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Action.GetActions' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Component.GrabFocus' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.EditableText.SetTextContents' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Text.GetText 0 -1' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'wait_for_names "New Folder"' "$repo/apps/file-explorer/tests/atspi_smoke.sh" \
   && grep -Fq 'at-spi2-core' "$repo/os/Containerfile" \
   && grep -Fq 'atspi-external-client.py' "$repo/os/Containerfile" \
@@ -198,7 +198,7 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
   && ok 'imager native jobs are reserved for explicit release rehearsals and tags' \
   || bad 'ordinary commits can still allocate or misroute native imager hosts'
 
-grep -Fq 'release/app-collections.toml' "$apps" \
+grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$apps" \
   && grep -Fq '$package_api/tilo-app-collections/$VERSION/' "$apps" \
   && grep -Fq '$package_api/tilo-app-$name/$VERSION/$file' "$apps" \
@@ -210,7 +210,11 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
   && grep -Fq 'tools/app_release.py --architecture-matrix' "$apps" \
-  && grep -Fq 'image: code.sandbox.example/qos/tilo-builder:latest' "$apps" \
+  && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '      builder_image: ${{ steps.builder.outputs.image }}' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        id: builder' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        run: python3 tools/resolve_ci_builder.py' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '    needs: plan' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '      image: ${{ needs.plan.outputs.builder_image }}' >/dev/null \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'TILO_APP_RELEASE_TAG_AUDIENCE' "$apps" \

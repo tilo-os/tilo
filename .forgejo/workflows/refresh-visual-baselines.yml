@@ -75,26 +75,26 @@ jobs:
           git ls-files --others --exclude-standard -z -- \
             crates/sdk/ui-core/tests/fixtures/typography \
             apps/ebook/tests/fixtures/typography \
-            shell/tests/snapshots/e2e \
-            shell/tests/snapshots/wheel_disc \
+            crates/session/shell/tests/snapshots/e2e \
+            crates/session/shell/tests/snapshots/wheel_disc \
             | xargs -0 -r git add -N --
           git diff --name-only --diff-filter=AM -- \
             crates/sdk/ui-core/tests/fixtures/typography \
             apps/ebook/tests/fixtures/typography \
-            shell/tests/snapshots/e2e \
-            shell/tests/snapshots/wheel_disc \
+            crates/session/shell/tests/snapshots/e2e \
+            crates/session/shell/tests/snapshots/wheel_disc \
             > "$review/changed-files.txt"
           git diff --stat -- \
             crates/sdk/ui-core/tests/fixtures/typography \
             apps/ebook/tests/fixtures/typography \
-            shell/tests/snapshots/e2e \
-            shell/tests/snapshots/wheel_disc \
+            crates/session/shell/tests/snapshots/e2e \
+            crates/session/shell/tests/snapshots/wheel_disc \
             > "$review/diff-stat.txt"
           git diff --binary -- \
             crates/sdk/ui-core/tests/fixtures/typography \
             apps/ebook/tests/fixtures/typography \
-            shell/tests/snapshots/e2e \
-            shell/tests/snapshots/wheel_disc \
+            crates/session/shell/tests/snapshots/e2e \
+            crates/session/shell/tests/snapshots/wheel_disc \
             > "$review/candidates.patch"
           while IFS= read -r path; do
             [ -z "$path" ] || cp --parents "$path" "$review/files"

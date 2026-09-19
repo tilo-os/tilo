@@ -28,7 +28,7 @@ class AtspiEndpointContractTests(unittest.TestCase):
                     "ak.set_live_atomic()",
                     "if !access.state.protected",
                 ]),
-                "shell/src/compositor/accessibility.rs": "\n".join([
+                "crates/session/shell/src/compositor/accessibility.rs": "\n".join([
                     "accesskit_unix::Adapter",
                     "self.rx.try_iter()",
                     "wake.ping()",
@@ -37,7 +37,7 @@ class AtspiEndpointContractTests(unittest.TestCase):
             }
             # Keep the unrelated native lifecycle and acceptance contracts valid
             # while each test varies only the shared tree-update expression.
-            files["shell/src/compositor/native.rs"] = "\n".join([
+            files["crates/session/shell/src/compositor/native.rs"] = "\n".join([
                 "drop(native_accessibility);",
                 "drop(display);",
             ])

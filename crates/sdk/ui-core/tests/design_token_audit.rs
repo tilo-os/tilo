@@ -366,7 +366,7 @@ fn app_and_shell_theme_escape_hatches_do_not_grow() {
     let repository = ui_root.parent().expect("ui crate lives in the repository");
     let mut files = Vec::new();
     walk(&repository.join("apps"), &mut files);
-    walk(&repository.join("shell/src"), &mut files);
+    walk(&repository.join("crates/session/shell/src"), &mut files);
     assert!(
         !files.is_empty(),
         "cross-product audit found no files to scan"
