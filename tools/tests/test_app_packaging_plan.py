@@ -112,6 +112,24 @@ class PlanProducerTests(unittest.TestCase):
         for name in ('ci_python.py', 'resolve_ci_builder.py', 'ci_select.py'):
             self.assertFalse((tools / name).exists())
 
+    def test_relocated_imports_ignore_legacy_shadow_and_fail_if_pinned_source_missing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'ci').mkdir()
+            (root / 'apps').mkdir()
+            shutil.copyfile(Path(plan.__file__).parent / 'ci/python.py', root / 'ci/python.py')
+            (root / 'app_channel_manifest.py').write_text('raise AssertionError("legacy shadow executed")\n')
+            (root / 'apps/app_channel_manifest.py').write_text('VALUE = "pinned"\n')
+            (root / 'entry.py').write_text('import app_channel_manifest; print(app_channel_manifest.VALUE)\n')
+            command = [sys.executable, '-I', str(root / 'ci/python.py'), str(root / 'entry.py')]
+            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout.strip(), 'pinned')
+            (root / 'apps/app_channel_manifest.py').unlink()
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('pinned app helper unavailable', result.stderr)
+            self.assertNotIn('legacy shadow executed', result.stderr)
+
     def test_relocated_app_helper_runs_with_isolation(self):
         tools = Path(plan.__file__).parent
         result = subprocess.run([sys.executable, '-I', str(tools / 'ci/python.py'),
