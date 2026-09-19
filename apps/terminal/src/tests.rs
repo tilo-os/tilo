@@ -2354,6 +2354,11 @@ fn context_menu_is_keyboard_navigable_and_semantically_complete() {
         .take_control_invocation()
         .expect("canonical select-all intent");
     assert_eq!(intent.address.action, "select-all");
+    // Grant selection without clipboard publication: this keyboard test must
+    // never write the real desktop clipboard on any platform.
+    widget.refresh_control_action_availability(&std::collections::HashSet::from([intent
+        .address
+        .clone()]));
     let resources = widget.resources(&doc);
     let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
     assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
