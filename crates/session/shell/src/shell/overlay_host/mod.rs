@@ -13278,6 +13278,11 @@ impl ShellOverlayHost {
                     // Mirrors the wheel-disc slot: both create
                     // affordances seed "Untitled".
                     st.add_workspace("Untitled");
+                    // The overview owns the input grab. Release it with the
+                    // navigation action so the newly active workspace is
+                    // immediately interactive, just like wheel creation.
+                    st.overlays.overview = false;
+                    st.bump();
                 }
                 *handled = true;
                 return true;
