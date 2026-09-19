@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Fail if any workspace crate emits a rustc warning.
 #
-#   tools/check-warnings.sh
+#   tools/ci/check-warnings.sh
 #
 # Not `RUSTFLAGS=-D warnings`: cargo passes RUSTFLAGS to dependencies too, so
 # that turns someone else's warning into our build failure — russh already
 # emits one. This reads the JSON diagnostics instead and keeps only those whose
 # source file is inside this repository.
 #
-# Clippy lints are handled separately by tools/clippy-ratchet.sh.
+# Clippy lints are handled separately by tools/ci/clippy-ratchet.sh.
 
 set -uo pipefail
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 
 raw=$(mktemp) || exit 2

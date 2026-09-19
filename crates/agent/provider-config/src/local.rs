@@ -582,6 +582,7 @@ mod tests {
                 required_accelerator_mib: 0,
                 context_window: 8192,
                 vision: false,
+                face_recognition: false,
             }],
         }
     }

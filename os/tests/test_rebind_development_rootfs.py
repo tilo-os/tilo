@@ -32,6 +32,9 @@ class TransformTests(unittest.TestCase):
         self.assertNotIn('--privileged', args)
         self.assertNotIn('--volume', args)
         self.assertNotIn('/bin/sh', args)
+        self.assertEqual(args[args.index('--omit') + 1].split(), sorted(transform.OMITTED_MODULES))
+        self.assertEqual(args[args.index('--omit-drivers') + 1], 'ext4 xfs')
+        self.assertEqual(args[args.index('--compress') + 1], 'zstd')
 
     def test_rejects_mutable_image_kernel_escape_and_invalid_epoch(self):
         for image, kernel, epoch in [('latest', '6.1', 0), (IMAGE, '../escape', 0),
@@ -46,6 +49,12 @@ class TransformTests(unittest.TestCase):
         for name in transform.REQUIRED_MODULES:
             with self.assertRaises(ValueError):
                 transform.module_evidence(log.replace('Including module: ' + name, 'not included: ' + name))
+
+    def test_omitted_module_is_rejected_even_with_required_modules(self):
+        log = '\n'.join('Including module: ' + name for name in transform.REQUIRED_MODULES)
+        for name in transform.OMITTED_MODULES:
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'omitted'):
+                transform.module_evidence(log + '\nIncluding module: ' + name)
 
     def test_mount_cleanup_on_consumer_failure(self):
         with tempfile.TemporaryDirectory() as temporary:

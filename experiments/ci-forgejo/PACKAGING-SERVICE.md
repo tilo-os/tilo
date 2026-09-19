@@ -6,7 +6,7 @@ runner scheduler remains responsible for capacity. No service or permissions are
 activated by this change.
 
 ```sh
-python3 -I tools/ci_python.py tools/app_packaging_service.py \
+python3 -I tools/ci/python.py tools/app_packaging_service.py \
   --state /state/coordinator.sqlite \
   --policy /etc/packaging/coordinator.json \
   --final-policy /etc/packaging/final-policy.json \
@@ -60,11 +60,12 @@ Install these reviewed files outside candidate checkouts in the immutable source
 bundle, preserving `tools/` paths:
 
 ```
-ci_python.py
+ci/python.py
+ci/__init__.py
 app_packaging_service.py
 app_packaging_product.py
 app_packaging_coordinator.py
-resolve_ci_builder.py
+ci/resolve_builder.py
 accept_app_artifacts.py
 assemble_verified_apps.py
 app_channel_manifest.py

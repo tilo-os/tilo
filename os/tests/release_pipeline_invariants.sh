@@ -212,7 +212,7 @@ grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && grep -Fq 'tools/app_release.py --architecture-matrix' "$apps" \
   && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '      builder_image: ${{ steps.builder.outputs.image }}' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        id: builder' >/dev/null \
-  && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        run: python3 -I tools/ci_python.py tools/resolve_ci_builder.py' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '    needs: plan' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '      image: ${{ needs.plan.outputs.builder_image }}' >/dev/null \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
@@ -237,8 +237,8 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'QPKG_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
   && grep -Fq 'cp -a /build/os/app-runtime/tilo-runtime /usr/lib/' "$repo/os/Containerfile" \
   && grep -Fq 'RUNTIME_BUNDLE_IDENTITY_FILE' "$repo/dist/apps/package-apps.sh" \
-  && grep -Fq -- '-C codegen-units=1' "$repo/tools/rustc-thin-app-wrapper.sh" \
-  && ! grep -Fq -- '--icf=all' "$repo/tools/rustc-thin-app-wrapper.sh" \
+  && grep -Fq -- '-C codegen-units=1' "$repo/tools/ci/rustc-thin-app-wrapper.sh" \
+  && ! grep -Fq -- '--icf=all' "$repo/tools/ci/rustc-thin-app-wrapper.sh" \
   && grep -Fq 'shared runtime changed; the full collection must be rebuilt' "$apps" \
   && ok 'OS builds consume OIDC-authenticated pinned app and desktop inputs without rebuilding them' \
   || bad 'OS releases are still coupled to app source builds'
