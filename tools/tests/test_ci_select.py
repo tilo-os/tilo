@@ -112,6 +112,49 @@ class SelectorTests(unittest.TestCase):
                     if extra == "leaf/src/lib.rs":
                         self.assertIn("leaf", plan["selected"])
 
+    def install_builder_recipe(self) -> None:
+        recipe = self.root / "os/Containerfile.builder"
+        recipe.parent.mkdir(parents=True, exist_ok=True)
+        recipe.write_text("FROM scratch\n")
+
+    def test_builder_recipe_only_omits_compile_in_unchanged_image(self) -> None:
+        self.install_builder_recipe()
+        self.install_quality_helpers()
+        for extras in ([], ["docs/ci-performance.md"], ["tools/ci/affected_packages.py"]):
+            with self.subTest(extras=extras):
+                plan = ci_select.make_plan(
+                    self.metadata, self.root, ["os/Containerfile.builder", *extras], 2)
+                self.assertFalse(plan["rust_required"])
+                self.assertEqual(plan["selected"], [])
+                self.assertEqual(plan["tested"], [])
+                self.assertEqual(plan["matrix"], {"include": []})
+                self.assertIn("candidate image qualification is separate", plan["reason"])
+
+    def test_builder_recipe_mixed_inputs_and_deletion_retain_full_checks(self) -> None:
+        self.install_builder_recipe()
+        for extra in ("leaf/src/lib.rs", "Cargo.lock", ".cargo/config.toml",
+                      "rust-toolchain.toml", ".forgejo/workflows/check.yml"):
+            with self.subTest(extra=extra):
+                plan = ci_select.make_plan(
+                    self.metadata, self.root, ["os/Containerfile.builder", extra], 2)
+                self.assertTrue(plan["rust_required"])
+                self.assertTrue(plan["full"])
+                self.assertEqual(plan["selected_count"], plan["workspace_count"])
+        (self.root / "os/Containerfile.builder").unlink()
+        deleted = ci_select.make_plan(self.metadata, self.root, ["os/Containerfile.builder"], 2)
+        self.assertTrue(deleted["full"])
+        self.assertTrue(deleted["rust_required"])
+
+    def test_builder_recipe_explicit_acceptance_checks_both_architectures(self) -> None:
+        self.install_builder_recipe()
+        plan = ci_select.make_plan(
+            self.metadata, self.root, ["os/Containerfile.builder"], 2, force_full=True)
+        self.assertTrue(plan["full"])
+        self.assertEqual(plan["selected_count"], plan["workspace_count"])
+        self.assertEqual(plan["tested"], plan["selected"])
+        self.assertEqual({row["arch"] for row in plan["matrix"]["include"]},
+                         set(ci_select.NATIVE_RUNNERS))
+
     def test_build_input_forces_full_workspace(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
         self.assertTrue(plan["full"])

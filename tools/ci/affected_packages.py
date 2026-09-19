@@ -226,10 +226,20 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, 
         if (root / source).is_file() and (root / test).is_file()
         for path in (source, test)
     }
-    quality_only = bool(changes) and all(prose(path) or path in quality_paths for path in changes)
+    # Ordinary checks run inside an already-published builder, so compiling the
+    # workspace cannot exercise edits to its recipe. Keep recipe policy checks
+    # mandatory; build-builder-image.yml builds/qualifies the candidate itself.
+    # A deleted recipe or any mixed Rust/build input retains native coverage.
+    recipe_present = ("os/Containerfile.builder" in changes
+                   and (root / "os/Containerfile.builder").is_file())
+    quality_only = bool(changes) and all(
+        prose(path) or path in quality_paths
+        or (recipe_present and path == "os/Containerfile.builder") for path in changes)
     if quality_only and not force_full:
         selected = set()
-        reason = ("audited developer/CI or design prose only; Rust checks not applicable"
+        reason = ("builder recipe covered by mandatory policy checks; candidate image qualification is separate"
+                  if recipe_present else
+                  "audited developer/CI or design prose only; Rust checks not applicable"
                   if all(prose(path) for path in changes) else
                   "audited CI helpers covered by mandatory repository-policy tests; Rust checks not applicable")
         full = False
