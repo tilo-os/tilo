@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Join the demo's separately-recorded pieces into one file.
 
-`yc-demo.py --record` composes the nine beats from a frame timeline, so it
+`run.py --record` composes the nine beats from a frame timeline, so it
 can only ever emit what it captured itself. Two pieces of the finished
 video are not captured by it:
 
   * the machine booting, recorded from QEMU by `os/dev/record-boot.py`
   * a beat driven by a person rather than a script, recorded by
-    `yc-demo-insert.py`
+    `insert.py`
 
 This joins them. It re-encodes every input to one format rather than
 stream-copying, because inputs that merely *look* alike — same nominal
@@ -17,8 +17,8 @@ plays correctly in the tool that wrote it and stutters everywhere else.
 A missing clip is an error so the output cannot silently omit a segment.
 
 Usage:
-  ./demo-assemble.py --out final.mp4 boot.mp4 tilo-demo.mp4
-  ./demo-assemble.py --out final.mp4 --dry-run boot.mp4 tilo-demo.mp4
+  scripts/demo/assemble.py --out final.mp4 boot.mp4 tilo-demo.mp4
+  scripts/demo/assemble.py --out final.mp4 --dry-run boot.mp4 tilo-demo.mp4
 """
 from __future__ import annotations
 

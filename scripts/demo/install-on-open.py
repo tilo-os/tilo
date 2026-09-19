@@ -27,14 +27,14 @@ verified run as a browser-ready H.264 MP4. The recorder samples the live
 headless compositor; it does not replay a `shots` fixture or assemble a
 facsimile out of unrelated screenshots.
 
-    scripts/install-on-open-demo.py --out target/install-on-open \\
+    scripts/demo/install-on-open.py --out target/install-on-open \\
         --record target/install-on-open/notes-open.mp4
 
 On the day, run it in the mode that sets the scene and gets out of the
 way — registry up, Notes absent, a real window to point a camera at —
 and type it yourself:
 
-    scripts/install-on-open-demo.py --backend winit --stage-only
+    scripts/demo/install-on-open.py --backend winit --stage-only
 
 Everything it needs is built by:
 
@@ -52,7 +52,7 @@ headless backend; release builds omit the control socket, not those paint
 passes.
 
 Staged: the registry is a loopback server on this machine rather than a
-hosted one, and `HOME` is the synthetic tree `scripts/demo-home.py`
+hosted one, and `HOME` is the synthetic tree `scripts/demo/home.py`
 builds so the palette shows a demo corpus instead of the operator's own
 files. Neither changes a code path — they change what the code path is
 pointed at.
@@ -79,7 +79,7 @@ import importlib.util
 
 
 def _load_demo_home():
-    """`scripts/demo-home.py`, by path.
+    """`scripts/demo/home.py`, by path.
 
     The filename has a hyphen in it, so it is not importable as a
     module name however the sys.path is arranged.
@@ -87,7 +87,7 @@ def _load_demo_home():
     # Loading it by path otherwise drops a `scripts/__pycache__/` in the
     # working tree on every run.
     sys.dont_write_bytecode = True
-    path = pathlib.Path(__file__).resolve().parent / "demo-home.py"
+    path = pathlib.Path(__file__).resolve().parent / "home.py"
     spec = importlib.util.spec_from_file_location("demo_home", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -643,7 +643,7 @@ def app_log_lines(logpath: pathlib.Path, package_id: str) -> list[str]:
 # ---------------------------------------------------------------------
 
 def main() -> int:
-    here = pathlib.Path(__file__).resolve().parent.parent
+    here = pathlib.Path(__file__).resolve().parents[2]
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--worktree", type=pathlib.Path, default=here,

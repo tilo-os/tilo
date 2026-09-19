@@ -73,6 +73,9 @@ class CheckAggregateTests(unittest.TestCase):
         for overrides in [
             {"select": "failure"}, {"select": "skipped"},
             {"security": "failure"}, {"security": "cancelled"},
+            # Builder failure skips its security consumer even when the
+            # independent selector succeeds; that must never pass aggregation.
+            {"security": "skipped", "affected": "skipped"},
             {"affected": "failure"}, {"affected": "skipped"},
             {"required": ""}, {"count": "0"}, {"count": "unknown"},
             {"affected": "skipped", "required": "false", "count": "4"},

@@ -80,7 +80,8 @@ jobs:
         run: bash os/tests/named_public_trust_context.sh docker
 
   select:
-    needs: builder
+    # Selection uses its pinned tools image and needs no builder result.
+    # Leave admission to the scheduler instead of serializing independent jobs.
     runs-on: runner-quality
     timeout-minutes: 15
     container:

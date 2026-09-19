@@ -25,9 +25,9 @@ The storyboard, in order:
 Each claim is read back from a session that did **not** make the change.
 When that is not possible, the transcript prints a GAP.
 
-    scripts/yc-demo.py
-    scripts/yc-demo.py --keep
-    scripts/yc-demo.py --record            # …and write a 1920x1080 video
+    scripts/demo/run.py
+    scripts/demo/run.py --keep
+    scripts/demo/run.py --record            # …and write a 1920x1080 video
 
 Runs against target/demo/shell:
 
@@ -64,14 +64,14 @@ import zlib
 # path, so it is imported by location — after `sys`, which the line
 # doing the importing needs.
 sys.path.insert(
-    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "headless-examples"))
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "headless-examples"))
 from reaper import die_with_parent, track   # noqa: E402
 
 # Set from `--keep`. Off means the kernel reaps a compositor with this
 # script, however this script dies.
 KEEP_SESSIONS = False
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _shadowed_definitions() -> list[str]:
@@ -454,7 +454,7 @@ class Session:
             # somebody debugging this wants their own filter.
             RUST_LOG=env.get(
                 "RUST_LOG",
-                "info,shell::selection=debug,file_explorer::drag=debug"),
+                "info,shell::selection=debug,file_explorer::drag=debug,tilo.state=debug"),
             # A home of this session's own, staged with the demo's files.
             HOME=self.home,
             # The two stores an app launch cannot do without. The install
@@ -467,15 +467,6 @@ class Session:
             # not quietly an install in another.
             TILO_STORE_CONFIG_DIR=os.path.join(self.dir, "store-config"),
             TILO_STORE_CACHE_DIR=os.path.join(self.dir, "store-cache"),
-            # Makes a `ui` app name the record it checked out, on the
-            # session log. Beat 7 depends on two apps announcing the
-            # *same* address, and the only address two sessions can share
-            # here is the untitled one: a record identified by a path
-            # would be a different id on each side, because each session
-            # has a home of its own. If that beat ever reports that
-            # nobody answered, this line is what says whether the two
-            # apps were even listening on the same channel.
-            RUST_LOG="tilo.state=debug",
         )
         # The packaging chain, when it is on disk. Passed by path rather
         # than found on PATH so the run measures the binaries built for it.

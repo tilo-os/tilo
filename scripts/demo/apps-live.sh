@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Assemble target/tilo-apps-live — the app payload the YC demo serves.
 #
-#   scripts/demo-apps-live.sh            # optimised (profile: demo)
-#   TILO_DEMO_PROFILE=debug scripts/demo-apps-live.sh
+#   scripts/demo/apps-live.sh            # optimised (profile: demo)
+#   TILO_DEMO_PROFILE=debug scripts/demo/apps-live.sh
 #
-# `scripts/yc-demo.py` uses this tree for both the preinstalled app and the
+# `scripts/demo/run.py` uses this tree for both the preinstalled app and the
 # `.qpkg` fetched from `serve-test-registry`.
 #
 # The size of one binary determines the fetch cost of "search, Enter,
@@ -13,7 +13,7 @@
 # 16-21 s measured for that step.
 #
 # `demo` rather than `release` because that is what the compositor is
-# built as and what `yc-demo.py` resolves first; for every package
+# built as and what `run.py` resolves first; for every package
 # built here it is the release configuration (opt-level 3, fat LTO,
 # one codegen unit, `strip = "symbols"`). `[profile.demo]` inherits
 # `release` and overrides exactly one thing — `debug-assertions` for
@@ -23,7 +23,7 @@
 # a clean checkout has none of it.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROFILE="${TILO_DEMO_PROFILE:-demo}"
 BIN="$REPO/target/$PROFILE"
 OUT="${TILO_APPS_LIVE_DIR:-$REPO/target/tilo-apps-live}"

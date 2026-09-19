@@ -174,7 +174,7 @@ jobs:
           set -euo pipefail
           profile_target="${RUNNER_TEMP:?}/tilo-imager-profile-${{ matrix.arch }}"
           cargo build --release --locked \
-            --manifest-path apps/imager/profile-tool/Cargo.toml \
+            --manifest-path tools/imager-profile/Cargo.toml \
             --target-dir "$profile_target"
           encoder="$profile_target/release/tilo-imager-profile"
           test -f "$encoder" && test ! -L "$encoder" && test -x "$encoder"

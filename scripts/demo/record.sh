@@ -113,7 +113,7 @@ No screen recorder found. Install one of:
   sudo dnf install ffmpeg                # kmsgrab needs root; x11grab needs an X11 session
 
 Or use the composed source, which needs no screen recorder at all:
-  scripts/demo-record.sh --source composed
+  scripts/demo/record.sh --source composed
 EOF
     exit 1
 fi

@@ -3,15 +3,15 @@
     dead_code,
     reason = "the standalone profile tool reuses complete production modules but only calls their CLI-facing subset"
 )]
-#[path = "../../src/model.rs"]
+#[path = "../../../apps/imager/src/model.rs"]
 mod model;
 #[allow(
     dead_code,
     reason = "the standalone profile tool reuses complete production modules but only calls their CLI-facing subset"
 )]
-#[path = "../../src/profile.rs"]
+#[path = "../../../apps/imager/src/profile.rs"]
 mod profile;
-#[path = "../../src/profile_cli.rs"]
+#[path = "../../../apps/imager/src/profile_cli.rs"]
 mod profile_cli;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
