@@ -61,14 +61,18 @@ impl ReaderPalette {
             ReadTheme::Dark => {
                 // Derive from OS theme tokens so the dark page tracks the
                 // active OS palette (Dracula, Nord, etc.).
+                // The page edge and rules are derived against the page they
+                // are drawn on (HIG §9.5): the declared `border_standard` is
+                // three shades from `raised` on the dark preset and vanished.
                 let c = &theme.tokens.colors;
+                let rule = ui::surface::edge_on(c.surfaces.raised);
                 ReaderPalette {
                     page: c.surfaces.raised,
-                    page_edge: c.border_standard,
+                    page_edge: rule,
                     ink: c.text_primary,
                     ink_dim: c.text_dim,
                     accent: c.accent[6],
-                    rule: c.border_standard,
+                    rule,
                     code_bg: c.neutral[0],
                     dark: true,
                 }

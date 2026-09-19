@@ -72,7 +72,14 @@ impl VideoEditorApp {
             // every light theme, which is how "No clip at playhead" came to be
             // near-invisible on a white desktop.
             fill_rect(scene, tf, c.surfaces.base, canvas);
-            stroke_rrect(scene, tf, c.border_standard, canvas, 2.0, 1.0);
+            stroke_rrect(
+                scene,
+                tf,
+                ui::surface::edge_on(c.surfaces.base),
+                canvas.inset(-0.5),
+                1.5,
+                1.0,
+            );
             // Nothing to composite, or nothing to composite *with*. Both are
             // said in words rather than papered over with an invented picture,
             // and both go through the shared empty state so the preview reads
@@ -178,11 +185,18 @@ impl VideoEditorApp {
                 );
             }
         }
-        // Safe-area guide.
+        // Safe-area guide: a faint white over footage, as every monitor draws
+        // it; over the empty canvas — the theme's own surface — a derived
+        // hairline, because white on a paper-white canvas is no guide at all.
+        let guide = if showed_real {
+            with_alpha(Color::WHITE, 0.12)
+        } else {
+            ui::surface::edge_on(c.surfaces.base)
+        };
         stroke_rrect(
             scene,
             tf,
-            with_alpha(Color::WHITE, 0.12),
+            guide,
             canvas.inset(-canvas.width() * 0.05),
             0.0,
             1.0,
@@ -208,11 +222,11 @@ impl VideoEditorApp {
         stroke_line(
             scene,
             tf,
-            c.border_standard,
+            pane_hairline(theme),
             r.transport.x0,
-            r.transport.y0,
+            r.transport.y0 + 0.5,
             r.transport.x1,
-            r.transport.y0,
+            r.transport.y0 + 0.5,
             1.0,
         );
         // Everything below is clipped to the transport, so no control drawn
@@ -228,22 +242,19 @@ impl VideoEditorApp {
         for (i, (action, rect)) in self.transport_buttons(r).into_iter().enumerate() {
             let is_play = action == TransportAction::PlayPause;
             let hovered = rect.contains(self.last_mouse);
-            let bg = if is_play {
-                c.accent[5]
-            } else if hovered {
-                c.lift(0.72)
-            } else {
-                c.neutral[3]
-            };
-            scene.fill(
-                Fill::NonZero,
-                tf,
-                bg,
-                None,
-                &Circle::new(rect.center(), rect.width() / 2.0),
-            );
+            // The shared button face at a radius of half its width, so each
+            // control is the fleet's button as a disc — Primary for play, the
+            // neutral rest face with its edge for the rest — instead of a bare
+            // ramp fill that had no edge and no press state.
+            let mut face = ui::widget::ButtonFace::new(rect, "")
+                .radius(rect.width() / 2.0)
+                .hovered(hovered);
+            if is_play {
+                face = face.primary();
+            }
+            ui::widget::Button::paint(scene, tf, tr, theme, &face);
             let col = if is_play {
-                on_fill(theme, bg).1
+                on_fill(theme, theme.accent_primary).1
             } else {
                 c.text_primary
             };
@@ -296,12 +307,21 @@ impl VideoEditorApp {
         // 16px band above the scrubber the old "PLAYING" used, which on a 58px
         // strip sits inside the 18px timecode's own line box.
         let motion = self.motion_words();
-        let (bw, _) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
-        let (tw, _) = tr.measure(&total, 13.0, None);
-        let (mw, _) = tr.measure(&meta, 11.5, None);
-        let motion_w = motion
-            .as_deref()
-            .map_or(0.0, |s| f64::from(tr.measure(s, 10.0, None).0));
+        let (bw, bh) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
+        let (tw, th) = tr.measure(&total, 13.0, None);
+        let (mw, mh) = tr.measure(&meta, 11.5, None);
+        let (motion_w, motion_h) = motion.as_deref().map_or((0.0, 0.0), |s| {
+            let (w, h) = tr.measure(s, 10.0, None);
+            (f64::from(w), f64::from(h))
+        });
+        // Every part's top from one rule — see `readout_tops` — rather than
+        // four hand-tuned offsets that were each right for one size at one
+        // text scale.
+        let [big_y, total_y, motion_y, meta_y] = readout_tops(
+            r.transport,
+            r.transport.y0 + TRANSPORT_CONTROL_CY * chrome_scale,
+            [f64::from(bh), f64::from(th), motion_h, f64::from(mh)],
+        );
         let fit = readout_fit(
             r.transport,
             self.transport_content_x(r),
@@ -319,21 +339,12 @@ impl VideoEditorApp {
                 18.0,
                 c.text_primary,
                 x,
-                r.transport.y0 + 8.0 * chrome_scale,
+                big_y,
                 TextWeight::Bold,
             );
         }
         if let Some(x) = fit.total_x {
-            text(
-                scene,
-                tr,
-                tf,
-                &total,
-                13.0,
-                c.text_dim,
-                x,
-                r.transport.y0 + 13.0 * chrome_scale,
-            );
+            text(scene, tr, tf, &total, 13.0, c.text_dim, x, total_y);
         }
         // Playing is reported in the success tint it always was; a shuttle
         // takes the accent, so the two states are not one word apart. This used
@@ -346,28 +357,10 @@ impl VideoEditorApp {
             } else {
                 c.accent[5]
             };
-            text(
-                scene,
-                tr,
-                tf,
-                words,
-                10.0,
-                tint,
-                x,
-                r.transport.y0 + 13.0 * chrome_scale,
-            );
+            text(scene, tr, tf, words, 10.0, tint, x, motion_y);
         }
         if let Some(x) = fit.meta_x {
-            text(
-                scene,
-                tr,
-                tf,
-                &meta,
-                11.5,
-                c.text_dim,
-                x,
-                r.transport.y0 + 14.0 * chrome_scale,
-            );
+            text(scene, tr, tf, &meta, 11.5, c.text_dim, x, meta_y);
         }
         // Scrubber.
         let scrub = self.scrubber_rect(r);
@@ -375,18 +368,19 @@ impl VideoEditorApp {
             scene.pop_layer();
             return;
         }
-        fill_rrect(scene, tf, c.neutral[3], scrub, 4.0);
+        // The shared slider face, as the inspector's rows use: the fleet's
+        // track, fill, knob and hover rather than a bare ramp bar under a
+        // local knob.
         let frac = (self.playhead / self.project.duration()).clamp(0.0, 1.0);
-        let filled = Rect::new(
-            scrub.x0,
-            scrub.y0,
-            scrub.x0 + scrub.width() * frac,
-            scrub.y1,
+        draw_track(
+            scene,
+            tf,
+            theme,
+            scrub,
+            frac,
+            hit_slider(scrub, self.last_mouse),
+            self.drag == Some(Drag::Scrubber),
         );
-        fill_rrect(scene, tf, c.accent[5], filled, 4.0);
-        let knob = Circle::new(Point::new(filled.x1, scrub.center().y), 6.0 * chrome_scale);
-        scene.fill(Fill::NonZero, tf, c.surfaces.raised, None, &knob);
-        scene.stroke(&Stroke::new(1.5), tf, c.border_focus, None, &knob);
         scene.pop_layer();
     }
 
