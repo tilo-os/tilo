@@ -224,3 +224,59 @@ fn cli_unpack_round_trips() {
     let body = std::fs::read(dest.join("bin/hello")).unwrap();
     assert_eq!(body, b"hi\n");
 }
+
+#[test]
+fn cli_entry_emits_a_server_acceptable_signed_change() {
+    let workdir = tempfile::tempdir().unwrap();
+    let identity = workdir.path().join("publisher.json");
+    let keygen = Command::new(bin_path())
+        .args(["keygen", "--out", identity.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(keygen.status.success(), "keygen: {keygen:?}");
+
+    let payload_dir = workdir.path().join("payload");
+    std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
+    std::fs::write(payload_dir.join("bin/hello"), b"hi\n").unwrap();
+    let manifest_path = workdir.path().join("manifest.toml");
+    std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
+    let qpkg = workdir.path().join("example.qpkg");
+    let packed = Command::new(bin_path())
+        .args([
+            "pack",
+            "--manifest",
+            manifest_path.to_str().unwrap(),
+            "--payload",
+            payload_dir.to_str().unwrap(),
+            "--identity",
+            identity.to_str().unwrap(),
+            "-o",
+            qpkg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(packed.status.success(), "pack: {packed:?}");
+
+    let emitted = Command::new(bin_path())
+        .args([
+            "entry",
+            "--url",
+            "https://packages.example/dev.qos.example.qpkg",
+            "--identity",
+            identity.to_str().unwrap(),
+            "--action",
+            "add",
+            qpkg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(emitted.status.success(), "entry: {emitted:?}");
+    let request: registry_types::EntryChangeRequest =
+        serde_json::from_slice(&emitted.stdout).unwrap();
+    let key = hex::decode(&request.entry.publisher_pubkey_hex).unwrap();
+    let mut publisher = [0_u8; 32];
+    publisher.copy_from_slice(&key);
+    registry_types::verify_change_request(&request, &[publisher]).unwrap();
+    assert_eq!(request.action, registry_types::EntryAction::Add);
+    assert_eq!(request.entry.versions.len(), 1);
+}

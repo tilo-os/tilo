@@ -81,7 +81,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     );
     let snapshot = storage.load_snapshot().unwrap().unwrap();
     registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
-    assert_eq!(snapshot.entries, vec![entry]);
+    assert_eq!(snapshot.entries, vec![entry.clone()]);
     assert_eq!(snapshot.publishers.len(), 1);
     assert_eq!(
         snapshot.publishers[0].pubkey_hex,
@@ -96,6 +96,53 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
         "the serving data directory must contain no owner private-key file"
     );
 
+    let mut replacement = entry;
+    replacement.name = "Changed".into();
+    replacement.updated_at_unix = 2;
+    sign_entry(&mut replacement, &publisher);
+    storage.save_entry(&replacement).unwrap();
+    let second = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+        .arg("--data-dir")
+        .arg(temp.path())
+        .arg("sign-snapshot")
+        .arg("--owner-key-file")
+        .arg(&key_path)
+        .arg("--valid-for-seconds")
+        .arg("3600")
+        .output()
+        .unwrap();
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(storage.load_snapshot().unwrap().unwrap().sequence, 2);
+
+    let rollback = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+        .arg("--data-dir")
+        .arg(temp.path())
+        .arg("rollback-snapshot")
+        .arg("--to-sequence")
+        .arg("1")
+        .arg("--owner-key-file")
+        .arg(&key_path)
+        .arg("--valid-for-seconds")
+        .arg("3600")
+        .output()
+        .unwrap();
+    assert!(
+        rollback.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rollback.stderr)
+    );
+    let rolled_back = storage.load_snapshot().unwrap().unwrap();
+    assert_eq!(rolled_back.sequence, 3);
+    assert_eq!(rolled_back.entries[0].name, "Test");
+    assert_eq!(
+        storage.load_snapshot_sequence(2).unwrap().unwrap().entries[0].name,
+        "Changed"
+    );
+
     std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
     let refused = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
         .arg("--data-dir")
@@ -106,5 +153,5 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
         .output()
         .unwrap();
     assert!(!refused.status.success());
-    assert_eq!(storage.load_snapshot().unwrap().unwrap().sequence, 1);
+    assert_eq!(storage.load_snapshot().unwrap().unwrap().sequence, 3);
 }
