@@ -763,9 +763,17 @@ impl ChromeState {
 
     /// Either a client-requested fullscreen or a group the user
     /// expanded with the tab's Expand chip — both suppress the top bar
-    /// and sidebar wheel.
+    /// and sidebar wheel once the current tree confirms that group exists.
     pub fn is_fullscreen(&self) -> bool {
-        self.fullscreen_group.is_some() || self.maximized_group.is_some()
+        let fullscreen_group = self.fullscreen_group;
+        let maximized_group = self.maximized_group;
+        self.tree().workspaces.iter().any(|workspace| {
+            workspace.strips.iter().any(|strip| {
+                strip.window_groups.iter().any(|group| {
+                    fullscreen_group == Some(group.id) || maximized_group == Some(group.id)
+                })
+            })
+        })
     }
 
     pub fn maximized_group(&self) -> Option<u64> {
