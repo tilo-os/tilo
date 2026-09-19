@@ -38,7 +38,17 @@ published_fingerprint="$(tr -d '[:space:]' <"$fingerprint_file")"
   || { printf 'published Linux fingerprint does not match protected release policy\n' >&2; exit 1; }
 
 keyring="$(mktemp -d /var/tmp/tilo-imager-release-keyring.XXXXXX)"
-trap 'find "$keyring" -depth -delete' EXIT
+cleanup() {
+  local status=$? cleanup_status=0
+  # Stop only this invocation's agents. Their socket removal can still race
+  # find after readdir; tolerate ENOENT for those vanished entries, not other
+  # cleanup errors. Preserve any earlier verification failure as well.
+  gpgconf --homedir "$keyring" --kill all || cleanup_status=$?
+  find "$keyring" -ignore_readdir_race -depth -delete || cleanup_status=$?
+  if [ "$status" -ne 0 ]; then return "$status"; fi
+  return "$cleanup_status"
+}
+trap cleanup EXIT
 chmod 0700 "$keyring"
 GNUPGHOME="$keyring" gpg --batch --import "$key" >/dev/null 2>&1
 if GNUPGHOME="$keyring" gpg --batch --with-colons --list-secret-keys 2>/dev/null \
