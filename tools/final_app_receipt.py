@@ -8,6 +8,9 @@ import app_channel_manifest as channel
 
 def load_policy(path, expected):
     policy = channel.pinned_json(path.read_bytes(), expected)
+    if 'canonical_verifier_bundles' in policy:
+        from canonical_verifier_bundle import native_arch, resolve_policy
+        policy = resolve_policy(policy, native_arch())
     channel.require(set(policy.get('canonical_binaries', {})) ==
                     {'tilo_pkg_sha256', 'tilo_runtime_bundle_sha256'},
                     'independently pinned canonical executable identities required')
@@ -16,7 +19,8 @@ def load_policy(path, expected):
 
 def preflight(pkg, runtime, policy_path, policy_sha):
     policy = load_policy(policy_path, policy_sha)
-    verifier = Path(__file__).resolve().with_name('canonical_app_verifier.py')
+    verifier = (Path(pkg).resolve().parent / 'canonical_app_verifier.py' if 'canonical_bundle' in policy
+                else Path(__file__).resolve().with_name('canonical_app_verifier.py'))
     channel.require(channel.sha(verifier) == policy['verifier_sha256'], 'trusted verifier digest mismatch')
     # Hash first: importing Python is execution, even before constructing a verifier.
     import importlib.util
@@ -67,12 +71,19 @@ def main():
         verify_parser.add_argument('--' + name, type=Path, required=True)
     verify_parser.add_argument('--source-sha', required=True)
     verify_parser.add_argument('--architecture', choices=sorted(channel.ARCHES), required=True)
+    checking = commands.add_parser('preflight')
+    checking.add_argument('--pkg-binary', type=Path, required=True)
+    checking.add_argument('--runtime-binary', type=Path, required=True)
     binding = commands.add_parser('bind-readback')
     for name in ('receipt', 'downloaded', 'output'):
         binding.add_argument('--' + name, type=Path, required=True)
     binding.add_argument('--receipt-sha256', required=True)
     binding.add_argument('--url', required=True)
     args = parser.parse_args()
+    if args.command == 'preflight':
+        preflight(args.pkg_binary, args.runtime_binary, args.trust_policy, args.trust_policy_sha256)
+        print('canonical verifier preflight passed')
+        return
     if args.command == 'verify':
         result = verify(args.collection, args.pkg_binary, args.runtime_binary, args.trust_policy,
                         args.trust_policy_sha256, args.source_sha, args.architecture)
