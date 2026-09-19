@@ -1,0 +1,32 @@
+{
+  "name": "Palette filter band controls sit on one line at the Selector height and meet the pointer floor",
+  "goal": "Open search and narrow it by kind or scope from clearly separated, addressable chips whose targets are at least 32 px tall",
+  "viewport": [1280, 800],
+  "budget": {"clicks": 0, "keys": 1},
+  "steps": [
+    {"op": "input", "action": {"modifiers": ["Super"]}},
+    {"op": "input", "action": {"key": "k"}},
+    {"op": "input", "action": {"modifiers": []}},
+    {"op": "checkpoint", "name": "palette", "checks": [
+      {"kind": "visible", "target": "semantic:palette:filter:all"},
+      {"kind": "visible", "target": "semantic:palette:filter:actions"},
+      {"kind": "visible", "target": "semantic:palette:scope:workspace"},
+      {"kind": "visible", "target": "semantic:palette:scope:everywhere"},
+
+      {"kind": "target_size", "target": "semantic:palette:filter:all", "min": [32, 32]},
+      {"kind": "target_size", "target": "semantic:palette:filter:actions", "min": [32, 32]},
+      {"kind": "target_size", "target": "semantic:palette:scope:workspace", "min": [80, 32]},
+      {"kind": "target_size", "target": "semantic:palette:scope:everywhere", "min": [80, 32]},
+
+      {"kind": "gap", "first": "semantic:palette:filter:all", "second": "semantic:palette:filter:actions", "axis": "x", "min": 8, "max": 8},
+      {"kind": "aligned", "first": "semantic:palette:filter:all", "second": "semantic:palette:filter:actions", "axis": "y", "tolerance": 0.5},
+      {"kind": "aligned", "first": "semantic:palette:scope:workspace", "second": "semantic:palette:scope:everywhere", "axis": "y", "tolerance": 0.5},
+
+      {"kind": "no_overlap", "first": "semantic:palette:filter:all", "second": "semantic:palette:filter:actions"},
+      {"kind": "no_overlap", "first": "semantic:palette:filter:actions", "second": "semantic:palette:scope:workspace"},
+      {"kind": "no_overlap", "first": "semantic:palette:filter:all", "second": "semantic:palette:scope:everywhere"},
+      {"kind": "no_overlap", "first": "semantic:palette:scope:workspace", "second": "semantic:palette:scope:everywhere"},
+      {"kind": "selected", "target": "semantic:palette:filter:all"}
+    ]}
+  ]
+}
