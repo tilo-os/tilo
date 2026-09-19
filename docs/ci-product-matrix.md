@@ -1,4 +1,4 @@
-# Product packaging coverage and next Windows qualification
+﻿# Product packaging coverage and next Windows qualification
 
 Source audit: main `0c02e6721`, 2026-09-19. A defined workflow is not evidence
 that every target has a ready runner, successful native build or releasable
@@ -7,7 +7,7 @@ artifact.
 ## Routine change lifecycle
 
 Routine work starts on a task branch and lands through one updated pull request.
-The exact head needs independent review and all applicable CI before merge.
+The exact head needs independent review and the protected check and lint contexts before merge.
 `check.yml` and `lint.yml` preserve a result for every `main` commit; dependency
 selection keeps the Rust lane focused while nightly CI remains the full-workspace
 backstop.
