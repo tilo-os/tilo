@@ -12,7 +12,7 @@ run() {
   "$@"
 }
 
-run 'Workspace membership' ./scripts/check-workspace-complete.sh
+run 'Workspace membership' python3 tools/policy/check_workspace_members.py --root .
 run 'Repository layout' python3 tools/policy/check_repository_layout.py
 run 'Workflow timeouts' python3 tools/policy/check_workflow_timeouts.py
 run 'Workflow dependency and supply-chain invariants' \

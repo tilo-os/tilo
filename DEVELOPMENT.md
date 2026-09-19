@@ -1062,7 +1062,7 @@ Enable the repo's git hooks once per clone:
 git config core.hooksPath .githooks
 ```
 
-`pre-commit` runs `scripts/check-workspace-complete.sh`, which parses the root
+`pre-commit` runs `tools/policy/check_workspace_members.py`, which parses the root
 manifest and rejects missing, duplicate, excluded, or stale workspace members.
 Nested fixture workspaces and explicit `[workspace].exclude` entries are ignored.
 Compilation and tests run in CI (`.forgejo/workflows/check.yml`).

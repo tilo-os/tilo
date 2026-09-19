@@ -127,7 +127,7 @@ jobs:
           fi
 
       - name: Workspace membership guard
-        run: ./scripts/check-workspace-complete.sh
+        run: python3 tools/policy/check_workspace_members.py --root .
 
       - name: Repository layout guard
         run: python3 tools/policy/check_repository_layout.py
@@ -263,7 +263,7 @@ jobs:
         if: contains(matrix.test_packages, '-p app-catalogue')
         run: >-
           bash tools/ci/measure.sh "build tilo-install test fixture" --
-          bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
+          bash tools/ci/run-command.sh "cargo build (tilo-install test fixture)" --
           cargo build --locked -p install
 
       - name: Test shard ${{ matrix.shard }}
@@ -272,7 +272,7 @@ jobs:
           XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
           bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
-          bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
+          bash tools/ci/run-command.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
           bash tools/with-headless-audio.sh cargo nextest run --locked --profile ci ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)"
 
@@ -281,7 +281,7 @@ jobs:
           XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
           bash tools/ci/measure.sh "check shard ${{ matrix.shard }}" --
-          bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
+          bash tools/ci/run-command.sh "cargo check (affected shard ${{ matrix.shard }})" --
           cargo check --locked --all-targets ${{ matrix.packages }}
 
       # Lint the exact same reverse-dependency closure at the selected base and
@@ -305,7 +305,7 @@ jobs:
           XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
           bash tools/ci/measure.sh "clippy shard ${{ matrix.shard }}" --
-          bash scripts/ci-run.sh "Clippy diagnostic diff (affected shard ${{ matrix.shard }})" --
+          bash tools/ci/run-command.sh "Clippy diagnostic diff (affected shard ${{ matrix.shard }})" --
           tools/ci/clippy-diff.sh '${{ needs.select.outputs.base }}' ${{ matrix.packages }}
 
       - name: Report remote compiler-cache effectiveness

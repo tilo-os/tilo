@@ -153,7 +153,7 @@ jobs:
 
       # Fail before the expensive image build if a crate is outside the workspace.
       - name: Workspace membership guard
-        run: ./scripts/check-workspace-complete.sh
+        run: python3 tools/policy/check_workspace_members.py --root .
 
       - name: Materialize the pinned app collection
         env:

@@ -93,7 +93,7 @@ jobs:
       - name: Build the compositor under test
         run: >-
           bash tools/ci/measure.sh "legacy app compositor build" --
-          bash scripts/ci-run.sh "cargo build (legacy app E2E)" --
+          bash tools/ci/run-command.sh "cargo build (legacy app E2E)" --
           cargo build --locked -p shell --bin shell
 
       - name: Exercise caret retention in real Linux applications

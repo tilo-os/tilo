@@ -86,7 +86,7 @@ jobs:
           printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
 
       - name: Workspace membership guard
-        run: ./scripts/check-workspace-complete.sh
+        run: python3 tools/policy/check_workspace_members.py --root .
 
       - name: Check complete workspace formatting
         run: cargo fmt --all --check
@@ -96,7 +96,7 @@ jobs:
       - name: Run every workspace test
         run: >-
           bash tools/ci/measure.sh "nightly workspace nextest" --
-          bash scripts/ci-run.sh "cargo nextest --workspace" --
+          bash tools/ci/run-command.sh "cargo nextest --workspace" --
           bash tools/with-headless-audio.sh cargo nextest run --workspace --locked --profile ci
           -E "not ($GOLDEN_FILTER)"
 
@@ -106,7 +106,7 @@ jobs:
       - name: Verify visual goldens on an idle renderer
         run: >-
           bash tools/ci/measure.sh "nightly isolated visual goldens" --
-          bash scripts/ci-run.sh "cargo nextest visual goldens" --
+          bash tools/ci/run-command.sh "cargo nextest visual goldens" --
           cargo nextest run --workspace --locked --profile ci
           -E "$GOLDEN_FILTER"
 
@@ -123,7 +123,7 @@ jobs:
       - name: Check every workspace target
         run: >-
           bash tools/ci/measure.sh "nightly all-target check" --
-          bash scripts/ci-run.sh "cargo check --workspace --all-targets" --
+          bash tools/ci/run-command.sh "cargo check --workspace --all-targets" --
           cargo check --workspace --locked --all-targets
 
       # Source-level protocol checks prevent an app from opting out, but only
@@ -134,7 +134,7 @@ jobs:
       - name: Certify every production app action surface
         run: >-
           bash tools/ci/measure.sh "nightly native app certification" --
-          bash scripts/ci-run.sh "tilo-dev certify --workspace" --
+          bash tools/ci/run-command.sh "tilo-dev certify --workspace" --
           cargo run --locked -p tilo-dev -- certify --workspace
 
       # `cargo check --all-targets` type-checks examples but neither links nor
@@ -144,7 +144,7 @@ jobs:
       - name: Test every workspace example
         run: >-
           bash tools/ci/measure.sh "nightly workspace examples" --
-          bash scripts/ci-run.sh "cargo test --workspace --examples" --
+          bash tools/ci/run-command.sh "cargo test --workspace --examples" --
           cargo test --workspace --examples --locked
 
       - name: Report remote compiler-cache effectiveness

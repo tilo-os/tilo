@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run one build/test command and surface failures near the top of the run.
 #
-# Usage: scripts/ci-run.sh <label> -- <command> [args...]
+# Usage: tools/ci/run-command.sh <label> -- <command> [args...]
 #
 # Cargo failures can be buried under thousands of build-progress lines. On
 # failure, this script writes a summary to `$GITHUB_STEP_SUMMARY`, emits
@@ -12,10 +12,10 @@
 # watchdog.
 set -uo pipefail
 
-label="${1:?usage: ci-run.sh <label> -- <command...>}"
+label="${1:?usage: run-command.sh <label> -- <command...>}"
 shift
 [ "${1:-}" = "--" ] && shift
-[ "$#" -gt 0 ] || { echo "ci-run.sh: no command given" >&2; exit 2; }
+[ "$#" -gt 0 ] || { echo "run-command.sh: no command given" >&2; exit 2; }
 
 log="$(mktemp -t "ci-${label//[^A-Za-z0-9_-]/_}-XXXXXX.log")"
 heartbeat_pid=""
@@ -36,12 +36,27 @@ trap cleanup EXIT
 
 echo "==> ${label}: $*"
 start=$(date +%s)
-progress_script="$(dirname "${BASH_SOURCE[0]}")/../tools/ci/process_progress.py"
+progress_script="$(dirname "${BASH_SOURCE[0]}")/process_progress.py"
 # Forgejo's runner terminates a step after 15 minutes without output. Cargo can
 # legitimately be silent that long while linking a large workspace target, so
-# emit one compact progress line per minute until the command exits.
-(
-    while sleep 60; do
+# emit one compact progress line per minute until the command exits. Keep the
+# timer PID explicit: killing only a `while sleep` subshell leaves its current
+# sleep holding the step's output pipe open until the minute expires.
+heartbeat() {
+    local sleep_pid=""
+    stop_timer() {
+        if [ -n "$sleep_pid" ]; then
+            kill "$sleep_pid" 2>/dev/null || true
+            wait "$sleep_pid" 2>/dev/null || true
+        fi
+        exit 0
+    }
+    trap stop_timer TERM INT
+    while true; do
+        sleep 60 &
+        sleep_pid=$!
+        wait "$sleep_pid" || exit 0
+        sleep_pid=""
         echo "==> ${label}: still running ($(( $(date +%s) - start ))s)"
         # A wrapper heartbeat alone cannot distinguish work from a stuck child.
         # Numeric descendant CPU/RSS/I/O counters let successive receipts show
@@ -49,7 +64,8 @@ progress_script="$(dirname "${BASH_SOURCE[0]}")/../tools/ci/process_progress.py"
         timeout 5s python3 "$progress_script" --root-pid "$$" 2>/dev/null ||
             echo 'CI_PROCESS_PROGRESS=unavailable'
     done
-) &
+}
+heartbeat &
 heartbeat_pid=$!
 # Stream and capture. PIPESTATUS[0] is the command's status, not tee's.
 "$@" 2>&1 | tee "$log"

@@ -6,7 +6,7 @@ fail=0
 note() { printf '  %s\n' "$*" >&2; }
 
 # Every crate on disk must be a workspace member.
-"$root/scripts/check-workspace-complete.sh"
+python3 "$root/tools/policy/check_workspace_members.py" --root "$root"
 python3 "$root/tools/policy/check_app_text_contract.py"
 python3 "$root/tools/policy/check_shell_copy_contract.py"
 

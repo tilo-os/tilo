@@ -162,7 +162,7 @@ class BuilderCandidates(unittest.TestCase):
                                if line.strip().startswith('image: '))
         self.assertIn(qualified_image, select_job)
         self.assertIn('runs-on: runner-quality', select_job)
-        self.assertIn('run: ./scripts/check-workspace-complete.sh', select_job)
+        self.assertIn('run: python3 tools/policy/check_workspace_members.py --root .', select_job)
         self.assertIn('run: python3 tools/policy/check_repository_layout.py', select_job)
         self.assertIn('python3 tools/ci/affected_packages.py --base "$base" --shards 2', select_job)
         self.assertNotRegex(select_job, r'(?m)^    needs:')
