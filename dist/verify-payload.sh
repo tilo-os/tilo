@@ -63,6 +63,30 @@ for elf in /usr/bin/tilo-shell /usr/bin/tilo-launcher "$libexec_dir/tilo-unlock-
         "") grep -Eq 'ELF 64-bit.*(x86-64|ARM aarch64)' <<<"$elf_description" ;;
         *) echo "unsupported TILO_EXPECT_ARCH: $TILO_EXPECT_ARCH" >&2; exit 2 ;;
     esac
+    # Static executables have no dynamic-loader dependencies, and ldd commonly
+    # exits nonzero for them. Prove that case from successfully inspected ELF
+    # headers instead of treating every failed ldd invocation as static.
+    if ! elf_headers=$(LC_ALL=C readelf --wide --file-header --program-headers --dynamic \
+        "$(path "$elf")" 2>&1); then
+        printf '%s\n' "$elf_headers" >&2
+        echo "ELF dependency inspection failed for $elf" >&2
+        exit 1
+    fi
+    if grep -Eq '^readelf: (Error|Warning):' <<<"$elf_headers" \
+        || ! grep -Eq '^[[:space:]]*Type:[[:space:]]+(EXEC|DYN)[[:space:]]' <<<"$elf_headers" \
+        || ! grep -Eq '^[[:space:]]*LOAD[[:space:]].*[[:space:]]E[[:space:]]' <<<"$elf_headers"; then
+        echo "invalid executable ELF headers for $elf" >&2
+        exit 1
+    fi
+    if ! grep -Eq '^[[:space:]]*INTERP[[:space:]]|\(NEEDED\)' <<<"$elf_headers"; then
+        # ET_DYN also describes shared libraries; only a declared PIE is an
+        # executable in this case. Static ET_EXEC needs no dynamic section.
+        if grep -Eq '^[[:space:]]*Type:[[:space:]]+EXEC[[:space:]]|\(FLAGS_1\).*\bPIE\b' <<<"$elf_headers"; then
+            continue
+        fi
+        echo "ELF is neither a static executable nor static PIE: $elf" >&2
+        exit 1
+    fi
     # Capture the inspector's status independently of the missing-library
     # search. A failed ldd or output pipe must never look like a clean payload.
     if ldd_output=$(LC_ALL=C ldd "$(path "$elf")" 2>&1); then
