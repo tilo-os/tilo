@@ -3141,7 +3141,11 @@ mod tests {
 
     /// Files that ship in the OS image, addressed from this crate.
     fn os_file(rel: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(rel)
+        // This crate lives in crates/system/fs; shipped image inputs remain
+        // at the workspace root rather than alongside the relocated crate.
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join(rel)
     }
 
     /// The `ExecStart=` argv from the shipped unit, so the test proves the shipped image runs, not a copy.
