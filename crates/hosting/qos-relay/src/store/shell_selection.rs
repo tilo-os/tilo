@@ -530,7 +530,12 @@ impl Selection {
                         && self.basis.room.as_ref().map(VerifiedRoom::heads)
                             != self.old.room.as_ref().map(VerifiedRoom::heads);
                     self.input = Some(File::open(self.scratch.join("extras.manifest"))?);
-                    self.extras_sorter = Some(Sorter::new(self.scratch.join("extras-sort"))?);
+                    let sort = if self.fallback {
+                        "extras-sort-fallback"
+                    } else {
+                        "extras-sort"
+                    };
+                    self.extras_sorter = Some(Sorter::new(self.scratch.join(sort))?);
                     self.phase = Phase::SortExtrasInput;
                     return Ok(Step::More);
                 };

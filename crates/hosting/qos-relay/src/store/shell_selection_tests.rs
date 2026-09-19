@@ -465,6 +465,92 @@ fn synthetic_frame(
     })
     .unwrap()
 }
+
+#[test]
+fn shell_selection_readiness_fallback_rebuilds_sorter_before_prior_basis() {
+    use super::replay::*;
+    use automerge::transaction::Transactable;
+
+    let (key, authority, mut owner, now) = synthetic_owner();
+    let cp1 = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace_id = crate::room_workspace_id(authority.room()).unwrap();
+    let mut store = WorkspaceStore::open(tmp.path(), workspace_id, true).unwrap();
+    for msg in &cp1 {
+        retain_frame(&store, &synthetic_frame(&authority, msg, true));
+    }
+    store.bind_shell_authority(authority.clone()).unwrap();
+    let prior_frames = replay_frames(&store);
+    let selected_before = retained::current(&store.root.join("shell-selected-v1"))
+        .unwrap()
+        .unwrap();
+    drop(store);
+
+    let cp2 = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
+    let NeighbourMsg::AppDocument { envelope, .. } = &cp2[1] else {
+        panic!()
+    };
+    let mut branch =
+        automerge::AutoCommit::load(&owner.document("selector.app", "one").unwrap()).unwrap();
+    branch.put(automerge::ROOT, "first", "T1").unwrap();
+    branch.commit();
+    let t1_heads = branch.get_heads();
+    branch.put(automerge::ROOT, "second", "T2").unwrap();
+    branch.commit();
+    let t2_bytes = branch
+        .get_changes(&t1_heads)
+        .iter()
+        .flat_map(|change| change.raw_bytes().to_vec())
+        .collect();
+    let t2 = synthetic_signed(
+        &key,
+        authority.room(),
+        collab_types::DocumentMutation::Incremental(t2_bytes),
+        envelope.seq + 2,
+        now,
+    );
+    let cp2_frames = cp2
+        .iter()
+        .map(|msg| synthetic_frame(&authority, msg, true))
+        .collect::<Vec<_>>();
+    let t2_frame = synthetic_frame(&authority, &t2, false);
+
+    let mut reopened = WorkspaceStore::open(tmp.path(), workspace_id, true).unwrap();
+    for frame in &cp2_frames {
+        retain_frame(&reopened, frame);
+    }
+    retain_frame(&reopened, &t2_frame);
+    reopened.bind_shell_authority(authority).unwrap();
+    let mut build = reopened
+        .start_replay_capture(ReplayId(rand::random()), [2; 32])
+        .unwrap();
+    let error = loop {
+        match reopened.capture_replay_step(&mut build, WorkLimit::default()) {
+            Err(error) => break error,
+            Ok(Step::More) => (),
+            Ok(Step::Done(_)) => panic!("T2 without T1 became selected"),
+        }
+    };
+    assert!(
+        error.to_string().contains("unresolved shell tail"),
+        "fallback failed before validating the prior basis: {error}"
+    );
+    assert_eq!(
+        retained::current(&reopened.root.join("shell-selected-v1"))
+            .unwrap()
+            .unwrap(),
+        selected_before
+    );
+    let stored = reopened.load_shared().unwrap();
+    for frame in cp2_frames.iter().chain(std::iter::once(&t2_frame)) {
+        assert!(stored.contains(frame), "unresolved original was not retained");
+    }
+    drop(reopened);
+
+    let unbound = WorkspaceStore::open(tmp.path(), workspace_id, true).unwrap();
+    assert!(replay_frames(&unbound).starts_with(&prior_frames));
+}
+
 #[test]
 fn shell_selection_uncovered_tail_blocks_new_floor_until_complete_successor_contains_it() {
     use automerge::transaction::Transactable;
