@@ -65,3 +65,8 @@ pub fn app_root() -> Box<dyn Widget> {
 pub fn app_root_offline() -> Box<dyn Widget> {
     Box::new(CalculatorApp::seeded())
 }
+
+#[cfg(test)]
+mod framework_history_tests;
+
+pub mod framework_history;

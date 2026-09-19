@@ -240,7 +240,10 @@ impl ExportDialog {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "export painting needs the render context, window bounds, sorted contact store and pointer position"
+    )]
     pub(crate) fn draw(
         &self,
         scene: &mut Scene,
@@ -386,10 +389,16 @@ impl ExportDialog {
                 continue;
             };
             if row.contains(pointer) {
+                // Hover is the quiet lift (HIG §9.3), derived against the
+                // Panel ground the dialog's rows sit on.
+                let hover = crate::app::row_tier_on(
+                    ui::chrome::panel_ground(theme),
+                    ui::chrome::SelectionState::new(false, true, false),
+                );
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    colors.surfaces.raised,
+                    hover.fill,
                     None,
                     &RoundedRect::from_rect(*row, f64::from(theme.tokens.radii.md)),
                 );

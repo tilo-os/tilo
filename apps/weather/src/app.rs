@@ -22,9 +22,9 @@
 //! `--shots` and tests build [`WeatherApp::new`]: seeded with bundled
 //! [`crate::sample`] snapshots, `live == false`, so the network worker is
 //! never spawned and the frame is fully populated and offline. The live
-//! binary builds [`WeatherApp::live`]: the same default places (real
-//! coordinates) but with the synthesized snapshots dropped, fetching real
-//! Open-Meteo forecasts on the first frame — it never renders invented data.
+//! binary builds [`WeatherApp::live`]: an empty model that adopts the actual
+//! saved places without rewriting their document. Its live draw/event pump
+//! fetches current Open-Meteo observations — it never renders invented data.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -85,9 +85,11 @@ pub struct WeatherApp {
     service: Option<WeatherService>,
     initial_fetch_done: bool,
     seeded_doc: bool,
+    seed_sample_document: bool,
     last_activity: Instant,
     resource_refresh_invocation: Option<tilo_actions::InvocationId>,
     resource_refresh_failure: Option<String>,
+    resource_refresh_tickets: std::collections::HashSet<u64>,
     actions: ui::ActionHost,
     /// Last document state folded into the render model. `ActionHost` updates
     /// this watermark eagerly; palette/agent actions are adopted on sync.
@@ -95,6 +97,16 @@ pub struct WeatherApp {
 }
 
 impl WeatherApp {
+    #[cfg(test)]
+    pub(crate) fn history_test_root() -> Self {
+        Self::assemble(
+            Rc::new(RefCell::new(Core::new(
+                crate::model::WeatherModel::default(),
+                crate::units::Units::METRIC,
+            ))),
+            false,
+        )
+    }
     fn dispatch_durable_action(&mut self, doc: &mut AutoCommit, action: &WeatherAction) {
         let dispatched = action.clone();
         self.actions.dispatch_with_context(
@@ -109,6 +121,7 @@ impl WeatherApp {
     /// framework action host. The core has already updated its render model;
     /// this is the authoritative history/collaboration write.
     fn flush_durable_actions(&mut self, doc: &mut AutoCommit) -> bool {
+        self.adopt_document_changes(doc);
         let actions = self.core.borrow_mut().take_durable_actions();
         if actions.is_empty() {
             return false;
@@ -154,42 +167,18 @@ impl WeatherApp {
             return;
         }
         let mut persisted = WeatherDoc::read_model(state);
-        let core = self.core.borrow();
-        let viewed_location = core.model.selected_location().map(|location| location.id);
-        for (id, snapshot) in &core.model.snapshots {
-            if persisted
-                .snapshots
-                .get(id)
-                .is_none_or(|remote| remote.fetched_at <= snapshot.fetched_at)
-            {
-                persisted.snapshots.insert(*id, snapshot.clone());
+        if self.core.borrow().model.locations != persisted.locations {
+            let unsent = self.core.borrow().queued_weather_tickets_after(0);
+            let mut invalidated = false;
+            for ticket in unsent {
+                invalidated |= self.resource_refresh_tickets.remove(&ticket);
+            }
+            if invalidated {
+                self.resource_refresh_failure =
+                    Some("Saved places changed before the refresh was dispatched".into());
             }
         }
-        for (id, reading) in &core.model.air_quality {
-            if persisted
-                .air_quality
-                .get(id)
-                .is_none_or(|remote| remote.fetched_at <= reading.fetched_at)
-            {
-                persisted.air_quality.insert(*id, reading.clone());
-            }
-        }
-        // Units belong to this device's Settings/region preference.
-        persisted.units = core.units;
-        // The city currently open in this window is presentation state. A
-        // collaborator reordering or adding places must not navigate another
-        // person's view; fall back to the durable default only if the viewed
-        // location was removed.
-        if let Some(index) = viewed_location.and_then(|id| {
-            persisted
-                .locations
-                .iter()
-                .position(|location| location.id == id)
-        }) {
-            persisted.selected = index;
-        }
-        drop(core);
-        self.core.borrow_mut().model = persisted;
+        self.core.borrow_mut().adopt_saved_places(&mut persisted);
         self.doc_heads = current_heads;
     }
 
@@ -198,12 +187,18 @@ impl WeatherApp {
     fn build_nav(core: Rc<RefCell<Core>>, collapsed: bool) -> NavShell {
         let overview: Box<dyn Widget> = Box::new(OverviewPane::new(core.clone()));
         let detail: Box<dyn Widget> = Box::new(DetailPane::new(core));
-        let width = if collapsed {
-            OVERVIEW_RAIL_WIDTH
+        // Authored 1× geometry. The shell resolves it against the theme it is
+        // built with (F1, round two): the text-sized city list and the
+        // breakpoint grow by the theme's responsive scale, the collapsed
+        // icon rail follows `ui_scale` only — scaling them here as well
+        // doubled both at 2×.
+        let nav = NavShell::new(overview, detail)
+            .with_breakpoint(ui::widget::DEFAULT_NAVSHELL_BREAKPOINT);
+        if collapsed {
+            nav.with_icon_overview_width(OVERVIEW_RAIL_WIDTH)
         } else {
-            OVERVIEW_WIDTH
-        };
-        NavShell::new(overview, detail).with_overview_width(width)
+            nav.with_overview_width(OVERVIEW_WIDTH)
+        }
     }
 
     fn assemble(core: Rc<RefCell<Core>>, live: bool) -> Self {
@@ -217,9 +212,11 @@ impl WeatherApp {
             service: None,
             initial_fetch_done: false,
             seeded_doc: false,
+            seed_sample_document: false,
             last_activity: Instant::now(),
             resource_refresh_invocation: None,
             resource_refresh_failure: None,
+            resource_refresh_tickets: std::collections::HashSet::new(),
             actions: ui::ActionHost::new(),
             doc_heads: Vec::new(),
         }
@@ -251,7 +248,9 @@ impl WeatherApp {
         let units = crate::units::Units::METRIC;
         model.units = units;
         let core = Rc::new(RefCell::new(Core::new(model, units)));
-        Self::assemble(core, false)
+        let mut app = Self::assemble(core, false);
+        app.seed_sample_document = true;
+        app
     }
 
     /// The id of the currently selected city, if any. Lets a test observe where
@@ -318,29 +317,43 @@ impl WeatherApp {
         self.ensure_service();
         self.core.borrow_mut().maybe_fire_geocode();
 
-        let reqs = self.core.borrow_mut().take_outbox();
-        if !reqs.is_empty()
-            && let Some(svc) = self.service.as_ref()
-        {
-            for r in reqs {
-                svc.request(r);
-            }
-            self.last_activity = Instant::now();
-        }
+        let reqs = self.core.borrow_mut().take_tracked_outbox();
+        let mut completions = Vec::new();
+        let mut disconnected = false;
         if let Some(svc) = self.service.as_ref() {
-            let resps = svc.drain();
-            if !resps.is_empty() {
-                let mut core = self.core.borrow_mut();
-                for r in resps {
-                    if let crate::net::Response::Error { message, .. } = &r
-                        && self.resource_refresh_invocation.is_some()
-                    {
-                        self.resource_refresh_failure = Some(message.clone());
-                    }
-                    core.apply_response(r);
+            if !reqs.is_empty() {
+                self.last_activity = Instant::now();
+            }
+            for r in reqs {
+                if let Some(failed) = svc.request(r) {
+                    completions.push(failed);
                 }
             }
+            let (ready, closed) = svc.drain_with_status();
+            completions.extend(ready);
+            disconnected = closed;
         }
+        for response in completions {
+            self.apply_network_response(response);
+        }
+        if disconnected {
+            // Real buffered replies settle first. Only the remaining accepted
+            // work fails; no result is replaced and no request is retried.
+            let failures = self.core.borrow().disconnected_responses();
+            for response in failures {
+                self.apply_network_response(response);
+            }
+        }
+    }
+
+    fn apply_network_response(&mut self, response: crate::net::Response) {
+        if let crate::net::Response::Tracked { ticket, .. } = &response
+            && self.resource_refresh_tickets.remove(ticket)
+            && let Some(message) = response.weather_error()
+        {
+            self.resource_refresh_failure = Some(message.to_string());
+        }
+        self.core.borrow_mut().apply_response(response);
     }
 
     /// Set the detail pane's Back-affordance reservation from the shell state
@@ -418,6 +431,9 @@ impl Default for WeatherApp {
 }
 
 impl Widget for WeatherApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             crate::actions::OPEN_LOCATION_OPERATION,
@@ -679,11 +695,16 @@ impl Widget for WeatherApp {
         if self.core.borrow().model.locations.is_empty() {
             return Err("save a weather location before refreshing".into());
         }
+        // Startup refreshes are background work. Capture the ticket boundary
+        // after they are enqueued, immediately before this operation's enqueue.
+        self.ensure_service();
+        let marker = self.core.borrow().request_marker();
         if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
         }
         self.resource_refresh_invocation = Some(invocation);
         self.resource_refresh_failure = None;
+        self.resource_refresh_tickets = self.core.borrow().queued_weather_tickets_after(marker);
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 
@@ -698,7 +719,7 @@ impl Widget for WeatherApp {
             return None;
         }
         self.tick_network();
-        if self.core.borrow().is_fetching() {
+        if !self.resource_refresh_tickets.is_empty() {
             return None;
         }
         self.resource_refresh_invocation = None;
@@ -735,32 +756,15 @@ impl Widget for WeatherApp {
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.seeded_doc {
-            if !WeatherDoc::is_initialised(state) {
+            // Only the explicit shot constructor seeds examples. A live blank
+            // document is valid; its first deliberate add creates the schema.
+            if self.seed_sample_document && state.get_heads().is_empty() {
                 self.bootstrap_document(state);
-            } else if !WeatherDoc::has_keyed_schema(state) {
-                // An old list-backed document is promoted by an action, not
-                // a synchronisation-time write.
-                self.dispatch_durable_action(state, &WeatherAction::Initialize);
-                self.doc_heads = state.get_heads();
             }
-            {
-                let mut core = self.core.borrow_mut();
-                let mut persisted = WeatherDoc::read_model(state);
-                for (id, snap) in core.model.snapshots.drain() {
-                    persisted.snapshots.entry(id).or_insert(snap);
-                }
-                for (id, aq) in core.model.air_quality.drain() {
-                    persisted.air_quality.entry(id).or_insert(aq);
-                }
-                // Units are a system preference (Settings), not doc state.
-                persisted.units = core.units;
-                core.model = persisted;
-            }
+            let mut persisted = WeatherDoc::read_model(state);
+            self.core.borrow_mut().adopt_saved_places(&mut persisted);
             self.seeded_doc = true;
             self.doc_heads = state.get_heads();
-            if self.live {
-                self.ensure_service();
-            }
         }
 
         // Direct palette/agent dispatches mutate the same document through the
@@ -768,7 +772,6 @@ impl Widget for WeatherApp {
         // result rather than letting it hide an unseen remote durable change.
         self.adopt_document_changes(state);
 
-        self.tick_network();
         self.nav.sync(state, path);
     }
 
@@ -778,6 +781,9 @@ impl Widget for WeatherApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The core solves its row grid without a renderer; hand it the
+        // theme's spacing and metrics here so reserve and paint agree.
+        self.core.borrow_mut().set_layout_tokens(theme);
         self.nav.build_layout(taffy, theme, node_map)
     }
 
@@ -846,6 +852,7 @@ impl Widget for WeatherApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        self.adopt_document_changes(state);
         self.ensure_service();
         self.nav.handle_event(
             event,
@@ -1233,8 +1240,10 @@ mod interaction_tests {
             "sample forecast is taller than 620px"
         );
         assert_eq!(h.app.core.borrow().scroll(), 0.0);
-        // Point over the detail (right) panel, not the overview list.
-        h.move_to(900.0, 400.0);
+        // Point over the detail (right) panel's hero card — not the overview
+        // list, and not the hourly strip, whose band owns the wheel for its
+        // own horizontal scroll.
+        h.move_to(900.0, 200.0);
         h.dispatch(&WindowEvent::MouseWheel {
             device_id: synth_device(),
             delta: MouseScrollDelta::LineDelta(0.0, -1.0),
@@ -1389,7 +1398,7 @@ mod interaction_tests {
         // The draw pass sets `overview_collapsible` and builds the chip's
         // hotspot; click the collapse chip (top-right of the overview panel).
         h.redraw();
-        let cx = over.x1 - 35.0; // chip spans x+w-30..x+w, RP=20 → over.x1-50..-20
+        let cx = over.x1 - 39.0; // chip spans x+w-30..x+w, RP=s6 → over.x1-54..-24
         let cy = over.y0 + 28.0;
         h.click(cx, cy);
         assert!(
@@ -2204,5 +2213,492 @@ mod interaction_tests {
             node.name.as_deref() == Some("Updated just now")
                 && node.live == Some(Politeness::Polite)
         }));
+    }
+}
+
+#[cfg(test)]
+mod history_regressions {
+    use super::*;
+    use automerge::transaction::Transactable;
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "exercise dispatch, restore and exact settlement through the real root in both result cases"
+    )]
+    fn history_dispatched_invocation_settles_exact_real_result_after_restore() {
+        for failed in [false, true] {
+            let mut app = WeatherApp::history_test_root();
+            let mut d = AutoCommit::new();
+            WeatherDoc::write_model(&mut d, &crate::sample::sample_model());
+            app.sync(&mut d, &automerge::ROOT);
+            let dispatched_model = crate::doc::WeatherDoc::read_model(&d);
+            let sample = crate::sample::sample_model();
+            let (service, requests, responses) = crate::net::test_service();
+            app.service = Some(service);
+            app.live = true;
+            app.initial_fetch_done = true;
+            let invocation = tilo_actions::InvocationId::new();
+            app.start_resource_operation(
+                invocation,
+                OperationKind::Effect,
+                crate::actions::REFRESH_OPERATION,
+                b"",
+                &d,
+                &automerge::ROOT,
+            )
+            .unwrap();
+            app.tick_network();
+            let sent: Vec<_> = requests.try_iter().collect();
+            assert!(!sent.is_empty());
+            d.delete(automerge::ROOT, "saved_locations").unwrap();
+            d.delete(automerge::ROOT, "location_order").unwrap();
+            d.delete(automerge::ROOT, "location_tombstones").unwrap();
+            d.get_heads();
+            app.sync(&mut d, &automerge::ROOT);
+            assert!(
+                app.poll_resource_operation(invocation, false, &d, &automerge::ROOT)
+                    .is_none()
+            );
+            // A later unrelated refresh must neither delay this invocation nor alter its result.
+            app.core.borrow_mut().model = crate::sample::sample_model();
+            app.core.borrow_mut().refresh_all();
+            app.tick_network();
+            assert!(requests.try_iter().next().is_some());
+            for request in sent {
+                let crate::net::Request::Tracked {
+                    ticket,
+                    generation,
+                    request,
+                } = request
+                else {
+                    panic!("ticket")
+                };
+                let response = if failed {
+                    crate::net::Response::Error {
+                        kind: crate::net::RequestKind::Forecast,
+                        message: "actual provider failure".into(),
+                    }
+                } else {
+                    match *request {
+                        crate::net::Request::Forecast { location_id, .. } => {
+                            crate::net::Response::Forecast({
+                                let mut snap = sample.snapshots.values().next().unwrap().clone();
+                                assert!(
+                                    dispatched_model
+                                        .locations
+                                        .iter()
+                                        .any(|l| l.id == location_id)
+                                );
+                                snap.location_id = location_id;
+                                snap
+                            })
+                        }
+                        crate::net::Request::AirQuality { location_id, .. } => {
+                            crate::net::Response::AirQuality({
+                                let mut aq = sample.air_quality.values().next().unwrap().clone();
+                                assert!(
+                                    dispatched_model
+                                        .locations
+                                        .iter()
+                                        .any(|l| l.id == location_id)
+                                );
+                                aq.location_id = location_id;
+                                aq
+                            })
+                        }
+                        _ => panic!("weather request"),
+                    }
+                };
+                responses
+                    .send(crate::net::Response::Tracked {
+                        ticket,
+                        generation,
+                        response: Box::new(response),
+                    })
+                    .unwrap();
+            }
+            let outcome = app
+                .poll_resource_operation(invocation, true, &d, &automerge::ROOT)
+                .unwrap();
+            if failed {
+                assert!(
+                    matches!(outcome,tilo_actions::InvocationUpdate::Failed{invocation:id,error} if id==invocation && error.message=="actual provider failure")
+                );
+            } else {
+                assert!(
+                    matches!(outcome,tilo_actions::InvocationUpdate::Succeeded{invocation:id,..} if id==invocation)
+                );
+            }
+            assert!(app.core.borrow().is_fetching());
+        }
+    }
+    #[test]
+    fn history_disconnected_worker_is_failure_not_success_or_permanent_pending() {
+        let mut app = WeatherApp::history_test_root();
+        let mut d = AutoCommit::new();
+        WeatherDoc::write_model(&mut d, &crate::sample::sample_model());
+        app.sync(&mut d, &automerge::ROOT);
+        let (service, requests, _responses) = crate::net::test_service();
+        drop(requests);
+        app.service = Some(service);
+        app.live = true;
+        app.initial_fetch_done = true;
+        let invocation = tilo_actions::InvocationId::new();
+        app.start_resource_operation(
+            invocation,
+            OperationKind::Effect,
+            crate::actions::REFRESH_OPERATION,
+            b"",
+            &d,
+            &automerge::ROOT,
+        )
+        .unwrap();
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &d, &automerge::ROOT),
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
+        ));
+    }
+
+    #[test]
+    fn history_unsent_invocation_and_stale_durable_selection_are_invalidated_on_actual_root_sync() {
+        let mut app = WeatherApp::history_test_root();
+        let mut d = AutoCommit::new();
+        WeatherDoc::write_model(&mut d, &crate::sample::sample_model());
+        app.sync(&mut d, &automerge::ROOT);
+        let target = app.core.borrow().model.locations[1].id;
+        app.core.borrow_mut().open_location(target);
+        WeatherDoc::remove_location(&mut d, target);
+        let heads = d.get_heads();
+        app.flush_durable_actions(&mut d);
+        assert_eq!(d.get_heads(), heads);
+        assert!(
+            !app.core
+                .borrow()
+                .model
+                .locations
+                .iter()
+                .any(|l| l.id == target)
+        );
+        let (service, requests, _responses) = crate::net::test_service();
+        app.service = Some(service);
+        app.live = true;
+        app.initial_fetch_done = true;
+        let invocation = tilo_actions::InvocationId::new();
+        app.start_resource_operation(
+            invocation,
+            OperationKind::Effect,
+            crate::actions::REFRESH_OPERATION,
+            b"",
+            &d,
+            &automerge::ROOT,
+        )
+        .unwrap();
+        let target = app.core.borrow().model.locations[0].id;
+        WeatherDoc::remove_location(&mut d, target);
+        d.get_heads();
+        app.sync(&mut d, &automerge::ROOT);
+        assert!(
+            matches!(app.poll_resource_operation(invocation,false,&d,&automerge::ROOT),Some(tilo_actions::InvocationUpdate::Failed{error,..}) if error.message.contains("before the refresh was dispatched"))
+        );
+        assert!(requests.try_iter().next().is_none());
+    }
+    #[test]
+    fn history_root_declares_registration() {
+        assert!(WeatherApp::new().document_history_definition().is_some());
+    }
+    #[test]
+    fn history_legacy_sync_and_blank_reopen_preserve_graph() {
+        for legacy in [false, true] {
+            let mut app = WeatherApp::assemble(
+                Rc::new(RefCell::new(Core::new(
+                    crate::model::WeatherModel::default(),
+                    crate::units::Units::METRIC,
+                ))),
+                false,
+            );
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "runtime_metadata", "keep")
+                .unwrap();
+            if legacy {
+                doc.put_object(automerge::ROOT, "locations", automerge::ObjType::List)
+                    .unwrap();
+            }
+            let heads = doc.get_heads();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                doc.get_heads(),
+                heads,
+                "ordinary sync preserves blank and legacy graphs"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod history_round1_tests {
+    use super::*;
+    use crate::net::{Request, RequestKind, Response};
+    use automerge::{ROOT, transaction::Transactable};
+
+    fn fixture() -> (
+        WeatherApp,
+        AutoCommit,
+        std::sync::mpsc::Receiver<Request>,
+        std::sync::mpsc::Sender<Response>,
+    ) {
+        let mut model = crate::sample::sample_model();
+        model.locations.truncate(2);
+        let mut doc = AutoCommit::new();
+        WeatherDoc::write_model(&mut doc, &model);
+        let mut app = WeatherApp::history_test_root();
+        app.sync(&mut doc, &ROOT);
+        let (service, requests, responses) = crate::net::test_service();
+        app.service = Some(service);
+        app.live = true;
+        (app, doc, requests, responses)
+    }
+    fn completion(request: &Request, failure: Option<&str>) -> Response {
+        let Request::Tracked {
+            ticket,
+            generation,
+            request,
+        } = request
+        else {
+            panic!("production request must have a ticket")
+        };
+        let sample = crate::sample::sample_model();
+        let (kind, response) = match request.as_ref() {
+            Request::Forecast { location_id, .. } => {
+                let mut snap = sample.snapshots.values().next().unwrap().clone();
+                snap.location_id = *location_id;
+                (RequestKind::Forecast, Response::Forecast(snap))
+            }
+            Request::AirQuality { location_id, .. } => {
+                let mut aq = sample.air_quality.values().next().unwrap().clone();
+                aq.location_id = *location_id;
+                (RequestKind::AirQuality, Response::AirQuality(aq))
+            }
+            _ => panic!("weather request"),
+        };
+        Response::Tracked {
+            ticket: *ticket,
+            generation: *generation,
+            response: Box::new(failure.map_or(response, |message| Response::Error {
+                kind,
+                message: message.into(),
+            })),
+        }
+    }
+    fn accepted_worker_death(restore: bool) {
+        let (mut app, mut doc, requests, responses) = fixture();
+        app.initial_fetch_done = true;
+        let invocation = tilo_actions::InvocationId::new();
+        app.start_resource_operation(
+            invocation,
+            OperationKind::Effect,
+            crate::actions::REFRESH_OPERATION,
+            b"",
+            &doc,
+            &ROOT,
+        )
+        .unwrap();
+        app.tick_network();
+        let accepted: Vec<_> = requests.try_iter().collect();
+        assert_eq!(accepted.len(), 4);
+        assert!(
+            accepted
+                .iter()
+                .all(|request| matches!(request, Request::Tracked { .. }))
+        );
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &ROOT)
+                .is_none()
+        );
+        if restore {
+            for key in ["saved_locations", "location_order", "location_tombstones"] {
+                doc.delete(ROOT, key).unwrap();
+            }
+            doc.get_heads();
+            app.sync(&mut doc, &ROOT);
+        }
+        drop(requests);
+        drop(responses);
+        assert!(
+            matches!(app.poll_resource_operation(invocation,false,&doc,&ROOT),Some(tilo_actions::InvocationUpdate::Failed{invocation:id,error}) if id==invocation && error.message.contains("disconnected")),
+            "accepted request must fail when its worker dies; restore={restore}"
+        );
+        assert!(!app.core.borrow().is_fetching());
+        assert!(app.resource_refresh_tickets.is_empty());
+        assert!(app.core.borrow().disconnected_responses().is_empty());
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &ROOT)
+                .is_none(),
+            "terminal outcome emitted exactly once"
+        );
+        app.tick_network();
+        assert!(
+            app.core.borrow_mut().take_outbox().is_empty(),
+            "disconnected requests are not retried"
+        );
+    }
+    #[test]
+    fn accepted_worker_death_settles_once() {
+        accepted_worker_death(false);
+    }
+    #[test]
+    fn accepted_worker_death_after_restore_settles_once() {
+        accepted_worker_death(true);
+    }
+
+    #[test]
+    fn buffered_real_completions_survive_terminal_channel_close() {
+        for complete_all in [false, true] {
+            let (mut app, doc, requests, responses) = fixture();
+            app.initial_fetch_done = true;
+            let invocation = tilo_actions::InvocationId::new();
+            app.start_resource_operation(
+                invocation,
+                OperationKind::Effect,
+                crate::actions::REFRESH_OPERATION,
+                b"",
+                &doc,
+                &ROOT,
+            )
+            .unwrap();
+            app.tick_network();
+            let sent: Vec<_> = requests.try_iter().collect();
+            assert_eq!(sent.len(), 4);
+            let target = app.core.borrow().model.locations[0].id;
+            let count = if complete_all { sent.len() } else { 1 };
+            for request in &sent[..count] {
+                responses.send(completion(request, None)).unwrap();
+            }
+            drop(requests);
+            drop(responses);
+            let outcome = app.poll_resource_operation(invocation, false, &doc, &ROOT);
+            if complete_all {
+                assert!(
+                    matches!(outcome, Some(tilo_actions::InvocationUpdate::Succeeded { invocation:id, .. }) if id==invocation)
+                );
+            } else {
+                assert!(
+                    matches!(outcome, Some(tilo_actions::InvocationUpdate::Failed { invocation:id, error }) if id==invocation && error.message.contains("disconnected"))
+                );
+            }
+            assert!(
+                app.core.borrow().model.snapshots.contains_key(&target),
+                "real buffered forecast retained"
+            );
+            assert!(!app.core.borrow().is_fetching());
+            assert!(app.core.borrow().disconnected_responses().is_empty());
+            assert!(
+                app.poll_resource_operation(invocation, false, &doc, &ROOT)
+                    .is_none()
+            );
+        }
+    }
+
+    fn startup_ownership(background_failure: bool, own_failure: bool) {
+        let (mut app, doc, requests, responses) = fixture();
+        assert!(!app.initial_fetch_done);
+        let target = app.core.borrow().model.locations[0].id;
+        let other = app.core.borrow().model.locations[1].id;
+        let payload = serde_json::to_vec(&target.to_string()).unwrap();
+        let invocation = tilo_actions::InvocationId::new();
+        app.start_resource_operation(
+            invocation,
+            OperationKind::Effect,
+            crate::actions::REFRESH_LOCATION_OPERATION,
+            &payload,
+            &doc,
+            &ROOT,
+        )
+        .unwrap();
+        // This is ordinary interactive work queued after acceptance but before
+        // the first dispatch, in addition to the initial four startup requests.
+        assert!(app.core.borrow_mut().refresh_location_by_id(other));
+        app.tick_network();
+        let sent: Vec<_> = requests.try_iter().collect();
+        assert_eq!(sent.len(), 8);
+        for (index, r) in sent.iter().enumerate() {
+            let Request::Tracked { request, .. } = r else {
+                panic!("ticket")
+            };
+            let id = match request.as_ref() {
+                Request::Forecast { location_id, .. } | Request::AirQuality { location_id, .. } => {
+                    *location_id
+                }
+                _ => panic!("weather"),
+            };
+            match index {
+                0 | 1 => {
+                    assert_eq!(id, target);
+                    responses.send(completion(r, None)).unwrap();
+                }
+                2 | 3 => {
+                    assert_eq!(id, other);
+                    if background_failure {
+                        responses
+                            .send(completion(r, Some("unrelated startup failure")))
+                            .unwrap();
+                    }
+                }
+                4 | 5 => {
+                    assert_eq!(id, target);
+                    responses
+                        .send(completion(r, own_failure.then_some("own provider failure")))
+                        .unwrap();
+                }
+                6 | 7 => assert_eq!(id, other),
+                _ => unreachable!(),
+            }
+        }
+        let outcome = app.poll_resource_operation(invocation, false, &doc, &ROOT);
+        if own_failure {
+            assert!(
+                matches!(outcome,Some(tilo_actions::InvocationUpdate::Failed{invocation:id,error}) if id==invocation && error.message=="own provider failure")
+            );
+        } else {
+            assert!(
+                matches!(outcome,Some(tilo_actions::InvocationUpdate::Succeeded{invocation:id,..}) if id==invocation),
+                "only the requested place's requests belong to this invocation"
+            );
+        }
+        assert!(
+            app.core.borrow().is_fetching(),
+            "unrelated queued/sent work remains outstanding"
+        );
+        // Duplicate owned responses must not settle background work or emit a
+        // second terminal outcome. Real background completions still apply.
+        for r in &sent[4..6] {
+            responses.send(completion(r, None)).unwrap();
+        }
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &ROOT)
+                .is_none()
+        );
+        app.tick_network();
+        assert!(app.core.borrow().is_fetching());
+        for (i, r) in sent.iter().enumerate() {
+            if i >= 6 || (i == 2 || i == 3) && !background_failure {
+                responses.send(completion(r, None)).unwrap();
+            }
+        }
+        app.tick_network();
+        assert!(!app.core.borrow().is_fetching());
+        assert!(app.core.borrow().model.snapshots.contains_key(&other));
+    }
+    #[test]
+    fn startup_failure_and_later_batch_do_not_own_per_place_invocation() {
+        startup_ownership(true, false);
+    }
+    #[test]
+    fn startup_pending_and_later_batch_do_not_delay_per_place_invocation() {
+        startup_ownership(false, false);
+    }
+    #[test]
+    fn own_failure_remains_failure_with_unrelated_pending_work() {
+        startup_ownership(false, true);
     }
 }
