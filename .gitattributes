@@ -9,6 +9,6 @@ crates/sdk/ui-core/assets/fonts/LICENSES/*.txt -text
 crates/sdk/ui-core/assets/fonts/manifest.toml text eol=lf
 
 # Media license notices retain the bytes verified by sources.json.
-tools/gstreamer-licenses/*.txt -text
-tools/gstreamer-licenses/*-COPYING -text
-tools/gstreamer-licenses/*-LICENSE -text
+tools/windows/gstreamer-licenses/*.txt -text
+tools/windows/gstreamer-licenses/*-COPYING -text
+tools/windows/gstreamer-licenses/*-LICENSE -text

@@ -1,7 +1,7 @@
 # Shared native Windows media runtime
 
-`install-windows-apps.ps1` inspects the actual PE imports of the binaries it
-builds. When any uses GStreamer, it invokes `install-windows-gstreamer.ps1`
+`install-apps.ps1` inspects the actual PE imports of the binaries it
+builds. When any uses GStreamer, it invokes `install-gstreamer.ps1`
 once. All apps use the same DLLs beside their executables, plugins under
 `lib/gstreamer-1.0`, and scanner under `libexec/gstreamer-1.0`. Start shortcuts
 still point directly to ordinary application `.exe` files. No wrapper, global
@@ -41,7 +41,7 @@ backend or `libssl` DLL. It is **not entirely OpenSSL-free**: this MSYS2
 (package `srt` 1.5.7-1) and `libssh.dll` (package `libssh` 0.12.2-1); both
 require `libcrypto-3-arm64.dll`. FFmpeg's own TLS uses GnuTLS. These are the
 only permitted direct OpenSSL consumers, with exact package owners/versions
-checked by `windows-gstreamer-crypto.ps1` and recorded under
+checked by `gstreamer-crypto.ps1` and recorded under
 `ReviewedCryptoResiduals` in the manifest. Unknown consumers and changed
 versions fail before copying. The verifier also scans unmanifested DLLs and
 executables for unexpected OpenSSL imports.
@@ -58,8 +58,8 @@ redistributing the bundled GPL/LGPL components.
 Stage and verify without building or installing apps:
 
 ```powershell
-./tools/install-windows-gstreamer.ps1 -Destination "$env:TEMP/Tilo media runtime"
-./tools/test-windows-gstreamer.ps1 -RuntimeDirectory "$env:TEMP/Tilo media runtime" `
+./tools/windows/install-gstreamer.ps1 -Destination "$env:TEMP/Tilo media runtime"
+./tools/windows/test-gstreamer.ps1 -RuntimeDirectory "$env:TEMP/Tilo media runtime" `
   -MediaPath ./apps/video-player/tests/fixtures/h264-aac.mp4
 ```
 
@@ -75,7 +75,7 @@ but this relocation test does not claim live HTTPS playback coverage.
 Music and Video Player can be selected explicitly through the shared installer:
 
 ```powershell
-./tools/install-windows-apps.ps1 -Apps music,video-player
+./tools/windows/install-apps.ps1 -Apps music,video-player
 ```
 
 Music builds its ordinary `music.exe` with default `audio` and `live` features.
