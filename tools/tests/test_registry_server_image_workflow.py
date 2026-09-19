@@ -29,6 +29,7 @@ class RegistryServerImageWorkflowTests(unittest.TestCase):
         for checkout in (applicability_checkout, build_checkout):
             self.assertIn("persist-credentials: false", checkout)
             self.assertNotIn("REGISTRY_TOKEN", checkout)
+        self.assertIn("fetch-depth: 0", applicability_checkout)
 
         before_login = self.source.split(
             "      - name: Log in for main publication\n", 1

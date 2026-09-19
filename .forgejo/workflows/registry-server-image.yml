@@ -64,7 +64,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-          fetch-depth: 2
+          # Checkout removes its scoped credential before any PR code runs, so
+          # retain the complete commit graph needed by the merge-base proof.
+          fetch-depth: 0
           sparse-checkout: |
             tools/ci/prepare_pr_history.py
             tools/ci/workflow_applicability.py
