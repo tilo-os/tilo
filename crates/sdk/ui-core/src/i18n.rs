@@ -110,6 +110,10 @@ thread_local! {
     static MANAGER: std::cell::RefCell<Option<I18nManager>> = const { std::cell::RefCell::new(None) };
     static PSEUDO_LOCALE: Cell<PseudoLocale> = const { Cell::new(PseudoLocale::Off) };
     static PSEUDO_REVISION: Cell<u64> = const { Cell::new(0) };
+    // Shared controls remain readable even when an app installs only its own
+    // catalog. App translations always take precedence over this source.
+    static TOOLKIT_SOURCE: Result<FluentBundle<FluentResource>, I18nError> =
+        make_bundle(&parse_locale_or_default("en-US"), include_str!("../locales/en-US.ftl"));
 }
 
 fn pseudo_expand(value: &str) -> String {
@@ -404,7 +408,13 @@ impl I18nManager {
                     return value;
                 }
             }
-            key.to_string()
+            TOOLKIT_SOURCE.with(|source| {
+                source
+                    .as_ref()
+                    .ok()
+                    .and_then(|bundle| format_from_bundle(bundle, key, args))
+                    .unwrap_or_else(|| key.to_string())
+            })
         });
         apply_pseudo_locale(resolved)
     }
@@ -456,8 +466,78 @@ macro_rules! i18n {
 mod tests {
     use super::*;
 
+    /// Lookup uses thread-local state; worker threads are reused across tests.
+    struct RestoreLookupState {
+        manager: Option<I18nManager>,
+        pseudo: PseudoLocale,
+        pseudo_revision: u64,
+    }
+
+    impl RestoreLookupState {
+        fn capture() -> Self {
+            Self {
+                manager: MANAGER.with(|manager| manager.borrow_mut().take()),
+                pseudo: PSEUDO_LOCALE.with(Cell::get),
+                pseudo_revision: PSEUDO_REVISION.with(Cell::get),
+            }
+        }
+    }
+
+    impl Drop for RestoreLookupState {
+        fn drop(&mut self) {
+            MANAGER.with(|manager| *manager.borrow_mut() = self.manager.take());
+            PSEUDO_LOCALE.with(|mode| mode.set(self.pseudo));
+            PSEUDO_REVISION.with(|revision| revision.set(self.pseudo_revision));
+        }
+    }
+
     const EN: &str = "greeting = Hello\nonly-source = Source fallback";
     const DE: &str = "greeting = Guten Tag";
+
+    #[test]
+    fn shared_toolkit_history_is_readable_without_app_catalogs() {
+        let _restore = RestoreLookupState::capture();
+        I18nManager::set_pseudo_locale(PseudoLocale::Off);
+        TOOLKIT_SOURCE.with(|source| assert!(source.is_ok(), "bundled toolkit catalog must parse"));
+        assert_eq!(
+            I18nManager::lookup_plain("standalone-history-title"),
+            "History"
+        );
+        assert_eq!(
+            I18nManager::lookup_plain("standalone-history-close"),
+            "Close history"
+        );
+    }
+
+    #[test]
+    fn app_locale_and_source_override_shared_toolkit_fallback() {
+        let _restore = RestoreLookupState::capture();
+        I18nManager::install(
+            "en-US",
+            "de-DE",
+            &[
+                (
+                    "en-US",
+                    "standalone-history-title = App history\nstandalone-history-close = App close",
+                ),
+                ("de", "standalone-history-title = Verlauf"),
+            ],
+        )
+        .unwrap();
+        I18nManager::set_pseudo_locale(PseudoLocale::Off);
+        assert_eq!(
+            I18nManager::lookup_plain("standalone-history-title"),
+            "Verlauf"
+        );
+        assert_eq!(
+            I18nManager::lookup_plain("standalone-history-close"),
+            "App close"
+        );
+        assert_eq!(
+            I18nManager::lookup_plain("standalone-history-selected-details"),
+            "Selected changes"
+        );
+    }
 
     #[test]
     fn installed_catalog_uses_language_match_then_source_fallback() {
