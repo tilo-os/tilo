@@ -2,7 +2,9 @@
 
 `finalization-operator.py` replaces per-run bind/stage, pending-request polling,
 loader-response reuse, and handoff scripts. It manages public inputs and signed
-outputs; existing checkpoint validation and local signing tools keep their roles.
+outputs. Its checkpoint bridge validates the immutable image once, publishes a
+small metadata receipt, and joins that receipt to the same EFI input already
+fetched through the signing spool. Local signing tools keep their existing roles.
 It never dispatches/restarts a build, grants signing authorization, or installs an OS.
 
 Use a trusted Linux root shell, the authenticated `fgj` (or WSL-visible `fgj.exe`)
@@ -85,9 +87,28 @@ python3 "$operator" --operation "$operation" handoff \
 ```
 
 `handoff` emits stable paths, hardware/architecture, and the exact context hash for
-checkpoint validation and signing. It does **not** export or validate a checkpoint.
-Authenticate the checkpoint/artifact independently, use
-`authorize-signing-input.py` with independently expected bytes, then
+checkpoint validation and signing. For a legacy operation that contains the pinned
+checkpoint exporter, validate and publish the small checkpoint receipt without
+streaming the EFI payload through a second transport:
+
+```sh
+python3 "$operator" --operation "$operation" export-checkpoint \
+  --run-directory "$run_directory" --purpose live-uki
+python3 "$operator" --operation "$operation" fetch \
+  --run-id "$run_id" --attempt "$attempt" --request-id "$request_id"
+python3 "$operator" --operation "$operation" materialize-checkpoint \
+  --run-directory "$run_directory" --purpose live-uki \
+  --request-directory "$run_directory/received/$request_id"
+```
+
+Repeat this for `target-uki`. Materialization requires the fetched signing request,
+context, size, and hash to match the independently validated receipt exactly. It
+writes the EFI input beside the receipt only after that comparison, and it never
+grants signing authorization. The read-only `diagnose-checkpoint` command reports
+sanitized validation phases when a legacy exporter cannot produce metadata.
+
+Use `authorize-signing-input.py` with the materialized checkpoint bytes as the
+independently expected input, then
 `service-local-signing-request.py` with the existing explicit local policy.
 Write its response under the handoff's `responses/<request-id>` directory.
 These stages must not derive expected hashes or authorization from a worker request.
