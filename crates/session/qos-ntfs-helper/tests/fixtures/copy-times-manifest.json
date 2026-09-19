@@ -1,0 +1,40 @@
+{
+  "fixture_builder_sha256": "d0f5decd7345df3d497ad1721dc3fee3b689c6ee92c47875b3c2759d3f955571",
+  "source_sha256": "b90caed8fade648f119c767bd310419be56a2b0014b16e6b2c68b50bc6c7e9cd",
+  "generated_manifest_sha256": "9b9441e7ace7f1b0f9f1aa39020c4050b3de21173e45fca2fedd344d016797d3",
+  "images": {
+    "times.img": {
+      "sha256": "97ea62974e87c64ee2dfbc2e80abedb6d905c5e3442de29b5b19e318a3fadee4",
+      "bytes": 67108864,
+      "standard_information_bytes": 72,
+      "last_data_change_100ns": 116444735999999999,
+      "last_access_100ns": 116444736012345678
+    },
+    "times-v1.img": {
+      "sha256": "d285cadc53b16b7cd523060da8767fe72375628ec0410225f60c3b2a2e19783f",
+      "bytes": 67108864,
+      "standard_information_bytes": 48,
+      "last_data_change_100ns": 116444735999999999,
+      "last_access_100ns": 116444736012345678
+    },
+    "times-missing.img": {
+      "sha256": "ca2aa5e11e2a6421753a6864888f74a1d7e034167731a12ae9f9afc898b13f9b",
+      "bytes": 67108864,
+      "native_status": 5,
+      "metadata_complete": false,
+      "native_identity": null
+    },
+    "times-duplicate.img": {
+      "sha256": "c273966bb3e0a44ca3f5667471be911a527206f5a33f10723f1b7b8be976c34e",
+      "bytes": 67108864,
+      "native_status": 0,
+      "copy_times_unavailable_reason": "duplicate-standard-information"
+    },
+    "times-invalid-flags.img": {
+      "sha256": "0483dc5d206eae3b434b205ab32dbd2892491d72bcad79ee4e29eb3d088b8042",
+      "bytes": 67108864,
+      "native_status": 0,
+      "copy_times_unavailable_reason": "invalid-standard-information-coverage"
+    }
+  }
+}

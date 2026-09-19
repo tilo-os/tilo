@@ -39,6 +39,7 @@
 
 pub mod appdir;
 pub mod capabilities;
+pub mod capture;
 #[cfg(target_os = "linux")]
 pub mod dbus_proxy;
 pub mod gpu;

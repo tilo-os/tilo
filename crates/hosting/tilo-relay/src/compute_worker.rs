@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use launcher::capture::CaptureCancellation;
 use launcher::manifest::read_manifest;
-use launcher::run::CaptureCancellation;
 use thiserror::Error;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
