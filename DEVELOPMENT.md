@@ -159,9 +159,13 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `libclang` (shared library) | `clang-libs` | bindgen for PipeWire and FFmpeg bindings; Python 3 checks that it can load |
 | `bwrap` (binary) | `bubblewrap` | the launcher's confinement tests drive the real sandbox |
 | `rust-analyzer` (binary) | `rustup component add rust-analyzer` | the code editor's language-server test drives a real server |
+| `cryptsetup` (binary) | `cryptsetup` | rollback mechanism tests drive a real LUKS2 header |
+| `swtpm` `swtpm_setup` (binaries) | `swtpm` `swtpm-tools` | rollback mechanism tests drive an isolated software TPM |
+| `tpm2_getcap` (binary) | `tpm2-tools` | rollback mechanism tests exercise production TPM policy commands |
 
-The sandbox and language-server tests require `bwrap` and `rust-analyzer`.
-Install them where Cargo runs, including inside a build container.
+The sandbox, language-server, and rollback mechanism tests require the binary
+tools listed above. Install them where Cargo runs, including inside a build
+container.
 
 ### Native Windows Imager builds
 
