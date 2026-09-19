@@ -34,6 +34,8 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
         self.assertIn("runner: runner-arm64", self.workflow)
         self.assertIn("os/tests/release_tools_image.sh", self.workflow)
         self.assertIn("docker buildx imagetools create", self.workflow)
+        self.assertIn("verify-public:", self.workflow)
+        self.assertIn("Pull and test the public image without credentials", self.workflow)
         smoke = (ROOT / "os/tests/release_tools_image.sh").read_text()
         self.assertIn("max_image_bytes=536870912", smoke)
         self.assertIn("docker image inspect --format '{{.Size}}'", smoke)
@@ -56,6 +58,25 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
         self.assertIn('tag="candidate-$SOURCE_REVISION"', self.workflow)
         self.assertNotRegex(self.workflow, r"(?m)^\s*(?:tags:|tag=).*(?:latest|:main)\s*$")
         self.assertIn("release-tools-image-receipt/release-tools-image.json", self.workflow)
+
+    def test_tested_index_is_replicated_and_verified_anonymously(self) -> None:
+        publish = self.workflow.split("\n  publish-index:\n", 1)[1].split(
+            "\n  verify-public:\n", 1
+        )[0]
+        self.assertIn(
+            "PUBLIC_IMAGE_REPOSITORY: code.sandbox.example/public/tilo-release-tools",
+            publish,
+        )
+        self.assertIn('"$IMAGE_REPOSITORY@$digest"', publish)
+        self.assertIn('[[ $public_digest == "$digest" ]]', publish)
+        self.assertIn('DOCKER_CONFIG="$anonymous_config"', publish)
+        self.assertIn('[[ $actual_children == "$expected_children" ]]', publish)
+
+        verify = self.workflow.split("\n  verify-public:\n", 1)[1]
+        self.assertNotIn("\n      credentials:", verify)
+        self.assertNotIn("REGISTRY_TOKEN", verify)
+        self.assertIn("docker pull --platform '${{ matrix.platform }}'", verify)
+        self.assertIn('bash os/tests/release_tools_image.sh "$image"', verify)
 
     def test_credentialed_publisher_uses_the_verified_compiler_free_image(self) -> None:
         expected = (
