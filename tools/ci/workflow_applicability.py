@@ -10,6 +10,7 @@ import sys
 
 
 APPLICABILITY_INPUT = "tools/ci/workflow_applicability.py"
+HISTORY_INPUT = "tools/ci/prepare_pr_history.py"
 APPLICABILITY_GUARD = (
     "(github.event_name != 'pull_request' || "
     "(needs.applicability.result == 'success' && "
@@ -126,7 +127,7 @@ def workflow_contract(source):
     i = 0
     while i < len(lines):
         line = lines[i]
-        if on_start < i < on_end and line == f'      - "{APPLICABILITY_INPUT}"':
+        if on_start < i < on_end and line in (f'      - "{APPLICABILITY_INPUT}"', f'      - "{HISTORY_INPUT}"'):
             i += 1
             continue
 
@@ -218,7 +219,7 @@ def applicable(repo, event_name, event, paths, workflow=None):
     matched = [path for path in changed if path and any(p.fullmatch(path) for p in patterns)]
     if workflow is not None:
         workflow = Path(workflow).as_posix()
-        contract_inputs = {APPLICABILITY_INPUT, workflow}
+        contract_inputs = {APPLICABILITY_INPUT, HISTORY_INPUT, workflow}
         direct = [path for path in matched if path not in contract_inputs]
         if direct:
             return True, matched
