@@ -123,7 +123,7 @@ jobs:
         env:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
-        run: python3 tools/resolve_ci_builder.py
+        run: python3 -I tools/ci_python.py tools/resolve_ci_builder.py
       - name: Guard disabled nonpublishing coordinator qualification
         env:
           COORDINATOR_ENABLED: ${{ vars.TILO_APP_COORDINATOR_QUALIFICATION }}
@@ -138,7 +138,7 @@ jobs:
           REQUESTED_APPS: ${{ github.event.inputs.apps }}
           REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
           REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
-        run: python3 tools/app_packaging_qualification.py
+        run: python3 -I tools/ci_python.py tools/app_packaging_qualification.py
       - name: Select only the affected apps or requested collection
         id: plan
         shell: bash
@@ -181,7 +181,7 @@ jobs:
               fi
               ;;
           esac
-          python3 tools/app_release.py "${args[@]}" | tee app-release-plan.json
+          python3 -I tools/ci_python.py tools/app_release.py "${args[@]}" | tee app-release-plan.json
           collection=
           case "$GITHUB_REF" in
             refs/tags/apps-v*) collection=${REQUESTED_COLLECTION:-default} ;;
@@ -197,7 +197,7 @@ jobs:
           if [[ $GITHUB_REF == refs/tags/* \
                 || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main ) \
                 || ${REQUESTED_PUBLISH:-false} == true ]]; then
-            matrix=$(python3 tools/app_release.py --architecture-matrix \
+            matrix=$(python3 -I tools/ci_python.py tools/app_release.py --architecture-matrix \
               --ref "$GITHUB_REF" --event "$GITHUB_EVENT_NAME" \
               --architectures "$REQUESTED_ARCHITECTURES" \
               --main-architectures "$MAIN_ARCHITECTURES")
@@ -212,7 +212,7 @@ jobs:
             fi
             echo 'publish=true' >> "$GITHUB_OUTPUT"
           else
-            matrix=$(python3 tools/app_release.py --architecture-matrix \
+            matrix=$(python3 -I tools/ci_python.py tools/app_release.py --architecture-matrix \
               --ref "$GITHUB_REF" --event "$GITHUB_EVENT_NAME" \
               --architectures "$REQUESTED_ARCHITECTURES")
             echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -241,7 +241,7 @@ jobs:
           BASELINE_RUN_ID: ${{ github.event.inputs.baseline_run_id }}
           BASELINE_EVIDENCE: ${{ github.event.inputs.baseline_evidence }}
           BASELINE_RECEIPT_SHA256: ${{ github.event.inputs.baseline_receipt_sha256 }}
-        run: python3 tools/app_packaging_plan.py
+        run: python3 -I tools/ci_python.py tools/app_packaging_plan.py
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: github.event.inputs.coordinator_intent != ''
         with:
