@@ -20,6 +20,7 @@ on:
       - ".forgejo/workflows/package-desktop.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
+      - "tools/ci/workflow_applicability.py"
   schedule:
     # One weekly candidate, separated from Saturday's OS image build.
     - cron: "0 4 * * 5"
@@ -45,7 +46,36 @@ env:
   TILO_DESKTOP_ARM64_RELEASES: "1"
 
 jobs:
+  applicability:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      applicable: ${{ steps.compare.outputs.applicable }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Require an exact relevant PR diff before desktop validation
+        id: compare
+        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/package-desktop.yml
+
   validate:
+    needs: applicability
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        true
+      }}
     runs-on: runner
     timeout-minutes: 30
     outputs:
