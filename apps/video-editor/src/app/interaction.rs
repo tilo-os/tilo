@@ -80,6 +80,19 @@ impl VideoEditorApp {
             }
             return true;
         }
+        // The shortcut sheet owns the keyboard like the dialogs above it: Esc
+        // and ? close it, and nothing else fires meanwhile — Ctrl+E used to
+        // open the export dialog underneath the sheet's scrim.
+        if self.navigation.help_open {
+            match key {
+                Key::Named(NamedKey::Escape) => self.navigation.help_open = false,
+                Key::Character(c) if c.as_str() == "?" || (shift && c.as_str() == "/") => {
+                    self.navigation.help_open = false;
+                }
+                _ => {}
+            }
+            return true;
+        }
         if self.bin_overlay_is_open() {
             // The narrow bin paints a full-window scrim, so it owns keyboard
             // input as well as pointer input. Keep the one useful pane walk
@@ -335,6 +348,7 @@ impl VideoEditorApp {
             // were written down anywhere in the product.
             Key::Character(c) if c.as_str() == "?" || (shift && c.as_str() == "/") => {
                 self.navigation.help_open = !self.navigation.help_open;
+                self.help_scroll = 0.0;
                 true
             }
             // G opens a timecode field: type a time, press Enter, land there.
@@ -372,12 +386,41 @@ impl VideoEditorApp {
     /// Shared rather than derived twice: a click has to land on the card that
     /// was actually drawn, or dismiss-on-click-away fires while the pointer
     /// is over the field.
-    pub(super) fn goto_layout(&self, r: &Regions) -> Rect {
-        let w = 260.0_f64.min(self.rect.width() - 32.0);
-        Rect::from_center_size(
-            Point::new(self.rect.center().x, r.transport.y0 - 46.0),
-            (w, 76.0),
-        )
+    pub(super) fn goto_layout(
+        &self,
+        r: &Regions,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> GotoLayout {
+        let type_sizes = dialog_type(tr, theme);
+        let sp = &theme.tokens.spacing;
+        let (s1, s2, s3, s4) = (
+            f64::from(sp.s1),
+            f64::from(sp.s2),
+            f64::from(sp.s3),
+            f64::from(sp.s4),
+        );
+        let line_xs = line_height(tr, type_sizes.xs);
+        let line_xl = line_height(tr, type_sizes.xl);
+        // Three measured lines — caption, the timecode, the hint — each one
+        // spacing step apart, inside the card's inset; so the field grows
+        // with the text instead of drawing its 2× timecode through its hint.
+        let h = s3 + line_xs + s1 + line_xl + s1 + line_xs + s3;
+        let w = GOTO_CARD_W.min(self.rect.width() - 2.0 * s4);
+        // Anchored just above the transport, whose playhead time it edits.
+        let y1 = r.transport.y0 - s2;
+        let cx = self.rect.center().x;
+        let card = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
+        let label_top = card.y0 + s3;
+        let entry_top = label_top + line_xs + s1;
+        let hint_top = entry_top + line_xl + s1;
+        GotoLayout {
+            card,
+            type_sizes,
+            label_top,
+            entry_top,
+            hint_top,
+        }
     }
 
     /// Whether a full-window scrim is up — the editor behind it is
@@ -395,18 +438,24 @@ impl VideoEditorApp {
         // Modals own all clicks. The unsaved-work question is asked over the
         // export dialog too (Ctrl+O works while it is up), so it is first.
         if self.pending_open.is_some() {
-            let (_, cancel, discard, save) = self.discard_layout();
-            if cancel.contains(p) {
-                self.resolve_pending_open(state, DiscardChoice::Cancel);
-            } else if discard.contains(p) {
-                self.resolve_pending_open(state, DiscardChoice::Discard);
-            } else if save.contains(p) {
-                self.resolve_pending_open(state, DiscardChoice::Save);
-            }
+            // Laid out from the current state — see `chrome_theme`. The
+            // question has no scrim dismissal and no close control: its way
+            // out is the Cancel it shows.
+            let hit = self
+                .with_dialog_layout(|app, tr, theme| app.discard_layout(tr, theme))
+                .flatten()
+                .and_then(|l| l.modal.hit(p));
+            let choice = match hit {
+                Some(ModalHit::Action(0)) => DiscardChoice::Cancel,
+                Some(ModalHit::Action(1)) => DiscardChoice::Discard,
+                Some(ModalHit::Action(2)) => DiscardChoice::Save,
+                _ => return,
+            };
+            self.resolve_pending_open(state, choice);
             return;
         }
         if self.presentation.export_open {
-            self.press_export(state, r, p);
+            self.press_export(state, p);
             return;
         }
         // The shortcut sheet and the go-to-timecode field paint the same
@@ -414,13 +463,24 @@ impl VideoEditorApp {
         // same way. Before this, a click "on" the dimmed background reached
         // the clip, slider or Export button underneath — a real edit, made
         // invisibly, through a surface that said the editor was unavailable.
-        // Clicking away dismisses, which is what a scrim invites.
+        // Clicking away dismisses, which is what a scrim invites; the card
+        // itself keeps the click, as every modal card in the fleet does.
         if self.navigation.help_open {
-            self.navigation.help_open = false;
+            let dismisses = self
+                .with_dialog_layout(|app, tr, theme| app.help_layout(tr, theme).modal.dismisses(p))
+                .unwrap_or(false);
+            if dismisses {
+                self.navigation.help_open = false;
+            }
             return;
         }
         if self.goto_entry.is_some() {
-            if !self.goto_layout(r).contains(p) {
+            let outside = self
+                .with_dialog_layout(|app, tr, theme| {
+                    !app.goto_layout(r, tr, theme).card.contains(p)
+                })
+                .unwrap_or(false);
+            if outside {
                 self.goto_entry = None;
             }
             return;
@@ -585,7 +645,9 @@ impl VideoEditorApp {
         // it now sits at the ruler's right end: a chip inside a region that
         // scrubs has to be claimed before the region is, or pressing it just
         // moves the playhead to the far right.
-        if self.zoom_chip_rect(r).contains(p) {
+        // The playhead's head keeps the ruler's right end even where the
+        // chip sits: a press on the head scrubs, as it does anywhere else.
+        if self.zoom_chip_rect(r).contains(p) && !self.playhead_head_rect(r).contains(p) {
             self.zoom_to_fit(r);
             return;
         }
@@ -605,13 +667,16 @@ impl VideoEditorApp {
                 }
             }
             for (tid, _kind, lane) in self.lane_rects(r) {
-                let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+                let header = self.track_head_rect(r, &lane);
                 if header.contains(p) {
-                    if self.mute_pill_rect(header).contains(p) {
+                    // The same bands the paint reads (`chrome_layout::track_head`),
+                    // so the pill under the pointer is the pill that was drawn.
+                    let head = self.track_head_layout(header);
+                    if head.mute.contains(p) {
                         self.toggle_track_mute(state, tid);
-                    } else if self.lock_pill_rect(header).contains(p) {
+                    } else if head.lock.contains(p) {
                         self.toggle_track_lock(state, tid);
-                    } else if self.solo_pill_rect(header).contains(p) {
+                    } else if head.solo.contains(p) {
                         self.toggle_track_solo(state, tid);
                     }
                     return;
@@ -1183,53 +1248,55 @@ impl VideoEditorApp {
         self.drag = Some(Drag::CurvePoint { channel: ch, idx });
     }
 
-    pub(super) fn press_export(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
-        let l = self.export_layout(r);
-        if !l.card.contains(p) {
-            // Click outside the card dismisses. A render in flight is not
-            // abandoned by that: it keeps reporting from the topbar chip and
-            // its own live region, and the chip is the way back in here.
-            self.presentation.export_open = false;
+    pub(super) fn press_export(&mut self, state: &mut AutoCommit, p: Point) {
+        // Laid out from the current state, as the next frame will paint it —
+        // see `chrome_theme`.
+        let Some(l) = self.with_dialog_layout(|app, tr, theme| app.export_layout(tr, theme)) else {
             return;
-        }
-        for (res, rect) in &l.resolution {
-            if rect.contains(p) {
-                self.export.resolution = *res;
-                return;
-            }
-        }
-        for (c, rect) in &l.container {
-            if rect.contains(p) {
-                self.export.container = *c;
-                return;
-            }
-        }
-        for (f, rect) in &l.fps {
-            if rect.contains(p) {
-                self.export.frame_rate = *f;
-                return;
-            }
-        }
-        if l.cancel.contains(p) {
-            if self.export_running() {
-                // A render in flight: this is Cancel, not Close. Stop it and
-                // leave the dialog up so the outcome is visible here as well
-                // as in the chip.
-                if let Some(job) = self.export_job.as_ref() {
-                    job.cancel();
-                }
-            } else {
+        };
+        match l.modal.hit(p) {
+            // The close control, or a click outside the card, dismisses. A
+            // render in flight is not abandoned by that: it keeps reporting
+            // from the topbar chip and its own live region, and the chip is
+            // the way back in here.
+            Some(ModalHit::Close | ModalHit::Scrim) => {
                 self.presentation.export_open = false;
             }
-            return;
-        }
-        if l.confirm.contains(p) {
-            // Matches what the button paints: a disabled Export refuses rather
-            // than starting something that can only fail.
-            if self.export_is_offered() {
-                self.request_export();
+            Some(ModalHit::Action(0)) => {
+                if self.export_running() {
+                    // A render in flight: this is Cancel, not Close. Stop it
+                    // and leave the dialog up so the outcome is visible here
+                    // as well as in the chip.
+                    if let Some(job) = self.export_job.as_ref() {
+                        job.cancel();
+                    }
+                } else {
+                    self.presentation.export_open = false;
+                }
             }
-            let _ = state;
+            Some(ModalHit::Action(_)) => {
+                // Matches what the button paints: a disabled Export refuses
+                // rather than starting something that can only fail.
+                if self.export_is_offered() {
+                    self.request_export();
+                }
+                let _ = state;
+            }
+            Some(ModalHit::Card) => {
+                // Only an option the body shows can be chosen: on a window too
+                // short for even the compacted stack the groups run past the
+                // body's clip, and a row nobody can see must not answer.
+                let body = l.modal.body;
+                let shown = |rect: &Rect| rect.intersect(body).contains(p);
+                if let Some((res, _)) = l.resolution.iter().find(|(_, rect)| shown(rect)) {
+                    self.export.resolution = *res;
+                } else if let Some((c, _)) = l.container.iter().find(|(_, rect)| shown(rect)) {
+                    self.export.container = *c;
+                } else if let Some((f, _)) = l.fps.iter().find(|(_, rect)| shown(rect)) {
+                    self.export.frame_rate = *f;
+                }
+            }
+            None => {}
         }
     }
 }

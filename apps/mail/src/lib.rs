@@ -64,6 +64,7 @@ pub mod doc;
 pub mod draw;
 pub mod engine;
 pub mod html_mail;
+pub mod i18n;
 pub mod model;
 pub mod oauth;
 pub mod pane;

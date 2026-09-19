@@ -4600,17 +4600,7 @@ impl MusicApp {
         } else if let Some(qi) = queue_index {
             self.push_menu("Remove from queue", Action::RemoveFromQueue(qi));
         }
-        // ContextMenu owns placement: it flips above the anchor when
-        // appropriate, clamps to the app viewport, and scrolls internally if
-        // the complete action list cannot fit. Keeping geometry in the shared
-        // primitive gives an immediately correct hit target at the current
-        // text scale, before the next draw pass.
-        self.context.set_text_scale(self.context_text_scale);
-        self.context.set_viewport(Some(self.rect));
-        self.context
-            .open_at([self.mouse.x as f32, self.mouse.y as f32]);
-        self.layout_context_menu();
-        self.dirty = true;
+        self.open_context_menu_at_pointer();
     }
 
     /// Build + open the "Add to playlist…" secondary picker.
@@ -4643,29 +4633,22 @@ impl MusicApp {
             );
         }
 
-        self.context.set_text_scale(self.context_text_scale);
-        self.context.set_viewport(Some(self.rect));
-        self.context
-            .open_at([self.mouse.x as f32, self.mouse.y as f32]);
-        self.layout_context_menu();
-        self.dirty = true;
+        self.open_context_menu_at_pointer();
     }
 
-    /// Run the context menu's own layout pass against a throwaway taffy tree
-    /// so its `rect` (and row geometry) are populated for hit-testing + draw.
-    fn layout_context_menu(&mut self) {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let theme = Theme::dark().with_text_scale(self.context_text_scale);
-        let node = self.context.build_layout(&mut taffy, &theme, &mut node_map);
-        let _ = taffy.compute_layout(
-            node,
-            Size {
-                width: taffy::AvailableSpace::Definite(240.0),
-                height: taffy::AvailableSpace::MaxContent,
-            },
-        );
-        self.context.apply_layout(&taffy, node, Point::ZERO);
+    /// Open the populated context menu at the pointer, bounded by the app rect.
+    ///
+    /// `ContextMenu::open_anchored` owns the geometry: it measures its rows with
+    /// the frame's renderer and theme when it paints, flips above the anchor
+    /// when there is no room below, and clamps to the viewport. The previous
+    /// hand-rolled nudge guessed `220 × (rows·28 + 24)` and laid the menu out
+    /// against `Theme::dark()` regardless of the live theme, so its hit rows
+    /// could disagree with the painted ones at any other density or scale.
+    fn open_context_menu_at_pointer(&mut self) {
+        let anchor = Rect::from_origin_size(self.mouse, (0.0, 0.0));
+        self.context.set_text_scale(self.context_text_scale);
+        self.context.open_anchored(anchor, self.rect);
+        self.dirty = true;
     }
 
     /// Keep the imperatively owned shared menu aligned with the current

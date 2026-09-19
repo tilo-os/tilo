@@ -433,7 +433,12 @@ impl Flex {
             scene.fill(Fill::NonZero, transform, fill, None, &self.shape(s.radius));
         }
         if let Some((w, c)) = s.border {
-            scene.stroke(&Stroke::new(w), transform, c, None, &self.shape(s.radius));
+            // A crisp inset stroke: half the width inside the rect, so the
+            // border covers the surface's outermost pixels instead of
+            // bleeding half a pixel onto the ground beside it.
+            let outline =
+                RoundedRect::from_rect(self.rect.inset(-w / 2.0), (s.radius - w / 2.0).max(0.0));
+            scene.stroke(&Stroke::new(w), transform, c, None, &outline);
         }
     }
 
