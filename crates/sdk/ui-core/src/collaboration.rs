@@ -40,11 +40,13 @@ pub use runtime_collab::{
 use crate::presence::PresenceKey;
 
 use runtime_portal::RawFd;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::LocalSet;
 
@@ -53,6 +55,10 @@ use tokio::task::LocalSet;
 /// Every step before the report is a local syscall, so reaching this means
 /// something upstream is wedged.
 const SHOVEL_INIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// One absolute deadline for each host identity request/response exchange.
+/// The identity client drops a failed stream, so this also bounds shutdown of
+/// partial and late replies without blocking the shovel's LocalSet.
+const HOST_IDENTITY_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Maximum number of UI-to-shovel commands waiting behind a slow broker.
 /// This deliberately caps commands, rather than bytes, because the protocol
@@ -1508,15 +1514,17 @@ impl InboundBridge {
 /// durable identity and requested route; an old handoff must not be replayed.
 pub struct HostSessionConnector {
     connect: Box<dyn FnOnce(RouteSpec) -> HostSessionFuture + Send>,
+    identity_exchange_timeout: Duration,
 }
+
+trait HostAsyncIo: AsyncRead + AsyncWrite {}
+impl<T: AsyncRead + AsyncWrite> HostAsyncIo for T {}
+type HostAsyncStream = Pin<Box<dyn HostAsyncIo>>;
 
 type HostSessionFuture = std::pin::Pin<
     Box<
         dyn std::future::Future<
-                Output = Result<
-                    (runtime_collab::CollabClient, SdkJoinIdentity),
-                    runtime_portal::NotAvailable,
-                >,
+                Output = Result<(HostAsyncStream, HostAsyncStream), runtime_portal::NotAvailable>,
             >,
     >,
 >;
@@ -1524,41 +1532,47 @@ type HostSessionFuture = std::pin::Pin<
 impl HostSessionConnector {
     /// Supply a factory for an owned collaboration stream and broker signer.
     ///
-    /// The factory runs only inside the SDK worker's Tokio runtime/LocalSet,
-    /// so it may register an owned Windows pipe handle or Unix socket there.
-    /// Only the factory and its captures cross threads; its future, stream and
-    /// Cap'n Proto client may be !Send. It must authenticate both endpoints and
-    /// enforce the requested route, and bound synchronous signer I/O itself.
+    /// The factory runs only inside the SDK worker's Tokio runtime/LocalSet and
+    /// returns separate owned collaboration and identity transports. Only the
+    /// factory and its captures cross threads; its future and streams may be
+    /// !Send. It must authenticate both endpoints and enforce the requested
+    /// route. Shared code frames and bounds every identity exchange async.
     /// Async setup is bounded by the existing shovel initialization timeout.
     ///
     /// Merely returning metadata does not establish authentication. Do not use
     /// this constructor as a replacement for host transport/grant validation.
-    pub fn new<F, Fut, S>(connect: F) -> Self
+    pub fn new<F, Fut, C, I>(connect: F) -> Self
     where
         F: FnOnce(RouteSpec) -> Fut + Send + 'static,
-        Fut: std::future::Future<
-                Output = Result<
-                    (S, runtime_identity::BrokerSigningIdentity),
-                    runtime_portal::NotAvailable,
-                >,
-            > + 'static,
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+        Fut: std::future::Future<Output = Result<(C, I), runtime_portal::NotAvailable>> + 'static,
+        C: AsyncRead + AsyncWrite + 'static,
+        I: AsyncRead + AsyncWrite + 'static,
     {
         Self {
             connect: Box::new(move |route| {
                 Box::pin(async move {
-                    let cluster_id = route.cluster_id;
-                    let (stream, identity) = connect(route).await?;
-                    let identity = sdk_join_identity_from(identity, cluster_id)?;
-                    let rpc = runtime_portal::CapnpClient::from_connected_io(
-                        stream,
-                        capnp_rpc::rpc_twoparty_capnp::Side::Client,
-                    );
-                    let raw: runtime_collab::CollabServiceClient = rpc.bootstrap();
-                    Ok((runtime_collab::CollabClient::from_raw(raw), identity))
+                    let (collaboration, identity) = connect(route).await?;
+                    Ok((
+                        Box::pin(collaboration) as HostAsyncStream,
+                        Box::pin(identity) as HostAsyncStream,
+                    ))
                 })
             }),
+            identity_exchange_timeout: HOST_IDENTITY_EXCHANGE_TIMEOUT,
         }
+    }
+
+    #[cfg(test)]
+    fn with_identity_timeout<F, Fut, C, I>(timeout: Duration, connect: F) -> Self
+    where
+        F: FnOnce(RouteSpec) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<(C, I), runtime_portal::NotAvailable>> + 'static,
+        C: AsyncRead + AsyncWrite + 'static,
+        I: AsyncRead + AsyncWrite + 'static,
+    {
+        let mut connector = Self::new(connect);
+        connector.identity_exchange_timeout = timeout;
+        connector
     }
 }
 
@@ -1724,6 +1738,30 @@ enum SdkDocumentSigner {
     Harness(Box<ed25519_dalek::SigningKey>),
 }
 
+/// Identity state after the shovel thread has entered its LocalSet. The host
+/// signer may be !Send because it is constructed there and never crosses the
+/// thread boundary; inherited Unix and harness identities remain Send.
+struct LocalSdkJoinIdentity {
+    presentation: Vec<u8>,
+    participant_kind: &'static str,
+    signer: LocalSdkDocumentSigner,
+}
+
+enum LocalSdkDocumentSigner {
+    Inherited(SdkDocumentSigner),
+    Host(runtime_identity::AsyncBrokerSigningIdentity),
+}
+
+impl From<SdkJoinIdentity> for LocalSdkJoinIdentity {
+    fn from(identity: SdkJoinIdentity) -> Self {
+        Self {
+            presentation: identity.presentation,
+            participant_kind: identity.participant_kind,
+            signer: LocalSdkDocumentSigner::Inherited(identity.signer),
+        }
+    }
+}
+
 fn harness_document_signer() -> SdkDocumentSigner {
     SdkDocumentSigner::Harness(Box::new(ed25519_dalek::SigningKey::generate(
         &mut rand_core::OsRng,
@@ -1764,6 +1802,40 @@ fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(
         presentation,
         participant_kind: "person",
         signer: SdkDocumentSigner::Certified(Box::new(identity)),
+    })
+}
+
+async fn sdk_join_identity_from_host(
+    mut identity: runtime_identity::AsyncBrokerSigningIdentity,
+    cluster_id: Uuid,
+) -> Result<LocalSdkJoinIdentity, runtime_portal::NotAvailable> {
+    let device_certificate = identity
+        .device_certificate()
+        .map(<[u8]>::to_vec)
+        .ok_or_else(|| {
+            runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "workspace identity has no certified device",
+            ))
+        })?;
+    let workspace_id = cluster_id.to_string();
+    let proof = identity.sign_collaboration_join(&workspace_id).await?;
+    let presentation = runtime_collab::CertifiedJoinIdentity {
+        workspace_id,
+        device_certificate,
+        proof: proof.to_vec(),
+    }
+    .encode()
+    .map_err(|error| {
+        runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("encoding certified collaboration join failed: {error}"),
+        ))
+    })?;
+    Ok(LocalSdkJoinIdentity {
+        presentation,
+        participant_kind: "person",
+        signer: LocalSdkDocumentSigner::Host(identity),
     })
 }
 
@@ -2814,8 +2886,35 @@ fn run_shovel(
     local.block_on(&rt, async move {
         let session = match source {
             SdkConnectSource::Host(connector, route) => {
+                let cluster_id = route.cluster_id;
+                let identity_timeout = connector.identity_exchange_timeout;
                 match tokio::time::timeout(SHOVEL_INIT_TIMEOUT, (connector.connect)(route)).await {
-                    Ok(result) => result,
+                    Ok(Ok((collaboration_stream, identity_stream))) => {
+                        let identity =
+                            runtime_identity::AsyncBrokerSigningIdentity::from_connected_io(
+                                identity_stream,
+                                identity_timeout,
+                            )
+                            .await;
+                        match identity {
+                            Ok(identity) => {
+                                match sdk_join_identity_from_host(identity, cluster_id).await {
+                                    Ok(identity) => {
+                                        let rpc = runtime_portal::CapnpClient::from_connected_io(
+                                            collaboration_stream,
+                                            capnp_rpc::rpc_twoparty_capnp::Side::Client,
+                                        );
+                                        let raw: runtime_collab::CollabServiceClient =
+                                            rpc.bootstrap();
+                                        Ok((runtime_collab::CollabClient::from_raw(raw), identity))
+                                    }
+                                    Err(error) => Err(error),
+                                }
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Ok(Err(error)) => Err(error),
                     Err(_) => Err(runtime_portal::NotAvailable::ConnectionFailed(
                         std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
@@ -2825,12 +2924,14 @@ fn run_shovel(
                 }
             }
             source => source.build_client().and_then(|client| {
-                identity.map(|identity| (client, identity)).ok_or_else(|| {
-                    runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "missing collaboration signing identity",
-                    ))
-                })
+                identity
+                    .map(|identity| (client, identity.into()))
+                    .ok_or_else(|| {
+                        runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "missing collaboration signing identity",
+                        ))
+                    })
             }),
         };
         let (client, identity) = match session {
@@ -2859,14 +2960,14 @@ fn run_shovel(
 )]
 async fn drive_shovel(
     client: runtime_collab::CollabClient,
-    identity: SdkJoinIdentity,
+    identity: LocalSdkJoinIdentity,
     mut outbound_rx: tokio_mpsc::Receiver<QueuedSdkCommand>,
     inbound_tx: InboundBridge,
 ) {
-    let SdkJoinIdentity {
+    let LocalSdkJoinIdentity {
         presentation,
         participant_kind,
-        signer,
+        mut signer,
     } = identity;
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
@@ -2914,7 +3015,7 @@ async fn drive_shovel(
                     continue;
                 };
                 if let Some(route) = routes.get_mut(key) {
-                    dispatch_sdk_request(route, request, &signer, &inbound_tx).await;
+                    dispatch_sdk_request(route, request, &mut signer, &inbound_tx).await;
                 }
             }
             SdkCommand::Join(spec) => {
@@ -2944,7 +3045,7 @@ async fn drive_shovel(
                 if joined.is_ok()
                     && let Some(route) = routes.get_mut(&key)
                 {
-                    dispatch_sdk_request(route, request, &signer, &inbound_tx).await;
+                    dispatch_sdk_request(route, request, &mut signer, &inbound_tx).await;
                 }
             }
             SdkCommand::PrimaryReady(reply) => {
@@ -3471,7 +3572,7 @@ fn next_certified_document_seq(now: std::time::SystemTime) -> u64 {
 )]
 async fn send_document_mutation(
     route: &SdkRoute,
-    signer: &SdkDocumentSigner,
+    signer: &mut LocalSdkDocumentSigner,
     mutation: collab_types::DocumentMutation,
 ) {
     let workspace_id = route.spec.cluster_id.to_string();
@@ -3490,8 +3591,13 @@ async fn send_document_mutation(
     };
     let now = std::time::SystemTime::now();
     let author = match signer {
-        SdkDocumentSigner::Certified(identity) => identity.signing_public_key(),
-        SdkDocumentSigner::Harness(key) => key.verifying_key().to_bytes(),
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
+            identity.signing_public_key()
+        }
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
+            key.verifying_key().to_bytes()
+        }
+        LocalSdkDocumentSigner::Host(identity) => identity.signing_public_key(),
     };
     let artifact = collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id);
     let author = collab_types::Ed25519PublicKey::from_bytes(author);
@@ -3527,12 +3633,9 @@ async fn send_document_mutation(
         }
     };
     let signature = match signer {
-        SdkDocumentSigner::Certified(identity) => match identity.sign_collaboration_op(
-            &workspace_id,
-            &route.spec.app_id,
-            record_id,
-            &unsigned_op,
-        ) {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => match identity
+            .sign_collaboration_op(&workspace_id, &route.spec.app_id, record_id, &unsigned_op)
+        {
             Ok(signature) => signature,
             Err(error) => {
                 tracing::warn!(
@@ -3542,7 +3645,20 @@ async fn send_document_mutation(
                 return;
             }
         },
-        SdkDocumentSigner::Harness(key) => {
+        LocalSdkDocumentSigner::Host(identity) => match identity
+            .sign_collaboration_op(&workspace_id, &route.spec.app_id, record_id, &unsigned_op)
+            .await
+        {
+            Ok(signature) => signature,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "collab: host identity service denied document operation; dropping"
+                );
+                return;
+            }
+        },
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
             use ed25519_dalek::Signer as _;
             let signing_bytes = match op.signing_bytes() {
                 Ok(bytes) => bytes,
@@ -3815,7 +3931,7 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
 async fn dispatch_sdk_request(
     route: &mut SdkRoute,
     request: CollabRequest,
-    signer: &SdkDocumentSigner,
+    signer: &mut LocalSdkDocumentSigner,
     inbound_tx: &InboundBridge,
 ) {
     match request {
@@ -4921,35 +5037,12 @@ mod tests {
         }
     }
 
-    struct HostIdentityFixture {
-        input: std::io::Cursor<Vec<u8>>,
-        output: Arc<std::sync::Mutex<Vec<u8>>>,
-    }
-
-    impl std::io::Read for HostIdentityFixture {
-        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-            std::io::Read::read(&mut self.input, bytes)
-        }
-    }
-
-    impl std::io::Write for HostIdentityFixture {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.output.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     fn host_identity_fixture(
         certificate: Option<Vec<u8>>,
         replies: Vec<runtime_identity::wire::Response>,
-    ) -> (
-        runtime_identity::BrokerSigningIdentity,
-        Arc<std::sync::Mutex<Vec<u8>>>,
-    ) {
+    ) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
         use runtime_identity::wire::Response;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         let mut responses = vec![Response::Metadata {
             display_name: "Host fixture".into(),
             avatar_color: [1, 2, 3],
@@ -4961,20 +5054,34 @@ mod tests {
             share_index: 1,
         }];
         responses.extend(replies);
-        let mut bytes = Vec::new();
-        for response in responses {
-            let frame = postcard::to_allocvec(&response).unwrap();
-            bytes.extend_from_slice(&u32::try_from(frame.len()).unwrap().to_le_bytes());
-            bytes.extend(frame);
-        }
         let output = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let identity =
-            runtime_identity::BrokerSigningIdentity::from_connected_io(HostIdentityFixture {
-                input: std::io::Cursor::new(bytes),
-                output: output.clone(),
-            })
-            .unwrap();
-        (identity, output)
+        let captured = output.clone();
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        tokio::task::spawn_local(async move {
+            for response in responses {
+                let mut len = [0; 4];
+                if server.read_exact(&mut len).await.is_err() {
+                    return;
+                }
+                let body_len = u32::from_le_bytes(len) as usize;
+                let mut body = vec![0; body_len];
+                if server.read_exact(&mut body).await.is_err() {
+                    return;
+                }
+                captured.lock().unwrap().extend_from_slice(&len);
+                captured.lock().unwrap().extend_from_slice(&body);
+                let frame = postcard::to_allocvec(&response).unwrap();
+                if server
+                    .write_all(&u32::try_from(frame.len()).unwrap().to_le_bytes())
+                    .await
+                    .is_err()
+                    || server.write_all(&frame).await.is_err()
+                {
+                    return;
+                }
+            }
+        });
+        (client, output)
     }
 
     fn host_identity_requests(bytes: &[u8]) -> Vec<runtime_identity::wire::Request> {
@@ -5013,18 +5120,12 @@ mod tests {
             let local = Rc::new(());
             tokio::task::yield_now().await;
             drop(local);
-            Err::<
-                (
-                    tokio::io::DuplexStream,
-                    runtime_identity::BrokerSigningIdentity,
-                ),
-                _,
-            >(runtime_portal::NotAvailable::ConnectionFailed(
-                std::io::Error::new(
+            Err::<(tokio::io::DuplexStream, tokio::io::DuplexStream), _>(
+                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     "fixture host refused its grant",
-                ),
-            ))
+                )),
+            )
         });
         let result = CollaborationManager::for_route_host(
             connector,
@@ -5059,10 +5160,7 @@ mod tests {
             started_tx.send(()).unwrap();
             std::future::pending::<
                 Result<
-                    (
-                        tokio::io::DuplexStream,
-                        runtime_identity::BrokerSigningIdentity,
-                    ),
+                    (tokio::io::DuplexStream, tokio::io::DuplexStream),
                     runtime_portal::NotAvailable,
                 >,
             >()
