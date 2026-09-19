@@ -1988,14 +1988,35 @@ impl CollaborationManager {
     ///
     /// # Errors
     /// Returns the host/identity/transport error or primary-route refusal.
-    pub fn for_route_host(
+    pub async fn for_route_host(
         connector: HostSessionConnector,
-        app_id: impl Into<String>,
+        app_id: String,
         cluster_id: Uuid,
         record: Option<String>,
         handle: Option<String>,
     ) -> Result<Self, runtime_portal::NotAvailable> {
-        let app_id = app_id.into();
+        tokio::task::spawn_blocking(move || {
+            Self::for_route_host_blocking(connector, app_id, cluster_id, record, handle)
+        })
+        .await
+        .map_err(|error| {
+            runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::other(format!(
+                "host collaboration bootstrap worker failed: {error}"
+            )))
+        })?
+    }
+
+    /// Synchronous implementation retained inside the background bootstrap
+    /// task and deterministic unit harnesses. Production callers only receive
+    /// the async entry point above, so identity and primary-route deadlines do
+    /// not stall the application's owner/frame thread.
+    fn for_route_host_blocking(
+        connector: HostSessionConnector,
+        app_id: String,
+        cluster_id: Uuid,
+        record: Option<String>,
+        handle: Option<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
         let route = RouteSpec {
             app_id: app_id.clone(),
             cluster_id,
@@ -3031,6 +3052,9 @@ async fn drive_shovel(
                 };
                 if let Some(route) = routes.get_mut(key) {
                     dispatch_sdk_request(route, request, &mut signer, &inbound_tx).await;
+                    if !inbound_tx.state.is_healthy() {
+                        break;
+                    }
                 }
             }
             SdkCommand::Join(spec) => {
@@ -3061,6 +3085,9 @@ async fn drive_shovel(
                     && let Some(route) = routes.get_mut(&key)
                 {
                     dispatch_sdk_request(route, request, &mut signer, &inbound_tx).await;
+                    if !inbound_tx.state.is_healthy() {
+                        break;
+                    }
                 }
             }
             SdkCommand::PrimaryReady(reply) => {
@@ -3589,6 +3616,7 @@ async fn send_document_mutation(
     route: &SdkRoute,
     signer: &mut LocalSdkDocumentSigner,
     mutation: collab_types::DocumentMutation,
+    bridge_state: &BridgeState,
 ) {
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
@@ -3666,6 +3694,9 @@ async fn send_document_mutation(
         {
             Ok(signature) => signature,
             Err(error) => {
+                if !identity.is_usable() {
+                    bridge_state.fail_closed("host identity signing transport");
+                }
                 tracing::warn!(
                     ?error,
                     "collab: host identity service denied document operation; dropping"
@@ -3957,7 +3988,7 @@ async fn dispatch_sdk_request(
             }
         }
         CollabRequest::Document { mutation } => {
-            send_document_mutation(route, signer, mutation).await;
+            send_document_mutation(route, signer, mutation, &inbound_tx.state).await;
         }
         CollabRequest::RequestDocumentSnapshot => {
             let _ = route.channel.request_document_snapshot().await;
@@ -5142,7 +5173,7 @@ mod tests {
                 )),
             )
         });
-        let result = CollaborationManager::for_route_host(
+        let result = CollaborationManager::for_route_host_blocking(
             connector,
             "dev.tilo.notes",
             cluster_id,
@@ -5183,7 +5214,7 @@ mod tests {
         });
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         let caller = thread::spawn(move || {
-            let result = CollaborationManager::for_route_host(
+            let result = CollaborationManager::for_route_host_blocking(
                 connector,
                 "dev.tilo.notes",
                 Uuid::new_v4(),
@@ -5215,7 +5246,7 @@ mod tests {
             let (stream, _peer) = tokio::io::duplex(4096);
             Ok((stream, identity))
         });
-        let result = CollaborationManager::for_route_host(
+        let result = CollaborationManager::for_route_host_blocking(
             connector,
             "dev.tilo.notes",
             Uuid::new_v4(),
@@ -5246,7 +5277,7 @@ mod tests {
             let (stream, _peer) = tokio::io::duplex(4096);
             Ok((stream, identity))
         });
-        let result = CollaborationManager::for_route_host(
+        let result = CollaborationManager::for_route_host_blocking(
             connector,
             "dev.tilo.notes",
             Uuid::new_v4(),
@@ -5299,7 +5330,7 @@ mod tests {
             });
             Ok((client, identity))
         });
-        let mut manager = CollaborationManager::for_route_host(
+        let mut manager = CollaborationManager::for_route_host_blocking(
             connector,
             "dev.tilo.notes",
             cluster_id,
@@ -5463,7 +5494,7 @@ mod tests {
         let (connector, release) =
             host_join_gate_connector(false, calls.clone(), attempt_tx, stop_tx);
         let cluster_id = Uuid::new_v4();
-        let result = CollaborationManager::for_route_host(
+        let result = CollaborationManager::for_route_host_blocking(
             connector,
             "dev.tilo.notes",
             cluster_id,
@@ -5503,7 +5534,7 @@ mod tests {
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         let started = Instant::now();
         let caller = thread::spawn(move || {
-            let result = CollaborationManager::for_route_host(
+            let result = CollaborationManager::for_route_host_blocking(
                 connector,
                 "dev.tilo.notes",
                 cluster_id,
