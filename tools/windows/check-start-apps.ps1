@@ -9,7 +9,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'windows-app-names.ps1')
+. (Join-Path $PSScriptRoot 'app-names.ps1')
 if (-not $IsWindows) { throw 'Run this check from PowerShell on Windows.' }
 $installDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Tilo/Applications'
 $expected = @{}
@@ -49,4 +49,4 @@ do {
     if ([DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 500 }
 } while ([DateTime]::UtcNow -lt $deadline)
 
-throw "Windows has not registered these installed apps in Start: $($missing -join ', '). The shortcut files alone do not prove installation. Packaged terminals or agents can redirect AppData writes into a private package cache that Explorer cannot see. First verify the executable and shortcut paths from an ordinary, unpackaged PowerShell session and rerun the installer there if they are missing. If the real files exist, investigate Explorer's app catalog. Rerun tools/check-windows-start-apps.ps1 -Apps $($Apps -join ',')."
+throw "Windows has not registered these installed apps in Start: $($missing -join ', '). The shortcut files alone do not prove installation. Packaged terminals or agents can redirect AppData writes into a private package cache that Explorer cannot see. First verify the executable and shortcut paths from an ordinary, unpackaged PowerShell session and rerun the installer there if they are missing. If the real files exist, investigate Explorer's app catalog. Rerun tools/windows/check-start-apps.ps1 -Apps $($Apps -join ',')."

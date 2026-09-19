@@ -12,15 +12,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'windows-app-names.ps1')
-. (Join-Path $PSScriptRoot 'windows-install-path.ps1')
+. (Join-Path $PSScriptRoot 'app-names.ps1')
+. (Join-Path $PSScriptRoot 'install-path.ps1')
 if (-not $IsWindows) { throw 'Run this installer from PowerShell on Windows.' }
 if ($Apps.Count -eq 0) { throw 'Select at least one application.' }
 $installDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Tilo/Applications'
 $menuDirectory = Join-Path ([Environment]::GetFolderPath('Programs')) 'Tilo'
 Assert-TiloPublicInstallDirectory $installDirectory
 Assert-TiloPublicInstallDirectory $menuDirectory
-$repository = Split-Path -Parent $PSScriptRoot
+$repository = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $applications = $Apps | Select-Object -Unique
 $buildArguments = @('build', '--locked', '--profile', $Profile, '--jobs', $Jobs, '--message-format=json-render-diagnostics')
 foreach ($application in $applications) { $buildArguments += @('-p', $application) }
@@ -87,13 +87,13 @@ Get-ChildItem -LiteralPath $fontSource -Recurse -File | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $fontTarget -Force
 }
 $shortcutShell = New-Object -ComObject WScript.Shell
-& (Join-Path $PSScriptRoot 'install-windows-dxc.ps1')
+& (Join-Path $PSScriptRoot 'install-dxc.ps1')
 if ('pdf-viewer' -in $applications -or 'file-explorer' -in $applications) {
-    & (Join-Path $PSScriptRoot 'install-windows-pdfium.ps1')
+    & (Join-Path $PSScriptRoot 'install-pdfium.ps1')
 }
 # Detect actual native media imports, so every app shares the same runtime
 # without maintaining per-app environment variables or launcher wrappers.
-& (Join-Path $PSScriptRoot 'install-windows-gstreamer.ps1') -SourcePrefix $GStreamerPrefix -Destination $installDirectory -ApplicationExecutables @($executables.Values)
+& (Join-Path $PSScriptRoot 'install-gstreamer.ps1') -SourcePrefix $GStreamerPrefix -Destination $installDirectory -ApplicationExecutables @($executables.Values)
 foreach ($application in $applications) {
     $destination = Join-Path $installDirectory "$application.exe"
     Copy-Item -LiteralPath $executables[$application] -Destination $destination -Force
@@ -131,4 +131,4 @@ foreach ($application in $applications) {
 
 # Explorer can retain a stale app catalog even when the shortcuts are valid.
 # Do not report a successful installation without checking what Start exposes.
-& (Join-Path $PSScriptRoot 'check-windows-start-apps.ps1') -Apps $applications
+& (Join-Path $PSScriptRoot 'check-start-apps.ps1') -Apps $applications
