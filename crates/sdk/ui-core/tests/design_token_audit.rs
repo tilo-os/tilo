@@ -50,6 +50,14 @@ fn walk(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+fn repository_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .expect("UI crate lives under crates/sdk in the repository")
+        .to_path_buf()
+}
+
 fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
     vec![
         // Hard-coded RGB literal palette values. Require a digit as the first
@@ -363,7 +371,7 @@ fn theme_escape_hatches_do_not_grow() {
 #[test]
 fn app_and_shell_theme_escape_hatches_do_not_grow() {
     let ui_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repository = ui_root.parent().expect("ui crate lives in the repository");
+    let repository = repository_root();
     let mut files = Vec::new();
     walk(&repository.join("apps"), &mut files);
     walk(&repository.join("crates/session/shell/src"), &mut files);
@@ -373,7 +381,7 @@ fn app_and_shell_theme_escape_hatches_do_not_grow() {
     );
     files.sort();
 
-    let found = ratcheted_counts(&files, repository);
+    let found = ratcheted_counts(&files, &repository);
     let baseline_path = ui_root.join(APP_SHELL_BASELINE);
     if std::env::var_os("UPDATE_APP_SHELL_DESIGN_BASELINE").is_some_and(|value| value == "1") {
         write_baseline(&baseline_path, &found);
@@ -403,11 +411,7 @@ fn app_and_shell_theme_escape_hatches_do_not_grow() {
 /// user-facing app window.
 #[test]
 fn product_apps_use_the_shared_responsive_launcher() {
-    let ui_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let apps = ui_root
-        .parent()
-        .expect("ui crate lives in the repository")
-        .join("apps");
+    let apps = repository_root().join("apps");
     let mut missing = Vec::new();
     for entry in fs::read_dir(&apps)
         .expect("apps directory exists")

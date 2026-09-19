@@ -8,7 +8,7 @@ use std::borrow::Cow;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 
 use crate::a11y::AccessNode;
 use crate::color_compat::ColorCompat;
@@ -99,12 +99,12 @@ impl<'a> ChoiceCardFace<'a> {
             .paint(scene, transform, theme);
 
         let foreground = if self.emphasized {
-            Color::WHITE
+            theme.tokens.colors.on_accent(4.5)
         } else {
             theme.tokens.colors.text_primary
         };
         let secondary = if self.emphasized {
-            Color::WHITE.with_alpha_factor(0.82)
+            foreground.with_alpha_factor(0.82)
         } else {
             theme.tokens.colors.text_dim
         };
@@ -115,7 +115,7 @@ impl<'a> ChoiceCardFace<'a> {
             self.rect.center().y + 16.0,
         );
         let tile_fill = if self.emphasized {
-            Color::WHITE.with_alpha_factor(0.18)
+            crate::tokens::Colors::hairline_on(theme.accent_primary, 46)
         } else {
             theme.accent_primary.with_alpha_factor(0.14)
         };
