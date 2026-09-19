@@ -40,6 +40,7 @@ class TrustedLocalModules:
         'create_app_receipt': 'apps/create_app_receipt.py',
         'final_app_receipt': 'apps/final_app_receipt.py',
         'assemble_app_collection': 'apps/assemble_app_collection.py',
+        'app_packaging_contract': 'app_packaging_contract.py',
         'app_packaging_plan': 'app_packaging_plan.py',
         'app_packaging_qualification': 'app_packaging_qualification.py',
         'app_packaging_product': 'app_packaging_product.py',
