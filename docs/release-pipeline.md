@@ -5,10 +5,18 @@ does not fan out into unrelated builds:
 
 | Component | Publication trigger | Expensive work | Published output |
 |---|---|---|---|
-| Apps | A relevant `main` change, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Changed apps once per enabled native architecture | Independently versioned qpkgs and immutable collection bundles |
-| Desktop session | A relevant `main` change or `desktop-vX.Y.Z` | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload on `main` |
+| Apps | `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Selected apps once per enabled native architecture | Independently versioned qpkgs and immutable collection bundles |
+| Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
 | OS | `vX.Y.Z`, or a manual **Release / OS** run from `main` with `publish` | Bootc image, sealed-image reproducibility and VM gates | Signed generation image, SBOM and provenance |
-| Imager | `imager-vX.Y.Z` | Native host packages and signed installer media | Linux, Windows and macOS downloads |
+| Imager | `imager-vX.Y.Z` | Native host packages and signed installer media | Linux and Windows downloads; macOS definitions retained but disabled |
+
+Continuous app packaging is the staged target, not an enabled default. Ordinary
+`main` pushes do not trigger **Release / apps**, and the guarded packaging
+coordinator is not active. Its first collection qualification is non-publishing;
+it does not itself enable continuous publication. The
+[product matrix](ci-product-matrix.md) distinguishes available definitions from
+qualified targets, including Windows apps still awaiting release qualification.
+OS publication remains deliberate through tags or explicit dispatches.
 
 Kernel, base-image, RPM and WPE buildroot snapshots remain input-promotion
 workflows. They run only when their pinned input set changes; an OS release
@@ -27,14 +35,19 @@ same signed native build and freshness checks.
 Pull requests use the cheapest lane that proves the affected boundary:
 
 - Rust tests use the affected-package graph in **Check affected workspace packages**.
-- Desktop packaging runs only when desktop/package inputs change. Its sccache
-  namespace is shared by architecture; compiler identity and native headers are
-  part of each cache key, so ABI-incompatible objects cannot collide.
-- OS pull requests build without WPE WebKit. WPE has its own signed snapshot
-  gate, while tagged OS releases require and include it.
-- Imager pull requests build and launch the Linux x86_64 package. A tag (or a
-  manual run with `full_native`) expands to Linux ARM64, Windows and both macOS
-  architectures before publication.
+- **Release / apps** computes the affected-app plan on PRs without native
+  release packaging.
+- Desktop PRs with matching packaging inputs run preflight contracts. Full
+  distribution builds run weekly, on tags, or by explicit dispatch. Their
+  sccache namespace is shared by architecture; compiler identity and native
+  headers remain part of each cache key.
+- Full OS builds run weekly, on tags, or by explicit dispatch, not on PRs or
+  ordinary `main` pushes. WPE has its own signed snapshot gate; tagged OS
+  releases require and include it.
+- Ordinary imager changes use the affected-package checks. Native imager
+  packaging runs only on tags or manual dispatches. Manual runs default to
+  Linux x86_64; tags or `full_native` add Linux ARM64 and Windows on both
+  architectures. macOS jobs remain disabled even with `full_native`.
 
 Release jobs never use an Actions cache as an artifact hand-off. Forgejo cache
 entries are opportunistic and workflow artifacts are scoped to one run. Each
@@ -47,8 +60,8 @@ again.
 
 The desktop release retains its complete ARM64 matrix and verifier behind the
 `TILO_DESKTOP_ARM64_RELEASES` capability switch. It is currently `"1"`: tagged
-and explicit full-native builds use the registered native `runner-arm64` pool
-and publish both architectures, while ordinary changes retain the amd64 lane.
+and explicit full-native builds use native amd64 and ARM64 runners. Weekly and default manual builds use the amd64 lane;
+PRs run preflight only. Desktop package publication requires a tag.
 No package or artifact definition needs to change if scheduling is paused.
 
 The Fedora desktop lane also emits a small deterministic OS payload containing
@@ -57,9 +70,8 @@ binaries. A successful `main` build publishes it immutably and advances
 `TILO_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`. Trusted OS composition
 downloads the matching architecture and omits those three Cargo packages from
 its build. OS-only changes therefore test the desktop/OS integration without
-recompiling the desktop. Pull requests receive only a short-lived, workflow-
-restricted package-read token, so they exercise the same immutable integration
-boundary without a reusable registry credential.
+recompiling the desktop. Scheduled/manual OS builds exercise this immutable
+integration boundary; ordinary PRs do not run the OS image workflow.
 
 Each architecture collection also contains the signed `tilo-runtime` bundle
 built in the same Cargo graph as its thin app binaries. The OS verifies and
@@ -81,9 +93,8 @@ digest variables automatically. Architecture-specific
 both native lanes publish; the unsuffixed pair remains the x86_64
 compatibility channel.
 
-Main-branch publication and pull-request builds default to both native
-architectures, as does manual app publication. During
-bootstrap, `architectures=x86_64` (or `aarch64`) may publish one architecture
+Manual app packaging defaults to both native architectures; PRs only plan
+which apps are affected. During bootstrap, `architectures=x86_64` (or `aarch64`) may publish one architecture
 without waiting for an unavailable native runner; tagged releases always
 enforce the complete `x86_64 aarch64` matrix.
 
@@ -109,25 +120,24 @@ python3 tools/apps/app_release.py --collection recovery
 TILO_RELEASE_APPS='notes calculator' dist/apps/package-apps.sh
 ```
 
-On a normal main push, **Release / apps** selects and publishes directly changed
-apps plus app binaries that transitively depend on a changed workspace crate,
-then assembles the default collection from those qpkgs and the unchanged
-members of the prior collection. A collection tag validates the complete
-requested set. Component tags are immutable publication boundaries and require
-the configured `QPKG_PUBLISHER_IDENTITY` secret.
-Manual desktop and imager runs with `full_native` exercise their full build
-matrices without publishing, which makes them safe release rehearsals.
+The staged coordinator uses the dependency graph to select directly changed
+apps plus app binaries that transitively depend on a changed workspace crate.
+Reusing unchanged collection members requires a previously verified baseline;
+the first qualification therefore builds the full selected collection. This
+path remains separate from enabled tag/manual publication. A collection tag
+validates the complete requested set. Component tags are immutable publication
+boundaries and require the configured `QPKG_PUBLISHER_IDENTITY` secret.
 
-OS pushes remain non-publishing while CI capacity is constrained, but trusted
-`main`, scheduled, and manual runs still perform the independent rebuild,
-installed-VM, desktop, app, and OS integration gates. Once a
-non-exportable `COSIGN_KEY_REF` is configured, setting
-`TILO_CONTINUOUS_OS_RELEASE=1` turns relevant `main` pushes into the same
-reproducibility, installed-VM, signing, SBOM, provenance, freshness, and
-channel-promotion path used by explicit releases. It does not introduce a
-weaker fast-publish path. A successful desktop payload publication requests
-that OS integration run only when the switch is enabled; standalone app
-updates continue to publish only their qpkg/collection boundary.
+Manual imager runs with `full_native` rehearse the enabled Linux/Windows matrix
+without publication. Desktop `full_native` includes ARM64; it does not create a
+tagged package release, but a manual desktop run from `main` **does publish the
+OS payload**. Neither option enables deferred macOS jobs.
+
+Scheduled and manual OS integration builds retain the independent rebuild,
+installed-VM, desktop, app, and OS integration gates. Continuous OS publication
+and desktop-to-OS publication chaining are disabled in the workflows; setting
+`TILO_CONTINUOUS_OS_RELEASE` alone does not enable them. App collection or
+desktop payload publication does not release an OS version.
 
 A manual **Release / OS** dispatch is also build-only by default. Enable its
 `publish` input only from `main` to allocate and promote a signed generation.
@@ -144,15 +154,15 @@ the immutable `genN`, source, and main-commit tags to that index. Every durable
 write is read back and an exact retry is accepted; a conflicting immutable tag
 fails closed. Only then does `latest` move as the release commit point.
 No architecture-specific child is promoted as an update channel. Non-publishing
-pull requests and rehearsals retain the single generic x86-64 lane, so absent
-native release capacity does not block ordinary integration feedback.
+scheduled builds and manual rehearsals retain the single generic x86-64 lane,
+so absent native release capacity does not block ordinary integration feedback.
 
 ## Forgejo-specific rules
 
 - Do not add `permissions:`. Forgejo ignores it; repository capabilities belong
   in Authorized Integrations. OIDC jobs use `enable-openid-connect: true`.
 - App publication uses two narrowly restricted Forgejo Actions (Local)
-  integrations: app release tags and pushes/manual dispatches from `main`. Their
+  integrations: app release tags and manual dispatches from `main`. Their
   audiences are stored in `TILO_APP_RELEASE_TAG_AUDIENCE` and
   `TILO_APP_RELEASE_MAIN_AUDIENCE`; no long-lived registry token reaches the
   publication job. The main integration has package-write and repository-write
@@ -161,10 +171,9 @@ native release capacity does not block ordinary integration feedback.
   read-only Forgejo Actions (Local) integration. The same integration reads the
   immutable desktop payload. Store its audience in
   `TILO_OS_APP_COLLECTION_AUDIENCE`. Restrict it to **Release / OS** events;
-  pull requests may use its short-lived package-read capability so their OS
-  builds test the same pinned integration inputs as `main`.
+  currently these are tags, schedules and manual dispatches.
 - Desktop payload publication uses a package-write/repository-write integration
-  restricted to `package-desktop.yml` pushes on `main`; store its audience in
+  restricted to `package-desktop.yml` scheduled/manual runs on `main`; store its audience in
   `TILO_DESKTOP_RELEASE_AUDIENCE`.
 - Keep remote actions pinned to full commit hashes.
 - Use the v3 artifact actions (or Forgejo's patched v4), because upstream v4's
