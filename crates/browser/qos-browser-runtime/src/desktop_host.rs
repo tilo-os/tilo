@@ -103,9 +103,9 @@ impl DesktopHandle {
         // Admit queued topology before validating an exact route.
         frame.relayout();
         self.pending_local_activation.borrow_mut().take();
-        let instance = match &command {
+        let previous = active_route(&self.tree.borrow());
+        let target = match &command {
             crate::desktop_navigation::Command::Select { route, .. } => {
-                frame.check_app_activation()?;
                 if command.generation() != self.generation { return Err("Stale desktop surface".into()); }
                 let (w, s, g, t) = route.ids()?;
                 if !self.tree.borrow().workspaces.iter().filter(|v| v.id == w)
@@ -114,16 +114,48 @@ impl DesktopHandle {
                     .flat_map(|g| &g.tabs).any(|v| v.id == t) {
                     return Err("Application route unavailable".into());
                 }
-                Some(t)
+                Some(route.clone())
+            }
+            crate::desktop_navigation::Command::Workspace { workspace, .. } => {
+                if command.generation() != self.generation { return Err("Stale desktop surface".into()); }
+                let workspace = workspace.parse::<u64>().ok().filter(|id| id.to_string() == *workspace)
+                    .map(WorkspaceId).ok_or("Invalid navigation identity")?;
+                let mut tree = self.tree.borrow().clone();
+                DesktopRoot::local(&mut tree, LocalViewIntent::Workspace(workspace));
+                active_route(&tree)
+            }
+            crate::desktop_navigation::Command::Strip { workspace, strip, .. } => {
+                if command.generation() != self.generation { return Err("Stale desktop surface".into()); }
+                let mut tree = self.tree.borrow().clone();
+                let workspace = tree.workspaces.iter().find(|item| item.id.0.to_string() == *workspace)
+                    .ok_or("Workspace unavailable")?.id;
+                let strip = tree.workspaces.iter().find(|item| item.id == workspace)
+                    .and_then(|item| item.strips.iter().find(|item| item.id.0.to_string() == *strip))
+                    .ok_or("Strip unavailable")?.id;
+                DesktopRoot::local(&mut tree, LocalViewIntent::Workspace(workspace));
+                DesktopRoot::local(&mut tree, LocalViewIntent::Strip(strip));
+                active_route(&tree)
             }
             _ => None,
         };
-        if let Some(instance) = instance { frame.prepare_app_activation(instance); }
+        if target.is_some() { frame.check_app_activation()?; }
+        let activates = matches!(&command, crate::desktop_navigation::Command::Select { .. })
+            || target.as_ref().and_then(|route| route.ids().ok()).map(|ids| ids.3)
+                != previous.as_ref().and_then(|route| route.ids().ok()).map(|ids| ids.3);
+        if activates {
+            if let Some(instance) = target.as_ref().and_then(|route| route.ids().ok()).map(|ids| ids.3) { frame.prepare_app_activation(instance); }
+        }
         *self.navigation_result.borrow_mut() = None;
         *self.navigation_command.borrow_mut() = Some(command);
         frame.relayout();
         let result = self.navigation_result.borrow_mut().take().ok_or("Desktop did not accept navigation")??;
-        if let Some(instance) = instance {
+        if target.as_ref().is_some_and(|route| active_route(&self.tree.borrow()).as_ref() != Some(route)) {
+            // Workspace selection is deferred so outgoing focus can be captured first.
+            frame.relayout();
+        }
+        self.pending_local_activation.borrow_mut().take();
+        if let Some(instance) = target.filter(|route| activates && active_route(&self.tree.borrow()).as_ref() == Some(route))
+            .and_then(|route| route.ids().ok()).map(|ids| ids.3) {
             frame.activate_app_focus(instance);
             self.activation_sequence.set(self.activation_sequence.get().wrapping_add(1));
         }
@@ -568,7 +600,8 @@ impl DesktopRoot {
                         crate::desktop_activity::ActivityCloseReason::WorkspaceChanged,
                     );
                 }
-                Self::local(
+                Self::apply_local(
+                    &self.handle,
                     &mut self.handle.tree.borrow_mut(),
                     LocalViewIntent::Workspace(workspace),
                 );
@@ -814,8 +847,8 @@ impl DesktopRoot {
             let w=tree.workspaces.iter().find(|w|w.id.0.to_string()==workspace).ok_or("Workspace unavailable")?;
             let s=w.strips.iter().find(|s|s.id.0.to_string()==strip).ok_or("Strip unavailable")?.id;
             let w=w.id;
-            Self::local(&mut tree,LocalViewIntent::Workspace(w));
-            Self::local(&mut tree,LocalViewIntent::Strip(s));
+            Self::apply_local(&self.handle,&mut tree,LocalViewIntent::Workspace(w));
+            Self::apply_local(&self.handle,&mut tree,LocalViewIntent::Strip(s));
             return Ok((true,None));
         }
         let route=match &command { Command::Select{route,..}|Command::Width{route,..}|Command::Maximize{route,..}=>route, _=>unreachable!() };
@@ -4400,6 +4433,97 @@ mod tests {
         assert!(handle.pending_local_activation.borrow().is_none());
         assert_eq!(handle.activation_sequence.get(), activation);
         assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some(owner.as_str()));
+    }
+
+    #[test]
+    fn external_strip_and_workspace_selection_activate_the_resulting_route() {
+        for case in [LocalSelectionCase::Strip, LocalSelectionCase::Workspace] {
+            let (root, handle, _) = fixture_with_topology(|tree| arrange_local_selection_case(tree, case));
+            let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+                ui::State::new(), Box::new(root), (1800, 900), Theme::dark(),
+                ui::TextRenderer::new(), ui::permissions::UserId("author".into()),
+            );
+            let initial = active_route(&handle.tree.borrow()).unwrap().ids().unwrap().3;
+            let control = focusable_control_for_instance(&frame, &frame.inspection().root, initial)
+                .expect("initial app exposes a focusable control");
+            frame.perform_semantic_named(&control, None, &ui::a11y::Action::Focus).unwrap();
+            frame.relayout();
+            handle.finish_local_activation(&mut frame);
+            let activation = handle.activation_sequence.get();
+            let command = match case {
+                LocalSelectionCase::Strip => crate::desktop_navigation::Command::Strip {
+                    generation: handle.generation.clone(), workspace: "1".into(), strip: "9".into(),
+                },
+                LocalSelectionCase::Workspace => crate::desktop_navigation::Command::Workspace {
+                    generation: handle.generation.clone(), workspace: "9".into(),
+                },
+                _ => unreachable!(),
+            };
+            handle.navigate(&mut frame, command).unwrap();
+            let selected = active_route(&handle.tree.borrow()).unwrap().ids().unwrap().3;
+            assert_ne!(selected, initial, "{case:?}: route changes instance");
+            assert_eq!(handle.activation_sequence.get(), activation + 1, "{case:?}");
+            if matches!(case, LocalSelectionCase::Strip) {
+                let owner = frame.inspection().keyboard_focus_owner.unwrap();
+                assert_eq!(frame.semantic_owner_instance(&owner), Some(selected), "{case:?}");
+            }
+            assert_eq!(focused_controls_for_instance(&frame, &frame.inspection().root, initial), 0, "{case:?}");
+        }
+    }
+
+    #[test]
+    fn pointer_press_on_another_group_surface_transfers_app_and_control_focus() {
+        let (root, handle, _) = fixture_with_topology(|tree| {
+            arrange_local_selection_case(tree, LocalSelectionCase::Group);
+        });
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(), root, (1800, 900), Theme::dark(), ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        let initial = active_route(&handle.tree.borrow()).unwrap().ids().unwrap().3;
+        let control = focusable_control_for_instance(&frame, &frame.inspection().root, initial)
+            .expect("initial app exposes a focusable control");
+        frame.perform_semantic_named(&control, None, &ui::a11y::Action::Focus).unwrap();
+        frame.relayout();
+        handle.finish_local_activation(&mut frame);
+        let before = handle.records.borrow().values().map(|record| (
+            record.clone(), record.store.read(&record.checkout.id, |doc| doc.clone().save()).unwrap(),
+        )).collect::<Vec<_>>();
+        let (point, selected, group_rect, surface_rect, viewport, visible) = unsafe {
+            let row = (&*root_ptr).surface.row(StripId(2)).unwrap();
+            let group = row.groups.iter().find(|group| group.id == 4).unwrap();
+            let surface = group.active_host().unwrap().get_rect();
+            let viewport = row.get_rect();
+            (
+                Point::new((surface.x0.max(viewport.x0) + surface.x1.min(viewport.x1)) / 2.0,
+                    surface.y1.min(viewport.y1) - 2.0),
+                group.active_tab_id(), group.get_rect(), surface, viewport,
+                row.children().iter().any(|widget| std::ptr::addr_eq(*widget, group as &dyn Widget)),
+            )
+        };
+        assert!(visible && group_rect.contains(point) && viewport.contains(point),
+            "destination must be a visible group surface hit: group={group_rect:?} surface={surface_rect:?} viewport={viewport:?} point={point:?}");
+        let device_id = winit::event::DeviceId::dummy();
+        for event in [
+            winit::event::WindowEvent::CursorMoved { device_id, position: winit::dpi::PhysicalPosition::new(point.x, point.y) },
+            winit::event::WindowEvent::MouseInput { device_id, state: winit::event::ElementState::Pressed, button: winit::event::MouseButton::Left },
+            winit::event::WindowEvent::MouseInput { device_id, state: winit::event::ElementState::Released, button: winit::event::MouseButton::Left },
+        ] {
+            frame.send_host_event(&event);
+            handle.finish_local_activation(&mut frame);
+        }
+        assert_eq!(active_route(&handle.tree.borrow()).unwrap().ids().unwrap().3, selected);
+        let owner = frame.inspection().keyboard_focus_owner.unwrap();
+        assert_eq!(frame.semantic_owner_instance(&owner), Some(selected));
+        assert_eq!(focused_controls_for_instance(&frame, &frame.inspection().root, initial), 0);
+        frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
+            "must not reach previous app".into(),
+        )));
+        for (record, bytes) in before {
+            assert_eq!(record.store.read(&record.checkout.id, |doc| doc.clone().save()).unwrap(), bytes);
+        }
     }
 
     #[test]
