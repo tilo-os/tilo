@@ -27,6 +27,12 @@ impl App {
         if self.close_admission.admitted {
             return true;
         }
+        // Native hosts may deliver another window-close or application Quit
+        // while a decision is already visible. Coalesce it here so it cannot
+        // replace the session, semantic addresses, focus, or failure detail.
+        if self.close_admission.dialog.is_some() {
+            return false;
+        }
         self.close_admission.ready = false;
         if self.close_admission.save_waiting {
             return false;
@@ -132,16 +138,19 @@ impl App {
         match command.choice {
             Choice::KeepEditing => self.close_admission.dismiss(),
             Choice::Retry => {
+                self.close_admission.retire_presentation();
                 self.request_close();
             }
             Choice::Discard => {
                 let current = self.root_widget.unsaved_documents(&self.state.doc);
                 if current != self.close_admission.reviewed {
                     self.close_admission.discarded.clear();
+                    self.close_admission.retire_presentation();
                     self.request_close();
                     return Err("document changed since the close question was shown".into());
                 }
                 self.close_admission.discarded = current;
+                self.close_admission.retire_presentation();
                 self.request_close();
             }
             Choice::Save => self.start_close_save()?,
@@ -158,6 +167,7 @@ impl App {
             .filter(|document| !self.close_admission.discarded.contains(document))
             .collect();
         if current != self.close_admission.reviewed {
+            self.close_admission.retire_presentation();
             self.request_close();
             return Err("document changed since the close question was shown".into());
         }
@@ -291,6 +301,7 @@ impl App {
             self.close_admission.save_broker_id = None;
             match result {
                 Ok(()) => {
+                    self.close_admission.retire_presentation();
                     self.request_close();
                 }
                 Err(message) => {
@@ -556,7 +567,7 @@ mod tests {
         }
     }
     #[test]
-    fn owned_root_close_refusal_keeps_editing_and_retries_exact_owner() {
+    fn repeated_close_preserves_failure_dialog_until_explicit_retry() {
         use automerge::{ReadDoc, transaction::Transactable};
         let fail = std::rc::Rc::new(std::cell::Cell::new(true));
         let flushes = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -575,19 +586,32 @@ mod tests {
         assert!(!app.request_close());
         assert!(!app.close_admission.admitted);
         assert!(app.close_admission.dialog.is_some());
+        let resource = app.close_admission.resources()[0].id.clone();
+        let dialog = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
+        let dialog = dialog as *const dyn Widget as *const () as usize;
         app.state
             .doc
             .put(automerge::ROOT, "edited_after_refusal", true)
             .unwrap();
         fail.set(false);
         assert!(
-            app.request_close(),
-            "explicit owned writer replaces only its intentionally disabled outer writer"
+            !app.request_close(),
+            "a duplicate native close cannot replace the failure decision"
         );
         assert_eq!(
             flushes.get(),
+            1,
+            "duplicate close does not retry persistence"
+        );
+        assert_eq!(app.close_admission.resources()[0].id, resource);
+        let actual = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
+        assert_eq!(actual as *const dyn Widget as *const () as usize, dialog);
+
+        close_choice(&mut app, Choice::Retry);
+        assert_eq!(
+            flushes.get(),
             2,
-            "one flush of the same root per checkpoint"
+            "explicit Retry re-evaluates the same checked owner exactly once"
         );
         assert!(
             app.state
@@ -600,6 +624,7 @@ mod tests {
             !app.close_admission.admitted,
             "checkpoint does not destroy the live tree"
         );
+        assert!(app.close_admission.ready);
     }
     #[test]
     fn disabled_host_and_missing_owned_hook_still_refuse_close() {
@@ -693,6 +718,10 @@ mod tests {
     }
 
     fn close_choice(app: &mut App, choice: Choice) {
+        invoke_close_choice(app, choice).unwrap();
+    }
+
+    fn invoke_close_choice(app: &mut App, choice: Choice) -> Result<(), String> {
         let resources = app.close_admission.resources();
         let action = resources[0]
             .actions
@@ -702,7 +731,7 @@ mod tests {
         let tilo_actions::ActionInput::Immediate(encoded) = &action.input else {
             panic!("unit close action")
         };
-        app.invoke_close_encoded(encoded).unwrap();
+        app.invoke_close_encoded(encoded)
     }
 
     // This is the production portable Quit router and the very same admission
@@ -762,6 +791,70 @@ mod tests {
             Some("edited after cancelled Quit")
         );
         assert!(!app.close_admission.admitted);
+    }
+
+    #[test]
+    fn repeated_native_quit_preserves_unsaved_session_addresses_and_focus() {
+        let (mut app, dirty) = quit_fixture(false);
+        let mut quit = native_quit_request::QuitRequest::new();
+        quit.set_target(Some(1));
+        assert!(!deliver_quit(&mut quit, &mut app));
+        app.init_layout();
+        app.layout_close_dialog((640.0, 480.0));
+        app.refresh_semantic_tree();
+        assert!(app.focus_tab(false));
+
+        let resources = app.close_admission.resources();
+        let addresses: Vec<_> = resources[0]
+            .actions
+            .iter()
+            .map(|action| (resources[0].id.clone(), action.id.clone()))
+            .collect();
+        let reviewed = app.close_admission.reviewed.clone();
+        let focused = app.focused_node;
+        let dialog = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
+        let dialog = dialog as *const dyn Widget as *const () as usize;
+
+        assert!(!deliver_quit(&mut quit, &mut app));
+        let repeated = app.close_admission.resources();
+        let repeated_addresses: Vec<_> = repeated[0]
+            .actions
+            .iter()
+            .map(|action| (repeated[0].id.clone(), action.id.clone()))
+            .collect();
+        assert_eq!(repeated_addresses, addresses);
+        assert_eq!(app.close_admission.reviewed, reviewed);
+        assert_eq!(app.focused_node, focused);
+        let actual = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
+        assert_eq!(actual as *const dyn Widget as *const () as usize, dialog);
+        assert!(dirty.get());
+    }
+
+    #[test]
+    fn stale_revision_retires_old_session_only_after_explicit_choice() {
+        use automerge::transaction::Transactable;
+        let (mut app, dirty) = quit_fixture(false);
+        let mut quit = native_quit_request::QuitRequest::new();
+        quit.set_target(Some(1));
+        assert!(!deliver_quit(&mut quit, &mut app));
+        let old_resource = app.close_admission.resources()[0].id.clone();
+        let old_reviewed = app.close_admission.reviewed.clone();
+
+        app.state
+            .doc
+            .put(automerge::ROOT, "draft", "newer collaborative revision")
+            .unwrap();
+        assert!(!deliver_quit(&mut quit, &mut app));
+        assert_eq!(app.close_admission.resources()[0].id, old_resource);
+        assert_eq!(app.close_admission.reviewed, old_reviewed);
+
+        assert_eq!(
+            invoke_close_choice(&mut app, Choice::Save),
+            Err("document changed since the close question was shown".into())
+        );
+        assert_ne!(app.close_admission.resources()[0].id, old_resource);
+        assert_ne!(app.close_admission.reviewed, old_reviewed);
+        assert!(dirty.get(), "stale Save cannot reach the document action");
     }
 
     #[test]
