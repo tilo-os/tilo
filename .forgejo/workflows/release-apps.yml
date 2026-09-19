@@ -367,6 +367,7 @@ jobs:
           BUILDER_IMAGE: ${{ needs.plan.outputs.builder_image }}
           COLLECTION: ${{ needs.plan.outputs.collection }}
           MATRIX: ${{ needs.plan.outputs.matrix }}
+          SELECTED_APPS: ${{ needs.plan.outputs.apps }}
         run: |
           set -euo pipefail
           policy="$RUNNER_TEMP/final-policy.json"
@@ -380,7 +381,7 @@ jobs:
           chmod +x "$tools/tilo-pkg" "$tools/tilo-runtime-bundle"
           while read -r arch; do
             python3 tools/assemble_verified_apps.py \
-              --built "release/tilo-apps-$arch" --plan "$plan" \
+              --built "release/tilo-apps-$arch" --plan "$plan" --selected-apps "$SELECTED_APPS" \
               --output "dist/qualified-apps/$arch" --work "$RUNNER_TEMP/qualified-apps-$arch" \
               --pkg-binary "$tools/tilo-pkg" --runtime-binary "$tools/tilo-runtime-bundle" \
               --trust-policy "$policy" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" \
