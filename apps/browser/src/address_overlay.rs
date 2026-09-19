@@ -30,7 +30,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::widget::Widget;
 
@@ -285,15 +285,16 @@ impl AddressSuggestions {
             &panel,
         );
 
-        // `TextRenderer` already applies the accessibility multiplier.  Using
-        // the theme's pre-scaled typography tokens here would apply it twice
-        // (4× glyphs at a 200% preference). Keep base sizes and scale only the
-        // surrounding geometry, exactly as shared `Text` does.
-        let title_size = 14.0;
-        let url_size = 12.0;
-        let scale = f64::from(self.text_scale);
-        let row_pad_x = ROW_PAD_X * scale;
-        let text_max = (f64::from(self.width) - row_pad_x * 2.0).max(0.0) as f32;
+        // Theme type sizes already carry the text scale; `renderer_input_style`
+        // hands them to the renderer so the scale is applied exactly once.
+        // Drawing the resolved size through the legacy size API scaled it a
+        // second time on the live desktop at large text.
+        let title_style =
+            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+        let url_style =
+            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.xs));
+        let line_gap = f64::from(theme.tokens.spacing.s1);
+        let text_max = (f64::from(self.width) - ROW_PAD_X * 2.0).max(0.0) as f32;
 
         let row_height = self.row_height();
         for (idx, entry) in self.items.iter().enumerate() {
@@ -340,23 +341,36 @@ impl AddressSuggestions {
             } else {
                 entry.title.as_str()
             };
-            let x = self.rect.x0 + row_pad_x;
-            text_renderer.draw_text(
+            let x = self.rect.x0 + ROW_PAD_X;
+            // One line each, elided to the row's width: a long title used to
+            // wrap under the width limit, and a wrapped title has no place to
+            // go in a row this tall except over its own URL line. Both lines
+            // are then measured with the styles they are drawn with and
+            // centred as one block in the row, so the pair sits in the same
+            // place in a 46px row and in the taller rows a text scale buys. A
+            // fixed 8px top with a size-derived second line left the block
+            // high in the row at every scale above 1.
+            let title = text_renderer.elide_to_width(title, title_style.size, text_max);
+            let url = text_renderer.elide_to_width(&entry.url, url_style.size, text_max);
+            let (_, title_h) = text_renderer.measure_style(&title, None, &title_style);
+            let (_, url_h) = text_renderer.measure_style(&url, None, &url_style);
+            let block_h = f64::from(title_h) + line_gap + f64::from(url_h);
+            let block_top = row_top + ((row_height - block_h) / 2.0).max(0.0);
+            text_renderer.draw_style(
                 scene,
-                title,
-                title_size,
+                &title,
                 theme.text_primary,
-                transform * Affine::translate((x, row_top + 8.0 * scale)),
-                Some(text_max),
+                transform * Affine::translate((x, block_top)),
+                None,
+                &title_style,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
-                &entry.url,
-                url_size,
+                &url,
                 theme.text_dim,
-                transform
-                    * Affine::translate((x, row_top + (8.0 + f64::from(title_size) + 6.0) * scale)),
-                Some(text_max),
+                transform * Affine::translate((x, block_top + f64::from(title_h) + line_gap)),
+                None,
+                &url_style,
             );
         }
     }

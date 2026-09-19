@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Controlled browser scroll response</title>
+<style>
+  html { scroll-behavior: auto; }
+  body { margin: 0; height: 18000px; background: repeating-linear-gradient(#edf3f9 0 100px, #96b4cc 100px 200px); font: 20px system-ui; }
+  h1, p { margin: 24px; }
+  canvas { position: fixed; left: 0; top: 0; z-index: 2147483647; pointer-events: none; }
+  #animation { position: fixed; right: 0; top: 0; width: 32px; height: 32px; }
+</style>
+<h1>Controlled browser scroll response</h1>
+<p>Use isolated, uniquely sized wheel inputs. The corner marker acknowledges a changed scroll position.</p>
+<canvas width="128" height="4"></canvas><div id="animation"></div>
+<script>
+'use strict';
+const marker = document.querySelector('canvas');
+const context = marker.getContext('2d', {alpha: false});
+let pending = null, ambiguous = false, lastY = scrollY;
+function sizeMarker() {
+  // Keep the backing pixels one-to-one with physical CEF pixels at any DPR.
+  marker.style.width = `${128 / devicePixelRatio}px`;
+  marker.style.height = `${4 / devicePixelRatio}px`;
+}
+function paint(value) {
+  const hi = (value >> 8) & 255, lo = value & 255;
+  const bytes = [0xb3, hi, lo, 0xb3 ^ hi ^ lo];
+  for (let bit = 0; bit < 32; bit++) {
+    context.fillStyle = bytes[bit >> 3] & (1 << (7 - bit % 8)) ? '#fff' : '#000';
+    context.fillRect(bit * 4, 0, 4, 4);
+  }
+}
+sizeMarker(); paint(0);
+addEventListener('resize', sizeMarker);
+addEventListener('wheel', event => {
+  if (pending !== null || event.deltaMode !== 0 || !Number.isInteger(event.deltaY)
+      || event.deltaY === 0 || Math.abs(event.deltaY) > 32767) {
+    ambiguous = true; paint(0); return;
+  }
+  if (!ambiguous) pending = {delta: event.deltaY, startY: scrollY};
+}, {passive: true});
+addEventListener('scroll', () => {
+  const changed = scrollY !== lastY;
+  lastY = scrollY;
+  if (!ambiguous && changed && pending !== null && scrollY !== pending.startY) {
+    paint(pending.delta); pending = null;
+  }
+}, {passive: true});
+// Unrelated paints deliberately continue, so next-frame timing cannot pass as
+// a response measurement. They never change the acknowledgement marker.
+let alternate = false;
+setInterval(() => {
+  document.querySelector('#animation').style.background = (alternate = !alternate) ? '#e66' : '#66e';
+}, 100);
+</script>
