@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import sys
 import traceback
 
@@ -39,8 +40,33 @@ print(json.dumps(result,sort_keys=True))
 '''
 
 
-def _inspect(operation, directory, purpose, local_spool):
-    """Run the pinned exporter's validations without transporting artifact bytes."""
+def _validate_generic_layout(operation, directory, local_spool):
+    """Authenticate an initialized generic operation and its selected run."""
+    local_spool.private_directory(operation)
+    local_spool.private_directory(directory)
+    if (directory.parent != operation
+            or re.fullmatch(r'run-[1-9][0-9]*-attempt-[1-9][0-9]*', directory.name) is None):
+        raise ValueError('generic checkpoint run scope differs')
+    config = local_spool.document(operation / 'operation.json')
+    request = local_spool.snapshot(operation / 'request.json', local_spool.MAX_JSON)
+    binding = local_spool.document(directory / 'binding.json')
+    context = local_spool.document(directory / 'signing-context.json')
+    if (local_spool.digest(request) != config.get('request_sha256')
+            or local_spool.context(context) != binding.get('context_sha256')):
+        raise ValueError('generic checkpoint operation binding differs')
+    return config, binding, context
+
+
+def _generic_layout(operation, directory, local_spool):
+    """Authenticate the generic layout before reporting its missing exporter pin."""
+    _validate_generic_layout(operation, directory, local_spool)
+    raise ValueError(
+        'generic operation has no authenticated checkpoint exporter; '
+        'initialize a new operation with a first-class pinned exporter')
+
+
+def _inspect_legacy(operation, directory, purpose, local_spool):
+    """Run the active legacy exporter's validations without transporting bytes."""
     local_spool.private_directory(operation)
     local_spool.private_directory(directory)
     if directory.parent != operation or purpose not in ('loader', 'live-uki', 'target-uki'):
@@ -108,44 +134,58 @@ def _inspect(operation, directory, purpose, local_spool):
     return result, metadata, spool, binding
 
 
-def diagnose(operation, directory, purpose, local_spool):
+def _inspect(operation, directory, purpose, local_spool, *, legacy=False):
+    if legacy:
+        return _inspect_legacy(operation, directory, purpose, local_spool)
+    return _generic_layout(operation, directory, local_spool)
+
+
+def diagnose(operation, directory, purpose, local_spool, *, legacy=False):
     """Bridge legacy immutable operations without rewriting their active config."""
-    result, _, _, _ = _inspect(operation, directory, purpose, local_spool)
+    result, _, _, _ = _inspect(
+        operation, directory, purpose, local_spool, legacy=legacy)
     return result
 
 
-def export_metadata(operation, directory, purpose, local_spool):
+def export_metadata(operation, directory, purpose, local_spool, *, legacy=False):
     """Publish an authenticated checkpoint receipt without its large EFI bytes."""
-    result, metadata, spool, binding = _inspect(operation, directory, purpose, local_spool)
+    result, metadata, spool, binding = _inspect(
+        operation, directory, purpose, local_spool, legacy=legacy)
     if not result.get('validated') or not result.get('local_metadata_validated') or metadata is None:
         raise ValueError('checkpoint metadata validation failed')
-    destination = directory / ('checkpoint-' + purpose)
+    checkpoints = directory / 'checkpoints'
+    if legacy and not checkpoints.exists():
+        checkpoints.mkdir(mode=0o700)
+    checkpoints = spool.private_directory(checkpoints)
+    destination = checkpoints / purpose
     if destination.exists() or destination.is_symlink():
         raise ValueError('fresh checkpoint output required')
-    ready = directory / ('.checkpoint-' + purpose + '.ready')
+    ready = checkpoints / ('.' + purpose + '.ready')
     if ready.exists() or ready.is_symlink():
         raise ValueError('checkpoint staging path already exists')
     ready.mkdir(mode=0o700)
     metadata['transport_context_sha256'] = binding['context_sha256']
     spool.write_new(ready / 'receipt.json', spool.canonical(metadata))
     ready.rename(destination)
-    spool.sync_directory(directory)
+    spool.sync_directory(checkpoints)
     return {'directory': str(destination), 'purpose': purpose,
             'input_sha256': metadata['input_sha256'], 'input_bytes': metadata['input_bytes'],
             'metadata_only': True, 'signing_authorized': False}
 
 
-def materialize(operation, directory, purpose, request_directory, local_spool):
+def materialize(operation, directory, purpose, request_directory, local_spool, *, legacy=False):
     """Attach a fetched signing-spool input only when it matches the checkpoint."""
     local_spool.private_directory(operation)
     local_spool.private_directory(directory)
     local_spool.private_directory(request_directory)
     if directory.parent != operation or purpose not in ('live-uki', 'target-uki'):
         raise ValueError('checkpoint materialization scope differs')
+    if not legacy:
+        _validate_generic_layout(operation, directory, local_spool)
     allowed = (directory / 'received', operation / 'received')
     if request_directory.parent not in allowed:
         raise ValueError('request directory lies outside admitted receive storage')
-    destination = local_spool.private_directory(directory / ('checkpoint-' + purpose))
+    destination = local_spool.private_directory(directory / 'checkpoints' / purpose)
     receipt = local_spool.document(destination / 'receipt.json')
     binding = local_spool.document(directory / 'binding.json')
     context = local_spool.document(directory / 'signing-context.json')

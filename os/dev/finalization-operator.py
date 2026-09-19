@@ -339,7 +339,7 @@ def bind(operation, c, q, run_id, attempt):
     _, fresh = actual_job(operation, c, run_id, attempt)
     require(fresh == job, 'job changed during binding')
     destination.mkdir(mode=0o700)
-    for name in ('received', 'responses'):
+    for name in ('received', 'responses', 'checkpoints'):
         (destination / name).mkdir(mode=0o700)
     for name, value in (('binding.json', binding), ('signing-context.json', context),
                         ('observation.json', observed), ('job.json', job)):
@@ -454,12 +454,15 @@ def reuse_response(operation, directory, nonce, old_directory, old_nonce, indepe
 def handoff(operation, directory, c):
     context = document(directory / 'signing-context.json')
     stage.bound_context(context, document(directory / 'binding.json'))
+    received = spool.private_directory(directory / 'received')
+    responses = spool.private_directory(directory / 'responses')
+    checkpoints = spool.private_directory(directory / 'checkpoints')
     return dict(operation=str(operation), run_directory=str(directory),
         request=str(operation / 'request.json'), binding=str(directory / 'binding.json'),
         signing_context=str(directory / 'signing-context.json'),
         context_sha256=spool.context(context), hardware_profile=c['hardware_profile'],
-        architecture=context['architecture'], received=str(directory / 'received'),
-        responses=str(directory / 'responses'), checkpoints=str(directory / 'checkpoints'),
+        architecture=context['architecture'], received=str(received),
+        responses=str(responses), checkpoints=str(checkpoints),
         next_step='Authenticate checkpoint input before authorize-signing-input.py; then service-local-signing-request.py and deliver.',
         signing_authorized=False)
 
@@ -468,16 +471,20 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--operation', type=Path, required=True)
     sub = ap.add_subparsers(dest='command', required=True)
-    diagnostic = sub.add_parser('diagnose-checkpoint', help='read-only diagnostics for a pinned legacy checkpoint exporter')
-    diagnostic.add_argument('--run-directory', type=Path, required=True)
-    diagnostic.add_argument('--purpose', choices=('loader', 'live-uki', 'target-uki'), required=True)
-    export = sub.add_parser('export-checkpoint', help='publish authenticated checkpoint metadata without large EFI transport')
-    export.add_argument('--run-directory', type=Path, required=True)
-    export.add_argument('--purpose', choices=('loader', 'live-uki', 'target-uki'), required=True)
-    materialize = sub.add_parser('materialize-checkpoint', help='match a fetched signing input to checkpoint metadata')
-    materialize.add_argument('--run-directory', type=Path, required=True)
-    materialize.add_argument('--purpose', choices=('live-uki', 'target-uki'), required=True)
-    materialize.add_argument('--request-directory', type=Path, required=True)
+    for name, help_text, purposes in (
+            ('diagnose-checkpoint', 'read-only checkpoint diagnostics', ('loader', 'live-uki', 'target-uki')),
+            ('export-checkpoint', 'publish authenticated checkpoint metadata without large EFI transport', ('loader', 'live-uki', 'target-uki')),
+            ('materialize-checkpoint', 'match a fetched signing input to checkpoint metadata', ('live-uki', 'target-uki'))):
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument('--purpose', choices=purposes, required=True)
+        p.add_argument('--run-id', type=int)
+        p.add_argument('--attempt', type=int)
+        p.add_argument('--legacy-layout', action='store_true',
+                       help='use the explicitly selected pre-operator operation layout')
+        p.add_argument('--run-directory', type=Path,
+                       help='legacy compatibility only; generic paths derive from run ID and attempt')
+        if name == 'materialize-checkpoint':
+            p.add_argument('--request-directory', type=Path, required=True)
     init = sub.add_parser('init')
     for name in ('request', 'helper-archive', 'receipt', 'original-public', 'new-public'):
         init.add_argument('--' + name, type=Path, required=True)
@@ -501,16 +508,27 @@ def main():
             p.add_argument('--independent-loader', type=Path, required=True)
     a = ap.parse_args()
     require(os.geteuid() == 0, 'trusted local root operation required')
-    if a.command == 'diagnose-checkpoint':
+    if a.command in ('diagnose-checkpoint', 'export-checkpoint', 'materialize-checkpoint'):
         import checkpoint_export
-        result = checkpoint_export.diagnose(a.operation, a.run_directory, a.purpose, spool)
-    elif a.command == 'export-checkpoint':
-        import checkpoint_export
-        result = checkpoint_export.export_metadata(a.operation, a.run_directory, a.purpose, spool)
-    elif a.command == 'materialize-checkpoint':
-        import checkpoint_export
-        result = checkpoint_export.materialize(
-            a.operation, a.run_directory, a.purpose, a.request_directory, spool)
+        if a.legacy_layout:
+            require(a.run_directory is not None and a.run_id is None and a.attempt is None,
+                    'legacy checkpoint layout requires only --run-directory')
+            directory = a.run_directory
+        else:
+            require(a.run_directory is None and a.run_id is not None and a.attempt is not None,
+                    'generic checkpoint layout requires only --run-id and --attempt')
+            c, _ = load(a.operation)
+            directory = admit_bound(a.operation, c, a.run_id, a.attempt)
+        if a.command == 'diagnose-checkpoint':
+            result = checkpoint_export.diagnose(
+                a.operation, directory, a.purpose, spool, legacy=a.legacy_layout)
+        elif a.command == 'export-checkpoint':
+            result = checkpoint_export.export_metadata(
+                a.operation, directory, a.purpose, spool, legacy=a.legacy_layout)
+        else:
+            result = checkpoint_export.materialize(
+                a.operation, directory, a.purpose, a.request_directory, spool,
+                legacy=a.legacy_layout)
     elif a.command == 'init':
         result = initialize(a)
     else:
