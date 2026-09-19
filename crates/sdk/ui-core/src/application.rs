@@ -587,6 +587,83 @@ impl AppComponent {
         self.local_view = view.clone();
         Ok(())
     }
+    pub(crate) fn unsaved_documents(&self) -> Vec<crate::close_admission::UnsavedDocument> {
+        let Some(root) = self.root.as_deref() else {
+            return Vec::new();
+        };
+        let _entry = self.context.wake_scope.enter();
+        self.context
+            .read_record(|doc| root.unsaved_documents(doc))
+            .unwrap_or_default()
+    }
+
+    /// Persist the current document and view through their original owners.
+    /// Unlike close(), refusal leaves callbacks, publication and the live tree
+    /// intact. Retry captures the latest view and document, not a stale snapshot.
+    pub(crate) fn checkpoint_for_close(&mut self) -> Vec<String> {
+        let mut errors = crate::close_admission::retry_reports(&mut self.pending_reports);
+        if self.context.closing.get() {
+            return errors;
+        }
+        let _entry = self.context.wake_scope.enter();
+        match self.capture_local_pair_owned(&self.local_view) {
+            Ok((view, application)) => {
+                let saved = self.context.envelope(view.clone(), application.clone());
+                match self.context.views.save(&saved) {
+                    Ok(()) => {
+                        self.local_view = view;
+                        self.application_view = application;
+                    }
+                    Err(error) => errors.push(error.to_string()),
+                }
+            }
+            Err(error) => errors.push(error.to_string()),
+        }
+        if let Err(error) = self.context.records.try_flush() {
+            errors.push(error);
+        }
+        if let Some(root) = self.root.as_deref_mut() {
+            errors.extend(root.checkpoint_components());
+            self.pending_reports
+                .extend(root.take_component_close_reports());
+        }
+        errors.extend(crate::close_admission::retry_reports(
+            &mut self.pending_reports,
+        ));
+        errors
+    }
+
+    /// Finalization after a successful host checkpoint. No second fallible
+    /// write is introduced after the host has committed to destroying the tree.
+    pub(crate) fn finish_admitted_close(&mut self) {
+        if self.close_report.is_some() {
+            return;
+        }
+        self.context.closing.set(true);
+        self.context.wake_scope.close();
+        let _entry = self.context.wake_scope.enter();
+        if let Some(root) = self.root.as_deref_mut() {
+            self.pending_reports.extend(root.finish_admitted_close());
+            self.pending_reports
+                .extend(root.take_component_close_reports());
+        }
+        let mut report = ComponentCloseReport {
+            recovery: Some(
+                self.context
+                    .envelope(self.local_view.clone(), self.application_view.clone()),
+            ),
+            view_error: None,
+            view_retry: None,
+            record_error: None,
+            record_retry: None,
+            teardown_error: None,
+        };
+        // Set the report before teardown: Drop must not fall back to a write.
+        self.close_report = Some(report.clone());
+        report.teardown_error = self.teardown().err();
+        self.close_report = Some(report);
+    }
+
     pub fn suspend(&mut self) -> ComponentCloseReport {
         self.close()
     }

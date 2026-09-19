@@ -434,6 +434,34 @@ pub(crate) fn test_number_action_binding() -> tilo_actions::ActionBinding<f64> {
 }
 
 pub trait Widget {
+    /// App-declared external document obligations. An in-memory RecordSet is
+    /// not evidence that an editable file has been saved.
+    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
+        self.children()
+            .into_iter()
+            .flat_map(|child| child.unsaved_documents(doc))
+            .collect()
+    }
+    /// Non-destructive persistence checkpoint. Never closes a wake scope or
+    /// removes a tree; a failed host close must leave every child usable.
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        let mut errors = Vec::new();
+        errors.extend(
+            self.children_mut()
+                .into_iter()
+                .flat_map(Widget::checkpoint_components),
+        );
+        errors
+    }
+    /// Only the host may call this after every checkpoint succeeded, without
+    /// dispatching another document mutation in between.
+    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.children_mut()
+            .into_iter()
+            .flat_map(Widget::finish_admitted_close)
+            .collect()
+    }
+
     /// Transitional durable writer owned by this root rather than the host.
     /// `None` means no such writer exists. Implementations must wait for all
     /// pending writes and report failure; a queued flush is not success.

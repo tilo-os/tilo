@@ -850,6 +850,40 @@ impl Widget for TileHost {
         app.start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
     }
 
+    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
+        match &self.content {
+            TileContent::App(root) => {
+                if let Some(binding) = &self.binding {
+                    binding
+                        .store
+                        .read(&binding.live, |document| root.unsaved_documents(document))
+                        .unwrap_or_default()
+                } else {
+                    root.unsaved_documents(doc)
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        let mut errors = crate::close_admission::retry_reports(&mut self.close_reports);
+        errors.extend(self.record_error.iter().cloned());
+        if let Some(binding) = &self.binding {
+            if let Err(error) = binding.store.try_flush() {
+                errors.push(error);
+            }
+        }
+        if let TileContent::App(root) = &mut self.content {
+            errors.extend(root.checkpoint_components());
+        }
+        errors
+    }
+    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        if let TileContent::App(root) = &mut self.content {
+            self.close_reports.extend(root.finish_admitted_close());
+        }
+        self.take_component_close_reports()
+    }
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
         if let TileContent::App(root) = &mut self.content {
             self.close_reports.extend(root.close_components());

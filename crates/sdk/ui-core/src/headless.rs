@@ -26,6 +26,8 @@
 //! second loads the store and dumps the document as JSON. Diffing the two
 //! dumps is the persistence proof for the app's document.
 
+mod document_history;
+
 use std::collections::{HashMap, HashSet};
 
 use taffy::prelude::*;
@@ -35,7 +37,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::a11y::{AccessNode, Role};
-use crate::accesskit_bridge::build_tree_update_bound;
+use crate::accesskit_bridge::build_tree_update_with_resources_bound;
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
@@ -408,6 +410,11 @@ pub struct FrameHarness {
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
     root_node: NodeId,
     child_node: NodeId,
+    document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
+    history_chrome_enabled: bool,
+    history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
+    history_focus_pending: bool,
+    history_pointer_owned: bool,
     text: TextRenderer,
     theme: Theme,
     /// Scratch scene for the draw pass. Never rasterised — see
@@ -668,6 +675,11 @@ impl FrameHarness {
             component_close_reports: vec![],
             root_node: NodeId::from(0usize),
             child_node: NodeId::from(0usize),
+            document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
+            history_chrome_enabled: false,
+            history_layout: None,
+            history_focus_pending: false,
+            history_pointer_owned: false,
             text,
             theme,
             scene: Scene::new(),
@@ -914,6 +926,7 @@ impl FrameHarness {
 
     fn render_png_on(&self, out: &std::path::Path, background: vello::peniko::Color) {
         self.drain_component_wakes();
+        self.presentation(|_, _| ());
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -1088,6 +1101,7 @@ impl FrameHarness {
             p.record_since(crate::profiling::Pass::Sync, t_sync);
         }
 
+        self.prepare_history_frame();
         let view = self.root.view_state();
         let mut first = true;
         settle_widget_composition(viewport_changed, |rebuild| {
@@ -1111,15 +1125,7 @@ impl FrameHarness {
                     self.node_map.clear();
                     return Ok((None, true));
                 }
-                // SAFETY: exclusive runner owns this exact fresh topology.
-                unsafe {
-                    self.bindings.rebuild(
-                        self.root.as_ref(),
-                        &self.taffy,
-                        self.child_node,
-                        &self.node_map,
-                    );
-                }
+                let presentation_node = self.build_history_frame();
                 if let Some(view) = &view {
                     self.root.restore_view_state(view);
                 }
@@ -1141,7 +1147,9 @@ impl FrameHarness {
                     && (viewport_changed || !retained_focus)
                 {
                     // SAFETY: freshly admitted stable tree, exclusively owned.
-                    self.focused = unsafe { focus.restore(&self.node_map, &self.bindings, None) };
+                    let eligible = self.focus_order();
+                    self.focused =
+                        unsafe { focus.restore(&self.node_map, &self.bindings, Some(&eligible)) };
                 }
                 let (w, h) = self.viewport;
                 self.root_node = self.taffy.parent_node(
@@ -1152,7 +1160,7 @@ impl FrameHarness {
                         },
                         ..Default::default()
                     },
-                    &[self.child_node],
+                    &[presentation_node],
                 );
             }
             let (w, h) = self.viewport;
@@ -1174,8 +1182,7 @@ impl FrameHarness {
                 profiler.record_since(crate::profiling::Pass::BuildLayout, t_build);
             }
             let t_apply = self.profiler.as_ref().map(|_| std::time::Instant::now());
-            self.root
-                .apply_layout(&self.taffy, self.child_node, Point::ORIGIN);
+            self.apply_history_frame();
             if let Some(profiler) = self.profiler.as_mut() {
                 profiler.record_since(crate::profiling::Pass::ApplyLayout, t_apply);
             }
@@ -1196,14 +1203,44 @@ impl FrameHarness {
 
         let t_draw = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.scene.reset();
-        self.root.draw_with_presence(
-            &mut self.scene,
-            Affine::IDENTITY,
-            &mut self.text,
-            &self.theme,
-            &self.presence,
-            &self.permissions,
-        );
+        self.root.native_view_frame_start();
+        if self.history_layout.is_none_or(|layout| layout.app_visible) {
+            self.root.draw_with_presence(
+                &mut self.scene,
+                Affine::IDENTITY,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+                &self.permissions,
+            );
+            if self.history_chrome_enabled {
+                self.root.draw_overlay(
+                    &mut self.scene,
+                    Affine::IDENTITY,
+                    &mut self.text,
+                    &self.theme,
+                    &self.presence,
+                );
+            }
+        }
+        if self.history_chrome_enabled {
+            let context = crate::standalone_history::HistoryReadContext {
+                document: &self.state.doc,
+                active_record: self.records.as_ref().and_then(|records| records.active()),
+                document_identity: self.state.document_identity(),
+                permissions: &self.permissions,
+            };
+            self.document_history
+                .draw(
+                    &context,
+                    &mut self.scene,
+                    Affine::IDENTITY,
+                    &mut self.text,
+                    &self.theme,
+                    &self.presence,
+                )
+                .map_err(|_| crate::widget::WidgetLayoutError::CompositionDidNotSettle)?;
+        }
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
         }
@@ -1212,7 +1249,10 @@ impl FrameHarness {
         // both themselves and their inner text control. A HashMap scan can pick
         // the anonymous child and lose the stable owner on the next rebuild.
         self.focused = None;
-        let mut pending = vec![self.child_node];
+        let mut pending = vec![
+            self.history_layout
+                .map_or(self.child_node, |layout| layout.root),
+        ];
         while let Some(node) = pending.pop() {
             // SAFETY: this frame's stable topology has been freshly admitted.
             let focused = unsafe {
@@ -1232,6 +1272,8 @@ impl FrameHarness {
                 pending.extend(children.into_iter().rev());
             }
         }
+
+        self.restore_history_focus();
 
         // One `relayout` is one rendered frame; commit it, folding in any
         // `handle_event` time banked by a preceding `send`.
@@ -1315,7 +1357,7 @@ impl FrameHarness {
     pub fn focus_order(&self) -> Vec<NodeId> {
         self.drain_component_wakes();
         let mut order = Vec::new();
-        collect_focus_order(self.child_node, self.root.as_ref(), &self.taffy, &mut order);
+        self.presentation(|root, node| collect_focus_order(node, root, &self.taffy, &mut order));
         order
     }
 
@@ -1340,6 +1382,9 @@ impl FrameHarness {
     fn set_focused(&mut self, node: Option<NodeId>) {
         if self.focused == node {
             return;
+        }
+        if node.is_some_and(|node| self.is_history_node(node)) {
+            self.remember_history_content();
         }
         if let Some(old) = self.focused {
             let _ = self.mutate_node(old, |widget| widget.set_focus(false));
@@ -1424,7 +1469,16 @@ impl FrameHarness {
     /// Orca and the built-in screen reader, with the driver's focus marked.
     pub fn a11y_nodes(&self) -> Vec<(accesskit::NodeId, accesskit::Node)> {
         self.drain_component_wakes();
-        build_tree_update_bound(self.root.as_ref(), &self.node_map, self.focused, 1.0).nodes
+        self.presentation(|root, _| {
+            build_tree_update_with_resources_bound(
+                root,
+                &self.node_map,
+                self.focused,
+                1.0,
+                &self.history_resources_snapshot().unwrap_or_default(),
+            )
+            .nodes
+        })
     }
 
     /// The id of the exported accessibility node whose accessible name is
@@ -1448,7 +1502,15 @@ impl FrameHarness {
     /// actually is.
     pub fn a11y_focus(&self) -> Option<(accesskit::NodeId, accesskit::Node)> {
         self.drain_component_wakes();
-        let update = build_tree_update_bound(self.root.as_ref(), &self.node_map, self.focused, 1.0);
+        let update = self.presentation(|root, _| {
+            build_tree_update_with_resources_bound(
+                root,
+                &self.node_map,
+                self.focused,
+                1.0,
+                &self.history_resources_snapshot().unwrap_or_default(),
+            )
+        });
         let focus = update.focus;
         update.nodes.into_iter().find(|(id, _)| *id == focus)
     }
@@ -1477,7 +1539,11 @@ impl FrameHarness {
     ) -> Result<(), String> {
         use crate::accesskit_bridge::{A11yTarget, resolve_node_id_bound};
         self.pump_component_wakes();
-        let resolved = resolve_node_id_bound(self.root.as_ref(), &self.node_map, target)
+        if let Some(result) = self.history_a11y_resource(target, action) {
+            return result;
+        }
+        let resolved = self
+            .try_presentation(|root, _| resolve_node_id_bound(root, &self.node_map, target))?
             .ok_or_else(|| format!("no accessibility node {target:?} in the current frame"))?;
         let (taffy_id, key_path, ordinal_path, semantic_target) = match resolved {
             A11yTarget::Root => return Err("the window root cannot be operated".into()),
@@ -1491,6 +1557,7 @@ impl FrameHarness {
                 semantic_target,
             } => (owner, key_path, ordinal_path, semantic_target),
         };
+        let history_target = self.is_history_node(taffy_id);
         // Operating an element inside a widget also moves the keyboard to that
         // widget, matching the App: the widget moves its own cursor, the host
         // moves the focus. Every verb, not just Focus — an activation must
@@ -1540,6 +1607,11 @@ impl FrameHarness {
                 _ => {}
             }
         }
+        if history_target {
+            self.history_tick()?;
+            self.relayout();
+            return Ok(());
+        }
         // The widget may have mutated the document from `perform_action_at` —
         // dispatching an action, or asking for a commit — and this route does
         // not go through `send`. Close the tick here too, or an app driven the
@@ -1573,7 +1645,7 @@ impl FrameHarness {
         self.drain_component_wakes();
         let mut out = HashMap::new();
         let mut counts = HashMap::new();
-        collect_targets(self.root.as_ref(), "", &mut counts, &mut out);
+        self.presentation(|root, _| collect_targets(root, "", &mut counts, &mut out));
         out
     }
 
@@ -1608,12 +1680,16 @@ impl FrameHarness {
     ) -> Result<(), String> {
         use crate::a11y::Action as SemanticAction;
         self.pump_component_wakes();
+        self.try_presentation(|_, _| ())?;
 
         let targets = self.named_target_nodes();
         let node = targets
             .get(name)
             .copied()
             .ok_or_else(|| format!("no addressable widget named {name:?}"))?;
+        if self.is_history_node(node) {
+            return self.history_named_action(node, semantic_target, action);
+        }
         // A requested semantic action is one deterministic interaction, so a
         // document mutation it performs is one deterministic undo boundary.
         // Capture before dispatch: `get_heads` also flushes any earlier work,
@@ -1811,7 +1887,9 @@ impl FrameHarness {
                 .or_insert(Some(node));
         }
         let mut retained = Vec::new();
-        collect_named_targets(self.root.as_ref(), "", &mut HashMap::new(), &mut retained);
+        self.presentation(|root, _| {
+            collect_named_targets(root, "", &mut HashMap::new(), &mut retained)
+        });
         let mut unique = HashMap::new();
         for target in &retained {
             unique
@@ -1888,7 +1966,7 @@ impl FrameHarness {
     #[must_use]
     pub fn accessibility_audit(&self) -> AccessibilityAudit {
         self.drain_component_wakes();
-        let inspection = self.inspection();
+        let inspection = self.presentation_inspection();
         let mut issues = Vec::new();
         audit_inspection_node(&inspection.root, &mut issues);
         AccessibilityAudit {
@@ -1908,13 +1986,14 @@ impl FrameHarness {
         use crate::widget::ControlBindingKind;
         self.drain_component_wakes();
 
-        let resources = self.resources();
-        let bindings = self.root.control_action_bindings();
+        let mut resources = self.resources();
+        resources.extend(self.history_resources_snapshot().unwrap_or_default());
+        let bindings = self.presentation(|root, _| root.control_action_bindings());
         let inventoried_controls = bindings
             .iter()
             .map(|binding| binding.control_id.clone())
             .collect::<HashSet<_>>();
-        let inspection = self.inspection();
+        let inspection = self.presentation_inspection();
         let has_semantics = inspection_has_semantics(&inspection.root);
         let semantic_effect_controls = effect_control_ids(&inspection.root);
         let mut issues = bindings
@@ -2064,17 +2143,20 @@ impl FrameHarness {
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
         let t_event = self.profiler.as_ref().map(|_| std::time::Instant::now());
-        self.root.handle_event(
-            event,
-            self.input_scale,
-            &self.modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus_target,
-            self.child_node,
-            &self.taffy,
-        );
+        let history_handled = self.history_event(event, &mut handled, &mut focus_target);
+        if !history_handled && self.history_layout.is_none_or(|layout| layout.app_visible) {
+            self.root.handle_event(
+                event,
+                self.input_scale,
+                &self.modifiers,
+                &mut self.state.doc,
+                &self.state.root,
+                &mut handled,
+                &mut focus_target,
+                self.child_node,
+                &self.taffy,
+            );
+        }
         if let Some(p) = self.profiler.as_mut() {
             // Banked; folded into the frame the following `relayout` commits.
             p.record_since(crate::profiling::Pass::HandleEvent, t_event);
@@ -2084,7 +2166,13 @@ impl FrameHarness {
         if let Some(t) = focus_target {
             self.set_focused(Some(t));
         }
-        self.host_tick();
+        if history_handled {
+            if let Err(error) = self.history_tick() {
+                tracing::debug!(%error, "headless History input refused");
+            }
+        } else {
+            self.host_tick();
+        }
         self.relayout();
     }
 
@@ -2504,6 +2592,7 @@ impl FrameHarness {
     /// layout rectangle.
     pub fn tap_named(&mut self, name: &str) -> Result<(), String> {
         self.pump_component_wakes();
+        self.try_presentation(|_, _| ())?;
         let rect = self
             .targets()
             .get(name)
@@ -2526,6 +2615,7 @@ impl FrameHarness {
     /// Returns an error if the widget is not found or has a zero-sized rect.
     pub fn click_named(&mut self, name: &str) -> Result<(), String> {
         self.pump_component_wakes();
+        self.try_presentation(|_, _| ())?;
         let rect = self
             .targets()
             .get(name)
@@ -3486,9 +3576,28 @@ fn write_spec_outputs(spec: &Spec, driver: &mut Driver) -> Result<(), String> {
             .map_err(|error| format!("writing dump to {}: {error}", path.display()))?;
     }
     if let Some(path) = &spec.inspect {
-        let json = driver
-            .inspection_json()
-            .map_err(|error| format!("serializing inspection: {error}"))?;
+        // Existing consumers address root.widget/root.children directly. Keep
+        // the operational snapshot intact and publish chrome additively.
+        #[derive(serde::Serialize)]
+        struct InspectionOutput {
+            #[serde(flatten)]
+            application: InspectionSnapshot,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            presentation: Option<InspectionNode>,
+        }
+        let presentation = driver
+            .history_chrome_enabled
+            .then(|| {
+                driver
+                    .try_presentation_inspection()
+                    .map(|snapshot| snapshot.root)
+            })
+            .transpose()?;
+        let json = serde_json::to_string_pretty(&InspectionOutput {
+            application: driver.inspection(),
+            presentation,
+        })
+        .map_err(|error| format!("serializing inspection: {error}"))?;
         write_headless_output(path, json)
             .map_err(|error| format!("writing inspection to {}: {error}", path.display()))?;
     }
@@ -3516,6 +3625,7 @@ pub fn run_component(
             return 3;
         }
     };
+    driver.enable_document_history_chrome();
     tilo_startup_metrics::mark("headless-setup-ready");
     let mut failure = drive_spec_actions(spec, &mut driver, |driver| {
         driver.persist_tick();
@@ -3619,7 +3729,9 @@ pub(crate) fn build_initialized_driver(
             return Err("custom persistence namespace requires explicit prepared inputs".into());
         }
     }
-    Ok(build_legacy_driver(inputs, viewport, Theme::dark(), true))
+    let (mut driver, autosave) = build_legacy_driver(inputs, viewport, Theme::dark(), true);
+    driver.enable_document_history_chrome();
+    Ok((driver, autosave))
 }
 
 /// Inspect the same explicit record binding without requiring or flushing a
@@ -3630,7 +3742,9 @@ pub(crate) fn build_audit_driver(
     viewport: (u32, u32),
     theme: Theme,
 ) -> (Driver, crate::persist::Autosave) {
-    build_legacy_driver(inputs, viewport, theme, false)
+    let (mut driver, autosave) = build_legacy_driver(inputs, viewport, theme, false);
+    driver.enable_document_history_chrome();
+    (driver, autosave)
 }
 
 fn build_legacy_driver(
