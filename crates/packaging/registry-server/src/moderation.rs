@@ -301,6 +301,22 @@ impl ModerationService {
         validate_submission(&successor.change, public.as_ref(), Some(reviewed))
     }
 
+    fn ensure_not_reserved_by_promotion(&self, package_id: &str) -> Result<(), ModerationError> {
+        if self
+            .storage
+            .load_promotion_transaction()?
+            .is_some_and(|journal| {
+                journal
+                    .submissions
+                    .iter()
+                    .any(|selected| selected.submission_id == package_id)
+            })
+        {
+            return Err(ModerationError::PromotionInProgress(package_id.into()));
+        }
+        Ok(())
+    }
+
     fn approve_locked(
         &self,
         reviewed_submission: &PendingSubmission,
@@ -404,6 +420,7 @@ impl ModerationService {
     ) -> Result<ReviewRecord, ModerationError> {
         let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
+        self.ensure_not_reserved_by_promotion(submission_id)?;
         let pending = self.require_pending(submission_id)?;
         let review_id = submission_review_id(&pending);
         let review = self
@@ -437,6 +454,7 @@ impl ModerationService {
     ) -> Result<ReviewRecord, ModerationError> {
         let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
+        self.ensure_not_reserved_by_promotion(package_id)?;
         let reviewer = reviewer.into();
         let reason = reason.into();
         let public = self.storage.load_entry(package_id)?;
@@ -493,6 +511,7 @@ impl ModerationService {
     ) -> Result<ReviewRecord, ModerationError> {
         let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
+        self.ensure_not_reserved_by_promotion(package_id)?;
         let reviewer = reviewer.into();
         let reason = reason.into();
         let Some(entry) = self.storage.load_quarantined_entry(package_id)? else {
@@ -863,6 +882,8 @@ pub enum ModerationError {
     NoPendingSubmission(String),
     #[error("pending submission for {0} changed after review; inspect it again")]
     PendingChanged(String),
+    #[error("package {0} is reserved by an active first-party promotion")]
+    PromotionInProgress(String),
     #[error("entry {0} already exists")]
     EntryAlreadyExists(String),
     #[error("no public entry for {0}")]

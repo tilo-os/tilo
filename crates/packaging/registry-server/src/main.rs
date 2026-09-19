@@ -109,9 +109,8 @@ enum Cmd {
         #[arg(long, default_value = "")]
         note: String,
     },
-    /// Remove a publisher from the allowlist. Existing entries
-    /// they authored stay in place; the moderator can delete them
-    /// separately.
+    /// Remove an unreferenced publisher from the allowlist. Public entries,
+    /// the current snapshot, and pending requests must be drained first.
     RemovePublisher {
         /// Publisher's Ed25519 pubkey (32-byte hex).
         #[arg(long)]
@@ -516,6 +515,11 @@ fn build_signed_snapshot(
         owner_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut snapshot, key)?;
+    registry_types::verify_snapshot(
+        &snapshot,
+        &hex::encode(key.verifying_key().to_bytes()),
+        issued_at_unix,
+    )?;
     Ok(snapshot)
 }
 
@@ -909,6 +913,8 @@ fn cmd_add_publisher(
     can_add_new: bool,
     note: String,
 ) -> anyhow::Result<()> {
+    let transaction = storage.lock_snapshot()?;
+    refuse_active_promotion(storage)?;
     let mut allow: PublisherAllowlist = storage
         .load_allowlist()
         .map_err(|e| anyhow::anyhow!("load allowlist: {e}"))?;
@@ -925,6 +931,7 @@ fn cmd_add_publisher(
     storage
         .save_allowlist(&allow)
         .map_err(|e| anyhow::anyhow!("save allowlist: {e}"))?;
+    drop(transaction);
     if replaced {
         info!("replaced publisher {pubkey}");
     } else {
@@ -935,18 +942,55 @@ fn cmd_add_publisher(
 
 /// `Cmd::RemovePublisher` — drop one allowlist row.
 fn cmd_remove_publisher(storage: &Storage, pubkey: &str) -> anyhow::Result<()> {
+    let transaction = storage.lock_snapshot()?;
+    refuse_active_promotion(storage)?;
+    let current_snapshot = transaction.current()?;
+    let referenced_entry = storage
+        .load_entries()?
+        .into_iter()
+        .find(|entry| entry.publisher_pubkey_hex.eq_ignore_ascii_case(pubkey))
+        .or_else(|| {
+            current_snapshot.and_then(|snapshot| {
+                snapshot
+                    .entries
+                    .into_iter()
+                    .find(|entry| entry.publisher_pubkey_hex.eq_ignore_ascii_case(pubkey))
+            })
+        });
+    if let Some(entry) = referenced_entry {
+        anyhow::bail!(
+            "cannot remove publisher {pubkey}: public package {} still references it; quarantine or delete the package and publish that state first",
+            entry.package_id
+        );
+    }
+    if let Some(pending) = storage
+        .load_pending_submissions()?
+        .into_iter()
+        .find(|pending| {
+            pending
+                .change
+                .entry
+                .publisher_pubkey_hex
+                .eq_ignore_ascii_case(pubkey)
+        })
+    {
+        anyhow::bail!(
+            "cannot remove publisher {pubkey}: pending package {} still references it; reject or approve the request first",
+            pending.change.entry.package_id
+        );
+    }
     let mut allow: PublisherAllowlist = storage
         .load_allowlist()
         .map_err(|e| anyhow::anyhow!("load allowlist: {e}"))?;
-    if allow.remove(pubkey) {
-        storage
-            .save_allowlist(&allow)
-            .map_err(|e| anyhow::anyhow!("save allowlist: {e}"))?;
-        info!("removed publisher {pubkey}");
-        Ok(())
-    } else {
+    if !allow.remove(pubkey) {
         anyhow::bail!("no publisher with pubkey {pubkey}");
     }
+    storage
+        .save_allowlist(&allow)
+        .map_err(|e| anyhow::anyhow!("save allowlist: {e}"))?;
+    drop(transaction);
+    info!("removed publisher {pubkey}");
+    Ok(())
 }
 
 /// `Cmd::ListPublishers` — print `publishers.toml` to stdout.
@@ -959,4 +1003,130 @@ fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("encode allowlist: {e}"))?;
     print!("{s}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion, sign_entry};
+
+    fn publisher_entry(key: &ed25519_dalek::SigningKey) -> RegistryEntry {
+        let mut entry = RegistryEntry {
+            package_id: "dev.tilo.concurrent".into(),
+            name: "Concurrent".into(),
+            description: "publisher removal regression".into(),
+            categories: Vec::new(),
+            icon_url: None,
+            source_url: None,
+            homepage: None,
+            publisher_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
+            versions: vec![RegistryVersion {
+                version: "1.0.0".into(),
+                qpkg_url: "https://packages.test/concurrent.qpkg".into(),
+                qpkg_root_hash_hex: "ab".repeat(32),
+                qpkg_size_bytes: 1,
+                released_at_unix: 1,
+                qpkg_blake3_hex: Some("cd".repeat(32)),
+                target: Some(RegistryTarget {
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                }),
+            }],
+            updated_at_unix: 1,
+            signature_hex: String::new(),
+        };
+        sign_entry(&mut entry, key);
+        entry
+    }
+
+    #[tokio::test]
+    async fn publisher_removal_waits_for_promotion_and_keeps_entries_servable() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+        let publisher = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+        let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
+        let identity = ServerIdentity {
+            owner_pubkey_hex: owner_hex.clone(),
+            name: "test".into(),
+            description: "test".into(),
+            base_url: "http://127.0.0.1".into(),
+        };
+        storage.save_identity(&identity).unwrap();
+        cmd_add_publisher(&storage, &publisher_hex, true, String::new()).unwrap();
+        let entry = publisher_entry(&publisher);
+        storage.save_entry(&entry).unwrap();
+
+        // Simulate promotion holding the registry transaction while a
+        // concurrent CLI attempts revocation. Removal must observe the
+        // published result, rather than racing the allowlist read.
+        let writer = storage.lock_snapshot().unwrap();
+        let remove_storage = storage.clone();
+        let remove_key = publisher_hex.clone();
+        let remover = std::thread::spawn(move || {
+            cmd_remove_publisher(&remove_storage, &remove_key).unwrap_err()
+        });
+        let first = build_signed_snapshot(&storage, None, vec![entry], &owner, 3_600).unwrap();
+        writer.publish(&first).unwrap();
+        drop(writer);
+        let removal_error = remover.join().unwrap().to_string();
+        assert!(removal_error.contains("public package dev.tilo.concurrent"));
+        registry_types::verify_snapshot(&first, &owner_hex, first.issued_at_unix).unwrap();
+        assert!(
+            storage
+                .load_allowlist()
+                .unwrap()
+                .get(&publisher.verifying_key().to_bytes())
+                .is_some()
+        );
+
+        // Revocation becomes legal only after both live storage and the
+        // published pointer no longer reference the publisher.
+        storage.delete_entry("dev.tilo.concurrent").unwrap();
+        assert!(
+            cmd_remove_publisher(&storage, &publisher_hex)
+                .unwrap_err()
+                .to_string()
+                .contains("public package dev.tilo.concurrent")
+        );
+        let writer = storage.lock_snapshot().unwrap();
+        let second =
+            build_signed_snapshot(&storage, Some(&first), Vec::new(), &owner, 3_600).unwrap();
+        writer.publish(&second).unwrap();
+        drop(writer);
+        cmd_remove_publisher(&storage, &publisher_hex).unwrap();
+        assert!(
+            build_signed_snapshot(
+                &storage,
+                Some(&second),
+                vec![publisher_entry(&publisher)],
+                &owner,
+                3_600,
+            )
+            .is_err(),
+            "a promotion candidate may never contain an unauthorized entry"
+        );
+
+        let writer = storage.lock_snapshot().unwrap();
+        let third =
+            build_signed_snapshot(&storage, Some(&second), Vec::new(), &owner, 3_600).unwrap();
+        writer.publish(&third).unwrap();
+        drop(writer);
+        registry_types::verify_snapshot(&third, &owner_hex, third.issued_at_unix).unwrap();
+
+        let bound = registry_server::bind_and_run(
+            "127.0.0.1:0".parse().unwrap(),
+            AppState::new(storage, identity),
+        )
+        .await
+        .unwrap();
+        let response = reqwest::get(format!("http://{bound}/entries"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let served: SignedRegistrySnapshot = response.json().await.unwrap();
+        assert_eq!(served, third);
+    }
 }
