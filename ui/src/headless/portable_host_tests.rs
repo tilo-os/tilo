@@ -638,3 +638,111 @@ fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
     frame.send_host_event(&move_to(filler_point.0 + 2.0, filler_point.1));
     assert!(frame.last_send_skipped_relayout());
 }
+
+#[test]
+fn hover_only_frames_run_zero_layout_passes() {
+    // Inert pointer motion must neither rebuild nor re-solve nor re-apply the
+    // retained tree: the frame counter stays put and the last relayout is the
+    // one the hover produced.
+    let root = Column::new()
+        .push(Box::new(Button::new("target", "Target", None)))
+        .push(Box::new(Button::new("other", "Other", None)));
+    let mut frame = frame(Box::new(root));
+    let device_id = winit::event::DeviceId::dummy();
+    let move_to = |x: f64, y: f64| WindowEvent::CursorMoved {
+        device_id,
+        position: winit::dpi::PhysicalPosition::new(x, y),
+    };
+    let button = frame.targets()["target"];
+    let other = frame.targets()["other"];
+    let filler = (button.center().x, other.max_y() + 40.0);
+    let ids = frame.layout_node_ids();
+
+    frame.send_host_event(&move_to(button.center().x, button.center().y));
+    assert!(!frame.last_send_skipped_relayout(), "hover onto a button paints");
+    let hover = frame.last_relayout();
+    assert!(!hover.rebuilt, "a hover change re-paints a retained tree: {hover:?}");
+    let frames = frame.relayout_frames();
+
+    for step in 0..3 {
+        frame.send_host_event(&move_to(button.center().x + 1.0 + f64::from(step), button.center().y));
+    }
+    assert_eq!(frame.relayout_frames(), frames, "motion inside the hovered button runs no layout pass");
+    frame.send_host_event(&move_to(filler.0, filler.1));
+    assert_eq!(frame.relayout_frames(), frames + 1, "leaving the button paints its resting state once");
+    assert!(!frame.last_relayout().rebuilt, "the leave repaints the retained tree");
+    for step in 0..3 {
+        frame.send_host_event(&move_to(filler.0 + f64::from(step), filler.1));
+    }
+    assert_eq!(frame.relayout_frames(), frames + 1, "inert motion over empty space runs no layout pass");
+    assert_eq!(frame.layout_node_ids(), ids, "hover frames keep the retained tree");
+    frame.verify_retained_geometry().unwrap();
+}
+
+#[test]
+fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
+    use crate::widget::BlockEditor;
+    let mut editor = BlockEditor::from_markdown("alpha\n\nbeta\n\ngamma");
+    editor.set_focus(true);
+    let mut frame = frame(Box::new(editor));
+    // The first key switches the interaction environment to keyboard, which
+    // recomposes once (widgets may size differently per modality); settle
+    // that before measuring an ordinary typed key.
+    frame.type_text("w");
+    frame.relayout();
+    frame.set_retained_geometry_check(1);
+    let ids = frame.layout_node_ids();
+    let focused = frame.focused();
+    assert!(focused.is_some(), "the editor's focused line owns keyboard focus");
+
+    frame.type_text("x");
+    let typed = frame.last_relayout();
+    assert!(!typed.rebuilt, "a character edit keeps the composed tree: {typed:?}");
+    assert!(typed.measured, "a character edit re-solves sizes: {typed:?}");
+    assert_eq!(frame.layout_node_ids(), ids, "node ids survive a retained relayout");
+    assert_eq!(frame.focused(), focused, "focus survives a retained relayout");
+    frame.verify_retained_geometry().unwrap();
+
+    // Splitting the block is a structural change: the line count grows, so
+    // the tree is rebuilt (on the press frame; the release frame that follows
+    // retains the new tree) and gains a node.
+    let rebuilt_before = frame.rebuilt_frames();
+    frame.key("Enter");
+    assert!(frame.rebuilt_frames() > rebuilt_before, "inserting a block rebuilds the composition");
+    assert_eq!(frame.layout_node_ids().len(), ids.len() + 1, "one more line node after the split");
+    frame.verify_retained_geometry().unwrap();
+}
+
+#[test]
+fn viewport_change_rebuilds_and_matches_a_fresh_composition() {
+    let root = Column::new()
+        .push(Box::new(Button::new("target", "Target", None)))
+        .push(Box::new(Button::new("other", "Other", None)));
+    let mut frame = frame(Box::new(root));
+    let ids = frame.layout_node_ids();
+    frame.resize((360, 200)).unwrap();
+    assert!(frame.last_relayout().rebuilt, "a viewport change recomposes");
+    // Node ids restart on a fresh tree, so identical ids do not prove
+    // retention on their own; the stats do.
+    assert_eq!(frame.layout_node_ids().len(), ids.len());
+    let rebuilt = frame.layout_node_ids();
+    frame.relayout();
+    assert!(!frame.last_relayout().rebuilt, "the following frame retains the new tree");
+    assert_eq!(frame.layout_node_ids(), rebuilt);
+    frame.verify_retained_geometry().unwrap();
+}
+
+#[test]
+fn full_relayout_valve_forces_the_rebuild_path() {
+    let root = Column::new().push(Box::new(Button::new("target", "Target", None)));
+    let mut frame = frame(Box::new(root));
+    frame.relayout();
+    assert!(!frame.last_relayout().rebuilt, "retained by default");
+    frame.set_full_relayout(Some(true));
+    frame.relayout();
+    assert!(frame.last_relayout().rebuilt, "the valve rebuilds every frame");
+    assert_eq!(frame.last_relayout().marked_dirty, 0, "a fresh tree has nothing to invalidate");
+    frame.set_full_relayout(None);
+    frame.relayout();
+    assert!(!frame.last_relayout().rebuilt, "clearing the override restores retention");
+}

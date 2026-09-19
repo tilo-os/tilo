@@ -1037,6 +1037,10 @@ impl Widget for LazyOwnerRoot {
     fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         if !self.during_layout {
             self.mount_owner();
+        } else if self.mount.get() && !self.mounted {
+            // A widget that will compose an owner during its next build has
+            // to request that build: a retained host never rebuilds unasked.
+            self.dirty = true;
         }
         self.child.sync(doc, path);
     }
