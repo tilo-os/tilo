@@ -81,6 +81,7 @@ on:
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/tilo-relay.yaml"
       - "tools/ci/workflow_applicability.py"
+      - "tools/ci/prepare_pr_history.py"
   workflow_dispatch:
 
 concurrency:
@@ -103,8 +104,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
+          fetch-depth: 2
+          sparse-checkout: |
+            tools/ci/prepare_pr_history.py
+            tools/ci/workflow_applicability.py
+            .forgejo/workflows/tilo-relay.yaml
+          sparse-checkout-cone-mode: false
           token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Prepare targeted PR history
+        run: python3 -I tools/ci/prepare_pr_history.py
       - name: Require an exact relevant PR diff before native work
         id: compare
         run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/tilo-relay.yaml
