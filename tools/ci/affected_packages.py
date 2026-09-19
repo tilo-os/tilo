@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from typing import Iterable
@@ -24,6 +25,7 @@ from typing import Iterable
 # pkg/tests/{app_manifests,verify_attest} and qdoc/tests/{convergence,office_roundtrip}.
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc"}
+EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
 # Audited developer/CI prose, not compiled documentation or runtime contracts.
 # Keep this explicit: crates/sdk/ui-core/CHARTS.md is included by Rust, docs/app-development.md
 # is inspected by tilo-dev, and docs/packaging.md is a packaging contract input.
@@ -97,6 +99,7 @@ GLOBAL_FILES = {
     "rust-toolchain.toml",
     "deny.toml",
     "os/Containerfile.builder",
+    EXTERNAL_ASSET_MANIFEST,
 }
 GLOBAL_PREFIXES = (
     ".cargo/",
@@ -140,12 +143,20 @@ def package_maps(metadata: dict, root: Path) -> tuple[dict[str, dict], dict[Path
     return packages, by_dir
 
 
-def changed_files(root: Path, base: str | None, head: str) -> list[str]:
+def comparison_merge_base(root: Path, base: str | None, head: str) -> str | None:
     if not base:
         base = run("git", "rev-parse", f"{head}^", cwd=root)
     try:
-        merge_base = run("git", "merge-base", base, head, cwd=root)
+        return run("git", "merge-base", base, head, cwd=root)
     except subprocess.CalledProcessError:
+        return None
+
+
+def changed_files(root: Path, base: str | None, head: str) -> list[str]:
+    if not base:
+        base = run("git", "rev-parse", f"{head}^", cwd=root)
+    merge_base = comparison_merge_base(root, base, head)
+    if merge_base is None:
         # A depth-limited checkout may have the event's exact base tree without
         # enough ancestry to compute a merge base. Comparing those two trees can
         # over-select files for a pull request whose base moved, but it cannot
@@ -163,6 +174,62 @@ def changed_files(root: Path, base: str | None, head: str) -> list[str]:
     )
     return [path.decode("utf-8", errors="surrogateescape")
             for path in output.split(b"\0") if path]
+
+
+def manifest_at(root: Path, revision: str) -> dict[str, tuple[str, str]] | None:
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{EXTERNAL_ASSET_MANIFEST}"],
+        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if result.returncode:
+        return None
+    try:
+        text = result.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    entries: dict[str, tuple[str, str]] = {}
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) != 3 or not all(fields):
+            return None
+        checksum, name, url = fields
+        if not re.fullmatch(r"[0-9a-f]{64}", checksum) or name in entries:
+            return None
+        entries[name] = (checksum, url)
+    return entries
+
+
+def builder_mold_asset(name: str, entry: tuple[str, str]) -> bool:
+    match = re.fullmatch(
+        r"mold-(\d+\.\d+\.\d+)-(x86_64|aarch64)-linux\.tar\.gz", name
+    )
+    if not match:
+        return False
+    version = match.group(1)
+    return entry[1] == (
+        f"https://github.com/rui314/mold/releases/download/v{version}/{name}"
+    )
+
+
+def builder_only_asset_manifest_change(root: Path, base: str | None, head: str) -> bool:
+    merge_base = comparison_merge_base(root, base, head)
+    if merge_base is None:
+        return False
+    before = manifest_at(root, merge_base)
+    after = manifest_at(root, head)
+    if before is None or after is None:
+        return False
+    changed_names = {
+        name for name in before.keys() | after.keys()
+        if before.get(name) != after.get(name)
+    }
+    return bool(changed_names) and all(
+        (name not in before or builder_mold_asset(name, before[name]))
+        and (name not in after or builder_mold_asset(name, after[name]))
+        for name in changed_names
+    )
 
 
 def owner_for(path: str, by_dir: dict[Path, str]) -> str | None:
@@ -243,10 +310,25 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
     return min(max(1, maximum), len(names), cost_limited)
 
 
-def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, *, force_full: bool = False) -> dict:
+def make_plan(
+    metadata: dict,
+    root: Path,
+    changes: list[str],
+    shard_count: int,
+    *,
+    force_full: bool = False,
+    builder_only_external_assets: bool = False,
+) -> dict:
     packages, by_dir = package_maps(metadata, root)
     seeds = {owner for path in changes if (owner := owner_for(path, by_dir))}
-    global_change = any(path in GLOBAL_FILES or path.startswith(GLOBAL_PREFIXES) for path in changes)
+    projected_quality_paths = (
+        {EXTERNAL_ASSET_MANIFEST} if builder_only_external_assets else set()
+    )
+    global_change = any(
+        (path in GLOBAL_FILES and path not in projected_quality_paths)
+        or path.startswith(GLOBAL_PREFIXES)
+        for path in changes
+    )
     workspace_source_roots = ("apps/", "crates/")
     unmapped_workspace_change = any(
         path.startswith(workspace_source_roots) and owner_for(path, by_dir) is None
@@ -280,6 +362,7 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, 
     )
     quality_only = bool(changes) and all(
         prose(path) or path in quality_paths
+        or path in projected_quality_paths
         or (recipe_present and path == "os/Containerfile.builder")
         for path in changes
     )
@@ -357,7 +440,19 @@ def main() -> int:
     root = Path(run("git", "rev-parse", "--show-toplevel", cwd=Path.cwd()))
     metadata = json.loads(args.metadata.read_text()) if args.metadata else cargo_metadata(root)
     changes = args.changes.read_text().splitlines() if args.changes else changed_files(root, args.base, args.head)
-    plan = make_plan(metadata, root, changes, args.shards, force_full=args.full)
+    builder_only_external_assets = (
+        args.changes is None
+        and EXTERNAL_ASSET_MANIFEST in changes
+        and builder_only_asset_manifest_change(root, args.base, args.head)
+    )
+    plan = make_plan(
+        metadata,
+        root,
+        changes,
+        args.shards,
+        force_full=args.full,
+        builder_only_external_assets=builder_only_external_assets,
+    )
     print(json.dumps(plan, indent=2))
     if args.github_output:
         emit_github(plan, args.github_output)
