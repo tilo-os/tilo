@@ -11,8 +11,10 @@ Use a trusted Linux root shell, the authenticated `fgj` (or WSL-visible `fgj.exe
 CLI, and the existing AWS/EKS broker connection used by `broker_signing_runner.py`.
 The broker adapter currently uses local user `benn1x`, AWS profile
 `tilo-eks-operator`, and the existing on-prem broker context. Those infrastructure
-settings do not select hardware. The operation's `--hardware-profile` and request's
-architecture/boot profile describe the intended image.
+settings do not select hardware. The operation's `--hardware-profile` must match
+the profile authenticated by the retained-rootfs receipt (`null` is the generic
+profile); initialization records it as `generic`. The request's architecture and
+boot profile describe the remaining intended-image properties.
 
 ## Prepare once per immutable set of inputs
 

@@ -100,6 +100,20 @@ def operator_identity():
     return spool.digest(spool.canonical(files))
 
 
+def retained_hardware_profile(raw):
+    """Return the canonical profile authenticated by the pinned retained receipt."""
+    receipt = json.loads(raw, object_pairs_hook=spool.unique)
+    require(isinstance(receipt, dict) and receipt.get('schema') == 1 and
+            receipt.get('purpose') == 'tilo-retained-development-raw-rootfs' and
+            'hardware_profile' in receipt, 'retained receipt identity differs')
+    profile = receipt['hardware_profile']
+    require(profile is None or isinstance(profile, str), 'invalid retained hardware profile')
+    profile = 'generic' if profile is None else profile
+    require(re.fullmatch(r'[a-z0-9][a-z0-9_.-]{0,127}', profile),
+            'invalid retained hardware profile')
+    return profile
+
+
 def initialize(args):
     """Snapshot public inputs once. Existing/partial operations are never overwritten."""
     request_raw = read(args.request)
@@ -108,6 +122,9 @@ def initialize(args):
     require(spool.digest(archive_raw) == args.archive_sha256, 'archive hash differs')
     files = {'request.json': request_raw, 'retained-rootfs.json': read(args.receipt, 65536)}
     require(spool.digest(files['retained-rootfs.json']) == q['receipt_sha256'], 'receipt pin differs')
+    retained_profile = retained_hardware_profile(files['retained-rootfs.json'])
+    require(args.hardware_profile == retained_profile,
+            'operation hardware profile differs from retained rootfs')
     for folder, source in (('original-public', args.original_public), ('new-public', args.new_public)):
         for name in stage.PUBLIC:
             files[folder + '/' + name] = read(source / name, 65536)
@@ -123,7 +140,7 @@ def initialize(args):
     c = validate_config(dict(schema=1, request_sha256=spool.digest(request_raw),
         helper_revision=q['helpers_revision'], archive_sha256=args.archive_sha256,
         operator_sha256=operator_identity(),
-        tools_image_id=args.tools_image_id, hardware_profile=args.hardware_profile,
+        tools_image_id=args.tools_image_id, hardware_profile=retained_profile,
         initial_free_bytes=args.initial_free_bytes, forgejo_host=args.forgejo_host,
         repository=args.repository, dispatch_ref=args.dispatch_ref,
         files={name: spool.digest(data) for name, data in files.items()}))
