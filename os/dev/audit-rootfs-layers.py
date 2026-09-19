@@ -53,6 +53,14 @@ PUBLIC_PEM_DER_SHA256 = frozenset({
     'd609f09d5bc2b9038bff653e31ce4d594ea32f8647fe8414d094aacb69e9cd9b',
     'aafe40f40e5e2c77bd51c7293152896478f75a80d01e7ed820f6c97c616c70e5',
     '82bf1f671fb9c8a3258e558e139ac450d787bb128c202e895b16a519691b0afc',
+    # Older EC vectors in lib/crypto-selftests-pk.c:141,154 from GnuTLS 3.7.7.
+    # Independently verified signed source RPM (unpatched upstream tar member):
+    # https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/37/Everything/source/tree/Packages/g/gnutls-3.7.7-1.fc37.src.rpm
+    # RPM SHA256: 3603cee33eb3fe11f6bc20bde3f0b1044b58834876ff169b16c42d8823a094cf
+    # Fedora signer: ACB5EE4E831C74BB7C168D27F55AD3FB5323552A
+    # Source SHA256: c3d79122e072177f55dc30a98f68b949c0f36f6159a363aae9512a22a9280ed0
+    '7e38af7715bbb425a6aa8060b7c0af60aeb81d39975c55e83edcb9eae7a5e9f8',
+    '09416ba3e0782523c56225fb168cd58cda7796e938db1b53f79b6abbaed2bbc7',
     # Public simulate_proxy.pl example from perl-IO-Socket-SSL.
     # RPM: https://kojipkgs.fedoraproject.org/packages/perl-IO-Socket-SSL/2.098/2.fc44/data/signed/6d9f90a6/noarch/perl-IO-Socket-SSL-2.098-2.fc44.noarch.rpm
     # RPM SHA256: c611b0adbabd7df6828a8fbdb573435f034ac2242407024e8987a54aa4959399

@@ -25,6 +25,20 @@ PRIVATE_DER = bytes.fromhex('302e020100300506032b657004220420') + bytes(range(32
 PUBLIC_VECTOR_DER = bytes.fromhex(
     '302e020100300506032b6570042204207e167aa999199425498ffc1fce59662995776ea1e88ebc80537206fca1dd5732')
 
+# Public secp192r1/secp224r1 self-test vectors from the signed GnuTLS source RPM.
+LEGACY_PUBLIC_EC_DER = (
+    bytes.fromhex(
+        '3068020101041ce29624575676b47f0a056b51e4de6b03ab27d1a8cc4f4a2b1d9af0f9a00706'
+        '052b81040021a13c033a00040a423dd8a5e9d64fb945478d529c1be68fff818fe920cd09da17'
+        'ae6a580b4f449b195c594b4eedff21436a491bbd0ea3ec93cc411c007ba4'
+    ),
+    bytes.fromhex(
+        '305f0201010418b8decc571b80331e02956b76d647beefe4d5af3fb55678d4a00a06082a8648'
+        'ce3d030101a13403320004ed6572229d8317911fc93ae2fc5c695d4e6082bd6a456b5b4d83c3'
+        '6d4c5e144b3f4974c330b0e8b192af9ad2e8068b16'
+    ),
+)
+
 # Exact public encrypted example from the signed perl-Net-SSLeay RPM.
 ENCRYPTED_PUBLIC_HEADERS = b'Proc-Type: 4,ENCRYPTED\nDEK-Info: DES-EDE3-CBC,932256E9ACCDC996\n\n'
 ENCRYPTED_PUBLIC_CIPHERTEXT = base64.b64decode(
@@ -265,6 +279,22 @@ class LayerAuditTests(unittest.TestCase):
                 self.assertEqual(reader.findings, set())
             stream, image = docker([tar([('any-path', value)])])
             self.assertEqual(audit.audit_stream(io.BytesIO(stream), image)['status'], 'passed-scoped-scan')
+
+    def test_legacy_public_ec_vectors_only_exempt_exact_authenticated_payloads(self):
+        for der in LEGACY_PUBLIC_EC_DER:
+            self.assertIn(hashlib.sha256(der).hexdigest(), audit.PUBLIC_PEM_DER_SHA256)
+            public = pem(b'EC PRIVATE KEY', payload=der)
+            stream, image = docker([tar([('legacy-library', public)])])
+            self.assertEqual(audit.audit_stream(io.BytesIO(stream), image)['status'], 'passed-scoped-scan')
+            self.assertEqual(audit.audit_stream(io.BytesIO(stream), image, [public])['layers'][0]['findings'],
+                             ['provided-private-material'])
+            modified = pem(b'EC PRIVATE KEY', payload=der[:-1] + bytes([der[-1] ^ 1]))
+            for value in (modified, public + b'\0' + pem()):
+                for cut in range(len(value)):
+                    reader = audit.Reader(io.BytesIO(value), len(value), hashing=True)
+                    reader.read(cut)
+                    reader.read(len(value) - cut)
+                    self.assertEqual(reader.findings, {'private-pem-envelope'})
 
     def test_public_vector_does_not_exempt_mutated_or_later_unknown_key(self):
         public = pem(payload=PUBLIC_VECTOR_DER)
