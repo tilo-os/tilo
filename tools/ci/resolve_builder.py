@@ -17,8 +17,12 @@ IMAGE = "code.sandbox.example/qos/tilo-builder"
 FILES_URL = "https://code.sandbox.example/api/v1/packages/qos/container/tilo-builder/latest/files"
 MAX_RESPONSE = 1024 * 1024
 ATTEMPTS = 3
-TRANSIENT_ERRNOS = {errno.ECONNRESET, errno.ECONNREFUSED, errno.ECONNABORTED,
-                    errno.ETIMEDOUT, errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EPIPE}
+# errno.errorcode can prefer Winsock aliases on Windows. Keep supported
+# transport categories identical across platforms, without changing errno tests.
+TRANSIENT_ERRNOS = {errno.ECONNRESET: "ECONNRESET", errno.ECONNREFUSED: "ECONNREFUSED",
+                    errno.ECONNABORTED: "ECONNABORTED", errno.ETIMEDOUT: "ETIMEDOUT",
+                    errno.ENETUNREACH: "ENETUNREACH", errno.EHOSTUNREACH: "EHOSTUNREACH",
+                    errno.EPIPE: "EPIPE"}
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -50,7 +54,7 @@ def failure(error):
         return "HTTP_INCOMPLETE", True
     if isinstance(error, OSError):
         code = error.errno
-        name = errno.errorcode.get(code) if type(code) is int else None
+        name = TRANSIENT_ERRNOS.get(code, errno.errorcode.get(code)) if type(code) is int else None
         return ("OS_" + name if name else "OSError"), code in TRANSIENT_ERRNOS if type(code) is int else False
     if isinstance(error, ValueError):
         return "ValueError", False
