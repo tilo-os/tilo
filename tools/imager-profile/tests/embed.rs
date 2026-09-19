@@ -35,7 +35,7 @@ fn only_reserved_tail_changes_and_live_extractor_accepts_it() {
     #[cfg(target_os = "linux")]
     {
         let extractor = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../os/usr/libexec/tilo-installer-profile-extract");
+            .join("../../os/usr/libexec/tilo-installer-profile-extract");
         let output = temporary.path().join("profile");
         assert!(
             Command::new("bash")
