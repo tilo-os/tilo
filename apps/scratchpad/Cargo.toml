@@ -22,6 +22,7 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 iroh-blobs.workspace = true
 dirs.workspace = true
+clap.workspace = true
 taffy.workspace = true
 vello.workspace = true
 winit.workspace = true

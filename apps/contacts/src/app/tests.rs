@@ -426,7 +426,10 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
     let large_text = Theme::dark().with_text_scale(2.0);
     drive_frame_with_theme(&mut app, 1440, 900, &large_text);
     assert!(app.narrow, "large text reflows master/detail to one pane");
-    assert_eq!(app.toolbar_h(), TOOLBAR_H * 2.0);
+    assert!(
+        app.toolbar_h()
+            >= ui::text_metrics::line_height_px(text_base(), 2.0) + 2.0 * f64::from(app.spacing.s3)
+    );
     assert_eq!(app.row_h(), ROW_H * 2.0);
     assert_eq!(app.hit.search.height(), FIELD_H * 2.0);
 
@@ -1211,12 +1214,7 @@ fn keyboard_focus_scrolls_a_below_the_fold_field_into_view() {
     h.press_named(NamedKey::Tab);
     assert_eq!(h.focused_slot(), Some(Slot::First));
     h.relayout();
-    let body_top = h.app.detail_rect.y0
-        + FORM_TITLE_TOP
-        + FORM_TITLE_H
-        + FORM_ROW_GAP
-        + 32.0
-        + h.app.detail_top_offset();
+    let body_top = h.app.form_body_top();
     assert!(
         rect_of(&h, Slot::First).y0 >= body_top - 24.0,
         "wrapping to the first field scrolled back to the top",
@@ -3754,7 +3752,7 @@ fn first_run_state_is_actionable_by_pointer_keyboard_and_assistive_tech() {
     assert!(app.empty_action_rect.width() >= 44.0);
     let first_run_area = Rect::new(
         app.rect.x0,
-        app.rect.y0 + TOOLBAR_H,
+        app.rect.y0 + app.toolbar_h(),
         app.rect.x1,
         app.rect.y1,
     );

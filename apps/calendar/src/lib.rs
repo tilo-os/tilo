@@ -46,6 +46,7 @@ mod draw_util;
 mod event_popovers;
 pub mod ics;
 mod input_context;
+mod metrics;
 mod mini_month;
 pub mod model;
 pub mod search_provider;

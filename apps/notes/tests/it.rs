@@ -68,3 +68,6 @@ mod canonical_actions;
 
 #[path = "canonical_views.rs"]
 mod canonical_views;
+
+#[path = "framework_history.rs"]
+mod framework_history;

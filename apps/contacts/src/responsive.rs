@@ -68,12 +68,25 @@ impl Default for PushNav {
 impl PushNav {
     /// Resolve the split layout purely from the allocated width.
     pub fn layout(total_w: f64) -> SplitLayout {
-        SplitLayout::from_width(total_w, PUSH_BREAKPOINT)
+        Self::layout_at(total_w, 1.0)
+    }
+
+    /// Resolve the split layout for a window of `total_w` logical pixels at
+    /// the theme's `text_scale`. The breakpoint tracks the scale because the
+    /// list and detail columns are sized by the text they hold: at 2× a
+    /// 1200px window has the room a 600px window has at 1×, so it pushes.
+    pub fn layout_at(total_w: f64, text_scale: f32) -> SplitLayout {
+        SplitLayout::from_width(total_w, PUSH_BREAKPOINT * f64::from(text_scale.max(1.0)))
     }
 
     /// `true` when the window is narrow enough for single-pane push.
     pub fn is_narrow(total_w: f64) -> bool {
         Self::layout(total_w) == SplitLayout::Overlay
+    }
+
+    /// [`Self::is_narrow`] at the theme's text scale.
+    pub fn is_narrow_at(total_w: f64, text_scale: f32) -> bool {
+        Self::layout_at(total_w, text_scale) == SplitLayout::Overlay
     }
 
     /// Which pane the push flow currently targets.
@@ -145,6 +158,18 @@ mod tests {
         assert_eq!(PushNav::layout(PUSH_BREAKPOINT - 1.0), SplitLayout::Overlay);
         assert!(!PushNav::is_narrow(1280.0));
         assert!(PushNav::is_narrow(700.0));
+        // At 2× the same 1280px window has the room a 640px window has at 1×,
+        // so it pushes; a scale below 1× never lowers the 1× breakpoint.
+        assert!(PushNav::is_narrow_at(1280.0, 2.0));
+        assert!(!PushNav::is_narrow_at(2.0 * PUSH_BREAKPOINT, 2.0));
+        assert_eq!(
+            PushNav::layout_at(PUSH_BREAKPOINT, 0.5),
+            SplitLayout::Docked
+        );
+        assert_eq!(
+            PushNav::layout_at(PUSH_BREAKPOINT - 1.0, 0.5),
+            SplitLayout::Overlay
+        );
     }
 
     #[test]
