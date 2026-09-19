@@ -555,7 +555,10 @@ fn crate_exposes_terminal_widget_as_library() {
     // Library root must re-export `TerminalWidget` so the shell can embed it.
     fn _takes_widget<T: ui::widget::Widget>(_: T) {}
     // This is a compile-time assertion via use.
-    #[allow(unused_imports)]
+    #[allow(
+        unused_imports,
+        reason = "the import itself is the compile-time public type assertion"
+    )]
     use crate::TerminalWidget as _;
 }
 

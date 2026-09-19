@@ -1544,7 +1544,10 @@ impl TileHost {
 // Standard immediate-mode paint-helper signature for this vello renderer
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the opening-card renderer needs every independently meaningful scene, transform, text, theme, and content input"
+)]
 fn draw_opening_card(
     scene: &mut Scene,
     transform: Affine,
