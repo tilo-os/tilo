@@ -257,8 +257,26 @@ where
                                     let Some(frame) = frame? else { return Ok(()); };
                                     let can_route = private_may_overtake(&frame, blocked_room, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
-                                        if let Some(reply) = handle_private(frame, &peer, &session).await? {
+                                        // The state future may hold the authorization lane
+                                        // needed by this private request. Keep polling it
+                                        // until it completes, retaining its one reply.
+                                        let private = handle_private(frame, &peer, &session);
+                                        tokio::pin!(private);
+                                        let mut completed = None;
+                                        let reply = loop {
+                                            tokio::select! {
+                                                biased;
+                                                result = &mut operation, if completed.is_none() => {
+                                                    completed = Some(result?);
+                                                }
+                                                result = &mut private => break result?,
+                                            }
+                                        };
+                                        if let Some(reply) = reply {
                                             private_tx.try_send(PrivateOutbound::Reply(reply)).map_err(|_| PeerError::Protocol("private reply backpressure".into()))?;
+                                        }
+                                        if let Some(reply) = completed {
+                                            break reply;
                                         }
                                     } else {
                                         let budget = crate::persistence::delivery_budget(inbound_bytes(&frame))?;
@@ -1940,6 +1958,11 @@ async fn route_private(
     let Some(ws) = session.workspaces.lock().await.get(&id).cloned() else {
         return Ok(Some(U::NotAuthorised));
     };
+    #[cfg(test)]
+    {
+        let root = ws.lock().await.store.root().to_owned();
+        crate::store::test_barrier::pause(&root, "private-authorization");
+    }
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
     private_phase(action, "route_lock_acquired");
     if !current_cert(peer, session)
@@ -2205,28 +2228,34 @@ mod private_transport_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_state_persistence_releases_routing_lock() {
-        paused_state_private_roundtrip(true, false, false).await;
+        paused_state_private_roundtrip(true, false, false, false).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_state_persistence_allows_same_connection_private_roundtrip() {
-        paused_state_private_roundtrip(false, false, false).await;
+        paused_state_private_roundtrip(false, false, false, false).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_replay_cleanup_with_full_reply_queue_keeps_private_reader_and_writer_live() {
-        paused_state_private_roundtrip(false, true, false).await;
+        paused_state_private_roundtrip(false, true, false, false).await;
     }
 
     #[tokio::test]
     async fn full_control_backlog_backpressures_and_recovers_after_held_writer() {
-        paused_state_private_roundtrip(false, true, true).await;
+        paused_state_private_roundtrip(false, true, true, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn overtaking_private_keeps_held_state_authorization_future_pollable() {
+        paused_state_private_roundtrip(false, false, false, true).await;
     }
 
     async fn paused_state_private_roundtrip(
         check_lock: bool,
         held_cleanup: bool,
         full_backlog: bool,
+        held_authorization: bool,
     ) {
         let (root, user) = UserIdentity::generate("alice", 1);
         let (a, _) = certified_device(&root, user.public_key, "a");
@@ -2316,7 +2345,9 @@ mod private_transport_tests {
         };
         let (release, reached) = crate::store::test_barrier::install(
             store.root(),
-            if held_cleanup {
+            if held_authorization {
+                "membership-read"
+            } else if held_cleanup {
                 "replay-cleanup"
             } else {
                 "state-persist"
@@ -2402,6 +2433,55 @@ mod private_transport_tests {
             target: b.device_public_key,
             message: ActionMessage::CatalogueRefresh,
         };
+        if held_authorization {
+            // The state handler holds the authorization lane while its real
+            // filesystem read is paused. Confirm the nested private handler
+            // has entered before releasing the read: no timing-based race.
+            let (private_release, private_reached) =
+                crate::store::test_barrier::install(store.root(), "private-authorization");
+            aw.write_all(
+                &crate::transport_v2::encode(&EnvelopeV2::Directed(request.clone())).unwrap(),
+            )
+            .await
+            .unwrap();
+            let entered =
+                tokio::time::timeout(std::time::Duration::from_secs(2), private_reached).await;
+            drop(release);
+            drop(private_release);
+            let progress = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                let mut state_seen = false;
+                let mut private_seen = false;
+                while !state_seen || !private_seen {
+                    match br.read_next().await.unwrap() {
+                        Some(EnvelopeV2::State(actual)) => {
+                            assert_eq!(actual, envelope);
+                            assert!(!state_seen);
+                            state_seen = true;
+                        }
+                        Some(EnvelopeV2::Delivered { action, .. }) => {
+                            assert_eq!(action, request);
+                            assert!(!private_seen);
+                            private_seen = true;
+                        }
+                        other => panic!("expected state/private progress: {other:?}"),
+                    }
+                }
+            })
+            .await;
+            for task in tasks {
+                task.abort();
+                let _ = task.await;
+            }
+            assert!(
+                matches!(entered, Ok(Ok(()))),
+                "private handler never entered lookahead"
+            );
+            assert!(
+                progress.is_ok(),
+                "overtaking private handler stopped polling the state future holding its authorization lane"
+            );
+            return;
+        }
         let progress = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             if check_lock {
                 drop(workspace.lock().await);
