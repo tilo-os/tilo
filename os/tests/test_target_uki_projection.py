@@ -8,6 +8,15 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'dev/sign-target-prediction.sh'
 
 
 class ProjectionTests(unittest.TestCase):
+    def test_embedded_image_export_is_one_complete_shell_program(self):
+        script = SCRIPT.read_text()
+        start = "podman run --rm -v \"$work:/out:Z\" --entrypoint /bin/bash \"$image\" -ceu '\n"
+        end = "\n'\ngeneration=\"$(tr -d '[:space:]' < \"$work/generation\")\""
+        self.assertEqual(script.count(start), 1)
+        payload = script.split(start, 1)[1].split(end, 1)[0]
+        self.assertNotIn("'", payload, 'single quote terminates the outer shell argument')
+        subprocess.run(['bash', '-n', '-c', payload], check=True)
+
     def test_both_paths_project_the_selected_verified_target(self):
         script = SCRIPT.read_text()
         block = script[script.index('target_source="$(cat'):script.index('# systemd-measure is')]
