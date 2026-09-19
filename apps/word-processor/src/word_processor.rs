@@ -3000,20 +3000,16 @@ impl WordProcessor {
     // ---- caret motion ------------------------------------------------------
 
     pub fn move_left(&mut self, state: &AutoCommit) {
-        if self
+        let extends_selection = self
             .selection_anchor
             .as_ref()
-            .is_none_or(|a| a.block == self.caret.block)
-        {
+            .is_some_and(|anchor| anchor.block == self.caret.block);
+        if extends_selection || self.caret.offset > 0 {
             let text = self.current_text(state);
             self.sync_edit_core_from_state(&text);
             self.edit_core
-                .motion(&text, ui::text_edit::Motion::Left, false);
+                .motion(&text, ui::text_edit::Motion::Left, extends_selection);
             self.sync_state_from_edit_core(&text);
-            return;
-        }
-        if self.caret.offset > 0 {
-            self.caret.offset -= 1;
             return;
         }
         let blocks = self.ordered_blocks(state);
@@ -3030,21 +3026,17 @@ impl WordProcessor {
     }
 
     pub fn move_right(&mut self, state: &AutoCommit) {
-        if self
+        let extends_selection = self
             .selection_anchor
             .as_ref()
-            .is_none_or(|a| a.block == self.caret.block)
-        {
+            .is_some_and(|anchor| anchor.block == self.caret.block);
+        let len = self.block_len(state, &self.caret.block);
+        if extends_selection || self.caret.offset < len {
             let text = self.current_text(state);
             self.sync_edit_core_from_state(&text);
             self.edit_core
-                .motion(&text, ui::text_edit::Motion::Right, false);
+                .motion(&text, ui::text_edit::Motion::Right, extends_selection);
             self.sync_state_from_edit_core(&text);
-            return;
-        }
-        let len = self.block_len(state, &self.caret.block);
-        if self.caret.offset < len {
-            self.caret.offset += 1;
             return;
         }
         let blocks = self.ordered_blocks(state);
@@ -3060,22 +3052,6 @@ impl WordProcessor {
     }
 
     pub fn move_home(&mut self) {
-        if self
-            .selection_anchor
-            .as_ref()
-            .is_none_or(|a| a.block == self.caret.block)
-        {
-            // The widget calls this only for the active block; the text is
-            // synchronized by the next stateful motion/edit if no document
-            // snapshot is available here.
-            if self.selection_anchor.is_none() {
-                self.caret.offset = 0;
-            } else {
-                self.selection_anchor = None;
-                self.caret.offset = 0;
-            }
-            return;
-        }
         self.caret.offset = 0;
     }
 
@@ -3088,15 +3064,15 @@ impl WordProcessor {
     }
 
     pub fn move_end(&mut self, state: &AutoCommit) {
-        if self
+        let extends_selection = self
             .selection_anchor
             .as_ref()
-            .is_none_or(|a| a.block == self.caret.block)
-        {
+            .is_some_and(|anchor| anchor.block == self.caret.block);
+        if self.selection_anchor.is_none() || extends_selection {
             let text = self.current_text(state);
             self.sync_edit_core_from_state(&text);
             self.edit_core
-                .motion(&text, ui::text_edit::Motion::LineEnd, false);
+                .motion(&text, ui::text_edit::Motion::LineEnd, extends_selection);
             self.sync_state_from_edit_core(&text);
             return;
         }
@@ -3333,6 +3309,29 @@ mod tests {
         wp.move_left(&state);
         assert_eq!(wp.current_text(&state), "ab");
         assert_eq!(wp.caret.offset, 2);
+    }
+
+    #[test]
+    fn caret_motion_extends_an_active_selection() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "abcd");
+
+        wp.move_home();
+        wp.set_anchor();
+        wp.move_right(&state);
+        assert_eq!(
+            wp.selection_blocks(&state)[0].1..wp.selection_blocks(&state)[0].2,
+            0..1
+        );
+
+        wp.clear_anchor();
+        wp.move_end(&state);
+        wp.set_anchor();
+        wp.move_home();
+        assert_eq!(
+            wp.selection_blocks(&state)[0].1..wp.selection_blocks(&state)[0].2,
+            0..4
+        );
     }
 
     #[test]
