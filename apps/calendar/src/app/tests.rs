@@ -906,7 +906,9 @@ fn resource_import_refuses_invalid_batch_without_partial_writes_or_success() {
         // Serialized callers and deferred widget imports share the real decoder
         // and executor; rejection cannot leave the preceding valid event behind.
         let encoded = crate::actions::encode(&batch);
-        let decoded = crate::actions::registry().decode(&encoded).unwrap();
+        let mut registry = tilo_actions::ActionRegistry::new();
+        crate::actions::register(&mut registry);
+        let decoded = registry.decode(&encoded).unwrap();
         let mut transport = tilo_actions::LocalTransport::new();
         assert!(
             tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut transport)
