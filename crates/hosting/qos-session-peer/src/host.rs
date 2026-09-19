@@ -61,6 +61,10 @@ impl QualificationHold {
             }
             return true;
         }
+        if line == "qualification action-registration stop" {
+            self.action_registration = None;
+            return true;
+        }
         if line == "qualification release" {
             self.release();
             return true;
@@ -503,9 +507,13 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                                     action_registration_barrier,
                                 ) { action_error = Some(problem.to_string()); }
                             }
-                            if current.actions.as_ref().is_some_and(|attached| attached.task.as_ref().is_some_and(|task| task.is_finished())) { action_error = Some("private broker attachment stopped; outcome unknown".into()); }
                         }
                     }
+                }
+                if action_error.is_none() && session.as_ref().is_some_and(|current| current.actions.as_ref().is_some_and(|attached| attached.task.as_ref().is_some_and(|task| task.is_finished()))) {
+                    error = Some("private broker attachment stopped; reconnecting shared session".into());
+                    delay = Duration::ZERO;
+                    if let Some(old) = session.take() { old.close().await; }
                 }
                 if action_error.is_some() {
                     *authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))? = None;

@@ -190,6 +190,60 @@ async fn reconnect_status_waits_for_durable_action_registration() {
     assert!(exit.success());
 }
 
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ended_private_attachment_reconnects_without_poisoning_actions() {
+    use std::io::Write;
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("owner");
+    let ready = temp.path().join("ready.json");
+    SessionOwner::initialize(&state).unwrap();
+    let (mut host, metadata, _) = start(&state, &ready).await;
+    let origin = metadata["fixture_origin"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let generation = loop {
+        let status = request(origin, "/status", None, None).await.1;
+        if status["actions"] == "ready" {
+            break status["native_subscription_generation"].as_u64().unwrap();
+        }
+        assert!(Instant::now() < deadline, "initial actions never ready: {status}");
+        tokio::task::yield_now().await;
+    };
+    writeln!(host.0.stdin.as_mut().unwrap(), "qualification action-registration hold").unwrap();
+    writeln!(host.0.stdin.as_mut().unwrap(), "reconnect").unwrap();
+    host.0.stdin.as_mut().unwrap().flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = request(origin, "/status", None, None).await.1;
+        if status["qualification"]["action_registration"]["reached"] == true {
+            break;
+        }
+        assert!(Instant::now() < deadline, "replacement attachment never reached hold: {status}");
+        tokio::task::yield_now().await;
+    }
+    writeln!(host.0.stdin.as_mut().unwrap(), "qualification action-registration stop").unwrap();
+    host.0.stdin.as_mut().unwrap().flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = request(origin, "/status", None, None).await.1;
+        assert_ne!(status["actions"], "unavailable", "ended attachment poisoned actions: {status}");
+        if status["actions"] == "ready"
+            && status["native_subscription_generation"].as_u64().unwrap() > generation + 1
+        {
+            assert!(status["action_error"].is_null(), "{status}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "actions did not recover after attachment ended: {status}");
+        tokio::task::yield_now().await;
+    }
+    writeln!(host.0.stdin.as_mut().unwrap(), "shutdown").unwrap();
+    let exit = tokio::task::spawn_blocking(move || host.0.wait().unwrap())
+        .await
+        .unwrap();
+    assert!(exit.success());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn normal_host_serves_real_checked_application_catalogue() {
     use qos_relay::{
