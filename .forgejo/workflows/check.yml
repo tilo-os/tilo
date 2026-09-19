@@ -156,7 +156,7 @@ jobs:
             base=HEAD^
           fi
           echo "base=$(git rev-parse "$base^{commit}")" >> "$GITHUB_OUTPUT"
-          python3 tools/ci/select.py --base "$base" --shards 2 "${selection_args[@]}" \
+          python3 tools/ci/affected_packages.py --base "$base" --shards 2 "${selection_args[@]}" \
             --github-output "$GITHUB_OUTPUT" | tee ci-plan.json
           {
             echo '```json'

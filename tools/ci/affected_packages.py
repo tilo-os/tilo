@@ -39,7 +39,7 @@ NON_COMPILING_DOCS = {
 # inputs. Keep exact source/test pairs: unknown tools, deleted files, workflows,
 # compiler wrappers and packaging implementation changes retain native coverage.
 QUALITY_ONLY_HELPERS = {
-    "tools/ci/select.py": "tools/tests/test_ci_select.py",
+    "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
     "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",

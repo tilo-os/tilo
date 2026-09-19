@@ -39,6 +39,7 @@ RETIRED_SOURCE_ROOTS = {
     "tools/check-warnings.sh": "tools/ci/check-warnings.sh",
     "tools/check_changed_rust_allows.py": "tools/ci/check_changed_rust_allows.py",
     "tools/ci-": "tools/ci/",
+    "tools/ci/select.py": "tools/ci/affected_packages.py",
     "tools/ci_": "tools/ci/",
     "tools/clippy-": "tools/ci/clippy-",
     "tools/gstreamer-licenses/": "tools/windows/gstreamer-licenses/",
