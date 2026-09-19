@@ -40,6 +40,47 @@ class Applicability(unittest.TestCase):
     def event(self, base, head):
         return {'pull_request': {'base': {'sha': base}, 'head': {'sha': head}}}
 
+    @staticmethod
+    def workflow(applicability=False, build_command='make image',
+                 publish_condition="github.ref == 'refs/heads/main'"):
+        helper = '      - "tools/ci/workflow_applicability.py"\n' if applicability else ''
+        gate = '''
+  applicability:
+    runs-on: runner-quality
+    steps:
+      - run: python3 tools/ci/workflow_applicability.py
+''' if applicability else ''
+        needs = '[signing-preflight, applicability]' if applicability else 'signing-preflight'
+        condition = f"${{{{ always() && ({publish_condition}) }}}}"
+        if applicability:
+            condition = (
+                "${{ always() && (github.event_name != 'pull_request' || "
+                "(needs.applicability.result == 'success' && "
+                "needs.applicability.outputs.applicable == 'true')) && "
+                f"({publish_condition}) }}}}"
+            )
+        return f'''name: fixture
+on:
+  push:
+    paths:
+{helper}      - "src/**"
+  pull_request:
+    paths:
+{helper}      - "src/**"
+      - ".forgejo/workflows/fixture.yml"
+jobs:
+{gate}  signing-preflight:
+    runs-on: runner
+    steps:
+      - run: check signing
+  build:
+    needs: {needs}
+    if: {condition}
+    runs-on: runner
+    steps:
+      - run: {build_command}
+'''
+
     def test_main_merge_does_not_make_its_changes_part_of_pr(self):
         self.git('checkout', '-qb', 'candidate')
         self.write('docs/change.md', 'candidate')
@@ -62,7 +103,62 @@ class Applicability(unittest.TestCase):
 
     def test_non_pr_events_preserve_builds(self):
         for event in ('push', 'workflow_dispatch'):
-            self.assertTrue(gate.applicable(self.repo, event, {}, ['os/kernel/**'])[0])
+            self.assertEqual(gate.applicable(
+                self.repo, event, {}, ['os/kernel/**'],
+                '.forgejo/workflows/fixture.yml'), (True, []))
+
+    def test_applicability_only_workflow_and_helper_changes_skip(self):
+        self.write('.forgejo/workflows/fixture.yml', self.workflow())
+        base = self.commit()
+        self.write('.forgejo/workflows/fixture.yml', self.workflow(applicability=True))
+        self.write('tools/ci/workflow_applicability.py', 'new gate implementation')
+        head = self.commit()
+        paths = ['src/**', '.forgejo/workflows/fixture.yml', 'tools/ci/workflow_applicability.py']
+        self.assertEqual(gate.applicable(
+            self.repo, 'pull_request', self.event(base, head), paths,
+            '.forgejo/workflows/fixture.yml'), (False, []))
+
+    def test_build_and_publication_contract_changes_build(self):
+        self.write('.forgejo/workflows/fixture.yml', self.workflow())
+        base = self.commit()
+        cases = (
+            self.workflow(applicability=True, build_command='make changed-image'),
+            self.workflow(applicability=True, publish_condition="github.ref == 'refs/tags/v1'"),
+        )
+        for source in cases:
+            self.git('reset', '--hard', base)
+            self.write('.forgejo/workflows/fixture.yml', source)
+            head = self.commit()
+            self.assertEqual(gate.applicable(
+                self.repo, 'pull_request', self.event(base, head),
+                ['.forgejo/workflows/fixture.yml'], '.forgejo/workflows/fixture.yml'),
+                (True, ['.forgejo/workflows/fixture.yml']))
+
+    def test_direct_build_input_still_builds_with_applicability_changes(self):
+        self.write('.forgejo/workflows/fixture.yml', self.workflow())
+        base = self.commit()
+        self.write('.forgejo/workflows/fixture.yml', self.workflow(applicability=True))
+        self.write('tools/ci/workflow_applicability.py', 'new gate implementation')
+        self.write('src/lib.rs', 'build input')
+        head = self.commit()
+        result, matched = gate.applicable(
+            self.repo, 'pull_request', self.event(base, head),
+            ['src/**', '.forgejo/workflows/fixture.yml', 'tools/ci/workflow_applicability.py'],
+            '.forgejo/workflows/fixture.yml')
+        self.assertTrue(result)
+        self.assertIn('src/lib.rs', matched)
+
+    def test_unprovable_workflow_contract_builds(self):
+        self.write('.forgejo/workflows/fixture.yml', self.workflow())
+        base = self.commit()
+        self.write('.forgejo/workflows/fixture.yml', self.workflow(applicability=True).replace(
+            "needs.applicability.outputs.applicable == 'true'",
+            "needs.applicability.outputs.applicable != 'false'"))
+        head = self.commit()
+        self.assertEqual(gate.applicable(
+            self.repo, 'pull_request', self.event(base, head),
+            ['.forgejo/workflows/fixture.yml'], '.forgejo/workflows/fixture.yml'),
+            (True, ['.forgejo/workflows/fixture.yml']))
 
     def test_invalid_or_missing_history_cannot_report_skip(self):
         for base in ('main', '0'*40):
