@@ -22,6 +22,48 @@ fn component_projection_never_seeds_or_marks_read() {
     assert!(!app.resources(&doc).is_empty());
 }
 #[test]
+fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+    let identity = LocalIdentity::demo();
+    let mut doc = AutoCommit::new();
+    ChatDoc::seed_starter(&mut doc, &identity.id, &identity.name, &identity.initials);
+    doc.commit();
+    let mut app =
+        ChatApp::from_document(&doc, identity, crate::app::ChatRuntime::Unavailable).unwrap();
+    app.sync(&mut doc, &ROOT);
+    assert!(app.needs_redraw(), "the first sync paints");
+    app.mark_drawn();
+    for _ in 0..3 {
+        app.sync(&mut doc, &ROOT);
+    }
+    assert!(!app.needs_redraw(), "an unchanged document must not repaint the canonical app");
+
+    let mut taffy = taffy::TaffyTree::<()>::new();
+    let node = taffy.new_leaf(taffy::style::Style::default()).unwrap();
+    let device_id = winit::event::DeviceId::dummy();
+    let (mut handled, mut focus) = (false, None);
+    app.handle_event(
+        &WindowEvent::CursorMoved { device_id, position: winit::dpi::PhysicalPosition::new(5.0, 5.0) },
+        1.0, &Default::default(), &mut doc, &ROOT, &mut handled, &mut focus, node, &taffy,
+    );
+    assert!(!handled && !app.needs_redraw(), "unconsumed pointer motion must not repaint");
+
+    doc.put(ROOT, "remote-change", "newer").unwrap();
+    doc.commit();
+    app.sync(&mut doc, &ROOT);
+    assert!(app.needs_redraw(), "a document change repaints");
+    app.mark_drawn();
+    app.sync(&mut doc, &ROOT);
+    assert!(!app.needs_redraw(), "the change is absorbed after one paint");
+
+    let (mut handled, mut focus) = (false, None);
+    app.handle_event(
+        &WindowEvent::MouseInput { device_id, state: ElementState::Pressed, button: MouseButton::Left },
+        1.0, &Default::default(), &mut doc, &ROOT, &mut handled, &mut focus, node, &taffy,
+    );
+    assert!(app.needs_redraw(), "a press repaints");
+}
+#[test]
 fn component_projection_refuses_unseeded_record() {
     assert!(
         ChatApp::from_document(
