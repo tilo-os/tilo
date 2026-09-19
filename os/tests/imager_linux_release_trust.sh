@@ -105,8 +105,44 @@ printf '%s\n' "$fingerprint" >"$assets/release-key/tilo-release-key.fingerprint"
 (cd "$assets/release-key" && sha256sum tilo-release-key.fingerprint \
   >tilo-release-key.fingerprint.sha256)
 
-TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
+# Reproduce an agent socket disappearing between readdir and unlink in the
+# production cleanup. The wrapper leaves native GNU find in charge of deletion
+# and its exit status; only the concurrent removal is injected deterministically.
+cleanup_tools="$work/cleanup-tools"
+mkdir "$cleanup_tools"
+export TILO_TEST_REAL_FIND="$(command -v find)"
+export TILO_TEST_CLEANUP_RACE_LOG="$work/cleanup-race.log"
+cat >"$cleanup_tools/find" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == /var/tmp/tilo-imager-release-keyring.* && " $* " == *' -delete '* ]]; then
+  printf 'race\n' >>"$TILO_TEST_CLEANUP_RACE_LOG"
+  touch "$1/S.gpg-agent.ssh"
+  args=()
+  for arg in "$@"; do
+    if [ "$arg" = -delete ]; then
+      args+=(-exec python3 -c 'import os,sys; p=sys.argv[1]; os.unlink(p) if p.endswith("/S.gpg-agent.ssh") else None' '{}' ';')
+    fi
+    args+=("$arg")
+  done
+  "$TILO_TEST_REAL_FIND" "${args[@]}"
+  exit "${TILO_TEST_CLEANUP_FAILURE:-0}"
+fi
+exec "$TILO_TEST_REAL_FIND" "$@"
+EOF
+chmod 0700 "$cleanup_tools/find"
+PATH="$cleanup_tools:$PATH" TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
   | grep -Fq 'verified 9 Linux and installer artifacts'
+[ "$(cat "$TILO_TEST_CLEANUP_RACE_LOG")" = race ]
+if PATH="$cleanup_tools:$PATH" TILO_TEST_CLEANUP_FAILURE=23 \
+   TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
+   >"$work/cleanup-failure.out" 2>"$work/cleanup-failure.err"; then
+  printf 'cleanup failure unexpectedly passed\n' >&2; exit 1
+else
+  [ "$?" -eq 23 ]
+fi
+grep -Fq 'verified 9 Linux and installer artifacts' "$work/cleanup-failure.out"
+printf 'ok    vanished agent sockets are tolerated and other cleanup errors fail closed\n'
 
 # Exercise cleanup around the actual signed release verification. The wrappers
 # model disappearing agent sockets and hard cleanup failures deterministically;
@@ -120,21 +156,25 @@ export TILO_TEST_CLEANUP_STATE="$work/cleanup-keyring"
 cat > "$work/cleanup-bin/gpgconf" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# == 4 && $1 == --homedir && $3 == --kill && $4 == gpg-agent ]]
+[[ $# == 4 && $1 == --homedir && $3 == --kill && $4 == all ]]
 [[ $2 =~ ^/var/tmp/tilo-imager-release-keyring\.[[:alnum:]]{6}$ && $GNUPGHOME == "$2" ]]
 printf '%s\n' "$2" > "$TILO_TEST_CLEANUP_STATE"
 "$TILO_TEST_REAL_GPGCONF" "$@"
 [[ ${TILO_TEST_CLEANUP_MODE:-} != stop-failure ]]
 EOF
-cat > "$work/cleanup-bin/rm" <<'EOF'
+cat > "$work/cleanup-bin/find" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# == 3 && $1 == -rf && $2 == -- && $3 == "$(cat "$TILO_TEST_CLEANUP_STATE")" ]]
+if [[ ${1:-} != /var/tmp/tilo-imager-release-keyring.* || " $* " != *' -delete '* ]]; then
+  exec "$TILO_TEST_REAL_FIND" "$@"
+fi
+[[ $# == 4 && $1 == "$(cat "$TILO_TEST_CLEANUP_STATE")" \
+   && $2 == -ignore_readdir_race && $3 == -depth && $4 == -delete ]]
 # Simulate a socket disappearing just before recursive deletion encounters it.
-touch "$3/S.gpg-agent.fixture"
-"$TILO_TEST_REAL_RM" -f -- "$3/S.gpg-agent.fixture"
+touch "$1/S.gpg-agent.fixture"
+"$TILO_TEST_REAL_RM" -f -- "$1/S.gpg-agent.fixture"
 if [[ ${TILO_TEST_CLEANUP_MODE:-} == remove-failure ]]; then exit 29; fi
-exec "$TILO_TEST_REAL_RM" "$@"
+exec "$TILO_TEST_REAL_FIND" "$@"
 EOF
 cat > "$work/cleanup-bin/gpg" <<'EOF'
 #!/usr/bin/env bash
@@ -163,7 +203,7 @@ run_cleanup_case() {
   fi
 }
 run_cleanup_case disappearing-socket 0 0
-run_cleanup_case remove-failure 0 1
+run_cleanup_case remove-failure 0 29
 run_cleanup_case stop-failure 0 1
 run_cleanup_case remove-failure 1 37
 printf 'ok    isolated keyring cleanup tolerates vanished sockets and preserves trust failures\n'
