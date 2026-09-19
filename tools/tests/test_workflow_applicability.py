@@ -266,7 +266,8 @@ jobs:
             self.assertIn('.forgejo/workflows/'+name, declared)
             gate.workflow_contract(path.read_text(encoding='utf-8'))
             fixture = self.repo/'workflow.yml'
-            fixture.write_text(path.read_text().replace('  pull_request:', '  pull_request: {}'))
+            event = 'pull_request_target' if name == 'fs-fuse.yml' else 'pull_request'
+            fixture.write_text(path.read_text().replace(f'  {event}:', f'  {event}: {{}}'))
             with self.assertRaises(ValueError): gate.declared_paths(fixture)
 
     def test_history_helper_only_routes_pull_request_gates(self):
@@ -307,7 +308,8 @@ jobs:
         for name, expensive_jobs in jobs.items():
             text = (ROOT/'.forgejo/workflows'/name).read_text(encoding='utf-8')
             gate_job = job(text, '  applicability:')
-            self.assertIn("if: ${{ github.event_name == 'pull_request' }}", gate_job)
+            event = 'pull_request_target' if name == 'fs-fuse.yml' else 'pull_request'
+            self.assertIn(f"if: ${{{{ github.event_name == '{event}' }}}}", gate_job)
             self.assertIn('runs-on: runner-quality', gate_job)
             self.assertIn('timeout-minutes: 5', gate_job)
             self.assertRegex(gate_job, r'image: code\.podesta\.ai/qos/ci-fast@sha256:[0-9a-f]{64}')
@@ -324,7 +326,7 @@ jobs:
                     build = job(text, f'  {job_name}:')
                     self.assertRegex(build, r'needs: (?:\[[^\n]*\bapplicability\b[^\n]*\]|applicability)')
                     self.assertIn('always()', build)
-                    self.assertIn("github.event_name != 'pull_request'", build)
+                    self.assertIn(f"github.event_name != '{event}'", build)
                     self.assertIn("needs.applicability.result == 'success'", build)
                     self.assertIn("needs.applicability.outputs.applicable == 'true'", build)
 

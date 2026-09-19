@@ -27,14 +27,16 @@ def merge_base(repo, base, head):
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def prepare(repo, event, depths=DEPTHS):
+def prepare(repo, event, depths=DEPTHS, trusted_base=False):
     refs = [event["pull_request"][side]["sha"] for side in ("base", "head")]
     for ref in refs:
         if not isinstance(ref, str) or not FULL_SHA.fullmatch(ref):
             raise ValueError("PR comparison requires immutable full commit IDs")
     base, head = refs
-    if git(repo, "rev-parse", "HEAD").stdout.strip() != head:
-        raise ValueError("checked out revision does not match the PR head")
+    expected = base if trusted_base else head
+    if git(repo, "rev-parse", "HEAD").stdout.strip() != expected:
+        side = "base" if trusted_base else "head"
+        raise ValueError(f"checked out revision does not match the PR {side}")
 
     ancestor = merge_base(repo, base, head)
     if ancestor:
@@ -57,7 +59,10 @@ def prepare(repo, event, depths=DEPTHS):
 def main():
     try:
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
-        ancestor = prepare(Path.cwd(), event)
+        ancestor = prepare(
+            Path.cwd(), event,
+            trusted_base=os.environ.get("GITHUB_EVENT_NAME") == "pull_request_target",
+        )
         print(f"PR merge base ready: {ancestor}")
     except (OSError, KeyError, TypeError, ValueError, RuntimeError,
             subprocess.CalledProcessError, json.JSONDecodeError) as error:

@@ -25,37 +25,67 @@ class API:
         return {"workflow_runs": next(self.polls)}
 
 
-def run(run_id, sha=SHA, status="success", workflow=contract.WORKFLOW):
+def run(run_id, sha=SHA, status="success", workflow=contract.WORKFLOW,
+        request_id="request-1", input_sha=None):
     return {"id": run_id, "workflow_id": workflow, "event": "workflow_dispatch",
-            "commit_sha": sha, "status": status}
+            "commit_sha": sha, "status": status,
+            "event_payload": {"inputs": {
+                "request_id": request_id,
+                "source_sha": input_sha or sha,
+            }}}
 
 
 class RunFuseContract(unittest.TestCase):
     def test_dispatches_and_propagates_the_exact_new_success(self):
         api = API([[run(7)], [run(7), run(8, status="waiting")], [run(8)]])
-        result = contract.execute(api, "qos/qos", "topic", SHA, sleep=lambda _: None)
+        result = contract.execute(api, "qos/qos", "topic", SHA, "request-1",
+                                  sleep=lambda _: None)
         self.assertEqual(result["id"], 8)
         self.assertIn(("POST", "repos/qos/qos/actions/workflows/fs-fuse-executor.yml/dispatches",
-                       {"ref": "topic", "inputs": {"source_sha": SHA}}), api.calls)
+                       {"ref": "topic", "inputs": {
+                           "source_sha": SHA, "request_id": "request-1"
+                       }}), api.calls)
 
     def test_failure_and_unknown_status_fail_closed(self):
         for status in ("failure", "cancelled", "mystery"):
             with self.subTest(status=status), self.assertRaises(RuntimeError):
                 contract.execute(API([[], [run(1, status=status)]]), "qos/qos", "topic", SHA,
+                                 "request-1",
                                  sleep=lambda _: None)
 
-    def test_wrong_revision_or_missing_run_fails_closed(self):
-        with self.assertRaisesRegex(RuntimeError, "branch advanced"):
+    def test_correlated_wrong_revision_or_missing_run_fails_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "did not bind the exact source"):
             contract.execute(API([[], [run(1, sha="b" * 40)]]), "qos/qos", "topic", SHA,
+                             "request-1",
                              sleep=lambda _: None)
         with self.assertRaisesRegex(RuntimeError, "timed out"):
             contract.execute(API([[], []]), "qos/qos", "topic", SHA,
+                             "request-1",
                              sleep=lambda _: None, attempts=1)
+
+    def test_ignores_concurrent_unrelated_dispatches_until_exact_run_arrives(self):
+        unrelated = run(1, sha="b" * 40, request_id="someone-else")
+        exact = run(2)
+        api = API([[], [unrelated], [unrelated, exact]])
+        result = contract.execute(api, "qos/qos", "topic", SHA, "request-1",
+                                  sleep=lambda _: None)
+        self.assertEqual(result["id"], 2)
+
+    def test_event_payload_must_correlate_both_request_and_source(self):
+        wrong_input = run(1, input_sha="b" * 40)
+        with self.assertRaisesRegex(RuntimeError, "did not bind the exact source"):
+            contract.execute(API([[], [wrong_input]]), "qos/qos", "topic", SHA,
+                             "request-1", sleep=lambda _: None)
 
     def test_rejects_mutable_or_malformed_dispatch_inputs(self):
         for ref, sha in (("topic", "main"), ("", SHA), ("bad ref", SHA), ("-oops", SHA)):
             with self.subTest(ref=ref, sha=sha), self.assertRaises(ValueError):
-                contract.execute(API([]), "qos/qos", ref, sha, sleep=lambda _: None)
+                contract.execute(API([]), "qos/qos", ref, sha, "request-1",
+                                 sleep=lambda _: None)
+        for request_id in ("", "bad request", "x" * 129):
+            with self.subTest(request_id=request_id), self.assertRaises(ValueError):
+                contract.execute(API([]), "qos/qos", "topic", SHA, request_id,
+                                 sleep=lambda _: None)
 
 
 if __name__ == "__main__":

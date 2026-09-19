@@ -4,7 +4,9 @@ name: CI / filesystem contract
 # serialized privileged workflow and propagate its exact result into this
 # long-standing PR check; unrelated changes never enter the FUSE queue.
 on:
-  pull_request:
+  # Forgejo loads pull_request_target workflows from the immutable base. This
+  # keeps the dispatch credential outside PR-controlled YAML and Python.
+  pull_request_target:
     branches: ["main"]
     paths:
       - ".cargo/**"
@@ -47,12 +49,12 @@ on:
       - "tools/ci/prepare_pr_history.py"
 
 concurrency:
-  group: fs-fuse-pr-${{ github.ref }}
+  group: fs-fuse-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   applicability:
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ github.event_name == 'pull_request_target' }}
     runs-on: runner-quality
     timeout-minutes: 5
     container:
@@ -65,14 +67,14 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 2
           sparse-checkout: |
             tools/ci/prepare_pr_history.py
             tools/ci/workflow_applicability.py
             .forgejo/workflows/fs-fuse.yml
           sparse-checkout-cone-mode: false
-          token: ${{ secrets.REGISTRY_TOKEN }}
+          token: ${{ github.token }}
       - name: Prepare targeted PR history
         run: python3 -I tools/ci/prepare_pr_history.py
       - name: Require an exact relevant PR diff before FUSE work
@@ -84,7 +86,7 @@ jobs:
     if: >-
       ${{
         always() &&
-        (github.event_name != 'pull_request' ||
+        (github.event_name != 'pull_request_target' ||
          (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
         true
       }}
@@ -98,13 +100,16 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.base.sha }}
           sparse-checkout: tools/ci/run_fuse_contract.py
           sparse-checkout-cone-mode: false
-          token: ${{ secrets.REGISTRY_TOKEN }}
+          token: ${{ github.token }}
       - name: Run the exact filesystem contract in the exclusive lane
         env:
-          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          # Provisioned for the qos-fuse-dispatch service account with only
+          # read:repository and write:repository scopes on qos/qos.
+          FORGEJO_TOKEN: ${{ secrets.FUSE_CONTRACT_TOKEN }}
           SOURCE_REF: ${{ github.event.pull_request.head.ref }}
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          REQUEST_ID: ${{ github.run_id }}-${{ github.run_attempt }}
         run: python3 -I tools/ci/run_fuse_contract.py

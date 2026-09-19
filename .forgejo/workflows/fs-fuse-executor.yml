@@ -9,6 +9,10 @@ on:
         description: "Exact PR head to test; empty for a normal manual run."
         required: false
         type: string
+      request_id:
+        description: "Unique trusted coordinator request; empty for a normal manual run."
+        required: false
+        type: string
 concurrency:
   # The privileged runner exposes one kernel-backed FUSE lane. Jobs from
   # different refs must queue behind each other rather than contend for that
@@ -37,11 +41,13 @@ jobs:
       - name: Bind a dispatched PR run to its exact source
         env:
           SOURCE_SHA: ${{ github.event.inputs.source_sha }}
+          REQUEST_ID: ${{ github.event.inputs.request_id }}
         run: |
           if [[ -z $SOURCE_SHA ]]; then
             exit 0
           fi
           [[ $SOURCE_SHA =~ ^[0-9a-f]{40}$ ]]
+          [[ $REQUEST_ID =~ ^[A-Za-z0-9._:-]{1,128}$ ]]
           test "$SOURCE_SHA" = "$GITHUB_SHA"
 
   real-fuse:

@@ -100,7 +100,7 @@ class QueueReliefTests(unittest.TestCase):
                 self.assertTrue(section(workflow(name), "jobs"))
 
         filesystem = section(workflow("fs-fuse"), "on")
-        self.assertRegex(filesystem, r"(?m)^  pull_request:")
+        self.assertRegex(filesystem, r"(?m)^  pull_request_target:")
         self.assertNotRegex(filesystem, r"(?m)^  (?:schedule|workflow_dispatch):")
         executor = section(workflow("fs-fuse-executor"), "on")
         self.assertNotRegex(executor, r"(?m)^  pull_request:")
@@ -110,7 +110,8 @@ class QueueReliefTests(unittest.TestCase):
     def test_filesystem_selection_runs_before_the_exclusive_lane(self):
         parent = workflow("fs-fuse")
         executor = workflow("fs-fuse-executor")
-        self.assertIn("group: fs-fuse-pr-${{ github.ref }}", section(parent, "concurrency"))
+        self.assertIn("group: fs-fuse-pr-${{ github.event.pull_request.number }}",
+                      section(parent, "concurrency"))
         self.assertIn("cancel-in-progress: true", section(parent, "concurrency"))
         self.assertIn("group: fs-fuse", section(executor, "concurrency"))
         self.assertIn("cancel-in-progress: false", section(executor, "concurrency"))
@@ -139,13 +140,23 @@ class QueueReliefTests(unittest.TestCase):
 
     def test_filesystem_pr_trigger_covers_orchestrator_inputs(self):
         events = section(workflow("fs-fuse"), "on")
-        pull = section(events, "pull_request", 2)
+        pull = section(events, "pull_request_target", 2)
         for path in (".forgejo/workflows/fs-fuse.yml",
                      ".forgejo/workflows/fs-fuse-executor.yml",
                      "tools/ci/run_fuse_contract.py",
                      "tools/ci/workflow_applicability.py",
                      "tools/ci/prepare_pr_history.py"):
             self.assertIn(f'      - "{path}"', pull)
+
+    def test_filesystem_dispatch_token_never_enters_pr_controlled_code(self):
+        parent = workflow("fs-fuse")
+        self.assertNotRegex(section(parent, "on"), r"(?m)^  pull_request:")
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", parent)
+        self.assertNotIn("FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}", parent)
+        self.assertEqual(parent.count("secrets.FUSE_CONTRACT_TOKEN"), 1)
+        contract = section(parent, "contract", 2)
+        self.assertLess(contract.index("ref: ${{ github.event.pull_request.base.sha }}"),
+                        contract.index("FORGEJO_TOKEN: ${{ secrets.FUSE_CONTRACT_TOKEN }}"))
 
     def test_builder_recipe_does_not_run_e2e_against_the_old_image(self):
         legacy_events = section(workflow("legacy-app-e2e"), "on")

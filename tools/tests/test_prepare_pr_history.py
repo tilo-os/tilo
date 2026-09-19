@@ -72,6 +72,17 @@ class PreparePrHistory(unittest.TestCase):
         clone = self.shallow_clone("candidate", 1)
         self.assertEqual(history.prepare(clone, self.event(base, head)), ancestor)
 
+    def test_target_event_runs_from_the_trusted_base_checkout(self):
+        base = self.commit("base")
+        self.git(self.source, "branch", "main")
+        self.git(self.source, "checkout", "-qb", "candidate")
+        head = self.commit("head")
+        self.publish()
+        clone = self.shallow_clone("main")
+        self.assertEqual(
+            history.prepare(clone, self.event(base, head), trusted_base=True), base
+        )
+
     def test_progressively_retries_deeper_targeted_fetches(self):
         completed = mock.Mock(stdout="b" * 40 + "\n", returncode=0, stderr="")
         fetch_depths = []

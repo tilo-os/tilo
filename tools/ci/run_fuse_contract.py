@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import time
+import uuid
 from urllib import error, request
 
 
@@ -42,17 +43,34 @@ def runs(api, repository):
     return rows
 
 
-def execute(api, repository, source_ref, source_sha, sleep=time.sleep, attempts=1080):
+def dispatched_inputs(row):
+    payload = row.get("event_payload")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(payload, dict):
+        return {}
+    inputs = payload.get("inputs")
+    return inputs if isinstance(inputs, dict) else {}
+
+
+def execute(api, repository, source_ref, source_sha, request_id=None,
+            sleep=time.sleep, attempts=1080):
     if not re.fullmatch(r"[0-9a-f]{40}", source_sha or ""):
         raise ValueError("SOURCE_SHA must be an immutable full commit ID")
     if not source_ref or source_ref.startswith("-") or any(c.isspace() for c in source_ref):
         raise ValueError("SOURCE_REF is invalid")
+    request_id = str(uuid.uuid4()) if request_id is None else request_id
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", request_id):
+        raise ValueError("REQUEST_ID is invalid")
 
     before = runs(api, repository)
     baseline = max((row.get("id", 0) for row in before if type(row.get("id")) is int), default=0)
     api("POST", f"repos/{repository}/actions/workflows/{WORKFLOW}/dispatches", {
         "ref": source_ref,
-        "inputs": {"source_sha": source_sha},
+        "inputs": {"source_sha": source_sha, "request_id": request_id},
     })
 
     observed = None
@@ -63,7 +81,11 @@ def execute(api, repository, source_ref, source_sha, sleep=time.sleep, attempts=
             and row.get("event") == "workflow_dispatch"
             and type(row.get("id")) is int and row["id"] > baseline
         ]
-        exact = [row for row in candidates if row.get("commit_sha") == source_sha]
+        correlated = [row for row in candidates
+                      if dispatched_inputs(row).get("request_id") == request_id]
+        exact = [row for row in correlated
+                 if row.get("commit_sha") == source_sha
+                 and dispatched_inputs(row).get("source_sha") == source_sha]
         if exact:
             observed = min(exact, key=lambda row: row["id"])
             status = observed.get("status")
@@ -78,8 +100,8 @@ def execute(api, repository, source_ref, source_sha, sleep=time.sleep, attempts=
                 raise RuntimeError(
                     f"exclusive filesystem contract run {observed['id']} has unknown status {status!r}"
                 )
-        elif candidates:
-            raise RuntimeError("dispatched branch advanced before exact filesystem admission")
+        elif correlated:
+            raise RuntimeError("correlated filesystem dispatch did not bind the exact source")
         sleep(10)
     suffix = f"; last run {observed['id']} was {observed.get('status')}" if observed else ""
     raise RuntimeError(f"timed out waiting for exclusive filesystem contract{suffix}")
@@ -93,7 +115,8 @@ def main():
         if not token:
             raise ValueError("FORGEJO_TOKEN is empty")
         execute(Forgejo(server, token).call, repository,
-                os.environ["SOURCE_REF"], os.environ["SOURCE_SHA"])
+                os.environ["SOURCE_REF"], os.environ["SOURCE_SHA"],
+                os.environ.get("REQUEST_ID"))
     except (KeyError, OSError, TypeError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         print(f"Cannot run exclusive filesystem contract: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

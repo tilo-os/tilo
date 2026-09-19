@@ -11,19 +11,22 @@ import sys
 
 APPLICABILITY_INPUT = "tools/ci/workflow_applicability.py"
 HISTORY_INPUT = "tools/ci/prepare_pr_history.py"
-APPLICABILITY_GUARD = (
-    "(github.event_name != 'pull_request' || "
+APPLICABILITY_GUARDS = tuple(
+    f"(github.event_name != '{event}' || "
     "(needs.applicability.result == 'success' && "
     "needs.applicability.outputs.applicable == 'true')) && "
+    for event in ("pull_request", "pull_request_target")
 )
 
 
 def declared_paths(workflow):
     """Read the deliberately restricted, quoted PR paths block; reject ambiguity."""
     lines = Path(workflow).read_text(encoding="utf-8").splitlines()
-    if lines.count("  pull_request:") != 1:
-        raise ValueError("missing or ambiguous pull_request event")
-    start = lines.index("  pull_request:") + 1
+    events = [event for event in ("pull_request", "pull_request_target")
+              if lines.count(f"  {event}:") == 1]
+    if len(events) != 1:
+        raise ValueError("missing or ambiguous pull request event")
+    start = lines.index(f"  {events[0]}:") + 1
     end = next((i for i in range(start, len(lines))
                 if lines[i].strip() and not lines[i].lstrip().startswith("#")
                 and len(lines[i]) - len(lines[i].lstrip()) <= 2), len(lines))
@@ -98,7 +101,10 @@ def applicability_wiring(source):
                         i += 1
                     raw = " ".join(parts)
                     i -= 1
-                guard_gate = APPLICABILITY_GUARD in re.sub(r"\s+", " ", raw).strip()
+                guard_gate = any(
+                    guard in re.sub(r"\s+", " ", raw).strip()
+                    for guard in APPLICABILITY_GUARDS
+                )
             i += 1
         if needs_gate != guard_gate:
             raise ValueError(f"partial applicability wiring for job {name}")
@@ -165,7 +171,8 @@ def workflow_contract(source):
             else:
                 i += 1
             expression = re.sub(r"\s+", " ", raw).strip()
-            expression = expression.replace(APPLICABILITY_GUARD, "")
+            for guard in APPLICABILITY_GUARDS:
+                expression = expression.replace(guard, "")
             if "needs.applicability" in expression:
                 raise ValueError("unsupported applicability guard")
             if expression != "${{ always() && true }}":
@@ -204,7 +211,7 @@ def applicable(repo, event_name, event, paths, workflow=None):
     patterns = [pattern_regex(p) for p in paths]
     if event_name in ("push", "workflow_dispatch"):
         return True, []
-    if event_name != "pull_request":
+    if event_name not in ("pull_request", "pull_request_target"):
         raise ValueError("unsupported workflow event")
     def git(*args):
         return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.PIPE)
