@@ -61,6 +61,7 @@ class SelectorTests(unittest.TestCase):
     def test_design_only_has_explicit_empty_rust_matrix(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["docs/designs/ci.md"], 2)
         self.assertFalse(plan["rust_required"])
+        self.assertTrue(plan["security_required"])
         self.assertEqual(plan["selected_count"], 0)
         self.assertEqual(plan["shard_count"], 0)
         self.assertEqual(plan["matrix"], {"include": []})
@@ -68,7 +69,96 @@ class SelectorTests(unittest.TestCase):
         ci_select.emit_github(plan, output)
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         self.assertEqual(values["rust_required"], "false")
+        self.assertEqual(values["security_required"], "true")
         self.assertEqual(values["selected_count"], "0")
+
+    def test_security_skip_is_limited_to_audited_pull_request_inputs(self) -> None:
+        self.install_quality_helpers()
+        prose = [
+            "AGENTS.md",
+            "DEVELOPMENT.md",
+            "docs/ci-performance.md",
+            "docs/ci-emergency-relief.md",
+            "docs/designs/ci.md",
+        ]
+        for path in prose:
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("audited prose\n")
+        for path in prose:
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(
+                    self.metadata, self.root, [path], 2, allow_security_skip=True)
+                self.assertFalse(plan["security_required"])
+        for source, test in ci_select.QUALITY_ONLY_HELPERS.items():
+            for changes in ([source], [test], [source, test, "docs/designs/ci.md"]):
+                with self.subTest(changes=changes):
+                    plan = ci_select.make_plan(
+                        self.metadata, self.root, changes, 2, allow_security_skip=True)
+                    self.assertFalse(plan["security_required"])
+
+    def test_security_selector_defaults_true_for_non_pr_and_full_runs(self) -> None:
+        for changes, options in [
+            (["docs/designs/ci.md"], {}),
+            (["docs/designs/ci.md"], {"force_full": True}),
+            (["tools/ci/affected_packages.py"], {}),
+        ]:
+            with self.subTest(changes=changes, options=options):
+                self.install_quality_helpers()
+                plan = ci_select.make_plan(self.metadata, self.root, changes, 2, **options)
+                self.assertTrue(plan["security_required"])
+
+    def test_security_selector_rejects_control_sensitive_and_mixed_inputs(self) -> None:
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        excluded = [
+            ".forgejo/workflows/check.yml",
+            "os/tests/security-boundaries.sh",
+            "tools/run-security-boundary-invariants.sh",
+            "Cargo.toml",
+            "os/external-assets/github-assets.tsv",
+            "SECURITY.md",
+            "tools/unknown.py",
+        ]
+        for path in excluded:
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(
+                    self.metadata, self.root, [path], 2, allow_security_skip=True)
+                self.assertTrue(plan["security_required"])
+        mixed = ci_select.make_plan(
+            self.metadata,
+            self.root,
+            ["tools/ci/affected_packages.py", "SECURITY.md"],
+            2,
+            allow_security_skip=True,
+        )
+        self.assertTrue(mixed["security_required"])
+
+    def test_security_selector_fails_closed_for_deleted_or_unobserved_helpers(self) -> None:
+        deleted_prose = self.root / "docs/designs/deleted.md"
+        deleted_prose.parent.mkdir(parents=True, exist_ok=True)
+        deleted_prose.write_text("audited prose\n")
+        deleted_prose.unlink()
+        self.assertTrue(ci_select.make_plan(
+            self.metadata,
+            self.root,
+            ["docs/designs/deleted.md"],
+            2,
+            allow_security_skip=True,
+        )["security_required"])
+        for source, test in ci_select.QUALITY_ONLY_HELPERS.items():
+            for missing in (source, test):
+                self.install_quality_helpers()
+                (self.root / missing).unlink()
+                with self.subTest(source=source, missing=missing):
+                    plan = ci_select.make_plan(
+                        self.metadata,
+                        self.root,
+                        [source],
+                        2,
+                        allow_security_skip=True,
+                    )
+                    self.assertTrue(plan["security_required"])
 
     def test_design_exception_never_overrides_code_or_manual_full(self) -> None:
         for changes, full in [
