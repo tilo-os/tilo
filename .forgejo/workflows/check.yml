@@ -223,15 +223,15 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
 
-      - name: Restore Cargo downloads
-        id: cargo-cache
-        uses: ./.forgejo/actions/restore-cargo-downloads
+      - name: Prepare Rust build caches
+        id: rust-build
+        uses: ./.forgejo/actions/prepare-rust-build
 
       - name: Verify deterministic OpenH264 native source ordering
         if: matrix.shard == 1
         run: python3 os/tests/test_openh264_source_order.py -v
 
-      - name: Prepare headless runtime and compiler cache
+      - name: Prepare headless runtime
         run: |
           ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
           driver="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
@@ -239,7 +239,6 @@ jobs:
           echo "VK_DRIVER_FILES=$driver" >> "$GITHUB_ENV"
           mkdir -p /tmp/tilo-xdg-runtime
           chmod 700 /tmp/tilo-xdg-runtime
-          bash tools/ci/sccache.sh prepare
 
       # Older/explicitly selected builders may predate the audio fixture.
       # The helper replaces only the conflicting audio daemon; other installed
@@ -322,7 +321,7 @@ jobs:
 
       # One writer avoids two shards racing to create the same immutable key.
       - name: Save Cargo downloads
-        if: always() && matrix.shard == 1 && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: always() && matrix.shard == 1 && steps.rust-build.outputs.cargo-cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
