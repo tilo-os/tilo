@@ -52,17 +52,31 @@ const AGENT_INVITE_PARAMS: &[ActionParam] = &[
 /// depend on the agent binary.
 const DEFAULT_AGENT_NAME: &str = "Claude";
 
-const IDENTITY_CONNECT_PARAMS: &[ActionParam] = &[ActionParam::required(
-    "path",
-    ParamType::Text,
-    "Absolute path to an exported Tilo identity JSON record.",
-)];
+const IDENTITY_CONNECT_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "path",
+        ParamType::Text,
+        "Absolute path to an exported Tilo identity JSON record.",
+    ),
+    ActionParam::required(
+        "confirm",
+        ParamType::Boolean,
+        "Confirm importing credentials and delegating workspace administration.",
+    ),
+];
 
-const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[ActionParam::required(
-    "id",
-    ParamType::Text,
-    "The identity's 64-character public-key fingerprint.",
-)];
+const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "id",
+        ParamType::Text,
+        "The identity's 64-character public-key fingerprint.",
+    ),
+    ActionParam::required(
+        "confirm",
+        ParamType::Boolean,
+        "Confirm delegating workspace administration to this identity.",
+    ),
+];
 
 const SEARCH_PROVIDER_SET_PARAMS: &[ActionParam] = &[
     ActionParam::required(
@@ -106,7 +120,136 @@ const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
         ParamType::Text,
         "lost, stolen, retired, or compromised (defaults to retired).",
     ),
+    ActionParam::required(
+        "confirm",
+        ParamType::Boolean,
+        "Explicit confirmation that this permanent administrative revocation should run.",
+    ),
 ];
+
+pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
+    use tilo_actions::{
+        ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
+    };
+
+    let mut contract = ActionContract::default();
+    match id {
+        "shortcut-help.toggle" | "overview.toggle" => {
+            contract = ActionContract::view();
+            contract.retry = RetryPolicy::AtMostOnce;
+            contract.reversible = true;
+        }
+        "desktop-tour.open"
+        | "settings.open"
+        | "settings.members.open"
+        | "settings.privacy.open"
+        | "settings.apps.open"
+        | "quick-settings.open"
+        | "quick-settings.clipboard"
+        | "quick-settings.devices"
+        | "projection.open"
+        | "capture.open"
+        | "collaborators.open"
+        | "room.activity.open" => {
+            contract = ActionContract::view();
+        }
+        "identity.connect" | "identity.select" => {
+            contract.permission = PermissionRequirement::Admin;
+            contract.risk = RiskLevel::Privileged;
+            contract.confirmation = ConfirmationPolicy::Confirm;
+        }
+        "identity.devices.copy" | "identity.device.enroll" | "identity.home-peer.enroll" => {
+            contract.permission = PermissionRequirement::Admin;
+        }
+        "identity.device.revoke" => {
+            contract.permission = PermissionRequirement::Admin;
+            contract.risk = RiskLevel::Privileged;
+            contract.confirmation = ConfirmationPolicy::Confirm;
+        }
+        "peer.invite.named" | "agent.invite" => {
+            contract.permission = PermissionRequirement::Invite;
+        }
+        "peer.invite" | "peer.connect" => contract = ActionContract::view(),
+        "text.insert" | "record.bring" => {
+            contract.permission = PermissionRequirement::Write;
+            contract.reversible = true;
+        }
+        "tab.new.terminal.here" | "window.new.terminal" | "tab.duplicate" => {
+            contract.permission = PermissionRequirement::Write;
+            contract.reversible = true;
+        }
+        // Moving a tab between groups is layout, undone by moving it back;
+        // closing one is not — its content is gone from the workspace.
+        "tab.split-right" | "tab.move-to-new-group" => {
+            contract.permission = PermissionRequirement::Write;
+            contract.reversible = true;
+        }
+        "tab.close" => {
+            contract.permission = PermissionRequirement::Write;
+            contract.reversible = false;
+        }
+        "notifications.dnd.toggle" => {
+            contract.permission = PermissionRequirement::Write;
+            contract.retry = RetryPolicy::AtMostOnce;
+            contract.reversible = true;
+        }
+        QS_BRIGHTNESS_ID | QS_VOLUME_ID | QS_WIFI_ID | QS_POWER_ID | QS_VPN_ID => {
+            contract = quick_settings_contract();
+        }
+        _ => {}
+    }
+    contract
+}
+
+pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
+    match id {
+        "shortcut-help.toggle"
+        | "desktop-tour.open"
+        | "overview.toggle"
+        | "settings.open"
+        | "settings.members.open"
+        | "settings.privacy.open"
+        | "settings.apps.open"
+        | "quick-settings.open"
+        | "quick-settings.clipboard"
+        | "quick-settings.devices"
+        | "projection.open"
+        | "capture.open"
+        | "collaborators.open"
+        | "room.activity.open"
+        | "peer.invite"
+        | "peer.connect" => tilo_actions::OperationKind::View,
+        "text.insert" | "record.bring" | "peer.invite.named" | "agent.invite" => {
+            tilo_actions::OperationKind::Document
+        }
+        _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
+        _ => tilo_actions::OperationKind::Effect,
+    }
+}
+
+fn current_shell_action_authorized(state: &ChromeState, id: &str) -> bool {
+    let tree = state.tree();
+    let Some(workspace) = tree.active_workspace() else {
+        return false;
+    };
+    let user = state.local_user_for_room(&workspace.room);
+    shell_action_authorized_for(workspace, &workspace.actor_for_person(&user), id)
+}
+
+pub(crate) fn shell_action_authorized_for(
+    workspace: &crate::shell::state::Workspace,
+    actor: &crate::shell::state::Actor,
+    id: &str,
+) -> bool {
+    let resource = crate::shell::search::action_api::ResourceRef::new("actions", id);
+    let kind = ResourceKind::Action;
+    let Some((target, verb)) =
+        crate::shell::search::visibility::required_capability(&resource, &kind)
+    else {
+        return true;
+    };
+    workspace.allows(actor, &target, verb)
+}
 
 fn active_workspace_id(
     state: &ChromeState,
@@ -458,6 +601,48 @@ fn active_admin_workspace(
     Ok((workspace_id, room, actor))
 }
 
+fn require_explicit_confirmation(args: &ActionArgs, action: &str) -> Result<(), ActionError> {
+    if args.boolean("confirm") == Some(true) {
+        Ok(())
+    } else {
+        Err(ActionError::Refused(format!(
+            "explicit confirmation is required to {action}"
+        )))
+    }
+}
+
+fn name_invited_peer(state: &mut ChromeState, args: &ActionArgs) -> Result<String, ActionError> {
+    let peer = args.text("peer").unwrap_or_default().trim().to_string();
+    let name = args.text("name").unwrap_or_default().trim().to_string();
+    if peer.is_empty() {
+        return Err(ActionError::Refused(
+            "this invite needs the collaborator's device identity".into(),
+        ));
+    }
+    if name.is_empty() {
+        return Err(ActionError::Refused(
+            "an invite has to say what to call them".into(),
+        ));
+    }
+    let user = state.active_local_user();
+    let named = {
+        let mut tree = state.tree_mut();
+        let Some(room) = tree.active_workspace().map(|workspace| workspace.room) else {
+            return Err(ActionError::Refused(
+                "there is no workspace here to invite anyone into".into(),
+            ));
+        };
+        tree.name_peer(room, &user, &peer, &name)
+    };
+    if !named {
+        return Err(ActionError::Refused(format!(
+            "{user} cannot name this collaborator in the current workspace — either \
+             this device does not administer it, or `{peer}` is not a device identity"
+        )));
+    }
+    Ok(name)
+}
+
 /// Current wall-clock time as nanoseconds since the epoch, clamped to
 /// `u64::MAX` rather than truncated — a value that large is centuries past
 /// any real expiry/enrollment window this crate computes against.
@@ -605,6 +790,7 @@ impl Action {
             subtitle: "Import identity credentials and use them in this workspace",
             params: IDENTITY_CONNECT_PARAMS,
             apply: |st, args| {
+                require_explicit_confirmation(args, "connect this identity")?;
                 let path = args.text("path").unwrap_or_default().trim();
                 if path.is_empty() {
                     return Err(ActionError::Refused("identity path is required".into()));
@@ -656,6 +842,7 @@ impl Action {
             subtitle: "Select one of the identities already connected to this device",
             params: IDENTITY_SELECT_PARAMS,
             apply: |st, args| {
+                require_explicit_confirmation(args, "select this identity")?;
                 let identity_id = args.text("id").unwrap_or_default().trim();
                 let (workspace_id, room, actor) = active_admin_workspace(st)?;
                 let store = crate::identity_registry::IdentityRegistryStore::from_env()
@@ -792,6 +979,11 @@ impl Action {
             subtitle: "Permanently stop trusting a lost, retired, or compromised device",
             params: DEVICE_REVOKE_PARAMS,
             apply: |st, args| {
+                if args.boolean("confirm") != Some(true) {
+                    return Err(ActionError::Refused(
+                        "explicit confirmation is required to revoke this device".into(),
+                    ));
+                }
                 let (_, profile) = active_identity(st)?;
                 let key = parse_device_key(args.text("device").unwrap_or_default())?;
                 let reason = match args
@@ -975,17 +1167,17 @@ impl Action {
         // un-ranked row would lose "invite" to a file with the word in its name.
         chrome(
             "peer.invite",
-            "Invite a collaborator",
-            "Create an invite to this workspace",
+            "Invite a collaborator…",
+            "Review an invite before creating it",
             |st, _| {
-                st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::IssueInvite);
+                st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::PromptInvite);
                 Ok(())
             },
         ),
         chrome(
             "peer.connect",
-            "Join a workspace",
-            "Use an invite from a collaborator",
+            "Open join-workspace prompt",
+            "Enter and review an invite from a collaborator",
             |st, _| {
                 st.push_peer_sync_request(
                     crate::shell::overlay_host::PeerSyncAction::PromptConnect,
@@ -1000,39 +1192,11 @@ impl Action {
         // live; the peer id stays the identity, the name is just a label.
         Action {
             id: "peer.invite.named",
-            label: "Invite a named collaborator",
-            subtitle: "Choose the name shown beside their cursor, then create an invite",
+            label: "Name collaborator and open invite",
+            subtitle: "Record the display name, then review their invite before creating it",
             params: PEER_INVITE_NAMED_PARAMS,
             apply: |st, args| {
-                let peer = args.text("peer").unwrap_or_default().trim().to_string();
-                let name = args.text("name").unwrap_or_default().trim().to_string();
-                if peer.is_empty() {
-                    return Err(ActionError::Refused(
-                        "this invite needs the collaborator's device identity".into(),
-                    ));
-                }
-                if name.is_empty() {
-                    return Err(ActionError::Refused(
-                        "an invite has to say what to call them".into(),
-                    ));
-                }
-                let user = st.active_local_user();
-                // Scoped so the write lock releases before anything else is touched.
-                let named = {
-                    let mut tree = st.tree_mut();
-                    let Some(room) = tree.active_workspace().map(|w| w.room) else {
-                        return Err(ActionError::Refused(
-                            "there is no workspace here to invite anyone into".into(),
-                        ));
-                    };
-                    tree.name_peer(room, &user, &peer, &name)
-                };
-                if !named {
-                    return Err(ActionError::Refused(format!(
-                        "{user} cannot name this collaborator in the current workspace — either \
-                         this device does not administer it, or `{peer}` is not a device identity"
-                    )));
-                }
+                let name = name_invited_peer(st, args)?;
                 // Mint the token too, so naming and inviting are one
                 // gesture; minted *for* them so the card names whose invite it is.
                 st.push_peer_sync_request(
@@ -1139,10 +1303,63 @@ impl Action {
             "Duplicate this tab",
             "Open a second instance of the focused app beside it",
             |st, _| {
-                if let Err(err) = crate::shell::window_actions::duplicate_active_tab(st) {
-                    st.push_warning_notification("Can't duplicate this tab", err.user_message());
-                }
-                Ok(())
+                crate::shell::window_actions::duplicate_active_tab(st).map_or_else(
+                    |err| {
+                        let message = err.user_message().to_string();
+                        st.push_warning_notification("Can't duplicate this tab", &message);
+                        Err(ActionError::Refused(message))
+                    },
+                    |_| Ok(()),
+                )
+            },
+        ),
+        // The tab menu's three rows as actions, on the focused tab: a
+        // capability reachable only by right-click is not finished. The
+        // rows and these closures call the same `window_actions` functions.
+        chrome(
+            "tab.close",
+            "Close this tab",
+            "Close the focused tab; its window closes with it if it was the last",
+            |st, _| {
+                crate::shell::window_actions::close_active_tab(st).map_err(|err| {
+                    let message = err.user_message().to_string();
+                    st.push_warning_notification("Can't close this tab", &message);
+                    ActionError::Refused(message)
+                })
+            },
+        ),
+        chrome(
+            "tab.split-right",
+            "Split this tab to the right",
+            "Move the focused tab into a new window group beside its current one",
+            |st, _| {
+                crate::shell::window_actions::split_active_tab(
+                    st,
+                    crate::shell::window_actions::SplitPlacement::Right,
+                )
+                .map(|_| ())
+                .map_err(|err| {
+                    let message = err.user_message().to_string();
+                    st.push_warning_notification("Can't split this tab", &message);
+                    ActionError::Refused(message)
+                })
+            },
+        ),
+        chrome(
+            "tab.move-to-new-group",
+            "Move this tab to a new group",
+            "Move the focused tab into a new window group at the end of its strip",
+            |st, _| {
+                crate::shell::window_actions::split_active_tab(
+                    st,
+                    crate::shell::window_actions::SplitPlacement::StripEnd,
+                )
+                .map(|_| ())
+                .map_err(|err| {
+                    let message = err.user_message().to_string();
+                    st.push_warning_notification("Can't move this tab", &message);
+                    ActionError::Refused(message)
+                })
             },
         ),
         chrome(
@@ -1188,14 +1405,292 @@ impl Action {
                 } else {
                     kind
                 };
-                st.push_record_request(id, kind);
+                let tree = st.tree();
+                let workspace = tree.active_workspace().ok_or_else(|| {
+                    ActionError::Refused("no active workspace accepts the record".into())
+                })?;
+                let user = st.local_user_for_room(&workspace.room);
+                let actor = workspace.actor_for_person(&user);
+                let target = (workspace.id, workspace.room, actor);
+                drop(tree);
+                st.push_tracked_record_request(id, kind, target.0, target.1, target.2);
                 Ok(())
             },
         },
     ];
 }
 
+pub(crate) struct SharedQsDispatcher {
+    actions: std::cell::RefCell<Rc<dyn crate::shell::quick_settings::actions::QsActions>>,
+    availability: std::cell::Cell<crate::shell::quick_settings::actions::QsActionAvailability>,
+}
+
+impl SharedQsDispatcher {
+    pub(crate) fn new(
+        actions: Rc<dyn crate::shell::quick_settings::actions::QsActions>,
+        availability: crate::shell::quick_settings::actions::QsActionAvailability,
+    ) -> Self {
+        Self {
+            actions: std::cell::RefCell::new(actions),
+            availability: std::cell::Cell::new(availability),
+        }
+    }
+
+    pub(crate) fn replace(
+        &self,
+        actions: Rc<dyn crate::shell::quick_settings::actions::QsActions>,
+        availability: crate::shell::quick_settings::actions::QsActionAvailability,
+    ) {
+        *self.actions.borrow_mut() = actions;
+        self.availability.set(availability);
+    }
+
+    fn action_available(&self, id: &str) -> bool {
+        let available = self.availability.get();
+        match id {
+            QS_BRIGHTNESS_ID => available.brightness,
+            QS_VOLUME_ID => available.volume,
+            QS_WIFI_ID => available.wifi,
+            QS_POWER_ID => available.power_profile,
+            QS_VPN_ID => available.vpn,
+            _ => false,
+        }
+    }
+}
+
+pub(crate) type SharedQsActions = Rc<SharedQsDispatcher>;
+
+pub(crate) const QS_BRIGHTNESS_ID: &str = "quick-settings.brightness.set";
+pub(crate) const QS_VOLUME_ID: &str = "quick-settings.volume.set";
+pub(crate) const QS_WIFI_ID: &str = "quick-settings.wifi.set-enabled";
+pub(crate) const QS_POWER_ID: &str = "quick-settings.power-profile.set";
+pub(crate) const QS_VPN_ID: &str = "quick-settings.vpn.set-enabled";
+
+fn quick_settings_params(id: &str) -> Vec<ActionParam> {
+    match id {
+        QS_BRIGHTNESS_ID | QS_VOLUME_ID => vec![
+            ActionParam::required_owned(
+                "percent",
+                ParamType::Number,
+                "Exact percentage from 0 through 100.",
+            )
+            .with_schema(serde_json::json!({"minimum": 0, "maximum": 100})),
+        ],
+        QS_WIFI_ID => vec![ActionParam::required_owned(
+            "enabled",
+            ParamType::Boolean,
+            "Whether the Wi-Fi radio should be enabled.",
+        )],
+        QS_POWER_ID => vec![
+            ActionParam::required_owned("profile", ParamType::Text, "The host power profile.")
+                .with_choices(["saver", "balanced", "performance"]),
+        ],
+        QS_VPN_ID => vec![
+            ActionParam::required_owned(
+                "name",
+                ParamType::Text,
+                "Exact configured VPN connection name.",
+            )
+            .with_schema(serde_json::json!({"minLength": 1, "maxLength": 255})),
+            ActionParam::required_owned(
+                "enabled",
+                ParamType::Boolean,
+                "Whether the named VPN connection should be enabled.",
+            ),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "validated hardware percentages are bounded to 0..=100 before this f64-to-f32 provider conversion"
+)]
+fn validated_percent(args: &ActionArgs) -> f32 {
+    args.number("percent").unwrap_or_default() as f32
+}
+
+fn apply_quick_settings_effect(
+    id: &str,
+    actions: &dyn crate::shell::quick_settings::actions::QsActions,
+    args: &ActionArgs,
+) -> Result<(), ActionError> {
+    let result = match id {
+        QS_BRIGHTNESS_ID => actions.set_brightness(validated_percent(args)),
+        QS_VOLUME_ID => actions.set_volume(validated_percent(args)),
+        QS_WIFI_ID => actions.set_wifi(args.boolean("enabled").unwrap_or(false)),
+        QS_POWER_ID => {
+            let profile = match args.text("profile") {
+                Some("saver") => crate::shell::quick_settings::actions::PowerProfile::Saver,
+                Some("balanced") => crate::shell::quick_settings::actions::PowerProfile::Balanced,
+                Some("performance") => {
+                    crate::shell::quick_settings::actions::PowerProfile::Performance
+                }
+                _ => return Err(ActionError::Refused("invalid power profile".into())),
+            };
+            actions.set_power_profile(profile)
+        }
+        QS_VPN_ID => actions.set_vpn_connection(
+            args.text("name").unwrap_or_default(),
+            args.boolean("enabled").unwrap_or(false),
+        ),
+        _ => return Err(ActionError::Refused("unknown Quick Settings effect".into())),
+    };
+    result.map_err(ActionError::Refused)
+}
+
+/// UI adapter for the callable Quick Settings slice. The root panel and its
+/// drill-ins still own presentation state, while these five effects bind the
+/// same typed parameters and call the same provider path as external action
+/// invocation. Operations outside this slice pass through unchanged.
+pub(crate) struct ValidatedQsActions<'a> {
+    inner: &'a dyn crate::shell::quick_settings::actions::QsActions,
+}
+
+impl<'a> ValidatedQsActions<'a> {
+    pub(crate) fn new(inner: &'a dyn crate::shell::quick_settings::actions::QsActions) -> Self {
+        Self { inner }
+    }
+
+    fn dispatch(
+        &self,
+        id: &str,
+        values: impl IntoIterator<Item = (String, crate::shell::search::action_api::ArgValue)>,
+    ) -> Result<(), String> {
+        let args = ActionArgs::bind(&quick_settings_params(id), values)
+            .map_err(|error| error.to_string())?;
+        apply_quick_settings_effect(id, self.inner, &args).map_err(|error| error.to_string())
+    }
+}
+
+impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_> {
+    fn set_brightness(&self, percent: f32) -> Result<(), String> {
+        self.dispatch(
+            QS_BRIGHTNESS_ID,
+            [(
+                "percent".into(),
+                crate::shell::search::action_api::ArgValue::Number(f64::from(percent)),
+            )],
+        )
+    }
+
+    fn set_volume(&self, percent: f32) -> Result<(), String> {
+        self.dispatch(
+            QS_VOLUME_ID,
+            [(
+                "percent".into(),
+                crate::shell::search::action_api::ArgValue::Number(f64::from(percent)),
+            )],
+        )
+    }
+
+    fn set_wifi(&self, enabled: bool) -> Result<(), String> {
+        self.dispatch(
+            QS_WIFI_ID,
+            [(
+                "enabled".into(),
+                crate::shell::search::action_api::ArgValue::Boolean(enabled),
+            )],
+        )
+    }
+
+    fn set_power_profile(
+        &self,
+        profile: crate::shell::quick_settings::actions::PowerProfile,
+    ) -> Result<(), String> {
+        let profile = match profile {
+            crate::shell::quick_settings::actions::PowerProfile::Saver => "saver",
+            crate::shell::quick_settings::actions::PowerProfile::Balanced => "balanced",
+            crate::shell::quick_settings::actions::PowerProfile::Performance => "performance",
+        };
+        self.dispatch(
+            QS_POWER_ID,
+            [(
+                "profile".into(),
+                crate::shell::search::action_api::ArgValue::Text(profile.into()),
+            )],
+        )
+    }
+
+    fn set_vpn_connection(&self, name: &str, enabled: bool) -> Result<(), String> {
+        self.dispatch(
+            QS_VPN_ID,
+            [
+                (
+                    "name".into(),
+                    crate::shell::search::action_api::ArgValue::Text(name.into()),
+                ),
+                (
+                    "enabled".into(),
+                    crate::shell::search::action_api::ArgValue::Boolean(enabled),
+                ),
+            ],
+        )
+    }
+
+    fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+        self.inner.connect_wifi(ssid, password)
+    }
+
+    fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
+        self.inner.set_bluetooth(enabled)
+    }
+
+    fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.inner.connect_bluetooth(address)
+    }
+
+    fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.inner.disconnect_bluetooth(address)
+    }
+
+    fn set_wired(&self, enabled: bool) -> Result<(), String> {
+        self.inner.set_wired(enabled)
+    }
+
+    fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
+        self.inner.set_airplane_mode(enabled)
+    }
+
+    fn set_hotspot(&self, enabled: bool) -> Result<(), String> {
+        self.inner.set_hotspot(enabled)
+    }
+
+    fn set_mobile_broadband(&self, enabled: bool) -> Result<(), String> {
+        self.inner.set_mobile_broadband(enabled)
+    }
+
+    fn toggle_mute(&self) -> Result<(), String> {
+        self.inner.toggle_mute()
+    }
+
+    fn set_mute(&self, muted: bool) -> Result<(), String> {
+        self.inner.set_mute(muted)
+    }
+}
+
+fn quick_settings_contract() -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        permission: tilo_actions::PermissionRequirement::Write,
+        retry: tilo_actions::RetryPolicy::Idempotent,
+        reversible: false,
+        ..tilo_actions::ActionContract::default()
+    }
+}
+
+fn quick_settings_contract_for(available: bool) -> tilo_actions::ActionContract {
+    let mut contract = quick_settings_contract();
+    if !available {
+        contract.availability = tilo_actions::Availability::Unavailable {
+            code: "quick_settings_unavailable".into(),
+            reason: "Quick Settings service is unavailable".into(),
+        };
+    }
+    contract
+}
+
 pub struct ActionsProvider {
+    qs_actions: SharedQsActions,
     search_preferences: Option<crate::shell::search::SearchPreferencesHandle>,
     provider_catalog: Option<crate::shell::search::SearchProviderCatalogHandle>,
 }
@@ -1205,6 +1700,29 @@ impl ActionsProvider {
         Self {
             search_preferences: None,
             provider_catalog: None,
+            qs_actions: Rc::new(SharedQsDispatcher::new(
+                Rc::new(crate::shell::quick_settings::actions::UnavailableQsActions),
+                crate::shell::quick_settings::actions::QsActionAvailability::default(),
+            )),
+        }
+    }
+
+    pub(crate) fn with_all_sources(
+        search_preferences: crate::shell::search::SearchPreferencesHandle,
+        provider_catalog: crate::shell::search::SearchProviderCatalogHandle,
+        qs_actions: SharedQsActions,
+    ) -> Self {
+        Self {
+            search_preferences: Some(search_preferences),
+            provider_catalog: Some(provider_catalog),
+            qs_actions,
+        }
+    }
+
+    pub(crate) fn with_shared_qs_actions(qs_actions: SharedQsActions) -> Self {
+        Self {
+            qs_actions,
+            ..Self::new()
         }
     }
 
@@ -1214,6 +1732,7 @@ impl ActionsProvider {
         Self {
             search_preferences: Some(search_preferences),
             provider_catalog: None,
+            ..Self::new()
         }
     }
 
@@ -1224,6 +1743,7 @@ impl ActionsProvider {
         Self {
             search_preferences: Some(search_preferences),
             provider_catalog: Some(provider_catalog),
+            ..Self::new()
         }
     }
 }
@@ -1272,8 +1792,153 @@ impl SearchProvider for ActionsProvider {
             let score = match_score(&needle_lower, &label_lower, &subtitle_lower, action.id);
             if let Some(score) = score {
                 let apply = action.apply;
+                let (on_open, on_begin_invoke) = if action.id == "record.bring" {
+                    let on_open = Rc::new(
+                        |_doc: &mut automerge::AutoCommit,
+                         _root: &automerge::ObjId,
+                         _chrome: &Chrome,
+                         _args: &ActionArgs| {
+                            Err(ActionError::Refused(
+                                "record.bring requires lifecycle dispatch".into(),
+                            ))
+                        },
+                    ) as Rc<crate::shell::search::OpenFn>;
+                    let begin = Rc::new(
+                        |_doc: &mut automerge::AutoCommit,
+                         _root: &automerge::ObjId,
+                         chrome: &Chrome,
+                         args: &ActionArgs| {
+                            let id = args.text("id").unwrap_or_default();
+                            let kind = args.text("kind").unwrap_or("document");
+                            let (workspace_id, room, actor) = {
+                                let state = chrome.borrow();
+                                let tree = state.tree();
+                                let workspace = tree.active_workspace().ok_or_else(|| {
+                                    ActionError::Refused("no active workspace".into())
+                                })?;
+                                let user = state.local_user_for_room(&workspace.room);
+                                let actor = workspace.actor_for_person(&user);
+                                if !shell_action_authorized_for(workspace, &actor, "record.bring") {
+                                    return Err(ActionError::Refused(
+                                        "current workspace authority no longer permits record.bring"
+                                            .into(),
+                                    ));
+                                }
+                                (workspace.id, workspace.room, actor)
+                            };
+                            let request_id = chrome.borrow_mut().push_tracked_record_request(
+                                id.to_string(),
+                                kind.to_string(),
+                                workspace_id,
+                                room,
+                                actor,
+                            );
+                            let chrome = chrome.clone();
+                            let ticket: crate::shell::search::PendingInvocation =
+                                Rc::new(move || {
+                                    match chrome.borrow_mut().take_record_request_result(request_id)
+                                    {
+                                        None => Ok(None),
+                                        Some(Ok(())) => Ok(Some(
+                                            crate::shell::search::ActionReceipt::completed(),
+                                        )),
+                                        Some(Err(error)) => Err(ActionError::Refused(error)),
+                                    }
+                                });
+                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+                        },
+                    ) as Rc<crate::shell::search::BeginInvokeFn>;
+                    (on_open, Some(begin))
+                } else if matches!(
+                    action.id,
+                    "peer.invite" | "peer.connect" | "peer.invite.named"
+                ) {
+                    let action_id = action.id;
+                    let on_open = Rc::new(
+                        move |_doc: &mut automerge::AutoCommit,
+                              _root: &automerge::ObjId,
+                              _chrome: &Chrome,
+                              _args: &ActionArgs| {
+                            Err(ActionError::Refused(format!(
+                                "{action_id} requires lifecycle dispatch"
+                            )))
+                        },
+                    ) as Rc<crate::shell::search::OpenFn>;
+                    let begin = Rc::new(
+                        move |_doc: &mut automerge::AutoCommit,
+                              _root: &automerge::ObjId,
+                              chrome: &Chrome,
+                              args: &ActionArgs| {
+                            let request_id = {
+                                let mut state = chrome.borrow_mut();
+                                if !current_shell_action_authorized(&state, action_id) {
+                                    return Err(ActionError::Refused(format!(
+                                        "current workspace authority no longer permits {action_id}"
+                                    )));
+                                }
+                                let request = match action_id {
+                                    "peer.invite" => {
+                                        crate::shell::overlay_host::PeerSyncAction::PromptInvite
+                                    }
+                                    "peer.connect" => {
+                                        crate::shell::overlay_host::PeerSyncAction::PromptConnect
+                                    }
+                                    "peer.invite.named" => {
+                                        let name = name_invited_peer(&mut state, args)?;
+                                        state.bump();
+                                        crate::shell::overlay_host::PeerSyncAction::IssueInviteFor {
+                                            name,
+                                            copy: false,
+                                        }
+                                    }
+                                    _ => unreachable!("matched peer lifecycle action"),
+                                };
+                                state.begin_peer_sync_request(request)
+                            };
+                            let chrome = chrome.clone();
+                            let ticket: crate::shell::search::PendingInvocation =
+                                Rc::new(move || {
+                                    match chrome
+                                        .borrow_mut()
+                                        .take_peer_sync_request_result(request_id)
+                                    {
+                                        None => Ok(None),
+                                        Some(Ok(())) => Ok(Some(
+                                            crate::shell::search::ActionReceipt::completed(),
+                                        )),
+                                        Some(Err(error)) => Err(ActionError::Refused(error)),
+                                    }
+                                });
+                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+                        },
+                    ) as Rc<crate::shell::search::BeginInvokeFn>;
+                    (on_open, Some(begin))
+                } else {
+                    let action_id = action.id;
+                    let on_open = Rc::new(
+                        move |_doc: &mut automerge::AutoCommit,
+                              _root: &automerge::ObjId,
+                              chrome: &Chrome,
+                              args: &ActionArgs| {
+                            let mut st = chrome.borrow_mut();
+                            if !current_shell_action_authorized(&st, action_id) {
+                                return Err(ActionError::Refused(format!(
+                                    "current workspace authority no longer permits {action_id}"
+                                )));
+                            }
+                            let outcome = apply(&mut st, args);
+                            // Repaint only on success; a refusal changed nothing.
+                            if outcome.is_ok() {
+                                st.bump();
+                            }
+                            outcome
+                        },
+                    ) as Rc<crate::shell::search::OpenFn>;
+                    (on_open, None)
+                };
                 out.push(SearchResult {
                     kind: ResourceKind::Action,
+                    operation_kind: shell_action_kind(action.id),
                     provider_id: self.id().to_string(),
                     id: action.id.to_string(),
                     title: action.label.to_string(),
@@ -1281,19 +1946,200 @@ impl SearchProvider for ActionsProvider {
                     badge: None,
                     score,
                     params: action.params.to_vec(),
-                    contract: None,
-                    on_open: Rc::new(move |_doc, _root, chrome: &Chrome, args: &ActionArgs| {
-                        let mut st = chrome.borrow_mut();
-                        let outcome = apply(&mut st, args);
-                        // Repaint only on success; a refusal changed nothing.
-                        if outcome.is_ok() {
-                            st.bump();
-                        }
-                        outcome
-                    }),
+                    contract: Some(shell_action_contract(action.id)),
+                    on_open,
                     on_invoke: None,
-                    on_begin_invoke: None,
+                    on_begin_invoke,
                 });
+            }
+        }
+        const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str)] = &[
+            (
+                QS_BRIGHTNESS_ID,
+                "Set display brightness",
+                "Set this device's backlight percentage",
+            ),
+            (
+                QS_VOLUME_ID,
+                "Set output volume",
+                "Set this device's default audio output percentage",
+            ),
+            (
+                QS_WIFI_ID,
+                "Set Wi-Fi enabled state",
+                "Enable or disable this device's Wi-Fi radio",
+            ),
+            (
+                QS_POWER_ID,
+                "Set power profile",
+                "Choose saver, balanced, or performance for this device",
+            ),
+            (
+                QS_VPN_ID,
+                "Set VPN enabled state",
+                "Enable or disable one named VPN connection on this device",
+            ),
+        ];
+        for &(id, label, subtitle) in QUICK_SETTINGS_ACTIONS {
+            let Some(score) = match_score(
+                &needle_lower,
+                &label.to_lowercase(),
+                &subtitle.to_lowercase(),
+                id,
+            ) else {
+                continue;
+            };
+            let actions = self.qs_actions.actions.borrow().clone();
+            let available = self.qs_actions.action_available(id);
+            out.push(SearchResult {
+                kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::Effect,
+                badge: None,
+                provider_id: self.id().to_string(),
+                id: id.to_string(),
+                title: label.to_string(),
+                subtitle: Some(subtitle.to_string()),
+                score,
+                params: quick_settings_params(id),
+                contract: Some(quick_settings_contract_for(available)),
+                on_open: Rc::new(move |_doc, _root, chrome, args| {
+                    if !current_shell_action_authorized(&chrome.borrow(), id) {
+                        return Err(ActionError::Refused(format!(
+                            "current workspace authority no longer permits {id}"
+                        )));
+                    }
+                    apply_quick_settings_effect(id, actions.as_ref(), args)?;
+                    let mut state = chrome.borrow_mut();
+                    match id {
+                        QS_BRIGHTNESS_ID => {
+                            state.quick_settings.brightness = validated_percent(args) / 100.0;
+                        }
+                        QS_VOLUME_ID => {
+                            state.quick_settings.volume = validated_percent(args) / 100.0;
+                        }
+                        QS_WIFI_ID => {
+                            state.quick_settings.wifi = args.boolean("enabled") == Some(true);
+                        }
+                        QS_POWER_ID => {
+                            state.quick_settings.power_profile = match args.text("profile") {
+                                Some("saver") => crate::shell::quick_settings::PowerProfile::Saver,
+                                Some("performance") => {
+                                    crate::shell::quick_settings::PowerProfile::Performance
+                                }
+                                _ => crate::shell::quick_settings::PowerProfile::Balanced,
+                            };
+                        }
+                        QS_VPN_ID => {
+                            if let Some(connection) =
+                                state.quick_settings.vpns.iter_mut().find(|connection| {
+                                    Some(connection.name.as_str()) == args.text("name")
+                                })
+                            {
+                                connection.active = args.boolean("enabled") == Some(true);
+                            }
+                        }
+                        _ => {}
+                    }
+                    state.bump();
+                    Ok(())
+                }),
+                on_invoke: None,
+                on_begin_invoke: None,
+            });
+        }
+        let actor = ctx.chrome.active_local_user();
+        let ownership_resource = {
+            let tree = ctx.chrome.tree();
+            tree.active_workspace().map(|workspace| {
+                crate::shell::workspace_settings::ownership_transfer_resource(workspace, &actor)
+            })
+        };
+        if let Some(resource) = ownership_resource {
+            for action in resource.actions {
+                let subtitle = action.description.clone().unwrap_or_else(|| {
+                    "Signed workspace governance action for the active workspace".into()
+                });
+                if let Some(score) = match_score(
+                    &needle_lower,
+                    &action.label.to_lowercase(),
+                    &subtitle.to_lowercase(),
+                    &action.id,
+                ) {
+                    let action_id = action.id.clone();
+                    let params = action.params().to_vec();
+                    out.push(SearchResult {
+                        kind: ResourceKind::Action,
+                        operation_kind: tilo_actions::OperationKind::Document,
+                        provider_id: self.id().to_string(),
+                        id: format!("{}#{}", resource.id.as_str(), action.id),
+                        title: action.label,
+                        subtitle: Some(subtitle),
+                        badge: None,
+                        score,
+                        params,
+                        contract: Some(action.contract),
+                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
+                            let mut state = chrome.borrow_mut();
+                            apply_ownership_action(&state, &action_id, arguments)?;
+                            state.bump();
+                            Ok(())
+                        }),
+                        on_invoke: None,
+                        on_begin_invoke: None,
+                    });
+                }
+            }
+        }
+        let profile_resource = {
+            let tree = ctx.chrome.tree();
+            tree.active_workspace().map(|workspace| {
+                crate::shell::workspace_settings::permission_profile_resource(workspace, &actor)
+            })
+        };
+        if let Some(resource) = profile_resource {
+            let mut surfaces = vec![(resource.id.as_str().to_string(), resource.actions)];
+            surfaces.extend(
+                resource
+                    .children
+                    .into_iter()
+                    .map(|child| (child.id.as_str().to_string(), child.actions)),
+            );
+            for (resource_id, actions) in surfaces {
+                for action in actions {
+                    let subtitle = action.description.clone().unwrap_or_else(|| {
+                        "Manage reusable least-privilege workspace roles".into()
+                    });
+                    let Some(score) = match_score(
+                        &needle_lower,
+                        &action.label.to_lowercase(),
+                        &subtitle.to_lowercase(),
+                        &action.id,
+                    ) else {
+                        continue;
+                    };
+                    let action_id = action.id.clone();
+                    let params = action.params().to_vec();
+                    out.push(SearchResult {
+                        kind: ResourceKind::Action,
+                        operation_kind: tilo_actions::OperationKind::Document,
+                        provider_id: self.id().to_string(),
+                        id: format!("{}#{}", resource_id, action.id),
+                        title: action.label,
+                        subtitle: Some(subtitle),
+                        badge: None,
+                        score,
+                        params,
+                        contract: Some(action.contract),
+                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
+                            let mut state = chrome.borrow_mut();
+                            apply_permission_profile_action(&state, &action_id, arguments)?;
+                            state.bump();
+                            Ok(())
+                        }),
+                        on_invoke: None,
+                        on_begin_invoke: None,
+                    });
+                }
             }
         }
         if let Some(preferences) = &self.search_preferences {
@@ -1309,6 +2155,7 @@ impl SearchProvider for ActionsProvider {
                 let preferences = Rc::clone(preferences);
                 out.push(SearchResult {
                     kind: ResourceKind::Action,
+                    operation_kind: tilo_actions::OperationKind::Effect,
                     provider_id: self.id().to_string(),
                     id: id.to_string(),
                     title: label.to_string(),
@@ -1369,6 +2216,7 @@ impl SearchProvider for ActionsProvider {
                     let provider_id = provider_id.clone();
                     out.push(SearchResult {
                         kind: ResourceKind::Action,
+                        operation_kind: tilo_actions::OperationKind::Effect,
                         provider_id: self.id().to_string(),
                         id: format!("search.provider.toggle:{provider_id}"),
                         title: label,
@@ -1417,6 +2265,7 @@ impl SearchProvider for ActionsProvider {
                     let params = action.params().to_vec();
                     out.push(SearchResult {
                         kind: ResourceKind::Action,
+                        operation_kind: tilo_actions::OperationKind::Document,
                         provider_id: self.id().to_string(),
                         id: format!("{}#{}", resource.id.as_str(), action.id),
                         title: action.label,
@@ -1468,6 +2317,7 @@ impl SearchProvider for ActionsProvider {
                     let params = action.params().to_vec();
                     out.push(SearchResult {
                         kind: ResourceKind::Action,
+                        operation_kind: tilo_actions::OperationKind::Document,
                         provider_id: self.id().to_string(),
                         id: format!("{}#{}", resource_id, action.id),
                         title: action.label,
@@ -1943,7 +2793,25 @@ mod tests {
                 .iter()
                 .find(|action| action.id == action_id)
                 .expect("device action is registered");
-            let error = (action.apply)(&mut chrome.borrow_mut(), &ActionArgs::none())
+            let args = if action_id == "identity.device.revoke" {
+                ActionArgs::bind(
+                    action.params,
+                    [
+                        (
+                            "device".into(),
+                            crate::shell::search::action_api::ArgValue::Text("0".repeat(64)),
+                        ),
+                        (
+                            "confirm".into(),
+                            crate::shell::search::action_api::ArgValue::Boolean(true),
+                        ),
+                    ],
+                )
+                .expect("confirmed revocation arguments bind")
+            } else {
+                ActionArgs::none()
+            };
+            let error = (action.apply)(&mut chrome.borrow_mut(), &args)
                 .expect_err("a non-admin must be refused before device state is touched");
             assert!(
                 matches!(&error, ActionError::Refused(message) if message.contains("may not administer devices")),
@@ -1955,7 +2823,7 @@ mod tests {
     #[test]
     fn room_activity_action_opens_the_sheet_on_open() {
         let p = ActionsProvider::new();
-        let c = chrome_rc();
+        let c = chrome_with_room();
         let mut doc = AutoCommit::new();
         let out = {
             let cs = c.borrow();
@@ -1988,7 +2856,7 @@ mod tests {
     #[test]
     fn dnd_action_toggles_flag_on_open() {
         let p = ActionsProvider::new();
-        let c = chrome_rc();
+        let c = chrome_with_room();
         let mut doc = AutoCommit::new();
         let out = {
             let cs = c.borrow();
@@ -2267,6 +3135,531 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_shell_action_exposes_a_valid_operational_contract() {
+        let chrome = chrome_with_room();
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        let results = ActionsProvider::new().query(SearchContext {
+            needle: "",
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        for result in results {
+            let contract = result
+                .contract
+                .unwrap_or_else(|| panic!("{} has no contract", result.id));
+            assert!(
+                contract.validate_declaration().is_empty(),
+                "{} has invalid contract: {:?}",
+                result.id,
+                contract.validate_declaration()
+            );
+        }
+    }
+
+    #[test]
+    fn contracts_match_current_availability_risk_and_document_mutation() {
+        let chrome = chrome_with_room();
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        let results = ActionsProvider::new().query(SearchContext {
+            needle: "quick-settings.",
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        for id in [
+            QS_BRIGHTNESS_ID,
+            QS_VOLUME_ID,
+            QS_WIFI_ID,
+            QS_POWER_ID,
+            QS_VPN_ID,
+        ] {
+            let result = results
+                .iter()
+                .find(|result| result.id == id)
+                .unwrap_or_else(|| panic!("missing Quick Settings effect {id}"));
+            assert!(matches!(
+                result
+                    .contract
+                    .as_ref()
+                    .map(|contract| &contract.availability),
+                Some(tilo_actions::Availability::Unavailable { .. })
+            ));
+        }
+        for id in ["identity.connect", "identity.select"] {
+            let contract = shell_action_contract(id);
+            assert_eq!(contract.risk, tilo_actions::RiskLevel::Privileged);
+            assert_eq!(
+                contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm
+            );
+            assert!(
+                Action::ALL
+                    .iter()
+                    .find(|action| action.id == id)
+                    .expect("identity action")
+                    .params
+                    .iter()
+                    .any(|parameter| parameter.name == "confirm")
+            );
+        }
+        assert!(!quick_settings_contract().reversible);
+        assert_eq!(
+            shell_action_kind("agent.invite"),
+            tilo_actions::OperationKind::Document
+        );
+        assert_eq!(
+            shell_action_kind("peer.invite.named"),
+            tilo_actions::OperationKind::Document
+        );
+    }
+
+    #[test]
+    fn retained_shell_action_rechecks_authority_before_mutation() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let result = {
+            let state = chrome.borrow();
+            provider
+                .query(SearchContext {
+                    needle: "do not disturb",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|result| result.id == "notifications.dnd.toggle")
+                .expect("authorized action is discovered")
+        };
+        {
+            let state = chrome.borrow_mut();
+            let mut tree = state.tree_mut();
+            let workspace = tree.active_workspace_mut().expect("workspace");
+            workspace.owner = None;
+            workspace.capabilities.clear();
+        }
+        let error = (result.on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none())
+            .expect_err("revocation between discovery and execution must win");
+        assert!(matches!(error, ActionError::Refused(_)));
+        assert!(!chrome.borrow().dnd());
+    }
+
+    #[test]
+    fn record_bring_reports_the_actual_queued_result() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let result = {
+            let state = chrome.borrow();
+            provider
+                .query(SearchContext {
+                    needle: "record.bring",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|result| result.id == "record.bring")
+                .expect("record action")
+        };
+        let args = ActionArgs::bind(
+            &result.params,
+            [(
+                "id".into(),
+                crate::shell::search::action_api::ArgValue::Text("file:/tmp/example".into()),
+            )],
+        )
+        .expect("record arguments");
+        let disposition = result
+            .on_begin_invoke
+            .as_ref()
+            .expect("record bring has lifecycle admission")(
+            &mut doc,
+            &automerge::ROOT,
+            &chrome,
+            &args,
+        )
+        .expect("request is admitted to the room index");
+        let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("queued record work must not report terminal success");
+        };
+        assert!(ticket().expect("pending poll").is_none());
+        chrome
+            .borrow_mut()
+            .complete_record_request(1, Err("controlled index refusal".into()));
+        assert!(
+            matches!(ticket(), Err(ActionError::Refused(message)) if message.contains("controlled"))
+        );
+    }
+
+    #[test]
+    fn permanent_device_revocation_requires_admin_and_confirmation() {
+        let action = Action::ALL
+            .iter()
+            .find(|action| action.id == "identity.device.revoke")
+            .expect("device revocation is registered");
+        let contract = shell_action_contract(action.id);
+        assert_eq!(
+            contract.permission,
+            tilo_actions::PermissionRequirement::Admin
+        );
+        assert_eq!(
+            contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert_eq!(contract.risk, tilo_actions::RiskLevel::Privileged);
+
+        let args = ActionArgs::bind(
+            action.params,
+            [(
+                "device".into(),
+                crate::shell::search::action_api::ArgValue::Text("0".repeat(64)),
+            )],
+        );
+        assert!(
+            matches!(args, Err(crate::shell::search::action_api::ArgError::Missing { name }) if name == "confirm"),
+            "confirmation is an enforced typed argument, not display-only metadata"
+        );
+    }
+
+    #[test]
+    fn tab_duplicate_failure_reaches_the_invoker_and_keeps_user_feedback() {
+        let action = Action::ALL
+            .iter()
+            .find(|action| action.id == "tab.duplicate")
+            .expect("duplicate action is registered");
+        let chrome = ChromeState::new_with_handle(std::sync::Arc::new(parking_lot::RwLock::new(
+            crate::shell::state::WorkspaceTree::default(),
+        )));
+        let args = ActionArgs::bind(action.params, []).expect("duplicate is nullary");
+        let error = (action.apply)(&mut chrome.borrow_mut(), &args)
+            .expect_err("no active tab must be a machine-readable failure");
+        assert!(
+            matches!(error, ActionError::Refused(message) if message.contains("no tab") || message.contains("No tab"))
+        );
+        assert!(
+            !chrome.borrow().notifications.is_empty(),
+            "the person still receives useful visible feedback"
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingQsActions {
+        calls: std::cell::RefCell<Vec<String>>,
+        fail: std::cell::Cell<bool>,
+    }
+
+    impl crate::shell::quick_settings::actions::QsActions for RecordingQsActions {
+        fn set_brightness(&self, percent: f32) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("brightness:{percent}"));
+            self.result()
+        }
+
+        fn set_volume(&self, percent: f32) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("volume:{percent}"));
+            self.result()
+        }
+
+        fn set_wifi(&self, enabled: bool) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("wifi:{enabled}"));
+            self.result()
+        }
+
+        fn set_bluetooth(&self, _enabled: bool) -> Result<(), String> {
+            self.result()
+        }
+
+        fn set_vpn_connection(&self, name: &str, enabled: bool) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("vpn:{name}:{enabled}"));
+            self.result()
+        }
+
+        fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("connect-wifi:{ssid}:{password:?}"));
+            self.result()
+        }
+
+        fn set_power_profile(
+            &self,
+            profile: crate::shell::quick_settings::actions::PowerProfile,
+        ) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("power:{profile:?}"));
+            self.result()
+        }
+
+        fn toggle_mute(&self) -> Result<(), String> {
+            self.result()
+        }
+
+        fn set_mute(&self, _muted: bool) -> Result<(), String> {
+            self.result()
+        }
+    }
+
+    impl RecordingQsActions {
+        fn result(&self) -> Result<(), String> {
+            if self.fail.get() {
+                Err("controlled provider failure".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn quick_settings_contracts_follow_each_production_mechanism() {
+        let dispatcher: Rc<dyn crate::shell::quick_settings::actions::QsActions> =
+            Rc::new(RecordingQsActions::default());
+        let availability = crate::shell::quick_settings::actions::QsActionAvailability {
+            brightness: false,
+            volume: true,
+            wifi: false,
+            power_profile: true,
+            vpn: false,
+        };
+        let provider = ActionsProvider::with_shared_qs_actions(Rc::new(SharedQsDispatcher::new(
+            dispatcher,
+            availability,
+        )));
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let results = provider.query(SearchContext {
+            needle: "quick-settings.",
+            wanted: &[ResourceKind::Action],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        for (id, available) in [
+            (QS_BRIGHTNESS_ID, false),
+            (QS_VOLUME_ID, true),
+            (QS_WIFI_ID, false),
+            (QS_POWER_ID, true),
+            (QS_VPN_ID, false),
+        ] {
+            let contract = results
+                .iter()
+                .find(|result| result.id == id)
+                .and_then(|result| result.contract.as_ref())
+                .unwrap_or_else(|| panic!("missing contract for {id}"));
+            assert_eq!(contract.availability.is_available(), available, "{id}");
+        }
+    }
+
+    #[test]
+    fn typed_quick_settings_effects_use_the_injected_dispatcher_exactly() {
+        let recorder = Rc::new(RecordingQsActions::default());
+        let dispatcher: Rc<dyn crate::shell::quick_settings::actions::QsActions> = recorder.clone();
+        let slot = Rc::new(SharedQsDispatcher::new(
+            dispatcher,
+            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+        ));
+        let provider = ActionsProvider::with_shared_qs_actions(slot);
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let results = provider.query(SearchContext {
+            needle: "quick-settings.",
+            wanted: &[ResourceKind::Action],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        let cases = [
+            (
+                QS_BRIGHTNESS_ID,
+                vec![(
+                    "percent".into(),
+                    crate::shell::search::action_api::ArgValue::Number(37.5),
+                )],
+            ),
+            (
+                QS_VOLUME_ID,
+                vec![(
+                    "percent".into(),
+                    crate::shell::search::action_api::ArgValue::Integer(64),
+                )],
+            ),
+            (
+                QS_WIFI_ID,
+                vec![(
+                    "enabled".into(),
+                    crate::shell::search::action_api::ArgValue::Boolean(true),
+                )],
+            ),
+            (
+                QS_POWER_ID,
+                vec![(
+                    "profile".into(),
+                    crate::shell::search::action_api::ArgValue::Text("saver".into()),
+                )],
+            ),
+            (
+                QS_VPN_ID,
+                vec![
+                    (
+                        "name".into(),
+                        crate::shell::search::action_api::ArgValue::Text("Work".into()),
+                    ),
+                    (
+                        "enabled".into(),
+                        crate::shell::search::action_api::ArgValue::Boolean(false),
+                    ),
+                ],
+            ),
+        ];
+        for (id, supplied) in cases {
+            let result = results.iter().find(|result| result.id == id).expect(id);
+            let args = ActionArgs::bind(&result.params, supplied).expect("typed args bind");
+            (result.on_open)(&mut doc, &automerge::ROOT, &chrome, &args)
+                .expect("controlled provider succeeds");
+        }
+        assert_eq!(
+            recorder.calls.borrow().as_slice(),
+            [
+                "brightness:37.5",
+                "volume:64",
+                "wifi:true",
+                "power:Saver",
+                "vpn:Work:false",
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_quick_settings_values_never_dispatch_and_provider_failures_propagate() {
+        let recorder = Rc::new(RecordingQsActions::default());
+        let params = quick_settings_params(QS_BRIGHTNESS_ID);
+        assert!(
+            ActionArgs::bind(
+                &params,
+                [(
+                    "percent".into(),
+                    crate::shell::search::action_api::ArgValue::Number(101.0)
+                )],
+            )
+            .is_err()
+        );
+        assert!(recorder.calls.borrow().is_empty());
+
+        recorder.fail.set(true);
+        let args = ActionArgs::bind(
+            &params,
+            [(
+                "percent".into(),
+                crate::shell::search::action_api::ArgValue::Number(50.0),
+            )],
+        )
+        .expect("valid value binds");
+        let error = apply_quick_settings_effect(QS_BRIGHTNESS_ID, recorder.as_ref(), &args)
+            .expect_err("provider failure reaches the caller");
+        assert!(matches!(error, ActionError::Refused(message) if message.contains("controlled")));
+        assert_eq!(recorder.calls.borrow().as_slice(), ["brightness:50"]);
+    }
+
+    #[test]
+    fn quick_settings_ui_adapter_and_external_effect_share_typed_dispatch() {
+        use crate::shell::quick_settings::actions::QsActions as _;
+
+        let recorder = Rc::new(RecordingQsActions::default());
+        let ui = ValidatedQsActions::new(recorder.as_ref());
+        let external = |id, supplied| {
+            let args = ActionArgs::bind(&quick_settings_params(id), supplied)
+                .expect("valid external value binds");
+            apply_quick_settings_effect(id, recorder.as_ref(), &args)
+                .expect("valid external value dispatches");
+        };
+
+        ui.set_brightness(37.5).expect("valid UI value dispatches");
+        external(
+            QS_BRIGHTNESS_ID,
+            vec![(
+                "percent".into(),
+                crate::shell::search::action_api::ArgValue::Number(37.5),
+            )],
+        );
+        ui.set_volume(64.0).expect("valid UI value dispatches");
+        external(
+            QS_VOLUME_ID,
+            vec![(
+                "percent".into(),
+                crate::shell::search::action_api::ArgValue::Number(64.0),
+            )],
+        );
+        ui.set_wifi(true).expect("valid UI value dispatches");
+        external(
+            QS_WIFI_ID,
+            vec![(
+                "enabled".into(),
+                crate::shell::search::action_api::ArgValue::Boolean(true),
+            )],
+        );
+        ui.set_power_profile(crate::shell::quick_settings::actions::PowerProfile::Saver)
+            .expect("valid UI value dispatches");
+        external(
+            QS_POWER_ID,
+            vec![(
+                "profile".into(),
+                crate::shell::search::action_api::ArgValue::Text("saver".into()),
+            )],
+        );
+        ui.set_vpn_connection("Work", false)
+            .expect("valid UI value dispatches");
+        external(
+            QS_VPN_ID,
+            vec![
+                (
+                    "name".into(),
+                    crate::shell::search::action_api::ArgValue::Text("Work".into()),
+                ),
+                (
+                    "enabled".into(),
+                    crate::shell::search::action_api::ArgValue::Boolean(false),
+                ),
+            ],
+        );
+        assert_eq!(
+            recorder.calls.borrow().as_slice(),
+            [
+                "brightness:37.5",
+                "brightness:37.5",
+                "volume:64",
+                "volume:64",
+                "wifi:true",
+                "wifi:true",
+                "power:Saver",
+                "power:Saver",
+                "vpn:Work:false",
+                "vpn:Work:false",
+            ],
+            "every callable UI/external pair reaches the same provider with the same validated value"
+        );
+
+        assert!(ui.set_brightness(101.0).is_err());
+        assert_eq!(
+            recorder.calls.borrow().len(),
+            10,
+            "invalid UI value never dispatches"
+        );
+        recorder.fail.set(true);
+        assert!(
+            ui.set_wifi(true).is_err(),
+            "provider failure reaches the UI adapter"
+        );
+    }
     #[test]
     fn an_agent_can_create_a_role_then_assign_it_through_the_headless_actions() {
         use crate::shell::search::action_api::ArgValue;

@@ -40,7 +40,6 @@ pub const BODY_KEY: &str = "editor_body";
 const DISK_BASE_KEY: &str = "editor_disk_base";
 
 const PADDING_X: f64 = 20.0;
-const PADDING_Y: f64 = 48.0; // leave room for the "Editor" header
 const TEXT_SIZE: f32 = 14.0;
 const LINE_HEIGHT: f32 = TEXT_SIZE * 1.5;
 const GUTTER_WIDTH: f64 = 44.0;
@@ -504,6 +503,24 @@ impl EditorPalette {
 }
 
 impl EditorApp {
+    fn line_height(tr: &TextRenderer) -> f64 {
+        f64::from(LINE_HEIGHT * tr.text_scale())
+    }
+
+    fn body_offset(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        let (_, title_height) = tr.measure(
+            "Editor",
+            theme.tokens.typography.scale.lg / theme.text_scale,
+            None,
+        );
+        let (_, hint_height) = tr.measure(
+            "Ag",
+            theme.tokens.typography.scale.sm / theme.text_scale,
+            None,
+        );
+        18.0 + f64::from(title_height + hint_height) + 12.0
+    }
+
     /// "Editor" title + the focus hint on the right.
     fn draw_header(
         &self,
@@ -514,8 +531,8 @@ impl EditorApp {
         palette: &EditorPalette,
     ) {
         let tokens = &theme.tokens;
-        let title_size = tokens.typography.scale.lg;
-        let hint_size = tokens.typography.scale.sm;
+        let title_size = tokens.typography.scale.lg / theme.text_scale;
+        let hint_size = tokens.typography.scale.sm / theme.text_scale;
         tr.draw_text(
             scene,
             "Editor",
@@ -531,10 +548,15 @@ impl EditorApp {
         } else {
             "Click to edit"
         };
-        let (hw, _) = tr.measure(hint, hint_size, None);
+        let hint = tr.elide_to_width(
+            hint,
+            hint_size,
+            (self.rect.width() - 2.0 * PADDING_X).max(0.0) as f32,
+        );
+        let (_, title_height) = tr.measure("Editor", title_size, None);
         tr.draw_text(
             scene,
-            hint,
+            &hint,
             hint_size,
             if self.disk_conflict.is_some() {
                 theme.tokens.colors.semantic.warning
@@ -544,8 +566,8 @@ impl EditorApp {
             at(
                 transform,
                 (
-                    self.rect.x1 - PADDING_X - f64::from(hw),
-                    self.rect.y0 + 18.0 + f64::from(title_size - hint_size) / 2.0,
+                    self.rect.x0 + PADDING_X,
+                    self.rect.y0 + 22.0 + f64::from(title_height),
                 ),
             ),
             None,
@@ -578,7 +600,7 @@ impl EditorApp {
         };
 
         for (row, line) in self.body.text.split('\n').enumerate() {
-            let y = body_top + count_to_f64(row) * f64::from(LINE_HEIGHT) + 2.0;
+            let y = body_top + count_to_f64(row) * Self::line_height(tr) + 2.0;
             if y > self.rect.y1 {
                 break;
             }
@@ -670,7 +692,7 @@ impl EditorApp {
                     caret_x,
                     y - 2.0,
                     caret_x + 1.5,
-                    y + f64::from(LINE_HEIGHT) - 2.0,
+                    y + Self::line_height(tr) - 2.0,
                 );
                 scene.fill(Fill::NonZero, transform, palette.caret, None, &caret);
             }
@@ -705,10 +727,10 @@ impl EditorApp {
             let prefix = self.body.text.get(line_start_byte..byte_idx).unwrap_or("");
             let (prefix_w, _) = tr.measure(prefix, TEXT_SIZE, None);
             let x = content_x + f64::from(prefix_w);
-            let y = body_top + count_to_f64(row) * f64::from(LINE_HEIGHT) + 2.0;
+            let y = body_top + count_to_f64(row) * Self::line_height(tr) + 2.0;
             // 2px wide, full line height — matches the local caret in
             // `TextInput` / `RichTextLine`.
-            let caret_rect = Rect::new(x, y, x + 2.0, y + f64::from(LINE_HEIGHT));
+            let caret_rect = Rect::new(x, y, x + 2.0, y + Self::line_height(tr));
             presence.draw_peer_caret(scene, theme, transform, user, caret_rect);
         }
     }
@@ -772,8 +794,8 @@ impl EditorApp {
             let (span_w, _) = tr.measure(span, TEXT_SIZE, None);
             let x0 = content_x + f64::from(pre_w);
             let x1 = x0 + f64::from(span_w);
-            let y0 = body_top + count_to_f64(row) * f64::from(LINE_HEIGHT) + 2.0;
-            let y1 = y0 + f64::from(LINE_HEIGHT);
+            let y0 = body_top + count_to_f64(row) * Self::line_height(tr) + 2.0;
+            let y1 = y0 + Self::line_height(tr);
             line_rects.push(Rect::new(x0, y0, x1, y1));
             byte_cursor = line_end_byte;
             if self.body.text.as_bytes().get(byte_cursor) == Some(&b'\n') {
@@ -847,7 +869,7 @@ impl Widget for EditorApp {
         let palette = EditorPalette::from_theme(theme);
         self.draw_header(scene, transform, tr, theme, &palette);
 
-        let body_top = self.rect.y0 + PADDING_Y;
+        let body_top = self.rect.y0 + Self::body_offset(tr, theme);
         let gutter_rect = Rect::new(
             self.rect.x0 + PADDING_X,
             body_top,
@@ -897,10 +919,12 @@ impl Widget for EditorApp {
             gutter_rect.x1 + 1.0,
             gutter_rect.y1,
         );
+        // A hairline derived against the gutter it separates (HIG §9.5),
+        // not a literal black that vanishes on a dark editor ground.
         scene.fill(
             Fill::NonZero,
             transform,
-            Color::from_rgba8(0, 0, 0, 24),
+            ui::tokens::colors::Colors::hairline_on(palette.gutter_bg, 26),
             None,
             &divider,
         );
@@ -1186,6 +1210,29 @@ mod tests {
             .put_object(&root, "tile", ObjType::Map)
             .expect("tile root");
         (doc, tile_root)
+    }
+
+    #[test]
+    fn enlarged_editor_rows_and_header_reserve_painted_text_height() {
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let theme = Theme::dark().with_text_scale(2.0);
+        let (_, body_height) = tr.measure("Ag", TEXT_SIZE, None);
+        assert!(EditorApp::line_height(&tr) >= f64::from(body_height));
+        let (_, title_height) = tr.measure(
+            "Editor",
+            theme.tokens.typography.scale.lg / theme.text_scale,
+            None,
+        );
+        let (_, hint_height) = tr.measure(
+            "Click to edit",
+            theme.tokens.typography.scale.sm / theme.text_scale,
+            None,
+        );
+        assert!(
+            EditorApp::body_offset(&mut tr, &theme)
+                >= 18.0 + f64::from(title_height + hint_height) + 12.0
+        );
     }
 
     #[test]

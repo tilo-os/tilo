@@ -998,7 +998,7 @@ mod tests {
     #[test]
     fn only_the_secret_service_unavailable_error_enters_recovery() {
         assert!(is_secret_service_unavailable(
-            &io::Error::from_raw_os_error(libc::ENOKEY)
+            &runtime_identity::secret_service_unavailable_error()
         ));
         assert!(!is_secret_service_unavailable(&io::Error::new(
             io::ErrorKind::InvalidData,

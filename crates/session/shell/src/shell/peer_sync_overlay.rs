@@ -644,6 +644,24 @@ impl PeerSyncOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // Theme type tokens already carry the user's text scale, and this
+        // sheet lays out and paints with those resolved sizes; the renderer
+        // must not scale them a second time (HIG §7a), so it is reset for
+        // the pass exactly as the lens pass resets it, and restored after.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+        self.draw_at_theme_scale(host_rect, scene, transform, text_renderer, theme);
+        text_renderer.set_text_scale(renderer_scale);
+    }
+
+    fn draw_at_theme_scale(
+        &mut self,
+        host_rect: Rect,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         self.button_rects.clear();
         if !self.visible() {
             self.rect = Rect::ZERO;
@@ -653,7 +671,12 @@ impl PeerSyncOverlay {
         let rect = self.rect;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let card = RoundedRect::from_rect(rect, f64::from(tokens.radii.lg));
+        // Panel role (HIG §9.1/§9.5): the sheet's corner is the Panel radius
+        // and its edge is derived against the ground, not declared.
+        let card = RoundedRect::from_rect(
+            rect,
+            ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -664,7 +687,7 @@ impl PeerSyncOverlay {
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
             &card,
         );
@@ -775,12 +798,15 @@ impl PeerSyncOverlay {
             .take(3)
         {
             let row = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 42.0);
-            scene.fill(
-                Fill::NonZero,
+            // Control role (HIG §9.1/§9.5): a row card at the Control radius
+            // (`radii.sm` is for details inside a control) with an edge
+            // derived from its lift floor, so it registers in light as well.
+            ui::surface::card(
+                scene,
                 transform,
+                row,
+                ui::chrome::ChromeRole::Control.radius(theme, row.height()),
                 colors.lift(0.35),
-                None,
-                &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm)),
             );
             let detail = format!(
                 "{} · expires in {}",
@@ -811,12 +837,12 @@ impl PeerSyncOverlay {
                 ("Copy", Button::Resend(invite.id), resend),
                 ("Cancel", Button::CancelPending(invite.id), cancel),
             ] {
-                scene.fill(
-                    Fill::NonZero,
+                ui::surface::card(
+                    scene,
                     transform,
+                    button_rect,
+                    button_rect.height() / 2.0,
                     colors.lift(0.35),
-                    None,
-                    &RoundedRect::from_rect(button_rect, button_rect.height() / 2.0),
                 );
                 let (width, height) = text.measure(label, body, None);
                 text.draw_text(
@@ -840,7 +866,10 @@ impl PeerSyncOverlay {
         y
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Invite-body variants share render context, card geometry, padding, vertical cursor, text sizes, and available width."
+    )]
     fn draw_body(
         &mut self,
         scene: &mut Scene,
@@ -1091,7 +1120,10 @@ impl PeerSyncOverlay {
         y + f64::from(body) + 10.0
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Invite choices paint from render context, bounds, label, selected state, and text size while registering a specific button action."
+    )]
     fn draw_choice(
         &mut self,
         scene: &mut Scene,
@@ -1105,18 +1137,27 @@ impl PeerSyncOverlay {
         body: f32,
     ) {
         let colors = &theme.tokens.colors;
+        // Selector role (HIG §9.3): the chosen recipient or role is a lift
+        // with the tier's hairline, never an accent fill (the accent means
+        // live state, §9.4); idle choices rest on the lift floor.
+        let tier = ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(selected));
         let fill = if selected {
-            colors.accent[5]
+            tier.fill
         } else {
             colors.lift(0.35)
         };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            fill,
-            None,
-            &RoundedRect::from_rect(rect, rect.height() / 2.0),
-        );
+        let radius = rect.height() / 2.0;
+        let shape = RoundedRect::from_rect(rect, radius);
+        scene.fill(Fill::NonZero, transform, fill, None, &shape);
+        if let Some(border) = tier.border {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                border,
+                None,
+                &ui::surface::edge_outline(rect, radius),
+            );
+        }
         let shown = text.elide_to_width(label, body, f64_to_f32(rect.width() - 16.0));
         let (width, height) = text.measure(&shown, body, None);
         text.draw_text(
@@ -1174,45 +1215,33 @@ impl PeerSyncOverlay {
         } else {
             vec![("Copy".into(), Button::CopyToken)]
         };
-        let colors = &theme.tokens.colors;
-        let bh = 30.0;
+        // Shared `Button` faces (HIG §9.9) at the minimum pointer target
+        // (§9.6) with the Control radius (§9.1) — the former 30 px pills
+        // were under the target and hand-painted an accent wash.
+        let bh = f64::from(theme.tokens.metrics.min_pointer_target);
+        let pad_x = f64::from(theme.tokens.spacing.s3);
+        let gap = f64::from(theme.tokens.spacing.s2);
         let by = rect.y1 - pad - bh;
         let mut bx = rect.x1 - pad;
         for (label, button) in buttons {
-            let (tw, th) = text.measure(&label, body, None);
-            let bw = f64::from(tw) + 26.0;
+            let (tw, _) = text.measure(&label, body, None);
+            let bw = f64::from(tw) + 2.0 * pad_x;
             let brect = Rect::new(bx - bw, by, bx, by + bh);
             let primary = matches!(
                 button,
                 Button::Join | Button::CopyToken | Button::CreateInvite
             );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if primary {
-                    colors.accent[5]
-                } else {
-                    colors.lift(0.35)
-                },
-                None,
-                &RoundedRect::from_rect(brect, bh / 2.0),
-            );
-            text.draw_text(
-                scene,
-                &label,
-                body,
-                colors.text_primary,
-                transform.pre_translate(
-                    (
-                        f64::midpoint(brect.x0, brect.x1) - f64::from(tw) / 2.0,
-                        f64::midpoint(brect.y0, brect.y1) - f64::from(th) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-            );
+            // The pass paints with the renderer reset to 1× (see `draw`), so
+            // the face is handed the theme-scaled label size explicitly.
+            let mut face = ui::widget::ButtonFace::new(brect, &label)
+                .radius(ui::chrome::ChromeRole::Control.radius(theme, bh))
+                .text_size(body);
+            if primary {
+                face = face.primary();
+            }
+            ui::widget::Button::paint(scene, transform, text, theme, &face);
             self.button_rects.push((button, brect));
-            bx = brect.x0 - 8.0;
+            bx = brect.x0 - gap;
         }
     }
 
@@ -1250,7 +1279,12 @@ impl PeerSyncOverlay {
 }
 
 fn card_rect(host: Rect, state: &PeerSyncSnapshot) -> Rect {
-    let w = (host.width() * 0.42).clamp(400.0, 520.0);
+    // A sheet with a form in it takes the sheet width (HIG §9.6), shrinking
+    // inside the panel padding on a narrow host rather than a bespoke
+    // 400–520 band. Unscaled `BASE` like the rest of this sheet's geometry.
+    let w = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet)
+        .min(host.width() - 2.0 * f64::from(ui::tokens::Spacing::BASE.s4))
+        .max(0.0);
     let h = if state.invite_review_open {
         330.0
     } else if state.invite_name.is_some() {
@@ -1331,7 +1365,10 @@ fn elide_token(token: &str) -> String {
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Invite naming needs render context, field geometry and text sizes, typed name, recipient mode, and optional recipient identity."
+)]
 fn draw_naming(
     scene: &mut Scene,
     transform: Affine,
@@ -1374,6 +1411,16 @@ fn draw_naming(
     let shown = text.elide_to_width(typed, name, f64_to_f32(avail - 40.0));
     let (tw, th) = text.measure(&shown, name, None);
     let ty = f64::midpoint(field.y0, field.y1) - f64::from(th) / 2.0;
+    let caret_w = 1.5;
+    // The caret sits on the text origin; an empty field shows its placeholder
+    // one `s1` to the right of the caret so the two never overlap (HIG §7).
+    let text_x = field.x0
+        + 12.0
+        + if typed.is_empty() {
+            caret_w + f64::from(theme.tokens.spacing.s1)
+        } else {
+            0.0
+        };
     text.draw_text(
         scene,
         if typed.is_empty() {
@@ -1387,7 +1434,7 @@ fn draw_naming(
         } else {
             colors.text_primary
         },
-        transform.pre_translate((field.x0 + 12.0, ty).into()),
+        transform.pre_translate((text_x, ty).into()),
         None,
     );
     let caret_x = field.x0
@@ -1402,7 +1449,7 @@ fn draw_naming(
         transform,
         colors.accent[5],
         None,
-        &Rect::new(caret_x, field.y0 + 9.0, caret_x + 1.5, field.y1 - 9.0),
+        &Rect::new(caret_x, field.y0 + 9.0, caret_x + caret_w, field.y1 - 9.0),
     );
     y = field.y1 + 12.0;
     let identity = recipient.map_or_else(
@@ -1431,7 +1478,10 @@ fn draw_naming(
     y + f64::from(body) + 10.0
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "An issued invite paints its recipient summary and fingerprint from render context, card geometry, token, and optional recipient name."
+)]
 fn draw_invite(
     scene: &mut Scene,
     transform: Affine,
@@ -1477,7 +1527,10 @@ fn draw_invite(
     y
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Receiving an invite uses render context, card geometry and text sizes, available width, and the pasted token to paint its parse state."
+)]
 fn draw_receiving(
     scene: &mut Scene,
     transform: Affine,
@@ -1554,7 +1607,10 @@ fn draw_receiving(
     y
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Invite-person rows combine render context and bounds with primary/secondary labels and named-versus-anonymous avatar state."
+)]
 fn draw_person(
     scene: &mut Scene,
     transform: Affine,
@@ -1651,7 +1707,10 @@ fn draw_code(
     field.y1
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Text elision accepts f32 widths; narrowing f64 overlay geometry may round subpixel precision without changing record or identity data."
+)]
 fn f64_to_f32(v: f64) -> f32 {
     v as f32
 }
@@ -1659,6 +1718,32 @@ fn f64_to_f32(v: f64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HIG §9.5: the invite card's rows and mini pills rest on the lift
+    /// floor with an edge derived from it; that edge must register on every
+    /// shipped palette, and the card's Panel border on its Panel ground.
+    #[test]
+    fn invite_rows_and_panel_edge_register_on_every_palette() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = ui::chrome::shell::panel_ground(&theme);
+            let floor = theme.tokens.colors.lift(0.35);
+            for (what, edge, fill) in [
+                (
+                    "panel border",
+                    ui::chrome::shell::panel_border(&theme),
+                    ground,
+                ),
+                ("row card", ui::surface::edge_on(floor), floor),
+            ] {
+                let delta = ui::surface::edge_delta(edge, fill);
+                assert!(
+                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: the {what} must separate from its fill (Δ luminance {delta:.4})",
+                    theme.name
+                );
+            }
+        }
+    }
 
     fn key(key: Key) -> WindowEvent {
         let mut event: KeyEvent = unsafe { std::mem::zeroed() };

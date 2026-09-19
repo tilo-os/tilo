@@ -333,7 +333,7 @@ fn available_bytes(path: &Path) -> Option<u64> {
         return None;
     }
     let info = unsafe { info.assume_init() };
-    info.f_bavail.checked_mul(info.f_frsize)
+    (info.f_bavail as u64).checked_mul(info.f_frsize as u64)
 }
 
 struct IncomingPersonalMediaTransfer {
@@ -3207,7 +3207,7 @@ impl ShellNetwork {
     /// checkpoint to one exact certified transport peer.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the transfer command carries the authenticated target plus its complete resumable-content contract"
+        reason = "the transfer boundary keeps the certified target, request/transfer IDs, size, resume checkpoint, hashes and spool path explicit"
     )]
     pub(crate) fn start_nearby_transfer(
         &self,
@@ -5316,7 +5316,7 @@ impl ShellNetwork {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "identity redemption keeps certificate, invitation, room, and persistence validation in one atomic admission path"
+        reason = "invite redemption keeps room/expiry/recipient checks, membership persistence and post-admission certification in order"
     )]
     fn redeem_invited_identity(
         &self,

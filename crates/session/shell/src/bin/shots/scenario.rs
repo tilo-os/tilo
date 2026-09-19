@@ -37,7 +37,10 @@ use super::driver::ShellDriver;
 /// `resolve_named_rect`-based click targeting out of reach of the next
 /// scenario that needs it.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "the scenario DSL retains implemented actions that the current catalogue does not construct"
+)]
 pub enum Action {
     /// Click at raw screen coordinates (cursor-move + press + release).
     ClickAt(Point),
@@ -1076,6 +1079,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 caller: opts.caller,
                 title: opts.title,
                 save: opts.save,
+                directory: opts.directory,
                 multiple: opts.multiple,
                 accept_label: opts.accept_label,
                 current_name: opts.current_name,
