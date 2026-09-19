@@ -18552,6 +18552,7 @@ dependencies = [
 name = "word-processor"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "automerge",
  "fluent",
  "qdoc",
