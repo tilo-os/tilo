@@ -428,6 +428,7 @@ pub struct FrameHarness {
     /// index instead of the record it checked out, testing something the
     /// user never runs.
     records: Option<crate::record::RecordSet>,
+    record_persistence: Option<(String, automerge::AutoCommit)>,
     room_index: Option<automerge::AutoCommit>,
     /// The taffy node holding keyboard focus, or `None`. Mirrors
     /// [`crate::app::App::focused_node`] — focus is App-level, not
@@ -670,6 +671,7 @@ impl FrameHarness {
             theme,
             scene: Scene::new(),
             records: None,
+            record_persistence: None,
             room_index: None,
             presence: PresenceCtx::empty(),
             permissions: PermissionContext::permissive(),
@@ -933,6 +935,37 @@ impl FrameHarness {
         self
     }
 
+    /// Configure the same per-record store as the live host, including apps
+    /// whose asynchronous first open supplies no record during construction.
+    fn with_record_persistence(
+        mut self,
+        manifest_id: &str,
+        room_index: automerge::AutoCommit,
+    ) -> Self {
+        self.record_persistence = Some((manifest_id.to_owned(), room_index));
+        self.tick_records();
+        self
+    }
+
+    fn tick_records(&mut self) {
+        if self.records.is_none()
+            && self.root.record_intent().is_some()
+            && let Some((manifest_id, room_index)) = self.record_persistence.take()
+        {
+            let mut records = crate::record::RecordSet::open(manifest_id);
+            records.discover_room(&room_index);
+            self.records = Some(records);
+            self.room_index = Some(room_index);
+        }
+        if let Some(set) = self.records.as_mut() {
+            crate::record::tick(set, &mut self.state, self.room_index.as_mut(), &*self.root);
+        }
+    }
+
+    fn persistence_document(&mut self) -> &mut automerge::AutoCommit {
+        self.room_index.as_mut().unwrap_or(&mut self.state.doc)
+    }
+
     /// The records this driver has open, if the app under test uses them.
     pub fn records(&self) -> Option<&crate::record::RecordSet> {
         self.drain_component_wakes();
@@ -966,13 +999,23 @@ impl FrameHarness {
 
     /// Write out every open record and wait for it to land.
     pub fn persist_flush(&mut self) {
+        if let Err(error) = self.try_persist_flush() {
+            tracing::error!(%error, "headless record persistence failed");
+        }
+    }
+
+    /// Flush records while retaining storage failures for the command's exit status.
+    ///
+    /// # Errors
+    /// Reports unavailable or failed record writers.
+    pub fn try_persist_flush(&mut self) -> Result<(), String> {
         self.pump_component_wakes();
         if let Some(wake) = &self.component_wake {
-            let _ = wake.binding.records.try_flush();
-            return;
+            return wake.binding.records.try_flush();
         }
-        if let Some(set) = self.records.as_mut() {
-            set.flush(&mut self.state.doc);
+        match self.records.as_mut() {
+            Some(set) => set.try_flush(&mut self.state.doc),
+            None => Ok(()),
         }
     }
 
@@ -1033,14 +1076,11 @@ impl FrameHarness {
         if let Some(wake) = &self.component_wake {
             wake.dirty.set(false);
         }
-        // Records first, as `ui::App` does: an action that opened a document
-        // must be editing that document by the time the next frame syncs.
-        if let Some(set) = self.records.as_mut() {
-            crate::record::tick(set, &mut self.state, self.room_index.as_mut(), &*self.root);
-        }
-        // Match the live redraw path: asynchronous models drain their change
-        // queues here before sync mounts or refreshes visible delegates.
+        // Select the current record before update, then observe a first
+        // asynchronous open before sync can accidentally edit the room index.
+        self.tick_records();
         self.root.update(&mut self.state.doc, &self.state.root);
+        self.tick_records();
         let t_sync = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.root.sync(&mut self.state.doc, &self.state.root);
         if let Some(p) = self.profiler.as_mut() {
@@ -2170,7 +2210,7 @@ impl FrameHarness {
         intent: &tilo_actions::ControlInvocation,
     ) {
         let invocation = tilo_actions::InvocationId::new();
-        match crate::bound_dispatch::invoke_resource_action(
+        let result = crate::bound_dispatch::invoke_resource_action(
             self.root.as_mut(),
             &mut self.state.doc,
             &target,
@@ -2182,7 +2222,16 @@ impl FrameHarness {
             false,
             invocation,
             None,
+        )
+        .map_err(crate::bound_dispatch::BoundActionError::into_door);
+        if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
+            self.root.as_mut(),
+            &target,
+            &result,
         ) {
+            tracing::warn!(?error, "headless: bound control feedback unavailable");
+        }
+        match result {
             Ok(crate::widget::ResourceOperationStart::Accepted) => {
                 self.bound_invocations.insert(invocation, target);
             }
@@ -2193,10 +2242,21 @@ impl FrameHarness {
         }
     }
 
+    /// Replace permissions for the legacy host document. Bound components keep
+    /// their own independently scoped permission contexts.
+    pub fn set_permission_ctx(&mut self, permissions: PermissionContext) {
+        self.permissions = permissions;
+    }
+
     fn dispatch_control_invocations(&mut self) {
-        for (target, intent) in
-            crate::bound_dispatch::drain_control_invocations(self.root.as_mut()).unwrap_or_default()
-        {
+        let bound = crate::bound_dispatch::drain_control_invocations(self.root.as_mut());
+        if let Some(error) = bound.error {
+            tracing::warn!(
+                ?error,
+                "headless: control traversal incomplete; delivering already drained intents"
+            );
+        }
+        for (target, intent) in bound.pending {
             self.dispatch_bound_control(target, &intent);
         }
 
@@ -2214,6 +2274,8 @@ impl FrameHarness {
                 Ok(target) => target,
                 Err(error) => {
                     tracing::warn!(code = error.code(), %error, "headless: control target refused");
+                    self.root
+                        .on_control_invocation_result(&intent.address, &Err(error.into_door()));
                     continue;
                 }
             };
@@ -2248,6 +2310,13 @@ impl FrameHarness {
                         Some(&intent.arguments),
                         false,
                     )?;
+                if !crate::bound_dispatch::permits_local_action(
+                    &self.permissions,
+                    &crate::collaboration::local_app_id(),
+                    spec,
+                ) {
+                    return Err(tilo_actions::DoorError::Unknown(intent.address.clone()));
+                }
                 let encoded = crate::bound_dispatch::encode_resource_action(
                     &resources,
                     &intent.address,
@@ -2282,6 +2351,8 @@ impl FrameHarness {
                 }
                 Ok::<_, tilo_actions::DoorError>(started)
             })();
+            self.root
+                .on_control_invocation_result(&intent.address, &result);
             match result {
                 Ok(crate::widget::ResourceOperationStart::Accepted) => {
                     self.pending_control_invocations.insert(invocation);
@@ -3446,23 +3517,21 @@ pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
     }
     // An app whose root names a record must be driven against that record's
     // document, not the room index — see `records` on `Driver`.
-    let mut driver = Driver::new(state, root, spec.viewport.unwrap_or(DEFAULT_VIEWPORT));
-    if driver.root_record_intent().is_some() {
-        let (records_state, _) = crate::persist::open(manifest_id);
-        driver = driver.with_records(
-            crate::record::RecordSet::open(manifest_id),
-            records_state.doc,
-        );
-    }
+    let room_index = state.doc.clone();
+    let mut driver = Driver::new(state, root, spec.viewport.unwrap_or(DEFAULT_VIEWPORT))
+        .with_record_persistence(manifest_id, room_index);
 
     tilo_startup_metrics::mark("headless-setup-ready");
     let mut failure = drive_spec_actions(spec, &mut driver, |driver| {
-        if !driver.persist_tick() {
-            autosave.request(&mut driver.state_mut().doc);
-        }
+        driver.persist_tick();
+        autosave.request(driver.persistence_document());
     });
     tilo_startup_metrics::mark("headless-record-flush-start");
-    driver.persist_flush();
+    if let Err(error) = driver.try_persist_flush() {
+        tilo_startup_metrics::mark("headless-durability-failed");
+        eprintln!("headless: record write failed: {error}");
+        return 3;
+    }
     tilo_startup_metrics::mark("headless-record-flush-done");
 
     if let Err(error) =
@@ -3476,7 +3545,7 @@ pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
     tilo_startup_metrics::mark("headless-output-done");
     tilo_startup_metrics::mark("headless-durability-start");
     // The same two calls `App::exiting` makes, for the same reason.
-    autosave.request(&mut driver.state_mut().doc);
+    autosave.request(driver.persistence_document());
     autosave.flush();
     if let Some(e) = autosave.last_error() {
         tilo_startup_metrics::mark("headless-durability-failed");
@@ -3510,6 +3579,7 @@ fn write_headless_output(
 mod tests {
     use super::*;
     use crate::widget::{Button, Checkbox, CodeEditor, Column, TextInput, TreeNode, TreeView};
+    use automerge::transaction::Transactable;
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
@@ -4308,6 +4378,349 @@ mod tests {
         let semantics = driver.inspection().root.semantics.expect("tree semantics");
         assert_eq!(semantics.children[0].state.expanded, Some(false));
         assert_eq!(semantics.value.as_deref(), Some("Child"));
+    }
+
+    #[test]
+    fn local_control_result_does_not_broadcast_into_component_siblings() {
+        use crate::application_test_support::ProbeHost;
+        use crate::widget::{Column, TileHost};
+        for closed in [false, true] {
+            let owner = ProbeHost::new();
+            let (component, sibling_seen) =
+                crate::widget::control_result_probe::component(&owner, 11, false);
+            let (legacy, legacy_seen) = crate::widget::control_result_probe::Probe::new(false);
+            let root = Column::new()
+                .push(Box::new(legacy))
+                .push(Box::new(TileHost::from_component(component)));
+            let mut host = Driver::new_with_controlled_inputs(
+                State::new(),
+                Box::new(root),
+                (400, 200),
+                Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                crate::permissions::UserId("reader".into()),
+            );
+            if closed {
+                host.close_components();
+            }
+            legacy_seen.enqueue("missing");
+            host.dispatch_control_invocations();
+            assert_eq!(legacy_seen.results.borrow().len(), 1);
+            assert!(
+                sibling_seen.results.borrow().is_empty(),
+                "legacy feedback must not enter bound sibling"
+            );
+            assert_eq!(sibling_seen.calls.get(), 0);
+        }
+    }
+
+    #[test]
+    fn bound_local_control_result_reports_permission_refusal_and_success() {
+        use crate::application_test_support::{ProbeHost, runner_inputs};
+        for accepted in [false, true] {
+            let owner = ProbeHost::new();
+            let (component, observed) =
+                crate::widget::control_result_probe::component(&owner, 11, accepted);
+            let binding = component.callback_binding();
+            let mut host = Driver::from_component(component, (400, 200), runner_inputs()).unwrap();
+            observed.enqueue("run");
+            host.dispatch_control_invocations();
+            assert_eq!(observed.calls.get(), 1);
+            let expected = if accepted {
+                crate::widget::ResourceOperationStart::Accepted
+            } else {
+                crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )
+            };
+            assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
+            observed.enqueue("run");
+            *binding.permissions.borrow_mut() = PermissionContext::from_capabilities(
+                collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
+                Vec::new(),
+            );
+            let before = owner
+                .records
+                .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
+                .unwrap();
+            host.dispatch_control_invocations();
+            assert_eq!(observed.calls.get(), 1, "revoked permission blocks handler");
+            assert_eq!(
+                owner
+                    .records
+                    .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
+                    .unwrap(),
+                before
+            );
+            assert_eq!(observed.results.borrow().len(), 2);
+            assert!(matches!(observed.results.borrow().last(), Some(Err(_))));
+        }
+    }
+
+    #[test]
+    fn local_control_result_keeps_confirmation_as_refusal() {
+        let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
+        probe.confirmation = true;
+        let mut host = Driver::new_with_controlled_inputs(
+            State::new(),
+            Box::new(probe),
+            (400, 200),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("reader".into()),
+        );
+        observed.enqueue("run");
+        host.dispatch_control_invocations();
+        assert_eq!(observed.calls.get(), 0);
+        assert_eq!(
+            *observed.results.borrow(),
+            vec![Err(tilo_actions::DoorError::ConfirmationRequired)]
+        );
+    }
+
+    #[test]
+    fn local_control_result_reports_completed_and_accepted() {
+        use crate::widget::control_result_probe::Probe;
+        for accepted in [false, true] {
+            let (probe, observed) = Probe::new(accepted);
+            let mut host = Driver::new_with_controlled_inputs(
+                State::new(),
+                Box::new(probe),
+                (400, 200),
+                Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                crate::permissions::UserId("reader".into()),
+            );
+            observed.enqueue("run");
+            host.dispatch_control_invocations();
+            assert_eq!(observed.calls.get(), 1);
+            let expected = if accepted {
+                crate::widget::ResourceOperationStart::Accepted
+            } else {
+                crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )
+            };
+            assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
+            observed.enqueue("missing");
+            host.dispatch_control_invocations();
+            assert_eq!(observed.calls.get(), 1);
+            assert!(matches!(
+                observed.results.borrow().last(),
+                Some(Err(tilo_actions::DoorError::Unknown(_)))
+            ));
+        }
+    }
+
+    #[test]
+    fn local_control_result_reports_fresh_permission_refusal_without_mutation() {
+        use crate::widget::control_result_probe::Probe;
+        let (probe, observed) = Probe::new(false);
+        let mut host = Driver::new_with_controlled_inputs(
+            State::new(),
+            Box::new(probe),
+            (400, 200),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("reader".into()),
+        );
+        observed.enqueue("run");
+        let readonly = PermissionContext::from_capabilities(
+            collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
+            Vec::new(),
+        );
+        host.set_permission_ctx(readonly);
+        let before = host.state.doc.base_heads();
+        host.dispatch_control_invocations();
+        assert_eq!(observed.calls.get(), 0, "permission checked before handler");
+        assert_eq!(host.state.doc.base_heads(), before);
+        assert_eq!(
+            automerge::transaction::Transactable::pending_ops(&host.state.doc),
+            0
+        );
+        assert!(matches!(
+            observed.results.borrow().as_slice(),
+            [Err(tilo_actions::DoorError::Unknown(_))]
+        ));
+        assert!(observed.pending.borrow().is_empty());
+    }
+
+    struct LateRecordProbe {
+        frames: usize,
+        checkout: crate::record::RecordCheckout,
+        ready: bool,
+    }
+    impl Widget for LateRecordProbe {
+        fn update(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+            self.frames = self.frames.saturating_add(1);
+            if self.frames == 2 {
+                doc.put(automerge::ROOT, "loaded", "initial content")
+                    .unwrap();
+            }
+            self.frames == 2
+        }
+        fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+            (self.frames >= 2).then(|| self.checkout.clone())
+        }
+        fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+            self.ready =
+                crate::record::identity(doc).is_some_and(|record| record.id == self.checkout.id);
+        }
+        fn test_id(&self) -> Option<&str> {
+            self.ready.then_some("record-ready")
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _: &Theme,
+            map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = tree.new_leaf(taffy::Style::default()).unwrap();
+            map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "the probe implements the fixed Widget event signature"
+        )]
+        fn handle_event(
+            &mut self,
+            _: &WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            _: &mut automerge::AutoCommit,
+            _: &automerge::ObjId,
+            _: &mut bool,
+            _: &mut Option<NodeId>,
+            _: NodeId,
+            _: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "LateRecordProbe"
+        }
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            vello::kurbo::Rect::ZERO
+        }
+        fn perform_action(
+            &mut self,
+            action: &crate::a11y::Action,
+            doc: &mut automerge::AutoCommit,
+            _: &automerge::ObjId,
+        ) -> bool {
+            if self.ready && matches!(action, crate::a11y::Action::Activate) {
+                doc.put(automerge::ROOT, "payload", "late record content")
+                    .unwrap();
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    #[test]
+    fn late_record_intent_uses_record_store_and_preserves_room_index() {
+        const CHILD: &str = "TILO_LATE_RECORD_TEST_CHILD";
+        const PACKAGE: &str = "dev.tilo.late-record-test";
+        if let Ok(case) = std::env::var(CHILD) {
+            use crate::record::{RecordCheckout, RecordId, RecordKind, RecordSet};
+            use automerge::ReadDoc;
+            let checkout = RecordCheckout::new(
+                RecordId::for_file("late-test-document"),
+                RecordKind::new("document"),
+            );
+            let blocked = case == "blocked";
+            if blocked {
+                // Block only the record namespace; the room index remains writable.
+                let room_store = app_state::DocStore::open_room(
+                    PACKAGE,
+                    &std::env::var("TILO_WORKSPACE_ID").unwrap(),
+                )
+                .unwrap();
+                let records = room_store.dir().join(app_state::RECORDS_DIR);
+                std::fs::write(records, b"blocked record namespace").unwrap();
+            }
+            let root = LateRecordProbe {
+                frames: 0,
+                checkout: checkout.clone(),
+                ready: false,
+            };
+            let spec = Spec {
+                actions: vec![
+                    Action::WaitForNamed {
+                        target: "record-ready".into(),
+                        timeout: std::time::Duration::from_secs(2),
+                    },
+                    Action::Perform {
+                        target: "record-ready".into(),
+                        semantic_target: None,
+                        action: crate::a11y::Action::Activate,
+                    },
+                ],
+                ..Spec::default()
+            };
+            let exit = run(&spec, Box::new(root), PACKAGE);
+            if blocked {
+                assert_eq!(exit, 3, "unavailable record writer must not report success");
+                return;
+            }
+            assert_eq!(exit, 0);
+            let (mut room, _) = crate::persist::open(PACKAGE);
+            assert!(
+                room.doc.get(automerge::ROOT, "payload").unwrap().is_none(),
+                "record body must not replace room index"
+            );
+            assert!(
+                room.doc.get(automerge::ROOT, "loaded").unwrap().is_none(),
+                "late loaded bytes belong to the record, not its index"
+            );
+            assert!(crate::record::room::holds(&room.doc, &checkout.id));
+            let mut records = RecordSet::open(PACKAGE);
+            let mut state = State::new();
+            assert!(records.checkout(&mut state, Some(&mut room.doc), &checkout));
+            assert_eq!(
+                state
+                    .doc
+                    .get(automerge::ROOT, "payload")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .to_str(),
+                Some("late record content")
+            );
+            return;
+        }
+        for case in ["success", "blocked"] {
+            let temp = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "headless::tests::late_record_intent_uses_record_store_and_preserves_room_index",
+                    "--nocapture",
+                ])
+                .env(CHILD, case)
+                .env("XDG_DATA_HOME", temp.path())
+                .env("TILO_PACKAGE_ID", PACKAGE)
+                .env("TILO_WORKSPACE_ID", "22222222-2222-4222-8222-222222222222")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]
