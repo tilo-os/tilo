@@ -114,6 +114,8 @@ jobs:
           fetch-depth: 0
       - name: Resolve one immutable builder for every architecture
         id: builder
+        # PRs only select affected apps; no builder-dependent job runs for them.
+        if: github.event_name != 'pull_request'
         env:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
