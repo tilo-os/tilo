@@ -38,27 +38,27 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Prepare remote compiler cache
-        run: bash tools/ci-sccache.sh prepare
+        run: bash tools/ci/sccache.sh prepare
 
       - name: Restore Cargo downloads
         uses: ./.forgejo/actions/restore-cargo-downloads
 
       - name: No rustc warnings
-        run: bash tools/ci-measure.sh "workspace warnings" -- tools/check-warnings.sh
+        run: bash tools/ci/measure.sh "workspace warnings" -- tools/ci/check-warnings.sh
 
       - name: Clippy ratchet
-        run: bash tools/ci-measure.sh "workspace clippy" -- tools/clippy-ratchet.sh
+        run: bash tools/ci/measure.sh "workspace clippy" -- tools/ci/clippy-ratchet.sh
 
       - name: Documentation (warnings are errors)
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: >-
-          bash tools/ci-measure.sh "workspace docs" --
+          bash tools/ci/measure.sh "workspace docs" --
           cargo doc --workspace --no-deps --locked
 
       - name: Build release binaries
         run: >-
-          bash tools/ci-measure.sh "workspace release" --
+          bash tools/ci/measure.sh "workspace release" --
           cargo build --release --workspace --locked
 
       - name: Check binary sizes against budget
@@ -66,4 +66,4 @@ jobs:
 
       - name: Report remote compiler-cache effectiveness
         if: always()
-        run: bash tools/ci-sccache.sh report || true
+        run: bash tools/ci/sccache.sh report || true

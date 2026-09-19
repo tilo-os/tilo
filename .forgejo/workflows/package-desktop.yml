@@ -332,7 +332,7 @@ jobs:
           fetch-depth: 0
       - name: Require this exact commit to be checked on main
         shell: bash
-        run: tools/ci-receipt.sh verify "$GITHUB_SHA" origin
+        run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin
 
   release:
     if: startsWith(github.ref, 'refs/tags/desktop-v')

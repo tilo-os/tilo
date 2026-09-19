@@ -145,7 +145,7 @@ full native signing/packaging acceptance. The audio helper's actual qualificatio
 passed both native architectures in run 9230; this does not establish that all
 tests on the latest main revision passed. Rust skipping applies narrowly to
 `docs/designs/*.md` and the explicit audited CI/developer-prose allowlist in
-`tools/ci_select.py`; security and selection remain mandatory, mixed changes
+`tools/ci/select.py`; security and selection remain mandatory, mixed changes
 retain Rust coverage, and explicit full checks override the skip.
 
 ## Current validation limits and next work

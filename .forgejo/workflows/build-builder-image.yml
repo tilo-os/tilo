@@ -18,7 +18,10 @@ on:
       - "os/dev/builder-canary-inputs.py"
       - "rust-toolchain.toml"
       - "crates/system/atomic-file/**"
-      - "tools/check-build-env.sh"
+      - "tools/ci/check-build-env.sh"
+      - "tools/ci/measure.sh"
+      - "tools/ci/sccache-canary.sh"
+      - "tools/ci/sccache.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/actions/restore-cargo-downloads/**"
       - ".forgejo/workflows/build-builder-image.yml"
@@ -140,7 +143,7 @@ jobs:
         with:
           driver: docker-container
 
-      # The Containerfile runs tools/check-build-env.sh during the build, so a
+      # The Containerfile runs tools/ci/check-build-env.sh during the build, so a
       # missing native dependency fails here rather than in every later job.
       - name: Build and push
         id: build
@@ -255,13 +258,13 @@ jobs:
       - name: Enable remote compiler cache
         run: |
           ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
-          bash tools/ci-sccache.sh prepare
+          bash tools/ci/sccache.sh prepare
       - name: Populate a new remote cache namespace
         run: |
           test -n "${RUSTC_WRAPPER:-}"
-          bash tools/ci-measure.sh "sccache cold canary" -- \
+          bash tools/ci/measure.sh "sccache cold canary" -- \
             cargo build -p atomic-file --locked
-          bash tools/ci-sccache-canary.sh cold
+          bash tools/ci/sccache-canary.sh cold
       - name: Retain only successful cold acceptance
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
@@ -302,13 +305,13 @@ jobs:
       - name: Enable remote compiler cache
         run: |
           ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
-          bash tools/ci-sccache.sh prepare
+          bash tools/ci/sccache.sh prepare
       - name: Require remote hits from a fresh compiler process
         run: |
           test -n "${RUSTC_WRAPPER:-}"
-          bash tools/ci-measure.sh "sccache warm canary" -- \
+          bash tools/ci/measure.sh "sccache warm canary" -- \
             cargo build -p atomic-file --locked
-          bash tools/ci-sccache-canary.sh warm
+          bash tools/ci/sccache-canary.sh warm
       - name: Retain only successful warm acceptance
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:

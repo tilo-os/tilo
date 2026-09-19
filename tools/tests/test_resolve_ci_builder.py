@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-SPEC = importlib.util.spec_from_file_location('resolver', ROOT / 'tools/resolve_ci_builder.py')
+SPEC = importlib.util.spec_from_file_location('resolver', ROOT / 'tools/ci/resolve_builder.py')
 resolver = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(resolver)
 
@@ -39,7 +39,7 @@ class BuilderResolutionTests(unittest.TestCase):
     def test_workflow_routes_both_consumers_through_resolved_output(self):
         workflow = (ROOT / '.forgejo/workflows/check.yml').read_text()
         self.assertIn('REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}', workflow)
-        self.assertIn('run: python3 tools/resolve_ci_builder.py', workflow)
+        self.assertIn('run: python3 tools/ci/resolve_builder.py', workflow)
         self.assertEqual(workflow.count('image: ${{ needs.builder.outputs.image }}'), 2)
         self.assertNotIn('image=code.sandbox.example/qos/tilo-builder:latest', workflow)
 
