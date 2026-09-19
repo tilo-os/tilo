@@ -180,6 +180,11 @@ enum Command {
         /// Wrap the entry in the signed mutation shape accepted by POST /entries.
         #[arg(long)]
         action: Option<RegistryAction>,
+        /// Current signed registry entry JSON. Required for updates so the
+        /// emitted request preserves immutable version history. A retry whose
+        /// artifact is already present reproduces the current entry exactly.
+        #[arg(long, requires = "action")]
+        previous_entry: Option<PathBuf>,
         /// The .qpkg to describe.
         file: PathBuf,
     },
@@ -222,8 +227,9 @@ fn main() -> Result<()> {
             url,
             identity,
             action,
+            previous_entry,
             file,
-        } => cmd_entry(&file, &url, &identity, action),
+        } => cmd_entry(&file, &url, &identity, action, previous_entry.as_deref()),
     }
 }
 
@@ -418,7 +424,10 @@ fn cmd_unpack(dest: &Path, file: &Path) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the publish subcommand's explicit CLI options are kept visible at the command boundary"
+)]
 fn cmd_publish(
     file: &Path,
     registry: &str,
@@ -743,41 +752,141 @@ fn registry_entry_for(
     qpkg_bytes: &[u8],
     url: &str,
     signer: &SigningKey,
+    previous: Option<&registry_types::RegistryEntry>,
 ) -> Result<registry_types::RegistryEntry> {
-    let meta = app_registry::qpkg::load(qpkg_bytes).map_err(|e| anyhow!("load qpkg: {e}"))?;
-    let declared = meta
-        .manifest
-        .publisher
-        .identity_bytes()
-        .map_err(|e| anyhow!("manifest publisher identity: {e}"))?;
-    if declared != signer.verifying_key().to_bytes() {
-        bail!("registry entry identity does not match the qpkg publisher");
+    let publisher = SigningIdentity::from_signing_key(signer.clone());
+    // Use the same trust-boundary path as `publish`: this verifies every
+    // signed blob, materialized payload limits and payload shape before any
+    // registry metadata is signed.
+    let (built, package_id) = app_registry::build_entry(
+        qpkg_bytes,
+        &publisher,
+        Some(pkg::manifest::Arch::X86_64),
+        None,
+    )
+    .map_err(|error| anyhow!("verify qpkg for registry entry: {error}"))?;
+    if built.arch != pkg::manifest::Arch::X86_64 {
+        bail!("the public registry currently supports only x86_64 packages");
     }
+    let meta = app_registry::qpkg::load(qpkg_bytes).map_err(|e| anyhow!("load qpkg: {e}"))?;
     let package = &meta.manifest.package;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_secs())
+        });
+    let version = registry_types::RegistryVersion {
+        version: package.version.clone(),
+        qpkg_url: url.to_string(),
+        qpkg_root_hash_hex: package_id.to_hex(),
+        qpkg_size_bytes: qpkg_bytes.len() as u64,
+        released_at_unix: now,
+        qpkg_blake3_hex: Some(built.qpkg_hash.clone()),
+        target: Some(registry_types::RegistryTarget {
+            architecture: app_registry::index::arch_wire(built.arch).to_string(),
+            isa: built.isa,
+            runtime: built.runtime,
+        }),
+    };
+    if let Some(previous) = previous {
+        if previous.package_id != package.id
+            || !previous
+                .publisher_pubkey_hex
+                .eq_ignore_ascii_case(&hex::encode(signer.verifying_key().to_bytes()))
+        {
+            bail!("--previous-entry does not belong to this package and publisher");
+        }
+        if let Some(existing) = previous
+            .versions
+            .iter()
+            .find(|existing| same_version_identity(existing, &version))
+        {
+            if !same_artifact(existing, &version) {
+                bail!(
+                    "version {} for target x86_64 already exists with different package bytes or metadata",
+                    version.version
+                );
+            }
+            return Ok(previous.clone());
+        }
+    }
+
+    let mut versions = previous.map_or_else(Vec::new, |entry| entry.versions.clone());
+    versions.push(version);
+    versions.sort_by(compare_registry_versions);
     let mut entry = registry_types::RegistryEntry {
         package_id: package.id.clone(),
         name: package.name.clone().unwrap_or_else(|| package.id.clone()),
-        description: String::new(),
+        description: previous.map_or_else(String::new, |entry| entry.description.clone()),
         categories: package.category.clone().into_iter().collect(),
-        icon_url: None,
-        source_url: None,
-        homepage: None,
+        icon_url: previous.and_then(|entry| entry.icon_url.clone()),
+        source_url: previous.and_then(|entry| entry.source_url.clone()),
+        homepage: previous.and_then(|entry| entry.homepage.clone()),
         publisher_pubkey_hex: hex::encode(signer.verifying_key().to_bytes()),
-        versions: vec![registry_types::RegistryVersion {
-            version: package.version.clone(),
-            qpkg_url: url.to_string(),
-            qpkg_root_hash_hex: meta.package_id.to_hex(),
-            qpkg_size_bytes: qpkg_bytes.len() as u64,
-            released_at_unix: now,
-        }],
-        updated_at_unix: now,
+        versions,
+        updated_at_unix: previous.map_or(now, |entry| {
+            now.max(entry.updated_at_unix.saturating_add(1))
+        }),
         signature_hex: String::new(),
     };
     registry_types::sign_entry(&mut entry, signer);
     Ok(entry)
+}
+
+fn same_version_identity(
+    left: &registry_types::RegistryVersion,
+    right: &registry_types::RegistryVersion,
+) -> bool {
+    left.version == right.version
+        && left
+            .target
+            .as_ref()
+            .map(|target| target.architecture.as_str())
+            == right
+                .target
+                .as_ref()
+                .map(|target| target.architecture.as_str())
+}
+
+fn same_artifact(
+    left: &registry_types::RegistryVersion,
+    right: &registry_types::RegistryVersion,
+) -> bool {
+    left.qpkg_root_hash_hex == right.qpkg_root_hash_hex
+        && left.qpkg_size_bytes == right.qpkg_size_bytes
+        && left.qpkg_blake3_hex == right.qpkg_blake3_hex
+        && left.target == right.target
+}
+
+fn compare_registry_versions(
+    left: &registry_types::RegistryVersion,
+    right: &registry_types::RegistryVersion,
+) -> std::cmp::Ordering {
+    let semantic = numeric_version_key(&right.version).cmp(&numeric_version_key(&left.version));
+    semantic
+        .then_with(|| right.version.cmp(&left.version))
+        .then_with(|| {
+            left.target
+                .as_ref()
+                .map(|target| target.architecture.as_str())
+                .cmp(
+                    &right
+                        .target
+                        .as_ref()
+                        .map(|target| target.architecture.as_str()),
+                )
+        })
+        .then_with(|| left.qpkg_root_hash_hex.cmp(&right.qpkg_root_hash_hex))
+}
+
+fn numeric_version_key(version: &str) -> Option<Vec<u64>> {
+    version
+        .split('.')
+        .map(|component| component.parse::<u64>().ok())
+        .collect()
 }
 
 fn cmd_entry(
@@ -785,10 +894,26 @@ fn cmd_entry(
     url: &str,
     identity: &Path,
     action: Option<RegistryAction>,
+    previous_entry: Option<&Path>,
 ) -> Result<()> {
     let qpkg_bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
     let signer = load_signing_key(identity)?;
-    let entry = registry_entry_for(&qpkg_bytes, url, &signer)?;
+    if matches!(action, Some(RegistryAction::Update)) && previous_entry.is_none() {
+        bail!("--previous-entry is required with --action update");
+    }
+    let previous = previous_entry
+        .map(|path| {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("read previous entry {}", path.display()))?;
+            let entry: registry_types::RegistryEntry =
+                serde_json::from_slice(&bytes).context("decode previous registry entry")?;
+            if !registry_types::verify_entry_signature(&entry) {
+                bail!("previous registry entry has an invalid publisher signature");
+            }
+            anyhow::Ok(entry)
+        })
+        .transpose()?;
+    let entry = registry_entry_for(&qpkg_bytes, url, &signer, previous.as_ref())?;
     let output = action.map_or_else(
         || serde_json::to_value(&entry),
         |action| {

@@ -123,6 +123,12 @@ fn run() -> Result<(), String> {
             qpkg_root_hash_hex: qpkg_root,
             qpkg_size_bytes: advertised_len as u64,
             released_at_unix: 1,
+            qpkg_blake3_hex: Some(blake3::hash(&qpkg).to_hex().to_string()),
+            target: Some(registry_types::RegistryTarget {
+                architecture: "x86_64".into(),
+                isa: "x86_64-v3".into(),
+                runtime: None,
+            }),
         }],
         updated_at_unix: 2,
         signature_hex: String::new(),
