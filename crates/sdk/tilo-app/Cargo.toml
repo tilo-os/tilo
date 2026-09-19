@@ -7,12 +7,15 @@ license.workspace = true
 
 [features]
 default = []
+test-support = ["ui-core/test-support"]
 webview-adblock = ["ui-core/webview-adblock"]
 webview-wpe = ["ui-core/webview-wpe"]
 dmabuf-import = ["ui-core/dmabuf-import"]
 gpu-video = ["ui-core/gpu-video"]
 mpris = ["ui-core/mpris"]
 portal = ["ui-core/portal"]
+# Optional native presentation diagnostics shared by app entrypoints.
+presentation-feedback = ["ui-core/presentation-feedback"]
 notifications = ["ui-core/notifications"]
 
 [dependencies]

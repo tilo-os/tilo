@@ -16,6 +16,12 @@
 //! view's top-left corner** — the widget does the logical→physical
 //! translation so engines never see toolkit layout space.
 
+pub mod chromium;
+mod credentials;
+pub use credentials::{
+    AddressFields, CredentialAccount, CredentialAction, CredentialForm, CredentialReply,
+    CredentialRequest,
+};
 pub mod profile;
 pub mod test_engine;
 
@@ -25,6 +31,9 @@ pub mod adblock;
 #[cfg(feature = "webview-wpe")]
 pub mod wpe;
 
+pub(crate) mod frame_trace;
+mod scroll_marker;
+
 use std::sync::{Arc, Mutex};
 
 /// One rendered frame from the engine: tightly-packed RGBA8 at physical
@@ -32,6 +41,8 @@ use std::sync::{Arc, Mutex};
 /// widget detects staleness via the allocation pointer.
 #[derive(Clone)]
 pub struct Frame {
+    /// Opt-in Rust receipt identity; never implies input causality.
+    pub trace_id: Option<u64>,
     pub rgba: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
@@ -90,14 +101,103 @@ pub enum NamedKey {
     PageDown,
 }
 
+/// An actual session entry; ids are engine-owned and valid for its snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NavigationEntry {
+    pub id: u32,
+    pub url: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NavigationDirection {
+    #[default]
+    Back,
+    Forward,
+}
+
+impl NavigationDirection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Back => "back",
+            Self::Forward => "forward",
+        }
+    }
+
+    pub fn from_wire(value: Option<&str>) -> Option<Self> {
+        match value {
+            None | Some("back") => Some(Self::Back),
+            Some("forward") => Some(Self::Forward),
+            Some(_) => None,
+        }
+    }
+}
+
+/// Bounded snapshot for one committed top-level origin and document generation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SiteStatus {
+    pub request_id: u32,
+    pub origin: String,
+    pub generation: u64,
+    pub blocked: u64,
+    pub global_enabled: bool,
+    pub excepted: bool,
+    pub effective: bool,
+    pub security: String,
+    pub certificate_status: u32,
+    pub tls_version: u32,
+    pub content_status: u32,
+    pub subject: String,
+    pub issuer: String,
+    /// Chromium `base::Time` microseconds since 1601-01-01.
+    pub expires: f64,
+    pub permissions: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
+    Credentials(CredentialRequest),
+    SetSiteExceptions(Vec<String>),
+    RequestSiteStatus {
+        request_id: u32,
+        origin: String,
+    },
+    SiteAction {
+        request_id: u32,
+        origin: String,
+        generation: u64,
+        action: String,
+    },
     /// Load the given (already normalised) URL.
     Navigate(String),
+    RequestNavigationHistory {
+        request_id: u32,
+        direction: NavigationDirection,
+    },
+    NavigateToHistoryEntry {
+        request_id: u32,
+        id: u32,
+    },
     GoBack,
     GoForward,
     Reload,
     StopLoading,
+    /// Ask the native browser host to leave document/video fullscreen.
+    ExitFullscreen,
+    /// Mute or restore native page audio without installing an audio capture handler.
+    SetAudioMuted(bool),
+    Find {
+        id: u32,
+        text: String,
+        forward: bool,
+        next: bool,
+    },
+    StopFinding,
+    ContextMenuAction {
+        id: u32,
+        command: u32,
+    },
+    SetZoomLevel(f64),
     /// Viewport size in physical pixels plus the display scale factor.
     Resize {
         width: u32,
@@ -131,6 +231,13 @@ pub enum WebViewCommand {
     /// Compiled `WebKit` content-blocker JSON (`None` clears the filter).
     /// Backends without native content filtering ignore this.
     SetContentFilter(Option<Arc<String>>),
+    /// Source filter rules for engines with native matching. An empty source
+    /// preserves current rules. `None` preserves the enabled state, so an
+    /// asynchronous list refresh cannot undo a user's disable action.
+    SetNativeFilterRules {
+        rules: Arc<String>,
+        enabled: Option<bool>,
+    },
     /// Several compiled content-blocker JSON blobs, split because the full
     /// filter-list rule set exceeds `WebKit`'s per-filter cap. An empty
     /// `chunks` clears all filters.
@@ -148,6 +255,8 @@ pub enum WebViewCommand {
     /// express (e.g. skipping `YouTube` video ads). Run at document-start
     /// in all frames.
     SetUserScripts(Arc<Vec<String>>),
+    /// Native blocker supplements, guarded by the top-level site policy.
+    SetBlockingScripts(Arc<Vec<String>>),
     /// Find the most useful visible HTML video in the current page. The
     /// result is delivered asynchronously as [`WebViewEvent::MediaElement`]
     /// or [`WebViewEvent::MediaElementUnavailable`]. Browser chrome uses the
@@ -165,6 +274,25 @@ pub enum WebViewCommand {
     /// Clear all persistent website data (cookies, caches, storage,
     /// service workers). Backends without a data store ignore this.
     ClearWebsiteData,
+    SetClearOnExit(bool),
+    ShowDeveloperTools,
+    PermissionDecision {
+        id: u32,
+        allow: bool,
+    },
+    DownloadDecision {
+        id: u32,
+        allow: bool,
+    },
+    CancelNativeDownload {
+        id: u32,
+    },
+    /// Retry a user-selected network GET without navigating the visible page.
+    RetryDownload {
+        id: u32,
+    },
+    /// Stop admitting downloads and cancel every pending or active transfer.
+    CancelAllDownloads,
     /// Start a user-requested download of an absolute HTTP(S) URL.
     StartDownload {
         uri: String,
@@ -185,11 +313,99 @@ pub enum WebViewCommand {
 /// into its own state (address bar text, title, progress) during `sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
+    CredentialResult(CredentialReply),
+    SiteStatus(SiteStatus),
+    SiteResult {
+        request_id: u32,
+        origin: String,
+        generation: u64,
+        action: String,
+        success: bool,
+        message: String,
+    },
+    TabClosed,
+    /// The visible route is retired while CEF remains alive solely as a
+    /// bounded transfer owner. Physical destruction still emits `TabClosed`.
+    TabDetached,
+    TabCloseBlocked,
+    ContextMenu {
+        id: u32,
+        x: f64,
+        y: f64,
+        link: String,
+        items: Vec<(u32, String)>,
+    },
+    ContextMenuClosed {
+        id: u32,
+    },
+    FindResult {
+        id: u32,
+        count: i32,
+        active: i32,
+        final_update: bool,
+    },
+    ZoomChanged(f64),
+    NavigationHistory {
+        request_id: u32,
+        direction: NavigationDirection,
+        entries: Vec<NavigationEntry>,
+    },
+    PermissionRequested {
+        id: u32,
+        origin: String,
+        permissions: String,
+    },
+    PermissionClosed {
+        id: u32,
+    },
+    NativeDownloadRequested {
+        id: u32,
+        url: String,
+        name: String,
+    },
+    DownloadUpdated {
+        id: u32,
+        state: String,
+        path: String,
+        name: String,
+        url: String,
+        retryable: bool,
+        received: u64,
+        total: u64,
+        error: String,
+    },
+    /// Runtime-wide native ownership evidence used by explicit window exit.
+    DownloadRuntime {
+        admitted: u32,
+        detached: u32,
+        accepting: bool,
+        error: String,
+    },
     UriChanged(String),
     TitleChanged(String),
+    FaviconChanged {
+        page_url: String,
+        width: u32,
+        height: u32,
+        png: Arc<Vec<u8>>,
+    },
+    AudioMutedChanged(bool),
+    MediaPlayingChanged {
+        page_url: String,
+        document_generation: u64,
+        playing: bool,
+    },
+    /// The page's CEF content-fullscreen intent changed.
+    FullscreenChanged(bool),
+    /// The renderer owning this tab exited without a reliable fullscreen edge.
+    RendererTerminated,
     /// Load progress in `0.0..=1.0`.
     LoadProgress(f64),
     LoadFinished,
+    /// Completion tagged with its document URL, so stale startup loads can be ignored.
+    LoadFinishedAt {
+        uri: String,
+    },
     LoadFailed {
         uri: String,
         error: String,
@@ -270,6 +486,29 @@ pub struct DmabufFrame {
 /// the widget, the host app, and the engine's own thread can share one
 /// handle.
 pub trait WebViewEngine: Send + Sync {
+    /// Create an independent document in the same runtime/profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tabs are unsupported, capacity is exhausted, or the
+    /// engine cannot create another document.
+    fn create_tab(&self) -> Result<SharedEngine, String> {
+        Err("This engine does not support tabs".into())
+    }
+    /// Suspend painting without discarding the document or its session history.
+    fn set_visible(&self, _visible: bool) {}
+    /// Keep pointer modifiers current even when no key event reaches the page.
+    fn set_modifiers(&self, _modifiers: KeyModifiers) {}
+    /// Native new-window intents, delivered to browser chrome as tab requests.
+    fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
+        Vec::new()
+    }
+
+    /// Whether this backend accepts source rules instead of `WebKit` JSON.
+    fn supports_native_filtering(&self) -> bool {
+        false
+    }
+
     /// Enqueue a command. Must never block on engine work.
     fn send(&self, cmd: WebViewCommand);
 
@@ -277,6 +516,17 @@ pub trait WebViewEngine: Send + Sync {
 
     /// Take all pending events, oldest first.
     fn drain_events(&self) -> Vec<WebViewEvent>;
+
+    /// Request native close admission. True allows immediate local close; false
+    /// completes asynchronously through `TabClosed`, `TabDetached` or `TabCloseBlocked`.
+    fn request_close(&self) -> bool {
+        true
+    }
+
+    /// Runtime-owned download events, independent of a tab lifetime.
+    fn drain_download_events(&self) -> Vec<WebViewEvent> {
+        Vec::new()
+    }
 
     /// Invoked (from any thread) whenever a new frame or event is ready —
     /// typically wired to the winit event loop proxy so idle apps repaint

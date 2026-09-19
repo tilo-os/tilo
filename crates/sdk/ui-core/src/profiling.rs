@@ -14,6 +14,12 @@
 //! When neither env var is set, [`FrameProfiler::from_env`] returns `None`
 //! and the render-loop hooks are `Option::map` over that: no clock read, no
 //! allocation, until profiling is explicitly requested.
+//!
+//! Live-frame diagnostics also attribute resource availability, recycled-buffer
+//! waiting, and presence overlays. Waiting is wall time, not active CPU work;
+//! none of these fields measure GPU completion or display presentation.
+
+pub(crate) mod resource_trace;
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -27,9 +33,27 @@ use vello::peniko::{Color, Fill};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-/// `1_000_000 / 60`. A frame whose total exceeds this cannot hold 60 fps and
-/// is counted as over-budget / dropped by [`PerfReport`].
+/// Rounded 60 Hz CPU-work budget. Exceeding it is a CPU diagnostic, not
+/// evidence of an actual dropped display frame.
 pub const FRAME_BUDGET_US: u64 = 16_667;
+
+/// Optional logical desktop position for live profiling with several apps.
+/// Kept in the shared host so benchmarks never need per-app windowing code.
+pub(crate) fn profile_window_position(value: &str) -> Option<(i32, i32)> {
+    let (x, y) = value.split_once(',')?;
+    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
+#[cfg(test)]
+mod window_position_tests {
+    #[test]
+    fn parses_signed_coordinates_and_rejects_malformed_positions() {
+        assert_eq!(super::profile_window_position(" -20, 40"), Some((-20, 40)));
+        for value in ["", "20", "20,40,60", "NaN,40", "2147483648,0"] {
+            assert_eq!(super::profile_window_position(value), None);
+        }
+    }
+}
 
 /// Attributes a measured duration to the right column of the current
 /// frame's [`FrameTiming`].
@@ -41,6 +65,12 @@ pub enum Pass {
     ApplyLayout,
     Draw,
     HandleEvent,
+    /// Resource discovery and control availability immediately before drawing.
+    ResourceAvailability,
+    /// CPU wait for recycled scene and damage buffers from the render worker.
+    ScenePoolWait,
+    /// Legacy cursors and remote semantic/action presence after widget drawing.
+    PresenceOverlay,
 }
 
 /// This is the atom every surface shares: the HUD graphs it, the dump
@@ -55,6 +85,9 @@ pub struct FrameTiming {
     pub apply_layout_us: u64,
     pub draw_us: u64,
     pub handle_event_us: u64,
+    pub resource_availability_us: u64,
+    pub scene_pool_wait_us: u64,
+    pub presence_overlay_us: u64,
     /// For the live app this is the measured wall time of the whole frame
     /// build (so it includes work *between* passes); for the headless
     /// harness, where passes run contiguously, it is their sum.
@@ -70,6 +103,9 @@ impl FrameTiming {
             .saturating_add(self.apply_layout_us)
             .saturating_add(self.draw_us)
             .saturating_add(self.handle_event_us)
+            .saturating_add(self.resource_availability_us)
+            .saturating_add(self.scene_pool_wait_us)
+            .saturating_add(self.presence_overlay_us)
     }
 
     pub fn over_budget(&self) -> bool {
@@ -126,13 +162,13 @@ impl DumpWriter {
                 if !self.header_written {
                     let _ = writeln!(
                         self.file,
-                        "frame,t_us,sync_us,build_layout_us,apply_layout_us,draw_us,handle_event_us,total_us"
+                        "frame,t_us,sync_us,build_layout_us,apply_layout_us,draw_us,handle_event_us,total_us,resource_availability_us,scene_pool_wait_us,presence_overlay_us"
                     );
                     self.header_written = true;
                 }
                 writeln!(
                     self.file,
-                    "{},{},{},{},{},{},{},{}",
+                    "{},{},{},{},{},{},{},{},{},{},{}",
                     t.frame,
                     t.t_us,
                     t.sync_us,
@@ -140,7 +176,10 @@ impl DumpWriter {
                     t.apply_layout_us,
                     t.draw_us,
                     t.handle_event_us,
-                    t.total_us
+                    t.total_us,
+                    t.resource_availability_us,
+                    t.scene_pool_wait_us,
+                    t.presence_overlay_us
                 )
             }
         };
@@ -284,6 +323,16 @@ impl FrameProfiler {
                 self.cur.apply_layout_us = self.cur.apply_layout_us.saturating_add(us);
             }
             Pass::Draw => self.cur.draw_us = self.cur.draw_us.saturating_add(us),
+            Pass::ResourceAvailability => {
+                self.cur.resource_availability_us =
+                    self.cur.resource_availability_us.saturating_add(us);
+            }
+            Pass::ScenePoolWait => {
+                self.cur.scene_pool_wait_us = self.cur.scene_pool_wait_us.saturating_add(us);
+            }
+            Pass::PresenceOverlay => {
+                self.cur.presence_overlay_us = self.cur.presence_overlay_us.saturating_add(us);
+            }
             // Input can arrive between frames, so it is banked and folded
             // into the next committed frame.
             Pass::HandleEvent => {
@@ -330,6 +379,9 @@ impl FrameProfiler {
             apply_layout_us = sample.apply_layout_us,
             draw_us = sample.draw_us,
             handle_event_us = sample.handle_event_us,
+            resource_availability_us = sample.resource_availability_us,
+            scene_pool_wait_us = sample.scene_pool_wait_us,
+            presence_overlay_us = sample.presence_overlay_us,
             total_us = sample.total_us,
             "frame"
         );
@@ -648,7 +700,7 @@ pub struct PerfReport {
     pub scenario: String,
     pub frames: usize,
     pub budget_us: u64,
-    /// Would drop below 60 fps.
+    /// CPU samples above the budget; does not count dropped display frames.
     pub over_budget: usize,
     pub over_budget_pct: f64,
     pub total: StatSummary,
@@ -657,6 +709,9 @@ pub struct PerfReport {
     pub apply_layout: StatSummary,
     pub draw: StatSummary,
     pub handle_event: StatSummary,
+    pub resource_availability: StatSummary,
+    pub scene_pool_wait: StatSummary,
+    pub presence_overlay: StatSummary,
     /// Skipped when serialising the report itself so a JSON summary stays
     /// small; dump separately if wanted.
     #[serde(skip)]
@@ -687,6 +742,9 @@ impl PerfReport {
             apply_layout: col(|f| f.apply_layout_us),
             draw: col(|f| f.draw_us),
             handle_event: col(|f| f.handle_event_us),
+            resource_availability: col(|f| f.resource_availability_us),
+            scene_pool_wait: col(|f| f.scene_pool_wait_us),
+            presence_overlay: col(|f| f.presence_overlay_us),
             samples,
         }
     }
@@ -727,6 +785,9 @@ impl PerfReport {
         row(&mut s, "apply_layout", &self.apply_layout);
         row(&mut s, "draw", &self.draw);
         row(&mut s, "handle_event", &self.handle_event);
+        row(&mut s, "resources", &self.resource_availability);
+        row(&mut s, "pool_wait", &self.scene_pool_wait);
+        row(&mut s, "presence", &self.presence_overlay);
         row(&mut s, "TOTAL", &self.total);
         s
     }
@@ -810,6 +871,15 @@ impl PerfScenario {
 
 /// The driver runs the app's real five passes with no GPU or display, so
 /// timings are of the production code path, not a mock.
+///
+/// # Panics
+///
+/// Panics if a named click target cannot be resolved or has an empty rectangle.
+/// A failed workload must not return a successful timing report.
+#[expect(
+    clippy::panic,
+    reason = "invalid benchmark workloads must not return timing reports"
+)]
 pub fn run_scenario(driver: &mut crate::headless::Driver, scenario: &PerfScenario) -> PerfReport {
     driver.begin_profiling();
     for _ in 0..scenario.warmup {
@@ -817,7 +887,7 @@ pub fn run_scenario(driver: &mut crate::headless::Driver, scenario: &PerfScenari
     }
     driver.clear_profile_samples();
 
-    for step in &scenario.steps {
+    for (step_index, step) in scenario.steps.iter().enumerate() {
         match step {
             PerfStep::Frame => driver.profile_frame(),
             PerfStep::Frames(n) => {
@@ -833,7 +903,12 @@ pub fn run_scenario(driver: &mut crate::headless::Driver, scenario: &PerfScenari
             PerfStep::Type(t) => driver.type_text(t),
             PerfStep::Key(k) => driver.key(k),
             PerfStep::ClickNamed(name) => {
-                let _ = driver.click_named(name);
+                driver.click_named(name).unwrap_or_else(|error| {
+                    panic!(
+                        "performance scenario {:?}, step {step_index}: {error}",
+                        scenario.name
+                    )
+                });
             }
             PerfStep::ClickAt(x, y) => driver.click_at(*x, *y),
         }
@@ -857,6 +932,45 @@ pub fn run_scenario_on(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "missing-control")]
+    fn scenario_cannot_report_success_after_a_missing_click() {
+        let mut driver = crate::headless::Driver::new(
+            crate::State::new(),
+            Box::new(crate::widget::Text::new("Root")),
+            (400, 300),
+        );
+        let scenario = PerfScenario {
+            name: "missing-target".into(),
+            viewport: (400, 300),
+            warmup: 1,
+            steps: vec![
+                PerfStep::ClickNamed("missing-control".into()),
+                PerfStep::Frames(10),
+            ],
+        };
+        run_scenario(&mut driver, &scenario);
+    }
+
+    #[test]
+    fn scenario_named_click_reaches_the_real_control() {
+        let clicks = std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = clicks.clone();
+        let root = crate::widget::Button::new("activate", "Activate", None)
+            .on_click(move || observed.set(observed.get() + 1));
+        let mut driver =
+            crate::headless::Driver::new(crate::State::new(), Box::new(root), (400, 300));
+        let scenario = PerfScenario {
+            name: "real-click".into(),
+            viewport: (400, 300),
+            warmup: 1,
+            steps: vec![PerfStep::ClickNamed("activate".into()), PerfStep::Frames(2)],
+        };
+        let report = run_scenario(&mut driver, &scenario);
+        assert_eq!(clicks.get(), 1);
+        assert!(report.frames >= 2);
+    }
 
     #[test]
     fn percentile_is_nearest_rank() {
@@ -904,6 +1018,48 @@ mod tests {
         assert_eq!(f.handle_event_us, 80);
         assert_eq!(f.total_us, 830);
         assert!(!f.over_budget());
+    }
+
+    #[test]
+    fn diagnostic_passes_accumulate_serialize_and_reset() {
+        let mut profiler = FrameProfiler::for_capture();
+        profiler.record(Pass::ResourceAvailability, Duration::from_micros(11));
+        profiler.record(Pass::ResourceAvailability, Duration::from_micros(7));
+        profiler.record(Pass::ScenePoolWait, Duration::from_micros(23));
+        profiler.record(Pass::PresenceOverlay, Duration::from_micros(31));
+        profiler.record(Pass::HandleEvent, Duration::from_micros(5));
+        profiler.commit_frame_summed();
+        profiler.commit_frame_summed();
+        let samples = profiler.take_capture();
+        assert_eq!(samples[0].total_us, 77);
+        assert_eq!(samples[1].total_us, 0);
+        let json = serde_json::to_value(samples[0]).expect("serialize frame");
+        assert_eq!(json["resource_availability_us"], 18);
+        assert_eq!(json["scene_pool_wait_us"], 23);
+        assert_eq!(json["presence_overlay_us"], 31);
+        let report = PerfReport::from_samples("diagnostic", samples.clone(), FRAME_BUDGET_US);
+        assert_eq!(report.resource_availability.max_us, 18);
+        assert_eq!(report.scene_pool_wait.max_us, 23);
+        assert_eq!(report.presence_overlay.max_us, 31);
+
+        let dir = tempfile::tempdir().expect("temporary profile directory");
+        let path = dir.path().join("frames.csv");
+        let mut writer = DumpWriter::open(&path).expect("open profile dump");
+        writer.write(&samples[0]);
+        writer.write(&samples[1]);
+        drop(writer);
+        let csv = std::fs::read_to_string(path).expect("read profile dump");
+        let mut lines = csv.lines();
+        let names: Vec<_> = lines.next().expect("header").split(',').collect();
+        let values: Vec<_> = lines.next().expect("frame").split(',').collect();
+        assert_eq!(names.len(), values.len());
+        for (name, value) in names.iter().zip(values) {
+            assert_eq!(
+                json[*name].as_u64(),
+                Some(value.parse().expect("CSV number"))
+            );
+        }
+        assert_eq!(lines.count(), 1, "one header, two frames");
     }
 
     #[test]

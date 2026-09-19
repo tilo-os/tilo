@@ -339,22 +339,28 @@ impl Slider {
                 &face.rect,
             );
         }
-        let colors = &theme.tokens.colors;
         let track_rect = face.track_rect();
-        let track_shape = RoundedRect::from_rect(track_rect, 3.0);
+        // Capsule ends: the radius is the track's own half-height, so it
+        // follows a taller track instead of a literal that once matched one.
+        let track_radius = track_rect.height() / 2.0;
+        // HIG §9.5: the unfilled half is a lift off the ground (not a ramp
+        // slot) with an edge derived from itself; the filled half is accent.
+        let unfilled = theme.tokens.colors.lift(1.0);
+        let filled = theme.accent_primary;
+        let track_shape = RoundedRect::from_rect(track_rect, track_radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.neutral[3],
+            unfilled,
             None,
             &track_shape,
         );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            crate::surface::edge_on(unfilled),
             None,
-            &track_shape,
+            &crate::surface::edge_outline(track_rect, track_radius),
         );
 
         // Filled portion of the track.
@@ -367,9 +373,9 @@ impl Slider {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.accent_primary,
+            filled,
             None,
-            &RoundedRect::from_rect(active, 3.0),
+            &RoundedRect::from_rect(active, track_radius),
         );
 
         // Knob — radius scales with state so hover/press are distinct even
@@ -377,19 +383,37 @@ impl Slider {
         let knob_radius = face.knob_radius();
         let knob_center = Point::new(active.x1, face.rect.center().y);
         let knob_shape = Circle::new(knob_center, knob_radius);
-        let (fill_color, border_color, border_width) = if face.dragging {
-            (theme.accent_primary, colors.border_white_20, 1.5)
-        } else if face.hovered {
-            (colors.surface_white_20, theme.text_dim, 1.5)
+        // One thumb colour that clears both halves of the track (HIG §9.5),
+        // held across rest / hover / drag: the `*_white_*` veneers were a
+        // grey blob on dark and vanished into the unfilled track on light.
+        // Hover and drag read from the radius (above), a firmer edge, and
+        // the halo — not from a second thumb colour.
+        let fill_color = crate::widget::toggle::ink_across(
+            &[filled, unfilled],
+            theme.tokens.colors.text_primary,
+            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        );
+        let border_color = if face.dragging || face.hovered {
+            crate::surface::edge_on_with(fill_color, crate::chrome::PANEL_BORDER_ALPHA)
         } else {
-            (colors.surface_white_10, colors.border_white_20, 1.5)
+            crate::surface::edge_on(fill_color)
         };
-        // Pressed halo: nested strokes outside the knob, drawn first so the
-        // knob sits cleanly on top.
+        let border_width = 1.5;
+        // Pressed halo: nested hairlines outside the knob, derived against
+        // the track they ring, drawn first so the knob sits cleanly on top.
         if face.dragging {
             for (r, col) in [
-                (knob_radius + 4.0, colors.border_white_10),
-                (knob_radius + 2.0, colors.border_white_20),
+                (
+                    knob_radius + 4.0,
+                    crate::tokens::colors::Colors::hairline_on(
+                        unfilled,
+                        crate::chrome::HAIRLINE_ALPHA,
+                    ),
+                ),
+                (
+                    knob_radius + 2.0,
+                    crate::tokens::colors::Colors::hairline_on(unfilled, crate::chrome::GLOW_ALPHA),
+                ),
             ] {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0),
