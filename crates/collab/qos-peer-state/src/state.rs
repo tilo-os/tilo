@@ -1,6 +1,6 @@
 //! Certified room and document replica. Transport identity is always an input.
 use crate::{NeighbourMsg, document, room};
-use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
+use automerge::{AutoCommit, ObjType, ReadDoc, ROOT, transaction::Transactable};
 use collab_types::caps::{Actor, CapDecision, Principal, ResourceRef, decide_capability};
 use collab_types::{
     ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpClass, Role, SignedOp,
@@ -68,13 +68,44 @@ struct Route {
     app: String,
     record: String,
 }
+#[cfg(test)]
+thread_local! { pub(crate) static CHECKPOINT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[derive(Clone)]
+struct AcceptedCheckpoint(std::sync::Arc<CheckpointBytes>);
+struct CheckpointBytes {
+    bytes: Vec<u8>,
+    decoded: std::sync::OnceLock<Result<std::sync::Arc<DecodedCheckpoint>, String>>,
+}
+struct DecodedCheckpoint {
+    doc: automerge::Automerge,
+    heads: Vec<String>,
+    payload_hash: [u8; 32],
+}
+impl AcceptedCheckpoint {
+    fn new(bytes: Vec<u8>) -> Self { Self(std::sync::Arc::new(CheckpointBytes { bytes, decoded: std::sync::OnceLock::new() })) }
+    fn decoded(&self) -> Result<std::sync::Arc<DecodedCheckpoint>, String> {
+        // Only immutable bytes and their derived representation are shared.
+        // Receipt authority, route and current coverage remain live decisions.
+        self.0.decoded.get_or_init(|| self.decode()).clone()
+    }
+    fn decode(&self) -> Result<std::sync::Arc<DecodedCheckpoint>, String> {
+        #[cfg(test)]
+        CHECKPOINT_DECODES.with(|count| count.set(count.get() + 1));
+        let doc = automerge::Automerge::load(&self.0.bytes).map_err(err)?;
+        let heads = doc.get_heads().iter().map(ToString::to_string).collect();
+        let payload = DocumentMutation::Snapshot(self.0.bytes.clone()).encode().map_err(err)?;
+        Ok(std::sync::Arc::new(DecodedCheckpoint { doc, heads, payload_hash: *blake3::hash(&payload).as_bytes() }))
+    }
+}
+
 #[derive(Clone)]
 struct Document {
     doc: AutoCommit,
     channel: ChannelState,
     encryption_required: bool,
     covered: BTreeMap<String, u64>,
-    covered_snapshot: Option<Vec<u8>>,
+    covered_snapshot: Option<AcceptedCheckpoint>,
 }
 #[derive(Serialize, Deserialize)]
 struct DurableDocument {
@@ -397,15 +428,16 @@ impl StatePeer {
         else {
             return false;
         };
-        let Ok(mut proof) = AutoCommit::load(snapshot) else {
+        let Ok(checkpoint) = snapshot.decoded() else {
             return false;
         };
-        let before = proof.base_heads();
+        let mut proof = checkpoint.doc.clone();
+        let before = proof.get_heads();
         // A sequence floor is not causal coverage: an out-of-order incremental
         // may have been validated while its dependencies were unavailable.
         proof.load_incremental(&bytes).is_ok()
             && proof.get_missing_deps(&[]).is_empty()
-            && proof.base_heads() == before
+            && proof.get_heads() == before
     }
     pub fn rows(&self) -> Vec<DocumentRow> {
         self.documents
@@ -859,7 +891,7 @@ impl StatePeer {
             if coverage.watermarks.get(&hex::encode(source)).copied() != Some(envelope.seq) {
                 return Err("checkpoint author coverage mismatch".into());
             }
-            candidate.covered_snapshot = Some(bytes.clone());
+            candidate.covered_snapshot = Some(AcceptedCheckpoint::new(bytes.clone()));
             for (author, sequence) in &coverage.watermarks {
                 let key: [u8; 32] = hex::decode(author)
                     .map_err(err)?
@@ -1089,7 +1121,7 @@ impl StatePeer {
     pub fn durable_coverage(&self,app:&str,record:&str)->Result<Option<crate::durability::DurableReceipt>,String>{
         Ok(self.durable_receipt_checkpoint(app,record)?.map(|(receipt,_)|receipt))
     }
-    fn durable_receipt_checkpoint(&self,app:&str,record:&str)->Result<Option<(crate::durability::DurableReceipt,AutoCommit)>,String>{
+    fn durable_receipt_checkpoint(&self,app:&str,record:&str)->Result<Option<(crate::durability::DurableReceipt,std::sync::Arc<DecodedCheckpoint>)>,String>{
         let Some(room)=self.room_doc.as_ref()else{return Ok(None)};
         let receipts=crate::durability::entries(room)?;
         let Some(receipt)=receipts.get(&crate::coverage::route_key(app,record))else{return Ok(None)};
@@ -1099,18 +1131,16 @@ impl StatePeer {
         if document.encryption_required{return Ok(None)}
         let Some(snapshot)=document.covered_snapshot.as_ref()else{return Ok(None)};
         if crate::coverage::entries(room)?.get(&crate::coverage::route_key(app,record))!=Some(coverage){return Ok(None)}
-        let accepted=AutoCommit::load(snapshot).map_err(err)?;
-        let heads=accepted.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>();
-        let payload=DocumentMutation::Snapshot(snapshot.clone()).encode().map_err(err)?;
-        if heads!=coverage.heads||*blake3::hash(&payload).as_bytes()!=coverage.payload_hash||coverage.watermarks.iter().any(|(author,seq)|document.covered.get(author).copied().unwrap_or(0)<*seq){return Ok(None)}
+        let accepted=snapshot.decoded()?;
+        if accepted.heads!=coverage.heads||accepted.payload_hash!=coverage.payload_hash||coverage.watermarks.iter().any(|(author,seq)|document.covered.get(author).copied().unwrap_or(0)<*seq){return Ok(None)}
         Ok(Some((receipt.clone(),accepted)))
     }
     /// Validate the receipt and current-head coverage against one decoded checkpoint.
     /// All authority, route, payload and watermark checks remain fresh per query.
     pub fn durable_coverage_with_current(&self,app:&str,record:&str)->Result<Option<(crate::durability::DurableReceipt,bool)>,String>{
-        let Some((receipt,mut accepted))=self.durable_receipt_checkpoint(app,record)? else{return Ok(None)};
+        let Some((receipt,accepted))=self.durable_receipt_checkpoint(app,record)? else{return Ok(None)};
         let document=self.documents.get(&Route{app:app.into(),record:record.into()}).ok_or("missing record")?;
-        let current=document.doc.base_heads().iter().all(|head|accepted.get_change_by_hash(head).is_some());
+        let current=document.doc.base_heads().iter().all(|head|accepted.doc.get_change_by_hash(head).is_some());
         Ok(Some((receipt,current)))
     }
     pub fn durable_covers_current(&self,app:&str,record:&str)->Result<bool,String>{
@@ -1131,7 +1161,7 @@ impl StatePeer {
                     .collect(),
                 encryption_required: entry.encryption_required,
                 covered: entry.covered.clone(),
-                covered_snapshot: entry.covered_snapshot.clone(),
+                covered_snapshot: entry.covered_snapshot.as_ref().map(|snapshot|snapshot.0.bytes.clone()),
             })
             .collect();
         postcard::to_allocvec(&Durable {
@@ -1209,7 +1239,7 @@ impl StatePeer {
                     channel,
                     encryption_required: document.encryption_required,
                     covered: document.covered,
-                    covered_snapshot: document.covered_snapshot,
+                    covered_snapshot: document.covered_snapshot.map(AcceptedCheckpoint::new),
                 },
             );
         }

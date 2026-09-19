@@ -1348,12 +1348,28 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     assert!(browser.durable_covers_current("test.app","tab:1").unwrap());
     assert_eq!(browser.durable_coverage_with_current("test.app","tab:1").unwrap(),Some((receipt.clone(),true)));
     let bytes=browser.durable().unwrap();let mut browser=StatePeer::restore(&bytes,room,ac,vec![bc],RevocationList::new(),now).unwrap();
+    crate::state::CHECKPOINT_DECODES.with(|count| count.set(0));
+    for _ in 0..100 {
+        let fork = browser.clone();
+        assert_eq!(fork.durable_coverage("test.app","tab:1").unwrap().unwrap(),receipt);
+        assert_eq!(fork.durable_coverage_with_current("test.app","tab:1").unwrap(),Some((receipt.clone(),true)));
+    }
+    assert_eq!(crate::state::CHECKPOINT_DECODES.with(|count| count.get()),1,"peer clones must share immutable checkpoint decoding");
     assert_eq!(browser.durable_coverage("test.app","tab:1").unwrap().unwrap(),receipt);
     let mut doc=AutoCommit::load(&browser.document("test.app","tab:1").unwrap()).unwrap();let heads=browser.document_heads("test.app","tab:1").unwrap();assert_eq!(heads,doc.get_heads());doc.put(ROOT,"value",2).unwrap();doc.commit();
-    browser.publish_incremental("test.app","tab:1",doc.save_after(&heads),&b,now).unwrap();
+    let local = browser.publish_incremental("test.app","tab:1",doc.save_after(&heads),&b,now).unwrap();
     assert!(!browser.durable_covers_current("test.app","tab:1").unwrap(),"an older receipt never covers a newer local edit");
-    assert_eq!(browser.durable_coverage_with_current("test.app","tab:1").unwrap(),Some((receipt,false)));
+    assert_eq!(browser.durable_coverage_with_current("test.app","tab:1").unwrap(),Some((receipt.clone(),false)));
     assert!(browser.durable_coverage_with_current("test.app","missing").unwrap().is_none());
+    let previous = browser.clone();
+    native.receive(b.verifying_key().to_bytes(),local,now).unwrap();
+    for message in native.durable_bootstrap_messages(&a,now,8).unwrap() {
+        browser.receive(a.verifying_key().to_bytes(),message,now).unwrap();
+    }
+    let (next,current) = browser.durable_coverage_with_current("test.app","tab:1").unwrap().unwrap();
+    assert_eq!(next.generation,8);
+    assert!(current,"replacement checkpoint covers the newer edit");
+    assert_eq!(previous.durable_coverage_with_current("test.app","tab:1").unwrap(),Some((receipt,false)),"checkpoint replacement must not mutate older peer clones");
 }
 
 #[test]
