@@ -82,7 +82,8 @@ fn shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         build_widget(args)?,
         args.viewport.unwrap_or(ui::headless::DEFAULT_VIEWPORT),
         ui::launch::shot_theme(args),
-    );
+    )
+    .with_records(ui::RecordSet::in_memory(), automerge::AutoCommit::new());
     // The loading scenario intentionally demonstrates an unfinished open.
     if args.scenario.as_deref() != Some("loading") {
         harness
