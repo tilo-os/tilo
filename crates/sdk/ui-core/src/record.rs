@@ -947,9 +947,11 @@ impl RecordSet {
                 tracing::error!(
                     record = %id,
                     error = %e,
-                    "record store unavailable; this record runs without persistence"
+                    "record store unavailable; writes refused"
                 );
-                return None;
+                return Some(crate::persist::Autosave::disabled(format!(
+                    "record {id} store unavailable: {e}"
+                )));
             }
         };
         let stored = match store.load() {
@@ -958,9 +960,11 @@ impl RecordSet {
                 tracing::error!(
                     record = %id,
                     error = %e,
-                    "stored record could not be read; continuing with what is live"
+                    "stored record could not be read; original bytes retained and writes refused"
                 );
-                None
+                return Some(crate::persist::Autosave::disabled(format!(
+                    "stored record {id} could not be read: {e}"
+                )));
             }
         };
         // The old package-global record file is a read-only migration source.
@@ -993,6 +997,23 @@ impl RecordSet {
             adopted_legacy = true;
             Some(legacy_doc)
         });
+        // Merge transactionally. Automerge may have applied part of a failed
+        // merge; never publish or enqueue that partial result to the writer.
+        let mut merged = doc.clone();
+        let mut stored = stored;
+        if let Some(stored) = stored.as_mut()
+            && let Err(error) = merged.merge(stored)
+        {
+            tracing::error!(record = %id, %error, "record merge refused; original stored bytes retained");
+            return Some(crate::persist::Autosave::disabled(format!(
+                "stored record {id} could not be merged: {error}"
+            )));
+        }
+        // The package actor belongs to its index, and a bootstrap fork actor
+        // belongs to pre-admission edits. All subsequent canonical record
+        // operations belong to this record's original persistent writer.
+        merged.set_actor(store.actor().clone());
+        *doc = merged;
         let mut autosave = crate::persist::Autosave::spawn(store, crate::persist::DEFAULT_DEBOUNCE);
         if let Some(mut stored) = stored {
             // Only seed heads that are already in this scoped store.  A
@@ -1001,13 +1022,6 @@ impl RecordSet {
             // dependencies after a crash.
             if !adopted_legacy {
                 autosave.seed(&mut stored);
-            }
-            if let Err(e) = doc.merge(&mut stored) {
-                tracing::error!(
-                    record = %id,
-                    error = %e,
-                    "stored record could not be merged; continuing with what is live"
-                );
             }
         }
         Some(autosave)

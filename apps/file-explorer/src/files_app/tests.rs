@@ -4253,3 +4253,55 @@ mod injected_startup_tests {
         assert!(listings.observations().is_empty());
     }
 }
+
+#[test]
+fn headless_f2_renames_fixture_without_opening_a_file() {
+    struct RestoreOpener;
+    impl Drop for RestoreOpener {
+        fn drop(&mut self) {
+            clear_document_opener();
+        }
+    }
+    let _restore = RestoreOpener;
+    let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = opened.clone();
+    set_document_opener(move |path| {
+        sink.borrow_mut().push(path.to_path_buf());
+        Err("unexpected external open during rename regression".into())
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let original = directory.path().join("report.txt");
+    std::fs::write(&original, b"preserved bytes").unwrap();
+    let mut widget = FileExplorerWidget::with_persistence(None, None);
+    widget.navigate(directory.path().to_path_buf());
+    let mut driver =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(widget), (1280, 800));
+    let mut previous = original;
+    for name in ["renamed.txt", "RENAMED.txt"] {
+        driver
+            .perform_named("file_view", &ui::a11y::Action::Focus)
+            .unwrap();
+        driver.key("Home");
+        driver.key("F2");
+        driver.set_modifiers(&["ctrl".into()]);
+        driver.key("a");
+        driver.set_modifiers(&[]);
+        driver.type_text(name);
+        driver.key("Enter");
+        assert!(
+            opened.borrow().is_empty(),
+            "F2 must enter rename before Enter is sent"
+        );
+        let destination = directory.path().join(name);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"preserved bytes");
+        let names = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec![std::ffi::OsString::from(name)]);
+        if previous.file_name() != destination.file_name() && name == "renamed.txt" {
+            assert!(!previous.exists());
+        }
+        previous = destination;
+    }
+}
