@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Fail closed on disabled or publishing coordinator qualification requests."""
+import json
 import os
 import re
 import subprocess
 import uuid
 
-import app_packaging_product as product
+import app_packaging_contract as contract
 from ci.resolve_builder import resolve
 
 
@@ -40,14 +41,14 @@ def validate(env, ancestor=None):
             raise ValueError('incremental qualification supports only the default collection')
         if not raw_proof or len(raw_proof) > 16384:
             raise ValueError('bounded verified baseline evidence required')
-        proof = product.json.loads(raw_proof)
-        if product.core.canonical(proof) != raw_proof or product.core.receipt_key(proof) != evidence:
+        proof = json.loads(raw_proof)
+        if contract.canonical(proof) != raw_proof or contract.receipt_key(proof) != evidence:
             raise ValueError('baseline verification proof hash mismatch')
         expected = {'source_sha': baseline, 'builder_image': env['REQUESTED_BUILDER'],
                     'collection': env['REQUESTED_COLLECTION'],
                     'architectures': env.get('REQUESTED_ARCHITECTURES', '').split(','),
                     'policy_sha256': policy_sha}
-        product.validate_evidence(proof, product.validate_desired(expected), int(run_id))
+        contract.validate_evidence(proof, contract.validate_desired(expected), int(run_id))
         if ancestor is None:
             subprocess.run(['git', 'merge-base', '--is-ancestor', baseline, source], check=True)
         elif not ancestor(baseline, source):
@@ -57,4 +58,4 @@ def validate(env, ancestor=None):
 
 if __name__ == '__main__':
     if validate(os.environ):
-        product.validate_local_cargo_inputs('.')
+        contract.validate_local_cargo_inputs('.')
