@@ -139,6 +139,45 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(set(plan["selected"]), {"qdoc", "pkg", "collab-types"})
         self.assertEqual(plan["shard_count"], 1)
 
+    def install_quality_helpers(self) -> None:
+        for source, test in ci_select.QUALITY_ONLY_HELPERS.items():
+            for path in (source, test):
+                target = self.root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("# fixture for path existence\n")
+
+    def test_tested_ci_helper_changes_have_no_native_shards(self) -> None:
+        self.install_quality_helpers()
+        for source, test in ci_select.QUALITY_ONLY_HELPERS.items():
+            for changes in ([source], [test], [source, test, "docs/ci-emergency-relief.md"]):
+                with self.subTest(changes=changes):
+                    plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+                    self.assertFalse(plan["rust_required"])
+                    self.assertEqual(plan["matrix"], {"include": []})
+                    self.assertIn("mandatory repository-policy tests", plan["reason"])
+
+    def test_ci_helper_exception_preserves_unknown_mixed_and_full_checks(self) -> None:
+        self.install_quality_helpers()
+        for extra in ("tools/unknown.py", ".forgejo/workflows/check.yml",
+                      "tools/run-repository-policy.sh", "os/tests/security-boundaries.sh",
+                      "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci_select.py"):
+            with self.subTest(extra=extra):
+                plan = ci_select.make_plan(self.metadata, self.root, ["tools/ci_select.py", extra], 2)
+                self.assertTrue(plan["rust_required"])
+        full = ci_select.make_plan(self.metadata, self.root, ["tools/ci_select.py"], 2, force_full=True)
+        self.assertTrue(full["full"])
+        self.assertEqual(full["selected_count"], full["workspace_count"])
+        self.assertTrue(ci_select.make_plan(self.metadata, self.root, [], 2)["rust_required"])
+
+    def test_missing_helper_or_test_retains_native_checks(self) -> None:
+        for source, test in ci_select.QUALITY_ONLY_HELPERS.items():
+            for missing in (source, test):
+                self.install_quality_helpers()
+                (self.root / missing).unlink()
+                with self.subTest(source=source, missing=missing):
+                    plan = ci_select.make_plan(self.metadata, self.root, [source, test], 2)
+                    self.assertTrue(plan["rust_required"])
+
     def test_unowned_deleted_crate_path_forces_full_workspace(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["apps/removed/Cargo.toml"], 2)
         self.assertTrue(plan["full"])
