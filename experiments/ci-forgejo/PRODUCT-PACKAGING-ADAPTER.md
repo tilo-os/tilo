@@ -131,6 +131,12 @@ baseline does not claim a downloadable release has been published.
    cases. The callback still requires fresh artifact provenance checks.
    The implemented zero-app path requires the trusted plan provenance above;
    it records handled work without advancing package/publication evidence.
+   This path is locally tested, not operationally qualified: a live fixture must
+   establish that `GITHUB_RUN_ID` is the API's internal run ID and that
+   `github.run_attempt` identifies the current plan job's `attempt`, including a
+   partial rerun. It must also verify the installed CLI's raw ZIP/log responses.
+   Raw capture reads at most the limit plus one byte and kills/reaps the CLI on
+   overflow or timeout; this does not bound the CLI's internal HTTP buffering.
 3. Provision a dedicated least-privilege product qualification identity and
    protected credentials; the existing integrator identity has pilot-only access.
    The default interactive fgj administrator profile is not a service identity.
