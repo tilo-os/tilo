@@ -147,7 +147,10 @@ impl ApplicationDelegate {
         }
 
         window_activation_hack(&app);
-        #[allow(deprecated)]
+        #[allow(
+            deprecated,
+            reason = "winit retains this AppKit activation fallback for supported older macOS releases"
+        )]
         app.activateIgnoringOtherApps(self.ivars().activate_ignoring_other_apps);
 
         if self.ivars().default_menu {
