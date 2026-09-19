@@ -224,15 +224,7 @@ jobs:
 
       - name: Restore Cargo downloads
         id: cargo-cache
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        continue-on-error: true
-        with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-deps-
+        uses: ./.forgejo/actions/restore-cargo-downloads
 
       - name: Prepare headless runtime and compiler cache
         run: |
