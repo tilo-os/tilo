@@ -1985,7 +1985,14 @@ impl Widget for FirewallApp {
 impl FirewallApp {
     fn rules_table_accessibility(&self) -> AccessNode {
         let table_name = format!("Rules in {}", self.selected_zone.name());
-        let (target, proto, action, source, controls) = rule_columns(self.layout.table);
+        let RuleColumns {
+            text: target,
+            proto,
+            action,
+            source,
+            ctrl: controls,
+            ..
+        } = rule_columns(self.layout.table);
         let right = self.layout.table.x1 - 12.0;
         let header = self.layout.table.y0..self.layout.table.y0 + 30.0;
         let columns = [
