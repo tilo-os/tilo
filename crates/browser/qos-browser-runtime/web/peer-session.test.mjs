@@ -382,3 +382,33 @@ test('connection-scoped revoked identity terminates admission wait without alloc
  const status=desktopAdmission(true);status.health.failures=[{id:'session:connection',code:'identity-revoked',scope:{kind:'connection'},severity:'error',message:'Device revoked'}];f.status(status);await drain();
  assert.equal(outcome,'Device revoked');await mounting;assert.equal(f.mountOptionsSeen.length,1);await peer.dispose();
 });
+
+test('light reports trigger persistence without a new snapshot; the commit report advances the health generation; identical reports do not notify',async()=>{
+ const f=fixture(),peer=await f.connect(),notifications=[];peer.subscribe(snapshot=>notifications.push(snapshot));
+ const settle=async()=>{for(let i=0;i<5;i++){await new Promise(resolve=>setTimeout(resolve,0));await drain();}};
+ await settle();
+ const before=peer.getSnapshot();notifications.length=0;
+ let commits=0;const commit=f.storage.commit;f.storage.commit=async writes=>{commits++;return commit(writes);};
+ // Publication path: between commit boundaries the runtime reports only the retained phase and the persistence trigger.
+ f.setFailCommit(false);f.status({phase:'ready',persistenceNeeded:true});await settle();
+ assert.equal(commits,1,'a light report with persistenceNeeded triggers persistence');
+ assert.strictEqual(peer.getSnapshot(),before,'a light report publishes no new snapshot');
+ assert.equal(peer.getSnapshot().health.generation,before.health.generation,'a light report does not advance the health generation');
+ assert.equal(notifications.length,0,'listeners are not notified for a light report');
+ // Acknowledgement path: the trigger is cleared; still nothing new for listeners.
+ f.status({phase:'ready',persistenceNeeded:false});await settle();
+ assert.equal(notifications.length,0);assert.strictEqual(peer.getSnapshot(),before);
+ // The full report after a commit carries fresh durability and advances the generation once.
+ f.setCommitStatus(()=>({phase:'ready',records:before.records,health:{transport:{phase:'connected',authenticated:true},admission:{phase:'ready',requiredRecords:[],pendingPrerequisites:0},records:[{record:{roomId:'r',appId:'dev.qos.word-processor',recordId:'tab:1'},admission:'admitted',current:{heads:['h']},editing:{mode:'online'},local:{state:'durable',committedAtMs:1},acknowledgement:{state:'covered',coversCurrentBasis:true},failureIds:[]}],failures:[]}}));
+ f.setFailCommit(false);f.status({phase:'ready',persistenceNeeded:true});await settle();
+ assert.equal(commits,2);
+ const committed=peer.getSnapshot();
+ assert(BigInt(committed.health.generation)>BigInt(before.health.generation),'the report after a commit advances the health generation');
+ assert.equal(notifications.length,1,'one notification for the commit report');
+ assert.equal(committed.health.records[0].local.state,'durable');
+ // An identical repeated report produces no listener notification.
+ const repeated=structuredClone(committed);
+ f.status(repeated);f.status(repeated);await settle();
+ assert.equal(notifications.length,1);assert.strictEqual(peer.getSnapshot(),committed);
+ await peer.dispose();
+});
