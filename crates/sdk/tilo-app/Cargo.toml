@@ -7,6 +7,7 @@ license.workspace = true
 
 [features]
 default = []
+test-support = ["ui-core/test-support"]
 webview-adblock = ["ui-core/webview-adblock"]
 webview-wpe = ["ui-core/webview-wpe"]
 dmabuf-import = ["ui-core/dmabuf-import"]
