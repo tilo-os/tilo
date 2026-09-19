@@ -1989,6 +1989,19 @@ impl Widget for WindowGroup {
         // they are not drawn or marked drawn until selected.
         self.children().into_iter().any(Widget::needs_redraw)
     }
+    /// Layout follows the built tree: the tab bar (whenever it was built) and
+    /// the active host. Inactive hosts have no taffy nodes until they are
+    /// selected, which is a structural change, so their dirtiness must not
+    /// keep the group re-measuring; the default would walk `for_each_child`
+    /// and include them.
+    fn is_layout_dirty(&self) -> bool {
+        (!self.external_navigation && self.bar.is_layout_dirty())
+            || self.active_host().is_some_and(Widget::is_layout_dirty)
+    }
+    fn layout_needs_measure(&self) -> bool {
+        (!self.external_navigation && self.bar.layout_needs_measure())
+            || self.active_host().is_some_and(Widget::layout_needs_measure)
+    }
     fn needs_animation_frame(&self) -> bool {
         // Include group and inactive closing-host animations beyond the active presentation.
         let spawn_in_flight = self

@@ -572,7 +572,7 @@ impl TextInput {
 
     pub fn set_font_size(&mut self, size: f32) {
         if self.font_size_override != Some(size) {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.font_size_override = Some(size);
         }
     }
@@ -590,7 +590,7 @@ impl TextInput {
 
     pub fn set_mono(&mut self, mono: bool) {
         if self.mono != mono {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
         self.mono = mono;
         if mono {
@@ -714,7 +714,7 @@ impl TextInput {
 
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
         if self.family != family {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.family = family;
         }
     }
@@ -4080,6 +4080,15 @@ impl Widget for TextInput {
     /// so it only needs re-measure before its first layout or right after a
     /// user edit — never blocking the scroll fast path while idle.
     fn layout_needs_measure(&self) -> bool {
+        self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
+    }
+
+    /// Same inputs as [`Self::layout_needs_measure`]: an input's size follows
+    /// its content only through a user edit (`dirty`, drained by the owner's
+    /// `take_dirty`) or a model change that reshapes multiline or attributed
+    /// text (`model_layout_dirty`, cleared by `measure`). Idle inputs would
+    /// otherwise be re-measured on every retained frame.
+    fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
     }
 

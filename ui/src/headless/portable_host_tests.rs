@@ -699,6 +699,7 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
     let typed = frame.last_relayout();
     assert!(!typed.rebuilt, "a character edit keeps the composed tree: {typed:?}");
     assert!(typed.measured, "a character edit re-solves sizes: {typed:?}");
+    assert_eq!(typed.marked_leaves, 1, "only the edited line is re-measured: {typed:?}");
     assert_eq!(frame.layout_node_ids(), ids, "node ids survive a retained relayout");
     assert_eq!(frame.focused(), focused, "focus survives a retained relayout");
     frame.verify_retained_geometry().unwrap();

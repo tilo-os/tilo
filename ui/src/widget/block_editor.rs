@@ -4374,6 +4374,19 @@ impl Widget for BlockEditor {
         self.structure_dirty = false;
         was
     }
+
+    /// The editor is a column of one taffy node per line; its own margins
+    /// and formula minimums are styles set at build time (a structural
+    /// change), so its size can only move when a line's does. Forwarded per
+    /// line rather than through `children()`, which the editor does not
+    /// expose, so an idle document re-measures nothing.
+    fn is_layout_dirty(&self) -> bool {
+        self.blocks.iter().any(|block| block.line.is_layout_dirty())
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.blocks.iter().any(|block| block.line.layout_needs_measure())
+    }
 }
 
 impl BlockEditor {

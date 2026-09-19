@@ -10234,6 +10234,12 @@ impl Widget for WordProcessorWidget {
     fn mark_drawn(&mut self) {
         self.dirty = false;
     }
+    /// One self-drawn taffy leaf filling its tile: its size follows the
+    /// parent alone, so only the first layout is a size change. Pages,
+    /// toolbars and panels are positioned inside `self.rect` by hand.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
 }
 
 /// Lets the shell host the word processor in a tab directly, the same way
