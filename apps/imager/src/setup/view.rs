@@ -323,6 +323,165 @@ impl SetupApp {
         self.picker_rx.is_none() && self.pending_scans == 0
     }
 
+    fn setup_projection(&self) -> super::actions::SetupProjection {
+        let controller = self.controller();
+        let page = controller.page();
+        let folders = controller
+            .folders()
+            .iter()
+            .enumerate()
+            .map(|(index, folder)| super::actions::FolderProjection {
+                identity: controller
+                    .folder_token(index)
+                    .expect("folder identities stay aligned with folder choices"),
+                index,
+                mode: super::actions::mode_key(folder.mode),
+                overridden: folder.mode_overridden,
+            })
+            .collect::<Vec<_>>();
+        let folder_count = folders.len();
+        let active_folder_count = controller
+            .folders()
+            .iter()
+            .filter(|folder| folder.mode != FolderMode::Later)
+            .count();
+        let chosen_experience = controller.chosen_experience();
+        let next = match page {
+            SetupPage::Experience => chosen_experience
+                .is_some_and(|experience| self.capabilities.platform.supports(experience)),
+            SetupPage::Folders => self.folder_selection_settled(),
+            SetupPage::Review => false,
+        };
+        let on_folder_choices = matches!(page, SetupPage::Folders | SetupPage::Review);
+        super::actions::SetupProjection {
+            page: super::actions::page_key(page),
+            selection: super::actions::SelectionProjection {
+                experience: chosen_experience.map(super::actions::experience_key),
+                common_mode: super::actions::mode_key(controller.default_mode()),
+                folder_count,
+                active_folder_count,
+                folders,
+                help_open: self.show_help,
+                imports_open: self.import_requested || self.import_app.is_some(),
+            },
+            review: super::actions::ReviewProjection {
+                ready: page == SetupPage::Review,
+            },
+            availability: super::actions::AvailabilityProjection {
+                desktop: self.capabilities.platform.supports(Experience::Desktop),
+                full_os: self.capabilities.platform.supports(Experience::FullOs),
+                connected: self.capabilities.connected_folders,
+                next,
+                back: page != SetupPage::Experience,
+                folder_policies: on_folder_choices,
+                folder_edits: on_folder_choices && folder_count > 0,
+                help: page == SetupPage::Folders,
+                open_imports: true,
+            },
+        }
+    }
+
+    fn apply_setup_operation(
+        &mut self,
+        operation: super::actions::SetupOperation,
+    ) -> Result<(), String> {
+        let command = match operation {
+            super::actions::SetupOperation::ChooseExperience { experience } => {
+                let experience = super::actions::parse_experience(&experience)?;
+                if !self.capabilities.platform.supports(experience) {
+                    return Err(experience_unavailable_reason(
+                        self.capabilities.platform,
+                        experience,
+                    ));
+                }
+                SetupCommand::ChooseExperience(experience)
+            }
+            super::actions::SetupOperation::SetCommonMode { mode } => {
+                if !matches!(
+                    self.controller().page(),
+                    SetupPage::Folders | SetupPage::Review
+                ) {
+                    return Err("Folder choices are not open on the current setup page.".into());
+                }
+                let mode = super::actions::parse_mode(&mode)?;
+                if mode == FolderMode::Connected && !self.capabilities.connected_folders {
+                    return Err("Folder syncing is not available in this build yet.".into());
+                }
+                SetupCommand::SetMode(mode)
+            }
+            super::actions::SetupOperation::SetFolderMode { folder, mode } => {
+                let index = self
+                    .controller()
+                    .folder_index(&folder)
+                    .ok_or_else(|| "folder selection is no longer available".to_string())?;
+                if !matches!(
+                    self.controller().page(),
+                    SetupPage::Folders | SetupPage::Review
+                ) {
+                    return Err("Folder choices are not open on the current setup page.".into());
+                }
+                let mode = super::actions::parse_mode(&mode)?;
+                if mode == FolderMode::Connected && !self.capabilities.connected_folders {
+                    return Err("Folder syncing is not available in this build yet.".into());
+                }
+                SetupCommand::SetFolderMode(index, mode)
+            }
+            super::actions::SetupOperation::ClearFolderMode { folder } => {
+                let index = self
+                    .controller()
+                    .folder_index(&folder)
+                    .ok_or_else(|| "folder selection is no longer available".to_string())?;
+                if !matches!(
+                    self.controller().page(),
+                    SetupPage::Folders | SetupPage::Review
+                ) {
+                    return Err("Folder choices are not open on the current setup page.".into());
+                }
+                SetupCommand::ClearFolderMode(index)
+            }
+            super::actions::SetupOperation::RemoveFolder { folder } => {
+                let index = self
+                    .controller()
+                    .folder_index(&folder)
+                    .ok_or_else(|| "folder selection is no longer available".to_string())?;
+                if !matches!(
+                    self.controller().page(),
+                    SetupPage::Folders | SetupPage::Review
+                ) {
+                    return Err("Folder choices are not open on the current setup page.".into());
+                }
+                SetupCommand::RemoveFolder(index)
+            }
+            super::actions::SetupOperation::ToggleHelp => {
+                if self.controller().page() != SetupPage::Folders {
+                    return Err("Folder help is available on the folder page.".into());
+                }
+                SetupCommand::ToggleHelp
+            }
+            super::actions::SetupOperation::Next => {
+                if self.controller().page() == SetupPage::Folders
+                    && !self.folder_selection_settled()
+                {
+                    return Err("Wait for the selected folders to finish scanning.".into());
+                }
+                SetupCommand::Next
+            }
+            super::actions::SetupOperation::Back => {
+                if self.controller().page() == SetupPage::Experience {
+                    return Err("Setup is already on its first page.".into());
+                }
+                SetupCommand::Back
+            }
+            super::actions::SetupOperation::OpenImports => SetupCommand::OpenImports,
+        };
+        self.apply_command(command);
+        if self.status_is_error {
+            return Err(self.status.clone());
+        }
+        self.ensure_import_app();
+        Ok(())
+    }
+
     fn start_desktop_install(&mut self) {
         if !self.folder_selection_settled() {
             return;
@@ -1783,6 +1942,42 @@ impl Drop for SetupApp {
 }
 
 impl Widget for SetupApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[super::actions::SETUP_OPERATION_TYPE]
+    }
+
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        vec![super::actions::resource(&self.setup_projection())]
+    }
+
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        let Some(operation) = super::actions::decode(type_id, payload)? else {
+            for child in self.children_mut() {
+                if let Some(output) =
+                    child.invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
+                {
+                    return Ok(Some(output));
+                }
+            }
+            return Ok(None);
+        };
+        if kind != tilo_actions::OperationKind::View {
+            return Err("Guided setup operations are local view operations.".into());
+        }
+        self.apply_setup_operation(operation)?;
+        Ok(Some(tilo_actions::ActionOutput {
+            value: Some(self.setup_projection().value()),
+            resources: Vec::new(),
+        }))
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.ensure_import_app();
         if let Some(import_app) = &mut self.import_app {
@@ -3122,5 +3317,519 @@ mod tests {
         ));
         assert_eq!(app.controller().folders().len(), 1);
         assert_eq!(app.controller().default_mode(), FolderMode::Copy);
+    }
+
+    fn setup_resource(app: &SetupApp, doc: &AutoCommit) -> tilo_actions::Resource {
+        Widget::resources(app, doc)
+            .into_iter()
+            .find(|resource| resource.id.as_str() == super::super::actions::SETUP_RESOURCE_ID)
+            .unwrap()
+    }
+
+    fn setup_action(app: &SetupApp, id: &str, doc: &AutoCommit) -> tilo_actions::ActionSpec {
+        setup_resource(app, doc)
+            .actions
+            .into_iter()
+            .find(|action| action.id == id)
+            .unwrap()
+    }
+
+    fn folder_action(
+        app: &SetupApp,
+        index: usize,
+        id: &str,
+        doc: &AutoCommit,
+    ) -> tilo_actions::ActionSpec {
+        child_resource(&setup_resource(app, doc), "imager.setup.selection").children[index]
+            .actions
+            .iter()
+            .find(|action| action.id == id)
+            .unwrap()
+            .clone()
+    }
+
+    fn setup_args(
+        entries: &[(&str, serde_json::Value)],
+    ) -> serde_json::Map<String, serde_json::Value> {
+        entries
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), value.clone()))
+            .collect()
+    }
+
+    fn invoke_setup(
+        app: &mut SetupApp,
+        id: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let doc = AutoCommit::new();
+        let action = setup_action(app, id, &doc);
+        let encoded = action
+            .build_json(&arguments)
+            .map_err(|error| error.to_string())?;
+        Widget::invoke_resource_operation_v2(
+            app,
+            action.kind,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &automerge::ROOT,
+        )?
+        .and_then(|output| output.value)
+        .ok_or_else(|| "setup operation returned no state projection".to_string())
+    }
+
+    fn invoke_folder_setup(
+        app: &mut SetupApp,
+        index: usize,
+        id: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let doc = AutoCommit::new();
+        let action = folder_action(app, index, id, &doc);
+        let encoded = action
+            .build_json(&arguments)
+            .map_err(|error| error.to_string())?;
+        invoke_encoded_setup(app, &encoded)
+    }
+
+    fn invoke_setup_raw(
+        app: &mut SetupApp,
+        operation: super::super::actions::SetupOperation,
+    ) -> Result<serde_json::Value, String> {
+        let doc = AutoCommit::new();
+        let encoded = super::super::actions::encode(&operation);
+        Widget::invoke_resource_operation_v2(
+            app,
+            tilo_actions::OperationKind::View,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &automerge::ROOT,
+        )?
+        .and_then(|output| output.value)
+        .ok_or_else(|| "setup operation returned no state projection".to_string())
+    }
+
+    fn child_resource<'a>(
+        resource: &'a tilo_actions::Resource,
+        kind: &str,
+    ) -> &'a tilo_actions::Resource {
+        resource
+            .children
+            .iter()
+            .find(|child| child.kind == kind)
+            .unwrap_or_else(|| panic!("missing child resource kind {kind}"))
+    }
+
+    fn invoke_encoded_setup(
+        app: &mut SetupApp,
+        encoded: &tilo_actions::EncodedAction,
+    ) -> Result<serde_json::Value, String> {
+        let doc = AutoCommit::new();
+        Widget::invoke_resource_operation_v2(
+            app,
+            tilo_actions::OperationKind::View,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &automerge::ROOT,
+        )?
+        .and_then(|output| output.value)
+        .ok_or_else(|| "setup operation returned no state projection".to_string())
+    }
+
+    #[test]
+    fn semantic_operations_choose_navigate_retain_and_invalidate_review() {
+        let mut app = supported_fixture();
+        let selected = invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        assert_eq!(selected["selection"]["experience"], "desktop");
+        assert_eq!(
+            invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap()["page"],
+            "folders"
+        );
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: None,
+            result: Ok(scan("Documents", 4096)),
+        });
+        invoke_folder_setup(
+            &mut app,
+            0,
+            "set-mode",
+            setup_args(&[("mode", serde_json::json!("later"))]),
+        )
+        .unwrap();
+        let cleared =
+            invoke_folder_setup(&mut app, 0, "use-common-mode", serde_json::Map::new()).unwrap();
+        assert_eq!(cleared["selection"]["folders"][0]["mode"], "copy");
+        assert_eq!(cleared["selection"]["folders"][0]["overridden"], false);
+        invoke_folder_setup(
+            &mut app,
+            0,
+            "set-mode",
+            setup_args(&[("mode", serde_json::json!("later"))]),
+        )
+        .unwrap();
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: None,
+            result: Ok(scan("Pictures", 2048)),
+        });
+        let removed = invoke_folder_setup(&mut app, 1, "remove", serde_json::Map::new()).unwrap();
+        assert_eq!(removed["selection"]["folder_count"], 1);
+        let review = invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        assert_eq!(review["page"], "review");
+        assert_eq!(review["review"]["ready"], true);
+        assert_eq!(review["selection"]["folder_count"], 1);
+        assert_eq!(review["selection"]["active_folder_count"], 0);
+
+        let edited = invoke_setup(
+            &mut app,
+            "set-common-mode",
+            setup_args(&[("mode", serde_json::json!("copy"))]),
+        )
+        .unwrap();
+        assert_eq!(edited["page"], "folders");
+        assert_eq!(edited["review"]["ready"], false);
+        assert_eq!(edited["selection"]["folders"][0]["mode"], "later");
+        let back = invoke_setup(&mut app, "back", serde_json::Map::new()).unwrap();
+        assert_eq!(back["page"], "experience");
+        assert_eq!(back["selection"]["experience"], "desktop");
+        assert_eq!(back["selection"]["folder_count"], 1);
+    }
+
+    #[test]
+    fn semantic_operations_refuse_unavailable_choices_without_mutating_state() {
+        let mut app = SetupApp::with_capabilities(SetupCapabilities {
+            platform: Capabilities {
+                host: HostOs::Linux,
+                desktop_session: true,
+                internal_dual_boot: false,
+            },
+            connected_folders: false,
+        });
+        let error = invoke_setup_raw(
+            &mut app,
+            super::super::actions::SetupOperation::ChooseExperience {
+                experience: "full_os".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("not available"), "{error}");
+        assert_eq!(app.controller().chosen_experience(), None);
+        invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        let error = invoke_setup_raw(
+            &mut app,
+            super::super::actions::SetupOperation::SetCommonMode {
+                mode: "connected".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("not available"), "{error}");
+        assert_eq!(app.controller().default_mode(), FolderMode::Copy);
+        assert_eq!(app.controller().page(), SetupPage::Folders);
+    }
+
+    #[test]
+    fn semantic_operations_refuse_stale_identities_and_malformed_arguments() {
+        let mut app = supported_fixture();
+        invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: None,
+            result: Ok(scan("Documents", 4096)),
+        });
+        let before = app.controller().folders().to_vec();
+        for operation in [
+            super::super::actions::SetupOperation::SetFolderMode {
+                folder: "missing".into(),
+                mode: "copy".into(),
+            },
+            super::super::actions::SetupOperation::ClearFolderMode {
+                folder: "missing".into(),
+            },
+            super::super::actions::SetupOperation::RemoveFolder {
+                folder: "missing".into(),
+            },
+        ] {
+            assert!(
+                invoke_setup_raw(&mut app, operation)
+                    .unwrap_err()
+                    .contains("folder selection")
+            );
+            assert_eq!(app.controller().folders(), before.as_slice());
+        }
+        let doc = AutoCommit::new();
+        let set_mode = folder_action(&app, 0, "set-mode", &doc);
+        assert!(set_mode.build_json(&serde_json::Map::new()).is_err());
+        assert!(
+            set_mode
+                .build_json(&setup_args(&[("mode", serde_json::json!(7))]))
+                .is_err()
+        );
+        assert!(
+            Widget::invoke_resource_operation_v2(
+                &mut app,
+                tilo_actions::OperationKind::View,
+                super::super::actions::SETUP_OPERATION_TYPE,
+                b"{not-json",
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert_eq!(app.controller().folders(), before.as_slice());
+    }
+
+    #[test]
+    fn setup_resource_projects_availability_help_and_import_navigation() {
+        let mut app = SetupApp::with_capabilities(SetupCapabilities {
+            platform: Capabilities {
+                host: HostOs::Linux,
+                desktop_session: true,
+                internal_dual_boot: false,
+            },
+            connected_folders: false,
+        });
+        app.import_launcher = || ImportApp::for_shot("import-complete");
+        let doc = AutoCommit::new();
+        let resource = Widget::resources(&app, &doc).pop().unwrap();
+        assert_eq!(resource.kind, "imager.setup");
+        assert_eq!(
+            resource.presentation.as_ref().unwrap().badge.as_deref(),
+            Some("Experience")
+        );
+        assert_eq!(resource.actions.len(), 6);
+        let detail = resource
+            .presentation
+            .as_ref()
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap();
+        assert!(detail.contains("Full OS no"), "{detail}");
+        assert!(detail.contains("Connected no"), "{detail}");
+        let choose = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "choose-experience")
+            .unwrap();
+        assert_eq!(
+            choose.params()[0]
+                .choices
+                .iter()
+                .map(std::convert::AsRef::as_ref)
+                .collect::<Vec<&str>>(),
+            vec!["desktop"]
+        );
+        assert!(resource.actions.iter().all(|action| {
+            action.operation_type.as_deref() == Some(super::super::actions::SETUP_OPERATION_TYPE)
+        }));
+        let chosen = invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        assert_eq!(chosen["availability"]["desktop"], true);
+        assert_eq!(chosen["availability"]["full_os"], false);
+        assert_eq!(chosen["availability"]["connected"], false);
+        assert_eq!(chosen["availability"]["next"], true);
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        let folders = invoke_setup(&mut app, "toggle-help", serde_json::Map::new()).unwrap();
+        assert_eq!(folders["selection"]["help_open"], true);
+        assert_eq!(folders["page"], "folders");
+        let opened = invoke_setup(&mut app, "open-imports", serde_json::Map::new()).unwrap();
+        assert_eq!(opened["selection"]["imports_open"], true);
+        assert_eq!(app.children()[0].name(), "ImportApp");
+        let updated = Widget::resources(&app, &doc).pop().unwrap();
+        assert_eq!(
+            updated.id.as_str(),
+            super::super::actions::SETUP_RESOURCE_ID
+        );
+        assert_eq!(
+            updated.presentation.as_ref().unwrap().badge.as_deref(),
+            Some("Folders")
+        );
+        assert!(
+            updated
+                .actions
+                .iter()
+                .find(|action| action.id == "toggle-help")
+                .unwrap()
+                .contract
+                .availability
+                .is_available()
+        );
+        let selection = child_resource(&updated, "imager.setup.selection");
+        let selection_detail = selection
+            .presentation
+            .as_ref()
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap();
+        assert!(selection_detail.contains("help open"), "{selection_detail}");
+        assert!(
+            selection_detail.contains("imports open"),
+            "{selection_detail}"
+        );
+    }
+
+    #[test]
+    fn setup_resource_browses_complete_path_free_folder_selection() {
+        let mut app = supported_fixture();
+        for (name, bytes) in [("Documents", 4096), ("Pictures", 2048)] {
+            app.apply_worker_message(WorkerMessage::ScanFinished {
+                destination: None,
+                result: Ok(scan(name, bytes)),
+            });
+        }
+        app.controller
+            .borrow_mut()
+            .set_folder_mode(1, FolderMode::Later);
+
+        let root = Widget::resources(&app, &AutoCommit::new()).pop().unwrap();
+        let selection = child_resource(&root, "imager.setup.selection");
+        let detail = selection
+            .presentation
+            .as_ref()
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap();
+        assert_eq!(
+            detail,
+            "experience no experience selected · common copy · 2 folders · 1 active · help closed · imports closed"
+        );
+        assert_eq!(selection.children.len(), 2);
+        assert_eq!(selection.children[0].kind, "imager.setup.folder");
+        assert_eq!(selection.children[1].kind, "imager.setup.folder");
+        assert!(
+            selection.children[0]
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("copy · common")
+        );
+        assert!(
+            selection.children[1]
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("later · override")
+        );
+        for folder in &selection.children {
+            assert!(!folder.label.contains("Documents"));
+            assert!(!folder.label.contains("Pictures"));
+            assert_eq!(folder.actions.len(), 3);
+            assert!(folder.actions.iter().all(|action| {
+                action.operation_type.as_deref()
+                    == Some(super::super::actions::SETUP_OPERATION_TYPE)
+            }));
+            assert_eq!(
+                folder
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "set-mode")
+                    .unwrap()
+                    .params()
+                    .len(),
+                1
+            );
+        }
+        let review = child_resource(&root, "imager.setup.review");
+        assert!(
+            review
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("ready no")
+        );
+        let availability = child_resource(&root, "imager.setup.availability");
+        assert!(
+            availability
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("Desktop yes")
+        );
+    }
+
+    #[test]
+    fn retained_folder_action_uses_identity_after_earlier_folder_is_removed() {
+        let mut app = supported_fixture();
+        invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        for (name, bytes) in [("A", 1), ("B", 2), ("C", 3)] {
+            app.apply_worker_message(WorkerMessage::ScanFinished {
+                destination: None,
+                result: Ok(scan(name, bytes)),
+            });
+        }
+
+        let root = Widget::resources(&app, &AutoCommit::new()).pop().unwrap();
+        let folders = &child_resource(&root, "imager.setup.selection").children;
+        let remove_a = folders[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "remove")
+            .unwrap()
+            .clone();
+        let set_b = folders[1]
+            .actions
+            .iter()
+            .find(|action| action.id == "set-mode")
+            .unwrap()
+            .clone();
+        let remove_a = match &remove_a.input {
+            tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("remove must be immediate"),
+        };
+        let set_b = match &set_b.input {
+            tilo_actions::ActionInput::Prompted { build, .. } => build("later"),
+            tilo_actions::ActionInput::Immediate(_) => panic!("set-mode must prompt for one mode"),
+        };
+        assert_ne!(set_b.type_id, "tilo.invalid_arguments");
+
+        invoke_encoded_setup(&mut app, &remove_a).unwrap();
+        invoke_encoded_setup(&mut app, &set_b).unwrap();
+        assert_eq!(app.controller().folders().len(), 2);
+        assert_eq!(app.controller().folders()[0].scan.bytes, 2);
+        assert_eq!(app.controller().folders()[0].mode, FolderMode::Later);
+        assert_eq!(app.controller().folders()[1].scan.bytes, 3);
+        assert_eq!(app.controller().folders()[1].mode, FolderMode::Copy);
     }
 }
