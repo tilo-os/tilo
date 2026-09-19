@@ -116,6 +116,47 @@ for mode in error unavailable empty missing missing-stderr; do
         missing*) grep -Fq 'unresolved shared library' "$work/verifier-$mode.log" ;;
     esac
 done
+# Both legitimate static forms bypass ldd only after real ELF inspection.
+# Build minimal native executables; a missing compiler/inspector fails this
+# contract rather than silently skipping an architecture's coverage.
+printf 'void _start(void) { for (;;) {} }\n' > "$work/static.c"
+for link_mode in -static -static-pie; do
+    cc -nostdlib "$link_mode" -Wl,-e,_start "$work/static.c" -o "$work/static"
+    for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" \
+                  "$fhs/usr/libexec/tilo-unlock-helper"; do
+        install -m755 "$work/static" "$target"
+    done
+    PATH="$work/verifier-bin:$PATH" TILO_TEST_LDD_MODE=error \
+        TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs"
+    if TILO_EXPECT_ARCH="$other_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+        echo "payload verifier accepted the other architecture's static binaries" >&2
+        exit 1
+    fi
+done
+cat > "$work/verifier-bin/readelf" <<'EOF'
+#!/usr/bin/env bash
+echo 'fixture ELF inspector failed' >&2
+exit 4
+EOF
+chmod +x "$work/verifier-bin/readelf"
+if PATH="$work/verifier-bin:$PATH" TILO_TEST_LDD_MODE=error \
+    TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" \
+    >"$work/verifier-readelf.log" 2>&1; then
+    echo "payload verifier accepted unobservable static ELF headers" >&2
+    exit 1
+fi
+grep -Fq 'ELF dependency inspection failed' "$work/verifier-readelf.log"
+# A shared object or relocatable object is not a static executable merely
+# because it has neither an interpreter nor shared-library dependencies.
+for object_mode in -shared -c; do
+    cc -nostdlib -fPIC "$object_mode" "$work/static.c" -o "$work/not-executable"
+    install -m755 "$work/not-executable" "$fhs/usr/bin/tilo-shell"
+    if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+        echo "payload verifier accepted $object_mode output as a static executable" >&2
+        exit 1
+    fi
+done
+install -m755 "$true_bin" "$fhs/usr/bin/tilo-shell"
 "$repo_root/dist/verify-devel-payload.sh" "$fhs"
 
 sed -i 's#^TryExec=.*#TryExec=/wrong#' "$fhs/usr/share/wayland-sessions/tilo-dev.desktop"
