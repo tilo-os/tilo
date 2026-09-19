@@ -4472,9 +4472,26 @@ mod tests {
     }
 
     #[test]
-    fn pointer_press_on_another_group_surface_transfers_app_and_control_focus() {
+    fn pointer_press_on_notes_nonfocusable_surface_clears_chat_composer_focus() {
         let (root, handle, _) = fixture_with_topology(|tree| {
-            arrange_local_selection_case(tree, LocalSelectionCase::Group);
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            let mut chat = None;
+            let mut notes = None;
+            for tab in tabs {
+                match tab.title.as_str() {
+                    "Chat" => chat = Some(tab),
+                    "Notes" => notes = Some(tab),
+                    _ => {}
+                }
+            }
+            let chat = chat.unwrap();
+            let notes = notes.unwrap();
+            strip.window_groups = vec![
+                WindowGroup { id: 4, active_tab: notes.id, tabs: vec![notes], width: WindowWidth::Normal, maximized: false },
+                WindowGroup { id: 3, active_tab: chat.id, tabs: vec![chat], width: WindowWidth::Normal, maximized: false },
+            ];
+            tree.active_group.insert(strip.id, 3);
         });
         let mut root = Box::new(root);
         let root_ptr = std::ptr::from_mut(root.as_mut());
@@ -4482,29 +4499,57 @@ mod tests {
             ui::State::new(), root, (1800, 900), Theme::dark(), ui::TextRenderer::new(),
             ui::permissions::UserId("author".into()),
         );
-        let initial = active_route(&handle.tree.borrow()).unwrap().ids().unwrap().3;
-        let control = focusable_control_for_instance(&frame, &frame.inspection().root, initial)
-            .expect("initial app exposes a focusable control");
-        frame.perform_semantic_named(&control, None, &ui::a11y::Action::Focus).unwrap();
+        let route = |label: &str| serde_json::from_value::<crate::desktop_navigation::Route>(
+            handle.navigation.borrow()["entries"].as_array().unwrap().iter()
+                .find(|entry| entry["label"] == label).unwrap()["route"].clone()
+        ).unwrap();
+        let notes_instance = route("Notes").ids().unwrap().3;
+        let (composer, _) = browser_semantic_route(&frame, "Message composer");
+        frame.perform_semantic_named(&composer, None, &ui::a11y::Action::Focus).unwrap();
         frame.relayout();
         handle.finish_local_activation(&mut frame);
-        let before = handle.records.borrow().values().map(|record| (
-            record.clone(), record.store.read(&record.checkout.id, |doc| doc.clone().save()).unwrap(),
-        )).collect::<Vec<_>>();
-        let (point, selected, group_rect, surface_rect, viewport, visible) = unsafe {
+        let activation = handle.activation_sequence.get();
+        assert_eq!(active_route(&handle.tree.borrow()).unwrap().ids().unwrap().3,
+            route("Chat").ids().unwrap().3, "Chat must be the canonical active app before the click");
+        let composer_focused = |frame: &ui::headless::FrameHarness| {
+            fn find(node: &ui::a11y::AccessNode) -> Option<bool> {
+                if node.name.as_deref() == Some("Message composer") { return Some(node.state.focused); }
+                node.children.iter().find_map(find)
+            }
+            fn walk(node: &ui::headless::InspectionNode) -> Option<bool> {
+                node.semantics.as_ref().and_then(find).or_else(|| node.children.iter().find_map(walk))
+            }
+            walk(&frame.inspection().root).unwrap()
+        };
+        assert!(composer_focused(&frame), "Chat composer precondition");
+        let chat = handle.records.borrow().values().find(|record| record.app == "dev.qos.chat").unwrap().clone();
+        let chat_before = chat.store.read(&chat.checkout.id, |doc| doc.clone().save()).unwrap();
+        let (group_rect, viewport, visible) = unsafe {
             let row = (&*root_ptr).surface.row(StripId(2)).unwrap();
             let group = row.groups.iter().find(|group| group.id == 4).unwrap();
-            let surface = group.active_host().unwrap().get_rect();
-            let viewport = row.get_rect();
-            (
-                Point::new((surface.x0.max(viewport.x0) + surface.x1.min(viewport.x1)) / 2.0,
-                    surface.y1.min(viewport.y1) - 2.0),
-                group.active_tab_id(), group.get_rect(), surface, viewport,
-                row.children().iter().any(|widget| std::ptr::addr_eq(*widget, group as &dyn Widget)),
-            )
+            (group.get_rect(), row.get_rect(),
+                row.children().iter().any(|widget| std::ptr::addr_eq(*widget, group as &dyn Widget)))
         };
-        assert!(visible && group_rect.contains(point) && viewport.contains(point),
-            "destination must be a visible group surface hit: group={group_rect:?} surface={surface_rect:?} viewport={viewport:?} point={point:?}");
+        let mut focusable = Vec::new();
+        fn collect_focusable(frame: &ui::headless::FrameHarness, node: &ui::headless::InspectionNode,
+            instance: ui::application::InstanceId, out: &mut Vec<Rect>) {
+            if node.focusable && frame.semantic_owner_instance(&node.path) == Some(instance) {
+                out.push(Rect::new(node.rect[0], node.rect[1], node.rect[2], node.rect[3]));
+            }
+            for child in &node.children { collect_focusable(frame, child, instance, out); }
+        }
+        collect_focusable(&frame, &frame.inspection().root, notes_instance, &mut focusable);
+        let hit = Rect::new(group_rect.x0.max(viewport.x0), group_rect.y0.max(viewport.y0),
+            group_rect.x1.min(viewport.x1), group_rect.y1.min(viewport.y1));
+        let point = (0..=((hit.height() / 8.0) as usize)).find_map(|y| {
+            (0..=((hit.width() / 8.0) as usize)).find_map(|x| {
+                let point = Point::new(hit.x0 + 2.0 + x as f64 * 8.0, hit.y0 + 2.0 + y as f64 * 8.0);
+                (hit.contains(point) && !focusable.iter().any(|bounds| bounds.contains(point))).then_some(point)
+            })
+        }).expect("visible Notes group exposes nonfocusable chrome or surface");
+        assert!(visible && group_rect.contains(point) && viewport.contains(point));
+        assert!(!focusable.iter().any(|bounds| bounds.contains(point)),
+            "pointer must avoid every focusable Notes control: point={point:?} focusable={focusable:?}");
         let device_id = winit::event::DeviceId::dummy();
         for event in [
             winit::event::WindowEvent::CursorMoved { device_id, position: winit::dpi::PhysicalPosition::new(point.x, point.y) },
@@ -4514,16 +4559,16 @@ mod tests {
             frame.send_host_event(&event);
             handle.finish_local_activation(&mut frame);
         }
-        assert_eq!(active_route(&handle.tree.borrow()).unwrap().ids().unwrap().3, selected);
+        assert_eq!(active_route(&handle.tree.borrow()).unwrap().ids().unwrap().3, notes_instance);
+        assert_eq!(handle.activation_sequence.get(), activation + 1,
+            "group pointer selection must cross the app activation boundary");
         let owner = frame.inspection().keyboard_focus_owner.unwrap();
-        assert_eq!(frame.semantic_owner_instance(&owner), Some(selected));
-        assert_eq!(focused_controls_for_instance(&frame, &frame.inspection().root, initial), 0);
+        assert_eq!(frame.semantic_owner_instance(&owner), Some(notes_instance));
+        assert!(!composer_focused(&frame), "Chat composer must clear its semantic focused flag");
         frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
             "must not reach previous app".into(),
         )));
-        for (record, bytes) in before {
-            assert_eq!(record.store.read(&record.checkout.id, |doc| doc.clone().save()).unwrap(), bytes);
-        }
+        assert_eq!(chat.store.read(&chat.checkout.id, |doc| doc.clone().save()).unwrap(), chat_before);
     }
 
     #[test]

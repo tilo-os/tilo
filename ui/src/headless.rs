@@ -1782,6 +1782,15 @@ impl FrameHarness {
             .or_else(|| order.first().copied())
     }
 
+    fn blur_inactive_app_components(&mut self, active: crate::application::InstanceId) {
+        let outgoing: Vec<_> = self.node_map.keys().copied().filter(|&node| {
+            self.bindings.binding_for(node).is_some_and(|binding| binding.instance_id != active)
+        }).collect();
+        for node in outgoing {
+            let _ = self.mutate_node(node, |widget| widget.set_focus(false));
+        }
+    }
+
     /// Resolve focus only in the selected, live app instance. A missing control
     /// is an authoritative no-owner result; layout cannot revive another app.
     pub fn prepare_app_activation(&mut self, instance: crate::application::InstanceId) {
@@ -1813,6 +1822,11 @@ impl FrameHarness {
         self.input_sequence.set(self.input_sequence.get().wrapping_add(1));
         self.remember_app_focus();
         self.relayout();
+        // Reconciliation can restore an opaque component's app-local focus
+        // flags after the runner has moved its own focus. Enforce the selected
+        // instance after that final layout so old controls cannot stay blue or
+        // claim accessibility focus.
+        self.blur_inactive_app_components(instance);
     }
 
     /// No-control shortcut routing stays inside the selected app and its
