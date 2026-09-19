@@ -48,7 +48,7 @@ release_signed_workflows=(
   "$workflows/snapshot-rpms.yml"
 )
 
-if python3 "$repo/tools/check_workflow_actions.py"; then
+if python3 "$repo/tools/policy/check_workflow_actions.py"; then
   printf 'ok    every remote workflow action is pinned to a full commit SHA\n'
 else
   fail=1

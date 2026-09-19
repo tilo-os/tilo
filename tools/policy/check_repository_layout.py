@@ -38,6 +38,7 @@ RETIRED_SOURCE_ROOTS = {
     "tools/check-changed-rustfmt.sh": "tools/ci/check-changed-rustfmt.sh",
     "tools/check-warnings.sh": "tools/ci/check-warnings.sh",
     "tools/check_changed_rust_allows.py": "tools/ci/check_changed_rust_allows.py",
+    "tools/check_": "tools/policy/check_",
     "tools/ci-": "tools/ci/",
     "tools/ci/select.py": "tools/ci/affected_packages.py",
     "tools/ci_": "tools/ci/",
@@ -48,6 +49,9 @@ RETIRED_SOURCE_ROOTS = {
     "tools/run-imager-ephemeral-runner.sh": "tools/ci/runners/imager-ephemeral-linux.sh",
     "tools/test-windows-": "tools/windows/test-",
     "tools/resolve_ci_builder.py": "tools/ci/resolve_builder.py",
+    "tools/app_resource_action_baseline.toml": "tools/policy/app_resource_action_baseline.toml",
+    "tools/report_action_directory_provider_offenders.py": "tools/policy/",
+    "tools/run-repository-policy.sh": "tools/policy/run.sh",
     "tools/rustc-thin-app-wrapper.sh": "tools/ci/rustc-thin-app-wrapper.sh",
     "tools/windows-": "tools/windows/",
     "ui/": "crates/sdk/ui-core/",
@@ -114,7 +118,7 @@ def tracked_files(root: Path) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     args = parser.parse_args(argv)
     root = args.root.resolve()
     try:
