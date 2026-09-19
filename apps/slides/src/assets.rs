@@ -82,6 +82,16 @@ pub enum ImageState {
     Failed,
 }
 
+/// Read-only image lookup shared by live rendering and frozen history.
+pub trait ImageLookup {
+    fn get(&self, id: &str) -> ImageState;
+}
+impl ImageLookup for ImageStore {
+    fn get(&self, id: &str) -> ImageState {
+        ImageStore::get(self, id)
+    }
+}
+
 /// A path-keyed image cache with off-thread decoding.
 pub struct ImageStore {
     inner: RefCell<HashMap<String, ImageState>>,
@@ -252,10 +262,24 @@ fn decode(path: &str) -> ImageState {
     let Some(bytes) = read_asset(path) else {
         return ImageState::Failed;
     };
+    decode_bytes(&bytes)
+}
+
+/// Pure bounded decode of already admitted bytes; no files, workers or stores.
+pub(crate) fn decode_bytes(bytes: &[u8]) -> ImageState {
+    decode_bytes_with_budget(bytes, MAX_READY_IMAGE_BYTES)
+}
+
+/// Reject dimensions before allocating pixels beyond a frozen preview's remainder.
+pub(crate) fn decode_bytes_with_budget(bytes: &[u8], budget: usize) -> ImageState {
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_FILE_BYTES {
+        return ImageState::Failed;
+    }
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
     limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
-    limits.max_alloc = Some(MAX_IMAGE_DECODE_BYTES);
+    let max_decode_bytes = MAX_IMAGE_DECODE_BYTES.min(u64::try_from(budget).unwrap_or(u64::MAX));
+    limits.max_alloc = Some(max_decode_bytes);
     let Ok(mut reader) =
         image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format()
     else {
@@ -265,7 +289,9 @@ fn decode(path: &str) -> ImageState {
     let Ok((w, h)) = reader.into_dimensions() else {
         return ImageState::Failed;
     };
-    if w == 0 || h == 0 || u64::from(w).saturating_mul(u64::from(h)) > MAX_IMAGE_PIXELS {
+    let pixels = u64::from(w).saturating_mul(u64::from(h));
+    if w == 0 || h == 0 || pixels > MAX_IMAGE_PIXELS || pixels.saturating_mul(4) > max_decode_bytes
+    {
         return ImageState::Failed;
     }
     let Ok(mut reader) =
@@ -298,6 +324,35 @@ fn decode(path: &str) -> ImageState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frozen_decode_refuses_pixels_exceeding_remaining_aggregate_budget() {
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        assert!(matches!(
+            decode_bytes_with_budget(bytes.get_ref(), 15),
+            ImageState::Failed
+        ));
+        assert!(matches!(
+            decode_bytes_with_budget(bytes.get_ref(), 16),
+            ImageState::Ready(_)
+        ));
+    }
+
+    #[test]
+    fn frozen_decode_keeps_file_dimension_and_corrupt_byte_limits() {
+        assert!(matches!(
+            decode_bytes(&vec![0; MAX_IMAGE_FILE_BYTES + 1]),
+            ImageState::Failed
+        ));
+        assert!(matches!(decode_bytes(b"corrupt"), ImageState::Failed));
+        let image =
+            image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, MAX_IMAGE_DIMENSION + 1));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        assert!(matches!(decode_bytes(bytes.get_ref()), ImageState::Failed));
+    }
 
     #[test]
     fn decode_refuses_an_oversized_source_before_image_parsing() {
