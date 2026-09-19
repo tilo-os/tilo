@@ -648,7 +648,10 @@ pub trait Widget {
     // node's own identity/layout). Bundling it into a context struct would
     // be a real signature change rippling through every implementor for no
     // behavioural difference, not a mechanical lint fix.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the shared Widget event contract exposes independently meaningful input, document, focus and layout parameters"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
