@@ -32,7 +32,7 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "os/scripts/bake-runtime-bundle.sh", "tools/app_release.py",
             "tools/ci_select.py", "tools/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
-            "release/app-collections.toml",
+            "release/app-collections.toml", ".cargo/config.toml", "tools/app_package_isa.py",
         ):
             self.write(relative, (ROOT / relative).read_text())
         self.write("bin/cargo", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FIXTURE_CARGO_LOG\"\n")
@@ -42,7 +42,13 @@ class AppArtifactHandoffTests(unittest.TestCase):
         self.write("os/scripts/build-thin-apps.sh", """#!/bin/bash
 set -euo pipefail
 mkdir -p target/thin-app
-printf 'fixture calculator payload' > target/thin-app/calculator
+python3 - <<'ELF'
+import os, pathlib
+header = bytearray(64)
+header[:6] = bytes([127, 69, 76, 70, 2, 1])
+header[18:20] = (62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183).to_bytes(2, 'little')
+pathlib.Path('target/thin-app/calculator').write_bytes(header)
+ELF
 chmod +x target/thin-app/calculator
 printf 'fixture runtime dylib' > target/thin-app/libruntime_dylib.so
 """)
@@ -64,13 +70,16 @@ else:
     raise SystemExit('unexpected runtime fixture invocation')
 """)
         self.write("target/release/tilo-pkg", """#!/usr/bin/env python3
-import pathlib, sys
+import pathlib, sys, os, tomllib
 a = sys.argv[1:]
 if a[0] == 'pack':
+    manifest = tomllib.loads(pathlib.Path(a[a.index('--manifest')+1]).read_text())
+    arch = os.environ['FIXTURE_ARCH']
+    assert manifest['package']['isa'] == {arch: 'v3' if arch == 'x86_64' else 'armv8-a'}
     payload = pathlib.Path(a[a.index('--payload')+1])/'bin/calculator'
     pathlib.Path(a[a.index('--output')+1]).write_bytes(payload.read_bytes())
 elif a[0] == 'verify':
-    assert pathlib.Path(a[-1]).read_bytes() == b'fixture calculator payload'
+    assert len(pathlib.Path(a[-1]).read_bytes()) == 64
 else:
     raise SystemExit('unexpected qpkg fixture invocation')
 """)
@@ -79,7 +88,8 @@ else:
                         FIXTURE_STDLIB=str(self.root / "stdlib"), TILO_RELEASE_APPS="calculator",
                         SOURCE_DATE_EPOCH="123", GITHUB_SHA="1" * 40)
         for name in ("CARGO_TARGET_DIR", "TILO_APP_RELEASE_OUT", "QPKG_PUBLISHER_IDENTITY_FILE",
-                     "RUNTIME_BUNDLE_IDENTITY_FILE", "TRUST_LIST", "MAX_QPKG_BYTES"):
+                     "RUNTIME_BUNDLE_IDENTITY_FILE", "TRUST_LIST", "MAX_QPKG_BYTES",
+                     "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET"):
             self.env.pop(name, None)
 
     def write(self, relative, content):
@@ -112,9 +122,36 @@ exit 99
         self.assertIn("application qpkg is too large", result.stderr)
         self.assertIn("pack failed: app=calculator output=", result.stderr)
         self.assertIn("calculator-0.1.0-x86_64.qpkg", result.stderr)
-        self.assertIn("exit_status=37 binary_bytes=26 limit=5242880", result.stderr)
+        self.assertIn("exit_status=37 binary_bytes=64 limit=5242880", result.stderr)
         self.assertNotIn("verify must not run", result.stderr)
         self.assertNotIn("packed app=", result.stdout)
+
+    def test_missing_source_isa_is_staged_before_pack_on_both_architectures(self):
+        manifest = self.root / "apps/calculator/tilo-app.toml"
+        manifest.write_text(re.sub(r'\[package\.isa\]\s*x86_64 = "v3"\s*',
+                                   '', manifest.read_text()))
+        for architecture in ("x86_64", "aarch64"):
+            self.env["FIXTURE_ARCH"] = architecture
+            self.command("bash", "dist/apps/package-apps.sh")
+
+    def test_wrong_arch_payload_is_rejected_before_pack(self):
+        self.env["FIXTURE_ARCH"] = "aarch64"
+        self.write("os/scripts/build-thin-apps.sh",
+                   (self.root / "os/scripts/build-thin-apps.sh").read_text().replace(
+                       "62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183", "62"))
+        result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("expected a 64-bit little-endian aarch64 ELF", result.stderr)
+        self.assertFalse(list((self.root / "dist/app-release/qpkg").glob("*.qpkg")))
+
+    def test_unrecorded_compiler_override_fails_before_build(self):
+        self.env.update(FIXTURE_ARCH="x86_64", RUSTFLAGS="-C target-cpu=native")
+        result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("RUSTFLAGS overrides", result.stderr)
+        self.assertFalse((self.root / "cargo.log").exists())
 
     def test_native_outputs_survive_actual_upload_selection_and_collection_assembly(self):
         for architecture in ("x86_64", "aarch64"):
@@ -122,9 +159,9 @@ exit 99
                 self.env["FIXTURE_ARCH"] = architecture
                 result = self.command("bash", "dist/apps/package-apps.sh")
                 self.assertIn("packing app=calculator binary=", result.stdout)
-                self.assertIn("binary_bytes=26", result.stdout)
+                self.assertIn("binary_bytes=64", result.stdout)
                 self.assertIn("packed app=calculator output=", result.stdout)
-                self.assertIn("qpkg_bytes=26 limit=5242880", result.stdout)
+                self.assertIn("qpkg_bytes=64 limit=5242880", result.stdout)
                 out = self.root / "dist/app-release"
                 artifact = self.root / "download" / architecture
                 artifact.mkdir(parents=True)

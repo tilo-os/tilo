@@ -23,6 +23,7 @@ GLOBAL_INPUTS = {
     "rust-toolchain.toml",
     "release/app-collections.toml",
     "tools/app_release.py",
+    "tools/app_package_isa.py",
     "dist/apps/package-apps.sh",
     "dist/apps/assemble-collection.sh",
     "tools/assemble_app_collection.py",
