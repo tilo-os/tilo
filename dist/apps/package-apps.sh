@@ -92,6 +92,16 @@ if [[ -z $identity ]]; then
 fi
 pubkey=$("$release_dir/tilo-runtime-bundle" key pubkey --identity "$identity")
 [[ $pubkey =~ ^[0-9a-fA-F]{64}$ ]]
+# Capture the public trust inputs from this signing invocation. These are not
+# inferred later from a downloaded package, and private identities stay in work/.
+runtime_pubkey=$("$release_dir/tilo-runtime-bundle" key pubkey --identity "$runtime_identity")
+[[ $runtime_pubkey =~ ^[0-9a-fA-F]{64}$ ]]
+python3 - "$out/work/receipt-signers.json" "$pubkey" "$runtime_pubkey" <<'PY'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "app_publisher": sys.argv[2].lower(), "runtime_publisher": sys.argv[3].lower(),
+}) + "\n")
+PY
 
 while IFS=$'\t' read -r name package binary id version manifest; do
     built="$thin_app_dir/$binary"
