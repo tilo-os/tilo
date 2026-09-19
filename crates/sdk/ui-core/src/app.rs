@@ -13672,7 +13672,6 @@ mod semantic_tree_app_tests {
         Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus,
         OperationKind, PermissionRequirement, Resource,
     };
-    use winit::keyboard::Key;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     enum CounterAction {
@@ -14570,15 +14569,10 @@ mod semantic_tree_app_tests {
         );
         assert!(observed.payloads.borrow().is_empty());
 
-        for character in "CONFIRM".chars() {
-            let mut event = action_palette_tests::synth_enter();
-            if let WindowEvent::KeyboardInput { event, .. } = &mut event {
-                let text = winit::keyboard::SmolStr::new(character.to_string());
-                event.logical_key = Key::Character(text.clone());
-                event.text = Some(text);
-            }
-            assert!(host.action_palette_handle_key(&event));
-        }
+        host.action_palette
+            .as_mut()
+            .expect("confirmation palette is open")
+            .set_query("CONFIRM");
         assert!(host.action_palette_handle_key(&action_palette_tests::synth_enter()));
         assert_eq!(
             observed.payloads.borrow().as_slice(),
