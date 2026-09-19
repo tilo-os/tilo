@@ -6,7 +6,7 @@
 
 use crate::shell::chrome_state::QuickSettingsState;
 use crate::shell::quick_settings::{PowerProfile, QsLevel};
-use crate::shell::quick_settings_drill_in::{
+use crate::shell::quick_settings::drill_in::{
     CONTROL_INSET, CONTROL_PAD, GLYPH, PANEL_PAD, RELATED_GAP, ROW_HEIGHT, SECTION_GAP,
     SIBLING_GAP, TARGET, TOGGLE_H, TOGGLE_W, centred_text_top, control_radius, leading_glyph,
     paint_control, trailing_glyph, trailing_toggle, type_size,

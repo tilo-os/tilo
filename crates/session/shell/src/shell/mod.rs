@@ -657,19 +657,6 @@ impl Shell {
         self.open_default_tile_context_menu(position);
     }
 
-    /// Entry point for `WindowEvent::DroppedFile`: classifies the item,
-    /// picks an app (Editor for code files, Files otherwise), and splices a
-    /// new `Stub` tab into the active workspace's first strip/group.
-    /// Returns the new tab id, or `None` if the path has no filename.
-    pub fn handle_file_drop(&mut self, path: &std::path::Path) -> Option<u64> {
-        workspace_drop::apply_runtime_workspace_drop_from_path(&mut self.tree, path)
-    }
-
-    #[cfg(any(test, debug_assertions))]
-    pub fn simulate_file_drop(&mut self, path: &std::path::Path) -> Option<u64> {
-        self.handle_file_drop(path)
-    }
-
     /// Populate `ctx_menu` with the tab action list and open it at
     /// `position`. The items come from [`tab_context_menu_items`], the one
     /// list the production host (`ShellOverlayHost`) builds its menu from,
