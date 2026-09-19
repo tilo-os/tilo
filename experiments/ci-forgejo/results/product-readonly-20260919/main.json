@@ -1,0 +1,36 @@
+{
+  "name": "main",
+  "commit": {
+    "id": "4b8277286ca108cc9445dbc0ddaaea72e1afc3d1",
+    "message": "Consolidate local model release tooling\n",
+    "url": "https://code.podesta.ai/qos/qos/commit/4b8277286ca108cc9445dbc0ddaaea72e1afc3d1",
+    "author": {
+      "name": "Quik2007",
+      "email": "quinten@daskju.com",
+      "username": "qwolff"
+    },
+    "committer": {
+      "name": "Quik2007",
+      "email": "quinten@daskju.com",
+      "username": "qwolff"
+    },
+    "verification": {
+      "verified": false,
+      "reason": "gpg.error.not_signed_commit",
+      "signature": "",
+      "signer": null,
+      "payload": ""
+    },
+    "timestamp": "2026-09-19T02:23:48+02:00",
+    "added": null,
+    "removed": null,
+    "modified": null
+  },
+  "protected": false,
+  "required_approvals": 0,
+  "enable_status_check": false,
+  "status_check_contexts": [],
+  "user_can_push": true,
+  "user_can_merge": true,
+  "effective_branch_protection_name": ""
+}

@@ -1,0 +1,127 @@
+{
+  "source": "https://code.podesta.ai/swagger.v1.json",
+  "collected_at": "2026-09-18T23:13:44.6729956Z",
+  "jobs_parameters": [
+    {
+      "type": "string",
+      "description": "owner of the repo",
+      "name": "owner",
+      "in": "path",
+      "required": true
+    },
+    {
+      "type": "string",
+      "description": "name of the repo",
+      "name": "repo",
+      "in": "path",
+      "required": true
+    },
+    {
+      "type": "integer",
+      "format": "int64",
+      "description": "ID of the workflow run",
+      "name": "run_id",
+      "in": "path",
+      "required": true
+    }
+  ],
+  "ActionRunJob": {
+    "description": "ActionRunJob represents a job of a run",
+    "type": "object",
+    "properties": {
+      "attempt": {
+        "description": "How many times the job has been attempted including the current attempt.",
+        "type": "integer",
+        "format": "int64",
+        "x-go-name": "Attempt"
+      },
+      "handle": {
+        "description": "Opaque identifier that uniquely identifies a single attempt of a job.",
+        "type": "string",
+        "x-go-name": "Handle"
+      },
+      "id": {
+        "description": "Identifier of this job.",
+        "type": "integer",
+        "format": "int64",
+        "x-go-name": "ID"
+      },
+      "name": {
+        "description": "the action run job name",
+        "type": "string",
+        "x-go-name": "Name"
+      },
+      "needs": {
+        "description": "the action run job needed ids",
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "x-go-name": "Needs"
+      },
+      "owner_id": {
+        "description": "the owner id",
+        "type": "integer",
+        "format": "int64",
+        "x-go-name": "OwnerID"
+      },
+      "repo_id": {
+        "description": "the repository id",
+        "type": "integer",
+        "format": "int64",
+        "x-go-name": "RepoID"
+      },
+      "run_id": {
+        "description": "Identifier of the workflow run this job belongs to.",
+        "type": "integer",
+        "format": "int64",
+        "x-go-name": "RunID"
+      },
+      "runs_on": {
+        "description": "the action run job labels to run on",
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "x-go-name": "RunsOn"
+      },
+      "status": {
+        "description": "the action run job status",
+        "type": "string",
+        "x-go-name": "Status"
+      },
+      "task_id": {
+        "description": "the action run job latest task id",
+        "type": "integer",
+        "format": "int64",
+        "x-go-name": "TaskID"
+      }
+    },
+    "x-go-package": "forgejo.org/modules/structs"
+  },
+  "ActionRun_fields": [
+    "ScheduleID",
+    "approved_by",
+    "commit_sha",
+    "created",
+    "duration",
+    "event",
+    "event_payload",
+    "html_url",
+    "id",
+    "index_in_repo",
+    "is_fork_pull_request",
+    "is_ref_deleted",
+    "need_approval",
+    "prettyref",
+    "repository",
+    "started",
+    "status",
+    "stopped",
+    "title",
+    "trigger_event",
+    "trigger_user",
+    "updated",
+    "workflow_id"
+  ]
+}

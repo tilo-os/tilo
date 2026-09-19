@@ -1,0 +1,9 @@
+{
+  "id": 22786,
+  "index_in_repo": 14,
+  "status": "waiting",
+  "created": "2026-09-18T23:12:18Z",
+  "started": "1970-01-01T00:00:00Z",
+  "workflow_id": "rerun-attempt.yml",
+  "commit_sha": "a5aaa73d482df4be13d2e596bdc0a791b827eb83"
+}

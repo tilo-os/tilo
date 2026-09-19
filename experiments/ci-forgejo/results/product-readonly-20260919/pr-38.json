@@ -1,0 +1,212 @@
+{
+  "collected_at": "2026-09-19T00:28:01.884668+00:00",
+  "pr": {
+    "number": 38,
+    "title": "Fix host-session input, app launch, and durable window close",
+    "state": "open",
+    "draft": false,
+    "merged": false,
+    "html_url": "https://code.podesta.ai/qos/qos/pulls/38",
+    "user": {
+      "login": "qwolff"
+    },
+    "head": {
+      "sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e",
+      "ref": "codex/import-host-keyboard",
+      "repo": {
+        "full_name": "qos/qos"
+      }
+    },
+    "base": {
+      "sha": "4b8277286ca108cc9445dbc0ddaaea72e1afc3d1",
+      "ref": "main",
+      "repo": {
+        "full_name": "qos/qos"
+      }
+    }
+  },
+  "files": [
+    {
+      "filename": "crates/system/settings-store/src/hardware.rs",
+      "status": "changed",
+      "additions": 2,
+      "deletions": 0
+    },
+    {
+      "filename": "shell/src/compositor/backend/drm/runtime.rs",
+      "status": "changed",
+      "additions": 35,
+      "deletions": 14
+    },
+    {
+      "filename": "shell/src/compositor/client_input.rs",
+      "status": "changed",
+      "additions": 21,
+      "deletions": 2
+    },
+    {
+      "filename": "shell/src/compositor/native.rs",
+      "status": "changed",
+      "additions": 41,
+      "deletions": 0
+    },
+    {
+      "filename": "shell/src/compositor/tab_binding.rs",
+      "status": "changed",
+      "additions": 101,
+      "deletions": 51
+    },
+    {
+      "filename": "shell/src/compositor/xwayland.rs",
+      "status": "changed",
+      "additions": 29,
+      "deletions": 0
+    },
+    {
+      "filename": "shell/src/firstboot.rs",
+      "status": "changed",
+      "additions": 80,
+      "deletions": 0
+    },
+    {
+      "filename": "shell/src/main.rs",
+      "status": "changed",
+      "additions": 11,
+      "deletions": 4
+    },
+    {
+      "filename": "shell/src/network/input_firewall.rs",
+      "status": "changed",
+      "additions": 19,
+      "deletions": 5
+    },
+    {
+      "filename": "shell/src/shell/chrome_state.rs",
+      "status": "changed",
+      "additions": 16,
+      "deletions": 0
+    },
+    {
+      "filename": "shell/src/shell/overlay_host.rs",
+      "status": "changed",
+      "additions": 180,
+      "deletions": 7
+    },
+    {
+      "filename": "shell/src/shell/state.rs",
+      "status": "changed",
+      "additions": 41,
+      "deletions": 0
+    },
+    {
+      "filename": "shell/src/wayland/color_management.rs",
+      "status": "changed",
+      "additions": 13,
+      "deletions": 12
+    }
+  ],
+  "reviews": [],
+  "runs": {
+    "workflow_runs": [
+      {
+        "id": 16516,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "release-apps.yml",
+        "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e",
+        "event": "pull_request",
+        "status": "success",
+        "started": "2026-09-05T14:07:53Z",
+        "stopped": "2026-09-05T14:22:48Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3523"
+      },
+      {
+        "id": 16515,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "package-desktop.yml",
+        "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e",
+        "event": "pull_request",
+        "status": "cancelled",
+        "started": "2026-09-05T14:06:29Z",
+        "stopped": "2026-09-06T17:25:13Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3522"
+      },
+      {
+        "id": 16514,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "lint.yml",
+        "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e",
+        "event": "pull_request",
+        "status": "success",
+        "started": "2026-09-05T14:06:24Z",
+        "stopped": "2026-09-05T14:09:52Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3521"
+      },
+      {
+        "id": 16513,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "legacy-app-e2e.yml",
+        "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e",
+        "event": "pull_request",
+        "status": "success",
+        "started": "2026-09-05T14:04:17Z",
+        "stopped": "2026-09-05T14:09:23Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3520"
+      },
+      {
+        "id": 16512,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "fs-fuse.yml",
+        "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e",
+        "event": "pull_request",
+        "status": "success",
+        "started": "2026-09-05T14:04:08Z",
+        "stopped": "2026-09-05T14:17:44Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3519"
+      },
+      {
+        "id": 16511,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "check.yml",
+        "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e",
+        "event": "pull_request",
+        "status": "failure",
+        "started": "2026-09-05T14:03:53Z",
+        "stopped": "2026-09-05T14:13:24Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3518"
+      },
+      {
+        "id": 16510,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "lint.yml",
+        "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e",
+        "event": "push",
+        "status": "cancelled",
+        "started": "2026-09-05T14:03:35Z",
+        "stopped": "2026-09-05T14:03:48Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3517"
+      }
+    ],
+    "total_count": 7
+  }
+}

@@ -1,0 +1,71 @@
+[
+  {
+    "head": "3971d4393d219918e07394ca7d3ae197dac7bb3e",
+    "current_base": "4b8277286ca108cc9445dbc0ddaaea72e1afc3d1",
+    "base_is_ancestor": false,
+    "protected_tree_difference_count": 973,
+    "protected_tree_difference_sample": [
+      ".cargo/config.toml",
+      ".config/nextest.toml",
+      ".forgejo/workflows/build-builder-image.yml",
+      ".forgejo/workflows/build-image.yml",
+      ".forgejo/workflows/build-kernel.yml",
+      ".forgejo/workflows/build-wine.yml",
+      ".forgejo/workflows/check.yml",
+      ".forgejo/workflows/development-compile.yml",
+      ".forgejo/workflows/development-disk-environment.yml",
+      ".forgejo/workflows/development-finalize.yml",
+      ".forgejo/workflows/development-inspect-guest-loaders.yml",
+      ".forgejo/workflows/development-kernel-resume.yml",
+      ".forgejo/workflows/development-kernel.yml",
+      ".forgejo/workflows/development-native-resume.yml",
+      ".forgejo/workflows/development-source.yml"
+    ]
+  },
+  {
+    "head": "f253957b7d100690a1399d9ed7b16342d39984ac",
+    "current_base": "4b8277286ca108cc9445dbc0ddaaea72e1afc3d1",
+    "base_is_ancestor": false,
+    "protected_tree_difference_count": 981,
+    "protected_tree_difference_sample": [
+      ".cargo/config.toml",
+      ".config/nextest.toml",
+      ".forgejo/actions/build-app-release/action.yml",
+      ".forgejo/actions/package-desktop-lane/action.yml",
+      ".forgejo/workflows/build-builder-image.yml",
+      ".forgejo/workflows/build-image.yml",
+      ".forgejo/workflows/build-kernel.yml",
+      ".forgejo/workflows/build-wine.yml",
+      ".forgejo/workflows/check.yml",
+      ".forgejo/workflows/development-compile.yml",
+      ".forgejo/workflows/development-disk-environment.yml",
+      ".forgejo/workflows/development-finalize.yml",
+      ".forgejo/workflows/development-inspect-guest-loaders.yml",
+      ".forgejo/workflows/development-kernel-resume.yml",
+      ".forgejo/workflows/development-kernel.yml"
+    ]
+  },
+  {
+    "head": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+    "current_base": "4b8277286ca108cc9445dbc0ddaaea72e1afc3d1",
+    "base_is_ancestor": false,
+    "protected_tree_difference_count": 979,
+    "protected_tree_difference_sample": [
+      ".cargo/config.toml",
+      ".config/nextest.toml",
+      ".forgejo/workflows/build-builder-image.yml",
+      ".forgejo/workflows/build-image.yml",
+      ".forgejo/workflows/build-kernel.yml",
+      ".forgejo/workflows/build-wine.yml",
+      ".forgejo/workflows/check.yml",
+      ".forgejo/workflows/development-compile.yml",
+      ".forgejo/workflows/development-disk-environment.yml",
+      ".forgejo/workflows/development-finalize.yml",
+      ".forgejo/workflows/development-inspect-guest-loaders.yml",
+      ".forgejo/workflows/development-kernel-resume.yml",
+      ".forgejo/workflows/development-kernel.yml",
+      ".forgejo/workflows/development-native-resume.yml",
+      ".forgejo/workflows/development-source.yml"
+    ]
+  }
+]

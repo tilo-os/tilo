@@ -1,0 +1,10 @@
+{
+  "repository": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "base": "92714aab674c7c3da23aef64bf9b286e0dde05f5",
+  "head": "f2806833e594ae657ba25a91b7411ba37f1512df",
+  "workflow": "rerun-attempt.yml",
+  "state_branch": "probe-rerun-state",
+  "run_branch": "probe-rerun-attempt",
+  "superseded_generic_head": "a5aaa73d482df4be13d2e596bdc0a791b827eb83",
+  "lane": "runner-quality"
+}
