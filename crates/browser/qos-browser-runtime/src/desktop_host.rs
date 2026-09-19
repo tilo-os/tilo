@@ -298,10 +298,34 @@ pub(crate) struct DesktopRoot {
     view_changed: bool,
 }
 impl DesktopRoot {
+    fn queue_activation_after_route_change(
+        handle: &DesktopHandle,
+        tree: &WorkspaceTree,
+        previous: Option<crate::desktop_navigation::Route>,
+    ) {
+        let selected = active_route(tree);
+        let instance = |route: &crate::desktop_navigation::Route| {
+            route.ids().ok().map(|(_, _, _, instance)| instance)
+        };
+        if previous.as_ref().and_then(instance) != selected.as_ref().and_then(instance) {
+            *handle.pending_local_activation.borrow_mut() = selected;
+        }
+    }
+
     fn apply_local(handle: &DesktopHandle, tree: &mut WorkspaceTree, intent: LocalViewIntent) {
-        let activation = matches!(intent, LocalViewIntent::Tab { .. } | LocalViewIntent::Group { .. });
-        Self::local(tree, intent.clone());
-        if activation { *handle.pending_local_activation.borrow_mut() = active_route(tree); }
+        let previous = active_route(tree);
+        Self::local(tree, intent);
+        Self::queue_activation_after_route_change(handle, tree, previous);
+    }
+
+    fn switch_workspace(handle: &DesktopHandle, tree: &mut WorkspaceTree, delta: i32) {
+        let previous = active_route(tree);
+        if let Some(index) = tree.workspaces.iter().position(|w| w.id == tree.active) {
+            let next = (index as i64 + i64::from(delta))
+                .rem_euclid(tree.workspaces.len() as i64) as usize;
+            tree.active = tree.workspaces[next].id;
+        }
+        Self::queue_activation_after_route_change(handle, tree, previous);
     }
     pub fn new(
         admission: Admission,
@@ -831,12 +855,7 @@ impl DesktopRoot {
         for intent in chrome {
             match intent {
                 qos_desktop::chrome::ChromeIntent::SwitchWorkspace(delta) => {
-                    if let Some(index) = tree.workspaces.iter().position(|w| w.id == tree.active) {
-                        let next = (index as i64 + i64::from(delta))
-                            .rem_euclid(tree.workspaces.len() as i64)
-                            as usize;
-                        tree.active = tree.workspaces[next].id;
-                    }
+                    Self::switch_workspace(&self.handle, &mut tree, delta);
                 }
                 _ => self
                     .handle
@@ -2763,6 +2782,13 @@ mod tests {
                 "cold pointer={pointer}"
             );
             assert!(
+                !access(&frame.inspection().root, "word_processor")
+                    .unwrap()
+                    .state
+                    .focused,
+                "the previous visible group must lose its focused control"
+            );
+            assert!(
                 frame.frame_output().ime.is_some(),
                 "cold Chat must expose its actual IME owner"
             );
@@ -4074,6 +4100,306 @@ mod tests {
         handle.finish_local_activation(&mut frame);
         assert_ne!(frame.inspection().keyboard_focus_owner.as_deref(), Some(chat_owner.as_str()));
         assert_eq!(handle.tree.borrow().active_group[&notes.1], notes.2);
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum LocalSelectionCase {
+        Workspace,
+        Strip,
+        Group,
+        Tab,
+        ChromeWorkspace,
+    }
+
+    fn arrange_local_selection_case(tree: &mut WorkspaceTree, case: LocalSelectionCase) {
+        let workspace = &mut tree.workspaces[0];
+        let strip = &mut workspace.strips[0];
+        let mut tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+        let first = tabs.remove(0);
+        let second = tabs.remove(2);
+        strip.window_groups[0].tabs = vec![first];
+        strip.window_groups[0].active_tab = strip.window_groups[0].tabs[0].id;
+        tree.active_strip.insert(workspace.id, strip.id);
+        tree.active_group.insert(strip.id, strip.window_groups[0].id);
+
+        match case {
+            LocalSelectionCase::Tab => {
+                strip.window_groups[0].tabs.push(second);
+            }
+            LocalSelectionCase::Group => {
+                strip.window_groups.push(WindowGroup {
+                    id: 4,
+                    active_tab: second.id,
+                    tabs: vec![second],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
+            }
+            LocalSelectionCase::Strip => {
+                workspace.strips.push(Strip {
+                    id: StripId(9),
+                    name: "Second".into(),
+                    window_groups: vec![WindowGroup {
+                        id: 90,
+                        active_tab: second.id,
+                        tabs: vec![second],
+                        width: WindowWidth::Normal,
+                        maximized: false,
+                    }],
+                });
+                tree.active_group.insert(StripId(9), 90);
+            }
+            LocalSelectionCase::Workspace | LocalSelectionCase::ChromeWorkspace => {
+                let mut second_workspace = workspace.clone();
+                second_workspace.id = WorkspaceId(9);
+                second_workspace.name = "Second".into();
+                second_workspace.strips = vec![Strip {
+                    id: StripId(9),
+                    name: "Second".into(),
+                    window_groups: vec![WindowGroup {
+                        id: 90,
+                        active_tab: second.id,
+                        tabs: vec![second],
+                        width: WindowWidth::Normal,
+                        maximized: false,
+                    }],
+                }];
+                tree.active_strip.insert(second_workspace.id, StripId(9));
+                tree.active_group.insert(StripId(9), 90);
+                tree.workspaces.push(second_workspace);
+            }
+        }
+    }
+
+    fn focused_controls_for_instance(
+        frame: &ui::headless::FrameHarness,
+        node: &ui::headless::InspectionNode,
+        instance: ui::application::InstanceId,
+    ) -> usize {
+        fn focused(node: &ui::a11y::AccessNode) -> usize {
+            usize::from(node.state.focused)
+                + node.children.iter().map(focused).sum::<usize>()
+        }
+        let here = if frame.semantic_owner_instance(&node.path) == Some(instance) {
+            node.semantics.as_ref().map_or(0, focused)
+        } else {
+            0
+        };
+        here + node.children.iter().map(|child| {
+            focused_controls_for_instance(frame, child, instance)
+        }).sum::<usize>()
+    }
+
+    fn focusable_control_for_instance(
+        frame: &ui::headless::FrameHarness,
+        node: &ui::headless::InspectionNode,
+        instance: ui::application::InstanceId,
+    ) -> Option<String> {
+        if node.focusable && frame.semantic_owner_instance(&node.path) == Some(instance) {
+            return Some(node.path.clone());
+        }
+        node.children.iter().find_map(|child| {
+            focusable_control_for_instance(frame, child, instance)
+        })
+    }
+
+    #[test]
+    fn visible_local_selections_bind_input_to_the_selected_active_instance() {
+        for case in [
+            LocalSelectionCase::Strip,
+            LocalSelectionCase::Group,
+            LocalSelectionCase::Tab,
+        ] {
+            let (root, handle, _) = fixture_with_topology(|tree| {
+                arrange_local_selection_case(tree, case);
+            });
+            let mut root = Box::new(root);
+            let root_ptr = std::ptr::from_mut(root.as_mut());
+            let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+                ui::State::new(),
+                root,
+                (1800, 900),
+                Theme::dark(),
+                ui::TextRenderer::new(),
+                ui::permissions::UserId("author".into()),
+            );
+            let initial_instance = active_route(&handle.tree.borrow())
+                .unwrap()
+                .ids()
+                .unwrap()
+                .3;
+            let initial_control = focusable_control_for_instance(
+                &frame,
+                &frame.inspection().root,
+                initial_instance,
+            )
+            .expect("initial app exposes a focusable control");
+            frame
+                .perform_semantic_named(&initial_control, None, &ui::a11y::Action::Focus)
+                .unwrap();
+            frame.relayout();
+            handle.finish_local_activation(&mut frame);
+            assert!(
+                focused_controls_for_instance(&frame, &frame.inspection().root, initial_instance) > 0,
+                "{case:?}: precondition requires a focused control in the initial app"
+            );
+
+            match case {
+                LocalSelectionCase::Workspace => {
+                    let mut tree = handle.tree.borrow_mut();
+                    DesktopRoot::apply_local(
+                        &handle,
+                        &mut tree,
+                        LocalViewIntent::Workspace(WorkspaceId(9)),
+                    );
+                    unsafe { (&mut *root_ptr).view_changed = true; }
+                }
+                LocalSelectionCase::Strip => {
+                    let mut tree = handle.tree.borrow_mut();
+                    DesktopRoot::apply_local(
+                        &handle,
+                        &mut tree,
+                        LocalViewIntent::Strip(StripId(9)),
+                    );
+                    unsafe { (&mut *root_ptr).view_changed = true; }
+                }
+                LocalSelectionCase::Group => {
+                    let mut tree = handle.tree.borrow_mut();
+                    DesktopRoot::apply_local(
+                        &handle,
+                        &mut tree,
+                        LocalViewIntent::Group { strip: StripId(2), group: 4 },
+                    );
+                    unsafe { (&mut *root_ptr).view_changed = true; }
+                }
+                LocalSelectionCase::Tab => {
+                    let target = handle.tree.borrow().workspaces[0].strips[0].window_groups[0]
+                        .tabs[1]
+                        .id;
+                    let mut tree = handle.tree.borrow_mut();
+                    DesktopRoot::apply_local(
+                        &handle,
+                        &mut tree,
+                        LocalViewIntent::Tab { group: 3, tab: target },
+                    );
+                    unsafe { (&mut *root_ptr).view_changed = true; }
+                }
+                LocalSelectionCase::ChromeWorkspace => {
+                    let mut tree = handle.tree.borrow_mut();
+                    DesktopRoot::switch_workspace(&handle, &mut tree, 1);
+                    unsafe { (&mut *root_ptr).view_changed = true; }
+                }
+            }
+            frame.relayout();
+            handle.finish_local_activation(&mut frame);
+
+            let selected_instance = active_route(&handle.tree.borrow())
+                .unwrap()
+                .ids()
+                .unwrap()
+                .3;
+            assert_ne!(selected_instance, initial_instance, "{case:?}: route changed app");
+            let owner = frame
+                .inspection()
+                .keyboard_focus_owner
+                .unwrap_or_else(|| panic!("{case:?}: selected app owns keyboard input"));
+            assert_eq!(
+                frame.semantic_owner_instance(&owner),
+                Some(selected_instance),
+                "{case:?}: keyboard owner must belong to the active route instance"
+            );
+            assert_eq!(
+                focused_controls_for_instance(&frame, &frame.inspection().root, initial_instance),
+                0,
+                "{case:?}: the previous app must not retain a focused control"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_selectors_queue_the_selected_instance_as_next_keyboard_owner() {
+        for case in [
+            LocalSelectionCase::Workspace,
+            LocalSelectionCase::ChromeWorkspace,
+        ] {
+            let (_root, handle, _) = fixture_with_topology(|tree| {
+                arrange_local_selection_case(tree, case);
+            });
+            let previous = active_route(&handle.tree.borrow()).unwrap();
+            match case {
+                LocalSelectionCase::Workspace => DesktopRoot::apply_local(
+                    &handle,
+                    &mut handle.tree.borrow_mut(),
+                    LocalViewIntent::Workspace(WorkspaceId(9)),
+                ),
+                LocalSelectionCase::ChromeWorkspace => {
+                    DesktopRoot::switch_workspace(&handle, &mut handle.tree.borrow_mut(), 1);
+                }
+                _ => unreachable!(),
+            }
+            let selected = active_route(&handle.tree.borrow()).unwrap();
+            assert_ne!(selected.ids().unwrap().3, previous.ids().unwrap().3, "{case:?}");
+            assert_eq!(
+                handle.pending_local_activation.borrow().as_ref(),
+                Some(&selected),
+                "{case:?}: queue the exact route whose instance became active"
+            );
+            assert_eq!(
+                handle.pending_local_activation.borrow().as_ref()
+                    .and_then(|route| route.ids().ok())
+                    .map(|ids| ids.3),
+                Some(selected.ids().unwrap().3),
+                "{case:?}: the queued keyboard owner must be the selected active instance"
+            );
+        }
+    }
+
+    #[test]
+    fn non_selection_local_changes_do_not_queue_activation() {
+        let (_root, handle, _) = fixture();
+        for intent in [
+            LocalViewIntent::Width {
+                group: 3,
+                width: WindowWidth::Fraction(500),
+            },
+            LocalViewIntent::Maximized {
+                group: 3,
+                maximized: true,
+            },
+        ] {
+            DesktopRoot::apply_local(&handle, &mut handle.tree.borrow_mut(), intent);
+            assert!(handle.pending_local_activation.borrow().is_none());
+        }
+    }
+
+    #[test]
+    fn admission_only_refresh_preserves_the_current_keyboard_owner() {
+        let (root, handle, _) = fixture();
+        let routes = root.resolver.host.routes.clone();
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(), Box::new(root), (1280, 720), Theme::dark(),
+            ui::TextRenderer::new(), ui::permissions::UserId("author".into()),
+        );
+        let route = serde_json::from_value::<crate::desktop_navigation::Route>(
+            handle.navigation.borrow()["entries"].as_array().unwrap().last().unwrap()["route"].clone(),
+        ).unwrap();
+        handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(), route,
+        }).unwrap();
+        let owner = frame.inspection().keyboard_focus_owner.unwrap();
+        let activation = handle.activation_sequence.get();
+
+        let tree = handle.tree.borrow().clone();
+        *handle.inbox.borrow_mut() = Some((Admission {
+            admitted_room: history_document(&tree), source_heads: vec![[8; 32]], tree, routes,
+            required: vec![], missing: vec![], unsupported: vec![], pending: 0,
+        }, handle.permissions.borrow().clone()));
+        frame.relayout();
+        handle.finish_local_activation(&mut frame);
+
+        assert!(handle.pending_local_activation.borrow().is_none());
+        assert_eq!(handle.activation_sequence.get(), activation);
+        assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some(owner.as_str()));
     }
 
     #[test]
