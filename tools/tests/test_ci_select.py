@@ -51,6 +51,18 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(row["arch"], "x86_64")
         self.assertEqual(set(row["test_packages"].split()[1::2]), set(plan["tested"]))
 
+    def test_thin_app_native_fixture_inputs_keep_a_native_first_shard(self) -> None:
+        # The real Cargo/loader fixture runs in affected shard 1, outside the
+        # quality image's Python-only discovery. Its sources must retain that
+        # execution path even when no workspace Rust source changes.
+        for path in ("os/tests/test_thin_app_selection.py", "os/scripts/build-thin-apps.sh",
+                     "dist/apps/package-apps.sh", "tools/ci/rustc-thin-app-wrapper.sh"):
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(self.metadata, self.root, [path], 2)
+                self.assertTrue(plan["rust_required"])
+                self.assertEqual([row["arch"] for row in plan["matrix"]["include"]
+                                  if row["shard"] == 1], ["x86_64"])
+
     def test_leaf_change_does_not_select_dependencies(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["leaf/src/lib.rs"], 2)
         self.assertIn("leaf", plan["selected"])

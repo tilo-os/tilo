@@ -223,6 +223,12 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
 
+      # This registry-free Cargo fixture needs a native linker. Keep it out of
+      # lightweight Python policy discovery and run once per native architecture.
+      - name: Verify thin-app Cargo target selection and runtime ABI
+        if: matrix.shard == 1
+        run: python3 os/tests/test_thin_app_selection.py -v
+
       - name: Restore Cargo downloads
         id: cargo-cache
         uses: ./.forgejo/actions/restore-cargo-downloads
