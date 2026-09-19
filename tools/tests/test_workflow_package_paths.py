@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.check_workflow_package_paths import (
+from tools.policy.check_workflow_package_paths import (
     audit,
     dependency_directories,
     pattern_covers,
@@ -102,7 +102,7 @@ jobs:
         )
 
     def test_repository_targeted_workflows_follow_package_closures(self) -> None:
-        from tools.check_workflow_package_paths import load_metadata
+        from tools.policy.check_workflow_package_paths import load_metadata
 
         repository_metadata = load_metadata(ROOT)
         relay_text = (

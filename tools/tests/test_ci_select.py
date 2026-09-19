@@ -164,7 +164,7 @@ class SelectorTests(unittest.TestCase):
     def test_ci_helper_exception_preserves_unknown_mixed_and_full_checks(self) -> None:
         self.install_quality_helpers()
         for extra in ("tools/unknown.py", ".forgejo/workflows/check.yml",
-                      "tools/run-repository-policy.sh", "os/tests/security-boundaries.sh",
+                      "tools/policy/run.sh", "os/tests/security-boundaries.sh",
                       "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci/affected_packages.py"):
             with self.subTest(extra=extra):
                 plan = ci_select.make_plan(self.metadata, self.root, ["tools/ci/affected_packages.py", extra], 2)
