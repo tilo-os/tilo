@@ -765,19 +765,13 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "live-media"))]
     #[test]
     fn screencast_is_none_without_portal() {
-        // Without the `live-media` build there is no portal support compiled
-        // in, so a share request always yields no node id and never panics.
-        #[cfg(not(feature = "live-media"))]
-        {
-            assert!(request_screencast().is_none());
-        }
-        // Under `live-media` the request performs a *real* xdg-desktop-portal
-        // ScreenCast handshake: it pops the system source picker and blocks on
-        // the user's choice. That must never run in a test / CI (it would open a
-        // dialog on the developer's desktop and hang), so the live path is
-        // exercised only by an actual share on a live session — not here.
+        // With portal support absent at compile time, a share request yields no
+        // node id and never panics. Under `live-media` this would open the real
+        // system picker, so that build intentionally has no unit-test analogue.
+        assert!(request_screencast().is_none());
     }
 
     #[test]
@@ -829,23 +823,12 @@ mod tests {
         /// Opus-decodes them back to PCM. No mock, no loopback shortcut — the
         /// bytes cross two endpoints and both codecs run.
         #[test]
+        #[ignore = "requires live network access and GStreamer Opus elements; see docs/testing-live.md"]
         fn two_peers_exchange_encoded_audio_over_quic() {
-            // Opt-in: now that `live-media` is a default feature, a plain
-            // `cargo test -p chat` compiles this in. It is deliberately NOT
-            // hermetic — it binds real iroh endpoints (whose N0 preset reaches
-            // n0's relay + DNS discovery) and requires the GStreamer Opus
-            // elements — so it must not run by default. Set
-            // CHAT_LIVE_MEDIA_TEST=1 to exercise the real QUIC + codec path.
-            if std::env::var("CHAT_LIVE_MEDIA_TEST").is_err() {
-                eprintln!("CHAT_LIVE_MEDIA_TEST not set — skipping live iroh+GStreamer loopback");
-                return;
-            }
-            // No usable network stack in this environment: skip cleanly
-            // rather than fail (the transport itself is still real).
-            let Some(mut a) = IrohTransport::try_new() else {
-                eprintln!("no iroh endpoint could bind; skipping live loopback");
-                return;
-            };
+            // This explicit live lane must fail honestly when its required
+            // network stack is unavailable; an ignored test should never turn
+            // into a reported pass through another runtime self-skip.
+            let mut a = IrohTransport::try_new().expect("first live iroh endpoint binds");
             let mut b = IrohTransport::try_new().expect("second endpoint binds once the first did");
 
             let ticket_b = b.local_ticket().expect("B publishes a real ticket");
