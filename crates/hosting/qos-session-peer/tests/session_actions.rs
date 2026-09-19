@@ -817,6 +817,98 @@ async fn invoke_and_observe(
 }
 
 #[cfg(feature = "test-support")]
+fn active_replacement_state_delta(signed: &qos_peer_state::NeighbourMsg) -> Vec<u8> {
+    let (channel, kind) = qos_peer_state::transport::retention(signed, false)
+        .expect("active replacement requires retained application state");
+    assert_eq!(kind, qos_peer_state::transport::Retention::Delta);
+    qos_relay::coedit::CoeditPayload::RetainedDelta {
+        channel,
+        body: postcard::to_stdvec(signed).unwrap(),
+    }
+    .encode()
+    .unwrap()
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn active_replacement_state_delta_is_a_provable_retained_tail() {
+    use qos_peer_state::{
+        NeighbourMsg,
+        retained_proof::{RetentionAuthority, RoomInput, verify_room, verify_snapshot},
+        transport::retention,
+    };
+    use qos_relay::coedit::CoeditPayload;
+    use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
+
+    let temp = tempfile::tempdir().unwrap();
+    let owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+    let key = qos_user_identity::persist::read_device_key(
+        &qos_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
+            .device_privkey,
+    )
+    .unwrap();
+    let source = key.verifying_key().to_bytes();
+    let authority =
+        RetentionAuthority::new(owner.peer().room(), owner.peer().authority().clone()).unwrap();
+    let messages = owner
+        .outgoing()
+        .iter()
+        .map(|bytes| postcard::from_bytes::<NeighbourMsg>(bytes).unwrap())
+        .collect::<Vec<_>>();
+    let room_message = messages
+        .iter()
+        .find(|msg| matches!(msg, NeighbourMsg::SyncResp { .. }))
+        .unwrap();
+    let room = verify_room(
+        &authority,
+        source,
+        retention(room_message, true).unwrap().0,
+        &postcard::to_stdvec(room_message).unwrap(),
+        RoomInput::Checkpoint,
+        None,
+    )
+    .unwrap();
+    let snapshot_message = messages.iter().find(|msg| matches!(msg, NeighbourMsg::AppDocument { app_id, .. } if app_id == "dev.qos.notes")).unwrap();
+    let snapshot = verify_snapshot(
+        &room,
+        source,
+        retention(snapshot_message, true).unwrap().0,
+        &postcard::to_stdvec(snapshot_message).unwrap(),
+    )
+    .unwrap();
+    let route = snapshot.coverage();
+    let mut doc =
+        AutoCommit::load(&owner.peer().document(&route.app, &route.record).unwrap()).unwrap();
+    doc.set_actor(ui::automerge::ActorId::from(source.to_vec()));
+    let _ = doc.save_incremental();
+    doc.put(ROOT, "active-action-state-proof", "contract increment")
+        .unwrap();
+    doc.commit();
+    let signed = owner
+        .peer()
+        .clone()
+        .signed_mutation(
+            &route.app,
+            &route.record,
+            collab_types::DocumentMutation::Incremental(doc.save_incremental()),
+            &key,
+            web_time::SystemTime::now(),
+        )
+        .unwrap();
+    let CoeditPayload::RetainedDelta { channel, body } =
+        CoeditPayload::decode(&active_replacement_state_delta(&signed)).unwrap()
+    else {
+        panic!("fixture must retain the signed incremental body");
+    };
+    assert_eq!(body, postcard::to_stdvec(&signed).unwrap());
+    assert!(
+        snapshot.tail_ready_after_snapshot(source, channel, &body),
+        "actual fixture frame must satisfy the production signed-route and replay-tail proof: {:?}",
+        snapshot.classify_tail(source, channel, &body)
+    );
+}
+
+#[cfg(feature = "test-support")]
 async fn active_replacement(
     host: &mut Host,
     origin: &str,
@@ -923,15 +1015,7 @@ async fn active_replacement(
             workspace_id: qos_relay::room_workspace_id(&room.to_string()).unwrap(),
             author_device_public_key: cert.device_public_key,
             authored_at_ns: qos_relay::clock::now_ns(),
-            delta: qos_relay::coedit::CoeditPayload::RetainedDelta {
-                channel: *blake3::hash(
-                    format!("{room}/{}/{}", row.app_id, row.record_id).as_bytes(),
-                )
-                .as_bytes(),
-                body: postcard::to_stdvec(&signed).unwrap(),
-            }
-            .encode()
-            .unwrap(),
+            delta: active_replacement_state_delta(&signed),
             signature: [0; 64],
         })
         .unwrap();
