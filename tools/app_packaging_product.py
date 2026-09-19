@@ -23,6 +23,7 @@ from resolve_ci_builder import resolve
 REPO = 'qos/qos'
 WORKFLOW = 'release-apps.yml'
 REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
+                  'tools/ci_python.py',
                   'tools/app_packaging_product.py', 'tools/app_packaging_coordinator.py',
                   'tools/app_packaging_qualification.py', 'tools/app_release.py',
                   'tools/app_packaging_plan.py', 'tools/ci_select.py',

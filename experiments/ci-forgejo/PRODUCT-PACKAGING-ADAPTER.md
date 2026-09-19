@@ -131,6 +131,13 @@ baseline does not claim a downloadable release has been published.
    cases. The callback still requires fresh artifact provenance checks.
    The implemented zero-app path requires the trusted plan provenance above;
    it records handled work without advancing package/publication evidence.
+   Every plan-job Python helper runs through pinned `tools/ci_python.py` using
+   `python3 -I`. The launcher appends local tools after standard-library paths
+   and uses a fresh private bytecode cache namespace, so candidate modules,
+   `PYTHONPATH`/user site hooks and candidate `__pycache__` cannot replace those
+   imports. The local import closure is plan → qualification → product →
+   coordinator/resolver, and app selector → ci_select; all are required pins.
+   The immutable CI image remains trusted for its interpreter and system site.
    This path is locally tested, not operationally qualified: a live fixture must
    establish that `GITHUB_RUN_ID` is the API's internal run ID and that
    `github.run_attempt` identifies the current plan job's `attempt`, including a
