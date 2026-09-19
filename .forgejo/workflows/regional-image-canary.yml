@@ -1,0 +1,27 @@
+name: Regional image cold-start canary
+
+on:
+  pull_request:
+    paths:
+      - .forgejo/workflows/regional-image-canary.yml
+
+jobs:
+  python-guard:
+    runs-on: oregon-canary-python-guard
+    steps:
+      - run: python --version
+
+  runner:
+    runs-on: oregon-canary-runner
+    steps:
+      - run: test -x /bin/sh
+
+  ci-fast:
+    runs-on: oregon-canary-ci-fast
+    steps:
+      - run: test -x /bin/sh
+
+  release-tools:
+    runs-on: oregon-canary-release-tools
+    steps:
+      - run: gawk --version >/dev/null && grep --version >/dev/null
