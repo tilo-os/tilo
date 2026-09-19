@@ -1,0 +1,174 @@
+{
+  "expected_head": "1e1484d2e8dbef46924115492af9f8d354f24091",
+  "final_head": "718131ea799faf032bc923d04239d1933dc457e2",
+  "final_manifest": {
+    "architectures": {
+      "aarch64": {
+        "architecture": "aarch64",
+        "artifact_commit": "1fbc811e12fc9f65f70533697c1f802f57c48aaa",
+        "runtime": {
+          "publisher": "1111111111111111111111111111111111111111111111111111111111111111",
+          "root_hash": "bc28108c2e39a544e172028477b38340bdec41126982cec57776637636cd1e3e",
+          "version": "fixture-1"
+        },
+        "sha256": "23b13644556e256f250ad0a75b7bb24bfe5d551102cacb96fc90fef9365abfa6",
+        "source_sha": "94b3f3bbfd4d061efaf948245e882d3f98e3014f",
+        "url": "https://code.podesta.ai/api/v1/repos/qos/ci-workflow-pilot-20260918-9245-repeat/raw/fixture-artifacts/aarch64.json?ref=1fbc811e12fc9f65f70533697c1f802f57c48aaa"
+      },
+      "x86_64": {
+        "architecture": "x86_64",
+        "artifact_commit": "1b6afe2cf667b206a48673782086cd18e555a261",
+        "runtime": {
+          "publisher": "1111111111111111111111111111111111111111111111111111111111111111",
+          "root_hash": "57963fbafacc679548526e11874ca28a251ec4dcce2d69e6bb434e90436bb1c1",
+          "version": "fixture-2R"
+        },
+        "sha256": "b33373a3d91d2dcd6be492a22c91f3bace28f164fd7cd72ef9fd90f53a7ba077",
+        "source_sha": "a335a2752c50eeeadaa128f6b1ef7ecee8ff64d0",
+        "url": "https://code.podesta.ai/api/v1/repos/qos/ci-workflow-pilot-20260918-9245-repeat/raw/fixture-artifacts/x86_64.json?ref=1b6afe2cf667b206a48673782086cd18e555a261"
+      }
+    },
+    "generation": 2,
+    "previous_channel_commit": "1e1484d2e8dbef46924115492af9f8d354f24091",
+    "schema": 1,
+    "source_sha": "a335a2752c50eeeadaa128f6b1ef7ecee8ff64d0"
+  },
+  "initial_manifest": {
+    "architectures": {
+      "aarch64": {
+        "architecture": "aarch64",
+        "artifact_commit": "1fbc811e12fc9f65f70533697c1f802f57c48aaa",
+        "runtime": {
+          "publisher": "1111111111111111111111111111111111111111111111111111111111111111",
+          "root_hash": "bc28108c2e39a544e172028477b38340bdec41126982cec57776637636cd1e3e",
+          "version": "fixture-1"
+        },
+        "sha256": "23b13644556e256f250ad0a75b7bb24bfe5d551102cacb96fc90fef9365abfa6",
+        "source_sha": "94b3f3bbfd4d061efaf948245e882d3f98e3014f",
+        "url": "https://code.podesta.ai/api/v1/repos/qos/ci-workflow-pilot-20260918-9245-repeat/raw/fixture-artifacts/aarch64.json?ref=1fbc811e12fc9f65f70533697c1f802f57c48aaa"
+      },
+      "x86_64": {
+        "architecture": "x86_64",
+        "artifact_commit": "43f86048a6613cf9feeca03cdaa07eb9b16ebecb",
+        "runtime": {
+          "publisher": "1111111111111111111111111111111111111111111111111111111111111111",
+          "root_hash": "be17bbbf568c9bc12ff459ac80c15bb032dd28b0ca29f61b4e74077d1bd7fc23",
+          "version": "fixture-1"
+        },
+        "sha256": "356b2b8432e89bbd8f3b9267611442112095e546977d8904446e89fe85a585bc",
+        "source_sha": "94b3f3bbfd4d061efaf948245e882d3f98e3014f",
+        "url": "https://code.podesta.ai/api/v1/repos/qos/ci-workflow-pilot-20260918-9245-repeat/raw/fixture-artifacts/x86_64.json?ref=43f86048a6613cf9feeca03cdaa07eb9b16ebecb"
+      }
+    },
+    "generation": 1,
+    "previous_channel_commit": "94b3f3bbfd4d061efaf948245e882d3f98e3014f",
+    "schema": 1,
+    "source_sha": "94b3f3bbfd4d061efaf948245e882d3f98e3014f"
+  },
+  "outcomes": [
+    {
+      "candidate": "372db30d0cbae9342c883faf5f8182314a2c65c8",
+      "error": "RuntimeError",
+      "observed_head": "718131ea799faf032bc923d04239d1933dc457e2",
+      "outcome": "not-current"
+    },
+    {
+      "candidate": "718131ea799faf032bc923d04239d1933dc457e2",
+      "observed_head": "718131ea799faf032bc923d04239d1933dc457e2",
+      "outcome": "promoted"
+    }
+  ],
+  "prepared": [
+    {
+      "candidate": "372db30d0cbae9342c883faf5f8182314a2c65c8",
+      "expected_head": "1e1484d2e8dbef46924115492af9f8d354f24091",
+      "manifest": {
+        "architectures": {
+          "aarch64": {
+            "architecture": "aarch64",
+            "artifact_commit": "1fbc811e12fc9f65f70533697c1f802f57c48aaa",
+            "runtime": {
+              "publisher": "1111111111111111111111111111111111111111111111111111111111111111",
+              "root_hash": "bc28108c2e39a544e172028477b38340bdec41126982cec57776637636cd1e3e",
+              "version": "fixture-1"
+            },
+            "sha256": "23b13644556e256f250ad0a75b7bb24bfe5d551102cacb96fc90fef9365abfa6",
+            "source_sha": "94b3f3bbfd4d061efaf948245e882d3f98e3014f",
+            "url": "https://code.podesta.ai/api/v1/repos/qos/ci-workflow-pilot-20260918-9245-repeat/raw/fixture-artifacts/aarch64.json?ref=1fbc811e12fc9f65f70533697c1f802f57c48aaa"
+          },
+          "x86_64": {
+            "architecture": "x86_64",
+            "artifact_commit": "571e4ba30bc431aa442140304d037916e9921b6a",
+            "runtime": {
+              "publisher": "1111111111111111111111111111111111111111111111111111111111111111",
+              "root_hash": "67351a0f351edebc031e2eca659162b1f807fb4feaa56a371e6350f2f1ba12f2",
+              "version": "fixture-2L"
+            },
+            "sha256": "517e7d35fd8faabf4879d13934ae9f73b6c20f2f22c30bd193ad6a1bf9567346",
+            "source_sha": "a335a2752c50eeeadaa128f6b1ef7ecee8ff64d0",
+            "url": "https://code.podesta.ai/api/v1/repos/qos/ci-workflow-pilot-20260918-9245-repeat/raw/fixture-artifacts/x86_64.json?ref=571e4ba30bc431aa442140304d037916e9921b6a"
+          }
+        },
+        "generation": 2,
+        "previous_channel_commit": "1e1484d2e8dbef46924115492af9f8d354f24091",
+        "schema": 1,
+        "source_sha": "a335a2752c50eeeadaa128f6b1ef7ecee8ff64d0"
+      }
+    },
+    {
+      "candidate": "718131ea799faf032bc923d04239d1933dc457e2",
+      "expected_head": "1e1484d2e8dbef46924115492af9f8d354f24091",
+      "manifest": {
+        "architectures": {
+          "aarch64": {
+            "architecture": "aarch64",
+            "artifact_commit": "1fbc811e12fc9f65f70533697c1f802f57c48aaa",
+            "runtime": {
+              "publisher": "1111111111111111111111111111111111111111111111111111111111111111",
+              "root_hash": "bc28108c2e39a544e172028477b38340bdec41126982cec57776637636cd1e3e",
+              "version": "fixture-1"
+            },
+            "sha256": "23b13644556e256f250ad0a75b7bb24bfe5d551102cacb96fc90fef9365abfa6",
+            "source_sha": "94b3f3bbfd4d061efaf948245e882d3f98e3014f",
+            "url": "https://code.podesta.ai/api/v1/repos/qos/ci-workflow-pilot-20260918-9245-repeat/raw/fixture-artifacts/aarch64.json?ref=1fbc811e12fc9f65f70533697c1f802f57c48aaa"
+          },
+          "x86_64": {
+            "architecture": "x86_64",
+            "artifact_commit": "1b6afe2cf667b206a48673782086cd18e555a261",
+            "runtime": {
+              "publisher": "1111111111111111111111111111111111111111111111111111111111111111",
+              "root_hash": "57963fbafacc679548526e11874ca28a251ec4dcce2d69e6bb434e90436bb1c1",
+              "version": "fixture-2R"
+            },
+            "sha256": "b33373a3d91d2dcd6be492a22c91f3bace28f164fd7cd72ef9fd90f53a7ba077",
+            "source_sha": "a335a2752c50eeeadaa128f6b1ef7ecee8ff64d0",
+            "url": "https://code.podesta.ai/api/v1/repos/qos/ci-workflow-pilot-20260918-9245-repeat/raw/fixture-artifacts/x86_64.json?ref=1b6afe2cf667b206a48673782086cd18e555a261"
+          }
+        },
+        "generation": 2,
+        "previous_channel_commit": "1e1484d2e8dbef46924115492af9f8d354f24091",
+        "schema": 1,
+        "source_sha": "a335a2752c50eeeadaa128f6b1ef7ecee8ff64d0"
+      }
+    }
+  ],
+  "production_publishing": false,
+  "pushes": [
+    {
+      "accepted": false,
+      "output": "error: failed to push some refs to 'ssh://code.podesta.ai/qos/ci-workflow-pilot-20260918-9245-repeat.git'"
+    },
+    {
+      "accepted": true,
+      "output": "To ssh://code.podesta.ai/qos/ci-workflow-pilot-20260918-9245-repeat.git\n \t718131ea799faf032bc923d04239d1933dc457e2:refs/heads/probe-atomic-app-channel-20260919\t1e1484d..718131e\nDone\n"
+    }
+  ],
+  "ref": "refs/heads/probe-atomic-app-channel-20260919",
+  "repository": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "restart_stale_attempt": {
+    "generation": 1000,
+    "reason": "source ancestry regression",
+    "returncode": 1,
+    "source_sha": "94b3f3bbfd4d061efaf948245e882d3f98e3014f"
+  }
+}
