@@ -27,7 +27,8 @@ The existing trusted coordinator policy additionally supplies:
 - `service_user_id`: exact positive user ID; `/user` must return that ID and
   `is_admin=false`. The credential comes only from the dedicated token file.
 - `builder_image`, `collection`, `architectures`: the single central desired
-  product scope. The source is always the freshly read `qos/qos` `main` SHA.
+  product scope. Normal ticks observe the freshly read `qos/qos` `main` SHA;
+  explicit recovery retains the active intent's immutable source.
 - `final_receipt_policy_sha256`: exact bytes of the separately mounted final
   policy, already required by the product adapter.
 - `bundle_compatibility_approved`: explicitly `true` only after the platform
@@ -50,11 +51,40 @@ needs read access to the private repository/artifacts and verifier package, plus
 permission to dispatch this workflow. Server-side grants still require separate
 qualification; client route restrictions do not replace least-privilege grants.
 
-Every applied invocation observes the latest desired identity and calls the
+Every normal applied invocation observes the latest desired identity and calls the
 existing state machine once. Repeated observations do not increment the sequence.
 An uncertain dispatch remains `reconcile-required` and is never automatically
 resent. This entrypoint does not introduce a reconciliation heuristic or conceal
 the outstanding state.
+
+An operator can bind an existing active intent to an explicitly identified run
+with the same managed entrypoint and mounts:
+
+```sh
+python3 -I tools/ci/python.py tools/app_packaging_service.py \
+  --state /state/coordinator.sqlite \
+  --policy /etc/packaging/coordinator.json \
+  --final-policy /etc/packaging/final-policy.json \
+  --token-file /var/run/packaging-token/token --apply --reconcile-run-id RUN_ID
+```
+
+Replace `RUN_ID` with the positive numeric ID from independent API readback.
+Recovery takes the same exclusive lock, authenticates the dedicated non-admin
+identity and uses a GET-only transport. It neither observes a new main SHA nor
+dispatches a workflow. The active source must still match the current trusted
+policy files. The returned run must match the requested ID, repository, workflow,
+immutable source/ref, dedicated trigger user, and every original dispatch input,
+including `coordinator_intent`. Missing intent metadata, a rotated policy, an
+unrelated run or an already-bound different ID fails closed. Successful workflow
+status alone never advances a packaging baseline: the existing trusted no-build
+or final-artifact acceptance is still required.
+
+There is no automatic run discovery or retry. Do not infer a run from timestamps,
+the newest run, or source SHA alone, and do not clear an uncertain intent to resend
+it. If the server cannot provide the original input/actor metadata, leave recovery
+blocked. Local tests exercise this path, but qualification of a real accepted
+Forgejo dispatch whose response is lost remains a separate rollout requirement;
+the retained two-Pod storage experiment only simulated dispatch loss.
 
 Install these reviewed files outside candidate checkouts in the immutable source
 bundle, preserving `tools/` paths:
