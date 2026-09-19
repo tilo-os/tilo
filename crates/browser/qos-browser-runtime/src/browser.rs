@@ -54,12 +54,14 @@ struct Config {
     #[serde(default)]
     semantics_window_ms: Option<u64>,
 }
-/// Default publication window: disabled. A 100 ms window measured 18.2 ms mean
-/// typing capacity against 24.3 ms, but with it the relay replayed the room's
-/// retained deltas back in bursts of hundreds (see the 2026-09-18 batching
-/// qualification), so the window stays at zero until that protocol interaction
-/// is understood. Hosts and benchmarks can still set `publication_window_ms`.
-const PUBLICATION_WINDOW_MS: u64 = 0;
+/// Default publication window. Changed records publish at most once per window
+/// while edits keep arriving; close, hide, focus loss, IME end and peer rebind
+/// publish immediately, so only a hard tab kill inside the window loses edits.
+/// Requires a native session peer with checkpoint cadence (2026-09-19): older
+/// natives re-published a multi-megabyte checkpoint per delta, and with sparser
+/// deltas the relay dropped them for backpressure and replayed the room on
+/// reconnect. Hosts and benchmarks can override with `publication_window_ms`.
+const PUBLICATION_WINDOW_MS: u64 = 100;
 fn publication_schedule(window_ms: Option<u64>) -> RefCell<crate::admitted_records::PublicationSchedule> {
     RefCell::new(crate::admitted_records::PublicationSchedule::new(std::time::Duration::from_millis(window_ms.unwrap_or(PUBLICATION_WINDOW_MS))))
 }
