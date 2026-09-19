@@ -48,13 +48,25 @@ class PlanProducerTests(unittest.TestCase):
             (tools / 'apps').mkdir()
             for name in ('ci/python.py', 'ci/__init__.py', 'ci/resolve_builder.py',
                          'app_packaging_plan.py', 'app_packaging_qualification.py',
-                         'app_packaging_product.py', 'app_packaging_coordinator.py'):
+                         'app_packaging_contract.py'):
                 shutil.copyfile(Path(plan.__file__).parent / name, tools / name)
             poison = "open('shadow-executed', 'w').write('bad'); raise RuntimeError('candidate module executed')\n"
+            # Workflow planning must not import controller implementation, even
+            # when candidate copies are present and would execute if imported.
+            for name in ('app_packaging_product.py', 'app_packaging_coordinator.py',
+                         'app_packaging_service.py', 'accept_app_artifacts.py'):
+                (tools / name).write_text(poison)
             for name in ('hashlib.py', 'json.py', 'sitecustomize.py', 'msvcrt.py', '_winapi.py'):
                 (tools / name).write_text(poison)
                 (root / name).write_text(poison)
                 (tools / 'apps' / name).write_text(poison)
+            (root / '.cargo').mkdir()
+            source_root = Path(plan.__file__).resolve().parents[1]
+            for name in ('rust-toolchain.toml', '.cargo/config.toml'):
+                shutil.copyfile(source_root / name, root / name)
+            subprocess.run([sys.executable, '-I', str(tools / 'ci/python.py'),
+                            str(tools / 'app_packaging_qualification.py')], cwd=root,
+                           env=dict(os.environ, **self.env), capture_output=True, text=True, check=True)
             # Even an unchecked-hash cache for a pinned local dependency must
             # not execute in place of that dependency's verified source bytes.
             malicious = root / 'malicious.py'
@@ -134,6 +146,7 @@ class PlanProducerTests(unittest.TestCase):
         for module, relative in (
             ('app_channel_manifest', 'apps/app_channel_manifest.py'),
             ('app_packaging_product', 'app_packaging_product.py'),
+            ('app_packaging_contract', 'app_packaging_contract.py'),
             ('ci.resolve_builder', 'ci/resolve_builder.py'),
             ('ci.affected_packages', 'ci/affected_packages.py'),
         ):
