@@ -10,7 +10,6 @@ on:
     tags: ["v*"]
     paths:
       - "tools/ci/workflow_applicability.py"
-      - "tools/ci/prepare_pr_history.py"
       - "os/kernel/**"
       - "crates/system/tilo-crypto/**"
       - "os/tests/kernel_module_signing_test.sh"
