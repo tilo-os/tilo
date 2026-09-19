@@ -1,0 +1,94 @@
+name: Qualification / current runtime publisher
+on:
+  workflow_dispatch:
+    inputs:
+      expected_source:
+        description: Exact reviewed 40-hex workflow commit dispatched by SHA
+        required: true
+        type: string
+
+jobs:
+  public-identity:
+    if: github.repository == 'qos/qos' && github.event_name == 'workflow_dispatch' && github.sha == github.event.inputs.expected_source
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a
+      credentials:
+        username: qos-packaging-controller
+        password: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}
+    steps:
+      - name: Derive only the public identity through the pinned production CLI
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.inputs.expected_source }}
+          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ secrets.RUNTIME_BUNDLE_SIGNING_KEY }}
+        run: |
+          python3 -I - <<'PY'
+          import gzip, hashlib, io, json, os, pathlib, re, resource, subprocess, tarfile, tempfile, time, urllib.request
+          resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+          source = os.environ.get('GITHUB_SHA', '')
+          identity = os.environ.pop('RUNTIME_BUNDLE_SIGNING_KEY', '')
+          token = os.environ.pop('VERIFIER_BUNDLE_READ_TOKEN', '')
+          bundle_sha = '10ad658a452b21545cf2521fa875536da5d951ee8dd509533251a0a3a0517bde'
+          runtime_sha = 'a5acd17e85ad7715d530b6ef10a8fefa1a7f875421dea8dcaffebcfbeaf77838'
+          result = {'source_sha': source, 'bundle_sha256': bundle_sha,
+                    'runtime_binary_sha256': runtime_sha, 'result': 'failed'}
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  return None
+          try:
+              assert (os.environ.get('GITHUB_REPOSITORY') == 'qos/qos'
+                      and os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
+                      and re.fullmatch('[0-9a-f]{40}', source)
+                      and source == os.environ.get('EXPECTED_SOURCE_SHA'))
+              assert token and identity and len(identity) <= 4096
+              # Match the production Identity::from_json_bytes seed contract.
+              parsed = json.loads(identity)
+              assert isinstance(parsed, dict) and re.fullmatch('[0-9a-fA-F]{64}', parsed.get('secret_key_hex', ''))
+              url = ('https://code.podesta.ai/api/packages/qos/generic/'
+                     'tilo-canonical-verifiers/' + bundle_sha + '/x86_64.tar.gz')
+              opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+              request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token})
+              expected_size = 6113401
+              payload = bytearray()
+              deadline = time.monotonic() + 90
+              with opener.open(request, timeout=30) as response:
+                  assert response.status == 200 and response.geturl() == url
+                  while True:
+                      assert time.monotonic() < deadline
+                      chunk = response.read1(min(65536, expected_size + 1 - len(payload)))
+                      if not chunk:
+                          break
+                      payload.extend(chunk)
+                      assert len(payload) <= expected_size
+              assert len(payload) == expected_size and hashlib.sha256(payload).hexdigest() == bundle_sha
+              with gzip.GzipFile(fileobj=io.BytesIO(payload)) as compressed:
+                  expanded = compressed.read(64 * 1024**2 + 1)
+              assert len(expanded) <= 64 * 1024**2
+              with tarfile.open(fileobj=io.BytesIO(expanded), mode='r:') as archive:
+                  members = archive.getmembers()
+                  assert len(members) == 4 and all(member.isfile() for member in members)
+                  assert {member.name for member in members} == {'manifest.json', 'canonical_app_verifier.py', 'tilo-pkg', 'tilo-runtime-bundle'}
+                  binary = archive.extractfile('tilo-runtime-bundle').read()
+              assert hashlib.sha256(binary).hexdigest() == runtime_sha
+              with tempfile.TemporaryDirectory(prefix='tilo-runtime-public-') as directory:
+                  tool = pathlib.Path(directory) / 'tilo-runtime-bundle'
+                  tool.write_bytes(binary)
+                  tool.chmod(0o500)
+                  # Identity::load reads stdin via /proc. The private JSON never
+                  # appears in argv, a plaintext file, artifact, log or output.
+                  completed = subprocess.run([str(tool), 'key', 'pubkey', '--identity', '/proc/self/fd/0'],
+                      input=identity.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                      timeout=30, env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
+                  assert completed.returncode == 0
+                  public = completed.stdout.decode('ascii').strip()
+                  assert re.fullmatch('[0-9a-f]{64}', public)
+              result.update(result='passed', runtime_publisher=public)
+          except Exception:
+              # Parsing, transport and child diagnostics may contain credentials.
+              # Never print an exception or captured stderr for this probe.
+              pass
+          print('TILO_RUNTIME_PUBLIC_IDENTITY ' + json.dumps(result, sort_keys=True))
+          raise SystemExit(0 if result['result'] == 'passed' else 1)
+          PY
