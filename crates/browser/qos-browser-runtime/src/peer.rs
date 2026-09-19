@@ -65,6 +65,9 @@ struct Peer {
     _key: SigningKey,
     callback: js_sys::Function,
     closed: std::cell::Cell<bool>,
+    /// Last full status report, reused (with refreshed cheap fields) by the
+    /// pre-commit publication and acknowledgement paths while the peer is ready.
+    last_report: RefCell<Option<serde_json::Value>>,
 }
 thread_local! {static PEERS:RefCell<BTreeMap<u32,Rc<Peer>>>=const{RefCell::new(BTreeMap::new())};static NEXT:std::cell::Cell<u32>=const{std::cell::Cell::new(1)};}
 fn error(e: impl ToString) -> JsValue {
@@ -89,9 +92,28 @@ fn report(peer: &Peer, phase: &str, error: Option<String>) {
     let health=health(peer,&state,phase=="ready",error.as_deref());
     let synchronized=health["records"].as_array().is_some_and(|records|!records.is_empty()&&records.iter().all(|record|record["acknowledgement"]["coversCurrentBasis"]==true));
     let value = serde_json::json!({"phase":phase,"desktop":{"version":1,"mode":"session"},"room":state.room(),"deviceId":peer._key.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>(),"records":state.rows(),"pendingPrerequisites":state.pending_count(),"persistenceNeeded":!peer.cache.pending_writes().is_empty(),"outgoingPending":peer.outbox.borrow().len(),"outgoingBlocked":outgoing.blocked_expired,"synchronization":if outgoing.blocked_expired>0{"blocked"}else if synchronized{"acknowledged"}else{"pending"},"error":error,"health":health});
-    let _ = peer
-        .callback
-        .call1(&JsValue::NULL, &JsValue::from_str(&value.to_string()));
+    let text = value.to_string();
+    *peer.last_report.borrow_mut() = Some(value);
+    let _ = peer.callback.call1(&JsValue::NULL, &JsValue::from_str(&text));
+}
+/// Report between commit boundaries without recomputing health. A typed key
+/// otherwise computed the full health report three times (publication,
+/// acknowledgement, committed). Only the cheap, exact fields are refreshed; the
+/// durable/save details of the cached health lag by at most one commit cycle,
+/// which `peer_committed` and every transport or failure path then refresh.
+/// Before the peer has ever been ready, or without a cached report, this is a
+/// full report.
+fn report_light(peer: &Peer) {
+    let cached = peer.last_report.borrow().clone();
+    match cached {
+        Some(mut value) if peer.was_ready.get() && value["phase"] == "ready" => {
+            value["records"] = serde_json::json!(peer.state.borrow().rows());
+            value["persistenceNeeded"] = serde_json::json!(!peer.cache.pending_writes().is_empty());
+            value["outgoingPending"] = serde_json::json!(peer.outbox.borrow().len());
+            let _ = peer.callback.call1(&JsValue::NULL, &JsValue::from_str(&value.to_string()));
+        }
+        _ => report(peer, "admitting", None),
+    }
 }
 #[wasm_bindgen]
 pub async fn connect_peer(
@@ -233,7 +255,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
         health_projection: RefCell::default(),actions: RefCell::default(),action_v2: std::cell::Cell::new(action_v2),
         admission_failure: RefCell::new(None),was_ready: std::cell::Cell::new(false),published: RefCell::new(BTreeSet::new()),
         id,cache,outbox:RefCell::new(outbox),endpoint:RefCell::new(Some(endpoint.clone())),session:RefCell::new(Some(session.clone())),state:RefCell::new(state),_key:key,
-        callback:callback.ok_or_else(||error("missing status callback"))?,closed:std::cell::Cell::new(false),transport_generation:std::cell::Cell::new(1),transport_connected:std::cell::Cell::new(true),rejected_checkpoints:RefCell::new(BTreeSet::new()),last_relay_contact:std::cell::Cell::new(None),last_peer_contact:std::cell::Cell::new(None),batches:RefCell::new(BTreeMap::new()),next_batch:std::cell::Cell::new(0),storage_epoch:RefCell::new(None),committed_at:std::cell::Cell::new(None),
+        callback:callback.ok_or_else(||error("missing status callback"))?,closed:std::cell::Cell::new(false),last_report:RefCell::new(None),transport_generation:std::cell::Cell::new(1),transport_connected:std::cell::Cell::new(true),rejected_checkpoints:RefCell::new(BTreeSet::new()),last_relay_contact:std::cell::Cell::new(None),last_peer_contact:std::cell::Cell::new(None),batches:RefCell::new(BTreeMap::new()),next_batch:std::cell::Cell::new(0),storage_epoch:RefCell::new(None),committed_at:std::cell::Cell::new(None),
     })};
     let transport_generation=peer.transport_generation.get();
     let hello = NeighbourMsg::IdentityHello {
@@ -482,7 +504,7 @@ pub(crate) fn local_owned_document(id: u32, app: &str, record: &str, mut current
         stage_journal(&peer, &candidate, &outbox)?;
         *peer.state.borrow_mut() = candidate;
         *peer.outbox.borrow_mut() = outbox;
-        report(&peer, "admitting", None);
+        report_light(&peer);
         Ok(())
     })
 }
@@ -602,7 +624,7 @@ pub fn acknowledge_peer_storage_batch(id:u32,raw:String)->Result<(),JsValue>{
         *peer.storage_epoch.borrow_mut()=Some(result.epoch);
         for write in writes{peer.cache.acknowledge(&write,if result.result.ok{Ok(())}else{Err(result.result.code.clone().unwrap_or_else(||"storage-transaction-failed".into()))}).map_err(error)?;}
         if result.result.ok{peer.committed_at.set(Some(result.observed_at_ms));}
-        report(&peer,"admitting",None);Ok(())
+        report_light(&peer);Ok(())
     })
 }
 fn required_read_failure(peer:&Peer,state:&StatePeer)->Option<String>{

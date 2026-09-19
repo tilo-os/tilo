@@ -77,6 +77,8 @@ struct Mount {
     metrics: RefCell<crate::frame_metrics::FrameMetrics>,
     published_records: std::cell::RefCell<crate::admitted_records::PublishedRecords>,
     publication: RefCell<crate::admitted_records::PublicationSchedule>,
+    /// Hash of the last semantics tree sent to the host; unchanged trees are omitted.
+    last_semantics: std::cell::Cell<u64>,
     peer_suspended: bool,
     peer:Option<u32>,
     desktop:Option<crate::desktop_host::DesktopHandle>,
@@ -464,6 +466,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         metrics: Default::default(),
         published_records: Default::default(),
         publication: publication_schedule(config.publication_window_ms),
+        last_semantics: std::cell::Cell::new(0),
         peer_suspended: false,
         peer:config.peer,
         desktop:None,
@@ -504,7 +507,7 @@ fn begin_desktop(event_loop:&ActiveEventLoop,id:u64,canvas:web_sys::HtmlCanvasEl
     frame.set_platform_conventions(ui::platform::PlatformConventions::new(if config.mac{ui::platform::Platform::MacOs}else{ui::platform::Platform::Linux}));
     desktop.sync_global_search(&mut frame);
     let images=std::mem::take(&mut *desktop.images.borrow_mut());
-    let mount=Mount{metrics:Default::default(),published_records:Default::default(),publication:publication_schedule(config.publication_window_ms),peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,viewport:ViewportState::new(Viewport{width:size.width,height:size.height,dpr}),hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
+    let mount=Mount{metrics:Default::default(),published_records:Default::default(),publication:publication_schedule(config.publication_window_ms),last_semantics:std::cell::Cell::new(0),peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,viewport:ViewportState::new(Viewport{width:size.width,height:size.height,dpr}),hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
     MOUNTS.with_borrow_mut(|mounts|mounts.insert(id,mount));emit(&status,serde_json::json!({"phase":"gpu-pending","id":id}));initialize_gpu(id,1,window);Ok(())
 }
 fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
@@ -760,10 +763,16 @@ impl Mount {
         }).collect::<Vec<_>>();
         let pending_intents=self.desktop.as_ref().map(|desktop|desktop.session_requests.borrow().len()).unwrap_or(0);
         let ime=f.ime.map(|i|serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)}));
-        emit(
-            &self.status,
-            serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.viewport.applied().dpr,"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.record.as_ref().map(|record|record.checkout.id.as_str()),"actorId":self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.get_actor().to_hex_string())),"desktopErrors":setup_errors,"componentCloseErrors":component_close_errors,"pendingSessionIntents":pending_intents,"sessionIntentStatus":if pending_intents>0{Some("awaiting-native-command-admission")}else{None},"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
-        );
+        // The semantics tree is the bulk of every status; the host keeps the
+        // last tree it received, so an unchanged tree is left out entirely.
+        let semantics_bytes = serde_json::to_vec(&f.semantics).unwrap_or_default();
+        let semantics_hash = { use std::hash::{Hash, Hasher}; let mut hasher = std::hash::DefaultHasher::new(); semantics_bytes.hash(&mut hasher); hasher.finish() };
+        let semantics_changed = semantics_hash != self.last_semantics.get();
+        let mut value = serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.viewport.applied().dpr,"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.record.as_ref().map(|record|record.checkout.id.as_str()),"actorId":self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.get_actor().to_hex_string())),"desktopErrors":setup_errors,"componentCloseErrors":component_close_errors,"pendingSessionIntents":pending_intents,"sessionIntentStatus":if pending_intents>0{Some("awaiting-native-command-admission")}else{None},"heads":heads,"document":document,"ime":ime});
+        if semantics_changed {
+            if let Ok(semantics) = serde_json::from_slice::<serde_json::Value>(&semantics_bytes) { value["semantics"] = semantics; self.last_semantics.set(semantics_hash); }
+        } else if self.metric_start().is_some() { self.metrics.borrow_mut().count("semantics_unchanged"); }
+        emit(&self.status, value);
         self.metric_end("publish_status", status_start);
     }
 }
