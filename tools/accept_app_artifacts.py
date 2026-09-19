@@ -7,6 +7,7 @@ with platform-owned policy/API clients, then inject it as ProductForgejo.verifie
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import tempfile
@@ -126,23 +127,27 @@ class FinalArtifactAcceptance:
                 channel.require(type(artifact.get('id')) is int and artifact['id'] > 0 and artifact.get('run_id') == run_id
                                 and artifact.get('expired') is False and type(artifact.get('size_in_bytes')) is int
                                 and 0 < artifact['size_in_bytes'] <= MAX_BYTES, 'invalid final artifact metadata')
-                downloaded = work / f'{architecture}.zip'
-                self.read.get(f'/actions/artifacts/{artifact["id"]}/zip', downloaded)
-                original, archive = extract_artifact(downloaded, work / architecture, architecture, bound[architecture])
-                channel.validate_receipt(original, architecture, root_policy, require_published=False)
-                channel.require(original['source_sha'] == intent['desired']['source_sha']
-                                and original['publication'] == {'status': 'unpublished'}, 'final source/publication mismatch')
-                tree = work / f'{architecture}-tree'
-                extract_tar(archive, tree)
-                # final.verify requires the archive beside its extracted tree.
-                import shutil
-                shutil.copyfile(archive, tree / archive.name)
-                replay = final.verify(tree, tools / 'tilo-pkg', tools / 'tilo-runtime-bundle', self.policy_path,
-                                      self.policy_sha, intent['desired']['source_sha'], architecture)
-                for key in ('schema', 'architecture', 'source_sha', 'collection', 'runtime', 'packages', 'publication'):
-                    channel.require(replay[key] == original[key], 'canonical replay differs from qualified receipt: ' + key)
-                receipts[architecture] = bound[architecture][0]
-                artifact_ids[architecture] = artifact['id']
+                # Retain only one architecture's large payload at a time. Tool
+                # bundles and accepted digests survive; payload scratch does not.
+                with tempfile.TemporaryDirectory(prefix=architecture + '-', dir=work) as scratch:
+                    area = Path(scratch)
+                    downloaded = area / 'artifact.zip'
+                    self.read.get(f'/actions/artifacts/{artifact["id"]}/zip', downloaded)
+                    original, archive = extract_artifact(downloaded, area / 'payload', architecture, bound[architecture])
+                    channel.validate_receipt(original, architecture, root_policy, require_published=False)
+                    channel.require(original['source_sha'] == intent['desired']['source_sha']
+                                    and original['publication'] == {'status': 'unpublished'}, 'final source/publication mismatch')
+                    tree = area / 'tree'
+                    extract_tar(archive, tree)
+                    # Both paths are in this private temporary filesystem. Give
+                    # final.verify its expected pathname without another 2GiB copy.
+                    os.link(archive, tree / archive.name)
+                    replay = final.verify(tree, tools / 'tilo-pkg', tools / 'tilo-runtime-bundle', self.policy_path,
+                                          self.policy_sha, intent['desired']['source_sha'], architecture)
+                    for key in ('schema', 'architecture', 'source_sha', 'collection', 'runtime', 'packages', 'publication'):
+                        channel.require(replay[key] == original[key], 'canonical replay differs from qualified receipt: ' + key)
+                    receipts[architecture] = bound[architecture][0]
+                    artifact_ids[architecture] = artifact['id']
         # No baseline can advance if a rerun changed the qualifier attempt/task,
         # run inputs or artifact identities during download/canonical execution.
         self.api.qualify_receipt(intent['desired'])
