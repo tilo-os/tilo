@@ -30,6 +30,20 @@ NON_COMPILING_DOCS = {
     "docs/ci-performance.md",
     "docs/ci-emergency-relief.md",
 }
+# These orchestration/validation helpers are exercised by the mandatory quality
+# job's run-repository-policy.sh unittest discovery. They are not Rust build
+# inputs. Keep exact source/test pairs: unknown tools, deleted files, workflows,
+# compiler wrappers and packaging implementation changes retain native coverage.
+QUALITY_ONLY_HELPERS = {
+    "tools/ci_select.py": "tools/tests/test_ci_select.py",
+    "tools/ci_queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
+    "tools/ci_timing_report.py": "tools/tests/test_ci_timing_report.py",
+    "tools/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
+    "tools/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",
+    "tools/check_workflow_actions.py": "tools/tests/test_workflow_actions.py",
+    "tools/check_workflow_package_paths.py": "tools/tests/test_workflow_package_paths.py",
+    "tools/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
+}
 NATIVE_RUNNERS = {"x86_64": "runner", "aarch64": "runner-arm64"}
 GLOBAL_FILES = {
     "Cargo.toml",
@@ -187,21 +201,30 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
 def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, *, force_full: bool = False) -> dict:
     packages, by_dir = package_maps(metadata, root)
     global_change = any(path in GLOBAL_FILES or path.startswith(GLOBAL_PREFIXES) for path in changes)
-    workspace_source_roots = ("apps/", "crates/", "shell/")
+    workspace_source_roots = ("apps/", "crates/")
     unmapped_workspace_change = any(
         path.startswith(workspace_source_roots) and owner_for(path, by_dir) is None
         for path in changes
     )
     # Only audited developer/CI and design prose is non-compiling. Other docs can contain
     # generated contracts, fixtures or embedded Rust inputs and retain coverage.
-    prose_only = bool(changes) and all(
+    def prose(path: str) -> bool:
+        return (
         path in NON_COMPILING_DOCS or (
             path.startswith("docs/designs/") and path.endswith(".md")
-            and ".." not in Path(path).parts) for path in changes
-    )
-    if prose_only and not force_full:
+            and ".." not in Path(path).parts))
+
+    quality_paths = {
+        path for source, test in QUALITY_ONLY_HELPERS.items()
+        if (root / source).is_file() and (root / test).is_file()
+        for path in (source, test)
+    }
+    quality_only = bool(changes) and all(prose(path) or path in quality_paths for path in changes)
+    if quality_only and not force_full:
         selected = set()
-        reason = "audited developer/CI or design prose only; Rust checks not applicable"
+        reason = ("audited developer/CI or design prose only; Rust checks not applicable"
+                  if all(prose(path) for path in changes) else
+                  "audited CI helpers covered by mandatory repository-policy tests; Rust checks not applicable")
         full = False
     elif force_full or global_change or unmapped_workspace_change:
         selected = set(packages)

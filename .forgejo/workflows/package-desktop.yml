@@ -14,7 +14,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "shell/**"
+      - "crates/session/shell/**"
       - "crates/packaging/launcher/**"
       - "crates/session/tilo-unlock-helper/**"
       - ".forgejo/workflows/package-desktop.yml"

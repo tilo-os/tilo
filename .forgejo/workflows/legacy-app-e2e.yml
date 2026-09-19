@@ -8,35 +8,37 @@ on:
   pull_request:
     branches: ["main"]
     paths:
-      - "shell/src/compositor/**"
-      - "shell/src/collab/**"
-      - "shell/src/network/**"
-      - "shell/src/shell/network.rs"
-      - "shell/src/shell/overlay_host.rs"
-      - "shell/src/shell/peer_view.rs"
-      - "shell/src/shell/state/shared_surfaces.rs"
+      - "crates/session/shell/src/compositor/**"
+      - "crates/session/shell/src/collab/**"
+      - "crates/session/shell/src/network/**"
+      - "crates/session/shell/src/shell/network.rs"
+      - "crates/session/shell/src/shell/overlay_host.rs"
+      - "crates/session/shell/src/shell/peer_view.rs"
+      - "crates/session/shell/src/shell/state/shared_surfaces.rs"
       - "crates/sdk/ui-core/src/input.rs"
       - "crates/sdk/ui-core/src/interaction.rs"
       - "crates/sdk/ui-core/src/widget/group_row.rs"
       - "scripts/legacy-app-caret-e2e.py"
       - "os/Containerfile.builder"
+      - ".forgejo/actions/restore-cargo-downloads/**"
       - ".forgejo/workflows/legacy-app-e2e.yml"
   # Capacity relief: main-push validation is covered by nightly/manual runs.
   # push:
   #   branches: ["main"]
   #   paths:
-  #     - "shell/src/compositor/**"
-  #     - "shell/src/collab/**"
-  #     - "shell/src/network/**"
-  #     - "shell/src/shell/network.rs"
-  #     - "shell/src/shell/overlay_host.rs"
-  #     - "shell/src/shell/peer_view.rs"
-  #     - "shell/src/shell/state/shared_surfaces.rs"
+  #     - "crates/session/shell/src/compositor/**"
+  #     - "crates/session/shell/src/collab/**"
+  #     - "crates/session/shell/src/network/**"
+  #     - "crates/session/shell/src/shell/network.rs"
+  #     - "crates/session/shell/src/shell/overlay_host.rs"
+  #     - "crates/session/shell/src/shell/peer_view.rs"
+  #     - "crates/session/shell/src/shell/state/shared_surfaces.rs"
   #     - "crates/sdk/ui-core/src/input.rs"
   #     - "crates/sdk/ui-core/src/interaction.rs"
   #     - "crates/sdk/ui-core/src/widget/group_row.rs"
   #     - "scripts/legacy-app-caret-e2e.py"
   #     - "os/Containerfile.builder"
+  #     - ".forgejo/actions/restore-cargo-downloads/**"
   #     - ".forgejo/workflows/legacy-app-e2e.yml"
   schedule:
     - cron: "30 3 * * *"
@@ -72,15 +74,7 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Restore Cargo downloads
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        continue-on-error: true
-        with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-deps-
+        uses: ./.forgejo/actions/restore-cargo-downloads
 
       - name: Prepare compiler cache and verify real app subjects
         run: |

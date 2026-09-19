@@ -4,6 +4,12 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+native_arch=$(uname -m)
+# Use the same audited flags for compilation and the subsequently signed ISA
+# declaration. ELF machine checks below independently reject a wrong-arch payload.
+CARGO_ENCODED_RUSTFLAGS=$(python3 "$repo_root/tools/app_package_isa.py" flags \
+    --root "$repo_root" --arch "$native_arch")
+export CARGO_ENCODED_RUSTFLAGS
 apps=${TILO_RELEASE_APPS:?space-separated app directory names are required}
 out=${TILO_APP_RELEASE_OUT:-$repo_root/dist/app-release}
 identity=${QPKG_PUBLISHER_IDENTITY_FILE:-}
@@ -86,6 +92,16 @@ if [[ -z $identity ]]; then
 fi
 pubkey=$("$release_dir/tilo-runtime-bundle" key pubkey --identity "$identity")
 [[ $pubkey =~ ^[0-9a-fA-F]{64}$ ]]
+# Capture the public trust inputs from this signing invocation. These are not
+# inferred later from a downloaded package, and private identities stay in work/.
+runtime_pubkey=$("$release_dir/tilo-runtime-bundle" key pubkey --identity "$runtime_identity")
+[[ $runtime_pubkey =~ ^[0-9a-fA-F]{64}$ ]]
+python3 - "$out/work/receipt-signers.json" "$pubkey" "$runtime_pubkey" <<'PY'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "app_publisher": sys.argv[2].lower(), "runtime_publisher": sys.argv[3].lower(),
+}) + "\n")
+PY
 
 while IFS=$'\t' read -r name package binary id version manifest; do
     built="$thin_app_dir/$binary"
@@ -96,6 +112,8 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     install -pm 0755 "$built" "$payload/bin/$binary"
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged_manifest"
+    python3 "$repo_root/tools/app_package_isa.py" stage --arch "$native_arch" \
+        --manifest "$staged_manifest" --binary "$payload/bin/$binary" --output "$staged_manifest"
     qpkg="$out/qpkg/$name-$version-$(uname -m).qpkg"
     binary_bytes=$(stat -c %s "$built")
     printf 'packing app=%s binary=%s binary_bytes=%s output=%s\n' \

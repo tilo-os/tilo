@@ -397,12 +397,13 @@ mod tests {
         let a = SavedLocation::new("A", "", "C", "CC", 1.0, 1.0, "auto");
         let b = SavedLocation::new("B", "", "C", "CC", 2.0, 2.0, "auto");
         let c = SavedLocation::new("C", "", "C", "CC", 3.0, 3.0, "auto");
-        let (a_id, c_id) = (a.id, c.id);
+        let (a_id, b_id, c_id) = (a.id, b.id, c.id);
         m.locations = vec![a, b, c];
         m.selected = 0; // "A" in view.
         // Drag "A" (idx 0) to the end (idx 2): order becomes B, C, A.
         assert!(m.move_location(0, 2));
-        assert_eq!(m.locations[0].id, m.locations[0].id);
+        assert_eq!(m.locations[0].id, b_id, "B shifted to the front");
+        assert_eq!(m.locations[1].id, c_id, "C shifted into the middle");
         assert_eq!(m.locations[2].id, a_id, "A landed at the end");
         assert_eq!(m.selected_location().unwrap().id, a_id, "view still on A");
         // Moving C to the front.

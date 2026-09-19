@@ -78,7 +78,7 @@ def audit(root: Path = ROOT) -> list[str]:
         if needle not in bridge:
             errors.append(f"crates/sdk/ui-core/src/accesskit_bridge.rs: missing AT-SPI {purpose}")
 
-    native = (root / "shell/src/compositor/accessibility.rs").read_text(encoding="utf-8")
+    native = (root / "crates/session/shell/src/compositor/accessibility.rs").read_text(encoding="utf-8")
     for needle, purpose in (
         ("accesskit_unix::Adapter", "native shell provider"),
         ("self.rx.try_iter()", "nonblocking compositor handoff"),
@@ -86,11 +86,11 @@ def audit(root: Path = ROOT) -> list[str]:
         ("self.adapter.update_if_active", "native shell tree updates"),
     ):
         if needle not in native:
-            errors.append(f"shell/src/compositor/accessibility.rs: missing {purpose}")
+            errors.append(f"crates/session/shell/src/compositor/accessibility.rs: missing {purpose}")
 
-    native_loop = (root / "shell/src/compositor/native.rs").read_text(encoding="utf-8")
+    native_loop = (root / "crates/session/shell/src/compositor/native.rs").read_text(encoding="utf-8")
     if "drop(native_accessibility);" not in native_loop:
-        errors.append("shell/src/compositor/native.rs: missing native AT-SPI provider teardown")
+        errors.append("crates/session/shell/src/compositor/native.rs: missing native AT-SPI provider teardown")
 
     # The source boundary above proves every graphical app reaches the shared
     # provider. These manifests declare the small, safe installed-image sample

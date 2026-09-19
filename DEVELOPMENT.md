@@ -987,7 +987,7 @@ The compositor starts on a Bazzite host without `/var/workspace`, `/etc/tilo`,
   provisioning returns early once the record exists. Start the compositor by
   hand (`./target/debug/shell`) and you get the warning, because you skipped
   the wrapper.
-- **`shell/src/config.rs`'s `load_config` is dead code** — nothing calls it, and
+- **`crates/session/shell/src/config.rs`'s `load_config` is dead code** — nothing calls it, and
   it looks for `/etc/tilo-desktop/desktop.toml` while the image ships
   `/etc/tilo/desktop.toml`. So `desktop.toml` configures nothing today, on a host
   or on the image. The host package omits this file.
@@ -1015,7 +1015,7 @@ Release builds ignore `TILO_UNLOCK_HELPER`,
 `TILO_LAUNCHER_BIN`. On a systemd desktop the session environment comes from
 `~/.config/environment.d/`, so an installed binary that honoured those would let
 anything able to write a file in your home decide what unlocks your screen. See
-`shell/src/compositor/dev_env.rs`.
+`crates/session/shell/src/compositor/dev_env.rs`.
 
 
 ## Headless testing

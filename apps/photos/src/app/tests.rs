@@ -24,6 +24,38 @@ fn timeline_geometry_keeps_200_percent_text_legible_and_density_bounded() {
 }
 
 #[test]
+fn people_scan_cursor_only_advances_after_the_admitted_batch_succeeds() {
+    let mut progress = PeopleScanProgress {
+        next_offset: 12,
+        ..PeopleScanProgress::default()
+    };
+    let (start, len) = progress.batch_range(25, 12).unwrap();
+    assert_eq!((start, len), (12, 12));
+    progress.record_failure("local model timed out".to_owned());
+    assert_eq!(
+        progress.next_offset, 12,
+        "a failed batch must retry its same photos"
+    );
+    assert_eq!(progress.status, "error");
+    assert_eq!(
+        progress.last_error.as_deref(),
+        Some("local model timed out")
+    );
+
+    progress.advance_after_success(start, len, 25);
+    assert_eq!(progress.next_offset, 24);
+    assert_eq!(progress.status, "paused");
+    let (last_start, last_len) = progress.batch_range(25, 12).unwrap();
+    assert_eq!((last_start, last_len), (24, 1));
+    progress.advance_after_success(last_start, last_len, 25);
+    assert_eq!(
+        progress.next_offset, 0,
+        "the bounded cursor completes every photo before wrapping"
+    );
+    assert_eq!(progress.status, "complete");
+}
+
+#[test]
 fn compact_header_rows_are_non_overlapping_at_200_percent() {
     let header = compact_library_header_geometry(Rect::new(0.0, 94.0, 390.0, 820.0), true, true);
     let title = Rect::new(12.0, header.title_y, 378.0, header.title_y + 26.0);
@@ -1038,6 +1070,41 @@ fn synchronized_app_registers_the_canonical_photo_search_provider() {
             .iter()
             .any(|resource| has_resource_id(resource, &address.resource))
     );
+}
+
+#[test]
+fn in_app_full_text_search_advances_in_bounded_index_pages() {
+    let mut doc = AutoCommit::new();
+    PhotosDoc::seed(&mut doc);
+    let photos = (0..400)
+        .map(|index| {
+            let path = format!("needle-photo-{index:03}.png");
+            LibraryPhoto::from_image(OpenImage::from_path(&path, 40, 20))
+        })
+        .collect();
+    PhotosDoc::set_library(
+        &mut doc,
+        &crate::model::PhotoLibrary {
+            photos,
+            ..Default::default()
+        },
+    );
+    let mut app = PhotosApp::new();
+    app.search_provider.sync(&doc).unwrap();
+    app.library_query = "needle".into();
+
+    app.advance_library_query();
+    assert!(!app.library_query_complete);
+    assert!(app.library_query_matches.len() <= ui::search::DEFAULT_SEARCH_RESULT_LIMIT);
+
+    for _ in 0..16 {
+        app.advance_library_query();
+        if app.library_query_complete {
+            break;
+        }
+    }
+    assert!(app.library_query_complete);
+    assert_eq!(app.library_query_matches.len(), 400);
 }
 
 #[test]

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A local app registry for the "search → the app is not here → it opens"
-# palette flow (docs/demo-script.md, beat 3; shell/src/shell/catalogue.rs).
+# palette flow (docs/demo-script.md, beat 3; crates/session/shell/src/shell/catalogue.rs).
 #
 #   scripts/demo-registry.sh up      # build, pack, sign, configure, serve (foreground)
 #   scripts/demo-registry.sh down    # restore registries.toml, stop a background server

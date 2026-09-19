@@ -347,7 +347,52 @@ struct PeopleScanProgress {
     last_error: Option<String>,
 }
 
+/// The exact local batch admitted to the one analysis worker.  This is kept
+/// in memory rather than in the CRDT (or the checkpoint) because it contains
+/// no biometric result, and because a cursor is only durable *after* this
+/// batch succeeds.
+#[derive(Clone, Debug)]
+struct PendingPeopleScan {
+    start: usize,
+    scanned: usize,
+    total: usize,
+}
+
 impl PeopleScanProgress {
+    /// Plan a bounded contiguous slice without moving the durable cursor.
+    /// The caller commits `advance_after_success` only after the face worker
+    /// has returned and its opaque local clusters were accepted.
+    fn batch_range(&self, available: usize, limit: usize) -> Option<(usize, usize)> {
+        (available > 0).then(|| {
+            let start = self.next_offset % available;
+            // Do not wrap a final partial batch: every locally available
+            // photograph is covered once before the next pass begins.
+            (start, limit.min(available.saturating_sub(start)))
+        })
+    }
+
+    fn advance_after_success(&mut self, start: usize, scanned: usize, total: usize) {
+        if total == 0 {
+            return;
+        }
+        self.next_offset = start.saturating_add(scanned) % total;
+        self.last_library_size = total;
+        self.completed_batches = self.completed_batches.saturating_add(1);
+        self.status = if self.next_offset == 0 {
+            "complete"
+        } else {
+            "paused"
+        }
+        .to_owned();
+        self.last_error = None;
+    }
+
+    fn record_failure(&mut self, error: String) {
+        // In particular, do not alter next_offset here: retry must send the
+        // same slice, not skip photographs whose private analysis failed.
+        self.status = "error".to_owned();
+        self.last_error = Some(error);
+    }
     fn load() -> Self {
         let Some(path) = Self::path() else {
             return Self::default();
@@ -552,6 +597,9 @@ enum MetadataEditorHit {
     ClearTags,
     ClearCapturedAt,
     ClearLocation,
+    /// Set the draft location to the centre of the offline reference map.
+    /// Pointer activation uses the exact point under the pointer instead.
+    PlaceOnMap,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -612,7 +660,11 @@ enum PlacesHit {
     ToggleList,
     ZoomIn,
     ZoomOut,
-    Marker(String),
+    /// A canonical place key, never a representative photo id.  A marker is
+    /// a collection affordance and must not silently choose one photo from it.
+    Place(String),
+    /// A photo row inside an already-open place collection.
+    Photo(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -971,6 +1023,7 @@ pub struct PhotosApp {
     active_analysis: HashSet<tilo_actions::InvocationId>,
     cancelled_analysis: HashSet<tilo_actions::InvocationId>,
     active_people_scans: HashSet<tilo_actions::InvocationId>,
+    pending_people_scans: HashMap<tilo_actions::InvocationId, PendingPeopleScan>,
     library_analysis: crate::library_analysis::LibraryAnalysisState,
     library_analysis_capability: Option<tilo_vision::LocalVisionCapability>,
     library_analysis_pending: Rc<Cell<Option<LibraryAnalysisHit>>>,
@@ -1023,9 +1076,20 @@ pub struct PhotosApp {
     /// changing the shared `SearchField` interaction contract.
     library_search: SearchField,
     library_query: String,
+    /// Incremental results from the retained full-text catalogue. A broad
+    /// query advances by one bounded candidate page per sync; paint and
+    /// filtering never scan or normalize the whole corpus.
+    library_query_indexed: String,
+    library_query_generation: u64,
+    library_query_cursor: Option<ui::search::SearchCursor>,
+    library_query_matches: HashSet<String>,
+    library_query_complete: bool,
     library_destination: LibraryDestination,
     places_list_mode: bool,
     places_viewport: crate::places::MapViewport,
+    /// The exact canonical place collection currently opened from a resource,
+    /// map marker, keyboard, or accessibility action. Presentation-only.
+    places_open_key: Option<String>,
     places_items: Vec<PlaceItem>,
     places_page: usize,
     places_hits: Vec<(PlacesHit, Rect)>,
@@ -1125,6 +1189,11 @@ pub struct PhotosApp {
     metadata_place_input: TextInput,
     metadata_latitude_input: TextInput,
     metadata_longitude_input: TextInput,
+    metadata_location_map: crate::places::MapViewport,
+    metadata_location_map_bounds: Rect,
+    /// A draft-only provenance choice. It becomes durable only on Save, and
+    /// lets collaborators distinguish deliberate map placement from typing.
+    metadata_location_from_map: bool,
     /// Whether each field started with multiple values in a multi-photo edit.
     /// An untouched empty mixed field means Keep, never Clear.
     metadata_mixed: [bool; 5],
@@ -1561,6 +1630,7 @@ impl PhotosApp {
             }
             self.active_analysis.remove(&completed.invocation);
             self.active_people_scans.remove(&completed.invocation);
+            let pending_people_scan = self.pending_people_scans.remove(&completed.invocation);
             if self.cancelled_analysis.remove(&completed.invocation) {
                 continue;
             }
@@ -1618,31 +1688,69 @@ impl PhotosApp {
                         result: Err(error), ..
                     } => analysis_failure(completed.invocation, error),
                     AnalysisOutcome::People(Err(error)) => {
-                        self.people_scan_progress.status = "error".to_owned();
-                        self.people_scan_progress.last_error = Some(error.clone());
+                        self.people_scan_progress.record_failure(error.clone());
                         self.people_scan_progress.save();
                         analysis_failure(completed.invocation, error)
                     }
                     AnalysisOutcome::People(Ok(batch)) => {
                         let added = self.people_controller.ingest_verified_face_clusters(batch);
-                        self.people_scan_progress.status = "paused".to_owned();
-                        self.people_scan_progress.completed_batches = self
-                            .people_scan_progress
-                            .completed_batches
-                            .saturating_add(1);
-                        self.people_scan_progress.last_error = None;
-                        self.people_scan_progress.save();
-                        self.notice = Some(if added == 0 {
-                            "No new local face suggestions were found in this batch".to_owned()
+                        if let Some(pending) = pending_people_scan {
+                            self.people_scan_progress.advance_after_success(
+                                pending.start,
+                                pending.scanned,
+                                pending.total,
+                            );
+                            self.people_scan_progress.save();
+                            self.notice = Some(if added == 0 {
+                                "No new local face suggestions were found in this batch".to_owned()
+                            } else {
+                                format!(
+                                    "{added} local People suggestion{} ready to review",
+                                    if added == 1 { " is" } else { "s are" }
+                                )
+                            });
+                            if self.people_scan_progress.next_offset != 0 {
+                                if let Err(error) =
+                                    self.schedule_people_scan_batch(completed.invocation, doc)
+                                {
+                                    self.people_scan_progress.record_failure(error.clone());
+                                    self.people_scan_progress.save();
+                                    analysis_failure(completed.invocation, error)
+                                } else {
+                                    tilo_actions::InvocationUpdate::Progress {
+                                        invocation: completed.invocation,
+                                        sequence: self.people_scan_progress.completed_batches,
+                                        phase: "scanning".to_owned(),
+                                        completed: Some(
+                                            u64::try_from(self.people_scan_progress.next_offset)
+                                                .unwrap_or(u64::MAX),
+                                        ),
+                                        total: Some(
+                                            u64::try_from(
+                                                self.people_scan_progress.last_library_size,
+                                            )
+                                            .unwrap_or(u64::MAX),
+                                        ),
+                                        message: Some("Scanning the next local batch".to_owned()),
+                                    }
+                                }
+                            } else {
+                                tilo_actions::InvocationUpdate::Succeeded {
+                                    invocation: completed.invocation,
+                                    output: tilo_actions::ActionOutput::default(),
+                                }
+                            }
                         } else {
-                            format!(
-                                "{added} local People suggestion{} ready to review",
-                                if added == 1 { " is" } else { "s are" }
+                            self.people_scan_progress.record_failure(
+                                "People scan result lost its local checkpoint; retry this batch"
+                                    .to_owned(),
+                            );
+                            self.people_scan_progress.save();
+                            analysis_failure(
+                                completed.invocation,
+                                "People scan result lost its local checkpoint; retry this batch"
+                                    .to_owned(),
                             )
-                        });
-                        tilo_actions::InvocationUpdate::Succeeded {
-                            invocation: completed.invocation,
-                            output: tilo_actions::ActionOutput::default(),
                         }
                     }
                 }
@@ -1740,6 +1848,7 @@ impl PhotosApp {
             active_analysis: HashSet::new(),
             cancelled_analysis: HashSet::new(),
             active_people_scans: HashSet::new(),
+            pending_people_scans: HashMap::new(),
             library_analysis: crate::library_analysis::LibraryAnalysisState::default(),
             library_analysis_capability: initial_analysis_capability,
             library_analysis_buttons: build_library_analysis_buttons(&library_analysis_pending),
@@ -1777,9 +1886,15 @@ impl PhotosApp {
                 .with_id("photos-library-search")
                 .with_placeholder("Search photos, people, places, text"),
             library_query: String::new(),
+            library_query_indexed: String::new(),
+            library_query_generation: 0,
+            library_query_cursor: None,
+            library_query_matches: HashSet::new(),
+            library_query_complete: true,
             library_destination: LibraryDestination::Timeline,
             places_list_mode: false,
             places_viewport: crate::places::MapViewport::default(),
+            places_open_key: None,
             places_items: Vec::new(),
             places_page: 0,
             places_hits: Vec::new(),
@@ -1858,6 +1973,9 @@ impl PhotosApp {
             metadata_longitude_input: TextInput::local()
                 .with_id("photos-metadata-longitude")
                 .with_placeholder("Longitude"),
+            metadata_location_map: crate::places::MapViewport::default(),
+            metadata_location_map_bounds: Rect::ZERO,
+            metadata_location_from_map: false,
             metadata_mixed: [false; 5],
             metadata_force_clear: [false; 5],
             metadata_editor_section: MetadataEditorSection::Organize,
@@ -2212,7 +2330,7 @@ impl PhotosApp {
             if self.active_people_scans.is_empty() {
                 push(
                     PeopleIntent::Scan,
-                    "Scan next local batch".to_owned(),
+                    "Scan local library".to_owned(),
                     true,
                     false,
                 );
@@ -2392,7 +2510,7 @@ impl PhotosApp {
                         );
                         push(
                             PeopleIntent::RejectSuggestion,
-                            "Not the same person".to_owned(),
+                            "Dismiss suggestion".to_owned(),
                             false,
                             false,
                         );
@@ -2468,6 +2586,7 @@ impl PhotosApp {
                 for invocation in self.active_people_scans.drain() {
                     self.active_analysis.remove(&invocation);
                     self.cancelled_analysis.insert(invocation);
+                    self.pending_people_scans.remove(&invocation);
                 }
                 self.people_scan_progress.status = "cancelled".to_owned();
                 self.people_scan_progress.save();
@@ -2946,11 +3065,44 @@ impl PhotosApp {
     pub fn show_places_for_shot(&mut self) {
         self.show_library();
         self.library_destination = LibraryDestination::Places;
+        self.places_open_key = None;
         self.places_viewport = crate::places::MapViewport {
             latitude: 18.0,
             longitude: 0.0,
             zoom: 1.5,
         };
+    }
+
+    /// Open the exact durable collection behind a Places resource or marker.
+    /// This reads only shared metadata, so it remains usable offline and
+    /// deliberately fails if a collaborator removed the addressed place.
+    fn open_place_collection(&mut self, doc: &AutoCommit, place_key: &str) -> Result<(), String> {
+        let photos: Vec<_> = PhotosDoc::library(doc)
+            .photos
+            .into_iter()
+            .filter(|photo| {
+                photo.location.as_ref().is_some_and(|location| {
+                    location.is_valid() && location.place_key() == place_key
+                })
+            })
+            .collect();
+        let Some(location) = photos.first().and_then(|photo| photo.location.as_ref()) else {
+            return Err("that place is no longer in the shared library".to_owned());
+        };
+        self.show_library();
+        self.library_destination = LibraryDestination::Places;
+        self.places_open_key = Some(place_key.to_owned());
+        self.places_list_mode = true;
+        self.places_page = 0;
+        self.places_viewport.latitude = location.latitude;
+        self.places_viewport.longitude = location.longitude;
+        self.places_viewport.zoom = 12.0;
+        self.notice = Some(format!(
+            "Showing {} shared photograph{} at this place offline",
+            photos.len(),
+            if photos.len() == 1 { "" } else { "s" }
+        ));
+        Ok(())
     }
 
     /// Pose a running folder import for hermetic offscreen visual coverage.
@@ -3320,10 +3472,16 @@ impl PhotosApp {
                 .set_text(&format!("{:.6}", location.latitude));
             self.metadata_longitude_input
                 .set_text(&format!("{:.6}", location.longitude));
+            self.metadata_location_map.latitude = location.latitude;
+            self.metadata_location_map.longitude = location.longitude;
+            self.metadata_location_map.zoom = 4.0;
+            self.metadata_location_from_map = location.provenance.source == "map";
         } else {
             self.metadata_place_input.set_text("");
             self.metadata_latitude_input.set_text("");
             self.metadata_longitude_input.set_text("");
+            self.metadata_location_map = crate::places::MapViewport::default();
+            self.metadata_location_from_map = false;
         }
         for (input, mixed, ordinary) in [
             (
@@ -3334,12 +3492,12 @@ impl PhotosApp {
             (
                 &mut self.metadata_people_input,
                 self.metadata_mixed[1],
-                "Add people names",
+                "Add people (+); = replaces, - removes",
             ),
             (
                 &mut self.metadata_tags_input,
                 self.metadata_mixed[2],
-                "Add searchable tags",
+                "Add tags (+); = replaces, - removes",
             ),
             (
                 &mut self.metadata_captured_at_input,
@@ -3398,15 +3556,6 @@ impl PhotosApp {
         if self.metadata_editor_ids.is_empty() {
             return;
         }
-        let labels = |input: &TextInput| {
-            input
-                .value()
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        };
         let optional = |input: &TextInput| {
             let value = input.value().trim();
             (!value.is_empty()).then(|| value.to_owned())
@@ -3425,15 +3574,37 @@ impl PhotosApp {
         };
         let labels_patch = |input: &TextInput, mixed: bool, clear: bool| {
             if clear {
-                crate::actions::MetadataPatch::Clear
+                crate::actions::MetadataLabelsPatch::Clear
             } else {
-                let values = labels(input);
+                let raw = input.value().trim();
+                let (mode, raw) = match raw.strip_prefix('=') {
+                    Some(value) => ("set", value),
+                    None => match raw.strip_prefix('+') {
+                        Some(value) => ("add", value),
+                        None => match raw.strip_prefix('-') {
+                            Some(value) => ("remove", value),
+                            None if self.metadata_editor_ids.len() > 1 && !raw.is_empty() => {
+                                ("add", raw)
+                            }
+                            None => ("set", raw),
+                        },
+                    },
+                };
+                let values = raw
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
                 if mixed && values.is_empty() {
-                    crate::actions::MetadataPatch::Keep
-                } else if values.is_empty() {
-                    crate::actions::MetadataPatch::Clear
+                    crate::actions::MetadataLabelsPatch::Keep
                 } else {
-                    crate::actions::MetadataPatch::Set(values)
+                    match mode {
+                        "add" => crate::actions::MetadataLabelsPatch::Add(values),
+                        "remove" => crate::actions::MetadataLabelsPatch::Remove(values),
+                        _ if values.is_empty() => crate::actions::MetadataLabelsPatch::Clear,
+                        _ => crate::actions::MetadataLabelsPatch::Set(values),
+                    }
                 }
             }
         };
@@ -3457,7 +3628,11 @@ impl PhotosApp {
                 longitude,
                 label: optional(&self.metadata_place_input),
                 provenance: crate::model::LocationProvenance {
-                    source: "user".to_owned(),
+                    source: if self.metadata_location_from_map {
+                        "map".to_owned()
+                    } else {
+                        "user".to_owned()
+                    },
                     scope: "shared".to_owned(),
                 },
             })
@@ -3542,9 +3717,42 @@ impl PhotosApp {
                 self.metadata_place_input.set_text("");
                 self.metadata_latitude_input.set_text("");
                 self.metadata_longitude_input.set_text("");
+                self.metadata_location_from_map = false;
             }
             _ => {}
         }
+    }
+
+    /// Write an explicit offline-map point into the draft fields. No document
+    /// update occurs here: batch edits retain their mixed values until the
+    /// user deliberately saves this one shared provenance-bearing patch.
+    fn set_metadata_location_from_map_point(&mut self, point: Point) -> bool {
+        let bounds = self.metadata_location_map_bounds;
+        if !bounds.contains(point) {
+            return false;
+        }
+        let Some((latitude, longitude)) = self.metadata_location_map.unproject(
+            point.x - bounds.x0,
+            point.y - bounds.y0,
+            bounds.width(),
+            bounds.height(),
+        ) else {
+            return false;
+        };
+        self.metadata_latitude_input
+            .set_text(&format!("{latitude:.6}"));
+        self.metadata_longitude_input
+            .set_text(&format!("{longitude:.6}"));
+        // Re-centre the private draft map so its persistent crosshair is an
+        // honest confirmation of the point just chosen.
+        self.metadata_location_map.latitude = latitude;
+        self.metadata_location_map.longitude = longitude;
+        self.metadata_mixed[4] = false;
+        self.metadata_force_clear[4] = false;
+        self.metadata_location_from_map = true;
+        self.notice =
+            Some("Offline map point selected; it will be shared only after Save".to_owned());
+        true
     }
 
     fn activate_metadata_editor_hit(&mut self, hit: MetadataEditorHit, doc: &mut AutoCommit) {
@@ -3562,6 +3770,10 @@ impl PhotosApp {
             MetadataEditorHit::ClearTags => self.clear_metadata_dimension(2),
             MetadataEditorHit::ClearCapturedAt => self.clear_metadata_dimension(3),
             MetadataEditorHit::ClearLocation => self.clear_metadata_dimension(4),
+            MetadataEditorHit::PlaceOnMap => {
+                let bounds = self.metadata_location_map_bounds;
+                let _ = self.set_metadata_location_from_map_point(bounds.center());
+            }
         }
     }
 
@@ -3693,6 +3905,18 @@ impl PhotosApp {
     }
 
     fn page_collection(&mut self, hit: CollectionPageHit) -> bool {
+        let place_total = self
+            .places_items
+            .iter()
+            .filter(|item| {
+                self.places_open_key.as_ref().is_none_or(|key| {
+                    item.photo
+                        .location
+                        .as_ref()
+                        .is_some_and(|location| location.place_key() == *key)
+                })
+            })
+            .count();
         let page_size = if matches!(
             hit,
             CollectionPageHit::AlbumsPrevious | CollectionPageHit::AlbumsNext
@@ -3716,10 +3940,8 @@ impl PhotosApp {
             CollectionPageHit::PeopleNext => {
                 (&mut self.people_page, self.library_people.len(), true)
             }
-            CollectionPageHit::PlacesPrevious => {
-                (&mut self.places_page, self.places_items.len(), false)
-            }
-            CollectionPageHit::PlacesNext => (&mut self.places_page, self.places_items.len(), true),
+            CollectionPageHit::PlacesPrevious => (&mut self.places_page, place_total, false),
+            CollectionPageHit::PlacesNext => (&mut self.places_page, place_total, true),
         };
         let pages = total.max(1).div_ceil(page_size);
         let next = if forward {
@@ -3912,6 +4134,26 @@ impl PhotosApp {
                 }
                 _ => {}
             }
+            if self.metadata_editor_section == MetadataEditorSection::TimeAndPlace
+                && matches!(self.metadata_editor_focus, 2 | 3)
+            {
+                // Coordinates subsequently authored through the shared text
+                // input are no longer accurately described as a map pin.
+                self.metadata_location_from_map = false;
+            }
+        }
+        if matches!(
+            event,
+            winit::event::WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            }
+        ) && self.metadata_editor_section == MetadataEditorSection::TimeAndPlace
+            && self.set_metadata_location_from_map_point(self.pointer)
+        {
+            *handled = true;
+            return true;
         }
         if matches!(
             event,
@@ -4242,23 +4484,11 @@ impl PhotosApp {
             crate::actions::PhotosOperation::ViewPlaces => {
                 self.show_library();
                 self.library_destination = LibraryDestination::Places;
+                self.places_open_key = None;
                 self.notice = Some("Showing offline Places".to_owned());
             }
             crate::actions::PhotosOperation::ViewPlace { place_key } => {
-                self.show_library();
-                self.library_destination = LibraryDestination::Places;
-                if let Some(photo) = PhotosDoc::library(doc).photos.iter().find(|photo| {
-                    photo
-                        .location
-                        .as_ref()
-                        .is_some_and(|location| location.place_key() == place_key)
-                }) && let Some(location) = &photo.location
-                {
-                    self.places_viewport.latitude = location.latitude;
-                    self.places_viewport.longitude = location.longitude;
-                    self.places_viewport.zoom = 12.0;
-                }
-                self.notice = Some("Showing selected place offline".to_owned());
+                self.open_place_collection(doc, &place_key)?;
             }
             crate::actions::PhotosOperation::ViewAlbum { .. }
             | crate::actions::PhotosOperation::ViewFolder { .. }
@@ -4644,7 +4874,8 @@ impl PhotosApp {
                     PlacesHit::ToggleList
                     | PlacesHit::ZoomIn
                     | PlacesHit::ZoomOut
-                    | PlacesHit::Marker(_) => return None,
+                    | PlacesHit::Place(_)
+                    | PlacesHit::Photo(_) => return None,
                 };
                 Some(
                     AccessNode::new(Role::RadioButton)
@@ -4843,10 +5074,12 @@ impl PhotosApp {
                         ),
                         PlacesHit::ZoomIn => ("Zoom in", "photos:places:zoom-in".to_owned()),
                         PlacesHit::ZoomOut => ("Zoom out", "photos:places:zoom-out".to_owned()),
-                        PlacesHit::Marker(id) => (
-                            "Open photograph at this place",
-                            format!("photos:places:photo:{id}"),
-                        ),
+                        PlacesHit::Place(key) => {
+                            ("Open place collection", format!("photos:places:open:{key}"))
+                        }
+                        PlacesHit::Photo(id) => {
+                            ("Open photograph", format!("photos:places:photo:{id}"))
+                        }
                     };
                     Some(
                         AccessNode::new(Role::Button)
@@ -4859,6 +5092,30 @@ impl PhotosApp {
                             .with_action_target(target),
                     )
                 }));
+                // These semantic controls intentionally share the same pure
+                // camera operation as keyboard arrows and pointer drag. They
+                // make panning available to screen readers and agents without
+                // introducing coordinate-only automation.
+                for (name, target) in [
+                    ("Pan map left", "photos:places:pan-left"),
+                    ("Pan map right", "photos:places:pan-right"),
+                    ("Pan map up", "photos:places:pan-up"),
+                    ("Pan map down", "photos:places:pan-down"),
+                ] {
+                    cards.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_description(
+                                "Move the offline map without changing shared location data",
+                            )
+                            .with_bounds(self.places_map_bounds)
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            })
+                            .with_action_target(target),
+                    );
+                }
                 cards.extend(
                     self.collection_page_hits
                         .iter()
@@ -5208,20 +5465,20 @@ impl PhotosApp {
                     );
                 }
                 if self.metadata_editor {
-                    let fields: &[(&str, &TextInput)] = match self.metadata_editor_section {
+                    let fields: &[(&str, &str, &TextInput)] = match self.metadata_editor_section {
                         MetadataEditorSection::Organize => &[
-                            ("Folder", &self.metadata_folder_input),
-                            ("People", &self.metadata_people_input),
-                            ("Tags", &self.metadata_tags_input),
+                            ("Folder", "folder", &self.metadata_folder_input),
+                            ("People", "people", &self.metadata_people_input),
+                            ("Tags", "tags", &self.metadata_tags_input),
                         ],
                         MetadataEditorSection::TimeAndPlace => &[
-                            ("Captured", &self.metadata_captured_at_input),
-                            ("Place name", &self.metadata_place_input),
-                            ("Latitude", &self.metadata_latitude_input),
-                            ("Longitude", &self.metadata_longitude_input),
+                            ("Captured", "captured", &self.metadata_captured_at_input),
+                            ("Place name", "place", &self.metadata_place_input),
+                            ("Latitude", "latitude", &self.metadata_latitude_input),
+                            ("Longitude", "longitude", &self.metadata_longitude_input),
                         ],
                     };
-                    for (name, input) in fields {
+                    for (name, target, input) in fields {
                         cards.push(
                             AccessNode::new(Role::TextInput)
                                 .with_name(*name)
@@ -5232,7 +5489,8 @@ impl PhotosApp {
                                     focused: input.is_focused(),
                                     ..Default::default()
                                 })
-                                .with_hashed_key(format!("photos:metadata:{name}")),
+                                .with_hashed_key(format!("photos:metadata:{name}"))
+                                .with_action_target(format!("photos:metadata:field:{target}")),
                         );
                     }
                     for (hit, bounds) in &self.metadata_editor_hits {
@@ -5264,6 +5522,10 @@ impl PhotosApp {
                             MetadataEditorHit::ClearLocation => {
                                 ("Clear location", "photos:metadata:clear-location")
                             }
+                            MetadataEditorHit::PlaceOnMap => (
+                                "Set location from offline map centre",
+                                "photos:metadata:place-on-map",
+                            ),
                         };
                         cards.push(
                             AccessNode::new(Role::Button)
@@ -5711,6 +5973,77 @@ impl PhotosApp {
             }
             return true;
         }
+        if let Some(command) = target.strip_prefix("photos:places:") {
+            if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
+                return false;
+            }
+            if matches!(action, AccessAction::Focus) {
+                return true;
+            }
+            if let Some(photo_id) = command.strip_prefix("photo:") {
+                if PhotosDoc::photo(doc, photo_id).is_none() {
+                    return false;
+                }
+                self.commit_library_action(
+                    doc,
+                    &crate::actions::PhotosAction::SelectPhoto {
+                        photo_id: photo_id.to_owned(),
+                    },
+                );
+                self.library_mode = false;
+                return true;
+            }
+            match command {
+                "toggle-list" => self.places_list_mode = !self.places_list_mode,
+                "zoom-in" => {
+                    self.places_viewport.zoom =
+                        (self.places_viewport.zoom + 1.0).min(crate::places::MAX_ZOOM)
+                }
+                "zoom-out" => {
+                    self.places_viewport.zoom =
+                        (self.places_viewport.zoom - 1.0).max(crate::places::MIN_ZOOM)
+                }
+                "pan-left" => {
+                    self.places_viewport = self.places_viewport.panned(
+                        44.0,
+                        0.0,
+                        self.places_map_bounds.width(),
+                        self.places_map_bounds.height(),
+                    )
+                }
+                "pan-right" => {
+                    self.places_viewport = self.places_viewport.panned(
+                        -44.0,
+                        0.0,
+                        self.places_map_bounds.width(),
+                        self.places_map_bounds.height(),
+                    )
+                }
+                "pan-up" => {
+                    self.places_viewport = self.places_viewport.panned(
+                        0.0,
+                        44.0,
+                        self.places_map_bounds.width(),
+                        self.places_map_bounds.height(),
+                    )
+                }
+                "pan-down" => {
+                    self.places_viewport = self.places_viewport.panned(
+                        0.0,
+                        -44.0,
+                        self.places_map_bounds.width(),
+                        self.places_map_bounds.height(),
+                    )
+                }
+                _ => {
+                    let Some(key) = command.strip_prefix("open:") else {
+                        return false;
+                    };
+                    return self.open_place_collection(doc, key).is_ok();
+                }
+            }
+            return true;
+        }
         if let Some(album_id) = target.strip_prefix("photos:album-edit:") {
             if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
                 return false;
@@ -5911,6 +6244,44 @@ impl PhotosApp {
             return true;
         }
         if let Some(command) = target.strip_prefix("photos:metadata:") {
+            if let Some(field) = command.strip_prefix("field:") {
+                let focus = match field {
+                    "folder" => 0,
+                    "people" => 1,
+                    "tags" => 2,
+                    "captured" => 0,
+                    "place" => 1,
+                    "latitude" => 2,
+                    "longitude" => 3,
+                    _ => return false,
+                };
+                return match action {
+                    AccessAction::Focus => {
+                        self.set_metadata_editor_focus(focus);
+                        true
+                    }
+                    AccessAction::SetValue(value) => {
+                        match field {
+                            "folder" => self.metadata_folder_input.set_text(value),
+                            "people" => self.metadata_people_input.set_text(value),
+                            "tags" => self.metadata_tags_input.set_text(value),
+                            "captured" => self.metadata_captured_at_input.set_text(value),
+                            "place" => self.metadata_place_input.set_text(value),
+                            "latitude" => {
+                                self.metadata_latitude_input.set_text(value);
+                                self.metadata_location_from_map = false;
+                            }
+                            "longitude" => {
+                                self.metadata_longitude_input.set_text(value);
+                                self.metadata_location_from_map = false;
+                            }
+                            _ => return false,
+                        }
+                        true
+                    }
+                    _ => false,
+                };
+            }
             if !matches!(action, AccessAction::Activate) {
                 return matches!(action, AccessAction::Focus);
             }
@@ -5926,6 +6297,10 @@ impl PhotosApp {
                 "clear-tags" => self.clear_metadata_dimension(2),
                 "clear-captured-at" => self.clear_metadata_dimension(3),
                 "clear-location" => self.clear_metadata_dimension(4),
+                "place-on-map" => {
+                    let bounds = self.metadata_location_map_bounds;
+                    let _ = self.set_metadata_location_from_map_point(bounds.center());
+                }
                 _ => return false,
             }
             return true;
@@ -6654,6 +7029,35 @@ impl PhotosApp {
             return Err(ui::search::SearchCatalogError::NonCanonicalResult);
         }
         self.search_provider.sync(doc)
+    }
+
+    fn advance_library_query(&mut self) {
+        let query = self.library_query.trim().to_owned();
+        let generation = self.search_provider.generation();
+        if query.is_empty() {
+            self.library_query_indexed.clear();
+            self.library_query_generation = generation;
+            self.library_query_cursor = None;
+            self.library_query_matches.clear();
+            self.library_query_complete = true;
+            return;
+        }
+        if self.library_query_indexed != query || self.library_query_generation != generation {
+            self.library_query_indexed.clone_from(&query);
+            self.library_query_generation = generation;
+            self.library_query_cursor = None;
+            self.library_query_matches.clear();
+            self.library_query_complete = false;
+        }
+        if self.library_query_complete {
+            return;
+        }
+        let (ids, next, _inspected) = self
+            .search_provider
+            .photo_matches_page(&query, self.library_query_cursor.as_ref());
+        self.library_query_matches.extend(ids);
+        self.library_query_cursor = next;
+        self.library_query_complete = self.library_query_cursor.is_none();
     }
 
     fn empty_state_text(&self) -> (String, String) {
@@ -8714,7 +9118,8 @@ impl PhotosApp {
             TextWeight::Medium,
         );
         let suggestion_copy = if suggestions.is_empty() {
-            "No local suggestions yet. Enable recognition, then scan a local batch.".to_owned()
+            "No local suggestions yet. Enable recognition, then scan this device's library."
+                .to_owned()
         } else {
             format!(
                 "{} suggestion{} waiting for a name and approval; none are shared.",
@@ -8750,7 +9155,7 @@ impl PhotosApp {
                     .unwrap_or("local model unavailable")
             ),
             "paused" if progress.completed_batches > 0 => format!(
-                "{} local batch(es) completed. Scan again to continue through this device's library.",
+                "{} local batch(es) completed. Resume to continue through this device's library.",
                 progress.completed_batches
             ),
             _ => String::new(),
@@ -9134,7 +9539,15 @@ impl PhotosApp {
         self.places_hits.clear();
         self.collection_page_hits.clear();
         if self.library_items.is_empty() {
-            let (title, body) = if self.library_query.trim().is_empty() {
+            let (title, body) = if !self.library_query.trim().is_empty()
+                && !self.library_query_complete
+            {
+                (
+                    "Searching photographs…".to_owned(),
+                    "Matching names, people, places, recognized text, and image descriptions locally."
+                        .to_owned(),
+                )
+            } else if self.library_query.trim().is_empty() {
                 (
                     tr("photos-library-empty-title"),
                     tr("photos-library-empty-body"),
@@ -9230,7 +9643,9 @@ impl PhotosApp {
                 ),
             );
         }
-        let count = if desktop_library {
+        let count = if !self.library_query.trim().is_empty() && !self.library_query_complete {
+            format!("{} matches so far · searching locally", self.library_total)
+        } else if desktop_library {
             format!("{} photographs · shared library", self.library_total)
         } else if large_text {
             format!("{} photos", self.library_total)
@@ -10172,9 +10587,28 @@ impl PhotosApp {
             None,
             &heading,
         );
+        let open_place = self.places_open_key.as_ref().and_then(|key| {
+            self.places_items.iter().find_map(|item| {
+                item.photo.location.as_ref().and_then(|location| {
+                    (location.place_key() == *key).then(|| location.display_name())
+                })
+            })
+        });
+        let visible_place_count = self
+            .places_items
+            .iter()
+            .filter(|item| {
+                self.places_open_key.as_ref().is_none_or(|key| {
+                    item.photo
+                        .location
+                        .as_ref()
+                        .is_some_and(|location| location.place_key() == *key)
+                })
+            })
+            .count();
         text_renderer.draw_text_weighted(
             scene,
-            "Places",
+            open_place.as_deref().unwrap_or("Places"),
             22.0,
             theme.text_primary,
             transform * Affine::translate((heading.x0 + 14.0, heading.y0 + 12.0)),
@@ -10184,8 +10618,13 @@ impl PhotosApp {
         text_renderer.draw_text_weighted(
             scene,
             &format!(
-                "{} photos with an explicitly shared location",
-                self.places_items.len()
+                "{} photos with an explicitly shared location{}",
+                visible_place_count,
+                if open_place.is_some() {
+                    " at this place"
+                } else {
+                    ""
+                }
             ),
             12.0,
             theme.text_dim,
@@ -10372,7 +10811,7 @@ impl PhotosApp {
             .iter()
             .map(|item| item.photo.clone())
             .collect();
-        for cluster in crate::places::clusters(&photos, self.places_viewport.zoom) {
+        for cluster in crate::places::clusters(&photos) {
             let location = crate::model::PhotoLocation {
                 latitude: cluster.latitude,
                 longitude: cluster.longitude,
@@ -10440,10 +10879,8 @@ impl PhotosApp {
                 point.x + radius,
                 point.y + radius,
             );
-            if let Some(photo_id) = cluster.photo_ids.first() {
-                self.places_hits
-                    .push((PlacesHit::Marker(photo_id.clone()), hit));
-            }
+            self.places_hits
+                .push((PlacesHit::Place(cluster.key.clone()), hit));
             if map.width() >= 560.0 {
                 let label_width =
                     (cluster.label.chars().count() as f64 * 6.5 + 24.0).clamp(72.0, 180.0);
@@ -10506,6 +10943,19 @@ impl PhotosApp {
         map: Rect,
     ) {
         use vello::peniko::Fill;
+        let items: Vec<PlaceItem> = self
+            .places_items
+            .iter()
+            .filter(|item| {
+                self.places_open_key.as_ref().is_none_or(|key| {
+                    item.photo
+                        .location
+                        .as_ref()
+                        .is_some_and(|location| location.place_key() == *key)
+                })
+            })
+            .cloned()
+            .collect();
         self.draw_collection_pager(
             scene,
             transform,
@@ -10513,13 +10963,12 @@ impl PhotosApp {
             theme,
             Rect::new(map.x0 + 12.0, map.y0 + 8.0, map.x1 - 124.0, map.y0 + 48.0),
             self.places_page,
-            self.places_items.len(),
+            items.len(),
             CollectionPageHit::PlacesPrevious,
             CollectionPageHit::PlacesNext,
         );
         let mut y = map.y0 + 64.0;
-        for item in self
-            .places_items
+        for item in items
             .iter()
             .skip(self.places_page * COLLECTION_PAGE_SIZE)
             .take(COLLECTION_PAGE_SIZE)
@@ -10568,7 +11017,7 @@ impl PhotosApp {
                 TextWeight::Regular,
             );
             self.places_hits
-                .push((PlacesHit::Marker(item.photo.id.clone()), row));
+                .push((PlacesHit::Photo(item.photo.id.clone()), row));
             y += 58.0;
         }
     }
@@ -11865,7 +12314,12 @@ impl PhotosApp {
                 }
             }
             MetadataEditorSection::TimeAndPlace => {
-                let row_h = ((footer_y - fields_y - 12.0) / 3.0).clamp(70.0, 94.0);
+                // Keep the placement surface in the edit flow: it is a
+                // bundled reference grid, not an embedded map service. The
+                // compact height leaves the shared text inputs reachable at
+                // large text sizes and works for a batch as well as one photo.
+                let map_h = 58.0;
+                let row_h = ((footer_y - fields_y - map_h - 26.0) / 3.0).clamp(48.0, 82.0);
                 label_and_input(
                     scene,
                     text_renderer,
@@ -11898,7 +12352,56 @@ impl PhotosApp {
                     ),
                     &mut hits,
                 );
-                let y = fields_y + row_h * 2.0;
+                let map = Rect::new(
+                    panel.x0 + 16.0,
+                    fields_y + row_h * 2.0,
+                    panel.x1 - 16.0,
+                    fields_y + row_h * 2.0 + map_h,
+                );
+                self.metadata_location_map_bounds = map;
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.neutral[2],
+                    None,
+                    &map,
+                );
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &map,
+                );
+                for step in 1..5 {
+                    let x = map.x0 + map.width() * f64::from(step) / 5.0;
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        theme.border_standard,
+                        None,
+                        &Rect::new(x, map.y0, x + 1.0, map.y1),
+                    );
+                }
+                let center = map.center();
+                scene.stroke(
+                    &Stroke::new(1.5),
+                    transform,
+                    theme.tokens.colors.accent[6],
+                    None,
+                    &Circle::new(center, 7.0),
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    "Offline reference map — click a point to set shared coordinates",
+                    10.0,
+                    theme.text_primary,
+                    transform * Affine::translate((map.x0 + 10.0, map.y0 + 8.0)),
+                    Some((map.width() - 20.0) as f32),
+                    TextWeight::Medium,
+                );
+                hits.push((MetadataEditorHit::PlaceOnMap, map));
+                let y = map.y1 + 8.0;
                 let gap = 8.0;
                 let field_w = (panel.width() - 32.0 - gap) * 0.5;
                 for (label, input, x) in [
@@ -12717,23 +13220,11 @@ impl Widget for PhotosApp {
             crate::actions::PhotosOperation::ViewPlaces => {
                 self.show_library();
                 self.library_destination = LibraryDestination::Places;
+                self.places_open_key = None;
                 self.notice = Some("Showing offline Places".to_owned());
             }
             crate::actions::PhotosOperation::ViewPlace { place_key } => {
-                self.show_library();
-                self.library_destination = LibraryDestination::Places;
-                if let Some(photo) = PhotosDoc::library(doc).photos.iter().find(|photo| {
-                    photo
-                        .location
-                        .as_ref()
-                        .is_some_and(|location| location.place_key() == place_key)
-                }) && let Some(location) = &photo.location
-                {
-                    self.places_viewport.latitude = location.latitude;
-                    self.places_viewport.longitude = location.longitude;
-                    self.places_viewport.zoom = 12.0;
-                }
-                self.notice = Some("Showing selected place offline".to_owned());
+                self.open_place_collection(doc, &place_key)?;
             }
             crate::actions::PhotosOperation::ViewAlbum { album_id } => {
                 self.view_album(doc, &album_id)?;
@@ -12950,66 +13441,7 @@ impl Widget for PhotosApp {
             operation,
             crate::actions::PhotosOperation::AnalyzePeopleLibrary
         ) {
-            if !self.people_controller.privacy().recognition_enabled {
-                return Err("People recognition is off on this device. Enable it in People before scanning local photographs.".to_owned());
-            }
-            let config = agent_provider_config::ProviderConfig::load();
-            self.people_controller.discover_face_capability(&config);
-            let capability =
-                tilo_vision::discover_local_face_capability(&config).ok_or_else(|| {
-                    "No verified local face model is ready. Install and start one in Settings."
-                        .to_owned()
-                })?;
-            let library = PhotosDoc::library(doc);
-            let locally_available: Vec<_> = library
-                .photos
-                .into_iter()
-                .filter(|photo| crate::doc::bytes_of(&photo.image).is_some())
-                .map(|photo| (photo.id, photo.image))
-                .collect();
-            if locally_available.is_empty() {
-                return Err(
-                    "No locally available photographs are ready for People recognition.".to_owned(),
-                );
-            }
-            let start = self.people_scan_progress.next_offset % locally_available.len();
-            let photos: Vec<_> = locally_available
-                .iter()
-                .cycle()
-                .skip(start)
-                .take(tilo_vision::MAX_FACE_BATCH.min(locally_available.len()))
-                .cloned()
-                .collect();
-            self.people_scan_progress.next_offset =
-                start.saturating_add(photos.len()) % locally_available.len();
-            self.people_scan_progress.last_library_size = locally_available.len();
-            self.people_scan_progress.status = "running".to_owned();
-            self.people_scan_progress.last_error = None;
-            self.people_scan_progress.save();
-            let Some((_, first)) = photos.first() else {
-                return Err(
-                    "No locally available photographs are ready for People recognition.".to_owned(),
-                );
-            };
-            let sender = self.analysis_tx.as_ref().ok_or_else(|| {
-                "local People recognition is unavailable on this device".to_owned()
-            })?;
-            sender
-                .try_send(AnalysisJob {
-                    invocation,
-                    photo_id: "photos.people".to_owned(),
-                    content: None,
-                    image: first.clone(),
-                    kind: AnalysisJobKind::People {
-                        capability,
-                        images: photos,
-                    },
-                })
-                .map_err(|_| {
-                    "local image analysis is busy; wait for the current photos to finish".to_owned()
-                })?;
-            self.active_analysis.insert(invocation);
-            self.active_people_scans.insert(invocation);
+            self.schedule_people_scan_batch(invocation, doc)?;
             return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
         }
 
@@ -13061,6 +13493,7 @@ impl Widget for PhotosApp {
         if cancellation_requested && self.active_analysis.remove(&invocation) {
             self.cancelled_analysis.insert(invocation);
             if self.active_people_scans.remove(&invocation) {
+                self.pending_people_scans.remove(&invocation);
                 self.people_scan_progress.status = "cancelled".to_owned();
                 self.people_scan_progress.save();
             }
@@ -13166,6 +13599,7 @@ impl Widget for PhotosApp {
             self.thumbnail_unavailable.clear();
             self.search_heads = heads.clone();
         }
+        self.advance_library_query();
         self.status = self.status_text(doc);
         let library = PhotosDoc::library(doc);
         self.library_analysis_coverage = library.photos.iter().fold(
@@ -13205,24 +13639,9 @@ impl Widget for PhotosApp {
                 .find(|album| &album.id == id)
                 .map(|album| &album.photo_ids)
         });
-        let query = self.library_query.trim().to_lowercase();
+        let query_active = !self.library_query.trim().is_empty();
         let matches_filter = |photo: &LibraryPhoto| {
-            let query_matches = query.is_empty()
-                || format!(
-                    "{} {} {} {} {} {} {}",
-                    photo.image.name,
-                    photo.folder.as_deref().unwrap_or_default(),
-                    photo.people.join(" "),
-                    photo.tags.join(" "),
-                    photo.captured_at.as_deref().unwrap_or_default(),
-                    photo.metadata_summary(),
-                    photo
-                        .analysis
-                        .as_ref()
-                        .map_or_else(String::new, crate::model::ImageAnalysis::searchable_text),
-                )
-                .to_lowercase()
-                .contains(&query);
+            let query_matches = !query_active || self.library_query_matches.contains(&photo.id);
             membership.is_none_or(|ids| ids.contains(&photo.id))
                 && query_matches
                 && (!self.active_favorites || photo.favorite)
@@ -13286,8 +13705,9 @@ impl Widget for PhotosApp {
                 .then_with(|| left.id.cmp(&right.id))
         });
         let projection_filter = format!(
-            "{}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{}",
-            query,
+            "{}\u{1f}{}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{}",
+            self.library_query_indexed,
+            self.library_query_matches.len(),
             self.active_album,
             self.active_folder,
             self.active_person,
@@ -14093,18 +14513,13 @@ impl Widget for PhotosApp {
                     self.places_viewport.zoom =
                         (self.places_viewport.zoom - 1.0).max(crate::places::MIN_ZOOM)
                 }
-                PlacesHit::Marker(id) => {
-                    let _ = self.actions.try_dispatch_with_context(
+                PlacesHit::Place(key) => {
+                    let _ = self.open_place_collection(doc, &key);
+                }
+                PlacesHit::Photo(id) => {
+                    self.commit_library_action(
                         doc,
-                        crate::actions::PHOTOS_ACTION_TYPE,
-                        &crate::actions::PhotosAction::SelectPhoto {
-                            photo_id: id.clone(),
-                        },
-                        tilo_actions::ActionContext::for_action(
-                            "org.tilo.Photos",
-                            "Photos",
-                            &crate::actions::PhotosAction::SelectPhoto { photo_id: id },
-                        ),
+                        &crate::actions::PhotosAction::SelectPhoto { photo_id: id },
                     );
                     self.library_mode = false;
                 }
@@ -14885,6 +15300,105 @@ impl Widget for PhotosApp {
 }
 
 impl PhotosApp {
+    /// Admit one fresh contiguous People slice plus a bounded, device-local
+    /// anchor set from earlier local suggestions. Anchors use ordinary local
+    /// pixels only to let the signed runtime bridge disjoint batches; they do
+    /// not count toward cursor progress and never leave this device.
+    fn schedule_people_scan_batch(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        doc: &AutoCommit,
+    ) -> Result<(), String> {
+        if !self.people_controller.privacy().recognition_enabled {
+            return Err("People recognition is off on this device. Enable it in People before scanning local photographs.".to_owned());
+        }
+        let config = agent_provider_config::ProviderConfig::load();
+        self.people_controller.discover_face_capability(&config);
+        let capability = tilo_vision::discover_local_face_capability(&config).ok_or_else(|| {
+            "No verified local face model is ready. Install and start one in Settings.".to_owned()
+        })?;
+        let locally_available: Vec<_> = PhotosDoc::library(doc)
+            .photos
+            .into_iter()
+            .filter(|photo| crate::doc::bytes_of(&photo.image).is_some())
+            .map(|photo| (photo.id, photo.image))
+            .collect();
+        let anchor_ids = self.people_controller.reconciliation_anchor_photo_ids(2);
+        let anchor_count = anchor_ids
+            .iter()
+            .filter(|id| {
+                locally_available
+                    .iter()
+                    .any(|(available, _)| available == *id)
+            })
+            .count()
+            .min(tilo_vision::MAX_FACE_BATCH.saturating_sub(1));
+        let (start, scan_len) = self
+            .people_scan_progress
+            .batch_range(
+                locally_available.len(),
+                tilo_vision::MAX_FACE_BATCH.saturating_sub(anchor_count),
+            )
+            .ok_or_else(|| {
+                "No locally available photographs are ready for People recognition.".to_owned()
+            })?;
+        let mut photos: Vec<_> = locally_available
+            .iter()
+            .skip(start)
+            .take(scan_len)
+            .cloned()
+            .collect();
+        for id in anchor_ids {
+            if photos.iter().any(|(photo_id, _)| photo_id == &id) {
+                continue;
+            }
+            if let Some(anchor) = locally_available
+                .iter()
+                .find(|(photo_id, _)| photo_id == &id)
+            {
+                photos.push(anchor.clone());
+            }
+        }
+        let Some((_, first)) = photos.first() else {
+            return Err(
+                "No locally available photographs are ready for People recognition.".to_owned(),
+            );
+        };
+        let sender = self
+            .analysis_tx
+            .as_ref()
+            .ok_or_else(|| "local People recognition is unavailable on this device".to_owned())?;
+        sender
+            .try_send(AnalysisJob {
+                invocation,
+                photo_id: "photos.people".to_owned(),
+                content: None,
+                image: first.clone(),
+                kind: AnalysisJobKind::People {
+                    capability,
+                    images: photos,
+                },
+            })
+            .map_err(|_| {
+                "local image analysis is busy; wait for the current photos to finish".to_owned()
+            })?;
+        self.people_scan_progress.status = "running".to_owned();
+        self.people_scan_progress.last_error = None;
+        self.people_scan_progress.last_library_size = locally_available.len();
+        self.people_scan_progress.save();
+        self.active_analysis.insert(invocation);
+        self.active_people_scans.insert(invocation);
+        self.pending_people_scans.insert(
+            invocation,
+            PendingPeopleScan {
+                start,
+                scanned: scan_len,
+                total: locally_available.len(),
+            },
+        );
+        Ok(())
+    }
+
     fn is_toolbar_hit_enabled(&self, hit: Hit) -> bool {
         self.buttons
             .iter()

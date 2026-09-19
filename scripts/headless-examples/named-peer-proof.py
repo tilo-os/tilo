@@ -448,10 +448,10 @@ def main() -> int:
     # -- what is being run -------------------------------------------
     print("Binaries under test")
     shell_sources = [
-        REPO / "shell" / "src" / "shell" / "state.rs",
-        REPO / "shell" / "src" / "shell" / "collab_broker.rs",
-        REPO / "shell" / "src" / "shell" / "network.rs",
-        REPO / "shell" / "src" / "shell" / "search" / "providers" / "actions.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "state.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "collab_broker.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "network.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "search" / "providers" / "actions.rs",
     ]
     app_sources = [
         REPO / "apps" / "word-processor" / "src" / "widget.rs",
