@@ -44,9 +44,12 @@ were denied. Author and reviewer remain administrators; synthetic status input
 is not trusted CI evidence. Routine automatic integration is still unimplemented,
 and product protections were not changed by this experiment.
 
-Emergency relief is a separate deployed increment: the coordinating task reports
-product `0975d89a8` and infrastructure `ffbd` live. The
-[emergency runbook](../ci-emergency-relief.md) on main records operational details.
+Emergency relief is a separate deployed increment. The
+[delivery status](ci-delivery-status.md#deployed-relief-versus-experiments) records
+the observed product/infrastructure checkpoints and remaining qualification gates;
+the [emergency runbook](../ci-emergency-relief.md) on main records operator procedures.
+Keep deployment revisions and timing receipts there rather than treating this
+platform decision as a second live status record.
 Every main revision retains check/lint; only eligible superseded heavy runs are
 coalesced. Reserved quality capacity, a lean image and reduced automatic heavy
 fan-out improve the executor without deciding the long-term build graph. This
