@@ -1,5 +1,5 @@
 name: Prepare Rust build
-description: Restore Cargo downloads and configure the optional remote compiler cache.
+description: Ensure native build tools, restore Cargo downloads, and configure the optional remote compiler cache.
 
 outputs:
   cargo-cache-hit:
@@ -9,6 +9,17 @@ outputs:
 runs:
   using: composite
   steps:
+    # Builder images created before the NTFS reader landed do not contain the
+    # GNU build system needed to bootstrap its pinned source archive. Keep this
+    # fallback until every runner has consumed a rebuilt Containerfile.builder;
+    # on current images it is an inexpensive command check.
+    - name: Ensure pinned NTFS build dependencies
+      shell: bash
+      run: |
+        if test -d crates/session/qos-ntfs-helper && ! command -v autoreconf >/dev/null; then
+          dnf install -y autoconf automake libtool
+        fi
+
     - name: Restore Cargo downloads
       id: cargo-downloads
       uses: ./.forgejo/actions/restore-cargo-downloads
