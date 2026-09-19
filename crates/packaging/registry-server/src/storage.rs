@@ -17,6 +17,9 @@
 //!         <review-id>.json           # immutable moderator audit records
 //!     quarantined/
 //!         <urlencoded-pkg-id>.json   # entries removed from public visibility
+//!     snapshots/
+//!         <sequence>-<hash>.json     # immutable owner-signed history
+//!     published-snapshot.json        # atomic current channel pointer
 //! ```
 //!
 //! Writes go through atomic rename (`.tmp` → target path) so a
@@ -56,6 +59,7 @@ impl Storage {
             "pending",
             "reviews",
             "quarantined",
+            "snapshots",
             "moderation-cases",
             "transparency",
             "moderation-requests",
@@ -107,7 +111,89 @@ impl Storage {
     ///
     /// Returns an error if the snapshot cannot be encoded or written.
     pub fn save_snapshot(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
-        save_json(&self.snapshot_path(), snapshot)
+        let body =
+            serde_json::to_vec_pretty(snapshot).map_err(|e| StorageError::Encode(e.to_string()))?;
+        let hash = registry_types::snapshot_hash(snapshot)
+            .map_err(|e| StorageError::Encode(e.to_string()))?;
+        let archive = self.snapshot_history_path(snapshot.sequence, &hash)?;
+        if archive.exists() {
+            let existing = std::fs::read(&archive)
+                .map_err(|e| StorageError::Io(format!("read snapshot history: {e}")))?;
+            if existing != body {
+                return Err(StorageError::Parse(format!(
+                    "snapshot history collision at sequence {}",
+                    snapshot.sequence
+                )));
+            }
+        } else {
+            atomic_write(&archive, &body)?;
+        }
+        atomic_write(&self.snapshot_path(), &body)
+    }
+
+    /// Load an immutable historical snapshot by its monotonic sequence.
+    ///
+    /// Exactly one archive member must match. The hash remains in the filename
+    /// so operators can compare backup/object-store listings without parsing
+    /// JSON, while sequence is the stable rollback handle.
+    pub fn load_snapshot_sequence(
+        &self,
+        sequence: u64,
+    ) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
+        let prefix = format!("{sequence:020}-");
+        let mut matches = Vec::new();
+        for item in std::fs::read_dir(self.root.join("snapshots"))
+            .map_err(|e| StorageError::Io(format!("read snapshot history: {e}")))?
+        {
+            let path = item
+                .map_err(|e| StorageError::Io(format!("read snapshot history entry: {e}")))?
+                .path();
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if name.starts_with(&prefix) && name.ends_with(".json") {
+                matches.push(path);
+            }
+        }
+        match matches.as_slice() {
+            [] => Ok(None),
+            [path] => {
+                let snapshot: SignedRegistrySnapshot =
+                    load_json(path, "historical registry snapshot")?.ok_or_else(|| {
+                        StorageError::Parse("snapshot history entry disappeared".into())
+                    })?;
+                let expected = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_prefix(&prefix))
+                    .and_then(|name| name.strip_suffix(".json"))
+                    .ok_or_else(|| {
+                        StorageError::Parse("invalid snapshot history filename".into())
+                    })?;
+                let actual = registry_types::snapshot_hash(&snapshot)
+                    .map_err(|e| StorageError::Parse(e.to_string()))?;
+                if !actual.eq_ignore_ascii_case(expected) {
+                    return Err(StorageError::Parse(format!(
+                        "snapshot history digest mismatch at sequence {sequence}"
+                    )));
+                }
+                Ok(Some(snapshot))
+            }
+            _ => Err(StorageError::Parse(format!(
+                "multiple snapshot history entries exist for sequence {sequence}"
+            ))),
+        }
+    }
+
+    fn snapshot_history_path(&self, sequence: u64, hash: &str) -> Result<PathBuf, StorageError> {
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(StorageError::Encode("invalid snapshot hash".into()));
+        }
+        Ok(self
+            .root
+            .join("snapshots")
+            .join(format!("{sequence:020}-{}.json", hash.to_ascii_lowercase())))
     }
 
     /// Verified current moderation head for inclusion in an owner-signed
@@ -660,6 +746,7 @@ mod tests {
         assert!(s.root.join("pending").is_dir());
         assert!(s.root.join("reviews").is_dir());
         assert!(s.root.join("quarantined").is_dir());
+        assert!(s.root.join("snapshots").is_dir());
     }
 
     #[test]
