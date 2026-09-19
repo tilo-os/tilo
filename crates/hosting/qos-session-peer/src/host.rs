@@ -22,6 +22,13 @@ struct QualificationHold {
     completion: Option<Box<dyn FnOnce()>>,
     deadline: Option<std::time::Instant>,
     expired: bool,
+    action_registration: Option<ActionRegistrationHold>,
+}
+#[cfg(feature = "test-support")]
+struct ActionRegistrationHold {
+    reached: Arc<std::sync::atomic::AtomicBool>,
+    release: tokio::sync::watch::Sender<bool>,
+    barrier: Option<qos_action_broker::peer_actions::ActionRegistrationBarrier>,
 }
 #[cfg(feature = "test-support")]
 impl QualificationHold {
@@ -32,6 +39,28 @@ impl QualificationHold {
         self.deadline = None;
     }
     fn command(&mut self, line: &str) -> bool {
+        if line == "qualification action-registration hold" {
+            if self.action_registration.is_none() {
+                let reached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (release, waiting) = tokio::sync::watch::channel(false);
+                self.action_registration = Some(ActionRegistrationHold {
+                    reached: reached.clone(),
+                    release,
+                    barrier: Some(
+                        qos_action_broker::peer_actions::ActionRegistrationBarrier::new(
+                            reached, waiting,
+                        ),
+                    ),
+                });
+            }
+            return true;
+        }
+        if line == "qualification action-registration release" {
+            if let Some(hold) = self.action_registration.as_ref() {
+                hold.release.send_replace(true);
+            }
+            return true;
+        }
         if line == "qualification release" {
             self.release();
             return true;
@@ -47,6 +76,14 @@ impl QualificationHold {
         }
         false
     }
+
+    fn take_action_registration_barrier(
+        &mut self,
+    ) -> Option<qos_action_broker::peer_actions::ActionRegistrationBarrier> {
+        self.action_registration
+            .as_mut()
+            .and_then(|hold| hold.barrier.take())
+    }
 }
 #[cfg(feature = "test-support")]
 impl Drop for QualificationHold {
@@ -61,10 +98,18 @@ pub struct NativeSubscription {
     ready: bool,
     publication: std::sync::Mutex<crate::publication::PublicationCursor>,
 }
-struct AttachedActions(Option<tokio::task::JoinHandle<Result<(), ()>>>);
+struct AttachedActions {
+    task: Option<tokio::task::JoinHandle<Result<(), ()>>>,
+    acknowledged: tokio::sync::watch::Receiver<bool>,
+}
+impl AttachedActions {
+    fn is_ready(&self) -> bool {
+        *self.acknowledged.borrow() && self.task.as_ref().is_some_and(|task| !task.is_finished())
+    }
+}
 impl Drop for AttachedActions {
     fn drop(&mut self) {
-        if let Some(task) = &self.0 {
+        if let Some(task) = &self.task {
             task.abort();
         }
     }
@@ -93,7 +138,7 @@ impl NativeSubscription {
     }
     async fn close(mut self) {
         if let Some(mut attached) = self.actions.take() {
-            if let Some(task) = attached.0.take() {
+            if let Some(task) = attached.task.take() {
                 task.abort();
                 let _ = task.await;
             }
@@ -107,7 +152,14 @@ impl NativeSubscription {
             .close()
             .await;
     }
-    fn attach(&mut self, actions: &crate::action_host::ActionHost, room: uuid::Uuid) -> Result<()> {
+    fn attach(
+        &mut self,
+        actions: &crate::action_host::ActionHost,
+        room: uuid::Uuid,
+        #[cfg(feature = "test-support")] barrier: Option<
+            qos_action_broker::peer_actions::ActionRegistrationBarrier,
+        >,
+    ) -> Result<()> {
         if self.actions.is_some() {
             return Ok(());
         }
@@ -118,9 +170,28 @@ impl NativeSubscription {
             .peer_action_attachment()
             .map_err(anyhow::Error::msg)?;
         let session = self.session.clone();
-        self.actions = Some(AttachedActions(Some(tokio::spawn(async move {
-            queue.serve(session, room, host).await
-        }))));
+        let (acknowledged, readiness) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async move {
+            #[cfg(feature = "test-support")]
+            if let Some(barrier) = barrier {
+                return queue
+                    .serve_with_readiness_and_registration_barrier_for_test(
+                        session,
+                        room,
+                        host,
+                        acknowledged,
+                        barrier,
+                    )
+                    .await;
+            }
+            queue
+                .serve_with_readiness(session, room, host, acknowledged)
+                .await
+        });
+        self.actions = Some(AttachedActions {
+            task: Some(task),
+            acknowledged: readiness,
+        });
         Ok(())
     }
 }
@@ -410,8 +481,17 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     if let Err(problem) = runtime.pump(&owner) { action_error.get_or_insert(problem); }
                     if action_error.is_none() && runtime.ready() {
                         if let Some(current) = session.as_mut().filter(|s| s.is_ready()) {
-                            if let Err(problem) = current.attach(runtime, owner.peer().room().parse()?) { action_error = Some(problem.to_string()); }
-                            if current.actions.as_ref().is_some_and(|attached| attached.0.as_ref().is_some_and(|task| task.is_finished())) { action_error = Some("private broker attachment stopped; outcome unknown".into()); }
+                            if current.actions.is_none() {
+                                #[cfg(feature = "test-support")]
+                                let action_registration_barrier = qualification.take_action_registration_barrier();
+                                if let Err(problem) = current.attach(
+                                    runtime,
+                                    owner.peer().room().parse()?,
+                                    #[cfg(feature = "test-support")]
+                                    action_registration_barrier,
+                                ) { action_error = Some(problem.to_string()); }
+                            }
+                            if current.actions.as_ref().is_some_and(|attached| attached.task.as_ref().is_some_and(|task| task.is_finished())) { action_error = Some("private broker attachment stopped; outcome unknown".into()); }
                         }
                     }
                 }
@@ -554,12 +634,16 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             }
             result = listener.accept() => {
                 let (socket,_)=result?; let mut status=public_status(&owner,session.as_ref().is_some_and(|current|current.is_ready()),&error);
-                status["actions"] = json!(if action_error.is_some() { "unavailable" } else if actions.as_ref().is_some_and(|runtime| runtime.ready()) && session.as_ref().is_some_and(|s| s.actions.is_some()) { "ready" } else { "starting" });
+                status["actions"] = json!(if action_error.is_some() { "unavailable" } else if actions.as_ref().is_some_and(|runtime| runtime.ready()) && session.as_ref().is_some_and(|s| s.actions.as_ref().is_some_and(AttachedActions::is_ready)) { "ready" } else { "starting" });
                 status["action_error"] = json!(action_error);
                 #[cfg(feature = "test-support")]
                 {
                     status["qualification"] = json!({"armed": qualification.route.is_some(), "held": qualification.completion.is_some(), "expired": qualification.expired,
-                        "workers": actions.as_mut().map(|runtime| runtime.qualification_heads(owner.peer().room()))});
+                        "workers": actions.as_mut().map(|runtime| runtime.qualification_heads(owner.peer().room())),
+                        "action_registration": qualification.action_registration.as_ref().map(|hold| json!({
+                            "armed": hold.barrier.is_some(),
+                            "reached": hold.reached.load(std::sync::atomic::Ordering::Acquire),
+                        }))});
                 }
                 status["native_subscription_generation"] = json!(subscription_generation);
                 let authorization=authorization.clone();let commands=enrollment_commands.clone();

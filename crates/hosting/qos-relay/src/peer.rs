@@ -3286,6 +3286,198 @@ mod private_transport_tests {
     }
 
     #[tokio::test]
+    async fn replacement_action_capability_requires_enable_then_durable_registration() {
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let (source, _) = certified_device(&root, user.public_key, "source");
+        let (broker, _) = certified_device(&root, user.public_key, "broker");
+        let room = uuid::Uuid::from_u128(7);
+        let host = uuid::Uuid::from_u128(99);
+        let id = crate::room_workspace_id(&room.to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut runtime = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        runtime.admit_device(source.device_public_key).unwrap();
+        runtime.admit_device(broker.device_public_key).unwrap();
+        let (source_state, _source_state_rx) = mpsc::channel(2);
+        let (old_broker_state, _old_broker_state_rx) = mpsc::channel(2);
+        let (replacement_state, _replacement_state_rx) = mpsc::channel(2);
+        let (source_private, _source_private_rx) = mpsc::channel(2);
+        let (broker_private, mut broker_private_rx) = mpsc::channel(2);
+        let (source_disconnect, _source_disconnect_rx) = mpsc::channel(1);
+        let (broker_disconnect, _broker_disconnect_rx) = mpsc::channel(1);
+        runtime.add_subscriber(Subscriber {
+            device_public_key: source.device_public_key,
+            role: source.role,
+            tx: source_state.clone(),
+            disconnect: source_disconnect.clone(),
+        });
+        runtime.add_subscriber(Subscriber {
+            device_public_key: broker.device_public_key,
+            role: broker.role,
+            tx: old_broker_state.clone(),
+            disconnect: broker_disconnect.clone(),
+        });
+        let runtime = Arc::new(AsyncMutex::new(runtime));
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, runtime.clone())])));
+        let trust = Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        ));
+        let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+        let metrics = Arc::new(crate::metrics::Metrics::default());
+        let source_session = SessionCtx {
+            workspaces: &registry,
+            autobind: None,
+            outbound: &source_state,
+            state_outbound: None,
+            connection_live: None,
+            own_user_public_key: &user.public_key,
+            metrics: &metrics,
+            trust_policy: &trust,
+            disconnect: &source_disconnect,
+            v2: true,
+            private_tx: &source_private,
+            revocations: &revocations,
+        };
+        assert!(matches!(
+            handle_private(EnvelopeV2::EnableActions { room }, &source, &source_session)
+                .await
+                .unwrap(),
+            Some(EnvelopeV2::ActionsReady {
+                capability: ActionCapability::TransportOnly,
+                ..
+            })
+        ));
+        assert!(
+            handle_private(
+                EnvelopeV2::EnableBrokerClient { room },
+                &source,
+                &source_session
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+
+        runtime.lock().await.add_subscriber(Subscriber {
+            device_public_key: broker.device_public_key,
+            role: broker.role,
+            tx: replacement_state.clone(),
+            disconnect: broker_disconnect.clone(),
+        });
+        let replacement_session = SessionCtx {
+            outbound: &replacement_state,
+            private_tx: &broker_private,
+            disconnect: &broker_disconnect,
+            ..source_session
+        };
+        let action = DirectedAction {
+            room,
+            request_id: uuid::Uuid::from_u128(8),
+            source: source.device_public_key,
+            target: broker.device_public_key,
+            message: ActionMessage::InvokeBound {
+                host,
+                invocation: qos_actions::InvocationId::new(),
+                app_peer: "1".into(),
+                app_id: "dev.qos.test".into(),
+                record_id: "record".into(),
+                resource: "record".into(),
+                action: "test".into(),
+                argument: None,
+                confirmation: None,
+                revision: None,
+            },
+        };
+        assert_eq!(
+            route_private(&action, &source, &source_session)
+                .await
+                .unwrap(),
+            Some(UnavailableReason::UnsupportedPeer)
+        );
+        assert!(broker_private_rx.try_recv().is_err());
+
+        assert_eq!(
+            handle_private(
+                EnvelopeV2::EnableActions { room },
+                &broker,
+                &replacement_session
+            )
+            .await
+            .unwrap(),
+            Some(EnvelopeV2::ActionsReady {
+                room,
+                capability: ActionCapability::TransportOnly,
+            })
+        );
+        assert_eq!(
+            route_private(&action, &source, &source_session)
+                .await
+                .unwrap(),
+            Some(UnavailableReason::AdmissionUnavailable)
+        );
+        assert!(broker_private_rx.try_recv().is_err());
+
+        assert_eq!(
+            handle_private(
+                EnvelopeV2::RegisterBroker { room, host },
+                &broker,
+                &replacement_session
+            )
+            .await
+            .unwrap(),
+            Some(EnvelopeV2::ActionsReady {
+                room,
+                capability: ActionCapability::DurableBroker { host },
+            })
+        );
+        assert_eq!(
+            route_private(&action, &source, &source_session)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(matches!(
+            broker_private_rx.recv().await,
+            Some(PrivateOutbound::Delivery(_))
+        ));
+
+        runtime
+            .lock()
+            .await
+            .remove_subscriber_session(&broker.device_public_key, &old_broker_state);
+        let current = runtime.lock().await;
+        assert!(
+            current
+                .subscribers
+                .get(&broker.device_public_key)
+                .is_some_and(|subscriber| subscriber.tx.same_channel(&replacement_state))
+        );
+        assert!(
+            current
+                .action_targets
+                .get(&broker.device_public_key)
+                .is_some_and(|target| target.broker_host == Some(host)
+                    && target.state_tx.same_channel(&replacement_state))
+        );
+        drop(current);
+        assert_eq!(
+            route_private(&action, &source, &source_session)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(matches!(
+            broker_private_rx.recv().await,
+            Some(PrivateOutbound::Delivery(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn bounded_private_queue_and_delivery_recheck_never_retain_traffic() {
         let (root, user) = UserIdentity::generate("alice", 1);
         let (a, a_key) = certified_device(&root, user.public_key, "a");

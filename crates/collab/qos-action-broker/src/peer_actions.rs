@@ -6,6 +6,32 @@ use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use uuid::Uuid;
 
+#[cfg(feature = "test-support")]
+#[derive(Clone)]
+pub struct ActionRegistrationBarrier {
+    reached: Arc<std::sync::atomic::AtomicBool>,
+    release: tokio::sync::watch::Receiver<bool>,
+}
+
+#[cfg(feature = "test-support")]
+impl ActionRegistrationBarrier {
+    pub fn new(
+        reached: Arc<std::sync::atomic::AtomicBool>,
+        release: tokio::sync::watch::Receiver<bool>,
+    ) -> Self {
+        Self { reached, release }
+    }
+
+    async fn wait(mut self) -> Result<(), ()> {
+        self.reached
+            .store(true, std::sync::atomic::Ordering::Release);
+        while !*self.release.borrow() {
+            self.release.changed().await.map_err(|_| ())?;
+        }
+        Ok(())
+    }
+}
+
 /// Host-owned current certificate/revocation authority. Implementations read
 /// the owner's explicit identity store on every check; this is never supplied
 /// by a wire request. Signature, expiry, device role, room membership and action
@@ -53,6 +79,12 @@ pub struct Request {
     pub notification: Option<qos_actions::InvocationUpdate>,
     pub reply: oneshot::Sender<Result<ActionMessage, ()>>,
     pub _permit: OwnedSemaphorePermit,
+}
+struct ReadinessReset(tokio::sync::watch::Sender<bool>);
+impl Drop for ReadinessReset {
+    fn drop(&mut self) {
+        self.0.send_replace(false);
+    }
 }
 impl PeerActionQueue {
     pub fn channel() -> (Self, mpsc::Receiver<Request>) {
@@ -133,16 +165,58 @@ impl PeerActionQueue {
         room: Uuid,
         host: Uuid,
     ) -> Result<(), ()> {
-        let result = self.serve_inner(session.clone(), room, host).await;
+        let (acknowledged, _) = tokio::sync::watch::channel(false);
+        let result = self
+            .serve_with_readiness_inner(session.clone(), room, host, acknowledged, None)
+            .await;
         session.close().await;
         result
     }
-    async fn serve_inner(
+
+    /// Serve and report when this exact relay attachment acknowledges the
+    /// expected durable broker capability. The acknowledgement returns to
+    /// false when this serving future exits.
+    pub async fn serve_with_readiness(
         &self,
         session: Arc<qos_relay::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
+        acknowledged: tokio::sync::watch::Sender<bool>,
     ) -> Result<(), ()> {
+        let result = self
+            .serve_with_readiness_inner(session.clone(), room, host, acknowledged, None)
+            .await;
+        session.close().await;
+        result
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn serve_with_readiness_and_registration_barrier_for_test(
+        &self,
+        session: Arc<qos_relay::RelayCoeditSession>,
+        room: Uuid,
+        host: Uuid,
+        acknowledged: tokio::sync::watch::Sender<bool>,
+        barrier: ActionRegistrationBarrier,
+    ) -> Result<(), ()> {
+        let result = self
+            .serve_with_readiness_inner(session.clone(), room, host, acknowledged, Some(barrier))
+            .await;
+        session.close().await;
+        result
+    }
+
+    async fn serve_with_readiness_inner(
+        &self,
+        session: Arc<qos_relay::RelayCoeditSession>,
+        room: Uuid,
+        host: Uuid,
+        acknowledged: tokio::sync::watch::Sender<bool>,
+        #[cfg(feature = "test-support")] barrier: Option<ActionRegistrationBarrier>,
+        #[cfg(not(feature = "test-support"))] _barrier: Option<()>,
+    ) -> Result<(), ()> {
+        acknowledged.send_replace(false);
+        let readiness = ReadinessReset(acknowledged);
         let ActionMessage::BrokerCatalogue { host: current, .. } =
             self.request(None, None, None).await?
         else {
@@ -150,6 +224,10 @@ impl PeerActionQueue {
         };
         if current != host {
             return Err(());
+        }
+        #[cfg(feature = "test-support")]
+        if let Some(barrier) = barrier {
+            barrier.wait().await?;
         }
         session.enable_actions(room).map_err(|_| ())?;
         session.register_action_broker(room, host).map_err(|_| ())?;
@@ -176,7 +254,11 @@ impl PeerActionQueue {
                         watches.retain(|(evidence, _, _)| evidence.action().request_id != request_id);
                         if reason == qos_relay::peer_actions::UnavailableReason::Backpressure { return Err(()); }
                     },
-                    Some(CertifiedActionEvent::Control(_)) => {},
+                    Some(CertifiedActionEvent::Control(control)) => {
+                        if registration_acknowledged(&control, room, host) {
+                            readiness.0.send_replace(true);
+                        }
+                    },
                     None => return Err(()),
                 },
                 transition = transitions.recv() => {
@@ -198,6 +280,21 @@ impl PeerActionQueue {
             }
         }
     }
+}
+fn registration_acknowledged(
+    control: &qos_relay::transport_v2::EnvelopeV2,
+    room: Uuid,
+    host: Uuid,
+) -> bool {
+    matches!(
+        control,
+        qos_relay::transport_v2::EnvelopeV2::ActionsReady {
+            room: acknowledged_room,
+            capability: qos_relay::transport_v2::ActionCapability::DurableBroker {
+                host: acknowledged_host,
+            },
+        } if *acknowledged_room == room && *acknowledged_host == host
+    )
 }
 fn sequence(update: &qos_actions::InvocationUpdate) -> Option<u64> {
     match update {
@@ -227,6 +324,65 @@ fn send(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_exact_durable_registration_acknowledges_readiness() {
+        use qos_relay::transport_v2::{ActionCapability, EnvelopeV2};
+
+        let room = Uuid::from_u128(1);
+        let host = Uuid::from_u128(2);
+        for (control, expected) in [
+            (
+                EnvelopeV2::ActionsReady {
+                    room,
+                    capability: ActionCapability::TransportOnly,
+                },
+                false,
+            ),
+            (
+                EnvelopeV2::ActionsReady {
+                    room: Uuid::from_u128(3),
+                    capability: ActionCapability::DurableBroker { host },
+                },
+                false,
+            ),
+            (
+                EnvelopeV2::ActionsReady {
+                    room,
+                    capability: ActionCapability::DurableBroker {
+                        host: Uuid::from_u128(4),
+                    },
+                },
+                false,
+            ),
+            (
+                EnvelopeV2::ActionsReady {
+                    room,
+                    capability: ActionCapability::DurableBroker { host },
+                },
+                true,
+            ),
+        ] {
+            assert_eq!(registration_acknowledged(&control, room, host), expected);
+        }
+    }
+
+    #[test]
+    fn attachment_exit_clears_only_its_own_readiness() {
+        let (old, old_ready) = tokio::sync::watch::channel(false);
+        let (replacement, replacement_ready) = tokio::sync::watch::channel(false);
+        let old = ReadinessReset(old);
+        let replacement = ReadinessReset(replacement);
+        old.0.send_replace(true);
+        assert!(*old_ready.borrow());
+        assert!(!*replacement_ready.borrow());
+        drop(old);
+        assert!(!*old_ready.borrow());
+        assert!(!*replacement_ready.borrow());
+        replacement.0.send_replace(true);
+        assert!(*replacement_ready.borrow());
+    }
+
     #[tokio::test]
     async fn native_peer_facade_queue_bounds_total_inflight_and_disconnects() {
         let (queue, receiver) = PeerActionQueue::channel();

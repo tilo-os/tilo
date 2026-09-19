@@ -103,6 +103,93 @@ async fn proof(origin: &str, cap: &str, key: &SigningKey, id: u8) -> enrollment:
     let challenge: ChallengeResponse = serde_json::from_value(response).unwrap();
     enrollment::sign(&enrollment::decode(&challenge.challenge).unwrap(), key).unwrap()
 }
+
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnect_status_waits_for_durable_action_registration() {
+    use std::io::Write;
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("owner");
+    let ready = temp.path().join("ready.json");
+    SessionOwner::initialize(&state).unwrap();
+    let (mut host, metadata, _) = start(&state, &ready).await;
+    let origin = metadata["fixture_origin"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let generation = loop {
+        let status = request(origin, "/status", None, None).await.1;
+        if status["actions"] == "ready" {
+            break status["native_subscription_generation"].as_u64().unwrap();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "initial actions never ready: {status}"
+        );
+        tokio::task::yield_now().await;
+    };
+
+    writeln!(
+        host.0.stdin.as_mut().unwrap(),
+        "qualification action-registration hold"
+    )
+    .unwrap();
+    host.0.stdin.as_mut().unwrap().flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = request(origin, "/status", None, None).await.1;
+        if status["qualification"]["action_registration"]["armed"] == true {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "registration hold was not armed: {status}"
+        );
+        tokio::task::yield_now().await;
+    }
+    writeln!(host.0.stdin.as_mut().unwrap(), "reconnect").unwrap();
+    host.0.stdin.as_mut().unwrap().flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let held = loop {
+        let status = request(origin, "/status", None, None).await.1;
+        if status["native_subscription_generation"].as_u64().unwrap() > generation
+            && status["qualification"]["action_registration"]["reached"] == true
+        {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "replacement never reached registration hold: {status}"
+        );
+        tokio::task::yield_now().await;
+    };
+    assert_eq!(held["native_peer"], "subscribed", "{held}");
+    assert_eq!(held["actions"], "starting", "{held}");
+
+    writeln!(
+        host.0.stdin.as_mut().unwrap(),
+        "qualification action-registration release"
+    )
+    .unwrap();
+    host.0.stdin.as_mut().unwrap().flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = request(origin, "/status", None, None).await.1;
+        if status["actions"] == "ready" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "registered actions never became ready: {status}"
+        );
+        tokio::task::yield_now().await;
+    }
+    writeln!(host.0.stdin.as_mut().unwrap(), "shutdown").unwrap();
+    let exit = tokio::task::spawn_blocking(move || host.0.wait().unwrap())
+        .await
+        .unwrap();
+    assert!(exit.success());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn normal_host_serves_real_checked_application_catalogue() {
     use qos_relay::{
