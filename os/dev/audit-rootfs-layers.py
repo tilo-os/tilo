@@ -5,6 +5,8 @@ This detects provided exact private material and private PEM envelopes. It does
 not establish universal secret absence or authorize publication/installation.
 """
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -19,7 +21,11 @@ CHUNK = 1024 * 1024
 MAX_BYTES = 256 * 1024**3
 MAX_METADATA = 8 * CHUNK
 MAX_LAYERS = 1024
-PEM = re.compile(rb'-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----')
+PEM = re.compile(rb'-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY)-----')
+MAX_PEM = 65536
+PEM_SPACE = b' \t\r\n\v\f'
+PEM_HEADERS = re.compile(rb'Proc-Type:[ \t]*4,ENCRYPTED\n'
+                         rb'DEK-Info:[ \t]*[A-Z0-9-]+,[0-9A-Fa-f]+\n\n')
 PUBLIC_FAILURE_REASONS = {
     'truncated archive': 'truncated-archive',
     'unbounded archive read requested': 'invalid-read-bound',
@@ -61,11 +67,77 @@ PUBLIC_FAILURE_REASONS = {
     'private comparison input must be a bounded owner-only regular file': 'invalid-private-file',
     'invalid immutable image identity or timeout': 'invalid-audit-inputs',
     'layer export failed or exceeded timeout': 'layer-export-failed',
+    'private PEM envelope exceeds size limit': 'private-pem-size-limit',
 }
 
 
 class AuditError(ValueError):
     pass
+
+
+class PrivatePEM:
+    """Recognize complete envelopes, including ones split across read calls.
+
+    Crypto parsers contain BEGIN/END strings as ordinary program data. Require
+    a matching footer and nonempty valid base64 between them. A bounded pending
+    candidate is separate from the exact-private-byte matcher and never joins
+    markers across intervening binary bytes, quotes, or other invalid payload.
+    """
+    def __init__(self):
+        self.pending = b''
+
+    @staticmethod
+    def body(raw, partial):
+        # JSON metadata can store a complete PEM with escaped line breaks.
+        # Decode only these separators inside a candidate, never arbitrary JSON
+        # escapes or adjacent string fields. Quotes/NUL still reject it.
+        if partial and raw.endswith(b'\\'):
+            raw = raw[:-1]
+        raw = raw.replace(b'\\r\\n', b'\n').replace(b'\\n', b'\n').replace(b'\\r', b'\n')
+        raw = raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n').lstrip(PEM_SPACE)
+        if raw.startswith(b'Proc-Type:') or (partial and b'Proc-Type:'.startswith(raw)):
+            headers = PEM_HEADERS.match(raw)
+            if headers is None:
+                return partial and len(raw) <= 512 and all(
+                    byte in b'\t\n' or 32 <= byte <= 126 and byte not in b'\"\'\\'
+                    for byte in raw)
+            raw = raw[headers.end():]
+        payload = raw.translate(None, PEM_SPACE)
+        if not re.fullmatch(rb'[A-Za-z0-9+/]*={0,2}', payload):
+            return False
+        if partial:
+            return True
+        try:
+            return bool(payload and base64.b64decode(payload, validate=True))
+        except binascii.Error:
+            return False
+
+    def feed(self, data):
+        window = self.pending + data
+        self.pending = window[-256:]
+        for begin in PEM.finditer(window):
+            footer = b'-----END ' + begin[1] + b'-----'
+            rest = window[begin.end():]
+            end = rest.find(footer)
+            if end >= 0:
+                if self.body(rest[:end], partial=False):
+                    if end + len(footer) + begin.end() - begin.start() > MAX_PEM:
+                        raise AuditError('private PEM envelope exceeds size limit')
+                    return True
+                continue
+            # A footer itself may straddle the next chunk. Remove only an exact
+            # prefix of this candidate's footer while checking body plausibility.
+            body = rest
+            for size in range(min(len(rest), len(footer) - 1), 0, -1):
+                if rest.endswith(footer[:size]):
+                    body = rest[:-size]
+                    break
+            if self.body(body, partial=True):
+                candidate = window[begin.start():]
+                if len(candidate) > MAX_PEM:
+                    raise AuditError('private PEM envelope exceeds size limit')
+                self.pending = candidate
+        return False
 
 
 def exact(stream, size):
@@ -84,6 +156,7 @@ class Reader:
         self.patterns = patterns
         self.digest = hashlib.sha256() if hashing else None
         self.tail = b''
+        self.pem = PrivatePEM()
         self.overlap = max([256, *(len(value) - 1 for value in patterns)])
         self.bytes_read = 0
         self.findings = set()
@@ -102,7 +175,7 @@ class Reader:
             window = self.tail + data
             if any(value in window for value in self.patterns):
                 self.findings.add('provided-private-material')
-            if PEM.search(window):
+            if 'private-pem-envelope' not in self.findings and self.pem.feed(data):
                 self.findings.add('private-pem-envelope')
             self.tail = window[-self.overlap:]
         return data
@@ -277,7 +350,7 @@ def audit_stream(stream, image_id, private_values=(), max_bytes=MAX_BYTES):
             metadata[name] = value
             if any(secret in value for secret in private_values):
                 metadata_findings.add('provided-private-material')
-            if PEM.search(value):
+            if PrivatePEM().feed(value):
                 metadata_findings.add('private-pem-envelope')
 
     walk_tar(total, visit, 4096)
