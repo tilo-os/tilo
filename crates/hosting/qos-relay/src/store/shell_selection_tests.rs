@@ -4,7 +4,7 @@ use super::*;
 use crate::{coedit::CoeditPayload, transport::Envelope};
 use qos_peer_state::{NeighbourMsg, StatePeer, retained_proof::*};
 
-fn replay_frames(store: &WorkspaceStore) -> Vec<Envelope> {
+pub(crate) fn replay_frames(store: &WorkspaceStore) -> Vec<Envelope> {
     use super::replay::*;
     let mut build = store
         .start_replay_capture(ReplayId(rand::random()), [2; 32])

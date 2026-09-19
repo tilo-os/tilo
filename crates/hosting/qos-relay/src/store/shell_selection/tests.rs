@@ -171,3 +171,66 @@ fn shell_selection_spills_history_metadata_and_preserves_unknown_files() {
         "opaque foreign history has no retirement proof"
     );
 }
+
+#[test]
+fn retirement_pin_survives_failed_source_barrier_on_retry_and_reopen() {
+    let (_tmp, store) = setup();
+    let scratch = store.root.join("store-work-v1").join(format!(
+        "retain-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    let mut selector = Selection::new(&store, scratch, None).unwrap();
+    while !matches!(selector.phase, Phase::Gc) {
+        selector.step(WorkLimit::default()).unwrap();
+    }
+    let generation = selector.staged.clone();
+    let mut plan = File::open(generation.join("gc.manifest")).unwrap();
+    let target = read_meta(&mut plan).unwrap().unwrap();
+    let source = store.root.join(target.source);
+    let pin = generation.join(format!("gc-{:016x}.delta", target.pin));
+    let fault = crate::store::test_barrier::fail(source.parent().unwrap(), "sync-dir");
+    assert!(selector.step(WorkLimit::default()).is_err());
+    assert!(
+        !source.exists(),
+        "injected barrier failure follows the real source unlink"
+    );
+    assert!(
+        pin.exists(),
+        "failed source barrier retains its durable witness"
+    );
+    assert!(
+        selector.step(WorkLimit::default()).is_err(),
+        "NotFound retry still requires source barrier"
+    );
+    assert!(
+        pin.exists(),
+        "retry must not retire witness without source barrier"
+    );
+    drop(selector);
+    let mut reopened_store = WorkspaceStore::open(
+        store.root.parent().unwrap().parent().unwrap(),
+        store.workspace_id,
+        true,
+    )
+    .unwrap();
+    reopened_store
+        .bind_shell_authority(store.shell_authority().unwrap().clone())
+        .unwrap();
+    let mut reopened = SelectedRead::new(&reopened_store).unwrap().unwrap();
+    loop {
+        match reopened.step() {
+            Ok(Step::More) => (),
+            Ok(Step::Done(())) => panic!("reopen bypassed failed source barrier"),
+            Err(_) => break,
+        }
+    }
+    assert!(
+        pin.exists(),
+        "reopen must retain witness while source barrier fails"
+    );
+    drop(fault);
+    while matches!(reopened.step().unwrap(), Step::More) {}
+    assert!(!pin.exists());
+    assert!(!source.exists());
+    assert!(reopened.basis.complete());
+}

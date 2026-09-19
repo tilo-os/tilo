@@ -187,12 +187,14 @@ impl SelectedGc {
                     let same = false;
                     if same && replay::equal_files(&source, &pin)? {
                         fs::remove_file(&source)?;
-                        retained::sync_dir(source.parent().unwrap())?;
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
                 Err(e) => return Err(e.into()),
             }
+            // A prior quantum/process may have unlinked the source but failed
+            // its directory barrier. Absence alone is not durable retirement.
+            retained::sync_dir(source.parent().unwrap())?;
             fs::remove_file(&pin)?;
             retained::sync_dir(&self.generation)?;
             Ok(())

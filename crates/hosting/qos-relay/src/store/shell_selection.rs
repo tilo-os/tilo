@@ -192,6 +192,7 @@ pub(crate) struct Selection {
     active_gc: Option<SelectedGc>,
     gc_output: File,
     changed: bool,
+    switch_attempted: bool,
     incoming: Option<[u8; 32]>,
     incoming_staged: bool,
 }
@@ -244,10 +245,17 @@ impl Selection {
             active_gc: None,
             gc_output: File::create(staged.join("gc.manifest"))?,
             changed: false,
+            switch_attempted: false,
             incoming,
             incoming_staged: false,
             scratch,
         })
+    }
+    /// A complete changed cut may already be visible if CURRENT's rename or
+    /// directory barrier reports an error. The owner must fence its captured
+    /// recipients on any later failure, even before an Activate result exists.
+    pub(crate) fn activation_on_error(&self) -> Option<PathBuf> {
+        (self.changed && self.switch_attempted).then(|| self.staged.clone())
     }
     pub(crate) fn stats(&self) -> &WorkStats {
         &self.sorter.stats
@@ -788,10 +796,13 @@ impl Selection {
                 retained::sync_dir(&self.staged)?;
                 #[cfg(test)]
                 super::test_barrier::pause(self.store.root(), "shell-select-switch");
+                self.switch_attempted = true;
                 retained::durable_write(
                     &self.store.root.join(DIRECTORY).join("CURRENT"),
                     self.staged.file_name().unwrap().as_encoded_bytes(),
                 )?;
+                #[cfg(test)]
+                super::test_barrier::check(self.store.root(), "shell-after-current")?;
                 self.active_gc = Some(SelectedGc::new(
                     self.store.root.clone(),
                     self.staged.clone(),

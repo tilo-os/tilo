@@ -212,6 +212,8 @@ fn records(generation: &Path) -> Result<Vec<Record>, StoreError> {
 }
 
 pub(super) fn sync_dir(path: &Path) -> Result<(), StoreError> {
+    #[cfg(test)]
+    super::test_barrier::check(path, "sync-dir")?;
     fs::File::open(path)?.sync_all()?;
     Ok(())
 }
@@ -407,6 +409,11 @@ pub(crate) struct RetainBuild {
 impl RetainBuild {
     pub(crate) fn scratch(&self) -> &Path {
         &self.scratch
+    }
+    pub(crate) fn activation_on_error(&self) -> Option<PathBuf> {
+        self.selection
+            .as_ref()
+            .and_then(|selection| selection.activation_on_error())
     }
     pub(crate) fn stats(&self) -> &super::bounded::WorkStats {
         self.selection

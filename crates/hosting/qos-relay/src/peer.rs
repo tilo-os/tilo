@@ -1140,6 +1140,7 @@ struct StateCommit {
     logical_offline_bytes: u64,
     publish: bool,
     activation: Option<std::path::PathBuf>,
+    activation_error: Option<crate::store::StoreError>,
 }
 
 async fn enqueue_state(
@@ -1280,6 +1281,7 @@ async fn enqueue_state_inner(
                         logical_offline_bytes,
                         publish,
                         activation: None,
+                        activation_error: None,
                     }));
                 }
                 let seq = state.next_sequence()?;
@@ -1310,12 +1312,24 @@ async fn enqueue_state_inner(
                     logical_offline_bytes,
                     publish,
                     activation: None,
+                    activation_error: None,
                 });
                 return Ok(Step::More);
             }
             let current = commit.as_mut().unwrap();
             if let Some(build) = retained_build.as_mut() {
-                match build.step(Default::default())? {
+                let result = match build.step(Default::default()) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let Some(activation) = build.activation_on_error() else { return Err(error); };
+                        // Keep the captured sessions and uncertain/committed cut
+                        // across the worker error so completion fences them.
+                        current.activation = Some(activation);
+                        current.activation_error = Some(error);
+                        return Ok(Step::Done(commit.take().unwrap()));
+                    }
+                };
+                match result {
                     Step::More => return Ok(Step::More),
                     Step::Done(outcome) => {
                         let written = outcome.written;
@@ -1380,13 +1394,14 @@ async fn enqueue_state_inner(
                 if crate::persistence::diagnostics() {
                     tracing::info!(phase="state_commit", persisted_envelope_bytes=commit.persisted_bytes, logical_offline_bytes=commit.logical_offline_bytes);
                 }
+                let activating = commit.activation.is_some();
+                let mut delivered = 0u64;
+                let publication_result: Result<(), crate::store::StoreError> = async {
+                if let Some(error) = commit.activation_error.take() { return Err(error); }
                 let mut cursor = if let Some(path) = commit.activation.take() {
                     Some(crate::persistence::blocking(move || crate::store::replay::PublicationCursor::open(&path)).await??)
                 } else { None };
-                let activating = cursor.is_some();
                 let mut original = cursor.is_none();
-                let mut delivered = 0u64;
-                let publication_result: Result<(), crate::store::StoreError> = async {
                 loop {
                     let (envelope, budget) = if let Some(mut selected) = cursor.take() {
                         let (next, result) = crate::persistence::blocking(move || {
@@ -2216,6 +2231,205 @@ mod private_transport_tests {
         let proof = crate::auth::build_hello_ack2(&key, &[1; 32]);
         crate::auth::verify_hello_ack2(&proof, &peer.device_public_key, &[1; 32]).unwrap();
         (peer, key)
+    }
+
+    async fn activation_failure_fences_original_sessions_and_retry(operation: &'static str) {
+        use crate::store::shell_selection_tests::{
+            admit_frames, producer_fixture, producer_frame, producer_metadata, replay_frames,
+        };
+        let meta = producer_metadata();
+        let authority = qos_peer_state::retained_proof::RetentionAuthority::new(
+            meta["room"].as_str().unwrap(),
+            serde_json::from_value(meta["authority"].clone()).unwrap(),
+        )
+        .unwrap();
+        let id = crate::room_workspace_id(authority.room()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut runtime = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        runtime.store.bind_shell_authority(authority).unwrap();
+        // Both captured sessions are already ready on this durable old basis.
+        for row in meta["baseline"].as_array().unwrap() {
+            let raw = producer_frame(&meta, row, 1);
+            let Envelope::Delta { delta, .. } = crate::transport::decode(&raw[4..]).unwrap() else {
+                panic!()
+            };
+            let crate::coedit::CoeditPayload::Checkpoint { channel, .. } =
+                crate::coedit::CoeditPayload::decode(&delta).unwrap()
+            else {
+                panic!()
+            };
+            runtime.store.retain_checkpoint(&channel, &raw).unwrap();
+        }
+        let store = runtime.store.clone();
+        let (root, user) = UserIdentity::generate("activation fault recipients", 1);
+        let mut peers = Vec::new();
+        let mut ordinary_receivers = Vec::new();
+        let mut disconnects = Vec::new();
+        let mut frames = Vec::new();
+        for label in ["original", "replaced"] {
+            let (peer, _) = certified_device(&root, user.public_key, label);
+            runtime.admit_device(peer.device_public_key).unwrap();
+            let (tx, rx) = mpsc::channel(32);
+            let (disconnect, disconnected) = mpsc::channel(1);
+            let (state_tx, state_rx) = mpsc::channel(32);
+            runtime.add_subscriber(Subscriber {
+                device_public_key: peer.device_public_key,
+                role: peer.role,
+                tx,
+                disconnect,
+            });
+            runtime.state_sessions.insert(
+                peer.device_public_key,
+                StateSession {
+                    peer: peer.clone(),
+                    tx: state_tx,
+                    live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                },
+            );
+            peers.push(peer);
+            ordinary_receivers.push(rx);
+            disconnects.push(disconnected);
+            frames.push(state_rx);
+        }
+        let workspace = Arc::new(AsyncMutex::new(runtime));
+        let metrics = Arc::new(crate::metrics::Metrics::default());
+        let room_half = producer_frame(&meta, &meta["tail"][0], 2);
+        enqueue_state(
+            &workspace,
+            crate::transport::decode(&room_half[4..]).unwrap(),
+            None,
+            crate::auth::PeerRole::Device,
+            metrics.clone(),
+        )
+        .await
+        .unwrap();
+        let owner = crate::persistence::handle(&workspace).await;
+        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+            .await
+            .unwrap();
+        let current = store.root().join("shell-selected-v1/CURRENT");
+        let before = std::fs::read(&current).unwrap();
+        let raw = producer_frame(&meta, &meta["tail"][1], 3);
+        let fault = crate::store::test_barrier::fail(store.root(), operation);
+        let (release, reached) = crate::store::test_barrier::install(store.root(), operation);
+        enqueue_state(
+            &workspace,
+            crate::transport::decode(&raw[4..]).unwrap(),
+            None,
+            crate::auth::PeerRole::Device,
+            metrics.clone(),
+        )
+        .await
+        .unwrap();
+        reached.await.unwrap();
+        assert_ne!(
+            std::fs::read(&current).unwrap(),
+            before,
+            "injection must follow CURRENT switch"
+        );
+        // A newer session replaces one captured channel while the original job
+        // is paused. Error fencing must never disconnect this replacement.
+        let (new_tx, _new_rx) = mpsc::channel(32);
+        let (new_disconnect, mut new_disconnected) = mpsc::channel(1);
+        let (new_state_tx, mut new_frames) = mpsc::channel(32);
+        {
+            let peer = &peers[1];
+            let mut runtime = workspace.lock().await;
+            runtime.add_subscriber(Subscriber {
+                device_public_key: peer.device_public_key,
+                role: peer.role,
+                tx: new_tx.clone(),
+                disconnect: new_disconnect,
+            });
+            runtime.state_sessions.insert(
+                peer.device_public_key,
+                StateSession {
+                    peer: peer.clone(),
+                    tx: new_state_tx,
+                    live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                },
+            );
+        }
+        drop(release);
+        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+            .await
+            .unwrap();
+        drop(fault);
+        // Retry identical bytes after the durable cut: suppression must not
+        // leave an old ready recipient connected forever without activation.
+        enqueue_state(
+            &workspace,
+            crate::transport::decode(&raw[4..]).unwrap(),
+            None,
+            crate::auth::PeerRole::Device,
+            metrics,
+        )
+        .await
+        .unwrap();
+        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            disconnects[0].try_recv().is_ok(),
+            "post-cut {operation} error must fence captured recipient before exact retry suppresses it"
+        );
+        assert!(frames[0].try_recv().is_err());
+        {
+            let runtime = workspace.lock().await;
+            assert!(
+                !runtime
+                    .state_sessions
+                    .contains_key(&peers[0].device_public_key)
+            );
+            assert!(
+                runtime.subscribers[&peers[1].device_public_key]
+                    .tx
+                    .same_channel(&new_tx)
+            );
+        }
+        assert!(
+            new_disconnected.try_recv().is_err(),
+            "replacement channel must survive old job failure"
+        );
+        assert!(
+            new_frames.try_recv().is_err(),
+            "exact retry remains semantically suppressed"
+        );
+        // Reconnect captures the real durable basis after resumed GC, admitting
+        // every frame and converging to the producer's exact app heads.
+        let peer = admit_frames(
+            &meta,
+            &producer_fixture().join("baseline-peer.postcard"),
+            replay_frames(&store),
+        );
+        for row in meta["rows"].as_array().unwrap() {
+            assert_eq!(
+                peer.document_heads(
+                    row["app_id"].as_str().unwrap(),
+                    row["record_id"].as_str().unwrap()
+                )
+                .unwrap()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+                serde_json::from_value::<Vec<String>>(row["heads"].clone()).unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_activation_post_current_failure_fences_original_sessions_on_exact_retry() {
+        activation_failure_fences_original_sessions_and_retry("shell-after-current").await;
+    }
+    #[tokio::test]
+    async fn selected_activation_cursor_open_failure_fences_original_sessions_on_exact_retry() {
+        activation_failure_fences_original_sessions_and_retry("shell-publication-open").await;
     }
 
     #[tokio::test]

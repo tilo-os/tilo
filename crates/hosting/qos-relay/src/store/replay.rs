@@ -972,6 +972,11 @@ pub(crate) struct PublicationCursor {
 }
 impl PublicationCursor {
     pub(crate) fn open(generation: &Path) -> Result<Self, StoreError> {
+        #[cfg(test)]
+        super::test_barrier::check(
+            generation.parent().and_then(Path::parent).unwrap(),
+            "shell-publication-open",
+        )?;
         Ok(Self {
             workspace: generation
                 .parent()

@@ -60,3 +60,34 @@ pub(crate) fn pause(root: &Path, operation: &'static str) {
         }
     }
 }
+
+// Deterministic I/O faults, scoped to a temporary path and removed on unwind.
+fn faults() -> &'static Mutex<std::collections::HashSet<Key>> {
+    static FAULTS: OnceLock<Mutex<std::collections::HashSet<Key>>> = OnceLock::new();
+    FAULTS.get_or_init(Mutex::default)
+}
+pub(crate) struct Fault(Key);
+impl Drop for Fault {
+    fn drop(&mut self) {
+        faults().lock().unwrap().remove(&self.0);
+    }
+}
+pub(crate) fn fail(root: &Path, operation: &'static str) -> Fault {
+    let key = (root.to_path_buf(), operation);
+    assert!(faults().lock().unwrap().insert(key.clone()));
+    Fault(key)
+}
+pub(crate) fn check(root: &Path, operation: &'static str) -> std::io::Result<()> {
+    pause(root, operation);
+    if faults()
+        .lock()
+        .unwrap()
+        .contains(&(root.to_path_buf(), operation))
+    {
+        Err(std::io::Error::other(format!(
+            "injected {operation} failure"
+        )))
+    } else {
+        Ok(())
+    }
+}
