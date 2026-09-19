@@ -126,21 +126,32 @@ pub fn spring() -> Flex {
     Flex::row().grow(1.0)
 }
 
-/// A 1px horizontal rule in the theme's border colour.
+/// A 1 px horizontal rule on the page ground, derived against
+/// `surfaces.base` (HIG §9.5); see [`divider_on`] for rules inside a card.
 pub fn divider(theme: &Theme) -> Flex {
+    divider_on(theme.tokens.colors.surfaces.base)
+}
+
+/// A 1 px rule inside a surface other than the page: derived against
+/// `ground` (HIG §9.5), so a rule inside a raised card registers in the dark
+/// preset, where the declared `border_standard` is three shades from
+/// `raised` and vanishes.
+pub fn divider_on(ground: Color) -> Flex {
     Flex::row().fill_w().h(Len::Px(1.0)).surface(Surface {
-        fill: Some(theme.border_standard),
+        fill: Some(ui::surface::edge_on(ground)),
         radius: 0.0,
         border: None,
     })
 }
 
-/// Card surface treatment used by panels across the app.
+/// Card surface treatment used by panels across the app: raised fill with
+/// its derived rest edge (HIG §9.5).
 pub fn card_surface(theme: &Theme) -> Surface {
+    let fill = theme.tokens.colors.surfaces.raised;
     Surface {
-        fill: Some(theme.tokens.colors.surfaces.raised),
+        fill: Some(fill),
         radius: f64::from(theme.tokens.radii.lg),
-        border: Some((1.0, theme.border_standard)),
+        border: Some((1.0, ui::surface::edge_on(fill))),
     }
 }
 
@@ -177,20 +188,27 @@ pub fn hover_fill(theme: &Theme) -> Color {
     theme.tokens.colors.neutral.stops[3]
 }
 
-/// A resting subtle [`Surface`] with a full pill radius.
+/// The derived rest edge of a subtle surface (HIG §9.5 "Chip quiet").
+pub fn subtle_edge(theme: &Theme) -> Color {
+    ui::surface::edge_on(subtle_fill(theme))
+}
+
+/// A resting subtle [`Surface`] with a full pill radius and its derived edge.
 pub fn subtle_surface(theme: &Theme) -> Surface {
     Surface {
         fill: Some(subtle_fill(theme)),
         radius: f64::from(theme.tokens.radii.full),
-        border: None,
+        border: Some((1.0, subtle_edge(theme))),
     }
 }
 
-/// A hover [`Surface`] with a full pill radius.
+/// A hover [`Surface`] with a full pill radius; the edge derives from the
+/// hover fill so it keeps registering as the face lifts.
 pub fn hover_pill_surface(theme: &Theme) -> Surface {
+    let fill = hover_fill(theme);
     Surface {
-        fill: Some(hover_fill(theme)),
+        fill: Some(fill),
         radius: f64::from(theme.tokens.radii.full),
-        border: None,
+        border: Some((1.0, ui::surface::edge_on(fill))),
     }
 }

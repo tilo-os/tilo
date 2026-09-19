@@ -62,7 +62,11 @@ impl VideoEditorApp {
         let topbar_edge = TOPBAR_EDGE * self.chrome_scale();
         let topbar_gap = TOPBAR_GAP * self.chrome_scale();
         let topbar_compact = self.topbar_is_compact();
-        let command_w = if topbar_compact { topbar_target } else { 124.0 };
+        let command_w = if topbar_compact {
+            topbar_target
+        } else {
+            TOPBAR_BTN_W
+        };
         let export_btn = Rect::new(
             r.x1 - topbar_edge - command_w,
             topbar_y,
@@ -72,17 +76,20 @@ impl VideoEditorApp {
         // Directly beneath Export, in the same strip the project notice uses,
         // so the two never share a pixel — see `project_notice_limit`.
         let chip_w = EXPORT_CHIP_W.min((r.width() - 24.0).max(0.0));
+        // On the pane-heading band, so the chip centres on the same line as
+        // the "INSPECTOR" heading it sits beside (and the project notice
+        // plate, which shares the strip).
         let export_chip = Rect::new(
             export_btn.x1 - chip_w,
-            topbar.y1 + 6.0,
+            topbar.y1 + PANE_HEADING_Y0,
             export_btn.x1,
-            topbar.y1 + 32.0,
+            topbar.y1 + PANE_HEADING_Y0 + PANE_HEADING_H,
         );
         let split_btn = if topbar_compact {
             Rect::ZERO
         } else {
             Rect::new(
-                export_btn.x0 - topbar_gap - 110.0,
+                export_btn.x0 - topbar_gap - TOPBAR_BTN_W,
                 topbar_y,
                 export_btn.x0 - topbar_gap,
                 topbar_y + topbar_target,
@@ -94,7 +101,12 @@ impl VideoEditorApp {
             export_btn.x0 - topbar_gap
         };
         let import_btn = Rect::new(
-            import_right - if topbar_compact { topbar_target } else { 112.0 },
+            import_right
+                - if topbar_compact {
+                    topbar_target
+                } else {
+                    TOPBAR_BTN_W
+                },
             topbar_y,
             import_right,
             topbar_y + topbar_target,
@@ -103,9 +115,9 @@ impl VideoEditorApp {
         // overlay, so the user can summon the collapsed bin.
         let menu_btn = if overlay {
             Rect::new(
-                r.x0 + 8.0 * self.chrome_scale(),
+                r.x0 + topbar_edge,
                 topbar_y,
-                r.x0 + 8.0 * self.chrome_scale() + topbar_target,
+                r.x0 + topbar_edge + topbar_target,
                 topbar_y + topbar_target,
             )
         } else {
@@ -133,15 +145,15 @@ impl VideoEditorApp {
         // entirely: a truncation so short it reads as a different project name
         // would be worse than nothing, and the shortcuts still reach it.
         let project_x0 = if overlay {
-            menu_btn.x1 + 8.0 * self.chrome_scale()
+            menu_btn.x1 + topbar_gap
         } else {
-            r.x0 + 12.0
+            r.x0 + topbar_edge
         };
         let leading_limit = if inspector_btn.width() > 0.0 {
             inspector_btn.x0
         } else {
             import_btn.x0
-        } - 12.0;
+        } - topbar_gap;
         let project_btn = {
             // At a large text size a short, ellipsized title is less useful
             // than a clear project-menu affordance.  Keep the film icon and
