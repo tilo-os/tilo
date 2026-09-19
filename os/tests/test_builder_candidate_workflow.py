@@ -148,7 +148,7 @@ class BuilderCandidates(unittest.TestCase):
                     self.assertFalse(output.exists())
 
     def test_both_architectures_and_builder_consumers_keep_acceptance_gates(self):
-        self.assertIn('needs: [build, images, cache-cold, cache-warm]', BUILD)
+        self.assertIn('needs: [plan, build, images, accept-builder]', BUILD)
         self.assertIn('runner: runner-arm64', BUILD)
         self.assertIn('name: builder-index-${{ github.sha }}', BUILD)
         # Native acceptance consumers must honor the resolved builder override.
@@ -273,12 +273,27 @@ class CanaryIdentity(unittest.TestCase):
         self.assertEqual(BUILD.count('image: ${{ matrix.image }}'), 2)
         self.assertEqual(BUILD.count('matrix: ${{ fromJSON(needs.images.outputs.matrix) }}'), 2)
         self.assertIn('needs: [images, cache-cold]', BUILD)
-        self.assertIn('needs: [build, images, cache-cold, cache-warm]', BUILD)
+        self.assertIn('  accept-builder:', BUILD)
+        self.assertIn('needs: [plan, build, images, cache-cold, cache-warm]', BUILD)
+        self.assertIn('needs: [plan, build, images, accept-builder]', BUILD)
         self.assertIn('builder-canary-inputs.py verify acceptance-receipts', BUILD)
         self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh cold'),
                         BUILD.index('name: Retain only successful cold acceptance'))
         self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh warm'),
                         BUILD.index('name: Retain only successful warm acceptance'))
+
+    def test_reuse_never_reaches_signing_or_promotion(self):
+        signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]
+        build = BUILD.split('  build:', 1)[1].split('\n  images:', 1)[0]
+        promotion = BUILD.split('  promote-builder:', 1)[1]
+        acceptance = BUILD.split('  accept-builder:', 1)[1].split('\n  promote-builder:', 1)[0]
+        self.assertIn("if: needs.plan.outputs.mode == 'build'", signing)
+        self.assertIn("needs.plan.outputs.mode == 'build'", build)
+        self.assertIn("needs.plan.outputs.mode == 'build'", promotion)
+        self.assertNotIn('COSIGN_KEY_REF', acceptance)
+        self.assertNotIn('enable-openid-connect', acceptance)
+        self.assertNotIn('promote-native-index.py', acceptance)
+        self.assertIn("needs.plan.outputs.mode == 'reuse'", acceptance)
 
 
 if __name__ == '__main__':

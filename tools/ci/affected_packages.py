@@ -45,6 +45,8 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/merge_pr.py": "tools/tests/test_ci_merge_pr.py",
+    "tools/ci/builder_workflow_plan.py": "tools/tests/test_builder_workflow_plan.py",
+    "tools/ci/resolve_promoted_builder.py": "tools/tests/test_resolve_promoted_builder.py",
     "tools/ci/native-mold-linker.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/verify-native-mold.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/dispatch_merge.py": "tools/tests/test_ci_merge_dispatch.py",
@@ -61,7 +63,11 @@ QUALITY_ONLY_HELPERS = {
 QUALITY_ONLY_CONTROL_INPUTS = {
     ".forgejo/workflows/build-builder-image.yml": (
         "os/tests/test_builder_candidate_workflow.py",
+        "os/tests/release_pipeline_invariants.sh",
+        "os/tests/workflow_dependency_invariants.sh",
+        "tools/tests/test_cargo_download_cache_action.py",
         "tools/tests/test_ci_native_mold.py",
+        "tools/tests/test_cosign_install_action.py",
     ),
     ".forgejo/workflows/check.yml": (
         "tools/tests/test_ci_check_aggregate.py",
