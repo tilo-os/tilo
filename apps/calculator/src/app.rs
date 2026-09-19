@@ -1047,7 +1047,7 @@ impl Widget for CalculatorApp {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if kind == tilo_actions::OperationKind::Document {
@@ -1056,6 +1056,25 @@ impl Widget for CalculatorApp {
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
+        if kind != tilo_actions::OperationKind::View {
+            return Err("Mode changes require a View invocation".into());
+        }
+        if let actions::CalculatorOperation::RecallHistory { id } = &operation {
+            let index = crate::doc::visible_ids(doc, crate::doc::HISTORY)
+                .iter()
+                .position(|visible| visible == id)
+                .ok_or("Calculation no longer exists")?;
+            let document = crate::doc::load(doc).ok_or("Calculation history is unavailable")?;
+            let entry = document
+                .history
+                .get(index)
+                .ok_or("Calculation no longer exists")?;
+            self.model.expr.clone_from(&entry.expr);
+            self.model.after_equals = false;
+            self.model_dirty = true;
+            self.set_mode(Mode::Calc);
+            return Ok(true);
+        }
         // Resource-open operations are presentation-only except for the first
         // graph visit, whose starter must still be a replayable action. The
         // handler receives an immutable document reference, so stage the
@@ -1065,6 +1084,9 @@ impl Widget for CalculatorApp {
             actions::CalculatorOperation::ShowCalculator => Mode::Calc,
             actions::CalculatorOperation::ShowGraph2d => Mode::Graph2d,
             actions::CalculatorOperation::ShowGraph3d => Mode::Graph3d,
+            actions::CalculatorOperation::RecallHistory { .. } => {
+                return Ok(false);
+            }
         });
         Ok(true)
     }
@@ -1873,6 +1895,81 @@ impl CalculatorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_recall_uses_stable_history_identity_and_refuses_deleted_entries() {
+        let mut app = CalculatorApp::seeded();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let id = crate::doc::row_id_at(&state.doc, crate::doc::HISTORY, 1).unwrap();
+        let expression = crate::doc::load(&state.doc).unwrap().history[1]
+            .expr
+            .clone();
+        let resources = app.resources(&state.doc);
+        let row = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == format!("calculator.history_entry:{id}"))
+            .unwrap();
+        let open = row.actions.iter().find(|spec| spec.id == "open").unwrap();
+        assert_eq!(open.kind, tilo_actions::OperationKind::View);
+        let tilo_actions::ActionInput::Immediate(encoded) = &open.input else {
+            panic!("recall needs no prompt");
+        };
+        // A new calculation moves every old positional index. The saved search
+        // result must still recall exactly the document row it advertised.
+        app.perform_action(
+            &mut state.doc,
+            &actions::commit_history_action("999+1", "1000"),
+        );
+        let heads = state.doc.get_heads();
+        app.set_mode(Mode::Graph3d);
+        assert!(
+            app.invoke_resource_operation(
+                open.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &state.doc,
+                &state.root
+            )
+            .unwrap()
+        );
+        assert_eq!(app.model.mode, Mode::Calc);
+        assert_eq!(app.model.expr, expression);
+        assert_eq!(state.doc.get_heads(), heads, "recall is presentation only");
+        app.model_dirty = false;
+        app.model.expr = "uncommitted input".into();
+        assert!(
+            app.invoke_resource_operation(
+                open.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &state.doc,
+                &state.root
+            )
+            .unwrap()
+        );
+        assert_eq!(app.model.expr, expression);
+        assert!(
+            app.model_dirty,
+            "recalling while already in Calc still repaints"
+        );
+        app.perform_action(&mut state.doc, &actions::delete_history_entry_action(&id));
+        assert!(
+            app.invoke_resource_operation(
+                open.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &state.doc,
+                &state.root
+            )
+            .is_err()
+        );
+        assert_eq!(
+            app.model.expr, expression,
+            "stale search must not recall a different row"
+        );
+    }
 
     #[test]
     fn live_launch_is_empty_calc_mode() {
