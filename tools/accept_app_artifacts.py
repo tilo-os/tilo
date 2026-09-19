@@ -14,7 +14,7 @@ import tempfile
 import zipfile
 
 import app_channel_manifest as channel
-from app_packaging_product import dispatch_inputs, validate_evidence
+from app_packaging_product import dispatch_inputs, run_inputs_match, validate_evidence
 from assemble_verified_apps import MAX_BYTES, extract_tar
 import canonical_verifier_bundle as bundle
 import final_app_receipt as final
@@ -34,7 +34,7 @@ def validate_run(api, intent, run):
                     and run.get('trigger_event') == 'workflow_dispatch'
                     and run.get('commit_sha') == desired['source_sha']
                     and payload.get('ref') == desired['source_sha']
-                    and payload.get('inputs') == dispatch_inputs(intent)
+                    and run_inputs_match(intent, payload.get('inputs'))
                     and type(run.get('id')) is int and run['id'] > 0,
                     'final run does not match trusted dispatch')
 
