@@ -1,5 +1,8 @@
 //! Native owner-route bridge. SDK retains signing, encryption and transport.
-#[allow(clippy::wildcard_imports, reason = "private implementation module shares its enclosing host types")]
+#[allow(
+    clippy::wildcard_imports,
+    reason = "private implementation module shares its enclosing host types"
+)]
 use super::*;
 use crate::collaboration::RouteSpec;
 use automerge::transaction::Transactable;
@@ -24,7 +27,10 @@ impl App {
             self.root_widget.handle_collab_event(event);
         }
     }
-    #[allow(clippy::vec_box, reason = "consume the existing SDK event envelope representation without copying it")]
+    #[allow(
+        clippy::vec_box,
+        reason = "consume the existing SDK event envelope representation without copying it"
+    )]
     pub(super) fn apply_document_scrollback(
         &mut self,
         ops: Vec<Box<collab_types::SignedOp>>,
@@ -157,7 +163,9 @@ impl App {
                     }
                     Ok(None) => break,
                     Err(error) => {
-                        let reason = format!("Remote document could not be applied: {error}. Synchronization needs recovery.");
+                        let reason = format!(
+                            "Remote document could not be applied: {error}. Synchronization needs recovery."
+                        );
                         if error.is_invalid_mutation() {
                             entry.pending.quarantine_invalid_front(reason);
                             continue;
@@ -176,9 +184,13 @@ impl App {
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    let reason = format!("Remote document could not be applied: {error}. Synchronization needs recovery.");
+                    let reason = format!(
+                        "Remote document could not be applied: {error}. Synchronization needs recovery."
+                    );
                     if error.is_invalid_mutation() {
-                        self.document_routes.primary.quarantine_invalid_front(reason);
+                        self.document_routes
+                            .primary
+                            .quarantine_invalid_front(reason);
                         continue;
                     }
                     self.document_routes.primary.failure = Some(reason);
@@ -244,7 +256,9 @@ impl App {
             }
         };
         let queue = if let Some(index) = owned {
-            let Some(entry) = self.document_routes.owners.get_mut(index) else { return; };
+            let Some(entry) = self.document_routes.owners.get_mut(index) else {
+                return;
+            };
             &mut entry.pending
         } else {
             &mut self.document_routes.primary

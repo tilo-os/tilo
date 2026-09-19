@@ -205,10 +205,18 @@ fn sidebar_rhythm_uses_three_spacing_steps() {
     // A header hugs its rows (`s2`); related rows sit `s1` apart; sections
     // are `s6` apart — the header is always nearer its own rows than the
     // section above it.
-    close(network.y0 - connectivity.y1, f64::from(sp.s2), "header to first row");
+    close(
+        network.y0 - connectivity.y1,
+        f64::from(sp.s2),
+        "header to first row",
+    );
     close(bluetooth.y0 - network.y1, f64::from(sp.s1), "row to row");
     close(devices.y0 - bluetooth.y1, f64::from(sp.s6), "section gap");
-    close(devices_sync.y0 - devices.y1, f64::from(sp.s2), "second header to its row");
+    close(
+        devices_sync.y0 - devices.y1,
+        f64::from(sp.s2),
+        "second header to its row",
+    );
     assert!(
         devices.y0 - bluetooth.y1 > network.y0 - connectivity.y1,
         "a header must be closer to its rows than to the previous section"
@@ -235,7 +243,11 @@ fn described_row_caption_hugs_its_label_not_the_next_row() {
         .copied()
         .expect("the Reduce motion row carries a toggle");
     // The toggle is the tallest thing in the row, so its edges are the row's.
-    close(caption.y0 - row_toggle.y1, f64::from(sp.s1), "caption below its row");
+    close(
+        caption.y0 - row_toggle.y1,
+        f64::from(sp.s1),
+        "caption below its row",
+    );
     close(
         next_toggle.y0 - caption.y1,
         f64::from(settings::widgets::ROW_GAP),
@@ -246,7 +258,11 @@ fn described_row_caption_hugs_its_label_not_the_next_row() {
         "the caption must belong to its label, not float towards the next row"
     );
     // Label and toggle share one centre line.
-    close(label.center().y, row_toggle.center().y, "label vs toggle centre");
+    close(
+        label.center().y,
+        row_toggle.center().y,
+        "label vs toggle centre",
+    );
 }
 
 #[test]
@@ -261,8 +277,16 @@ fn hero_places_title_beside_its_icon_with_a_caption_gap() {
         title.x0 >= icon.x1,
         "title {title:?} must sit beside the icon {icon:?}, not wrap beneath it"
     );
-    close(subtitle.x0, title.x0, "subtitle shares the title's left edge");
-    close(subtitle.y0 - title.y1, f64::from(sp.s1), "title to subtitle");
+    close(
+        subtitle.x0,
+        title.x0,
+        "subtitle shares the title's left edge",
+    );
+    close(
+        subtitle.y0 - title.y1,
+        f64::from(sp.s1),
+        "title to subtitle",
+    );
     assert!(
         title.y0 < icon.y1 && subtitle.y1 > icon.y0,
         "text block {title:?}/{subtitle:?} overlaps the icon band {icon:?}"
@@ -277,7 +301,11 @@ fn region_pane_keeps_a_readable_form_measure_and_stays_fluid_when_narrow() {
     let control = by_test_id(&app, "region.currency");
     // Label and trailing chooser stay on one centre line (to the engine's
     // half-pixel: the 13 px label's line box is odd-height since F2)…
-    same_centre_line(label.center().y, control.center().y, "label vs dropdown centre");
+    same_centre_line(
+        label.center().y,
+        control.center().y,
+        "label vs dropdown centre",
+    );
     // …inside the toolkit's readable form measure (720) rather than the full
     // detail width, so the pair no longer drifts ~600 px apart.
     let card_inner = control.x1 - label.x0;
@@ -298,7 +326,11 @@ fn region_pane_keeps_a_readable_form_measure_and_stays_fluid_when_narrow() {
         "region.number_style",
         "region.first_day",
     ] {
-        close(by_test_id(&app, id).x1, control.x1, &format!("{id} trailing edge"));
+        close(
+            by_test_id(&app, id).x1,
+            control.x1,
+            &format!("{id} trailing edge"),
+        );
     }
 
     // A narrow window is a maximum, not a fixed width: the card still fills it.
@@ -336,7 +368,10 @@ fn sidebar_rows_seat_the_pointer_target_at_1x_and_grow_with_large_text() {
     let mut large = SettingsApp::with_selected(Category::Appearance).with_width_hint(1600.0);
     lay_out_scaled(&mut large, (1600.0, 900.0), 2.0);
     let rows = by_widget_name(&large, "SidebarRow");
-    assert!(!rows.is_empty(), "the sidebar is still docked at 1600 px / 200 %");
+    assert!(
+        !rows.is_empty(),
+        "the sidebar is still docked at 1600 px / 200 %"
+    );
     let shortest = rows.iter().map(Rect::height).fold(f64::MAX, f64::min);
     let tallest = rows.iter().map(Rect::height).fold(0.0, f64::max);
     assert!(
@@ -380,7 +415,11 @@ fn region_choice_rows_switch_layout_as_one_card() {
             control.y0 >= label.y1,
             "phone: {id} {control:?} sits beneath its label {label:?}"
         );
-        close(control.x0, label.x0, &format!("phone: {id} starts on its label's left edge"));
+        close(
+            control.x0,
+            label.x0,
+            &format!("phone: {id} starts on its label's left edge"),
+        );
         // The chooser hugs its label by the caption gap, not the row gap.
         // Taffy rounds each sibling's position to whole pixels on its own, so
         // the gap between two adjacent edges can land one pixel either side of

@@ -495,7 +495,11 @@ impl AccountList {
             "Set up locally".to_string()
         };
         let code_size = if has_local_secret {
-            if stacked { STACKED_CODE_SIZE } else { CODE_SIZE }
+            if stacked {
+                STACKED_CODE_SIZE
+            } else {
+                CODE_SIZE
+            }
         } else {
             13.0
         };
@@ -690,7 +694,11 @@ impl RowMetrics {
         let (issuer_h, label_h, gap) = (20.0, 16.25, 4.0);
         Self {
             stacked,
-            row_h: if stacked { NARROW_ROW_HEIGHT } else { ROW_HEIGHT },
+            row_h: if stacked {
+                NARROW_ROW_HEIGHT
+            } else {
+                ROW_HEIGHT
+            },
             issuer_h,
             label_h,
             gap,
@@ -749,8 +757,8 @@ impl RowMetrics {
             let identity_band = stacked_identity_band(issuer_h + gap + label_h, avatar_r, gap);
             let code_top = STACKED_TOP + identity_band + gap;
             let code_cy = code_top + code_h / 2.0;
-            let row_h = (code_cy + (code_h / 2.0).max(ring_r) + f64::from(sp.s2))
-                .max(NARROW_ROW_HEIGHT);
+            let row_h =
+                (code_cy + (code_h / 2.0).max(ring_r) + f64::from(sp.s2)).max(NARROW_ROW_HEIGHT);
             Self {
                 stacked: true,
                 row_h,
@@ -1027,7 +1035,10 @@ mod tests {
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
         let m = RowMetrics::measure(&mut tr, &theme, 568.0);
-        assert!(!m.stacked, "a 600px viewport keeps identity and code on one line");
+        assert!(
+            !m.stacked,
+            "a 600px viewport keeps identity and code on one line"
+        );
         assert_eq!(m.row_h, ROW_HEIGHT, "1× rows keep their authored height");
         assert_eq!(m.ring_r, RING_R);
         let narrow = RowMetrics::measure(&mut tr, &theme, 358.0);
@@ -1046,8 +1057,14 @@ mod tests {
         // one line, so it stacks and grows instead of overlapping.
         let m = RowMetrics::measure(&mut tr, &theme, 700.0);
         assert!(m.stacked, "200% text stacks a 700px row");
-        assert!(m.row_h > NARROW_ROW_HEIGHT, "stacked row grows with its text");
-        assert!(m.ring_r > RING_R, "the ring grows so its seconds fit inside");
+        assert!(
+            m.row_h > NARROW_ROW_HEIGHT,
+            "stacked row grows with its text"
+        );
+        assert!(
+            m.ring_r > RING_R,
+            "the ring grows so its seconds fit inside"
+        );
         assert!(
             m.code_top >= STACKED_TOP + m.issuer_h + m.gap + m.label_h,
             "the code line starts below the identity block"
@@ -1056,7 +1073,10 @@ mod tests {
         let wide = RowMetrics::measure(&mut tr, &theme, 1400.0);
         assert!(!wide.stacked);
         assert!(wide.row_h > ROW_HEIGHT);
-        assert!(wide.copy_zone_w > COPY_ZONE_W, "copy target follows the wider code");
+        assert!(
+            wide.copy_zone_w > COPY_ZONE_W,
+            "copy target follows the wider code"
+        );
     }
 
     #[test]
@@ -1081,7 +1101,10 @@ mod tests {
             Some((0, Zone::Body))
         );
         assert_eq!(
-            l.hit(Point::new(layout.code_right - 20.0, r.y0 + m.code_top + 4.0)),
+            l.hit(Point::new(
+                layout.code_right - 20.0,
+                r.y0 + m.code_top + 4.0
+            )),
             Some((0, Zone::Copy))
         );
         // The ring sits on the code's centre line, clear of the identity.

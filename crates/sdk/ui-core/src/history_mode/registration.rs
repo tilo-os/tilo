@@ -52,9 +52,15 @@ impl HistoryPresentation {
 /// Immutable identity supplied by the owning runner. This carries no document.
 /// Bound runners resolve their actual checkout instead of accepting a foreign identity.
 #[derive(Clone)]
-#[allow(clippy::large_enum_variant, reason = "registration keeps an opaque owner witness inline; it is not a per-frame message")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "registration keeps an opaque owner witness inline; it is not a per-frame message"
+)]
 pub enum HistorySourceRegistration {
-    CheckedFiles { scope: &'static str, source: super::checked_files::FileHistorySource },
+    CheckedFiles {
+        scope: &'static str,
+        source: super::checked_files::FileHistorySource,
+    },
     HostDocument {
         scope: &'static str,
         resource: HistoryResource,
@@ -73,16 +79,30 @@ impl HistorySourceRegistration {
     /// Capture the mounted component/tile's actual custody and storage identity.
     /// # Errors
     /// Refuses unavailable custody or an owner belonging to another application.
-    pub fn owned(scope: &'static str, app_id: &str, owner: super::HistoryOwner) -> Result<Self, HistoryRegistrationError> {
+    pub fn owned(
+        scope: &'static str,
+        app_id: &str,
+        owner: super::HistoryOwner,
+    ) -> Result<Self, HistoryRegistrationError> {
         let resource = owner.resource(app_id)?;
-        Ok(Self::OwnedDocument { scope, owner, resource })
+        Ok(Self::OwnedDocument {
+            scope,
+            owner,
+            resource,
+        })
     }
     pub(crate) fn scope(&self) -> &'static str {
         match self {
-            Self::HostDocument { scope, .. } | Self::OwnedDocument { scope, .. } | Self::Unversioned { scope, .. } | Self::CheckedFiles { scope, .. } => scope,
+            Self::HostDocument { scope, .. }
+            | Self::OwnedDocument { scope, .. }
+            | Self::Unversioned { scope, .. }
+            | Self::CheckedFiles { scope, .. } => scope,
         }
     }
-    pub(crate) fn document(&self, outer: &automerge::AutoCommit) -> Result<automerge::AutoCommit, HistoryRegistrationError> {
+    pub(crate) fn document(
+        &self,
+        outer: &automerge::AutoCommit,
+    ) -> Result<automerge::AutoCommit, HistoryRegistrationError> {
         match self {
             Self::OwnedDocument { owner, .. } => owner.document(outer),
             Self::CheckedFiles { .. } => Err(HistoryRegistrationError::UnsupportedOwner),
@@ -93,7 +113,8 @@ impl HistorySourceRegistration {
 pub struct HistoryRegistration {
     pub(crate) definition: &'static HistoryDefinition,
     pub(crate) sources: Vec<HistorySourceRegistration>,
-    pub(crate) assets: std::collections::HashMap<&'static str, std::rc::Rc<dyn super::HistoricalAssetSource>>,
+    pub(crate) assets:
+        std::collections::HashMap<&'static str, std::rc::Rc<dyn super::HistoricalAssetSource>>,
 }
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum HistoryRegistrationError {
@@ -115,15 +136,40 @@ pub enum HistoryRegistrationError {
 impl HistoryRegistration {
     /// Called only by the runner that installed an explicitly app-global opener.
     /// A persistence path identifies storage; it is not a user-file write target.
-    pub(crate) fn installed_app_state(definition: &'static HistoryDefinition, autosave: Option<&crate::persist::Autosave>, lifetime: uuid::Uuid) -> Result<Self, HistoryRegistrationError> {
-        if definition.scopes.iter().any(|scope| matches!(scope.presentation,HistoryPresentation::CheckedFiles { .. })) { return Err(HistoryRegistrationError::UnsupportedOwner); }
-        let resource = if let Some(saver) = autosave.filter(|saver| !saver.document_path().as_os_str().is_empty()) {
-            if saver.package_id() != definition.app_id { return Err(HistoryRegistrationError::ForeignSource); }
-            HistoryResource::new(saver.document_path().to_string_lossy().into_owned(), format!("host:{lifetime}"), definition.app_id,
-                crate::RecordId::derived("app-state", &crate::RecordId::for_file(saver.document_path())))
+    pub(crate) fn installed_app_state(
+        definition: &'static HistoryDefinition,
+        autosave: Option<&crate::persist::Autosave>,
+        lifetime: uuid::Uuid,
+    ) -> Result<Self, HistoryRegistrationError> {
+        if definition
+            .scopes
+            .iter()
+            .any(|scope| matches!(scope.presentation, HistoryPresentation::CheckedFiles { .. }))
+        {
+            return Err(HistoryRegistrationError::UnsupportedOwner);
+        }
+        let resource = if let Some(saver) =
+            autosave.filter(|saver| !saver.document_path().as_os_str().is_empty())
+        {
+            if saver.package_id() != definition.app_id {
+                return Err(HistoryRegistrationError::ForeignSource);
+            }
+            HistoryResource::new(
+                saver.document_path().to_string_lossy().into_owned(),
+                format!("host:{lifetime}"),
+                definition.app_id,
+                crate::RecordId::derived(
+                    "app-state",
+                    &crate::RecordId::for_file(saver.document_path()),
+                ),
+            )
         } else {
-            HistoryResource::new(format!("memory:{lifetime}"), format!("host:{lifetime}"), definition.app_id,
-                crate::RecordId::derived("app-state", &crate::RecordId::for_tab(0)))
+            HistoryResource::new(
+                format!("memory:{lifetime}"),
+                format!("host:{lifetime}"),
+                definition.app_id,
+                crate::RecordId::derived("app-state", &crate::RecordId::for_tab(0)),
+            )
         };
         let sources = definition
             .scopes
@@ -175,8 +221,19 @@ impl HistoryRegistration {
     ///
     /// # Errors
     /// Returns an error if the named scope is not installed in this registration.
-    pub fn with_asset_source(mut self, scope: &'static str, source: std::rc::Rc<dyn super::HistoricalAssetSource>) -> Result<Self, HistoryRegistrationError> {
-        if !self.definition.scopes.iter().any(|candidate| candidate.key == scope) { return Err(HistoryRegistrationError::InvalidScopes); }
+    pub fn with_asset_source(
+        mut self,
+        scope: &'static str,
+        source: std::rc::Rc<dyn super::HistoricalAssetSource>,
+    ) -> Result<Self, HistoryRegistrationError> {
+        if !self
+            .definition
+            .scopes
+            .iter()
+            .any(|candidate| candidate.key == scope)
+        {
+            return Err(HistoryRegistrationError::InvalidScopes);
+        }
         self.assets.insert(scope, source);
         Ok(self)
     }
@@ -224,9 +281,11 @@ impl HistoryRegistration {
                         return Err(HistoryRegistrationError::InvalidNamespace);
                     }
                 }
-                (_, HistorySourceRegistration::HostDocument { resource, .. } | HistorySourceRegistration::OwnedDocument { resource, .. })
-                    if resource.app_id != self.definition.app_id =>
-                {
+                (
+                    _,
+                    HistorySourceRegistration::HostDocument { resource, .. }
+                    | HistorySourceRegistration::OwnedDocument { resource, .. },
+                ) if resource.app_id != self.definition.app_id => {
                     return Err(HistoryRegistrationError::ForeignSource);
                 }
                 (
@@ -242,11 +301,15 @@ impl HistoryRegistration {
         for source in &self.sources {
             // A raw path identity cannot establish that the outer State owns
             // that file. Path owners use the actual checkout custody adapter.
-            if matches!(source, HistorySourceRegistration::HostDocument { resource, .. } if resource.record_id.file_path().is_some()) {
+            if matches!(source, HistorySourceRegistration::HostDocument { resource, .. } if resource.record_id.file_path().is_some())
+            {
                 return Err(HistoryRegistrationError::UnsupportedOwner);
             }
-            if let HistorySourceRegistration::OwnedDocument { owner, resource, .. } = source
-                && owner.resource(self.definition.app_id)? != *resource {
+            if let HistorySourceRegistration::OwnedDocument {
+                owner, resource, ..
+            } = source
+                && owner.resource(self.definition.app_id)? != *resource
+            {
                 return Err(HistoryRegistrationError::ForeignSource);
             }
         }
@@ -256,19 +319,34 @@ impl HistoryRegistration {
     pub(crate) fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
         self.validate_root_with_owner(root, None)
     }
-    pub(crate) fn validate_root_with_owner(&self, root: &dyn Widget, enclosing: Option<&super::HistoryOwner>) -> Result<(), HistoryRegistrationError> {
-        fn collect(root: &dyn Widget, actual: &mut Vec<super::HistoryOwner>) -> Result<(), HistoryRegistrationError> {
+    pub(crate) fn validate_root_with_owner(
+        &self,
+        root: &dyn Widget,
+        enclosing: Option<&super::HistoryOwner>,
+    ) -> Result<(), HistoryRegistrationError> {
+        fn collect(
+            root: &dyn Widget,
+            actual: &mut Vec<super::HistoryOwner>,
+        ) -> Result<(), HistoryRegistrationError> {
             if root.has_separate_document_owner() {
-                let owner = root.history_owner().ok_or(HistoryRegistrationError::UnsupportedOwner)?;
+                let owner = root
+                    .history_owner()
+                    .ok_or(HistoryRegistrationError::UnsupportedOwner)?;
                 owner.validate()?;
-                if !actual.iter().any(|other| owner.same_owner(other)) { actual.push(owner); }
+                if !actual.iter().any(|other| owner.same_owner(other)) {
+                    actual.push(owner);
+                }
             }
-            for child in root.children() { collect(child, actual)?; }
+            for child in root.children() {
+                collect(child, actual)?;
+            }
             Ok(())
         }
         for source in &self.sources {
             if let HistorySourceRegistration::CheckedFiles { scope, source } = source {
-                let root_registration = root.history_registration()?.ok_or(HistoryRegistrationError::UnsupportedOwner)?;
+                let root_registration = root
+                    .history_registration()?
+                    .ok_or(HistoryRegistrationError::UnsupportedOwner)?;
                 if root_registration.definition.app_id != self.definition.app_id || !root_registration.sources.iter().any(|candidate| matches!(candidate,HistorySourceRegistration::CheckedFiles { scope: other_scope,source: other } if scope==other_scope && source.same_owner(other))) { return Err(HistoryRegistrationError::UnsupportedOwner); }
             }
         }
@@ -276,14 +354,33 @@ impl HistoryRegistration {
         // An explicitly witnessed Files-only root does not claim its enclosing
         // tab's UI state as file content. Descendant document owners still match
         // their own declared Domain sources under the normal bijection below.
-        let external_only = self.sources.iter().all(|source| matches!(source,HistorySourceRegistration::CheckedFiles { .. }));
-        if let Some(owner) = enclosing { owner.validate()?; if !external_only { actual.push(owner.clone()); } }
+        let external_only = self
+            .sources
+            .iter()
+            .all(|source| matches!(source, HistorySourceRegistration::CheckedFiles { .. }));
+        if let Some(owner) = enclosing {
+            owner.validate()?;
+            if !external_only {
+                actual.push(owner.clone());
+            }
+        }
         collect(root, &mut actual)?;
-        let registered: Vec<_> = self.sources.iter().filter_map(|source| match source {
-            HistorySourceRegistration::OwnedDocument { owner, .. } => Some(owner), _ => None,
-        }).collect();
-        if actual.iter().any(|owner| !registered.iter().any(|registered| owner.same_owner(registered)))
-            || registered.iter().any(|owner| !actual.iter().any(|actual| owner.same_owner(actual))) {
+        let registered: Vec<_> = self
+            .sources
+            .iter()
+            .filter_map(|source| match source {
+                HistorySourceRegistration::OwnedDocument { owner, .. } => Some(owner),
+                _ => None,
+            })
+            .collect();
+        if actual.iter().any(|owner| {
+            !registered
+                .iter()
+                .any(|registered| owner.same_owner(registered))
+        }) || registered
+            .iter()
+            .any(|owner| !actual.iter().any(|actual| owner.same_owner(actual)))
+        {
             return Err(HistoryRegistrationError::UnsupportedOwner);
         }
         Ok(())

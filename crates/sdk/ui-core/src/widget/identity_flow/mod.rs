@@ -1859,7 +1859,10 @@ pub fn mint_invite(
 ///
 /// Returns an error for an invalid endpoint/certificate, unsafe authority
 /// storage, encryption/signing failure, or an exhausted authority quota.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Broker invites bind channel identity, owner signing identity, inviter label, role and expiry, redemption endpoint/certificate, and authority storage."
+)]
 pub fn mint_invite_for_broker(
     channel: ChannelId,
     channel_name: impl Into<String>,
@@ -1898,7 +1901,10 @@ pub fn mint_invite_for_broker(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Invite signing binds channel and owner identity, recipient-visible label, role/expiry, redemption endpoint/certificate, and the issuing authority."
+)]
 fn mint_invite_at(
     channel: ChannelId,
     channel_name: String,
@@ -2677,7 +2683,9 @@ pub(super) mod test_events {
         let text: Option<winit::keyboard::SmolStr> = text.map(Into::into);
         let event = KeyEvent::synthetic(
             winit::event::RawKeyEvent {
-                physical_key: PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified),
+                physical_key: PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                ),
                 state: ElementState::Pressed,
             },
             logical_key.clone(),

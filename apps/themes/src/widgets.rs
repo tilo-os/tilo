@@ -128,7 +128,14 @@ struct RowView {
 }
 
 impl ThemeRow {
-    pub(crate) fn draw_snapshot(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect) {
+    pub(crate) fn draw_snapshot(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
         self.rect = rect;
         self.paint(scene, t, tr, theme);
     }
@@ -165,7 +172,6 @@ impl ThemeRow {
         self.draw_active_badge(scene, t, tr, theme);
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn from_spec(spec: &ThemeSpec, selected: bool) -> Self {
         Self {
             id: spec.id.clone(),

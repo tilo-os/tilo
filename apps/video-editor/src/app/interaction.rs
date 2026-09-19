@@ -386,7 +386,12 @@ impl VideoEditorApp {
     /// Shared rather than derived twice: a click has to land on the card that
     /// was actually drawn, or dismiss-on-click-away fires while the pointer
     /// is over the field.
-    pub(super) fn goto_layout(&self, r: &Regions, tr: &mut TextRenderer, theme: &Theme) -> GotoLayout {
+    pub(super) fn goto_layout(
+        &self,
+        r: &Regions,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> GotoLayout {
         let type_sizes = dialog_type(tr, theme);
         let sp = &theme.tokens.spacing;
         let (s1, s2, s3, s4) = (

@@ -330,7 +330,7 @@ impl SearchPage {
 impl SearchResult {
     /// Build a row whose invocation takes no arguments — most rows: opening
     /// a note, launching an app, toggling an overlay.
-    #[allow(clippy::too_many_arguments)]
+
     pub fn nullary(
         kind: ResourceKind,
         provider_id: impl Into<String>,
@@ -363,7 +363,7 @@ impl SearchResult {
     /// [`SearchResult::nullary`] for a row that can refuse — a launch can
     /// still fail (missing package, declined sandbox, no display), and the
     /// return value is how a control-socket caller learns that.
-    #[allow(clippy::too_many_arguments)]
+
     pub fn nullary_fallible(
         kind: ResourceKind,
         provider_id: impl Into<String>,

@@ -25,8 +25,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
-use vello::peniko::{BlendMode, Fill};
 use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -135,7 +135,9 @@ impl Metrics {
     fn measure(tr: &mut TextRenderer) -> Self {
         let control = draw::line_growth(tr, CONTROL_FONT);
         Self {
-            row_h: ROW_H + draw::line_growth(tr, ROW_TITLE_FONT) + draw::line_growth(tr, ROW_SUB_FONT),
+            row_h: ROW_H
+                + draw::line_growth(tr, ROW_TITLE_FONT)
+                + draw::line_growth(tr, ROW_SUB_FONT),
             sidebar_row_h: SIDEBAR_ROW_H + control,
             search_row_h: SEARCH_ROW_H + control,
             toggle: TOGGLE_SIZE + control,
@@ -1200,7 +1202,13 @@ impl ui::widget::Widget for SnippetsApp {
             let fading = presence < 0.999;
             if fading {
                 let clip = self.toggle_rect(band).inflate(2.0, 2.0);
-                scene.push_layer(Fill::NonZero, BlendMode::default(), presence as f32, t, &clip);
+                scene.push_layer(
+                    Fill::NonZero,
+                    BlendMode::default(),
+                    presence as f32,
+                    t,
+                    &clip,
+                );
             }
             self.draw_toggle(scene, t, theme, band, presence);
             if fading {
@@ -2183,7 +2191,10 @@ impl SnippetsApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Sidebar row painting combines render context, row geometry, label/count, selection state, and hierarchy indentation."
+    )]
     fn sidebar_row(
         &self,
         scene: &mut Scene,
@@ -2199,7 +2210,12 @@ impl SnippetsApp {
     ) -> Rect {
         let c = &theme.tokens.colors;
         let pad = 10.0;
-        let row = Rect::new(area.x0 + 8.0, y, area.x1 - 8.0, y + self.m.sidebar_row_h - 4.0);
+        let row = Rect::new(
+            area.x0 + 8.0,
+            y,
+            area.x1 - 8.0,
+            y + self.m.sidebar_row_h - 4.0,
+        );
         if active {
             draw::fill_round(scene, t, row, theme.radii_md(), c.accent[5]);
         } else if row.contains(self.last_mouse) {
@@ -2399,7 +2415,13 @@ impl SnippetsApp {
         // A soft rounded tile carrying a glyph — a real, composed anchor.
         let tile = 56.0;
         let tile_rect = Rect::new(cx - tile / 2.0, top, cx + tile / 2.0, top + tile);
-        ui::surface::card(scene, t, tile_rect, theme.radii_md() + 4.0, c.surfaces.raised);
+        ui::surface::card(
+            scene,
+            t,
+            tile_rect,
+            theme.radii_md() + 4.0,
+            c.surfaces.raised,
+        );
         let glyph = "{ }";
         let (gw, gh) = tr.measure(glyph, 22.0, None);
         let gw = f64::from(gw);
@@ -2921,7 +2943,8 @@ impl SnippetsApp {
         } else {
             "☆ Star"
         };
-        let mut buttons: Vec<(&str, bool, Action)> = vec![(primary_label, true, Action::Copy(open))];
+        let mut buttons: Vec<(&str, bool, Action)> =
+            vec![(primary_label, true, Action::Copy(open))];
         if snippet.has_placeholders() {
             buttons.push(("Variables…", false, Action::Expand(open)));
         }
@@ -2960,7 +2983,10 @@ impl SnippetsApp {
 
     /// Draw a toolbar button, record its hit region against `action`, and
     /// return the x-coordinate the next button should start at.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Toolbar button painting combines render context, position, label/style, and the action recorded for its hit region."
+    )]
     fn toolbar_button(
         &mut self,
         scene: &mut Scene,
@@ -3018,7 +3044,13 @@ impl SnippetsApp {
             Rect::new(card.x0 + 10.0, card.y0, card.x0 + gutter_w + pad, card.y1),
             c.neutral[1],
         );
-        draw::stroke_edge(scene, t, card, theme.radii_md(), ui::surface::edge_on(c.neutral[0]));
+        draw::stroke_edge(
+            scene,
+            t,
+            card,
+            theme.radii_md(),
+            ui::surface::edge_on(c.neutral[0]),
+        );
 
         let mut y = card.y0 + pad;
         let code_x = x0 + gutter_w;
@@ -3574,7 +3606,14 @@ mod tests {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        Widget::draw(app, &mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::empty());
+        Widget::draw(
+            app,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
     }
 
     fn hit_rect(app: &SnippetsApp, want: &Action) -> Option<Rect> {
@@ -3617,7 +3656,10 @@ mod tests {
         draw_once(&mut app);
         assert!(hit_rect(&app, &Action::ToggleSidebar).is_none());
         let search = hit_rect(&app, &Action::FocusSearch).expect("search recorded");
-        assert!((search.x0 - (SIDEBAR_W + 12.0)).abs() < 0.5, "search {search:?}");
+        assert!(
+            (search.x0 - (SIDEBAR_W + 12.0)).abs() < 0.5,
+            "search {search:?}"
+        );
     }
 
     #[test]

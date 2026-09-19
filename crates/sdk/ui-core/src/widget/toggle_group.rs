@@ -736,7 +736,11 @@ impl Widget for ToggleGroup {
         let width = usize_to_f32(self.segments.len().max(1)) * SEGMENT_WIDTH;
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: if self.flexible_width { Dimension::percent(1.0) } else { Dimension::length(width) },
+                width: if self.flexible_width {
+                    Dimension::percent(1.0)
+                } else {
+                    Dimension::length(width)
+                },
                 height: Dimension::length(STRIP_HEIGHT),
             },
             // A segmented strip has an intrinsic label-bearing width. In a
@@ -803,7 +807,10 @@ impl Widget for ToggleGroup {
         let labels: Vec<&str> = self.segments.iter().map(|s| s.label.as_str()).collect();
         let face = SegmentedFace::new(&self.segment_rects, &labels, self.selected)
             .style(self.style)
-            .text_size(crate::text_metrics::renderer_type_size(text_renderer, theme.tokens.typography.scale.sm))
+            .text_size(crate::text_metrics::renderer_type_size(
+                text_renderer,
+                theme.tokens.typography.scale.sm,
+            ))
             .radius(radius);
         Self::paint(scene, transform, text_renderer, theme, &face);
 

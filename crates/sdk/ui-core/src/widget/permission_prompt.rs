@@ -19,9 +19,9 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_metrics::{centered_text_top, renderer_type_size};
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::{centered_text_top, renderer_type_size};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -255,7 +255,10 @@ struct ButtonVisualState {
 // Standard immediate-mode paint-helper signature for this vello renderer
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "permission buttons combine scene resources and theme with bounds, label and hover/disabled/primary/focus state"
+)]
 fn draw_button(
     scene: &mut Scene,
     transform: Affine,

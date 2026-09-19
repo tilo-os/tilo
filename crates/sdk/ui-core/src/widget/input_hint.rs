@@ -13,11 +13,11 @@ use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
-use crate::text_metrics::renderer_type_size;
 use crate::input::{ControllerBinding, InputBinding, KeyboardBinding};
 use crate::interaction::{ControllerFamily, InteractionEnvironment, KeyboardFamily};
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::{TaffyTreeExt, Widget};

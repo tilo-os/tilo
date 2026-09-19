@@ -1,9 +1,9 @@
 //! Inert discovery index, built only from a normal validated publication.
 //! It never retains `Resource`/`ActionSpec` values or executable callbacks.
 use super::{App, ResourceCacheKey};
-use tilo_actions::{ActionAddress, ActionDescriptor, OperationKind, Resource};
 use runtime_collab::ActionDirectoryRow;
 use std::collections::HashMap;
+use tilo_actions::{ActionAddress, ActionDescriptor, OperationKind, Resource};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct DirectoryWitness {
@@ -60,7 +60,12 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
                     resource: descriptor.address.resource.clone(),
                     resource_kind: descriptor.resource_kind.clone(),
                     resource_label: descriptor.resource_label.clone(),
-                    resource_presentation_json: resource.presentation.as_ref().filter(|value| value.is_valid()).and_then(|value| serde_json::to_string(value).ok()).unwrap_or_default(),
+                    resource_presentation_json: resource
+                        .presentation
+                        .as_ref()
+                        .filter(|value| value.is_valid())
+                        .and_then(|value| serde_json::to_string(value).ok())
+                        .unwrap_or_default(),
                     action: Some(descriptor.address.action.clone()),
                     has_children: false,
                     visibility_action: Some(descriptor.address.action.clone()),
@@ -94,7 +99,12 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
                     resource: resource.id.as_str().to_owned(),
                     resource_kind: resource.kind.clone(),
                     resource_label: resource.label.clone(),
-                    resource_presentation_json: resource.presentation.as_ref().filter(|value| value.is_valid()).and_then(|value| serde_json::to_string(value).ok()).unwrap_or_default(),
+                    resource_presentation_json: resource
+                        .presentation
+                        .as_ref()
+                        .filter(|value| value.is_valid())
+                        .and_then(|value| serde_json::to_string(value).ok())
+                        .unwrap_or_default(),
                     action: None,
                     descriptor: None,
                     has_children: !actions.is_empty() || !children.is_empty(),

@@ -428,7 +428,10 @@ fn native_owned_routes_isolate_two_documents_and_outer_for_snapshot_incremental_
         "initial installed owners synchronize independently"
     );
     for (route, request) in &fixture.app.document_routes.sent {
-        let CollabRequest::Document { mutation: collab_types::DocumentMutation::Snapshot(data) } = request else {
+        let CollabRequest::Document {
+            mutation: collab_types::DocumentMutation::Snapshot(data),
+        } = request
+        else {
             panic!("initial publication is a snapshot")
         };
         let doc = automerge::AutoCommit::load(data).unwrap();
@@ -591,7 +594,10 @@ fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
         .iter()
         .find(|(route, _)| Some(route) == fixture.bindings[0].broker_route().as_ref())
         .unwrap();
-    let CollabRequest::Document { mutation: collab_types::DocumentMutation::Snapshot(data) } = request else {
+    let CollabRequest::Document {
+        mutation: collab_types::DocumentMutation::Snapshot(data),
+    } = request
+    else {
         panic!("reconnect needs fresh snapshot")
     };
     let doc = automerge::AutoCommit::load(data).unwrap();
@@ -694,11 +700,15 @@ fn native_owned_review_restore_enqueues_one_target_delta_and_preserves_other_own
         .unwrap();
     let outer = fixture.app.state.doc.base_heads();
     let target = named(&mut fixture.app, "History");
-    fixture.app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+    fixture
+        .app
+        .dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut fixture.app);
     select_native_version(&mut fixture.app, old);
     let target = named(&mut fixture.app, "Restore…");
-    fixture.app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+    fixture
+        .app
+        .dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut fixture.app);
     native_key(&mut fixture.app, "Enter");
     assert_eq!(fixture.value(0, "body").as_deref(), Some("old version"));
@@ -725,7 +735,10 @@ fn native_owned_review_restore_enqueues_one_target_delta_and_preserves_other_own
         fixture.app.document_routes.sent[0].0,
         fixture.bindings[0].broker_route().unwrap()
     );
-    let CollabRequest::Document { mutation: collab_types::DocumentMutation::Incremental(data) } = &fixture.app.document_routes.sent[0].1 else {
+    let CollabRequest::Document {
+        mutation: collab_types::DocumentMutation::Incremental(data),
+    } = &fixture.app.document_routes.sent[0].1
+    else {
         panic!("restore follows initial snapshot with exact-route delta")
     };
     assert!(!data.is_empty());
@@ -751,7 +764,9 @@ fn native_owned_review_restore_enqueues_one_target_delta_and_preserves_other_own
     assert_eq!(fixture.app.document_routes.sent.len(), 1);
     // Restoring the same selected version again is a canonical no-op.
     let target = named(&mut fixture.app, "Restore…");
-    fixture.app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+    fixture
+        .app
+        .dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut fixture.app);
     native_key(&mut fixture.app, "Enter");
     assert_eq!(
@@ -1783,7 +1798,9 @@ fn native_routed_live_update_keeps_selected_historical_canvas_pinned() {
         .unwrap();
     fixture.install_history();
     let target = named(&mut fixture.app, "History");
-    fixture.app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+    fixture
+        .app
+        .dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut fixture.app);
     select_native_version(&mut fixture.app, selected);
     let preview_before = fixture
@@ -1838,80 +1855,183 @@ fn round1_top_level_native_history_preserves_legacy_custody_and_stale_at_refusal
     use crate::permissions::*;
     let mut fixture = TopLegacyFixture::new();
     let tile_pointer = std::ptr::from_mut(fixture.tile.as_mut());
-    let mut app = App::from_managed_root(State::new(), ManagedRoot::new(fixture.tile, fixture.registration)).unwrap();
+    let mut app = App::from_managed_root(
+        State::new(),
+        ManagedRoot::new(fixture.tile, fixture.registration),
+    )
+    .unwrap();
     layout(&mut app);
     let allowed = app.permission_ctx().clone();
-    assert!(!app.bindings.owns_document(node_for_test_id(&app, "history-open")));
-    app.state.doc.put(ROOT, "unfinished outer", "pending").unwrap();
+    assert!(
+        !app.bindings
+            .owns_document(node_for_test_id(&app, "history-open"))
+    );
+    app.state
+        .doc
+        .put(ROOT, "unfinished outer", "pending")
+        .unwrap();
     let outer = (app.state.doc.base_heads(), app.state.doc.pending_ops());
-    let before = fixture.store.read_history(&fixture.checkout.id, |_, history| history.revision()).unwrap();
+    let before = fixture
+        .store
+        .read_history(&fixture.checkout.id, |_, history| history.revision())
+        .unwrap();
     let target = named(&mut app, "owned editor");
     app.dispatch_a11y_action(target, &crate::a11y::Action::SetValue("owned edit".into()));
-    assert_eq!(legacy_body(&fixture.store, &fixture.checkout), "owned edit", "top-level chrome must retain the actual legacy owner");
-    assert_eq!((app.state.doc.base_heads(), app.state.doc.pending_ops()), outer);
-    assert_eq!(fixture.store.read_history(&fixture.checkout.id, |_, history| history.revision()).unwrap(), before+1);
-    app.set_permission_ctx(PermissionContext::from_capabilities(Actor::person(None, LOCAL_USER), vec![]));
+    assert_eq!(
+        legacy_body(&fixture.store, &fixture.checkout),
+        "owned edit",
+        "top-level chrome must retain the actual legacy owner"
+    );
+    assert_eq!(
+        (app.state.doc.base_heads(), app.state.doc.pending_ops()),
+        outer
+    );
+    assert_eq!(
+        fixture
+            .store
+            .read_history(&fixture.checkout.id, |_, history| history.revision())
+            .unwrap(),
+        before + 1
+    );
+    app.set_permission_ctx(PermissionContext::from_capabilities(
+        Actor::person(None, LOCAL_USER),
+        vec![],
+    ));
     app.dispatch_a11y_action(target, &crate::a11y::Action::SetValue("denied".into()));
     assert_eq!(legacy_body(&fixture.store, &fixture.checkout), "owned edit");
     app.set_permission_ctx(allowed);
-    app.node_map.clear(); app.bindings.clear();
+    app.node_map.clear();
+    app.bindings.clear();
     // Exclusive App retains the box; old maps cannot be dereferenced while rebinding.
-    unsafe { (*tile_pointer).bind_record(fixture.replacement.clone(), fixture.checkout.clone()); }
-    app.rebuild_structure(); layout(&mut app);
-    assert!(!app.build_a11y_tree_update(1.0).nodes.iter().any(|(id, _)| *id == target));
+    unsafe {
+        (*tile_pointer).bind_record(fixture.replacement.clone(), fixture.checkout.clone());
+    }
+    app.rebuild_structure();
+    layout(&mut app);
+    assert!(
+        !app.build_a11y_tree_update(1.0)
+            .nodes
+            .iter()
+            .any(|(id, _)| *id == target)
+    );
     app.dispatch_a11y_action(target, &crate::a11y::Action::SetValue("stale".into()));
     assert_eq!(legacy_body(&fixture.replacement, &fixture.checkout), "live");
     let definition = &crate::history_mode::integration_tests::RESTORABLE;
     let owner = unsafe { (*tile_pointer).history_owner().unwrap() };
-    app.install_history(HistoryRegistration::new(definition, vec![HistorySourceRegistration::owned("document", definition.app_id, owner).unwrap()]).unwrap()).unwrap();
+    app.install_history(
+        HistoryRegistration::new(
+            definition,
+            vec![HistorySourceRegistration::owned("document", definition.app_id, owner).unwrap()],
+        )
+        .unwrap(),
+    )
+    .unwrap();
     layout(&mut app);
     let fresh = named(&mut app, "owned editor");
     assert_ne!(fresh, target);
-    app.dispatch_a11y_action(target, &crate::a11y::Action::SetValue("stale allowed".into()));
+    app.dispatch_a11y_action(
+        target,
+        &crate::a11y::Action::SetValue("stale allowed".into()),
+    );
     assert_eq!(legacy_body(&fixture.replacement, &fixture.checkout), "live");
-    let replacement_revision = fixture.replacement.read_history(&fixture.checkout.id, |_, history| history.revision()).unwrap();
-    app.dispatch_a11y_action(fresh, &crate::a11y::Action::SetValue("replacement edit".into()));
-    assert_eq!(legacy_body(&fixture.replacement, &fixture.checkout), "replacement edit");
+    let replacement_revision = fixture
+        .replacement
+        .read_history(&fixture.checkout.id, |_, history| history.revision())
+        .unwrap();
+    app.dispatch_a11y_action(
+        fresh,
+        &crate::a11y::Action::SetValue("replacement edit".into()),
+    );
+    assert_eq!(
+        legacy_body(&fixture.replacement, &fixture.checkout),
+        "replacement edit"
+    );
     assert_eq!(legacy_body(&fixture.store, &fixture.checkout), "owned edit");
-    assert_eq!(fixture.replacement.read_history(&fixture.checkout.id, |_, history| history.revision()).unwrap(), replacement_revision+1);
-    assert_eq!((app.state.doc.base_heads(), app.state.doc.pending_ops()), outer);
+    assert_eq!(
+        fixture
+            .replacement
+            .read_history(&fixture.checkout.id, |_, history| history.revision())
+            .unwrap(),
+        replacement_revision + 1
+    );
+    assert_eq!(
+        (app.state.doc.base_heads(), app.state.doc.pending_ops()),
+        outer
+    );
 }
 
 #[test]
 fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return() {
-    use crate::widget::native_view::{NativeView, NativeViewBackend, NativeViewGeometry, NativeViewHost};
+    use crate::widget::native_view::{
+        NativeView, NativeViewBackend, NativeViewGeometry, NativeViewHost,
+    };
     use std::{cell::Cell, rc::Rc};
     #[derive(Default)]
-    struct NativeState { mounts: Cell<usize>, attached: Cell<bool>, visible: Cell<bool>, enabled: Cell<bool>, focused: Cell<bool> }
+    struct NativeState {
+        mounts: Cell<usize>,
+        attached: Cell<bool>,
+        visible: Cell<bool>,
+        enabled: Cell<bool>,
+        focused: Cell<bool>,
+    }
     struct Backend(Rc<NativeState>);
     impl NativeViewBackend for Backend {
-        fn mount(&mut self, _: &NativeViewHost<'_>) -> Result<(), String> { self.0.mounts.set(self.0.mounts.get()+1); self.0.attached.set(true); Ok(()) }
-        fn unmount(&mut self) { self.0.attached.set(false); }
+        fn mount(&mut self, _: &NativeViewHost<'_>) -> Result<(), String> {
+            self.0.mounts.set(self.0.mounts.get() + 1);
+            self.0.attached.set(true);
+            Ok(())
+        }
+        fn unmount(&mut self) {
+            self.0.attached.set(false);
+        }
         fn set_geometry(&mut self, _: NativeViewGeometry) {}
-        fn set_visible(&mut self, value: bool) { self.0.visible.set(value); }
-        fn set_enabled(&mut self, value: bool) { self.0.enabled.set(value); }
-        fn set_focus(&mut self, value: bool) { self.0.focused.set(value); }
+        fn set_visible(&mut self, value: bool) {
+            self.0.visible.set(value);
+        }
+        fn set_enabled(&mut self, value: bool) {
+            self.0.enabled.set(value);
+        }
+        fn set_focus(&mut self, value: bool) {
+            self.0.focused.set(value);
+        }
     }
     let native = Rc::new(NativeState::default());
     let mut view = NativeView::new("Top-level native editor", Backend(native.clone()));
     view.set_focus(true);
     let mut app = app();
     app.root_widget = Box::new(view);
-    let host = NativeViewHost::headless(crate::platform::PlatformConventions::new(crate::platform::Platform::MacOs), 1.0);
+    let host = NativeViewHost::headless(
+        crate::platform::PlatformConventions::new(crate::platform::Platform::MacOs),
+        1.0,
+    );
     app.init_layout();
     let root = app.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
-    assert!(native.attached.get() && native.visible.get() && native.enabled.get() && native.focused.get());
+    assert!(
+        native.attached.get()
+            && native.visible.get()
+            && native.enabled.get()
+            && native.focused.get()
+    );
     let target = named(&mut app, "History");
     app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     let root = app.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
-    assert!(app.history.as_ref().unwrap().live_visible(), "wide activity retains the rendered live backdrop");
+    assert!(
+        app.history.as_ref().unwrap().live_visible(),
+        "wide activity retains the rendered live backdrop"
+    );
     assert!(!app.history.as_ref().unwrap().live_interactive());
-    assert!(!native.attached.get(), "wide activity must detach independent native input even without a selected preview");
+    assert!(
+        !native.attached.get(),
+        "wide activity must detach independent native input even without a selected preview"
+    );
     draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
-    assert!(!native.attached.get() && !native.visible.get(), "drawing the live backdrop must not reactivate native controls");
+    assert!(
+        !native.attached.get() && !native.visible.get(),
+        "drawing the live backdrop must not reactivate native controls"
+    );
     let target = named(&mut app, "History");
     app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     let root = app.root_node.unwrap();
@@ -1921,14 +2041,28 @@ fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return
     assert!(native.attached.get() && native.visible.get() && native.enabled.get());
 }
 
-fn round1_malformed_mutation(incremental: bool, mut document: automerge::AutoCommit) -> collab_types::DocumentMutation {
+fn round1_malformed_mutation(
+    incremental: bool,
+    mut document: automerge::AutoCommit,
+) -> collab_types::DocumentMutation {
     let baseline = document.base_heads();
     document.set_actor(automerge::ActorId::from(b"malformed-peer".as_slice()));
-    document.put(ROOT, "invalid-peer-field", "must never enter").unwrap(); document.commit();
-    let mut bytes = if incremental { document.save_after(&baseline) } else { document.save() };
+    document
+        .put(ROOT, "invalid-peer-field", "must never enter")
+        .unwrap();
+    document.commit();
+    let mut bytes = if incremental {
+        document.save_after(&baseline)
+    } else {
+        document.save()
+    };
     bytes[4] ^= 0xff; // Corrupt an unknown complete chunk, not a known snapshot or incomplete tail.
     assert!(automerge::AutoCommit::load(&bytes).is_err());
-    if incremental { collab_types::DocumentMutation::Incremental(bytes) } else { collab_types::DocumentMutation::Snapshot(bytes) }
+    if incremental {
+        collab_types::DocumentMutation::Incremental(bytes)
+    } else {
+        collab_types::DocumentMutation::Snapshot(bytes)
+    }
 }
 
 #[test]
@@ -1937,33 +2071,116 @@ fn round1_owned_malformed_remote_recovers_with_snapshot_after_local_edit_finishe
         let mut fixture = RoutedOwners::new();
         let binding = fixture.bindings[0].clone();
         let route = binding.broker_route().unwrap();
-        let before = fixture.records.read_checked(&binding.checkout.id, Clone::clone).unwrap();
-        let bad = routed_document(&route, round1_malformed_mutation(incremental, before.clone()));
+        let before = fixture
+            .records
+            .read_checked(&binding.checkout.id, Clone::clone)
+            .unwrap();
+        let bad = routed_document(
+            &route,
+            round1_malformed_mutation(incremental, before.clone()),
+        );
         fixture.app.apply_signed_document_envelope(&bad, None);
-        assert!(fixture.app.document_sync_status().unwrap().contains("could not be applied"));
+        assert!(
+            fixture
+                .app
+                .document_sync_status()
+                .unwrap()
+                .contains("could not be applied")
+        );
         let failure = fixture.app.document_sync_status().map(str::to_owned);
-        let invalid_recovery = routed_document(&route, round1_malformed_mutation(false, before.clone()));
-        fixture.app.apply_signed_document_envelope(&invalid_recovery, None);
+        let invalid_recovery =
+            routed_document(&route, round1_malformed_mutation(false, before.clone()));
+        fixture
+            .app
+            .apply_signed_document_envelope(&invalid_recovery, None);
         assert_eq!(fixture.app.document_sync_status(), failure.as_deref());
         fixture.app.publish_owned_documents();
-        assert!(!fixture.app.document_routes.sent.iter().any(|(sent, _)| sent == &route));
-        assert_eq!(fixture.records.read_checked(&binding.checkout.id, |doc| doc.base_heads()).unwrap(), before.base_heads());
+        assert!(
+            !fixture
+                .app
+                .document_routes
+                .sent
+                .iter()
+                .any(|(sent, _)| sent == &route)
+        );
+        assert_eq!(
+            fixture
+                .records
+                .read_checked(&binding.checkout.id, |doc| doc.base_heads())
+                .unwrap(),
+            before.base_heads()
+        );
         let recovery = fixture.remote(0, "recovered", false);
-        fixture.records.with_action_state(&binding.checkout.id, |doc, _, _| { doc.put(ROOT, "local-draft", "preserved").unwrap(); }).unwrap();
-        let pending = fixture.records.read_history(&binding.checkout.id, |doc, history| (doc.base_heads(), doc.pending_ops(), history.revision())).unwrap();
+        fixture
+            .records
+            .with_action_state(&binding.checkout.id, |doc, _, _| {
+                doc.put(ROOT, "local-draft", "preserved").unwrap();
+            })
+            .unwrap();
+        let pending = fixture
+            .records
+            .read_history(&binding.checkout.id, |doc, history| {
+                (doc.base_heads(), doc.pending_ops(), history.revision())
+            })
+            .unwrap();
         fixture.app.apply_signed_document_envelope(&recovery, None);
-        assert_eq!(fixture.app.document_sync_status(), failure.as_deref(), "recovery remains visible until the snapshot actually merges");
-        assert_eq!(fixture.records.read_history(&binding.checkout.id, |doc, history| (doc.base_heads(), doc.pending_ops(), history.revision())).unwrap(), pending);
+        assert_eq!(
+            fixture.app.document_sync_status(),
+            failure.as_deref(),
+            "recovery remains visible until the snapshot actually merges"
+        );
+        assert_eq!(
+            fixture
+                .records
+                .read_history(&binding.checkout.id, |doc, history| (
+                    doc.base_heads(),
+                    doc.pending_ops(),
+                    history.revision()
+                ))
+                .unwrap(),
+            pending
+        );
         assert_eq!(fixture.value(0, "recovered"), None);
-        fixture.records.with_history(&binding.checkout.id, |doc, history| { history.commit_action_authored(doc, None, None, Some(binding.author.clone())); }).unwrap();
-        let revision = fixture.records.read_history(&binding.checkout.id, |_, history| history.revision()).unwrap();
+        fixture
+            .records
+            .with_history(&binding.checkout.id, |doc, history| {
+                history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
+            })
+            .unwrap();
+        let revision = fixture
+            .records
+            .read_history(&binding.checkout.id, |_, history| history.revision())
+            .unwrap();
         fixture.app.drain_document_routes();
-        assert_eq!(fixture.value(0, "recovered").as_deref(), Some("remote"), "a malformed front must not permanently block a fresh snapshot");
-        assert_eq!(fixture.value(0, "local-draft").as_deref(), Some("preserved"));
-        assert_eq!(fixture.records.read_history(&binding.checkout.id, |_, history| history.revision()).unwrap(), revision);
+        assert_eq!(
+            fixture.value(0, "recovered").as_deref(),
+            Some("remote"),
+            "a malformed front must not permanently block a fresh snapshot"
+        );
+        assert_eq!(
+            fixture.value(0, "local-draft").as_deref(),
+            Some("preserved")
+        );
+        assert_eq!(
+            fixture
+                .records
+                .read_history(&binding.checkout.id, |_, history| history.revision())
+                .unwrap(),
+            revision
+        );
         assert_eq!(fixture.app.document_sync_status(), None);
         fixture.app.publish_owned_documents();
-        assert_eq!(fixture.app.document_routes.sent.iter().filter(|(sent, _)| sent == &route).count(), 1, "recovered exact owner resumes publication");
+        assert_eq!(
+            fixture
+                .app
+                .document_routes
+                .sent
+                .iter()
+                .filter(|(sent, _)| sent == &route)
+                .count(),
+            1,
+            "recovered exact owner resumes publication"
+        );
     }
 }
 
@@ -1972,31 +2189,105 @@ fn round1_primary_malformed_remote_recovers_with_snapshot_after_local_edit_finis
     use automerge::ReadDoc;
     for incremental in [false, true] {
         let mut fixture = RoutedOwners::new();
-        let route = fixture.app.bound_broker_route_for_test.as_ref().unwrap().route.clone();
+        let route = fixture
+            .app
+            .bound_broker_route_for_test
+            .as_ref()
+            .unwrap()
+            .route
+            .clone();
         let before = fixture.app.state.doc.base_heads();
-        let bad = routed_document(&route, round1_malformed_mutation(incremental, fixture.app.state.doc.clone()));
+        let bad = routed_document(
+            &route,
+            round1_malformed_mutation(incremental, fixture.app.state.doc.clone()),
+        );
         fixture.app.apply_signed_document_envelope(&bad, None);
-        assert!(fixture.app.document_sync_status().unwrap().contains("could not be applied"));
+        assert!(
+            fixture
+                .app
+                .document_sync_status()
+                .unwrap()
+                .contains("could not be applied")
+        );
         let failure = fixture.app.document_sync_status().map(str::to_owned);
-        let invalid_recovery = routed_document(&route, round1_malformed_mutation(false, fixture.app.state.doc.clone()));
-        fixture.app.apply_signed_document_envelope(&invalid_recovery, None);
+        let invalid_recovery = routed_document(
+            &route,
+            round1_malformed_mutation(false, fixture.app.state.doc.clone()),
+        );
+        fixture
+            .app
+            .apply_signed_document_envelope(&invalid_recovery, None);
         assert_eq!(fixture.app.document_sync_status(), failure.as_deref());
         assert_eq!(fixture.app.state.doc.base_heads(), before);
         let mut peer = fixture.app.state.doc.clone();
         peer.set_actor(automerge::ActorId::from(b"recovery-peer".as_slice()));
-        peer.put(ROOT, "recovered", "remote").unwrap(); peer.commit();
-        let recovery = routed_document(&route, collab_types::DocumentMutation::Snapshot(peer.save()));
-        fixture.app.state.doc.put(ROOT, "local-draft", "preserved").unwrap();
-        let pending = (fixture.app.state.doc.base_heads(), fixture.app.state.doc.pending_ops(), fixture.app.state.history_revision());
+        peer.put(ROOT, "recovered", "remote").unwrap();
+        peer.commit();
+        let recovery = routed_document(
+            &route,
+            collab_types::DocumentMutation::Snapshot(peer.save()),
+        );
+        fixture
+            .app
+            .state
+            .doc
+            .put(ROOT, "local-draft", "preserved")
+            .unwrap();
+        let pending = (
+            fixture.app.state.doc.base_heads(),
+            fixture.app.state.doc.pending_ops(),
+            fixture.app.state.history_revision(),
+        );
         fixture.app.apply_signed_document_envelope(&recovery, None);
-        assert_eq!(fixture.app.document_sync_status(), failure.as_deref(), "recovery remains visible until the snapshot actually merges");
-        assert_eq!((fixture.app.state.doc.base_heads(), fixture.app.state.doc.pending_ops(), fixture.app.state.history_revision()), pending);
-        assert!(fixture.app.state.doc.get(ROOT, "recovered").unwrap().is_none());
+        assert_eq!(
+            fixture.app.document_sync_status(),
+            failure.as_deref(),
+            "recovery remains visible until the snapshot actually merges"
+        );
+        assert_eq!(
+            (
+                fixture.app.state.doc.base_heads(),
+                fixture.app.state.doc.pending_ops(),
+                fixture.app.state.history_revision()
+            ),
+            pending
+        );
+        assert!(
+            fixture
+                .app
+                .state
+                .doc
+                .get(ROOT, "recovered")
+                .unwrap()
+                .is_none()
+        );
         fixture.app.state.commit_action(None, None);
         let revision = fixture.app.state.history_revision();
         fixture.app.drain_document_routes();
-        assert_eq!(fixture.app.state.doc.get(ROOT, "recovered").unwrap().map(|(value, _)| value.to_str().unwrap().to_owned()).as_deref(), Some("remote"), "primary malformed front must not block fresh snapshot recovery");
-        assert_eq!(fixture.app.state.doc.get(ROOT, "local-draft").unwrap().unwrap().0.to_str(), Some("preserved"));
+        assert_eq!(
+            fixture
+                .app
+                .state
+                .doc
+                .get(ROOT, "recovered")
+                .unwrap()
+                .map(|(value, _)| value.to_str().unwrap().to_owned())
+                .as_deref(),
+            Some("remote"),
+            "primary malformed front must not block fresh snapshot recovery"
+        );
+        assert_eq!(
+            fixture
+                .app
+                .state
+                .doc
+                .get(ROOT, "local-draft")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_str(),
+            Some("preserved")
+        );
         assert_eq!(fixture.app.state.history_revision(), revision);
         assert_eq!(fixture.app.document_sync_status(), None);
         assert_eq!(fixture.value(0, "recovered"), None);
@@ -2008,39 +2299,125 @@ fn round1_primary_malformed_remote_recovers_with_snapshot_after_local_edit_finis
 fn round1_malformed_incremental_tail_never_partly_applies_valid_prefix() {
     let mut fixture = RoutedOwners::new();
     let valid = fixture.remote(0, "must-not-partly-apply", true);
-    let collab_types::DocumentMutation::Incremental(mut bytes) = collab_types::DocumentMutation::decode(&valid.payload).unwrap() else { panic!("fixture delta"); };
+    let collab_types::DocumentMutation::Incremental(mut bytes) =
+        collab_types::DocumentMutation::decode(&valid.payload).unwrap()
+    else {
+        panic!("fixture delta");
+    };
     bytes.extend_from_slice(b"invalid trailing chunk");
     assert!(automerge::AutoCommit::load(&bytes).is_err());
-    let envelope = routed_document(&fixture.bindings[0].broker_route().unwrap(), collab_types::DocumentMutation::Incremental(bytes));
+    let envelope = routed_document(
+        &fixture.bindings[0].broker_route().unwrap(),
+        collab_types::DocumentMutation::Incremental(bytes),
+    );
     fixture.app.apply_signed_document_envelope(&envelope, None);
-    assert_eq!(fixture.value(0, "must-not-partly-apply"), None, "partial incremental parsing must not admit the valid prefix");
-    assert!(fixture.app.document_sync_status().unwrap().contains("could not be applied"));
+    assert_eq!(
+        fixture.value(0, "must-not-partly-apply"),
+        None,
+        "partial incremental parsing must not admit the valid prefix"
+    );
+    assert!(
+        fixture
+            .app
+            .document_sync_status()
+            .unwrap()
+            .contains("could not be applied")
+    );
 }
 
 #[test]
 fn round1_quarantining_bad_bytes_preserves_other_admitted_updates_and_recovers_in_order() {
     let mut fixture = RoutedOwners::new();
     let binding = fixture.bindings[0].clone();
-    let baseline = fixture.records.read_checked(&binding.checkout.id, Clone::clone).unwrap();
-    let bad = routed_document(&binding.broker_route().unwrap(), round1_malformed_mutation(false, baseline.clone()));
+    let baseline = fixture
+        .records
+        .read_checked(&binding.checkout.id, Clone::clone)
+        .unwrap();
+    let bad = routed_document(
+        &binding.broker_route().unwrap(),
+        round1_malformed_mutation(false, baseline.clone()),
+    );
     let delta = fixture.remote(0, "valid-queued-delta", true);
-    let collab_types::DocumentMutation::Incremental(delta_bytes) = collab_types::DocumentMutation::decode(&delta.payload).unwrap() else { panic!("fixture delta"); };
-    assert!(matches!(automerge::AutoCommit::load(&delta_bytes), Err(automerge::AutomergeError::MissingDeps)), "valid incremental requires the actual receiver's dependencies");
+    let collab_types::DocumentMutation::Incremental(delta_bytes) =
+        collab_types::DocumentMutation::decode(&delta.payload).unwrap()
+    else {
+        panic!("fixture delta");
+    };
+    assert!(
+        matches!(
+            automerge::AutoCommit::load(&delta_bytes),
+            Err(automerge::AutomergeError::MissingDeps)
+        ),
+        "valid incremental requires the actual receiver's dependencies"
+    );
     let mut snapshot_peer = baseline;
-    snapshot_peer.set_actor(automerge::ActorId::from(b"independent-snapshot-peer".as_slice()));
-    snapshot_peer.put(ROOT, "valid-recovery-snapshot", "remote").unwrap(); snapshot_peer.commit();
-    let snapshot = routed_document(&binding.broker_route().unwrap(), collab_types::DocumentMutation::Snapshot(snapshot_peer.save()));
-    fixture.records.with_action_state(&binding.checkout.id, |doc, _, _| { doc.put(ROOT, "local-draft", "preserved").unwrap(); }).unwrap();
-    let pending = fixture.records.read_history(&binding.checkout.id, |doc, history| (doc.base_heads(), doc.pending_ops(), history.revision())).unwrap();
-    for message in [&bad, &delta, &snapshot] { fixture.app.apply_signed_document_envelope(message, None); }
-    assert_eq!(fixture.records.read_history(&binding.checkout.id, |doc, history| (doc.base_heads(), doc.pending_ops(), history.revision())).unwrap(), pending);
-    fixture.records.with_history(&binding.checkout.id, |doc, history| { history.commit_action_authored(doc, None, None, Some(binding.author.clone())); }).unwrap();
-    let revision = fixture.records.read_history(&binding.checkout.id, |_, history| history.revision()).unwrap();
+    snapshot_peer.set_actor(automerge::ActorId::from(
+        b"independent-snapshot-peer".as_slice(),
+    ));
+    snapshot_peer
+        .put(ROOT, "valid-recovery-snapshot", "remote")
+        .unwrap();
+    snapshot_peer.commit();
+    let snapshot = routed_document(
+        &binding.broker_route().unwrap(),
+        collab_types::DocumentMutation::Snapshot(snapshot_peer.save()),
+    );
+    fixture
+        .records
+        .with_action_state(&binding.checkout.id, |doc, _, _| {
+            doc.put(ROOT, "local-draft", "preserved").unwrap();
+        })
+        .unwrap();
+    let pending = fixture
+        .records
+        .read_history(&binding.checkout.id, |doc, history| {
+            (doc.base_heads(), doc.pending_ops(), history.revision())
+        })
+        .unwrap();
+    for message in [&bad, &delta, &snapshot] {
+        fixture.app.apply_signed_document_envelope(message, None);
+    }
+    assert_eq!(
+        fixture
+            .records
+            .read_history(&binding.checkout.id, |doc, history| (
+                doc.base_heads(),
+                doc.pending_ops(),
+                history.revision()
+            ))
+            .unwrap(),
+        pending
+    );
+    fixture
+        .records
+        .with_history(&binding.checkout.id, |doc, history| {
+            history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
+        })
+        .unwrap();
+    let revision = fixture
+        .records
+        .read_history(&binding.checkout.id, |_, history| history.revision())
+        .unwrap();
     fixture.app.drain_document_routes();
-    assert_eq!(fixture.value(0, "valid-queued-delta").as_deref(), Some("remote"));
-    assert_eq!(fixture.value(0, "valid-recovery-snapshot").as_deref(), Some("remote"));
-    assert_eq!(fixture.value(0, "local-draft").as_deref(), Some("preserved"));
-    assert_eq!(fixture.records.read_history(&binding.checkout.id, |_, history| history.revision()).unwrap(), revision);
+    assert_eq!(
+        fixture.value(0, "valid-queued-delta").as_deref(),
+        Some("remote")
+    );
+    assert_eq!(
+        fixture.value(0, "valid-recovery-snapshot").as_deref(),
+        Some("remote")
+    );
+    assert_eq!(
+        fixture.value(0, "local-draft").as_deref(),
+        Some("preserved")
+    );
+    assert_eq!(
+        fixture
+            .records
+            .read_history(&binding.checkout.id, |_, history| history.revision())
+            .unwrap(),
+        revision
+    );
     assert_eq!(fixture.app.document_sync_status(), None);
 }
 
@@ -2048,87 +2425,247 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
     use automerge::ReadDoc;
     let mut fixture = RoutedOwners::new();
     let binding = fixture.bindings[0].clone();
-    let route = if owned { binding.broker_route().unwrap() } else { fixture.app.bound_broker_route_for_test.as_ref().unwrap().route.clone() };
-    let baseline = if owned { fixture.records.read_checked(&binding.checkout.id, Clone::clone).unwrap() } else { fixture.app.state.doc.clone() };
+    let route = if owned {
+        binding.broker_route().unwrap()
+    } else {
+        fixture
+            .app
+            .bound_broker_route_for_test
+            .as_ref()
+            .unwrap()
+            .route
+            .clone()
+    };
+    let baseline = if owned {
+        fixture
+            .records
+            .read_checked(&binding.checkout.id, Clone::clone)
+            .unwrap()
+    } else {
+        fixture.app.state.doc.clone()
+    };
     let bad = routed_document(&route, round1_malformed_mutation(false, baseline.clone()));
     fixture.app.apply_signed_document_envelope(&bad, None);
     assert!(fixture.app.document_sync_status().is_some());
     let mut peer = baseline;
-    peer.set_actor(automerge::ActorId::from(b"deferred-recovery-peer".as_slice()));
-    peer.put(ROOT, "recovery-S", "first").unwrap(); peer.commit();
+    peer.set_actor(automerge::ActorId::from(
+        b"deferred-recovery-peer".as_slice(),
+    ));
+    peer.put(ROOT, "recovery-S", "first").unwrap();
+    peer.commit();
     let s_heads = peer.base_heads();
-    let s = routed_document(&route, collab_types::DocumentMutation::Snapshot(peer.save()));
-    peer.put(ROOT, "later-D", "later").unwrap(); peer.commit();
-    let d = routed_document(&route, if later_snapshot { collab_types::DocumentMutation::Snapshot(peer.save()) } else { collab_types::DocumentMutation::Incremental(peer.save_after(&s_heads)) });
+    let s = routed_document(
+        &route,
+        collab_types::DocumentMutation::Snapshot(peer.save()),
+    );
+    peer.put(ROOT, "later-D", "later").unwrap();
+    peer.commit();
+    let d = routed_document(
+        &route,
+        if later_snapshot {
+            collab_types::DocumentMutation::Snapshot(peer.save())
+        } else {
+            collab_types::DocumentMutation::Incremental(peer.save_after(&s_heads))
+        },
+    );
     if owned {
-        fixture.records.with_action_state(&binding.checkout.id, |doc, _, _| { doc.put(ROOT, "local-draft", "preserved").unwrap(); }).unwrap();
-    } else { fixture.app.state.doc.put(ROOT, "local-draft", "preserved").unwrap(); }
+        fixture
+            .records
+            .with_action_state(&binding.checkout.id, |doc, _, _| {
+                doc.put(ROOT, "local-draft", "preserved").unwrap();
+            })
+            .unwrap();
+    } else {
+        fixture
+            .app
+            .state
+            .doc
+            .put(ROOT, "local-draft", "preserved")
+            .unwrap();
+    }
     let observation = |fixture: &RoutedOwners| {
-        if owned { fixture.records.read_history(&binding.checkout.id, |doc, history| (doc.base_heads(), doc.pending_ops(), history.revision())).unwrap() }
-        else { (fixture.app.state.doc.base_heads(), fixture.app.state.doc.pending_ops(), fixture.app.state.history_revision()) }
+        if owned {
+            fixture
+                .records
+                .read_history(&binding.checkout.id, |doc, history| {
+                    (doc.base_heads(), doc.pending_ops(), history.revision())
+                })
+                .unwrap()
+        } else {
+            (
+                fixture.app.state.doc.base_heads(),
+                fixture.app.state.doc.pending_ops(),
+                fixture.app.state.history_revision(),
+            )
+        }
     };
     let pending = observation(&fixture);
     fixture.app.apply_signed_document_envelope(&s, None);
-    assert!(fixture.app.document_sync_status().is_some(), "S must remain visibly pending while local editing continues");
+    assert!(
+        fixture.app.document_sync_status().is_some(),
+        "S must remain visibly pending while local editing continues"
+    );
     fixture.app.apply_signed_document_envelope(&d, None);
     if overflow {
         // S plus D and62 duplicate D packets fill the bounded64-item queue.
-        for _ in 0..62 { fixture.app.apply_signed_document_envelope(&d, None); }
-        peer.put(ROOT, "refused-newer-change", "must recover later").unwrap(); peer.commit();
-        let refused = routed_document(&route, collab_types::DocumentMutation::Snapshot(peer.save()));
+        for _ in 0..62 {
+            fixture.app.apply_signed_document_envelope(&d, None);
+        }
+        peer.put(ROOT, "refused-newer-change", "must recover later")
+            .unwrap();
+        peer.commit();
+        let refused = routed_document(
+            &route,
+            collab_types::DocumentMutation::Snapshot(peer.save()),
+        );
         fixture.app.apply_signed_document_envelope(&refused, None);
-        assert!(fixture.app.document_sync_status().unwrap().contains("queue is full"));
+        assert!(
+            fixture
+                .app
+                .document_sync_status()
+                .unwrap()
+                .contains("queue is full")
+        );
     }
-    assert_eq!(observation(&fixture), pending, "remote admission must not finish local edits");
+    assert_eq!(
+        observation(&fixture),
+        pending,
+        "remote admission must not finish local edits"
+    );
     if owned {
         fixture.app.publish_owned_documents();
-        assert!(!fixture.app.document_routes.sent.iter().any(|(sent, _)| sent == &route));
-        fixture.records.with_history(&binding.checkout.id, |doc, history| { history.commit_action_authored(doc, None, None, Some(binding.author.clone())); }).unwrap();
-    } else { fixture.app.state.commit_action(None, None); }
+        assert!(
+            !fixture
+                .app
+                .document_routes
+                .sent
+                .iter()
+                .any(|(sent, _)| sent == &route)
+        );
+        fixture
+            .records
+            .with_history(&binding.checkout.id, |doc, history| {
+                history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
+            })
+            .unwrap();
+    } else {
+        fixture.app.state.commit_action(None, None);
+    }
     let committed_revision = observation(&fixture).2;
     fixture.app.drain_document_routes();
     let value = |fixture: &RoutedOwners, key: &str| {
-        if owned { fixture.value(0, key) }
-        else { fixture.app.state.doc.get(ROOT, key).unwrap().map(|(value, _)| value.to_str().unwrap().to_owned()) }
+        if owned {
+            fixture.value(0, key)
+        } else {
+            fixture
+                .app
+                .state
+                .doc
+                .get(ROOT, key)
+                .unwrap()
+                .map(|(value, _)| value.to_str().unwrap().to_owned())
+        }
     };
     assert_eq!(value(&fixture, "recovery-S").as_deref(), Some("first"));
-    assert_eq!(value(&fixture, "later-D").as_deref(), Some("later"), "traffic arriving after deferred recovery S must not be lost");
+    assert_eq!(
+        value(&fixture, "later-D").as_deref(),
+        Some("later"),
+        "traffic arriving after deferred recovery S must not be lost"
+    );
     assert_eq!(value(&fixture, "local-draft").as_deref(), Some("preserved"));
-    assert_eq!(observation(&fixture).2, committed_revision, "remote recovery has no authored undo boundary");
+    assert_eq!(
+        observation(&fixture).2,
+        committed_revision,
+        "remote recovery has no authored undo boundary"
+    );
     if overflow {
-        assert!(fixture.app.document_sync_status().unwrap().contains("queue is full"), "older S cannot clear the obligation created by refused later traffic");
+        assert!(
+            fixture
+                .app
+                .document_sync_status()
+                .unwrap()
+                .contains("queue is full"),
+            "older S cannot clear the obligation created by refused later traffic"
+        );
         assert_eq!(value(&fixture, "refused-newer-change"), None);
         if owned {
             fixture.app.publish_owned_documents();
-            assert!(!fixture.app.document_routes.sent.iter().any(|(sent, _)| sent == &route));
+            assert!(
+                !fixture
+                    .app
+                    .document_routes
+                    .sent
+                    .iter()
+                    .any(|(sent, _)| sent == &route)
+            );
         }
-        let fresh = routed_document(&route, collab_types::DocumentMutation::Snapshot(peer.save()));
+        let fresh = routed_document(
+            &route,
+            collab_types::DocumentMutation::Snapshot(peer.save()),
+        );
         fixture.app.apply_signed_document_envelope(&fresh, None);
-        assert_eq!(value(&fixture, "refused-newer-change").as_deref(), Some("must recover later"));
+        assert_eq!(
+            value(&fixture, "refused-newer-change").as_deref(),
+            Some("must recover later")
+        );
     }
     assert_eq!(fixture.app.document_sync_status(), None);
     assert_eq!(observation(&fixture).2, committed_revision);
     assert_eq!(fixture.value(1, "later-D"), None);
     if owned {
-        assert!(fixture.app.state.doc.get(ROOT, "later-D").unwrap().is_none());
+        assert!(
+            fixture
+                .app
+                .state
+                .doc
+                .get(ROOT, "later-D")
+                .unwrap()
+                .is_none()
+        );
         fixture.app.publish_owned_documents();
-        let sent = fixture.app.document_routes.sent.iter().filter(|(sent, _)| sent == &route).collect::<Vec<_>>();
-        assert_eq!(sent.len(), 1, "only recovered exact owner resumes publication");
-        let CollabRequest::Document { mutation: collab_types::DocumentMutation::Snapshot(data) } = &sent[0].1 else { panic!("first owned publication is snapshot"); };
+        let sent = fixture
+            .app
+            .document_routes
+            .sent
+            .iter()
+            .filter(|(sent, _)| sent == &route)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sent.len(),
+            1,
+            "only recovered exact owner resumes publication"
+        );
+        let CollabRequest::Document {
+            mutation: collab_types::DocumentMutation::Snapshot(data),
+        } = &sent[0].1
+        else {
+            panic!("first owned publication is snapshot");
+        };
         let published = automerge::AutoCommit::load(data).unwrap();
-        assert_eq!(published.get(ROOT, "later-D").unwrap().unwrap().0.to_str(), Some("later"));
-    } else { assert_eq!(fixture.value(0, "later-D"), None); }
+        assert_eq!(
+            published.get(ROOT, "later-D").unwrap().unwrap().0.to_str(),
+            Some("later")
+        );
+    } else {
+        assert_eq!(fixture.value(0, "later-D"), None);
+    }
 }
 
 #[test]
 fn round2_owned_deferred_recovery_retains_later_delta_and_newer_snapshot() {
-    for snapshot in [false, true] { round2_deferred_recovery_keeps_later_traffic(true, snapshot, false); }
+    for snapshot in [false, true] {
+        round2_deferred_recovery_keeps_later_traffic(true, snapshot, false);
+    }
 }
 #[test]
 fn round2_primary_deferred_recovery_retains_later_delta_and_newer_snapshot() {
-    for snapshot in [false, true] { round2_deferred_recovery_keeps_later_traffic(false, snapshot, false); }
+    for snapshot in [false, true] {
+        round2_deferred_recovery_keeps_later_traffic(false, snapshot, false);
+    }
 }
 #[test]
 fn round2_deferred_recovery_overflow_requires_new_snapshot_on_both_routes() {
-    for owned in [false, true] { round2_deferred_recovery_keeps_later_traffic(owned, false, true); }
+    for owned in [false, true] {
+        round2_deferred_recovery_keeps_later_traffic(owned, false, true);
+    }
 }

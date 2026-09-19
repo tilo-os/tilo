@@ -119,7 +119,10 @@ impl SessionContinuation {
     }
 
     // Keep the POSIX group/other permission mask explicit for this security check.
-    #[allow(clippy::verbose_bit_mask)]
+    #[allow(
+        clippy::verbose_bit_mask,
+        reason = "The explicit POSIX 0o077 mask verifies that the pinned runtime directory grants no group or other permissions."
+    )]
     fn runtime_unchanged(&self) -> bool {
         match (
             self.runtime.metadata(),

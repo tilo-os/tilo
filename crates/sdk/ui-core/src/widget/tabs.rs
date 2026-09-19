@@ -1,8 +1,8 @@
-use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
 use crate::icons;
 use crate::presence::{PresenceCtx, PresenceKey};
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::colors::Colors;
@@ -415,7 +415,10 @@ impl TabBar {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "A tab pill uses render context, tab index, animated bounds, collaborator presence, and drag-driven hover suppression."
+    )]
     fn draw_pill_inner(
         &self,
         scene: &mut Scene,
@@ -538,7 +541,10 @@ impl TabBar {
     /// accent dot only; unpinned pills add the (elided) title text. Split out
     /// of `draw_pill_inner` to keep it inside the `too_many_lines` budget.
     // Every parameter is state `draw_pill_inner` already resolved once per pill.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Tab title painting reuses the resolved tab descriptor/index, bounds, pin/active/hover states, and render context from the pill painter."
+    )]
     fn draw_pill_body(
         &self,
         scene: &mut Scene,
@@ -812,7 +818,10 @@ impl TabBar {
     /// so they slide out of the pill's right edge as it opens. Split out of
     /// `draw_pill_inner` to keep it inside the `too_many_lines` budget.
     // Every parameter is state `draw_pill_inner` already resolved once per pill.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Action chips reuse the tab index, animated offset, pin/hover flags, reveal width, resolved text colors, and themed render context."
+    )]
     fn draw_pill_action_chips(
         &self,
         scene: &mut Scene,
@@ -1627,10 +1636,7 @@ impl TabBar {
         if chip.area() <= 0.0 {
             return Rect::ZERO;
         }
-        let side = self
-            .min_pointer_target
-            .max(chip.width())
-            .max(chip.height());
+        let side = self.min_pointer_target.max(chip.width()).max(chip.height());
         let target = square_at(chip.center(), side);
         if self.rect.area() > 0.0 {
             target.intersect(self.rect)
@@ -2026,7 +2032,7 @@ fn fit_pill_widths(natural: &[f64], pinned: &[bool], avail: f64) -> Vec<f64> {
 /// zone has opened to `effective` px. A pinned pill never gets chips.
 // Every parameter (widths/insets, plus the rect and reveal they're applied
 // to) is independently load-bearing for this geometry.
-#[allow(clippy::too_many_arguments)]
+
 fn chip_rects(
     r: Rect,
     effective: f64,
@@ -2636,7 +2642,10 @@ impl TabBar {
     /// out of `draw` to keep that dispatcher inside the `too_many_lines` budget.
     // Every parameter here is state `draw` already resolved once per frame — no
     // hidden refetching.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The tab-strip pass needs render context and presence together with the current layout interpolation and insertion-fade duration."
+    )]
     fn draw_pills(
         &self,
         scene: &mut Scene,
@@ -5572,7 +5581,11 @@ mod tests {
     fn leading_glyph_sits_on_the_pill_inset_and_the_title_follows_by_icon_gap() {
         let r = Rect::new(100.0, 6.0, 300.0, 38.0);
         let glyph = leading_glyph_rect(r);
-        assert_eq!(glyph.x0, r.x0 + PILL_PAD_X, "glyph starts on the text inset");
+        assert_eq!(
+            glyph.x0,
+            r.x0 + PILL_PAD_X,
+            "glyph starts on the text inset"
+        );
         assert_eq!(glyph.width(), ICON_W);
         assert_eq!(glyph.height(), ICON_W, "the glyph slot is square");
         assert!(
@@ -5581,7 +5594,11 @@ mod tests {
         );
         let with_glyph = title_x0(r, ICON_W + ICON_GAP);
         assert!((with_glyph - glyph.x1 - ICON_GAP).abs() < 1e-9);
-        assert_eq!(title_x0(r, 0.0), r.x0 + PILL_PAD_X, "no glyph: title on the inset");
+        assert_eq!(
+            title_x0(r, 0.0),
+            r.x0 + PILL_PAD_X,
+            "no glyph: title on the inset"
+        );
         // The pinned marker occupies the same slot, centred on the pill.
         let pinned = square_at(r.center(), ICON_W);
         assert!((pinned.center().x - r.center().x).abs() < 1e-9);
@@ -5594,8 +5611,15 @@ mod tests {
     #[test]
     fn every_chip_shares_the_centre_line_and_one_hover_shape() {
         let r = Rect::new(0.0, 6.0, 400.0, 38.0);
-        let (close, max_rect, search) =
-            chip_rects(r, CHIP_CLUSTER_W, false, CLOSE_W, CLOSE_INSET, ACTION_W, ACTION_W);
+        let (close, max_rect, search) = chip_rects(
+            r,
+            CHIP_CLUSTER_W,
+            false,
+            CLOSE_W,
+            CLOSE_INSET,
+            ACTION_W,
+            ACTION_W,
+        );
         for (name, chip) in [("close", close), ("maximize", max_rect), ("search", search)] {
             assert!(chip.area() > 0.0, "{name} chip is laid out at full reveal");
             assert!(
@@ -5614,7 +5638,11 @@ mod tests {
         assert!((ring.center().x - max_rect.center().x).abs() < 1e-9);
         assert!((ring.center().y - max_rect.center().y).abs() < 1e-9);
         let search_ring = chip_hover_ring(search);
-        assert_eq!(search_ring.size(), ring.size(), "one shape for both action chips");
+        assert_eq!(
+            search_ring.size(),
+            ring.size(),
+            "one shape for both action chips"
+        );
     }
 
     /// A maximize/search chip's pointer target is the theme's minimum
@@ -5632,16 +5660,32 @@ mod tests {
             1,
         );
         lay_out_at_width(&mut b, 640.0);
-        let min = f64::from(crate::theme::Theme::dark().tokens.metrics.min_pointer_target);
+        let min = f64::from(
+            crate::theme::Theme::dark()
+                .tokens
+                .metrics
+                .min_pointer_target,
+        );
         let pill = Rect::new(
             100.0,
             b.rect.y0 + TAB_PILL_INSET_Y,
             500.0,
             b.rect.y1 - TAB_PILL_INSET_Y,
         );
-        let (_, max_rect, search) =
-            chip_rects(pill, CHIP_CLUSTER_W, false, CLOSE_W, CLOSE_INSET, ACTION_W, ACTION_W);
-        assert_eq!(max_rect.width(), ACTION_W, "the painted chip does not widen");
+        let (_, max_rect, search) = chip_rects(
+            pill,
+            CHIP_CLUSTER_W,
+            false,
+            CLOSE_W,
+            CLOSE_INSET,
+            ACTION_W,
+            ACTION_W,
+        );
+        assert_eq!(
+            max_rect.width(),
+            ACTION_W,
+            "the painted chip does not widen"
+        );
         for (name, chip) in [("maximize", max_rect), ("search", search)] {
             let hit = b.action_hit_rect(chip);
             assert!(
@@ -5700,18 +5744,30 @@ mod tests {
         let mut handled = false;
         // Between B's search glyph (ends at 122) and maximize glyph (starts
         // at 126): inside both enlarged targets — maximize wins.
-        b.on_cursor_moved(winit::dpi::PhysicalPosition::new(124.0, 20.0), 1.0, &mut handled);
+        b.on_cursor_moved(
+            winit::dpi::PhysicalPosition::new(124.0, 20.0),
+            1.0,
+            &mut handled,
+        );
         assert_eq!(b.hover_max_idx, Some(1));
         assert_eq!(b.hover_search_idx, None, "one point lights one chip");
         // Left of the search glyph, inside its target only.
-        b.on_cursor_moved(winit::dpi::PhysicalPosition::new(100.0, 20.0), 1.0, &mut handled);
+        b.on_cursor_moved(
+            winit::dpi::PhysicalPosition::new(100.0, 20.0),
+            1.0,
+            &mut handled,
+        );
         assert_eq!(b.hover_search_idx, Some(1));
         assert_eq!(b.hover_max_idx, None);
         // The press resolves the same way, from the authoritative rects.
         b.last_cursor = Point::new(124.0, 20.0);
         b.hover_idx = Some(1);
         b.on_left_press(&mut handled);
-        assert_eq!(b.pending_max, Some(2), "the overlap press fires maximize on tab B");
+        assert_eq!(
+            b.pending_max,
+            Some(2),
+            "the overlap press fires maximize on tab B"
+        );
         assert_eq!(b.pending_search, None);
     }
 
@@ -5740,12 +5796,17 @@ mod tests {
             max.area() > 0.0 && search.area() > 0.0,
             "hovering the active pill reveals both action chips"
         );
-        let close_hit = b.close_hit_rect(0).expect("the active pill has a close target");
+        let close_hit = b
+            .close_hit_rect(0)
+            .expect("the active pill has a close target");
         assert!(
             close_hit.x0 >= max.x1,
             "close target {close_hit:?} starts after the maximize glyph {max:?}"
         );
-        assert!(close_hit.width() >= CLOSE_HIT_PX - 1e-9, "and keeps its 32 px");
+        assert!(
+            close_hit.width() >= CLOSE_HIT_PX - 1e-9,
+            "and keeps its 32 px"
+        );
 
         // The search glyph's trailing edge lies inside the enlarged maximize
         // target; the painted glyph wins over the target.
@@ -5757,14 +5818,21 @@ mod tests {
         let mut handled = false;
         b.last_cursor = on_search_glyph;
         b.on_left_press(&mut handled);
-        assert_eq!(b.pending_search.take(), Some(1), "a press on the search glyph searches");
+        assert_eq!(
+            b.pending_search.take(),
+            Some(1),
+            "a press on the search glyph searches"
+        );
         assert_eq!(b.pending_max, None);
 
         // A press on the maximize glyph maximizes and never closes.
         b.last_cursor = max.center();
         b.on_left_press(&mut handled);
         assert_eq!(b.pending_max.take(), Some(1));
-        assert_eq!(b.pending_close, None, "the destructive chip never takes a maximize press");
+        assert_eq!(
+            b.pending_close, None,
+            "the destructive chip never takes a maximize press"
+        );
     }
 
     /// A chip's hover wash is measured against the ground, so it is light
@@ -5776,8 +5844,14 @@ mod tests {
         let light = chip_hover_tint(&Theme::light(), ACTION_HOVER_TINT_ALPHA);
         assert_eq!(dark.a(), ACTION_HOVER_TINT_ALPHA);
         assert_eq!(light.a(), ACTION_HOVER_TINT_ALPHA);
-        assert!(dark.r() > 128, "over a dark ground the wash is light: {dark:?}");
-        assert!(light.r() < 128, "over a light ground the wash is dark: {light:?}");
+        assert!(
+            dark.r() > 128,
+            "over a dark ground the wash is light: {dark:?}"
+        );
+        assert!(
+            light.r() < 128,
+            "over a light ground the wash is dark: {light:?}"
+        );
     }
 
     /// `visible_title` is the function `draw` renders through, so this asserts

@@ -119,7 +119,10 @@ pub enum Affordance {
     Back,
 }
 
-#[allow(clippy::struct_excessive_bools, reason = "toggle policy, layout cache validity, animation activity and dirtiness are independent flags")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "toggle policy, layout cache validity, animation activity and dirtiness are independent flags"
+)]
 pub struct NavShell {
     sidebar: Option<Element>,
     overview: Element,
@@ -732,9 +735,12 @@ impl NavShell {
         let (inset, chip) = (self.chip_inset, self.chip_size);
         self.affordance_rect = match self.affordance {
             Affordance::None => Rect::ZERO,
-            Affordance::SidebarToggle => {
-                Rect::new(r.x0 + inset, r.y0 + inset, r.x0 + inset + chip, r.y0 + inset + chip)
-            }
+            Affordance::SidebarToggle => Rect::new(
+                r.x0 + inset,
+                r.y0 + inset,
+                r.x0 + inset + chip,
+                r.y0 + inset + chip,
+            ),
             Affordance::Back => Rect::new(
                 r.x0 + inset,
                 r.y0 + inset,
@@ -1481,10 +1487,19 @@ impl Widget for NavShell {
     fn next_wake_deadline(&self) -> Option<Instant> {
         // Modal traversal hides backdrop panes from interaction/accessibility,
         // but those retained panes still draw and must wake for timed changes.
-        self.overview.next_wake_deadline()
+        self.overview
+            .next_wake_deadline()
             .into_iter()
-            .chain(self.detail.as_ref().and_then(|pane| pane.next_wake_deadline()))
-            .chain(self.sidebar.as_ref().and_then(|pane| pane.next_wake_deadline()))
+            .chain(
+                self.detail
+                    .as_ref()
+                    .and_then(|pane| pane.next_wake_deadline()),
+            )
+            .chain(
+                self.sidebar
+                    .as_ref()
+                    .and_then(|pane| pane.next_wake_deadline()),
+            )
             .min()
     }
 
@@ -1902,25 +1917,41 @@ mod tests {
         let deadline = Instant::now() + std::time::Duration::from_millis(900);
         let mut content = EventProbe::new("content", Default::default());
         content.deadline = Some(deadline);
-        let mut ns = NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(content));
+        let mut ns =
+            NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(content));
         lay_out(&mut ns, 420.0, 500.0);
         ns.snap_sidebar(true);
         assert!(ns.overlay_sidebar_is_modal());
-        assert_eq!(ns.next_wake_deadline(), Some(deadline), "a live backdrop must still wake for its fade");
+        assert_eq!(
+            ns.next_wake_deadline(),
+            Some(deadline),
+            "a live backdrop must still wake for its fade"
+        );
     }
 
     #[test]
     fn control_presence_modal_exposure_matches_full_inventory() {
-        let resource = tilo_actions::Resource::new("test-pane", "test", "Test")
-            .with_action(tilo_actions::ActionSpec::operation("go", "Go", tilo_actions::OperationKind::View, "test.go", &()).unwrap());
+        let resource = tilo_actions::Resource::new("test-pane", "test", "Test").with_action(
+            tilo_actions::ActionSpec::operation(
+                "go",
+                "Go",
+                tilo_actions::OperationKind::View,
+                "test.go",
+                &(),
+            )
+            .unwrap(),
+        );
         let button = crate::widget::Button::new("go", "Go", None)
             .on_action(tilo_actions::ActionBinding::unit_for(&resource, "go").unwrap());
-        let mut ns = NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(button));
+        let mut ns =
+            NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(button));
         lay_out(&mut ns, 420.0, 500.0);
         for open in [false, true, false] {
             ns.snap_sidebar(open);
-            let inventory = ns.control_action_bindings().iter().any(|b|
-                matches!(b.kind, crate::widget::ControlBindingKind::Action(_)));
+            let inventory = ns
+                .control_action_bindings()
+                .iter()
+                .any(|b| matches!(b.kind, crate::widget::ControlBindingKind::Action(_)));
             assert_eq!(ns.has_action_control_bindings(), inventory);
             assert_eq!(inventory, !open, "modal sidebar hides overview emitter");
         }
@@ -2935,14 +2966,21 @@ mod tests {
             (860.0, 260.0, 340.0),
             "1× is the authored geometry",
         );
-        assert_eq!((one.chip_inset, one.chip_size, one.back_chip_width), (12.0, 36.0, 104.0));
+        assert_eq!(
+            (one.chip_inset, one.chip_size, one.back_chip_width),
+            (12.0, 36.0, 104.0)
+        );
         assert_eq!(one.mode(), ShellMode::Wide);
 
         let two = Theme::dark().with_text_scale(2.0);
         let mut large = authored();
         lay_out_with(&mut large, &two, 1400.0, 700.0);
         assert_eq!(
-            (large.breakpoint(), large.sidebar_width(), large.overview_width()),
+            (
+                large.breakpoint(),
+                large.sidebar_width(),
+                large.overview_width()
+            ),
             (1720.0, 520.0, 680.0),
         );
         assert_eq!(
@@ -2951,24 +2989,46 @@ mod tests {
             "a 1400 px window at 2× has the room a 700 px window has at 1×",
         );
         let grown = crate::widget::text_control_height(CHIP_SIZE, &two);
-        assert!(grown > CHIP_SIZE && grown < 2.0 * CHIP_SIZE, "chip grows by the line, not 2×");
+        assert!(
+            grown > CHIP_SIZE && grown < 2.0 * CHIP_SIZE,
+            "chip grows by the line, not 2×"
+        );
         assert_eq!(large.chip_size, grown);
         assert_eq!(large.chip_inset, 12.0, "the inset is spacing, not text");
-        assert_eq!(large.back_chip_width, grown + (BACK_CHIP_WIDTH - CHIP_SIZE) * 2.0);
-        assert_eq!(large.collapse_button_rect().height(), grown, "the hit rect is the grown chip");
+        assert_eq!(
+            large.back_chip_width,
+            grown + (BACK_CHIP_WIDTH - CHIP_SIZE) * 2.0
+        );
+        assert_eq!(
+            large.collapse_button_rect().height(),
+            grown,
+            "the hit rect is the grown chip"
+        );
 
         let mut rail = NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
             .with_icon_overview_width(68.0);
         lay_out_with(&mut rail, &two, 1400.0, 700.0);
-        assert_eq!(rail.overview_width(), 68.0, "an icon rail never grows with the text");
+        assert_eq!(
+            rail.overview_width(),
+            68.0,
+            "an icon rail never grows with the text"
+        );
 
         let mut defaults = NavShell::new(Box::new(Text::new("o")), Box::new(Text::new("d")))
             .with_sidebar(Box::new(Text::new("s")));
-        lay_out_with(&mut defaults, &Theme::dark().with_ui_scale(1.5), 2000.0, 700.0);
+        lay_out_with(
+            &mut defaults,
+            &Theme::dark().with_ui_scale(1.5),
+            2000.0,
+            700.0,
+        );
         let metrics = Theme::dark().with_ui_scale(1.5).tokens.metrics;
         assert!((defaults.sidebar_width() - f64::from(metrics.sidebar_width)).abs() < 1e-6);
         assert!((defaults.overview_width() - f64::from(metrics.overview_width)).abs() < 1e-6);
-        assert!((defaults.breakpoint() - 1050.0).abs() < 1e-6, "700 authored × ui 1.5");
+        assert!(
+            (defaults.breakpoint() - 1050.0).abs() < 1e-6,
+            "700 authored × ui 1.5"
+        );
         assert!((defaults.chip_inset - 18.0).abs() < 1e-6, "s3 at ui 1.5");
     }
 

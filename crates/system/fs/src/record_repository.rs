@@ -453,12 +453,13 @@ impl RecordRepository {
                 .envelopes
                 .iter()
                 .all(|envelope| record.envelopes.contains(envelope));
-            let committed = record
-                .replica
-                .transaction_state(id)
-                .is_some_and(|(transaction, committed)| {
-                    committed && transaction == &entry.transaction
-                });
+            let committed =
+                record
+                    .replica
+                    .transaction_state(id)
+                    .is_some_and(|(transaction, committed)| {
+                        committed && transaction == &entry.transaction
+                    });
             if !exact_batch || !committed {
                 return Err(RecordRepositoryError::TransactionPreconditionFailed(
                     batch.record_id,
@@ -1866,7 +1867,10 @@ mod tests {
         .unwrap()
     }
 
-    #[allow(clippy::too_many_lines)] // Builds a complete signed transaction fixture.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture builds and signs the source and sibling versions, bindings and conflict manifest for keep-both transactions"
+    )] // Builds a complete signed transaction fixture.
     fn keep_both_transaction(
         fixture: &Fixture,
     ) -> (
@@ -2107,7 +2111,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Atomic merge and restart scenario.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the codec matrix follows one signed merge through prepare, atomic publication and repository restart"
+    )] // Atomic merge and restart scenario.
     fn completed_single_record_merge_projects_atomically_and_survives_restart() {
         for codec in [
             ConflictMergeCodecV1::PlainUtf8ThreeWayV1,
@@ -2278,7 +2285,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Both participant orders form one contract matrix.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "both participant arrival orders share the same keep-both fixture and assert no partial projection at each step"
+    )] // Both participant orders form one contract matrix.
     fn keep_both_remote_participant_orders_never_project_one_half() {
         for source_first in [true, false] {
             let fixture = Fixture::new();
@@ -2658,7 +2668,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Crash-journal replay is checked phase by phase.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one crash-recovery scenario covers signed participant setup, partial durability, journal replay and final projections"
+    )] // Crash-journal replay is checked phase by phase.
     fn journaled_repository_commit_projects_neither_half_and_replays_exactly() {
         let fixture = Fixture::new();
         let replaced = FileRecordId::new();

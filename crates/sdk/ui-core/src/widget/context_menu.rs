@@ -235,7 +235,9 @@ impl ContextMenu {
         self.position = Some(position);
         self.measured_width = MENU_WIDTH * self.text_scale;
         self.row_height = ROW_HEIGHT * self.text_scale;
-        if let Some(viewport) = self.viewport { self.constrain_to(viewport); }
+        if let Some(viewport) = self.viewport {
+            self.constrain_to(viewport);
+        }
         self.hovered = self
             .items
             .iter()
@@ -275,7 +277,9 @@ impl ContextMenu {
     /// still exposes every complete label.
     pub fn set_viewport(&mut self, viewport: Option<Rect>) {
         self.viewport = viewport.filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
-        if let Some(viewport) = self.viewport { self.constrain_to(viewport); }
+        if let Some(viewport) = self.viewport {
+            self.constrain_to(viewport);
+        }
         self.layout_at_position();
     }
 
@@ -307,8 +311,13 @@ impl ContextMenu {
 
     fn has_leading_gutter(&self) -> bool {
         self.items.iter().any(|item| {
-            matches!(item, MenuItem::Action { checked: Some(_), .. }
-                | MenuItem::Action { icon: Some(_), .. })
+            matches!(
+                item,
+                MenuItem::Action {
+                    checked: Some(_),
+                    ..
+                } | MenuItem::Action { icon: Some(_), .. }
+            )
         })
     }
 
@@ -323,14 +332,17 @@ impl ContextMenu {
                 let (w, h) = text.measure_style(label, None, &style);
                 let check_width = if has_leading_gutter {
                     f64::from(theme.tokens.typography.scale.sm + theme.tokens.spacing.s2)
-                } else { 0.0 };
+                } else {
+                    0.0
+                };
                 width = width.max(f64::from(w) + check_width);
                 height = height.max(f64::from(h));
             }
         }
         // The label's inset on both sides, and `s3` of air around the line.
         self.measured_width = width + 2.0 * label_inset(theme);
-        self.row_height = (height + f64::from(theme.tokens.spacing.s3)).max(ROW_HEIGHT * self.text_scale);
+        self.row_height =
+            (height + f64::from(theme.tokens.spacing.s3)).max(ROW_HEIGHT * self.text_scale);
         self.layout_at_position();
         self.ensure_hover_visible();
     }
@@ -536,11 +548,21 @@ impl ContextMenu {
         self.hovered
     }
 
-    fn row_height(&self) -> f64 { self.row_height }
-    fn padding(&self) -> f64 { PADDING }
-    fn menu_width(&self) -> f64 { self.legacy_width() }
-    fn rows_viewport(&self) -> Rect { self.body_rect() }
-    fn has_overflow(&self) -> bool { self.max_scroll() > 0.0 }
+    fn row_height(&self) -> f64 {
+        self.row_height
+    }
+    fn padding(&self) -> f64 {
+        PADDING
+    }
+    fn menu_width(&self) -> f64 {
+        self.legacy_width()
+    }
+    fn rows_viewport(&self) -> Rect {
+        self.body_rect()
+    }
+    fn has_overflow(&self) -> bool {
+        self.max_scroll() > 0.0
+    }
     fn scroll_by(&mut self, delta: f64) {
         self.scroll_offset = (self.scroll_offset + delta).clamp(0.0, self.max_scroll());
     }
@@ -758,7 +780,13 @@ impl Widget for ContextMenu {
         for (idx, item) in self.items.iter().enumerate() {
             let row_height = self.item_height(item);
             match item {
-                MenuItem::Action { label, icon, checked, destructive, .. } => {
+                MenuItem::Action {
+                    label,
+                    icon,
+                    checked,
+                    destructive,
+                    ..
+                } => {
                     // The row Enter / a click would activate. Painted the way
                     // every other menu-like list in the toolkit paints its
                     // armed row (`Popover`, `Dropdown`, `SlashMenu`,
@@ -798,15 +826,30 @@ impl Widget for ContextMenu {
                     };
                     let label_x = if has_leading_gutter {
                         let icon_size = f64::from(theme.tokens.typography.scale.sm);
-                        if let Some(icon) = (*icon).or_else(|| (*checked == Some(true)).then_some(Icon::Check)) {
-                            draw_icon(scene, transform,
-                                Rect::from_origin_size((label_x, y + (row_height - icon_size) / 2.0), (icon_size, icon_size)),
-                                icon, ink, 1.8);
+                        if let Some(icon) =
+                            (*icon).or_else(|| (*checked == Some(true)).then_some(Icon::Check))
+                        {
+                            draw_icon(
+                                scene,
+                                transform,
+                                Rect::from_origin_size(
+                                    (label_x, y + (row_height - icon_size) / 2.0),
+                                    (icon_size, icon_size),
+                                ),
+                                icon,
+                                ink,
+                                1.8,
+                            );
                         }
                         label_x + icon_size + f64::from(theme.tokens.spacing.s2)
-                    } else { label_x };
-                    let label = text_renderer.elide_to_width(label, style.size,
-                        (self.rect.x1 - label_x - label_inset(theme)).max(1.0) as f32);
+                    } else {
+                        label_x
+                    };
+                    let label = text_renderer.elide_to_width(
+                        label,
+                        style.size,
+                        (self.rect.x1 - label_x - label_inset(theme)).max(1.0) as f32,
+                    );
                     let (_, label_height) = text_renderer.measure_style(&label, None, &style);
                     let label_y = y + (row_height - f64::from(label_height)) / 2.0;
                     text_renderer.draw_style(
@@ -1411,7 +1454,10 @@ mod tests {
         m.set_text_scale(2.0);
         let after = m.get_rect();
         assert_eq!(after.width(), before.width() * 2.0);
-        assert_eq!(after.height(), PADDING * 2.0 + ROW_HEIGHT * 4.0 + SEPARATOR_HEIGHT);
+        assert_eq!(
+            after.height(),
+            PADDING * 2.0 + ROW_HEIGHT * 4.0 + SEPARATOR_HEIGHT
+        );
 
         let second_action = m.item_rect(2).expect("second action row");
         let p = Point::new(

@@ -341,7 +341,8 @@ impl Graph2dScreen {
         // The prefix slot and the header band follow the labels as this frame
         // paints them, so the field never starts under `y =` and the first
         // card never starts under the subtitle at any text scale.
-        self.prefix_w = draw::measure_w(tr, PREFIX_LABEL, 14.0, TextWeight::Medium).max(PREFIX_W_1X);
+        self.prefix_w =
+            draw::measure_w(tr, PREFIX_LABEL, 14.0, TextWeight::Medium).max(PREFIX_W_1X);
         self.header_h = Self::header_band(tr).2;
         for field in &mut self.fields {
             field.set_text_scale(text_scale);
@@ -416,7 +417,10 @@ impl Graph2dScreen {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "graph painting combines scene resources with the calculator model, available area and optional trace point"
+    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -489,7 +493,14 @@ impl Graph2dScreen {
         if let Some(p) = trace {
             self.draw_trace(scene, t, tr, theme, model, (p, view));
         }
-        draw::stroke_rrect(scene, t, self.canvas, 0.0, ui::surface::edge_on(c.neutral[0]), 1.0);
+        draw::stroke_rrect(
+            scene,
+            t,
+            self.canvas,
+            0.0,
+            ui::surface::edge_on(c.neutral[0]),
+            1.0,
+        );
     }
 
     /// The function panel's background + "Functions" header.
@@ -535,7 +546,12 @@ impl Graph2dScreen {
             Align::Left,
             TextWeight::Semibold,
         );
-        let sub = Rect::new(self.panel.x0 + 16.0, head.y1, self.panel.x1 - 16.0, head.y1 + sub_h);
+        let sub = Rect::new(
+            self.panel.x0 + 16.0,
+            head.y1,
+            self.panel.x1 - 16.0,
+            head.y1 + sub_h,
+        );
         draw::text_in(
             scene,
             tr,

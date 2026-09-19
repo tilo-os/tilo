@@ -3315,7 +3315,10 @@ fn two_x_phone_keeps_toolbar_to_two_rows_and_document_readable() {
         assert!(rect.width() >= f64::from(width) + 12.0);
         assert!(rect.height() >= f64::from(height));
         assert_eq!(rect.intersect(wp.rect), *rect);
-        assert!(rect.y1 <= row_height, "actions stay in their reserved first row");
+        assert!(
+            rect.y1 <= row_height,
+            "actions stay in their reserved first row"
+        );
     }
     assert_eq!(
         wp.zoom.factor(),

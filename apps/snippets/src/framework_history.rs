@@ -215,7 +215,8 @@ impl HistoryPreview for SnippetsPreview {
             // The code body's line pitch at the current text scale — the same
             // rule the live app's metrics use — so the card holds its lines at
             // 2x; the card keeps its 24 px-per-line allowance at 1x.
-            let line_h = crate::app::BODY_LINE + crate::draw::line_growth(tr, crate::app::BODY_FONT);
+            let line_h =
+                crate::app::BODY_LINE + crate::draw::line_growth(tr, crate::app::BODY_FONT);
             let pitch = 24. + (line_h - crate::app::BODY_LINE);
             let height = (s.body.lines().count() as f64 * pitch + 40.).max(80.);
             crate::app::SnippetsApp::draw_code(

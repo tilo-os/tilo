@@ -226,7 +226,14 @@ impl Chart {
         self.max.unwrap_or(derived).max(1e-3)
     }
 
-    fn draw_series(scene: &mut Scene, transform: Affine, plot: Rect, series: &[Series], ceil: f32, area: bool) {
+    fn draw_series(
+        scene: &mut Scene,
+        transform: Affine,
+        plot: Rect,
+        series: &[Series],
+        ceil: f32,
+        area: bool,
+    ) {
         // Series: area fill (optional) then top line.
         for s in series {
             if s.data.len() < 2 {
@@ -254,7 +261,10 @@ impl Chart {
     /// Immediate-mode draw: render a full chart into `scene` at `rect`,
     /// reading colours from `theme`. Lets a host that lays out its own
     /// dashboard cards paint a chart at a known rect without a widget.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Chart painting combines render context and bounds with series, scale maximum, area mode, title, and axis labels."
+    )]
     pub fn draw_at(
         scene: &mut Scene,
         transform: Affine,

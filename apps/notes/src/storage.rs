@@ -652,9 +652,16 @@ fn saver_loop(
 /// Refuses a directory with an existing cooperating writer or unusable lock.
 pub fn lock_workspace(root: &Path) -> Result<std::fs::File, String> {
     std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
-    let file = std::fs::OpenOptions::new().read(true).write(true).create(true)
-        .truncate(false).open(root.join(".notes-writer.lock")).map_err(|e| e.to_string())?;
-    file.try_lock().map_err(|e| format!("notebook is already open; stop all legacy Notes writers before migration: {e}"))?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(".notes-writer.lock"))
+        .map_err(|e| e.to_string())?;
+    file.try_lock().map_err(|e| {
+        format!("notebook is already open; stop all legacy Notes writers before migration: {e}")
+    })?;
     Ok(file)
 }
 

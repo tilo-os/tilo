@@ -20,8 +20,8 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_metrics::renderer_type_size;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
@@ -768,11 +768,18 @@ mod tests {
         // Draw order: header label, ‹, ›, seven weekday labels, then day cells.
         let header_band = (rect.y0, HEADER_HEIGHT);
         let weekday_band = (rect.y0 + HEADER_HEIGHT, WEEKDAY_HEIGHT);
-        let first_cell = picker.day_rects.first().map(|(_, r)| *r).expect("day cells");
+        let first_cell = picker
+            .day_rects
+            .first()
+            .map(|(_, r)| *r)
+            .expect("day cells");
         let expectations: Vec<(&str, (f64, f64))> = std::iter::once(("May 2026", header_band))
             .chain([("\u{2039}", header_band), ("\u{203A}", header_band)])
             .chain(WEEKDAY_LABELS.iter().map(|label| (*label, weekday_band)))
-            .chain(std::iter::once(("27", (first_cell.y0, first_cell.height()))))
+            .chain(std::iter::once((
+                "27",
+                (first_cell.y0, first_cell.height()),
+            )))
             .collect();
         for (index, (text, (band_y0, band_h))) in expectations.into_iter().enumerate() {
             crate::widget::text::assert_glyph_run_centred_in_band(

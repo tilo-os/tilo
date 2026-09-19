@@ -206,7 +206,10 @@ impl AgendaView {
         self.scroll.wants_pointer_capture()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "agenda painting combines paint context and viewport with date bounds, calendar filters, model data and hover position"
+    )]
     pub(crate) fn draw(
         &self,
         scene: &mut Scene,
@@ -322,7 +325,10 @@ impl AgendaView {
 /// Draw one day's two-line heading (relative label + long date) at `y`,
 /// clipped to `area`. Split out of `AgendaView::draw` to keep it within the
 /// line-count lint.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "day headings combine paint context, clipping and row metrics with the displayed date and today's relative label"
+)]
 fn draw_day_heading(
     scene: &mut Scene,
     transform: Affine,
@@ -370,7 +376,10 @@ fn draw_day_heading(
 /// Draw one event row at `y`, pushing its hit-rect into `hits` when the row
 /// is on screen. Split out of `AgendaView::draw` to keep it within the
 /// line-count lint.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "event rows combine paint context and clipping metrics with event data, location visibility, pointer and hit output"
+)]
 fn draw_event_row(
     scene: &mut Scene,
     transform: Affine,
@@ -459,7 +468,10 @@ fn draw_event_row(
 /// Draw one task row at `y`, pushing its open- and toggle-hit rects into
 /// `hits` when the row is on screen. Split out of `AgendaView::draw` to keep
 /// it within the line-count lint.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "task rows combine paint context and clipping metrics with task data, pointer and open/toggle hit output"
+)]
 fn draw_task_row(
     scene: &mut Scene,
     transform: Affine,

@@ -106,7 +106,10 @@ impl FilePickerOverlay {
     /// Routes an event to the active picker and reports whether the modal
     /// consumed the shell's input. An active picker always consumes input,
     /// even when its inner widget has no action for a particular event.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "file-picker routing adds viewport bounds to the Widget event, CRDT state and focus output parameters"
+    )]
     pub(crate) fn handle_event(
         &mut self,
         viewport: Rect,

@@ -149,7 +149,8 @@ pub fn read_baseline(path: &Path) -> Counts {
 pub fn write_baseline(path: &Path, header: &[&str], counts: &Counts) {
     let mut output = String::new();
     for line in header {
-        writeln!(&mut output, "# {line}").expect("writing a baseline line to a String is infallible");
+        writeln!(&mut output, "# {line}")
+            .expect("writing a baseline line to a String is infallible");
     }
     for ((path, pattern), count) in counts {
         writeln!(&mut output, "{path} {pattern} {count}")
@@ -243,11 +244,18 @@ fn a_file_gated_to_tests_has_no_production_lines() {
 #[test]
 fn ratchet_reports_growth_and_stale_entries_separately() {
     let key = |p: &str, k: &str| (p.to_string(), k.to_string());
-    let found: Counts = [(key("a.rs", "x"), 3), (key("b.rs", "x"), 1)].into_iter().collect();
-    let baseline: Counts = [(key("a.rs", "x"), 2), (key("c.rs", "x"), 1)].into_iter().collect();
+    let found: Counts = [(key("a.rs", "x"), 3), (key("b.rs", "x"), 1)]
+        .into_iter()
+        .collect();
+    let baseline: Counts = [(key("a.rs", "x"), 2), (key("c.rs", "x"), 1)]
+        .into_iter()
+        .collect();
     let (grew, stale) = ratchet_failures(&found, &baseline, &|k| format!("fix {k}"));
     assert_eq!(grew.len(), 2, "a.rs grew and b.rs is new");
     assert!(grew[0].starts_with("a.rs [x]: 3 occurrence(s), baseline 2 — fix x"));
     assert!(grew[1].starts_with("b.rs [x]: 1 occurrence(s), baseline 0"));
-    assert_eq!(stale, vec!["c.rs [x]: now 0, baseline still 1 — lower it to 0"]);
+    assert_eq!(
+        stale,
+        vec!["c.rs [x]: now 0, baseline still 1 — lower it to 0"]
+    );
 }

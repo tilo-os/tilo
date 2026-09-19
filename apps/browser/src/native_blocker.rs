@@ -22,9 +22,10 @@ fn cached_rules(directory: &Path) -> String {
     for (name, _) in crate::blocker::LISTS {
         let path = directory.join(name);
         if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() <= MAX_LIST)
-            && let Some(text) = crate::blocker::read_cached_list(&path) {
-                append_bounded(&mut rules, &text);
-            }
+            && let Some(text) = crate::blocker::read_cached_list(&path)
+        {
+            append_bounded(&mut rules, &text);
+        }
     }
     rules
 }
@@ -119,12 +120,7 @@ fn fetch_rules(
             .map(|duration| duration.as_secs());
         let path = directory.join("native-filter-updated.json");
         let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        if std::fs::write(
-            &temporary,
-            serde_json::to_vec(&updated).unwrap_or_default(),
-        )
-        .is_ok()
-        {
+        if std::fs::write(&temporary, serde_json::to_vec(&updated).unwrap_or_default()).is_ok() {
             let _ = std::fs::rename(&temporary, path);
         }
         let _ = std::fs::remove_file(temporary);
@@ -249,8 +245,8 @@ pub(crate) fn start(engine: SharedEngine) {
 }
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
     use super::*;
+    use std::io::{Read, Write};
 
     #[test]
     #[ignore = "child entry point for private refresh/root lifecycle regression"]
@@ -286,8 +282,8 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let engine = ui::webview::chromium::ChromiumEngine::with_private_host(&host, &root)
-            .unwrap() as SharedEngine;
+        let engine = ui::webview::chromium::ChromiumEngine::with_private_host(&host, &root).unwrap()
+            as SharedEngine;
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/filters", listener.local_addr().unwrap());
@@ -486,7 +482,10 @@ mod tests {
     #[test]
     fn concurrent_refresh_requests_admit_only_one_worker() {
         let state = Arc::new(std::sync::Mutex::new(Status::default()));
-        #[allow(clippy::needless_collect, reason = "spawn all workers before joining any, preserving the concurrent admission race")]
+        #[allow(
+            clippy::needless_collect,
+            reason = "spawn all workers before joining any, preserving the concurrent admission race"
+        )]
         let threads = (0..16)
             .map(|_| {
                 let state = state.clone();

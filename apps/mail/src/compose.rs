@@ -2028,7 +2028,10 @@ impl ComposeWindow {
             .map_or(Rect::ZERO, |(r, _)| *r)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "compose-field painting shares render context with the localized label key, field bounds and focus state"
+    )]
     fn draw_field(
         &self,
         scene: &mut Scene,

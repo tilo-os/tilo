@@ -12,7 +12,10 @@ pub(crate) fn emit_json(prefix: &str, row: serde_json::Value) {
     panic_on_error(write_json(prefix, row));
 }
 
-#[allow(clippy::panic, reason = "preserve synchronous stderr failure policy; a failed benchmark trace must not silently qualify")]
+#[allow(
+    clippy::panic,
+    reason = "preserve synchronous stderr failure policy; a failed benchmark trace must not silently qualify"
+)]
 fn panic_on_error(result: io::Result<()>) {
     if let Err(error) = result {
         panic!("failed printing to stderr: {error}");

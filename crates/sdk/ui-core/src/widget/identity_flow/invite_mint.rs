@@ -230,7 +230,10 @@ impl InviteMintScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Invite-screen routing mirrors the host Widget event contract, including CRDT, focus/handled, and layout parameters."
+    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -350,10 +353,7 @@ impl InviteMintScreen {
     }
 
     fn selected_index(&self) -> usize {
-        EXPIRIES
-            .iter()
-            .position(|e| *e == self.expiry)
-            .unwrap_or(1)
+        EXPIRIES.iter().position(|e| *e == self.expiry).unwrap_or(1)
     }
 
     fn actions(&self) -> [ModalAction<'static>; 3] {
@@ -721,7 +721,10 @@ mod tests {
         assert_eq!(empty.segments.len(), 4);
         assert_eq!(empty.segments[0].height(), 34.0);
         assert!(empty.qr.is_none() && empty.link_lines.is_empty());
-        assert!(empty.hint.is_some(), "an empty state is designed, not blank");
+        assert!(
+            empty.hint.is_some(),
+            "an empty state is designed, not blank"
+        );
 
         s.set_channel(ChannelId::new(), "engineering");
         let (sk, pk) = generate_keypair();

@@ -18,7 +18,10 @@
 
 pub mod chromium;
 mod credentials;
-pub use credentials::{AddressFields, CredentialAction, CredentialRequest, CredentialReply, CredentialForm, CredentialAccount};
+pub use credentials::{
+    AddressFields, CredentialAccount, CredentialAction, CredentialForm, CredentialReply,
+    CredentialRequest,
+};
 pub mod profile;
 pub mod test_engine;
 
@@ -285,7 +288,9 @@ pub enum WebViewCommand {
         id: u32,
     },
     /// Retry a user-selected network GET without navigating the visible page.
-    RetryDownload { id: u32 },
+    RetryDownload {
+        id: u32,
+    },
     /// Stop admitting downloads and cancel every pending or active transfer.
     CancelAllDownloads,
     /// Start a user-requested download of an absolute HTTP(S) URL.

@@ -662,8 +662,12 @@ impl CalcScreen {
                 continue;
             };
             draw_recorded_row(
-                scene, t, tr, theme,
-                Rect::new(r.x0, r.y0 + 4.0, r.x1, r.y1 - 4.0), entry,
+                scene,
+                t,
+                tr,
+                theme,
+                Rect::new(r.x0, r.y0 + 4.0, r.x1, r.y1 - 4.0),
+                entry,
             );
         }
         scene.pop_layer();

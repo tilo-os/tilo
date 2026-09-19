@@ -220,14 +220,17 @@ struct InventoryOnlyPublisher {
 fn inventory_only_publisher() -> (Box<dyn Widget>, std::rc::Rc<Cell<bool>>) {
     let resource = Publisher.resources(&AutoCommit::new()).remove(0);
     let enabled = std::rc::Rc::new(Cell::new(false));
-    (Box::new(InventoryOnlyPublisher {
-        counts: std::rc::Rc::new([Cell::new(0), Cell::new(0)]),
-        visible: std::rc::Rc::new(Cell::new(true)),
-        duplicate: false,
-        button: Button::new("custom-flip", "Flip", None)
-            .on_action(tilo_actions::ActionBinding::unit_for(&resource, "flip").unwrap()),
-        enabled: enabled.clone(),
-    }), enabled)
+    (
+        Box::new(InventoryOnlyPublisher {
+            counts: std::rc::Rc::new([Cell::new(0), Cell::new(0)]),
+            visible: std::rc::Rc::new(Cell::new(true)),
+            duplicate: false,
+            button: Button::new("custom-flip", "Flip", None)
+                .on_action(tilo_actions::ActionBinding::unit_for(&resource, "flip").unwrap()),
+            enabled: enabled.clone(),
+        }),
+        enabled,
+    )
 }
 
 #[test]
@@ -240,7 +243,9 @@ fn control_presence_keeps_inventory_only_custom_emitters_and_permissions() {
             1 => Box::new(crate::widget::Column::new().push(root)),
             2 => Box::new(crate::widget::Scrollable::new_vertical().with_child(root)),
             _ => Box::new(crate::widget::NavShell::sidebar_over_content(
-                Box::new(crate::widget::Text::new("sidebar")), root)),
+                Box::new(crate::widget::Text::new("sidebar")),
+                root,
+            )),
         };
         assert!(root.has_action_control_bindings());
         let mut app = App::new_with_controlled_inputs(State::new(), root);
@@ -248,14 +253,20 @@ fn control_presence_keeps_inventory_only_custom_emitters_and_permissions() {
         app.refresh_control_action_availability();
         assert!(enabled.get(), "wrapper {wrapper}");
         app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"), Vec::new()));
-        assert!(!enabled.get(), "wrapper {wrapper} must refresh hidden custom emitter");
+            collab_types::caps::Actor::person(None, "restricted"),
+            Vec::new(),
+        ));
+        assert!(
+            !enabled.get(),
+            "wrapper {wrapper} must refresh hidden custom emitter"
+        );
     }
 }
 
 #[test]
 fn control_presence_replacement_resets_availability_stamp() {
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Column::new()));
+    let mut app =
+        App::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Column::new()));
     app.action_registry_mut().register::<Flip>(FLIP_TYPE);
     app.refresh_control_action_availability();
     assert!(app.last_control_availability.is_none());
@@ -270,7 +281,10 @@ fn control_presence_replacement_resets_availability_stamp() {
     let (root, enabled) = inventory_only_publisher();
     app.root_widget = root;
     app.refresh_control_action_availability();
-    assert!(enabled.get(), "new emitter must not inherit removed emitter refresh stamp");
+    assert!(
+        enabled.get(),
+        "new emitter must not inherit removed emitter refresh stamp"
+    );
 }
 impl Widget for InventoryOnlyPublisher {
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
@@ -337,7 +351,10 @@ impl Widget for InventoryOnlyPublisher {
         // default accessibility-derived metadata implementation.
         self.button.control_action_bindings()
     }
-    fn refresh_control_action_availability(&mut self, allowed: &std::collections::HashSet<tilo_actions::ActionAddress>) {
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
         self.button.refresh_control_action_availability(allowed);
         self.enabled.set(self.button.is_enabled());
     }
@@ -357,7 +374,9 @@ fn control_presence_host_uses_predicate_but_coverage_keeps_inventory() {
         let counts = std::rc::Rc::new([Cell::new(0), Cell::new(0)]);
         let resource = Publisher.resources(&AutoCommit::new()).remove(0);
         let root = FastInventoryPublisher {
-            counts: counts.clone(), visible: std::rc::Rc::new(Cell::new(true)), duplicate: false,
+            counts: counts.clone(),
+            visible: std::rc::Rc::new(Cell::new(true)),
+            duplicate: false,
             enabled: std::rc::Rc::new(Cell::new(false)),
             button: Button::new("fast-flip", "Flip", None)
                 .on_action(tilo_actions::ActionBinding::unit_for(&resource, "flip").unwrap()),
@@ -367,15 +386,24 @@ fn control_presence_host_uses_predicate_but_coverage_keeps_inventory() {
             1 => Box::new(crate::widget::Column::new().push(Box::new(root))),
             2 => Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(root))),
             _ => Box::new(crate::widget::NavShell::sidebar_over_content(
-                Box::new(crate::widget::Text::new("sidebar")), Box::new(root))),
+                Box::new(crate::widget::Text::new("sidebar")),
+                Box::new(root),
+            )),
         };
         let mut app = App::new_with_controlled_inputs(State::new(), root);
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
         app.refresh_control_action_availability();
         app.refresh_control_action_availability();
-        assert_eq!(counts[1].get(), 0, "presence refresh must not inventory controls");
+        assert_eq!(
+            counts[1].get(),
+            0,
+            "presence refresh must not inventory controls"
+        );
         assert_eq!(app.control_action_coverage().len(), 1);
-        assert!(counts[1].get() > 0, "explicit coverage still inventories controls");
+        assert!(
+            counts[1].get() > 0,
+            "explicit coverage still inventories controls"
+        );
     }
 }
 
@@ -439,14 +467,19 @@ impl Widget for FastInventoryPublisher {
                 .with_semantic_key("counted-catalogue"),
         )
     }
-    fn has_action_control_bindings(&self) -> bool { true }
+    fn has_action_control_bindings(&self) -> bool {
+        true
+    }
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         // Count full semantic construction, independently of inventory's
         // default accessibility-derived metadata implementation.
         self.counts[1].set(self.counts[1].get() + 1);
         self.button.control_action_bindings()
     }
-    fn refresh_control_action_availability(&mut self, allowed: &std::collections::HashSet<tilo_actions::ActionAddress>) {
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
         self.button.refresh_control_action_availability(allowed);
         self.enabled.set(self.button.is_enabled());
     }

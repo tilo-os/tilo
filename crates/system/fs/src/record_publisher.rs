@@ -110,32 +110,71 @@ impl RecordPublisher {
         self.actor
     }
 
-    pub(crate) fn publication_lease(&self) -> Result<std::sync::MutexGuard<'_, ()>, RecordPublisherError> {
-        self.publish_lock.lock().map_err(|_| RecordPublisherError::PublicationUnavailable)
+    pub(crate) fn publication_lease(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, ()>, RecordPublisherError> {
+        self.publish_lock
+            .lock()
+            .map_err(|_| RecordPublisherError::PublicationUnavailable)
     }
 
-    pub(crate) fn repository(&self) -> &Arc<RecordRepository> { &self.repository }
+    pub(crate) fn repository(&self) -> &Arc<RecordRepository> {
+        &self.repository
+    }
 
     /// Build the exact bounded restore batch while the caller retains P and R.
     pub(crate) fn sign_checked_restore(
-        &self, manifest: FileMutationTransactionManifestV1, previous_sequence: u64,
-    ) -> Result<crate::record_transaction::RecordTransactionJournalEntry, RecordPublisherError> {
-        if manifest.workspace_id != self.workspace_id || manifest.actor != self.actor
-            || !matches!(manifest.operation, collab_types::FileMutationOperationV1::RestoreContent { .. }) {
+        &self,
+        manifest: FileMutationTransactionManifestV1,
+        previous_sequence: u64,
+    ) -> Result<crate::record_transaction::RecordTransactionJournalEntry, RecordPublisherError>
+    {
+        if manifest.workspace_id != self.workspace_id
+            || manifest.actor != self.actor
+            || !matches!(
+                manifest.operation,
+                collab_types::FileMutationOperationV1::RestoreContent { .. }
+            )
+        {
             return Err(RecordPublisherError::TransactionScopeMismatch);
         }
         let transaction = FileMutationTransactionV1::signed(manifest, &self.signing_key)
             .map_err(|_| RecordPublisherError::InvalidTransaction)?;
         let record_id = transaction.manifest.participants[0].record_id;
-        let prepare = previous_sequence.checked_add(1).ok_or(RecordPublisherError::SequenceContention)?;
-        let commit = prepare.checked_add(1).ok_or(RecordPublisherError::SequenceContention)?;
+        let prepare = previous_sequence
+            .checked_add(1)
+            .ok_or(RecordPublisherError::SequenceContention)?;
+        let commit = prepare
+            .checked_add(1)
+            .ok_or(RecordPublisherError::SequenceContention)?;
         Ok(crate::record_transaction::RecordTransactionJournalEntry {
             schema_version: crate::record_transaction::RECORD_TRANSACTION_JOURNAL_VERSION,
-            participant_batches: vec![crate::record_transaction::RecordTransactionParticipantBatch {
-                record_id, envelopes: vec![
-                    RecordEnvelopeV1::signed(record_id, self.actor, prepare, RecordOperationV1::PrepareTransaction(transaction.clone()), &self.signing_key)?,
-                    RecordEnvelopeV1::signed(record_id, self.actor, commit, RecordOperationV1::CommitTransaction { transaction_id: transaction.manifest.transaction_id }, &self.signing_key)?,
-                ] }], transaction, phase: crate::record_transaction::RecordTransactionPhase::Prepared, namespace_delta: None,
+            participant_batches: vec![
+                crate::record_transaction::RecordTransactionParticipantBatch {
+                    record_id,
+                    envelopes: vec![
+                        RecordEnvelopeV1::signed(
+                            record_id,
+                            self.actor,
+                            prepare,
+                            RecordOperationV1::PrepareTransaction(transaction.clone()),
+                            &self.signing_key,
+                        )?,
+                        RecordEnvelopeV1::signed(
+                            record_id,
+                            self.actor,
+                            commit,
+                            RecordOperationV1::CommitTransaction {
+                                transaction_id: transaction.manifest.transaction_id,
+                            },
+                            &self.signing_key,
+                        )?,
+                    ],
+                },
+            ],
+            transaction,
+            phase: crate::record_transaction::RecordTransactionPhase::Prepared,
+            namespace_delta: None,
         })
     }
 
@@ -260,8 +299,14 @@ impl RecordPublisher {
         let entries = journal.entries().cloned().collect::<Vec<_>>();
         for entry in entries {
             if entry.phase == crate::record_transaction::RecordTransactionPhase::BroadcastCommitted
-                && matches!(entry.transaction.manifest.operation, collab_types::FileMutationOperationV1::RestoreContent { .. }) {
-                if entry.transaction.manifest.workspace_id != self.workspace_id { return Err(RecordPublisherError::TransactionScopeMismatch); }
+                && matches!(
+                    entry.transaction.manifest.operation,
+                    collab_types::FileMutationOperationV1::RestoreContent { .. }
+                )
+            {
+                if entry.transaction.manifest.workspace_id != self.workspace_id {
+                    return Err(RecordPublisherError::TransactionScopeMismatch);
+                }
                 continue;
             }
             if entry.transaction.manifest.workspace_id != self.workspace_id
@@ -501,7 +546,10 @@ impl RecordPublisher {
     /// or cannot be durably published.
     // Validation and publication are deliberately serialized as one ordered,
     // retry-safe state transition.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One publication lock covers validation and ordered version, content-revision, conflict, and metadata updates for retry safety."
+    )]
     pub fn publish_state(
         &self,
         metadata: &FileMetadataV1,
@@ -698,7 +746,10 @@ impl RecordPublisher {
     /// competing publisher already made the exact state visible.
     // Ownership freezes the requested operation while bounded retries clone it
     // into independently signed envelopes.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "The owned operation is the retry snapshot cloned into independently signed envelopes at each candidate sequence."
+    )]
     fn apply_idempotent(
         &self,
         key: RecordRepositoryKey,

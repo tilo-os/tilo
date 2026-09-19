@@ -1,5 +1,8 @@
 //! Review presentation and synchronous delivery to the sole restore admission door.
-#[allow(clippy::wildcard_imports, reason = "private implementation module shares its enclosing host types")]
+#[allow(
+    clippy::wildcard_imports,
+    reason = "private implementation module shares its enclosing host types"
+)]
 use super::*;
 use crate::{
     State,
@@ -31,20 +34,32 @@ impl HistoryHost {
         self.clock = clock;
     }
 
-    pub(super) fn show_review(&mut self, token: Option<crate::history_mode::RestoreReview>, message: impl AsRef<str>) {
-        let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else { self.invalidate_owner(); return; };
+    pub(super) fn show_review(
+        &mut self,
+        token: Option<crate::history_mode::RestoreReview>,
+        message: impl AsRef<str>,
+    ) {
+        let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
+            self.invalidate_owner();
+            return;
+        };
         let title = scope.title;
         let confirm = self.commands.clone();
         let cancel = self.commands.clone();
         let dismiss = self.commands.clone();
-        let ready = token.is_some() || self.files.as_ref().is_some_and(|files| files.review.is_some());
-        let command = if let Some(files)=self.files.as_ref().filter(|files|files.review.is_some()) {
-            ReviewCommand::FileConfirm(files.confirmation_token())
-        } else if ready {
-            ReviewCommand::Confirm
-        } else {
-            ReviewCommand::Refresh
-        };
+        let ready = token.is_some()
+            || self
+                .files
+                .as_ref()
+                .is_some_and(|files| files.review.is_some());
+        let command =
+            if let Some(files) = self.files.as_ref().filter(|files| files.review.is_some()) {
+                ReviewCommand::FileConfirm(files.confirmation_token())
+            } else if ready {
+                ReviewCommand::Confirm
+            } else {
+                ReviewCommand::Refresh
+            };
         self.review = Some(ReviewPanel {
             token,
             dialog: ModalDialog::new(format!("Restore {title}"), Text::new(message.as_ref()))
@@ -87,18 +102,25 @@ impl HistoryHost {
         };
         if matches!(command, ReviewCommand::Cancel) {
             self.review = None;
-            if let Some(files)=&mut self.files { files.cancel_review(); }
+            if let Some(files) = &mut self.files {
+                files.cancel_review();
+            }
             return false;
         }
         if self.validate_root(root).is_err() {
             self.invalidate_owner();
             return false;
         }
-        if matches!(self.source(),HistorySourceRegistration::CheckedFiles { .. }) {
+        if matches!(
+            self.source(),
+            HistorySourceRegistration::CheckedFiles { .. }
+        ) {
             self.service_file_review(command);
             return false;
         }
-        if matches!(command,ReviewCommand::FileConfirm(_)) { return false; }
+        if matches!(command, ReviewCommand::FileConfirm(_)) {
+            return false;
+        }
         let Some(controller) = &self.controller else {
             return false;
         };
@@ -118,7 +140,9 @@ impl HistoryHost {
         let Some(review) = self.review.as_ref().and_then(|panel| panel.token.as_ref()) else {
             return false;
         };
-        let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else { return false; };
+        let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
+            return false;
+        };
         let Some(schema) = scope.content_schema else {
             return false;
         };

@@ -162,7 +162,10 @@ mod tests {
         // so it pushes; a scale below 1× never lowers the 1× breakpoint.
         assert!(PushNav::is_narrow_at(1280.0, 2.0));
         assert!(!PushNav::is_narrow_at(2.0 * PUSH_BREAKPOINT, 2.0));
-        assert_eq!(PushNav::layout_at(PUSH_BREAKPOINT, 0.5), SplitLayout::Docked);
+        assert_eq!(
+            PushNav::layout_at(PUSH_BREAKPOINT, 0.5),
+            SplitLayout::Docked
+        );
         assert_eq!(
             PushNav::layout_at(PUSH_BREAKPOINT - 1.0, 0.5),
             SplitLayout::Overlay

@@ -5,18 +5,18 @@
 //! historical renderer access to a live record, persistence, or dispatch.
 
 pub mod adapter;
+mod assets;
 pub mod checked_files;
 mod files_session;
-pub mod restore;
 pub mod preview;
-mod assets;
+pub mod restore;
 pub use assets::{HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAssetSource};
-pub mod registration;
 pub(crate) mod owner;
+pub mod registration;
 pub use owner::HistoryOwner;
-pub(crate) mod host;
 mod canvas;
 pub(crate) mod frame;
+pub(crate) mod host;
 pub use preview::*;
 pub use registration::*;
 
@@ -28,9 +28,9 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash};
 
 use crate::history_source::{
-    compare_entries, groups::read_named_ranges, CompareError, HistorySource,
+    CompareError, HistorySource, compare_entries, groups::read_named_ranges,
 };
-use crate::{group_entries, GroupingConfig, HistoryEntry, HistoryEntryId, HistoryGroup, RecordId};
+use crate::{GroupingConfig, HistoryEntry, HistoryEntryId, HistoryGroup, RecordId, group_entries};
 
 /// Full authority namespace for one historical resource.
 ///

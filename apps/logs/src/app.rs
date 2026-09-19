@@ -934,7 +934,10 @@ fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
 }
 
 /// Baseline-free top-left text at `(x,y)`, no wrapping.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Log text painting needs scene/transform, content, font size/weight/family, color, and top-left coordinates."
+)]
 fn text_at(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -1582,7 +1585,10 @@ impl LogsApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Filter trigger painting combines render context, measured text metrics, bounds, caption/value, and open/active states."
+    )]
     fn draw_dropdown_trigger(
         scene: &mut Scene,
         t: Affine,
@@ -2613,7 +2619,10 @@ fn column_x(row: Rect, k: f64) -> Cols {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Line painting passes the scene transform, both endpoint coordinates, stroke color, and stroke width."
+)]
 fn line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, c: Color, w: f64) {
     scene.stroke(
         &Stroke::new(w),

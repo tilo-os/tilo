@@ -65,7 +65,10 @@ fn fail_if_armed(
 ///
 /// Returns an error when any repository, history, namespace, journal, or
 /// broadcast phase fails.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "transaction recovery coordinates repository, journal, history, namespace persistence, exact intent, authorization and broadcast"
+)]
 pub fn complete_replacement_transaction<A, F>(
     repository: &RecordRepository,
     journal: &mut RecordTransactionJournal,
@@ -116,7 +119,10 @@ where
 /// Recover a bounded record delta against current converged repository state.
 /// Later valid binding/content changes survive; the receipt remains the exact
 /// admitted manifest rather than whichever revision now wins projection.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "checked restore coordinates converged repository state, journal, history, durable namespace, admitted intent and broadcast"
+)]
 pub(crate) fn complete_checked_restore_after_repository<F>(
     repository: &RecordRepository,
     journal: &mut RecordTransactionJournal,
@@ -228,7 +234,10 @@ where
 /// Resume the durable projection phases after the repository has already
 /// accepted every exact participant, as happens for independently delivered
 /// remote record streams.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "durable history, staged namespace persistence and broadcast phases stay together so journal replay preserves their order"
+)]
 pub(crate) fn complete_replacement_transaction_after_repository<F>(
     journal: &mut RecordTransactionJournal,
     history: &FileHistoryStore,
@@ -455,7 +464,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Crash recovery through every durable phase.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the signed replacement fixture follows a failed broadcast through retry and checks exact namespace state without duplicate history"
+    )] // Crash recovery through every durable phase.
     fn broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history() {
         let temp = tempfile::tempdir().unwrap();
         let workspace_id = Uuid::new_v4();

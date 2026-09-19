@@ -1498,7 +1498,10 @@ impl Core {
         });
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "saved-place chip painting combines paint context, list width/position and hotspot output while applying reorder geometry"
+    )]
     fn draw_chips(
         &self,
         scene: &mut Scene,
@@ -1594,7 +1597,10 @@ impl Core {
 
     /// The rounded current temperature a saved-place chip shows, or `None`
     /// before the city's first snapshot has arrived.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "saved-place chips combine paint context and bounds with location identity, list index and temperature units"
+    )]
     fn draw_chip(
         &self,
         scene: &mut Scene,
@@ -2444,7 +2450,10 @@ impl Core {
     /// The hero card: condition glyph, big temperature, condition label,
     /// "feels like", and the sunrise/sunset arc (or a compact fallback on a
     /// narrow pane). Returns the y cursor for the next section.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the weather hero combines paint context, detail bounds and vertical position with snapshot data and responsive metrics"
+    )]
     fn draw_detail_hero(
         &self,
         rect: Rect,
@@ -2721,7 +2730,10 @@ impl Core {
 
     /// The 24-hour scrollable strip card. Returns the y cursor for the
     /// next section.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the hourly strip combines paint context, detail bounds and vertical position with forecast data and responsive metrics"
+    )]
     fn draw_detail_hourly(
         &mut self,
         rect: Rect,
@@ -3295,7 +3307,10 @@ impl Core {
         scene.fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &rect);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the sun arc combines paint context and bounds with observation, sunrise and sunset times plus day/night state"
+    )]
     fn draw_sun_arc(
         scene: &mut Scene,
         t: Affine,
@@ -3418,7 +3433,10 @@ impl Core {
     /// pollutant tiles, or an honest loading / unavailable message when there
     /// is no reading yet. Real data only — a missing value shows an em-dash,
     /// never a fabricated zero.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "air-quality painting combines paint context and bounds with optional readings and measured detail layout"
+    )]
     fn draw_air_quality(
         &self,
         scene: &mut Scene,
@@ -4346,7 +4364,10 @@ fn track_fill(ground: Color) -> Color {
     ui::tokens::colors::Colors::hairline_on(ground, TRACK_ALPHA)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "left-aligned text forwards scene resources, string, origin, size, weight and color to the text renderer"
+)]
 pub(crate) fn text_left(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -4368,7 +4389,10 @@ pub(crate) fn text_left(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "right-aligned text needs scene resources, string, right edge, top position, size, weight and color for measured alignment"
+)]
 pub(crate) fn text_right(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -4391,7 +4415,10 @@ pub(crate) fn text_right(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "centered text needs scene resources, string, center/top position, size, weight and color for measured alignment"
+)]
 fn text_center(
     scene: &mut Scene,
     tr: &mut TextRenderer,

@@ -212,7 +212,10 @@ fn private_startup_failures_remove_owned_roots_after_reaping() {
 fn private_packaged_helper_discovery_failure_child() {
     let root = PathBuf::from(std::env::var_os("QOS_TEST_PRIVATE_ROOT").unwrap());
     let result = ChromiumEngine::new_private(&root);
-    assert!(result.is_err(), "isolated discovery unexpectedly found a helper");
+    assert!(
+        result.is_err(),
+        "isolated discovery unexpectedly found a helper"
+    );
     assert!(
         !root.exists(),
         "discovery failure must release the allocated private root"
@@ -781,7 +784,9 @@ fn runtime_download_queue_coalesces_progress_and_is_bounded() {
         Some(WebViewEvent::TabDetached)
     );
     assert_eq!(
-        decode_event(&json!({"event":"download_runtime","admitted":2,"detached":1,"accepting":true,"error":""})),
+        decode_event(
+            &json!({"event":"download_runtime","admitted":2,"detached":1,"accepting":true,"error":""})
+        ),
         Some(WebViewEvent::DownloadRuntime {
             admitted: 2,
             detached: 1,
@@ -810,10 +815,11 @@ fn detached_acknowledgment_releases_visible_route_before_physical_close() {
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut saw_detach = false;
     while !saw_detach {
-        saw_detach = detached
-            .drain_events()
-            .contains(&WebViewEvent::TabDetached);
-        assert!(std::time::Instant::now() < deadline, "detach acknowledgment");
+        saw_detach = detached.drain_events().contains(&WebViewEvent::TabDetached);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detach acknowledgment"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(
@@ -822,7 +828,10 @@ fn detached_acknowledgment_releases_visible_route_before_physical_close() {
     );
     drop(detached);
     assert_eq!(routes.lock().unwrap().len(), 1);
-    assert!(first.create_tab().is_ok(), "detached transfer owner does not use a visible slot");
+    assert!(
+        first.create_tab().is_ok(),
+        "detached transfer owner does not use a visible slot"
+    );
 }
 
 #[test]
@@ -954,35 +963,57 @@ fn scoped_site_reload_roundtrips_with_document_bounds() {
 fn credential_protocol_encodes_actions_without_secret_fields() {
     use crate::webview::{CredentialAction, CredentialRequest};
     let request = CredentialRequest {
-        request_id: 7, origin: "https://example.test".into(), document: "2".into(),
-        action: CredentialAction::Save { capture: "3".into() },
+        request_id: 7,
+        origin: "https://example.test".into(),
+        document: "2".into(),
+        action: CredentialAction::Save {
+            capture: "3".into(),
+        },
     };
     let command = WebViewCommand::Credentials(request.clone());
     assert!(command_within_limits(&command));
-    assert_eq!(encode_command(command).unwrap(), json!({"op":"credential_action","request_id":7,
-        "origin":"https://example.test","document":"2","action":"save","capture":"3"}));
-    let mut stale=request.clone();stale.document="0".into();
+    assert_eq!(
+        encode_command(command).unwrap(),
+        json!({"op":"credential_action","request_id":7,
+        "origin":"https://example.test","document":"2","action":"save","capture":"3"})
+    );
+    let mut stale = request.clone();
+    stale.document = "0".into();
     assert!(!command_within_limits(&WebViewCommand::Credentials(stale)));
-    let mut bad=request;bad.action=CredentialAction::Fill{form:"01".into(),account:"account".into()};
+    let mut bad = request;
+    bad.action = CredentialAction::Fill {
+        form: "01".into(),
+        account: "account".into(),
+    };
     assert!(!command_within_limits(&WebViewCommand::Credentials(bad)));
 }
 
 #[test]
 fn credential_protocol_rejects_secret_or_unbounded_reply_fields() {
-    let base=json!({"event":"credential_result","tab":1,"request_id":7,"action":"capture",
+    let base = json!({"event":"credential_result","tab":1,"request_id":7,"action":"capture",
         "origin":"https://example.test","document":"2","success":true,"message":"Choose Save",
         "capture":"3","username":"synthetic-user"});
     assert!(validate_event(&base).is_ok());
-    assert!(matches!(decode_event(&base),Some(WebViewEvent::CredentialResult(reply)) if reply.capture.as_deref()==Some("3")));
-    for (key,value) in [("password",json!("must-not-cross")),("document",json!("9007199254740992")),
-        ("username",json!("x".repeat(1025))),("success",json!("yes"))] {
-        let mut bad=base.clone();bad[key]=value;assert!(validate_event(&bad).is_err(),"{key}");
+    assert!(
+        matches!(decode_event(&base),Some(WebViewEvent::CredentialResult(reply)) if reply.capture.as_deref()==Some("3"))
+    );
+    for (key, value) in [
+        ("password", json!("must-not-cross")),
+        ("document", json!("9007199254740992")),
+        ("username", json!("x".repeat(1025))),
+        ("success", json!("yes")),
+    ] {
+        let mut bad = base.clone();
+        bad[key] = value;
+        assert!(validate_event(&bad).is_err(), "{key}");
     }
-    let mut list=json!({"event":"credential_result","request_id":1,"action":"list","origin":"https://example.test",
+    let mut list = json!({"event":"credential_result","request_id":1,"action":"list","origin":"https://example.test",
         "document":"2","success":true,"message":"Done","accounts":[{"id":"one","username":"user"}]});
     assert!(validate_event(&list).is_ok());
-    list["accounts"][0]["password"]=json!("must-not-cross");assert!(validate_event(&list).is_err());
-    list["accounts"]=json!(vec![json!({"id":"one","username":"user"});65]);assert!(validate_event(&list).is_err());
+    list["accounts"][0]["password"] = json!("must-not-cross");
+    assert!(validate_event(&list).is_err());
+    list["accounts"] = json!(vec![json!({"id":"one","username":"user"}); 65]);
+    assert!(validate_event(&list).is_err());
 }
 
 #[test]
@@ -991,7 +1022,10 @@ fn oversized_favicon_dimensions_cannot_wrap_into_valid_sizes() {
         let mut event = json!({"event":"favicon", "width":1, "height":1,
             "png":"AA==", "page_url":"https://example.test"});
         event[key] = json!(u64::from(u32::MAX) + 2);
-        assert!(decode_event(&event).is_none(), "oversized {key} was truncated");
+        assert!(
+            decode_event(&event).is_none(),
+            "oversized {key} was truncated"
+        );
     }
 }
 
@@ -1001,9 +1035,14 @@ fn download_byte_counts_reject_fractional_and_out_of_range_values() {
         "path":"", "name":"fixture", "url":"https://example.test/file",
         "retryable":true, "received":12.0, "total":100.0, "error":""});
     assert!(validate_event(&base).is_ok());
-    assert!(matches!(decode_event(&base), Some(WebViewEvent::DownloadUpdated {
-        received:12, total:100, ..
-    })));
+    assert!(matches!(
+        decode_event(&base),
+        Some(WebViewEvent::DownloadUpdated {
+            received: 12,
+            total: 100,
+            ..
+        })
+    ));
     for key in ["received", "total"] {
         for invalid in [-1.0, 0.5, 18_446_744_073_709_551_616.0, 1e30] {
             let mut event = base.clone();
@@ -1022,7 +1061,10 @@ fn poisoned_command_queue_fails_closed_without_panicking() {
         panic!("synthetic queue failure");
     }));
     assert!(poison.is_err());
-    assert_eq!(queue.push(json!({"op":"navigate"})), Err("command channel poisoned"));
+    assert_eq!(
+        queue.push(json!({"op":"navigate"})),
+        Err("command channel poisoned")
+    );
     assert!(queue.pop().is_none());
     queue.close();
 }
@@ -1076,7 +1118,10 @@ fn poisoned_routes_still_notify_live_tabs_of_helper_failure() {
 #[test]
 fn favicon_base64_rejects_trailing_data_and_invalid_padding() {
     for invalid in ["AA==junk", "=AAA", "A", "AA=", "AB=="] {
-        assert!(decode_base64_bounded(invalid, 16).is_none(), "accepted {invalid}");
+        assert!(
+            decode_base64_bounded(invalid, 16).is_none(),
+            "accepted {invalid}"
+        );
     }
     assert_eq!(decode_base64_bounded("AA==", 1), Some(vec![0]));
     assert_eq!(decode_base64_bounded("AQID", 3), Some(vec![1, 2, 3]));
@@ -1086,7 +1131,10 @@ fn favicon_base64_rejects_trailing_data_and_invalid_padding() {
 
 #[test]
 fn poisoned_native_event_routes_return_error_instead_of_panicking() {
-    for event in [json!({"event":"closed","tab":1}), json!({"event":"download_runtime", "admitted":0,"detached":0,"accepting":true,"error":""})] {
+    for event in [
+        json!({"event":"closed","tab":1}),
+        json!({"event":"download_runtime", "admitted":0,"detached":0,"accepting":true,"error":""}),
+    ] {
         let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = routes.lock().unwrap();
@@ -1107,13 +1155,21 @@ fn poisoned_supervisor_slot_can_still_reap_its_child() {
         let _guard = slot.lock().unwrap();
         panic!("synthetic supervisor slot failure");
     }));
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| take_supervisor_child(&slot)));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        take_supervisor_child(&slot)
+    }));
     if result.is_err() {
-        if let Some(mut child) = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        if let Some(mut child) = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = child.wait();
         }
     }
-    let mut child = result.expect("taking supervisor child panicked").expect("child was lost");
+    let mut child = result
+        .expect("taking supervisor child panicked")
+        .expect("child was lost");
     assert!(child.wait().unwrap().success());
     assert!(take_supervisor_child(&slot).is_none());
 }
@@ -1128,6 +1184,9 @@ fn poisoned_new_tab_queue_preserves_already_admitted_requests() {
         requests.push_back(("https://example.test".into(), true));
         panic!("synthetic new-tab queue failure");
     }));
-    assert_eq!(engine.take_new_tab_requests(), vec![("https://example.test".into(), true)]);
+    assert_eq!(
+        engine.take_new_tab_requests(),
+        vec![("https://example.test".into(), true)]
+    );
     assert!(engine.take_new_tab_requests().is_empty());
 }

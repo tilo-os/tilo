@@ -278,7 +278,10 @@ pub enum PillEdge {
 /// A small rounded "pill" with a label — used for ref decorations, badges,
 /// ahead/behind counts. The label is painted at `size`; the pill is
 /// [`pill_height`] tall. Returns the advance width consumed (pill + gap).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Git decoration pills expose position, text size and label, foreground/background colors, and edge style beside render context."
+)]
 pub fn pill(
     scene: &mut Scene,
     tr: &mut TextRenderer,

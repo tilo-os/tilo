@@ -866,7 +866,10 @@ impl PeerSyncOverlay {
         y
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Invite-body variants share render context, card geometry, padding, vertical cursor, text sizes, and available width."
+    )]
     fn draw_body(
         &mut self,
         scene: &mut Scene,
@@ -1117,7 +1120,10 @@ impl PeerSyncOverlay {
         y + f64::from(body) + 10.0
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Invite choices paint from render context, bounds, label, selected state, and text size while registering a specific button action."
+    )]
     fn draw_choice(
         &mut self,
         scene: &mut Scene,
@@ -1134,9 +1140,12 @@ impl PeerSyncOverlay {
         // Selector role (HIG §9.3): the chosen recipient or role is a lift
         // with the tier's hairline, never an accent fill (the accent means
         // live state, §9.4); idle choices rest on the lift floor.
-        let tier =
-            ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(selected));
-        let fill = if selected { tier.fill } else { colors.lift(0.35) };
+        let tier = ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(selected));
+        let fill = if selected {
+            tier.fill
+        } else {
+            colors.lift(0.35)
+        };
         let radius = rect.height() / 2.0;
         let shape = RoundedRect::from_rect(rect, radius);
         scene.fill(Fill::NonZero, transform, fill, None, &shape);
@@ -1356,7 +1365,10 @@ fn elide_token(token: &str) -> String {
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Invite naming needs render context, field geometry and text sizes, typed name, recipient mode, and optional recipient identity."
+)]
 fn draw_naming(
     scene: &mut Scene,
     transform: Affine,
@@ -1466,7 +1478,10 @@ fn draw_naming(
     y + f64::from(body) + 10.0
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "An issued invite paints its recipient summary and fingerprint from render context, card geometry, token, and optional recipient name."
+)]
 fn draw_invite(
     scene: &mut Scene,
     transform: Affine,
@@ -1512,7 +1527,10 @@ fn draw_invite(
     y
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Receiving an invite uses render context, card geometry and text sizes, available width, and the pasted token to paint its parse state."
+)]
 fn draw_receiving(
     scene: &mut Scene,
     transform: Affine,
@@ -1589,7 +1607,10 @@ fn draw_receiving(
     y
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Invite-person rows combine render context and bounds with primary/secondary labels and named-versus-anonymous avatar state."
+)]
 fn draw_person(
     scene: &mut Scene,
     transform: Affine,
@@ -1686,7 +1707,10 @@ fn draw_code(
     field.y1
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Text elision accepts f32 widths; narrowing f64 overlay geometry may round subpixel precision without changing record or identity data."
+)]
 fn f64_to_f32(v: f64) -> f32 {
     v as f32
 }
@@ -1704,7 +1728,11 @@ mod tests {
             let ground = ui::chrome::shell::panel_ground(&theme);
             let floor = theme.tokens.colors.lift(0.35);
             for (what, edge, fill) in [
-                ("panel border", ui::chrome::shell::panel_border(&theme), ground),
+                (
+                    "panel border",
+                    ui::chrome::shell::panel_border(&theme),
+                    ground,
+                ),
                 ("row card", ui::surface::edge_on(floor), floor),
             ] {
                 let delta = ui::surface::edge_delta(edge, fill);

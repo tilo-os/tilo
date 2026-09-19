@@ -525,13 +525,23 @@ impl ConnectModal {
         // actions sit one `s6` group step under the last field instead of
         // floating at the bottom of a fixed-height panel (HIG §7b).
         let sp = &theme.tokens.spacing;
-        let field_rows = if self.engine == Engine::Sqlite { 2.0 } else { 4.0 };
+        let field_rows = if self.engine == Engine::Sqlite {
+            2.0
+        } else {
+            4.0
+        };
         let note_h = if self.engine == Engine::Sqlite {
             0.0
         } else {
             f64::from(sp.s6)
         };
-        let ph = 20.0 + 36.0 + 48.0 + field_rows * 56.0 + note_h + f64::from(sp.s6) + 32.0
+        let ph = 20.0
+            + 36.0
+            + 48.0
+            + field_rows * 56.0
+            + note_h
+            + f64::from(sp.s6)
+            + 32.0
             + f64::from(sp.s4);
         let px = root.x0 + (root.width() - pw) / 2.0;
         let py = root.y0 + (root.height() - ph) / 2.0;
@@ -584,7 +594,10 @@ impl ConnectModal {
     }
 
     /// Engine selector segmented control. Returns the Y position beneath it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "engine selector painting shares the render context and the panel origin, width and row position"
+    )]
     fn draw_engine_selector(
         &mut self,
         scene: &mut Scene,
@@ -636,7 +649,10 @@ impl ConnectModal {
 
     /// The engine-dependent field set (`SQLite` file path, or the network
     /// host/port/db/user/password rows). Returns the Y position beneath it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "connection field painting shares the render context and panel geometry across engine-specific rows"
+    )]
     fn draw_fields(
         &mut self,
         scene: &mut Scene,

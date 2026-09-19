@@ -315,7 +315,10 @@ impl ColorPicker {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The color picker paints the saturation/value square and hue strip from shared bounds, size, palette, and current HSV selection."
+    )]
     fn draw_sv_hue(
         &mut self,
         scene: &mut Scene,

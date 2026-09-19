@@ -155,7 +155,10 @@ impl Sidebar {
         self.collapsed = !self.collapsed;
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "sidebar chrome combines paint context, window/content/detail bounds, view-switcher placement and pointer hover"
+    )]
     pub(crate) fn draw_chrome(
         &self,
         scene: &mut Scene,

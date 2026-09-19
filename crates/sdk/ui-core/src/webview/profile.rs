@@ -188,16 +188,17 @@ pub fn record_resize(width: u32, height: u32, scale_factor: f32) {
         return;
     }
     if let Some(n) = next_resize_trace(&RESIZE_COUNT) {
-        eprintln!(
-            "[webview-profile] resize #{n} {width}x{height} scale {scale_factor:.2}"
-        );
+        eprintln!("[webview-profile] resize #{n} {width}x{height} scale {scale_factor:.2}");
     }
 }
 
 fn next_resize_trace(counter: &std::sync::atomic::AtomicU64) -> Option<u64> {
-    counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-        (n < TRACE_FRAMES).then(|| n.saturating_add(1))
-    }).ok().map(|n| n.saturating_add(1))
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            (n < TRACE_FRAMES).then(|| n.saturating_add(1))
+        })
+        .ok()
+        .map(|n| n.saturating_add(1))
 }
 
 #[cfg(test)]
@@ -242,7 +243,8 @@ impl State {
             dims = self.dims_changes,
         );
         self.intervals_ms.report("frame interval (ms)");
-        self.latency_ms.report("input→next-frame, uncorrelated (ms)");
+        self.latency_ms
+            .report("input→next-frame, uncorrelated (ms)");
         self.swizzle_us.report("SHM swizzle (us)");
     }
 }

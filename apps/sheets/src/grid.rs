@@ -2800,7 +2800,10 @@ pub(crate) fn reference_color(slot: usize) -> Color {
 /// scene space so the caller can draw a matching caret; otherwise the return
 /// is the x just past the text. Only strings beginning with `=` are scanned
 /// for references — a plain value is drawn entirely in `base_color`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "formula painting keeps renderer inputs, text style, origin and optional character caret explicit for reference coloring"
+)]
 pub(crate) fn draw_formula_line(
     scene: &mut Scene,
     transform: Affine,
