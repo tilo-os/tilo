@@ -82,6 +82,18 @@ class ChannelReaderTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 self.select(raw, policy=dict(self.policy, **{key: value}))
 
+    def test_canonical_policy_requires_matching_backend_and_binary_identities(self):
+        hashes = {'tilo_pkg_sha256': '7' * 64, 'tilo_runtime_bundle_sha256': '8' * 64}
+        policy = dict(self.policy, canonical_binaries=hashes)
+        receipt = self.published()
+        with self.assertRaises(ValueError):
+            self.select(self.manifest(receipt), policy=policy)
+        receipt['verification'].update(backend='canonical-cli-v1', canonical_binaries=hashes)
+        self.assertTrue(self.select(self.manifest(receipt), policy=policy)['usable_for_download'])
+        receipt['verification']['canonical_binaries'] = dict(hashes, tilo_pkg_sha256='9' * 64)
+        with self.assertRaises(ValueError):
+            self.select(self.manifest(receipt), policy=policy)
+
     def test_uploader_receipt_must_match_archive_and_trusted_digest(self):
         raw = encode(dict(self.upload, sha256='0' * 64))
         with self.assertRaisesRegex(ValueError, 'does not match verified archive'):

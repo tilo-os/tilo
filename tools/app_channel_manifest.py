@@ -99,7 +99,8 @@ def archive_matches_tree(archive, tree):
     require(all(sha(tree / name) == value for name, value in checks.items()), 'collection checksum mismatch')
 
 
-def create_receipt(archive, tree, archive_sha256, source_sha, architecture, policy, verifier_path, verifier_sha256, audit_only=False):
+def create_receipt(archive, tree, archive_sha256, source_sha, architecture, policy, verifier_path, verifier_sha256, audit_only=False,
+                   canonical_binaries=None):
     require(architecture in ARCHES, 'unsupported architecture')
     digest(source_sha, 40)
     require(sha(archive) == digest(archive_sha256), 'archive digest mismatch')
@@ -109,6 +110,8 @@ def create_receipt(archive, tree, archive_sha256, source_sha, architecture, poli
     spec = importlib.util.spec_from_file_location('trusted_app_artifact_verifier', verifier_path)
     verifier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(verifier)
+    if canonical_binaries is not None:
+        verifier = verifier.CanonicalVerifier(*canonical_binaries, policy)
     apps_trusted, runtime_trusted = trusted_keys(policy)
     index = read_json((tree / 'index.json').read_bytes())
     require(index['format'] == 1 and index['source'] == source_sha and index['architecture'] == architecture,
@@ -142,6 +145,8 @@ def create_receipt(archive, tree, archive_sha256, source_sha, architecture, poli
             'verification': {'verifier_sha256': verifier_sha256, 'package_identity': 'blake3-ed25519-signed-root-v1',
                              'runtime_identity': 'blake3-ed25519-runtime-bundle-v1'},
             'publication': {'status': 'unpublished'}}
+    if canonical_binaries is not None:
+        result['verification'].update(backend='canonical-cli-v1', canonical_binaries=verifier.binary_hashes)
     if audit_only:
         result.update(schema='tilo.app-collection-audit/v1', compatibility_issues=compatibility_issues,
                       compatible=not compatibility_issues, cryptographic_integrity_verified=True)
@@ -166,6 +171,9 @@ def validate_receipt(receipt, architecture, policy, require_published=True):
     require(digest(verification['verifier_sha256']) == digest(policy['verifier_sha256']), 'unapproved verifier identity')
     require(verification['package_identity'] == 'blake3-ed25519-signed-root-v1'
             and verification['runtime_identity'] == 'blake3-ed25519-runtime-bundle-v1', 'unsupported verification identity')
+    if 'canonical_binaries' in policy:
+        require(verification.get('backend') == 'canonical-cli-v1' and verification.get('canonical_binaries') == policy['canonical_binaries'],
+                'canonical verification identity mismatch')
     names, app_ids = set(), set()
     for app in receipt['packages']:
         require(app['file'] not in names and re.fullmatch('[A-Za-z0-9][A-Za-z0-9._+-]*-' + architecture + r'\.qpkg', app['file']), 'package architecture/inventory mismatch')
@@ -231,6 +239,8 @@ def main():
     create.add_argument('--upload-receipt', type=Path)
     create.add_argument('--upload-receipt-sha256')
     create.add_argument('--audit-only', action='store_true', help='produce non-consumable compatibility audit, never a publication receipt')
+    create.add_argument('--pkg-binary', type=Path, help='use canonical CLI adapter with this hash-pinned tilo-pkg binary')
+    create.add_argument('--runtime-binary', type=Path)
     for name in ('select', 'inspect-candidate'):
         command = commands.add_parser(name)
         command.add_argument('--manifest', type=Path, required=True)
@@ -240,8 +250,10 @@ def main():
     args = parser.parse_args()
     policy = read_json(args.trust_policy.read_bytes())
     if args.command == 'create-receipt':
+        require(bool(args.pkg_binary) == bool(args.runtime_binary), 'both canonical verifier binaries are required')
         result = create_receipt(args.archive, args.tree, args.archive_sha256, args.source_sha, args.architecture,
-                                policy, args.verifier, args.verifier_sha256, audit_only=args.audit_only)
+                                policy, args.verifier, args.verifier_sha256, audit_only=args.audit_only,
+                                canonical_binaries=(args.pkg_binary, args.runtime_binary) if args.pkg_binary else None)
         require(bool(args.upload_receipt) == bool(args.upload_receipt_sha256), 'uploader receipt and trusted digest required together')
         if args.upload_receipt:
             require(not args.audit_only, 'audit cannot be promoted to publication receipt')
