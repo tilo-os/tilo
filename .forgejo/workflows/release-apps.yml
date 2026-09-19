@@ -28,6 +28,7 @@ on:
       - "tools/canonical_app_verifier.py"
       - "tools/create_app_receipt.py"
       - "tools/final_app_receipt.py"
+      - "tools/assemble_verified_apps.py"
       - "tools/resolve_ci_builder.py"
       - "tools/assemble_app_collection.py"
       - "dist/apps/assemble-collection.sh"
@@ -310,12 +311,12 @@ jobs:
             --signers dist/app-release/work/receipt-signers.json \
             --source-sha "$GITHUB_SHA" --architecture "$RECEIPT_ARCH"
       - name: Stage native canonical tools for final receipt qualification
-        if: github.event.inputs.verify_final_receipt == 'true'
+        if: github.event.inputs.verify_final_receipt == 'true' || github.event.inputs.coordinator_intent != ''
         run: |
           mkdir -p dist/canonical-verifiers
           cp target/release/tilo-pkg target/release/tilo-runtime-bundle dist/canonical-verifiers/
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: github.event.inputs.verify_final_receipt == 'true'
+        if: github.event.inputs.verify_final_receipt == 'true' || github.event.inputs.coordinator_intent != ''
         with:
           name: canonical-verifiers-${{ matrix.arch }}
           path: dist/canonical-verifiers/*
@@ -334,6 +335,80 @@ jobs:
       - name: Report compiler-cache effectiveness
         if: always()
         run: bash tools/ci-sccache.sh report || true
+
+  qualify-collection:
+    # Coordinator guard keeps this qualification disabled; no publisher OIDC.
+    if: github.event.inputs.coordinator_intent != '' && needs.plan.outputs.publish == 'false' && needs.build.result == 'success'
+    needs: [plan, build]
+    runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.plan.outputs.builder_image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release
+      - name: Assemble and verify without publication
+        env:
+          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}
+          FINAL_RECEIPT_POLICY: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY }}
+          FINAL_RECEIPT_POLICY_SHA256: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256 }}
+          COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
+          COORDINATOR_POLICY_SHA256: ${{ github.event.inputs.coordinator_policy_sha256 }}
+          BASELINE_EVIDENCE: ${{ github.event.inputs.baseline_evidence }}
+          BASELINE_RECEIPT_SHA256: ${{ github.event.inputs.baseline_receipt_sha256 }}
+          BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
+          BUILDER_IMAGE: ${{ needs.plan.outputs.builder_image }}
+          COLLECTION: ${{ needs.plan.outputs.collection }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+        run: |
+          set -euo pipefail
+          policy="$RUNNER_TEMP/final-policy.json"
+          printf '%s' "$FINAL_RECEIPT_POLICY" > "$policy"
+          baseline="$RUNNER_TEMP/baseline-proof.json"
+          printf '%s' "$BASELINE_EVIDENCE" > "$baseline"
+          plan="$RUNNER_TEMP/final-collection-plan.json"
+          python3 tools/app_release.py --collection "$COLLECTION" > "$plan"
+          native_arch=$(uname -m)
+          tools="release/canonical-verifiers-$native_arch"
+          chmod +x "$tools/tilo-pkg" "$tools/tilo-runtime-bundle"
+          while read -r arch; do
+            python3 tools/assemble_verified_apps.py \
+              --built "release/tilo-apps-$arch" --plan "$plan" \
+              --output "dist/qualified-apps/$arch" --work "$RUNNER_TEMP/qualified-apps-$arch" \
+              --pkg-binary "$tools/tilo-pkg" --runtime-binary "$tools/tilo-runtime-bundle" \
+              --trust-policy "$policy" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" \
+              --source-sha "$GITHUB_SHA" --builder-image "$BUILDER_IMAGE" \
+              --collection "$COLLECTION" --architecture "$arch" --intent "$COORDINATOR_INTENT" \
+              --run-id "$GITHUB_RUN_ID" --source-epoch "$(git log -1 --format=%ct)" \
+              --coordinator-policy-sha256 "$COORDINATOR_POLICY_SHA256" \
+              --baseline-proof "$baseline" --baseline-proof-sha256 "$BASELINE_RECEIPT_SHA256" \
+              --baseline-source "$BASELINE_SHA"
+          done < <(jq -r '.include[].arch' <<< "$MATRIX")
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: contains(github.event.inputs.architectures, 'x86_64')
+        with:
+          name: final-app-collection-x86_64
+          path: |
+            dist/qualified-apps/x86_64/tilo-apps-x86_64.tar.gz
+            dist/qualified-apps/x86_64/final-publication-receipt.json
+            dist/qualified-apps/x86_64/assembly-provenance.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: contains(github.event.inputs.architectures, 'aarch64')
+        with:
+          name: final-app-collection-aarch64
+          path: |
+            dist/qualified-apps/aarch64/tilo-apps-aarch64.tar.gz
+            dist/qualified-apps/aarch64/final-publication-receipt.json
+            dist/qualified-apps/aarch64/assembly-provenance.json
+          if-no-files-found: error
 
   publish:
     if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
