@@ -3992,7 +3992,7 @@ impl App {
             Err(tilo_actions::DoorError::ConfirmationRequired) => {
                 self.open_action_palette();
                 if let Some(palette) = self.action_palette.as_mut() {
-                    palette.activate_bound(target);
+                    palette.activate_bound_with_arguments(target, &intent.arguments);
                 }
                 true
             }
@@ -4046,7 +4046,13 @@ impl App {
                     &intent.address,
                     &Err(tilo_actions::DoorError::ConfirmationRequired),
                 );
-                let _ = self.open_action_palette_at(&intent.address);
+                self.open_action_palette();
+                let activated = self.action_palette.as_mut().is_some_and(|palette| {
+                    palette.activate_address_with_arguments(&intent.address, &intent.arguments)
+                });
+                if !activated {
+                    self.close_action_palette();
+                }
                 dispatched = dispatched.saturating_add(1);
                 continue;
             }
@@ -14545,6 +14551,39 @@ mod semantic_tree_app_tests {
             vec![Err(tilo_actions::DoorError::ConfirmationRequired)]
         );
         assert!(host.action_palette().is_some());
+    }
+
+    #[test]
+    fn confirmed_control_preserves_captured_arguments_through_palette_dispatch() {
+        let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
+        probe.confirmation = true;
+        probe.typed_text = true;
+        observed.enqueue_text("run", "captured before confirmation");
+        let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
+
+        assert_eq!(host.dispatch_control_invocations(), 1);
+        assert!(
+            host.action_palette()
+                .is_some_and(crate::action_palette::ActionPalette::in_argument_mode),
+            "captured arguments enter confirmation directly"
+        );
+        assert!(observed.payloads.borrow().is_empty());
+
+        for character in "CONFIRM".chars() {
+            let mut event = action_palette_tests::synth_enter();
+            if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+                let text = winit::keyboard::SmolStr::new(character.to_string());
+                event.logical_key = Key::Character(text.clone());
+                event.text = Some(text);
+            }
+            assert!(host.action_palette_handle_key(&event));
+        }
+        assert!(host.action_palette_handle_key(&action_palette_tests::synth_enter()));
+        assert_eq!(
+            observed.payloads.borrow().as_slice(),
+            ["captured before confirmation"],
+            "confirmation dispatches the original intent arguments"
+        );
     }
 
     #[test]

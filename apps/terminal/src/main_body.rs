@@ -21,7 +21,9 @@ use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
+use ui::tilo_actions::{
+    ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource, RetryPolicy,
+};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -589,6 +591,7 @@ pub struct TerminalWidget {
     /// the chosen row's label ourselves (mirrors `TextInput`).
     context_menu: ContextMenu,
     find_menu_index: Option<usize>,
+    menu_paste_index: Option<usize>,
     menu_effects: HashMap<usize, ui::widget::ActionEmitter<()>>,
     allowed_menu_actions: Option<HashSet<ui::tilo_actions::ActionAddress>>,
     /// Keyboard and pointer gestures enqueue the same typed invocations as
@@ -800,6 +803,7 @@ impl TerminalWidget {
             select_to_copy: false,
             context_menu: ContextMenu::new(),
             find_menu_index: None,
+            menu_paste_index: None,
             menu_effects: HashMap::new(),
             allowed_menu_actions: None,
             gesture_effects: VecDeque::new(),
@@ -1161,8 +1165,6 @@ impl TerminalWidget {
         for (id, label) in [
             ("interrupt", "Interrupt process"),
             ("clear", "Clear screen"),
-            ("paste", "Paste"),
-            ("paste-primary", "Paste primary selection"),
         ] {
             if let Ok(spec) =
                 ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
@@ -1173,6 +1175,39 @@ impl TerminalWidget {
                 }
                 terminal.actions.push(control);
             }
+        }
+        for (id, label) in [
+            ("paste", "Paste"),
+            ("paste-primary", "Paste primary selection"),
+        ] {
+            let mut paste = ActionSpec::typed_operation(
+                id,
+                label,
+                "text",
+                OperationKind::Effect,
+                "terminal.paste",
+                vec![ActionParam::required(
+                    "text",
+                    ParamType::Text,
+                    "Exact text to paste after confirmation",
+                )],
+                |args| {
+                    EncodedAction::encode_operation(
+                        "terminal.paste",
+                        &args.text("text").unwrap_or_default(),
+                    )
+                    .expect("a borrowed string always serializes")
+                },
+            )
+            .with_description(
+                "Pastes the exact supplied text; clipboard contents are never re-read after confirmation.",
+            )
+            .privileged()
+            .retry_policy(RetryPolicy::AtMostOnce);
+            if disconnected {
+                paste = paste.unavailable("session_disconnected", unavailable_reason);
+            }
+            terminal.actions.push(paste);
         }
         terminal.children.push(self.transcript_resource());
         terminal
@@ -2193,6 +2228,7 @@ impl Widget for TerminalWidget {
         &[
             "terminal.send",
             "terminal.run",
+            "terminal.paste",
             "terminal.control",
             "terminal.open-link",
         ]
@@ -2303,18 +2339,15 @@ impl Widget for TerminalWidget {
                 command.push(b'\r');
                 self.try_write_input(&command)?;
             }
+            "terminal.paste" => {
+                if kind != OperationKind::Effect {
+                    return Ok(false);
+                }
+                self.try_paste(&value)?;
+            }
             "terminal.control" => match (kind, value.as_str()) {
                 (OperationKind::Effect, "interrupt") => self.try_write_input(&[0x03])?,
                 (OperationKind::Effect, "clear") => self.try_write_input(&[0x0c])?,
-                (OperationKind::Effect, "paste") => {
-                    let text = clipboard_paste().ok_or("clipboard text is unavailable")?;
-                    self.try_paste(&text)?;
-                }
-                (OperationKind::Effect, "paste-primary") => {
-                    let text =
-                        clipboard_paste_primary().ok_or("primary selection text is unavailable")?;
-                    self.try_paste(&text)?;
-                }
                 (OperationKind::Effect, "copy-selection") => {
                     let text = self
                         .selected_text()
@@ -3472,9 +3505,13 @@ impl TerminalWidget {
         // currently-selected text (from any app), matching every
         // terminal. Snaps the viewport back to the live bottom.
         if self.grid_rect.contains(self.last_cursor_pos) {
-            if clipboard_paste_primary().is_some() {
+            if let Some(text) = clipboard_paste_primary() {
                 let session = self.session_resource();
-                self.queue_gesture_effect(&session, "paste-primary");
+                self.queue_gesture_effect(
+                    &session,
+                    "paste-primary",
+                    Self::paste_action_arguments(text),
+                );
             }
             *handled = true;
         }
@@ -3542,15 +3579,23 @@ impl TerminalWidget {
                     && !text.is_empty()
                 {
                     let transcript = self.transcript_resource();
-                    self.queue_gesture_effect(&transcript, "copy-selection");
+                    self.queue_gesture_effect(
+                        &transcript,
+                        "copy-selection",
+                        serde_json::Map::new(),
+                    );
                 }
                 *handled = true;
                 return;
             }
             if c.as_str().eq_ignore_ascii_case("v") {
-                if clipboard_paste().is_some() {
+                if let Some(text) = clipboard_paste() {
                     let session = self.session_resource();
-                    self.queue_gesture_effect(&session, "paste");
+                    self.queue_gesture_effect(
+                        &session,
+                        "paste",
+                        Self::paste_action_arguments(text),
+                    );
                 }
                 *handled = true;
                 return;
@@ -3560,9 +3605,9 @@ impl TerminalWidget {
         // (especially useful over remote-desktop/keymaps where Ctrl+Shift+V is
         // intercepted). It uses the same bracketed-paste-safe path.
         if mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::Insert)) {
-            if clipboard_paste().is_some() {
+            if let Some(text) = clipboard_paste() {
                 let session = self.session_resource();
-                self.queue_gesture_effect(&session, "paste");
+                self.queue_gesture_effect(&session, "paste", Self::paste_action_arguments(text));
             }
             *handled = true;
             return;
@@ -4859,11 +4904,13 @@ impl TerminalWidget {
         let mut menu = ContextMenu::new();
         menu.set_platform_conventions(self.conventions);
         self.menu_effects.clear();
+        self.menu_paste_index = None;
         let session = self.session_resource();
         let transcript = self.transcript_resource();
         if has_selection {
             self.push_menu_effect(&mut menu, "Copy", &transcript, "copy-selection");
         }
+        self.menu_paste_index = Some(menu.items().len());
         self.push_menu_effect(&mut menu, "Paste", &session, "paste");
         menu.push(MenuItem::separator());
         if !self.grid_is_blank() {
@@ -4923,8 +4970,9 @@ impl TerminalWidget {
                 if let Some(allowed) = &self.allowed_menu_actions {
                     emitter.refresh_availability(allowed);
                 }
+                let index = menu.items().len();
                 let available = emitter.is_available();
-                self.menu_effects.insert(menu.items().len(), emitter);
+                self.menu_effects.insert(index, emitter);
                 menu.push(MenuItem::action(label, || {}).with_enabled(available));
             }
             Err(error) => tracing::error!(%error, action_id, "terminal menu binding failed"),
@@ -4935,7 +4983,12 @@ impl TerminalWidget {
     /// contract. The invocation is still re-authorized by the host when it is
     /// drained, so a role change between input and confirmation cannot race a
     /// PTY or clipboard effect.
-    fn queue_gesture_effect(&mut self, resource: &Resource, action_id: &str) -> bool {
+    fn queue_gesture_effect(
+        &mut self,
+        resource: &Resource,
+        action_id: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> bool {
         let Some(spec) = resource.actions.iter().find(|spec| spec.id == action_id) else {
             tracing::error!(
                 action_id,
@@ -4944,7 +4997,7 @@ impl TerminalWidget {
             return false;
         };
         let Ok(binding) =
-            ui::tilo_actions::ActionBinding::new(resource, spec, |()| serde_json::Map::new())
+            ui::tilo_actions::ActionBinding::new(resource, spec, move |()| arguments.clone())
         else {
             tracing::error!(action_id, "terminal gesture binding failed");
             return false;
@@ -4970,6 +5023,10 @@ impl TerminalWidget {
         true
     }
 
+    fn paste_action_arguments(text: String) -> serde_json::Map<String, serde_json::Value> {
+        serde_json::Map::from_iter([("text".to_string(), serde_json::Value::String(text))])
+    }
+
     /// Open the terminal's shared context menu at a host-owned logical
     /// position. This is useful for embedders that route a context-menu
     /// gesture themselves (touch long-press, keyboard invocation, or a custom
@@ -4980,6 +5037,13 @@ impl TerminalWidget {
     }
 
     fn activate_context_menu_item(&mut self, index: usize) {
+        if self.menu_paste_index == Some(index) {
+            if let Some(text) = clipboard_paste() {
+                let session = self.session_resource();
+                self.queue_gesture_effect(&session, "paste", Self::paste_action_arguments(text));
+            }
+            return;
+        }
         if let Some(emitter) = self.menu_effects.get_mut(&index) {
             if let Err(error) = emitter.emit(()) {
                 tracing::warn!(%error, "terminal menu action could not be queued");

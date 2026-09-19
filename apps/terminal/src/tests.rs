@@ -1029,6 +1029,10 @@ fn paste_shortcuts_queue_the_same_canonical_confirmed_action() {
         assert_eq!(intent.address.action, "paste");
         let resources = widget.resources(&doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
+        assert_eq!(spec.params.len(), 1);
+        assert_eq!(spec.params[0].name.as_ref(), "text");
+        assert!(spec.params[0].required);
+        assert!(spec.build_json(&serde_json::Map::new()).is_err());
         assert_eq!(
             spec.contract.confirmation,
             ui::tilo_actions::ConfirmationPolicy::Confirm
@@ -1641,6 +1645,11 @@ fn confirmed_paste_shortcut_rechecks_live_role_before_writing_to_the_pty() {
         .expect("shortcut queues the canonical paste action");
     assert_eq!(intent.address.action, "paste");
     assert!(drain_writes(&writes).is_empty());
+    ui::clipboard_copy("substituted after shortcut intent");
+    assert_eq!(
+        ui::clipboard_paste().as_deref(),
+        Some("substituted after shortcut intent")
+    );
 
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("state");
@@ -2646,6 +2655,50 @@ fn denied_terminal_menu_rows_are_disabled_while_local_rows_remain_usable() {
 }
 
 #[test]
+#[serial_test::serial]
+fn menu_paste_executes_the_text_captured_when_the_row_was_selected() {
+    use ui::a11y::Action;
+
+    ui::clipboard_copy("menu snapshot");
+    assert_eq!(ui::clipboard_paste().as_deref(), Some("menu snapshot"));
+    let (mut widget, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    widget.open_context_menu_at(vello::kurbo::Point::new(20.0, 20.0));
+    let paste_target = widget
+        .accessibility()
+        .unwrap()
+        .children
+        .into_iter()
+        .find(|node| node.role == ui::a11y::Role::Menu)
+        .unwrap()
+        .children
+        .into_iter()
+        .find(|node| node.name.as_deref() == Some("Paste"))
+        .and_then(|node| node.action_target)
+        .unwrap();
+    assert!(widget.perform_semantic_action(&paste_target, &Action::Activate, &mut doc, &ROOT,));
+    let intent = widget
+        .take_control_invocation()
+        .expect("menu paste queues its captured canonical intent");
+
+    ui::clipboard_copy("menu substitution");
+    let resources = widget.resources(&doc);
+    let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
+    let encoded = spec.build_json(&intent.arguments).unwrap();
+    assert!(
+        widget
+            .invoke_resource_operation(spec.kind, &encoded.type_id, &encoded.payload, &doc, &ROOT,)
+            .unwrap()
+    );
+    assert_eq!(
+        drain_writes(&writes),
+        b"menu snapshot",
+        "menu confirmation cannot substitute later clipboard contents"
+    );
+}
+
+#[test]
 fn context_menu_clamps_to_top_when_taller_than_viewport() {
     use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
     use vello::{
@@ -3411,6 +3464,17 @@ fn middle_click_queues_the_canonical_confirmed_primary_paste_action() {
     assert_eq!(
         spec.contract.confirmation,
         ui::tilo_actions::ConfirmationPolicy::Confirm
+    );
+    ui::clipboard_copy_primary("SUBSTITUTED");
+    let encoded = spec.build_json(&intent.arguments).unwrap();
+    assert!(
+        w.invoke_resource_operation(spec.kind, &encoded.type_id, &encoded.payload, &doc, &ROOT)
+            .unwrap()
+    );
+    assert_eq!(
+        drain_writes(&write_rx),
+        b"PASTED",
+        "execution uses the primary-selection text captured before confirmation"
     );
 }
 
