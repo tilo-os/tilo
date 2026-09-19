@@ -5,6 +5,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workflows="$repo/.forgejo/workflows"
+cosign_action="$repo/.forgejo/actions/install-cosign/action.yml"
 fail=0
 
 if grep -Rqs --include='*.yml' --include='*.yaml' --include='*.env' \
@@ -193,14 +194,20 @@ for arch in amd64 arm64; do
     fail=1
   fi
 done
+if ! grep -Fq './os/dev/install-cached-cosign.sh' "$cosign_action" \
+  || ! grep -Fq 'key: cosign-v2.5.2-${{ inputs.cache-architecture }}-' "$cosign_action" \
+  || ! grep -Fq 'uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684' "$cosign_action" \
+  || ! grep -Fq 'uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684' "$cosign_action"; then
+  printf 'shared Cosign action bypasses verified installation or persistent caching\n' >&2
+  fail=1
+fi
 for workflow in "${cosign_workflows[@]}"; do
-  if ! grep -Fq './os/dev/install-cached-cosign.sh' "$workflow"; then
-    printf 'workflow bypasses the checksum-verified Cosign cache: %s\n' \
-      "${workflow#$repo/}" >&2
-    fail=1
+  if grep -Fq 'uses: ./.forgejo/actions/install-cosign' "$workflow"; then
+    continue
   fi
-  if ! grep -Eq 'github-assets-all-v1-|cosign-v2\.5\.2-' "$workflow"; then
-    printf 'Cosign workflow has no persistent binary cache: %s\n' \
+  if ! grep -Fq './os/dev/install-cached-cosign.sh' "$workflow" \
+    || ! grep -Fq 'github-assets-all-v1-' "$workflow"; then
+    printf 'workflow bypasses cached, checksum-verified Cosign installation: %s\n' \
       "${workflow#$repo/}" >&2
     fail=1
   fi

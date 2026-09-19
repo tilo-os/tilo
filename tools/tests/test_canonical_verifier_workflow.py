@@ -39,11 +39,12 @@ class VerifierWorkflowTests(unittest.TestCase):
         self.assertIn('persist-credentials: false', bundle_job)
         self.assertIn('if-no-files-found: error', source)
         self.assertIn('retention-days: 14', source)
-        self.assertIn('python3 -I tools/ci_python.py tools/canonical_verifier_bundle.py produce', source)
+        self.assertIn('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py produce', source)
 
     def run_fixture(self, root, *, head_ok=True, arch_ok=True, compile_ok=True):
         (root / 'tools').mkdir()
-        for name in ('ci_python.py', 'canonical_verifier_bundle.py', 'canonical_app_verifier.py', 'app_channel_manifest.py'):
+        (root / 'tools/ci').mkdir()
+        for name in ('ci/python.py', 'canonical_verifier_bundle.py', 'canonical_app_verifier.py', 'app_channel_manifest.py'):
             shutil.copyfile(ROOT / 'tools' / name, root / 'tools' / name)
         def git(*args):
             return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()

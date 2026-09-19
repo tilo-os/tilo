@@ -35,7 +35,7 @@ jobs:
         env:
           REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-        run: python3 -I tools/ci_python.py tools/resolve_ci_builder.py
+        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py
 
   bundle:
     needs: builder
@@ -71,7 +71,7 @@ jobs:
       - name: Restore Cargo downloads
         uses: ./.forgejo/actions/restore-cargo-downloads
       - name: Configure optional compiler cache
-        run: bash tools/ci-sccache.sh prepare
+        run: bash tools/ci/sccache.sh prepare
       - name: Build and bundle only canonical verifier tools
         shell: bash
         run: |
@@ -83,7 +83,7 @@ jobs:
           target/release/tilo-runtime-bundle --help >/dev/null
           mkdir -p target/verifier-bundle target/verifier-repeat
           for directory in target/verifier-bundle target/verifier-repeat; do
-            python3 -I tools/ci_python.py tools/canonical_verifier_bundle.py produce \
+            python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py produce \
               --pkg-binary target/release/tilo-pkg \
               --runtime-binary target/release/tilo-runtime-bundle \
               --builder-image "$BUILDER_IMAGE" --source-sha "$GITHUB_SHA" \
@@ -102,4 +102,4 @@ jobs:
             target/verifier-bundle/${{ matrix.arch }}.tar.descriptor.json
       - name: Report optional compiler cache
         if: always()
-        run: bash tools/ci-sccache.sh report || true
+        run: bash tools/ci/sccache.sh report || true

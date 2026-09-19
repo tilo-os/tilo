@@ -136,14 +136,16 @@ baseline does not claim a downloadable release has been published.
    cases. The callback still requires fresh artifact provenance checks.
    The implemented zero-app path requires the trusted plan provenance above;
    it records handled work without advancing package/publication evidence.
-   Every plan-job Python helper runs through pinned `tools/ci_python.py` using
+   Every plan-job Python helper runs through pinned `tools/ci/python.py` using
    `python3 -I`. The launcher appends local tools after standard-library paths
    and prevents absent platform-specific standard modules from falling back to
    candidate files (for example, the Windows `msvcrt` probe on Linux),
    and uses a fresh private bytecode cache namespace, so candidate modules,
    `PYTHONPATH`/user site hooks and candidate `__pycache__` cannot replace those
    imports. The local import closure is plan → qualification → product →
-   coordinator/resolver, and app selector → ci_select; all are required pins.
+   coordinator/ci.resolve_builder, and app selector → ci.affected_packages;
+   the shared ci package initializer is also a required pin. All helper source
+   paths follow the tools/ci layout; no legacy duplicate files are installed.
    The immutable CI image remains trusted for its interpreter and system site.
    Cargo metadata also executes a toolchain: the policy pins
    `rust-toolchain.toml` and `.cargo/config.toml`. Source directory listings prove

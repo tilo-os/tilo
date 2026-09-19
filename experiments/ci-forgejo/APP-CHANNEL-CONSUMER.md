@@ -300,7 +300,7 @@ compatibility. The coordinator's trusted helper closure must include
 The bundle includes its frozen `canonical_app_verifier.py`; final verification loads
 that digest-checked copy rather than the candidate checkout's adapter. Qualification
 and publication helper commands run under the platform's isolated
-`python3 -I tools/ci_python.py tools/SCRIPT.py` launcher, with stdlib imports ahead of
+`python3 -I tools/ci/python.py tools/SCRIPT.py` launcher, with stdlib imports ahead of
 reviewed helper paths and no inherited PYTHONPATH. This commit depends on that
 launcher being integrated; it does not supply a second launcher implementation.
 

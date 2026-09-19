@@ -62,7 +62,7 @@ Single Cargo workspace, no submodules. Prefer explicit paths over `git add -A`.
 ## Build & Test
 
 Run plain `cargo`. The toolchain is pinned in `rust-toolchain.toml` and the whole workspace is
-edition 2024 — don't add a crate on an older edition. `tools/check-build-env.sh` names any
+edition 2024 — don't add a crate on an older edition. `tools/ci/check-build-env.sh` names any
 missing native library, which Rust otherwise reports as `pkg-config exited with status code 1`
 inside a `-sys` crate. How those libraries get there is per-machine and `DEVELOPMENT.md`'s
 business, not this file's.

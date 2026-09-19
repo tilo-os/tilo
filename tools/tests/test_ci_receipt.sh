@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-tool=$repo_root/tools/ci-receipt.sh
+tool=$repo_root/tools/ci/receipt.sh
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
