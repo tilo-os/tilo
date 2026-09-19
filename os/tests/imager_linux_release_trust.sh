@@ -95,8 +95,44 @@ printf '%s\n' "$fingerprint" >"$assets/release-key/tilo-release-key.fingerprint"
 (cd "$assets/release-key" && sha256sum tilo-release-key.fingerprint \
   >tilo-release-key.fingerprint.sha256)
 
-TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
+# Reproduce an agent socket disappearing between readdir and unlink in the
+# production cleanup. The wrapper leaves native GNU find in charge of deletion
+# and its exit status; only the concurrent removal is injected deterministically.
+cleanup_tools="$work/cleanup-tools"
+mkdir "$cleanup_tools"
+export TILO_TEST_REAL_FIND="$(command -v find)"
+export TILO_TEST_CLEANUP_RACE_LOG="$work/cleanup-race.log"
+cat >"$cleanup_tools/find" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == /var/tmp/tilo-imager-release-keyring.* && " $* " == *' -delete '* ]]; then
+  printf 'race\n' >>"$TILO_TEST_CLEANUP_RACE_LOG"
+  touch "$1/S.gpg-agent.ssh"
+  args=()
+  for arg in "$@"; do
+    if [ "$arg" = -delete ]; then
+      args+=(-exec python3 -c 'import os,sys; p=sys.argv[1]; os.unlink(p) if p.endswith("/S.gpg-agent.ssh") else None' '{}' ';')
+    fi
+    args+=("$arg")
+  done
+  "$TILO_TEST_REAL_FIND" "${args[@]}"
+  exit "${TILO_TEST_CLEANUP_FAILURE:-0}"
+fi
+exec "$TILO_TEST_REAL_FIND" "$@"
+EOF
+chmod 0700 "$cleanup_tools/find"
+PATH="$cleanup_tools:$PATH" TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
   | grep -Fq 'verified 9 Linux and installer artifacts'
+[ "$(cat "$TILO_TEST_CLEANUP_RACE_LOG")" = race ]
+if PATH="$cleanup_tools:$PATH" TILO_TEST_CLEANUP_FAILURE=23 \
+   TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
+   >"$work/cleanup-failure.out" 2>"$work/cleanup-failure.err"; then
+  printf 'cleanup failure unexpectedly passed\n' >&2; exit 1
+else
+  [ "$?" -eq 23 ]
+fi
+grep -Fq 'verified 9 Linux and installer artifacts' "$work/cleanup-failure.out"
+printf 'ok    vanished agent sockets are tolerated and other cleanup errors fail closed\n'
 
 # Upgrade the actual signed release fixture to a schema-2 board catalog.
 cp "$catalog" "$work/v1.json"
