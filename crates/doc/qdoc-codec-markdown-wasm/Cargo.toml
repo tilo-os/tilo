@@ -21,4 +21,4 @@ qdoc = { path = "../qdoc" }
 # Generated bindings for the host-facing WIT interface. Pinned to a
 # bindgen version known to target component-model 1.0.x; the host loads
 # the produced .wasm with wasmtime 46 via wasmtime::component::bindgen!.
-wit-bindgen = "0.36"
+wit-bindgen = "0.57"
