@@ -59,6 +59,30 @@ from run duration and the observed container pull-to-create interval. It does no
 sum parallel jobs into elapsed time or invent missing timestamps. Raw job logs and
 credentials are not written to the report; use `--input` for saved local fixtures.
 
+## Preview affected applications
+
+When an app packaging selection is surprising, inspect the existing selector
+without compiling or dispatching CI. From a branch with committed changes and
+an up-to-date `origin/main`:
+
+```sh
+python3 -I tools/ci/python.py tools/apps/app_release.py --base origin/main
+```
+
+The JSON lists selected apps, count and input classification. Selection includes
+apps that transitively depend on changed workspace crates; shared runtime,
+lockfile, toolchain or packaging changes can select the whole app fleet. This
+command needs the pinned Rust toolchain for `cargo metadata --locked --no-deps`.
+It compares committed Git revisions and does not include uncommitted edits.
+
+The selected list describes package output. Native packaging currently builds
+the full default Cargo graph even for a partial package selection, preserving
+the shared Rust runtime ABI; this preview does not promise fewer compile targets.
+
+A zero count means no app package is selected; check/lint and relevant tests
+still apply. Packaging automation compares against its last independently
+verified collection baseline, which can differ from this branch-to-main preview.
+
 ## Linux builds in WSL: keep the checkout on the Linux filesystem
 
 Use a separate Linux checkout under your WSL home directory for sustained Rust
