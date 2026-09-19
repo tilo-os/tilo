@@ -1037,7 +1037,10 @@ fn export_home_peer(
 /// Join a workspace as a durable, serving peer without a FUSE mount. The
 /// normal workspace router keeps the supplied live capability policy in front
 /// of its blob provider, so a home peer never becomes an unenforced source.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "replica startup is one ordered validation and service-lifetime sequence"
+)]
 async fn replica(config_path: PathBuf) -> Result<()> {
     let config_text = std::fs::read_to_string(&config_path)
         .with_context(|| format!("read home-peer bundle {}", config_path.display()))?;
@@ -1076,7 +1079,10 @@ async fn replica(config_path: PathBuf) -> Result<()> {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one workspace replica keeps its connected services and shutdown order explicit"
+)]
 async fn replica_workspace(
     bundle: HomePeerBundle,
     index: usize,
@@ -1294,7 +1300,10 @@ fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> [u8; 32] 
     *blake3::hash(&bytes).as_bytes()
 }
 
-#[allow(clippy::too_many_lines)] // Linear CLI assembly keeps resource lifetimes explicit.
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear CLI assembly keeps resource lifetimes explicit"
+)]
 async fn serve(
     mount_point: PathBuf,
     cache_dir: Option<PathBuf>,
@@ -1778,7 +1787,10 @@ fn initialize_owner_record_authority(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)] // Linear CLI assembly keeps resource lifetimes explicit.
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear CLI assembly keeps resource lifetimes explicit"
+)]
 async fn mount(
     mount_point: PathBuf,
     ticket: String,
@@ -1982,7 +1994,10 @@ impl SharedCredential {
     }
 }
 
-#[allow(clippy::too_many_lines)] // Shared-mount bootstrap is one ordered trust sequence.
+#[allow(
+    clippy::too_many_lines,
+    reason = "shared-mount bootstrap is one ordered trust sequence"
+)]
 async fn mount_share(
     mount_point: PathBuf,
     credential: SharedCredential,
@@ -2472,7 +2487,10 @@ impl SharedFetchError {
     }
 }
 
-#[allow(clippy::significant_drop_tightening)] // Registry update and persistence are one mutation.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "registry update and persistence are one mutation"
+)]
 fn track_shared_revision(
     availability: Option<&Arc<Mutex<fs::AvailabilityRegistry>>>,
     revision: collab_types::ContentRevisionV1,
@@ -2530,7 +2548,10 @@ async fn refresh_host_replica_observation(
     Ok(())
 }
 
-#[allow(clippy::significant_drop_tightening)] // The complete projection is namespace-atomic.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the complete projection is namespace-atomic"
+)]
 fn apply_shared_snapshot(
     namespace: &Arc<Mutex<Namespace>>,
     history: &FileHistoryStore,
@@ -2763,7 +2784,10 @@ fn open_history(cache_dir: Option<&Path>) -> Result<Option<Arc<FileHistoryStore>
 
 /// Atomically persist the namespace document and retain bounded known-good
 /// generations. A damaged primary is never overwritten by the live daemon.
-#[allow(clippy::significant_drop_tightening)] // Durable replacement is serialized with mutations.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "durable replacement is serialized with mutations"
+)]
 fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
     if let Err(error) = persist_namespace_generation(namespace, path) {
         eprintln!("namespace persist to {} failed: {error}", path.display());
@@ -2773,7 +2797,10 @@ fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
 /// Atomically persist one exact namespace generation and return its digest.
 /// A full-replica readiness proof is only published after this succeeds, so a
 /// ready NAS can always reopen the same namespace after a power loss.
-#[allow(clippy::significant_drop_tightening)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the namespace lock must cover snapshot encoding and durable replacement"
+)]
 fn persist_namespace_generation(
     namespace: &Arc<Mutex<Namespace>>,
     path: &Path,
@@ -2864,7 +2891,11 @@ async fn open_namespace_mount(
 }
 
 /// Mount the FUSE filesystem and run until interrupted (or the mount exits).
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // CLI assembly mirrors independent mount options.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "CLI assembly mirrors independent mount options and their ordered service lifetimes"
+)]
 async fn run_mount(
     mount_point: PathBuf,
     namespace: Arc<Mutex<Namespace>>,
@@ -3141,7 +3172,11 @@ mod tests {
 
     /// Files that ship in the OS image, addressed from this crate.
     fn os_file(rel: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(rel)
+        // This crate lives in crates/system/fs; shipped image inputs remain
+        // at the workspace root rather than alongside the relocated crate.
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join(rel)
     }
 
     /// The `ExecStart=` argv from the shipped unit, so the test proves the shipped image runs, not a copy.

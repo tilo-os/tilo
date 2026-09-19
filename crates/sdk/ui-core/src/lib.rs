@@ -120,6 +120,7 @@ pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange};
 pub mod text_assistance;
 pub mod text_break;
 pub use text_break::{LineBreakKind, line_break_opportunities};
+pub mod close_admission;
 pub mod reader_hud;
 pub mod record;
 pub mod render_thread;
