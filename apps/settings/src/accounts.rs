@@ -274,7 +274,7 @@ impl MailStore {
     pub const REL_PATH: &'static str = "mail/accounts.json";
 
     pub fn path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("mail").join("accounts.json"))
+        settings_store::config_path(std::path::Path::new("mail/accounts.json"))
     }
 
     pub fn to_json(&self) -> String {
@@ -366,12 +366,12 @@ pub struct DavStore {
 impl DavStore {
     /// The `CalDAV` (calendar) store path.
     pub fn calendar_path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("calendar").join("accounts.json"))
+        settings_store::config_path(std::path::Path::new("calendar/accounts.json"))
     }
 
     /// The `WebDAV` (files) store path.
     pub fn files_path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("files").join("accounts.json"))
+        settings_store::config_path(std::path::Path::new("files/accounts.json"))
     }
 
     pub fn to_json(&self) -> String {
@@ -467,7 +467,7 @@ pub struct NextcloudStore {
 
 impl NextcloudStore {
     pub fn path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("nextcloud").join("accounts.json"))
+        settings_store::config_path(std::path::Path::new("nextcloud/accounts.json"))
     }
 
     pub fn to_json(&self) -> String {

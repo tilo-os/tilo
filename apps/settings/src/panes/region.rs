@@ -28,7 +28,9 @@ use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_text_action};
 use crate::region::{
     Currency, DateStyle, FirstDayOfWeek, Measurement, NumberStyle, RegionSettings, TimeStyle,
 };
-use crate::widgets::{caption, card, choice_row, rows};
+use crate::widgets::{
+    caption, card, choice_row, choice_row_stacked, choice_rows_stack_below, rows,
+};
 
 pub const CURRENCY_KEY: &str = "region.currency";
 pub const DATE_KEY: &str = "region.date_format";
@@ -44,6 +46,10 @@ pub struct RegionPane {
     actions: ui::ActionHost,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
+    /// The content width the host expects to give this pane, for the first
+    /// frame (before `apply_layout` has recorded a rect) — a cold `--shots`
+    /// frame or a fresh navigation. After that the pane's own rect decides.
+    width_hint: Option<f32>,
 }
 
 impl Default for RegionPane {
@@ -67,14 +73,46 @@ impl RegionPane {
             actions: ui::ActionHost::new(),
             composed: None,
             rect: Rect::ZERO,
+            width_hint: None,
         }
+    }
+
+    /// Seed the width the pane composes for until its first `apply_layout`.
+    #[must_use]
+    pub fn with_width_hint(mut self, width: f32) -> Self {
+        self.width_hint = Some(width);
+        self
     }
 
     pub fn settings(&self) -> RegionSettings {
         self.settings
     }
 
+    /// The width the pane lays out for: its last allocated rect, else the
+    /// host's hint. `None` before either exists (compose for a wide pane).
+    fn layout_width(&self) -> Option<f32> {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a logical-pixel width comfortably representable by f32"
+        )]
+        let allocated = (self.rect.width() > 0.0).then_some(self.rect.width() as f32);
+        allocated.or(self.width_hint)
+    }
+
+    /// Whether the Formats card composes its choosers beneath their labels.
+    /// One decision for the whole card, so no row is left inline while its
+    /// neighbours wrap.
+    fn stack_choices(&self) -> bool {
+        self.layout_width()
+            .is_some_and(|width| width < choice_rows_stack_below())
+    }
+
     fn build_composition(&self) -> Box<dyn Widget> {
+        let choice: fn(&str, Box<dyn Widget>) -> Box<dyn Widget> = if self.stack_choices() {
+            choice_row_stacked
+        } else {
+            choice_row
+        };
         let loc = self.settings.locale;
 
         // Currency dropdown — options are ISO codes (the stored form).
@@ -131,12 +169,12 @@ impl RegionPane {
         let formats = card(
             "Formats",
             rows(vec![
-                choice_row("Currency", Box::new(currency)),
-                choice_row("Date format", Box::new(date)),
-                choice_row("Time format", Box::new(time)),
-                choice_row("Measurement", Box::new(units)),
-                choice_row("Number format", Box::new(number_style)),
-                choice_row("First day of week", Box::new(first_day)),
+                choice("Currency", Box::new(currency)),
+                choice("Date format", Box::new(date)),
+                choice("Time format", Box::new(time)),
+                choice("Measurement", Box::new(units)),
+                choice("Number format", Box::new(number_style)),
+                choice("First day of week", Box::new(first_day)),
             ]),
         );
 
@@ -216,10 +254,18 @@ impl RegionPane {
     }
 }
 
-pub fn build() -> Box<dyn Widget> {
+/// The Region & Formats pane, composed for the content width the host expects
+/// to allocate (`None` composes for a wide pane), so the first frame already
+/// lays the Formats card out for a phone-width screen (stacked choosers) or a
+/// wide one (label beside chooser).
+pub fn build_for_width(width_hint: Option<f32>) -> Box<dyn Widget> {
     // Under --shots / fresh installs, load() returns defaults; that's a
     // perfectly realistic populated state (USD / ISO / 24h / Metric).
-    Box::new(RegionPane::new())
+    let pane = RegionPane::new();
+    Box::new(match width_hint {
+        Some(width) => pane.with_width_hint(width),
+        None => pane,
+    })
 }
 
 impl Widget for RegionPane {

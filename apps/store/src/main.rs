@@ -111,13 +111,12 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         .shots
         .as_deref()
         .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
-    store::shots::render_scenario_to_path_with_preferences(
+    store::shots::render_scenario_to_path_with_theme(
         args.viewport
             .unwrap_or(store::shots::DEFAULT_SHOTS_VIEWPORT),
         out,
         args.scenario.as_deref(),
-        args.text_scale,
-        shot_reduce_motion(),
+        &ui::launch::shot_theme(args),
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
 }

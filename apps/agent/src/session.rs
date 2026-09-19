@@ -51,16 +51,13 @@ struct StepOutcome {
 
 impl StepOutcome {
     fn content_hash(&self) -> Result<&str, String> {
-        let mut hashes = self
-            .output
-            .resources
-            .iter()
-            .filter_map(|address| tilo_actions::content_hash(address));
-        if let Some(hash) = hashes.next() {
-            if hashes.next().is_some() {
-                return Err("the previous action produced more than one content resource".into());
+        if !self.output.resources.is_empty() {
+            if self.output.resources.len() != 1 {
+                return Err("the previous action must produce exactly one content resource".into());
             }
-            return Ok(hash);
+            return tilo_actions::content_hash(&self.output.resources[0]).ok_or_else(|| {
+                "the previous action produced a resource that is not qos.content".into()
+            });
         }
         if let Some(surface::Product::Content { hash }) = &self.product {
             return Ok(hash);
@@ -701,7 +698,7 @@ impl Session {
         match update {
             tilo_actions::InvocationUpdate::Succeeded { output, .. } => Ok(Ok(StepOutcome {
                 output,
-                product: self.product_for_app(&action.app),
+                product: None,
             })),
             tilo_actions::InvocationUpdate::Cancelled { .. } => Ok(Err(TaskActionStop::Cancelled)),
             tilo_actions::InvocationUpdate::Failed { error, .. } => {
@@ -1190,23 +1187,6 @@ impl Session {
         Ok(found)
     }
 
-    /// What the named application's current document denotes after an
-    /// action. This remains the application's function, not an interpretation
-    /// of its document by the agent.
-    fn product_for_app(&self, app: &str) -> Option<surface::Product> {
-        let namespace = surface::for_app_id(app).map_or(app, |contract| contract.namespace);
-        let view = self.view(None);
-        self.editor
-            .as_ref()
-            .filter(|editor| editor.contract().namespace == namespace)
-            .and_then(|editor| (editor.contract().product)(&view, &editor.doc))
-            .or_else(|| {
-                self.peers
-                    .get(namespace)
-                    .and_then(|editor| (editor.contract().product)(&view, &editor.doc))
-            })
-    }
-
     fn perform_broker(
         &mut self,
         id: &str,
@@ -1288,7 +1268,7 @@ impl Session {
                 std::thread::sleep(self.cfg.pace);
                 Ok(Ok(StepOutcome {
                     output,
-                    product: self.product_for_app(&offer.app),
+                    product: None,
                 }))
             }
             _ => Ok(Err(
@@ -2179,6 +2159,10 @@ fn describe(action: &WordProcessorAction) -> String {
 }
 
 #[cfg(test)]
+#[path = "../tests/typed_peer.rs"]
+mod handoff_test_peer;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2392,6 +2376,491 @@ mod tests {
             now,
             Duration::ZERO
         ));
+    }
+
+    mod handoff_sequences {
+        use super::*;
+        use crate::session::handoff_test_peer as peer;
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
+        use tilo_actions::{ActionOutput, ResourceProvider, ResultSpec};
+
+        const PHOTOS: &str = "dev.tilo.photos";
+        const WRITER: &str = "dev.tilo.word-processor";
+        const PRODUCE: &str = "export-edited-content";
+        const RECORD: &str = "file:/handoff-sequence.docx";
+        static SERIAL: Mutex<()> = Mutex::new(());
+        type Calls = Vec<(String, serde_json::Map<String, serde_json::Value>)>;
+
+        #[derive(Clone, Copy)]
+        enum Between {
+            Nothing,
+            BrokerView,
+            LocalRotate,
+            Duplicate,
+        }
+
+        struct Observation {
+            calls: Calls,
+            instruction: String,
+            images: Vec<String>,
+            rotation: u8,
+        }
+
+        fn produced() -> ActionOutput {
+            let bytes = photos::pixels::encode_png(&photos::shots_pattern(5, 3)).unwrap();
+            let hash = qdoc::blobstore::put(&bytes).unwrap();
+            ActionOutput {
+                value: None,
+                resources: vec![format!("qos.content:{hash}")],
+            }
+        }
+
+        fn content_result() -> ResultSpec {
+            ResultSpec::Resource {
+                resource_kind: "qos.content".into(),
+            }
+        }
+
+        fn writer_resources(
+            doc: &automerge::AutoCommit,
+            caret: &str,
+        ) -> Vec<tilo_actions::Resource> {
+            wp::provide_resources(
+                &wp::WpResourceCtx {
+                    caret_block: caret.into(),
+                    caret_offset: 0,
+                    target_blocks: vec![caret.into()],
+                    format_spans: Vec::new(),
+                    selection: None,
+                    region: RegionKind::Body,
+                    search_hits: Vec::new(),
+                },
+                doc,
+            )
+        }
+
+        fn connect_peer(
+            path: &std::path::Path,
+            app: &str,
+            handle: &str,
+            record: Option<&str>,
+        ) -> peer::TypedPeer {
+            let mut client = peer::TypedPeer::connect(path);
+            peer::send(
+                &mut client,
+                &CollabRequest::Hello {
+                    app_id: app.into(),
+                    cluster_id: peer::room(),
+                    record: record.map(str::to_owned),
+                    handle: Some(handle.into()),
+                },
+            )
+            .unwrap();
+            client.set_read_timeout(Some(Duration::from_millis(20)));
+            client
+        }
+
+        // These are controlled application outcomes, carried by the real broker.
+        // The None/wrong-kind cases declare matching contracts: the broker must
+        // accept them, leaving the real agent loop to refuse a content handoff.
+        // Photos pixel production is covered separately by the native proof.
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one fixture owns both app peers and the real Session plan lifecycle"
+        )]
+        fn run_sequence(
+            output: ActionOutput,
+            result: ResultSpec,
+            between: Between,
+            failed: bool,
+        ) -> Observation {
+            let _serial = SERIAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("collab.sock");
+            let _broker = peer::spawn_with_agent_actions(
+                &socket,
+                &[(PHOTOS, PRODUCE), (PHOTOS, "view"), (WRITER, "place-image")],
+            );
+            let mut photo = automerge::AutoCommit::new();
+            photos::doc::PhotosDoc::seed(&mut photo);
+            let source = photos::pixels::encode_png(&photos::shots_pattern(3, 2)).unwrap();
+            let source_hash = qdoc::blobstore::put(&source).unwrap();
+            let open = photos::OpenImage::from_path("held.png", 3, 2).with_content(source_hash);
+            photos::doc::PhotosDoc::set_image(&mut photo, Some(&open));
+            let image_id = photos::actions::resource_id(&open);
+            let mut photo_resources = photos::actions::PhotosResources.resources(&photo);
+            for resource in &mut photo_resources {
+                resource.children.clear();
+                resource
+                    .actions
+                    .retain(|action| action.id == PRODUCE || action.id == "view");
+                for action in &mut resource.actions {
+                    if action.id == PRODUCE {
+                        action.contract.result = result.clone();
+                    }
+                }
+            }
+            let mut document = automerge::AutoCommit::new();
+            let model = qdoc::model::init(&mut document, &automerge::ROOT);
+            let mut ids = qdoc::model::seeded_id_gen(&document, &model);
+            let instruction_id = {
+                let mut edit = qdoc::DocMut {
+                    doc: &mut document,
+                    c: &model,
+                    ids: &mut ids,
+                };
+                let id = edit.insert_block(None, "paragraph");
+                edit.splice_text(&id, 0, 0, "Scribe: run the reviewed handoff plan");
+                id
+            };
+            document.commit();
+            let mut photo_peer = connect_peer(&socket, PHOTOS, "photos", None);
+            let mut writer_peer = connect_peer(&socket, WRITER, "quinten", Some(RECORD));
+            peer::publish_actions(&mut photo_peer, PHOTOS, &photo_resources);
+            peer::publish_actions(
+                &mut writer_peer,
+                WRITER,
+                &writer_resources(&document, &instruction_id),
+            );
+            let permissions = PermissionContext::from_capabilities(
+                ui::permissions::Actor::agent("Scribe"),
+                ["photos", "word-processor"]
+                    .into_iter()
+                    .map(|app| {
+                        ui::permissions::CapOverride::grant(
+                            ui::permissions::Subject::agent("Scribe"),
+                            ui::permissions::Scope::App(app.into()),
+                            ui::permissions::Verb::Write,
+                        )
+                    })
+                    .collect(),
+            );
+            let mut session = Session::connect(Config {
+                endpoint: Some(socket),
+                endpoint_identity: Some(peer::endpoint_identity("Scribe")),
+                app_id: WRITER.into(),
+                cluster: peer::room(),
+                record: Some(RECORD.into()),
+                name: "Scribe".into(),
+                pace: Duration::ZERO,
+                once: true,
+                model: false,
+                model_timeout: Duration::from_millis(1),
+                await_document: Duration::from_secs(5),
+                settle: Duration::ZERO,
+                directory: None,
+                permissions,
+            })
+            .unwrap();
+            session.editor = Some(Editor::from_snapshot(&document.save(), "Scribe").unwrap());
+            // A usable held photo is essential: it exposes the forbidden
+            // broker-result fallback that empty-replica tests would miss.
+            session.peers.insert(
+                "photos",
+                Editor::peer_from_snapshot(
+                    surface::for_app_id(PHOTOS).unwrap(),
+                    &photo.save(),
+                    "Scribe",
+                )
+                .unwrap(),
+            );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let offers = loop {
+                assert!(Instant::now() < deadline, "both app catalogues must arrive");
+                if let Some(CollabEvent::ActionCatalogue { surfaces }) =
+                    session.link.recv(Duration::from_millis(50)).unwrap()
+                {
+                    session.broker_surfaces = surfaces;
+                }
+                let offers = Session::document_broker_offers(
+                    &session.broker_surfaces,
+                    &session.cfg.permissions,
+                );
+                if [PRODUCE, "view", "place-image"]
+                    .iter()
+                    .all(|id| offers.iter().any(|offer| offer.address().action == *id))
+                {
+                    break offers;
+                }
+            };
+            let step = |action: &str, arguments| {
+                let offer = offers
+                    .iter()
+                    .find(|offer| offer.address().action == action)
+                    .unwrap();
+                plan::Step::bound(
+                    Instruction::Perform {
+                        id: offer.id(),
+                        arguments,
+                        confirmation: ConfirmationEvidence::None,
+                    },
+                    &offers,
+                )
+            };
+            let producer = step(PRODUCE, serde_json::Map::new());
+            let mut steps = vec![producer.clone()];
+            match between {
+                Between::Nothing => {}
+                Between::BrokerView => steps.push(step("view", serde_json::Map::new())),
+                Between::Duplicate => steps.push(producer),
+                Between::LocalRotate => steps.push(plan::Step::own(Instruction::Perform {
+                    id: surface::encode_address(&tilo_actions::ActionAddress::new(
+                        image_id,
+                        "rotate-right",
+                    )),
+                    arguments: serde_json::Map::new(),
+                    confirmation: ConfirmationEvidence::None,
+                })),
+            }
+            steps.push(step(
+                "place-image",
+                serde_json::Map::from_iter([(
+                    tilo_actions::PROMPTED_PARAM.into(),
+                    serde_json::Value::String("model-invented-hash".into()),
+                )]),
+            ));
+            let calls = Arc::new(Mutex::new(Calls::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut threads = Vec::new();
+            for (mut client, is_photo) in [(photo_peer, true), (writer_peer, false)] {
+                let calls = Arc::clone(&calls);
+                let stop = Arc::clone(&stop);
+                let output = output.clone();
+                let mut replica = document.clone();
+                let caret = instruction_id.clone();
+                threads.push(std::thread::spawn(move || {
+                    while !stop.load(Ordering::Acquire) {
+                        let Some(event) = client.recv().unwrap() else {
+                            continue;
+                        };
+                        if let CollabEvent::Invocation {
+                            id,
+                            resource,
+                            action,
+                            argument,
+                            actor,
+                            ..
+                        } = event
+                        {
+                            let json = argument
+                                .as_deref()
+                                .unwrap()
+                                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                                .expect("Session must dispatch the typed JSON argument envelope");
+                            let arguments = serde_json::from_str(json).unwrap();
+                            calls.lock().unwrap().push((action.clone(), arguments));
+                            let invocation =
+                                tilo_actions::InvocationId(Uuid::from_u128(u128::from(id)));
+                            let update = if is_photo {
+                                if failed && action == PRODUCE {
+                                    tilo_actions::InvocationUpdate::Failed {
+                                        invocation,
+                                        error: tilo_actions::ActionFailure {
+                                            code: "fixture.failed".into(),
+                                            message: "Producer refused".into(),
+                                            details: None,
+                                            retryable: false,
+                                        },
+                                    }
+                                } else {
+                                    tilo_actions::InvocationUpdate::Succeeded {
+                                        invocation,
+                                        output: if action == PRODUCE {
+                                            output.clone()
+                                        } else {
+                                            ActionOutput::default()
+                                        },
+                                    }
+                                }
+                            } else {
+                                let resources = writer_resources(&replica, &caret);
+                                peer::service_document_invocation(
+                                    &mut client,
+                                    &mut replica,
+                                    &resources,
+                                    wp::register,
+                                    id,
+                                    resource,
+                                    action,
+                                    argument.as_deref(),
+                                    &actor,
+                                )
+                            };
+                            client
+                                .send(&CollabRequest::UpdateInvocation { id, update })
+                                .unwrap();
+                        }
+                    }
+                }));
+            }
+            let outcome = session.run_plan(&instruction_id, &Plan { steps });
+            stop.store(true, Ordering::Release);
+            for thread in threads {
+                thread.join().unwrap();
+            }
+            assert!(
+                outcome.unwrap(),
+                "the actual plan loop must complete or report its refusal"
+            );
+            let snapshot = session.editor.as_ref().unwrap().snapshot().unwrap();
+            Observation {
+                calls: calls.lock().unwrap().clone(),
+                instruction: snapshot
+                    .blocks
+                    .iter()
+                    .find(|block| block.id == instruction_id)
+                    .map(|block| block.text.clone())
+                    .unwrap_or_default(),
+                images: snapshot
+                    .blocks
+                    .iter()
+                    .filter(|block| block.kind == "image")
+                    .filter_map(|block| match block.attrs.get("blob") {
+                        Some(qdoc::AttrVal::Str(hash)) => Some(hash.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                rotation: photos::doc::PhotosDoc::edits(&session.peers["photos"].doc)
+                    .rotate_quarters,
+            }
+        }
+
+        fn assert_no_consumer(observed: &Observation, expected_calls: &[&str]) {
+            assert_eq!(
+                observed
+                    .calls
+                    .iter()
+                    .map(|(action, _)| action.as_str())
+                    .collect::<Vec<_>>(),
+                expected_calls,
+                "an invalidated or missing product must stop before dispatching Writer"
+            );
+            assert!(
+                observed.images.is_empty(),
+                "the refusal must not insert an image"
+            );
+            assert!(
+                !observed.instruction.is_empty(),
+                "the instruction must retain the refusal"
+            );
+        }
+
+        #[test]
+        fn run_plan_replaces_invented_content_with_the_exact_broker_result() {
+            let output = produced();
+            let hash = tilo_actions::content_hash(&output.resources[0])
+                .unwrap()
+                .to_owned();
+            let observed = run_sequence(output, content_result(), Between::Nothing, false);
+            assert_eq!(observed.calls.len(), 2);
+            assert_eq!(observed.calls[0], (PRODUCE.into(), serde_json::Map::new()));
+            assert_eq!(
+                observed.calls[1],
+                (
+                    "place-image".into(),
+                    serde_json::Map::from_iter([(
+                        tilo_actions::PROMPTED_PARAM.into(),
+                        serde_json::Value::String(hash.clone())
+                    ),])
+                )
+            );
+            assert_eq!(observed.images, vec![hash]);
+            assert!(observed.instruction.is_empty());
+        }
+
+        #[test]
+        fn run_plan_refuses_missing_broker_content_despite_a_held_photograph() {
+            let observed = run_sequence(
+                ActionOutput::default(),
+                ResultSpec::None,
+                Between::Nothing,
+                false,
+            );
+            assert_no_consumer(&observed, &[PRODUCE]);
+        }
+
+        #[test]
+        fn run_plan_refuses_wrong_kind_despite_a_held_photograph() {
+            let observed = run_sequence(
+                ActionOutput {
+                    value: None,
+                    resources: vec!["files.entry:fixture".into()],
+                },
+                ResultSpec::Resource {
+                    resource_kind: "files.entry".into(),
+                },
+                Between::Nothing,
+                false,
+            );
+            assert_no_consumer(&observed, &[PRODUCE]);
+        }
+
+        #[test]
+        fn run_plan_refuses_ambiguous_broker_content() {
+            let mut output = produced();
+            output
+                .resources
+                .push(format!("qos.content:{}", "a".repeat(64)));
+            let observed = run_sequence(output, content_result(), Between::Nothing, false);
+            assert_no_consumer(&observed, &[PRODUCE]);
+        }
+
+        #[test]
+        fn run_plan_invalidates_content_after_a_nonproducing_broker_step() {
+            let observed = run_sequence(produced(), content_result(), Between::BrokerView, false);
+            assert_no_consumer(&observed, &[PRODUCE, "view"]);
+        }
+
+        #[test]
+        fn run_plan_invalidates_content_after_a_local_photos_edit() {
+            let observed = run_sequence(produced(), content_result(), Between::LocalRotate, false);
+            assert_eq!(
+                observed.rotation, 1,
+                "the intervening local Document operation must really run"
+            );
+            assert_no_consumer(&observed, &[PRODUCE]);
+        }
+
+        #[test]
+        fn run_plan_invalidates_content_after_a_skipped_duplicate() {
+            let observed = run_sequence(produced(), content_result(), Between::Duplicate, false);
+            assert_no_consumer(&observed, &[PRODUCE]);
+        }
+
+        #[test]
+        fn run_plan_stops_after_a_failed_producer() {
+            let observed = run_sequence(produced(), content_result(), Between::Nothing, true);
+            assert_no_consumer(&observed, &[PRODUCE]);
+            assert!(observed.instruction.contains("Producer refused"));
+        }
+
+        #[test]
+        fn run_plan_reports_unavailable_bytes_without_inserting_an_image() {
+            let missing = "e".repeat(64);
+            assert!(qdoc::blobstore::get(&missing).is_none());
+            let observed = run_sequence(
+                ActionOutput {
+                    value: None,
+                    resources: vec![format!("qos.content:{missing}")],
+                },
+                content_result(),
+                Between::Nothing,
+                false,
+            );
+            assert_eq!(observed.calls.len(), 2);
+            assert_eq!(observed.calls[1].0, "place-image");
+            assert_eq!(
+                observed.calls[1].1.get(tilo_actions::PROMPTED_PARAM),
+                Some(&serde_json::Value::String(missing)),
+            );
+            assert!(observed.images.is_empty());
+            assert!(observed.instruction.contains("not available"));
+        }
     }
 
     #[test]

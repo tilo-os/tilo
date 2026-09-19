@@ -778,7 +778,6 @@ impl AgentModelsPane {
                             "Accept license & download",
                             Some(CONFIRM_KEY),
                         )))
-                        .push(hgap(8.0))
                         .push(Box::new(Button::new(
                             "agent-models-cancel-install",
                             "Cancel",
@@ -870,17 +869,15 @@ impl AgentModelsPane {
                 } else {
                     action_label(action)
                 };
-                row = row
-                    .push(Box::new(Button::new(
-                        &format!(
-                            "agent-models-{}-{}",
-                            action_slug(action),
-                            model_key(&model.package.id, action)
-                        ),
-                        label,
-                        Some(&model_key(&model.package.id, action)),
-                    )))
-                    .push(hgap(8.0));
+                row = row.push(Box::new(Button::new(
+                    &format!(
+                        "agent-models-{}-{}",
+                        action_slug(action),
+                        model_key(&model.package.id, action)
+                    ),
+                    label,
+                    Some(&model_key(&model.package.id, action)),
+                )));
             }
             body.push(Box::new(row.push(Box::new(Spacer::new()))));
         }
@@ -1094,7 +1091,6 @@ impl AgentModelsPane {
                             .with_secret(true)
                             .with_placeholder("API key (stored in Tilo vault)"),
                     ))
-                    .push(hgap(8.0))
                     .push(Box::new(
                         Button::new(
                             &format!("agent-models-set-api-key-{profile_id}"),
@@ -1119,7 +1115,6 @@ impl AgentModelsPane {
                             }));
                         }),
                     ))
-                    .push(hgap(8.0))
                     .push(Box::new(
                         Button::new(
                             &format!("agent-models-remove-api-key-{profile_id}"),
@@ -1489,7 +1484,10 @@ impl Widget for AgentModelsPane {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The Widget event contract forwards input, CRDT state, focus/handled outputs, and layout to the composed settings pane."
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
