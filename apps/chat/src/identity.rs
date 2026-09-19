@@ -247,7 +247,6 @@ mod tests {
     fn hex8_and_color_are_stable() {
         let pk = [0xABu8; 32];
         assert_eq!(hex8(&pk), "abababababababab");
-        assert_eq!(color_from_bytes(&pk), color_from_bytes(&pk));
-        assert!(color_from_bytes(&pk) < 8);
+        assert_eq!(color_from_bytes(&pk), 5);
     }
 }
