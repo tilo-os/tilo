@@ -369,10 +369,10 @@ def main() -> int:
 
     # A stale compositor produces a verdict about code that is not under
     # test, and it produces it silently.
-    src = REPO / "shell" / "src"
+    src = REPO / "crates" / "session" / "shell" / "src"
     newest = max((f.stat().st_mtime for f in src.rglob("*.rs")), default=0)
     if shell.stat().st_mtime < newest:
-        print(f"REFUSING: {shell} predates shell/src. Build first.",
+        print(f"REFUSING: {shell} predates crates/session/shell/src. Build first.",
               file=sys.stderr)
         return 2
 
