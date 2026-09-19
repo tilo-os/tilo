@@ -231,7 +231,11 @@ target gives an empty lib so `cargo check` on the workspace still passes.
 ### Build
 
 ```bash
-cargo build -p qdoc-codec-markdown-wasm --target wasm32-wasip2 --release
+cargo build \
+  --manifest-path crates/doc/qdoc-codec-markdown-wasm/Cargo.toml \
+  --target wasm32-wasip2 \
+  --release \
+  --locked
 ```
 
 Output at `target/wasm32-wasip2/release/qdoc_codec_markdown_wasm.wasm`.
