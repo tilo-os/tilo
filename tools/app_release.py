@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tomllib
 
-from ci import select as ci_select
+from ci import affected_packages as ci_select
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +40,7 @@ PACKAGING_INPUTS = {
 VERIFICATION_INPUTS = {
     "tools/app_release.py",
     "tools/ci/__init__.py",
-    "tools/ci/select.py",
+    "tools/ci/affected_packages.py",
     "tools/app_channel_manifest.py",
     "tools/canonical_app_verifier.py",
     "tools/create_app_receipt.py",
