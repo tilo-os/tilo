@@ -7,10 +7,19 @@ when an operator later installs these exact bytes and explicitly runs the servic
 
 ## Exact scope and identities
 
-Source inspected: `b34678dbfd154b0ad8979ae9e8527942768ec5ca` on merged `qos/qos/main`.
+Source inspected: `b4cba2210b4c03be13ec518822756849feadb685` on merged `qos/qos/main`.
 `coordinator.json` binds all **29** production `REQUIRED_PATHS` to their committed
 SHA256 values. `controller-source-hashes.json` separately records the **12** trusted
 service files that must be deployed outside candidate checkouts.
+
+This refresh follows the green merges of PR76 (managed recovery) and PR77
+(builder metadata retries and PR planning without a builder lookup).
+`refresh-review.json` records the complete before/after digest delta: only
+`.forgejo/workflows/release-apps.yml` and `tools/ci/resolve_builder.py` changed in
+the 29 trusted inputs; only `tools/ci/resolve_builder.py` and
+`tools/app_packaging_service.py` changed in the 12-file controller closure.
+No other trusted input changed. Final signing/verifier policy bytes and all
+public identities, compatibility evidence and product scope are unchanged.
 
 - Qualification only, service identity **82**, default collection, **x86_64** only.
 - **53 apps**, enumerated in `review.json`, with no prior baseline or evidence.
@@ -27,7 +36,7 @@ service files that must be deployed outside candidate checkouts.
   qualification policy; it requires its own approved native bundle before expansion.
 
 The coordinator's semantic policy identity is
-`770316f152a7fa88116f4fb6d02e70b954b669e5288fc4c540c786ce4708d0a7`.
+`25f1bedff8a3d23f8fd5a98843a0adb738271aa26819326fdf4c9427d815c720`.
 It hashes canonical JSON, so it differs from the pretty-printed file SHA256 in
 `review.json`. The final policy binds **exact file bytes**, including the trailing
 newline, with SHA256
@@ -69,8 +78,9 @@ proof identities, and writes only local JSON. Six concrete-policy tests exercise
 the real service/product/dispatch guards, including changed trusted files, missing
 closure members, modified policy bytes, wrong architecture, disabled controls and
 publication attempts. Architecture patching in these offline tests tests schema;
-the retained native Pod is the separate ABI evidence. The existing 69 packaging
-policy/service/coordinator/transport tests also pass.
+the retained native Pod is the separate ABI evidence. The existing 80 packaging
+policy/service/coordinator/transport tests also pass. Resolver and app-release
+workflow contract tests cover the newly landed metadata and PR-plan changes.
 
 ## One controlled qualification, after review
 
@@ -78,11 +88,13 @@ policy/service/coordinator/transport tests also pass.
    are **absent**; only the qualified state PVC and credential Secrets are retained.
    Prepare installation from the reviewed staged manifests under infra
    `apps/forgejo/packaging-controller/`, preserving the existing PVC and Secrets.
-   The staged immutable source ConfigMap binds reviewed commit
-   `f622cb6ef0478f1e0802c957d83a8be96771eed0`. Compare all twelve projected file
-   hashes to `controller-source-hashes.json` for candidate main `b34678dbf`;
-   different commit labels are acceptable only when every required source byte
-   matches. A mismatch requires a newly reviewed source bundle before installation.
+   The earlier staged source ConfigMap at
+   `f622cb6ef0478f1e0802c957d83a8be96771eed0` is now stale: its managed service
+   and builder resolver differ. Regenerate the immutable source bundle from the
+   clean, reviewed refreshed policy checkout using the existing infra source
+   generator. Compare every projected file hash to `controller-source-hashes.json`
+   for candidate main `b4cba2210`; different commit labels are acceptable only
+   when all twelve required source files match. Reject the old source bundle.
 2. Re-read current main and compare every `trusted_files` entry to it. The service
    intentionally observes current main at invocation time. App-only movement is
    allowed; changed trusted workflow/tool/config bytes require renewed review and
@@ -114,8 +126,11 @@ policy/service/coordinator/transport tests also pass.
    handcraft an intent, replace the state machine, or resend an uncertain POST.
 5. Retain its exact run/job/attempt/task and intended source. Let Forgejo admit the
    existing jobs. If the dispatch becomes uncertain, reconcile that durable intent;
-   do not dispatch another collection. Failures preserve state and never become a
-   successful baseline. Do not lower the trust/ISA/verification gates to finish.
+   do not dispatch another collection. The newly reviewed managed recovery path
+   uses the same service and mounts with `--apply --reconcile-run-id EXACT_RUN_ID`;
+   it is GET-only and requires exact original intent/source/actor/policy metadata.
+   Missing proof blocks recovery, and no recovery command belongs in a retry loop.
+   Failures preserve state and never become a successful baseline. Do not lower the trust/ISA/verification gates to finish.
 6. After the attached run finishes, run **one** more manual controller invocation
    to accept it through `FinalArtifactAcceptance`: exact dispatch, current qualifier
    log markers, artifact hashes and independent canonical replay. `core.tick`'s
