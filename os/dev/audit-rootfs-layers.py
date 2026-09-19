@@ -20,6 +20,48 @@ MAX_BYTES = 256 * 1024**3
 MAX_METADATA = 8 * CHUNK
 MAX_LAYERS = 1024
 PEM = re.compile(rb'-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----')
+PUBLIC_FAILURE_REASONS = {
+    'truncated archive': 'truncated-archive',
+    'unbounded archive read requested': 'invalid-read-bound',
+    'negative tar field': 'negative-tar-field',
+    'invalid tar field': 'invalid-tar-field',
+    'invalid archive name': 'invalid-archive-name',
+    'unsafe archive name': 'unsafe-archive-name',
+    'invalid PAX metadata': 'invalid-pax-metadata',
+    'invalid tar terminator': 'invalid-tar-terminator',
+    'nonzero bytes after tar terminator': 'trailing-tar-data',
+    'invalid or compressed layer tar header': 'invalid-tar-header',
+    'oversized tar metadata': 'oversized-tar-metadata',
+    'global path/size metadata unsupported': 'unsupported-global-pax-metadata',
+    'invalid PAX size': 'invalid-pax-size',
+    'tar entry exceeds byte limit': 'tar-entry-byte-limit',
+    'unsupported tar entry type': 'unsupported-tar-entry-type',
+    'truncated tar entry': 'truncated-tar-entry',
+    'archive entry count limit exceeded': 'archive-entry-limit',
+    'duplicate JSON key': 'duplicate-json-key',
+    'immutable image ID required': 'invalid-image-id',
+    'private match inputs must be bounded nonempty values': 'invalid-private-match-inputs',
+    'duplicate archive entry': 'duplicate-archive-entry',
+    'invalid archive directory': 'invalid-archive-directory',
+    'invalid legacy layer alias': 'invalid-layer-alias',
+    'unknown legacy layer alias': 'unknown-layer-alias',
+    'unexpected Docker archive entry type': 'unexpected-archive-entry-type',
+    'too many layers': 'layer-count-limit',
+    'too many layer occurrences': 'layer-occurrence-limit',
+    'truncated layer': 'truncated-layer',
+    'layer filename differs from content digest': 'layer-digest-mismatch',
+    'Docker metadata exceeds size limit': 'archive-metadata-size-limit',
+    'archive byte limit exceeded': 'archive-byte-limit',
+    'one Docker image manifest required': 'invalid-manifest-count',
+    'unexpected Docker manifest schema': 'invalid-manifest-schema',
+    'archive configuration differs from requested image ID': 'image-config-mismatch',
+    'invalid manifest layer list': 'invalid-manifest-layers',
+    'manifest/configuration/layer identity mismatch': 'archive-identity-mismatch',
+    'invalid Docker archive metadata': 'invalid-archive-metadata',
+    'private comparison input must be a bounded owner-only regular file': 'invalid-private-file',
+    'invalid immutable image identity or timeout': 'invalid-audit-inputs',
+    'layer export failed or exceeded timeout': 'layer-export-failed',
+}
 
 
 class AuditError(ValueError):
@@ -209,8 +251,8 @@ def audit_stream(stream, image_id, private_values=(), max_bytes=MAX_BYTES):
                     or not re.fullmatch(rb'[.][.]/[0-9a-f]{64}[.]tar', link)):
                 raise AuditError('invalid legacy layer alias')
             target = link[3:].decode('ascii')
-            if target not in layers or target in aliases.values():
-                raise AuditError('unknown or ambiguous legacy layer alias')
+            if target not in layers:
+                raise AuditError('unknown legacy layer alias')
             aliases[name] = target
             return
         if kind not in (b'0', b'\0') or link:
@@ -256,9 +298,13 @@ def audit_stream(stream, image_id, private_values=(), max_bytes=MAX_BYTES):
         ordered = manifest['Layers']
         if not isinstance(ordered, list) or not all(isinstance(name, str) for name in ordered):
             raise AuditError('invalid manifest layer list')
+        if len(ordered) > MAX_LAYERS:
+            raise AuditError('too many layer occurrences')
         ordered = [aliases.get(name, name) for name in ordered]
-        if (not ordered or len(ordered) != len(set(ordered))
-                or set(ordered) != set(layers) or config['rootfs']['type'] != 'layers'
+        # Repeated filesystem deltas are valid. Podman exports each distinct
+        # payload once, with different legacy aliases for its chain positions.
+        # Preserve every ordered occurrence when checking the config identity.
+        if (not ordered or set(ordered) != set(layers) or config['rootfs']['type'] != 'layers'
                 or config['rootfs']['diff_ids'] != [layers[name]['diff_id'] for name in ordered]):
             raise AuditError('manifest/configuration/layer identity mismatch')
     except (KeyError, TypeError, json.JSONDecodeError):
@@ -268,7 +314,8 @@ def audit_stream(stream, image_id, private_values=(), max_bytes=MAX_BYTES):
             'status': 'rejected-private-material' if metadata_findings or any(row['findings'] for row in rows) else 'passed-scoped-scan',
             'scope': 'all uncompressed layer bytes and archive metadata file contents: provided exact private bytes and private PEM envelopes only',
             'universal_secret_absence_proven': False, 'installable': False,
-            'archive_bytes_read': total.bytes_read, 'metadata_findings': sorted(metadata_findings), 'layers': rows}
+            'archive_bytes_read': total.bytes_read, 'unique_layers_scanned': len(layers),
+            'metadata_findings': sorted(metadata_findings), 'layers': rows}
 
 
 def load_private(path):
@@ -316,12 +363,29 @@ def main():
     parser.add_argument('--image-id', required=True)
     parser.add_argument('--private-file', action='append', default=[], type=Path)
     args = parser.parse_args()
+    stage = 'private-comparison-input'
     try:
-        result = audit_image(args.image_id, [load_private(path) for path in args.private_file])
+        private_values = [load_private(path) for path in args.private_file]
+        stage = 'layer-export-and-scan'
+        result = audit_image(args.image_id, private_values)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if result['status'] == 'passed-scoped-scan' else 1
-    except (OSError, ValueError, subprocess.SubprocessError):
-        raise SystemExit('layer audit failed; no private diagnostics retained') from None
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        # Export/parser failures must remain observable without copying exception
+        # diagnostics, archive paths, command output or private comparison bytes.
+        reason = 'unclassified-audit-error'
+        if isinstance(error, AuditError):
+            reason = PUBLIC_FAILURE_REASONS.get(str(error), reason)
+        elif isinstance(error, OSError):
+            reason = 'io-error'
+        elif isinstance(error, subprocess.SubprocessError):
+            reason = 'subprocess-error'
+        print(json.dumps({'schema': 1,
+            'image_id': args.image_id if re.fullmatch(r'sha256:[0-9a-f]{64}', args.image_id) else None,
+            'scanner': 'docker-layer-private-material-v1', 'status': 'failed-scoped-scan',
+            'failed_stage': stage, 'failure_reason': reason,
+            'universal_secret_absence_proven': False, 'installable': False}, sort_keys=True))
+        return 1
 
 
 if __name__ == '__main__':
