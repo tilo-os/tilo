@@ -27678,7 +27678,7 @@ mod tests {
     }
 
     /// Search must reach the focused app's own *content*, not just its tab
-    /// title. `nir` appears only in the note's body, so
+    /// title. `tilo` appears only in the note's body, so
     /// a provider looking it up by tab id rather than by document
     /// answers nothing.
     #[test]
@@ -27710,7 +27710,7 @@ mod tests {
         assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
         assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
 
-        h.host.palette.set_query("nir");
+        h.host.palette.set_query("tilo");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
 
         let hit = h
