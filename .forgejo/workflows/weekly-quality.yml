@@ -37,11 +37,8 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
-      - name: Prepare remote compiler cache
-        run: bash tools/ci/sccache.sh prepare
-
-      - name: Restore Cargo downloads
-        uses: ./.forgejo/actions/restore-cargo-downloads
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
 
       - name: No rustc warnings
         run: bash tools/ci/measure.sh "workspace warnings" -- tools/ci/check-warnings.sh

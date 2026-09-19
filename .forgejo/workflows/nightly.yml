@@ -59,17 +59,16 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
-      - name: Restore Cargo downloads
-        id: cargo-cache
-        uses: ./.forgejo/actions/restore-cargo-downloads
+      - name: Prepare Rust build caches
+        id: rust-build
+        uses: ./.forgejo/actions/prepare-rust-build
 
-      - name: Prepare runtime and cache metrics
+      - name: Prepare headless runtime
         run: |
           ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
           test -r "$VK_DRIVER_FILES"
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
-          bash tools/ci/sccache.sh prepare
 
       # This golden-pinned image predates the audio fixture. Install only new
       # packages or replace the audio daemon: never update fonts, Mesa or libraries.
@@ -157,7 +156,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save Cargo downloads
-        if: always() && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: always() && steps.rust-build.outputs.cargo-cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:

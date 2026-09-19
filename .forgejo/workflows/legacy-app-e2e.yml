@@ -21,6 +21,7 @@ on:
       - "scripts/legacy-app-caret-e2e.py"
       - "os/Containerfile.builder"
       - ".forgejo/actions/restore-cargo-downloads/**"
+      - ".forgejo/actions/prepare-rust-build/**"
       - ".forgejo/workflows/legacy-app-e2e.yml"
   # Capacity relief: main-push validation is covered by nightly/manual runs.
   # push:
@@ -39,6 +40,7 @@ on:
   #     - "scripts/legacy-app-caret-e2e.py"
   #     - "os/Containerfile.builder"
   #     - ".forgejo/actions/restore-cargo-downloads/**"
+  #     - ".forgejo/actions/prepare-rust-build/**"
   #     - ".forgejo/workflows/legacy-app-e2e.yml"
   schedule:
     - cron: "30 3 * * *"
@@ -73,12 +75,11 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
-      - name: Restore Cargo downloads
-        uses: ./.forgejo/actions/restore-cargo-downloads
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
 
-      - name: Prepare compiler cache and verify real app subjects
+      - name: Verify real app subjects
         run: |
-          bash tools/ci/sccache.sh prepare
           # The builder-image update and this workflow can race on the first
           # merge that introduces a new subject. Normally these packages are
           # already baked in; this fallback handles that transition.

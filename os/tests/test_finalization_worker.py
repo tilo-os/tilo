@@ -4,9 +4,12 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import tarfile
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -17,6 +20,58 @@ spec.loader.exec_module(worker)
 
 
 class WorkerContract(unittest.TestCase):
+    def test_real_git_archives_keep_exported_code_and_parents_non_writable(self):
+        with tempfile.TemporaryDirectory(prefix='tilo-finalizer-archive-') as temporary:
+            root = Path(temporary)
+            tree = root / 'repo'
+            tree.mkdir()
+            def git(*arguments):
+                return subprocess.check_output(['git', '-C', str(tree), *arguments], stderr=subprocess.PIPE)
+            git('init', '-q')
+            git('config', 'user.name', 'Archive fixture')
+            git('config', 'user.email', 'fixture@example.invalid')
+            # An explicit ambient override must not weaken the export policy.
+            git('config', 'tar.umask', '0000')
+            files = {'os/dev/signer.py': b'#!/usr/bin/python3\nprint("fixture")\n',
+                     'os/dev/module.py': b'fixture = b"public\\0bytes"\n',
+                     'README': b'full source only\n'}
+            for name, content in files.items():
+                path = tree / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            git('add', '.')
+            git('update-index', '--chmod=+x', 'os/dev/signer.py')
+            git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'fixture')
+            for label in ('controller', 'source', 'helpers'):
+                with self.subTest(label=label):
+                    exported = root / (label + '.tar')
+                    worker.archive_tree(tree, label, exported)
+                    selected = files if label == 'source' else {name: content for name, content in files.items()
+                                                               if name.startswith('os/')}
+                    with tarfile.open(exported) as archive:
+                        members = archive.getmembers()
+                        actual = {}
+                        for entry in members:
+                            self.assertEqual((entry.uid, entry.gid), (0, 0))
+                            self.assertEqual(entry.mode, 0o755 if entry.isdir() or entry.name.endswith('/signer.py') else 0o644)
+                            self.assertFalse(entry.mode & 0o022)
+                            if entry.isfile():
+                                name = entry.name.removeprefix(label + '/')
+                                actual[name] = archive.extractfile(entry).read()
+                                self.assertEqual(actual[name], git('show', 'HEAD:' + name))
+                            else:
+                                self.assertTrue(entry.isdir())
+                        self.assertEqual(actual, selected)
+                        self.assertTrue({label, label + '/os', label + '/os/dev'}.issubset(
+                            {entry.name.rstrip('/') for entry in members if entry.isdir()}))
+                        destination = root / (label + '-extracted')
+                        destination.mkdir()
+                        archive.extractall(destination, filter='data')
+                    for entry in members:
+                        path = destination / entry.name
+                        self.assertEqual(stat.S_IMODE(path.stat().st_mode), entry.mode)
+                        self.assertEqual(path.stat().st_uid, os.geteuid())
+
     def request(self):
         return {'schema': 1, 'source_revision': worker.SOURCE, 'helpers_revision': 'a' * 40,
                 'source_dir': '/work/source', 'architecture': 'aarch64',

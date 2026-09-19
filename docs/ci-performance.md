@@ -113,10 +113,10 @@ is not implemented or claimed here.
 
 ## Cache layers
 
-- sccache stores compiler outputs in repository-scoped S3 namespaces configured
-  by the builder and `tools/ci/sccache.sh`. Inspect the effective namespace rather
-  than assuming all lanes use one historical prefix. This is the main cross-runner Rust cache. The builder
-  workflow proves a cold write and a warm read in separate containers against
+- sccache stores compiler outputs in S3 namespaces configured by the runner,
+  builder and `tools/ci/sccache.sh`. Inspect the effective namespace rather than
+  assuming every lane has a separate prefix. This is the main cross-runner Rust
+  cache. The builder workflow proves a cold write and a warm read in separate containers against
   an isolated canary prefix whenever the image changes.
 - `actions/cache` stores only Cargo registry indexes, crate archives, and Git
   checkouts. We deliberately do not archive `target/`: it is large, expensive
@@ -129,6 +129,33 @@ is not implemented or claimed here.
 The layers solve different problems; replacing them with a single target-tree
 archive would duplicate compiler storage and spend runner CPU compressing
 revision-specific linker outputs.
+
+### Compiler-cache trust
+
+Namespaces organize compiler outputs and select the objects a build can reuse;
+they do not restrict who can write them. The September 2026 review of the broker
+configuration and infrastructure IAM policy found ordinary CI jobs and
+interactive agents sharing cache credentials with bucket-wide object access.
+This was a source/configuration audit, not a live IAM attestation. Changing a
+prefix alone therefore does not establish a trusted writer boundary. Compiler
+cache keys distinguish incompatible inputs; they do not authenticate the
+producer of a cached object.
+
+Ordinary development builds already use this shared cache trust model. Before
+extending reuse to a security check or release gate that requires stronger
+provenance, enforce writer isolation with separate credentials and storage
+permissions, or promote verified objects into a cache whose writers are
+restricted. Otherwise retain uncached verification for that gate. Keep the
+[OS release's second no-cache build](security/threat-model.md#abuse-case-analysis-and-current-controls)
+as a separate requirement; a cold-write/warm-read cache canary proves reuse,
+not writer isolation.
+
+The [kernel module signing fixture](../os/tests/kernel_module_signing_test.sh)
+currently clears `RUSTC_WRAPPER` when building its helper. Retain that bypass
+until its cache trust requirements are reviewed; the separate libkmod parser
+checks runtime interoperability, not compiler-cache provenance. See
+[local compiler-cache guidance](../DEVELOPMENT.md#sizing-the-compilation-cache)
+and [packaging cache usage](packaging.md) for the existing reuse paths.
 
 ## Build-profile reuse
 

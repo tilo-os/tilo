@@ -8,12 +8,12 @@
 //! touch. That gap is why the "tiles never load" bug shipped: every test was
 //! green while the real network→decode→render path was never run.
 //!
-//! They are GATED behind the `MAPS_LIVE` env var so hermetic CI (offline) stays
-//! green by self-skipping. They are NOT `#[ignore]`d, so they compile with every
-//! build and are trivially runnable:
+//! The network-dependent cases are explicitly ignored so hermetic CI reports
+//! them as not executed instead of counting an early return as a passing test.
+//! They still compile with every build and are runnable as one opt-in lane:
 //!
-//!   `MAPS_LIVE=1` \
-//!   tilo-build test -p maps --test `live_maps` -- --nocapture --test-threads 1
+//!   tilo-build test -p maps --test live_maps -- \
+//!     --ignored --nocapture --test-threads 1
 //!
 //! Set `MAPS_LIVE_OUT=/some/dir` to control where the inspection PNGs are
 //! written (default: `apps/maps/live-out/`).
@@ -47,17 +47,6 @@ const VP: (u32, u32) = (700, 780);
 fn map_region() -> Rect {
     let (w, h) = VP;
     Rect::new(30.0, 110.0, f64::from(w) - 90.0, f64::from(h) - 90.0)
-}
-
-fn live_enabled() -> bool {
-    std::env::var("MAPS_LIVE").is_ok_and(|v| v != "0" && !v.is_empty())
-}
-
-fn skip(name: &str) {
-    eprintln!(
-        "[SKIP] {name}: live network test. Run with:\n  \
-         MAPS_LIVE=1 tilo-build test -p maps --test live_maps -- --nocapture --test-threads 1"
-    );
 }
 
 fn unique_cache() -> PathBuf {
@@ -109,12 +98,8 @@ const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
 /// imagery into memory, recorded no failures, and wrote real PNGs to disk.
 /// No GPU required — this is pure network + decode + drain.
 #[test]
+#[ignore = "requires live tile services; run the explicit maps live lane"]
 fn live_tiles_fetch_decode_and_cache() {
-    if !live_enabled() {
-        skip("live_tiles_fetch_decode_and_cache");
-        return;
-    }
-
     let cache = unique_cache();
     let mut app = MapsApp::new_with_cache_dir(cache.clone());
     let mut h = Harness::new(VP);
@@ -188,12 +173,8 @@ fn live_tiles_fetch_decode_and_cache() {
 /// substantially CHANGED once imagery arrived. Requires a headless GPU
 /// (lavapipe is fine).
 #[test]
+#[ignore = "requires live tile services and a GPU; run the explicit maps live lane"]
 fn live_render_shows_real_tiles() {
-    if !live_enabled() {
-        skip("live_render_shows_real_tiles");
-        return;
-    }
-
     let cache = unique_cache();
     let mut app = MapsApp::new_with_cache_dir(cache.clone());
     let mut h = Harness::new(VP);
@@ -292,11 +273,8 @@ fn live_render_shows_real_tiles() {
 /// one zoom-out and one zoom-in mid-frame and asserts each shows varied imagery,
 /// exercising the real fetch→decode→draw path (only the base tiles ever load).
 #[test]
+#[ignore = "requires live tile services and a GPU; run the explicit maps live lane"]
 fn live_mid_zoom_reuses_tiles_and_never_blanks() {
-    if !live_enabled() {
-        skip("live_mid_zoom_reuses_tiles_and_never_blanks");
-        return;
-    }
     let cache = unique_cache();
     let mut app = MapsApp::new_with_cache_dir(cache.clone());
     let mut h = Harness::new(VP);

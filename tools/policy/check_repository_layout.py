@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject generated artifacts and retired source roots tracked in the repository."""
+"""Reject generated artifacts, retired roots, and misplaced repository tooling."""
 
 from __future__ import annotations
 
@@ -57,6 +57,25 @@ RETIRED_SOURCE_ROOTS = {
     "ui/": "crates/sdk/ui-core/",
 }
 
+# These application tools are deployed outside candidate checkouts by exact
+# reviewed path. Their paths are part of app_packaging_product.REQUIRED_PATHS
+# and retained qualification evidence, so moving them requires a coordinated
+# controller/policy migration. This is a closed exception, not a precedent for
+# adding more application code to the tools root.
+ROOT_APPLICATION_CONTROLLER_FILES = frozenset(
+    {
+        "tools/accept_app_artifacts.py",
+        "tools/app_packaging_contract.py",
+        "tools/app_packaging_coordinator.py",
+        "tools/app_packaging_plan.py",
+        "tools/app_packaging_product.py",
+        "tools/app_packaging_qualification.py",
+        "tools/app_packaging_service.py",
+        "tools/assemble_verified_apps.py",
+        "tools/canonical_verifier_bundle.py",
+    }
+)
+
 
 def generated_artifact_violations(paths: list[str]) -> list[str]:
     violations = []
@@ -80,8 +99,27 @@ def retired_source_root_violations(paths: list[str]) -> list[str]:
     return sorted(violations)
 
 
+def flat_application_tooling_violations(paths: list[str]) -> list[str]:
+    candidates = (
+        path
+        for path in paths
+        if path.startswith(("tools/app_", "tools/accept_app_"))
+        or path == "tools/assemble_verified_apps.py"
+    )
+    return sorted(
+        "new application tooling must live under `tools/apps/`; the root-level "
+        f"controller exception is closed: {path}"
+        for path in candidates
+        if path not in ROOT_APPLICATION_CONTROLLER_FILES
+    )
+
+
 def repository_layout_violations(paths: list[str]) -> list[str]:
-    return sorted(generated_artifact_violations(paths) + retired_source_root_violations(paths))
+    return sorted(
+        generated_artifact_violations(paths)
+        + retired_source_root_violations(paths)
+        + flat_application_tooling_violations(paths)
+    )
 
 
 def duplicate_fixture_violations(root: Path, paths: list[str]) -> list[str]:
@@ -134,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {violation}", file=sys.stderr)
         print("FAIL: repair the repository layout violations above", file=sys.stderr)
         return 1
-    print("repository layout OK (no generated artifacts or retired source roots)")
+    print("repository layout OK (no generated artifacts, retired roots, or misplaced tooling)")
     return 0
 
 
