@@ -31,6 +31,103 @@ pub(super) struct ReviewedInitial {
     destination: super::model::ObservedTree,
 }
 impl InitialPreview {
+    fn worker_paths(&self) -> std::collections::BTreeSet<&super::model::RelativePath> {
+        self.source
+            .entries()
+            .keys()
+            .chain(self.destination.entries().keys())
+            .collect()
+    }
+    pub(super) fn worker_len(&self) -> usize {
+        self.worker_paths().len()
+    }
+    pub(super) fn worker_page(
+        &self,
+        offset: usize,
+    ) -> Result<crate::connected::InitialPage, StoreError> {
+        let paths = self.worker_paths();
+        if offset > paths.len() {
+            return Err(StoreError::LimitExceeded);
+        }
+        let total = paths.len();
+        let entries: Vec<_> = paths
+            .into_iter()
+            .skip(offset)
+            .take(crate::connected::PAGE_LIMIT)
+            .map(|path| crate::connected::InitialEntry {
+                path: path.clone(),
+                source: self.source.entries().get(path).cloned(),
+                destination: self.destination.entries().get(path).cloned(),
+            })
+            .collect();
+        let next = offset
+            .checked_add(entries.len())
+            .ok_or(StoreError::LimitExceeded)?;
+        Ok(crate::connected::InitialPage {
+            entries,
+            next_offset: (next < total).then_some(next),
+        })
+    }
+    /// Whole-comparison acceptance selects existing safe regular-file decisions.
+    /// The executor still requires fresh native evidence for the selected path.
+    pub(super) fn worker_accept(
+        self,
+        store: &ConnectionStore,
+        source: &super::endpoint::PinnedEndpoint,
+        destination: &super::endpoint::PinnedEndpoint,
+        cancel: &AtomicBool,
+    ) -> Result<Option<ReviewedInitial>, StoreError> {
+        use super::model::{Conflict, Decision, EntryState, Side};
+        let fresh_source = super::endpoint::observe(source, cancel);
+        let fresh_destination = super::endpoint::observe(destination, cancel);
+        let (_, _, digest) =
+            store.initial_review_basis(self.record.id, &fresh_source, &fresh_destination)?;
+        if digest != self.digest
+            || fresh_source != self.source
+            || fresh_destination != self.destination
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        let mut selection = None;
+        for path in self.worker_paths() {
+            let left = self.source.entries().get(path);
+            let right = self.destination.entries().get(path);
+            if path.components().len() != 1
+                || [left, right]
+                    .into_iter()
+                    .flatten()
+                    .any(|entry| !matches!(entry, EntryState::File { .. }))
+            {
+                continue;
+            }
+            let decision = match (left, right) {
+                (Some(left), Some(right)) if left == right => Decision::VerifyEqual,
+                (Some(_), None) => Decision::Propagate { from: Side::Source },
+                (None, Some(_)) => Decision::Propagate {
+                    from: Side::Destination,
+                },
+                (Some(_), Some(_)) => Decision::Conflict(Conflict::DivergentEdits),
+                (None, None) => continue,
+            };
+            let conflict = matches!(decision, Decision::Conflict(_));
+            selection = Some(super::store::OperationIntent {
+                connection: self.record.id,
+                expected_revision: self.record.revision,
+                expected_baseline: None,
+                path: path.clone(),
+                source_before: left.cloned(),
+                destination_before: right.cloned(),
+                decision,
+            });
+            // Prefer a baseline-establishing step; otherwise preserve both.
+            if !conflict {
+                break;
+            }
+        }
+        selection
+            .map(|selection| self.accept(selection))
+            .transpose()
+    }
     fn from_observations(
         store: &ConnectionStore,
         id: ConnectionId,

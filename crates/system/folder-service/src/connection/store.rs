@@ -737,6 +737,26 @@ impl ConnectionStore {
             _ => Err(StoreError::Corrupt),
         }
     }
+    /// Read-only bounded facade projection; rows never become native authority.
+    pub(super) fn worker_conflicts(
+        &self,
+        id: ConnectionId,
+        cursor: Option<PageCursor>,
+        limit: usize,
+    ) -> Result<Page<ConflictRecord>, StoreError> {
+        let rows = self.table_page(id, 3, cursor, limit)?;
+        Ok(Page {
+            entries: rows
+                .entries
+                .into_iter()
+                .map(|row| match row {
+                    Row::Conflict(conflict) => conflict.decode(),
+                    _ => Err(StoreError::Corrupt),
+                })
+                .collect::<Result<_, _>>()?,
+            next: rows.next,
+        })
+    }
     pub(super) fn load_connection(&self, id: ConnectionId) -> Result<ConnectionRecord, StoreError> {
         self.connection(id)?.decode()
     }

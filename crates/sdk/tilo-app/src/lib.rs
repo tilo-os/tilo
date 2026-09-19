@@ -40,7 +40,7 @@ pub mod prelude {
 /// ```
 #[cfg(feature = "folder-copy")]
 pub mod folders {
-    pub use tilo_folder_service::{copy, review, scan, session, startup};
+    pub use tilo_folder_service::{connected, copy, review, scan, session, startup};
 }
 
 #[cfg(feature = "install-artifacts")]

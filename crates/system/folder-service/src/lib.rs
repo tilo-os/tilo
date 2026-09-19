@@ -39,6 +39,7 @@ mod migration_store;
 mod migration_worker;
 
 pub mod copy;
+pub mod connected;
 pub mod review;
 pub mod scan;
 pub mod session;
