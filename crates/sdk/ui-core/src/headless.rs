@@ -428,7 +428,7 @@ pub struct FrameHarness {
     /// index instead of the record it checked out, testing something the
     /// user never runs.
     records: Option<crate::record::RecordSet>,
-    record_persistence: Option<(String, automerge::AutoCommit)>,
+    record_persistence: Option<(crate::record::RecordSet, automerge::AutoCommit)>,
     room_index: Option<automerge::AutoCommit>,
     /// The taffy node holding keyboard focus, or `None`. Mirrors
     /// [`crate::app::App::focused_node`] — focus is App-level, not
@@ -445,6 +445,7 @@ pub struct FrameHarness {
     action_registry: tilo_actions::ActionRegistry,
     action_transport: Box<dyn tilo_actions::ActionTransport>,
     pending_control_invocations: HashSet<tilo_actions::InvocationId>,
+    control_failures: Vec<String>,
     bound_invocations:
         HashMap<tilo_actions::InvocationId, crate::bound_dispatch::BoundActionTarget>,
     /// Per-pass frame profiler, installed by the perf harness via
@@ -688,6 +689,7 @@ impl FrameHarness {
             action_registry: tilo_actions::ActionRegistry::new(),
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
             pending_control_invocations: HashSet::new(),
+            control_failures: Vec::new(),
             bound_invocations: HashMap::new(),
             profiler: None,
         };
@@ -937,12 +939,12 @@ impl FrameHarness {
 
     /// Configure the same per-record store as the live host, including apps
     /// whose asynchronous first open supplies no record during construction.
-    fn with_record_persistence(
+    fn with_prepared_record_persistence(
         mut self,
-        manifest_id: &str,
+        records: crate::record::RecordSet,
         room_index: automerge::AutoCommit,
     ) -> Self {
-        self.record_persistence = Some((manifest_id.to_owned(), room_index));
+        self.record_persistence = Some((records, room_index));
         self.tick_records();
         self
     }
@@ -950,9 +952,8 @@ impl FrameHarness {
     fn tick_records(&mut self) {
         if self.records.is_none()
             && self.root.record_intent().is_some()
-            && let Some((manifest_id, room_index)) = self.record_persistence.take()
+            && let Some((mut records, room_index)) = self.record_persistence.take()
         {
-            let mut records = crate::record::RecordSet::open(manifest_id);
             records.discover_room(&room_index);
             self.records = Some(records);
             self.room_index = Some(room_index);
@@ -1252,7 +1253,9 @@ impl FrameHarness {
         timeout: std::time::Duration,
         mut condition: impl FnMut(&Self) -> bool,
     ) -> bool {
-        self.pump_component_wakes();
+        self.relayout();
+        self.idle_control_tick();
+        self.relayout();
         if condition(self) {
             return true;
         }
@@ -1260,7 +1263,8 @@ impl FrameHarness {
             return false;
         };
         while std::time::Instant::now() < deadline {
-            self.poll_control_invocations();
+            self.relayout();
+            self.idle_control_tick();
             self.relayout();
             if condition(self) {
                 return true;
@@ -2103,7 +2107,7 @@ impl FrameHarness {
     ///    the document directly instead of dispatching actions.
     /// 3. **Undo/redo the tree asked for** runs last, so an action performed in
     ///    the same tick is already on the stack and is what gets reverted.
-    fn host_tick(&mut self) {
+    fn idle_control_tick(&mut self) {
         self.dispatch_control_invocations();
         self.poll_control_invocations();
         let author = self.author.clone();
@@ -2117,6 +2121,11 @@ impl FrameHarness {
                 &author,
             );
         }
+    }
+
+    fn host_tick(&mut self) {
+        self.idle_control_tick();
+        let author = self.author.clone();
         if self.root.needs_commit() {
             // Authored *and* carrying the widget's commit context. An
             // anonymous entry is invisible to author-scoped undo, so a
@@ -2238,6 +2247,7 @@ impl FrameHarness {
             Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
             Err(error) => {
                 tracing::warn!(code = error.code(), %error, "headless: bound control refused");
+                self.control_failures.push(error.to_string());
             }
         }
     }
@@ -2274,6 +2284,7 @@ impl FrameHarness {
                 Ok(target) => target,
                 Err(error) => {
                     tracing::warn!(code = error.code(), %error, "headless: control target refused");
+                    self.control_failures.push(error.to_string());
                     self.root
                         .on_control_invocation_result(&intent.address, &Err(error.into_door()));
                     continue;
@@ -2360,6 +2371,7 @@ impl FrameHarness {
                 Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
                 Err(error) => {
                     tracing::warn!(code = error.code(), %error, "headless: control action refused");
+                    self.control_failures.push(error.to_string());
                 }
             }
         }
@@ -2379,6 +2391,11 @@ impl FrameHarness {
                 invocation,
                 false,
             );
+            match &update {
+                Ok(Some(update)) => self.record_control_failure(update),
+                Err(error) => self.control_failures.push(format!("{error:?}")),
+                Ok(None) => {}
+            }
             if update.is_err()
                 || update
                     .as_ref()
@@ -2403,8 +2420,25 @@ impl FrameHarness {
                 &self.state.root,
             ) && update.is_terminal()
             {
+                self.record_control_failure(&update);
                 self.pending_control_invocations.remove(&invocation);
             }
+        }
+    }
+
+    fn record_control_failure(&mut self, update: &tilo_actions::InvocationUpdate) {
+        match update {
+            tilo_actions::InvocationUpdate::Failed { error, .. } => {
+                self.control_failures.push(error.message.clone())
+            }
+            tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
+                self.control_failures.push(
+                    message
+                        .clone()
+                        .unwrap_or_else(|| "Control operation cancelled".into()),
+                )
+            }
+            _ => {}
         }
     }
 
@@ -3364,6 +3398,19 @@ fn drive_spec_actions(
     mut persist: impl FnMut(&mut Driver),
 ) -> Option<String> {
     tilo_startup_metrics::mark("headless-actions-start");
+    // Native idle frames admit queued local controls even without input. Use
+    // the same host tick here, including fresh permissions and undo recording.
+    if !driver.wait_until(std::time::Duration::from_secs(10), |driver| {
+        !driver.root.has_pending_control_invocation()
+            && driver.pending_control_invocations.is_empty()
+            && driver.bound_invocations.is_empty()
+    }) {
+        return Some("startup control invocation did not become ready".into());
+    }
+    if let Some(error) = driver.control_failures.first() {
+        return Some(format!("startup control invocation failed: {error}"));
+    }
+    persist(driver);
     for (index, action) in spec.actions.iter().enumerate() {
         if let Err(error) = driver.perform(action) {
             tilo_startup_metrics::mark("headless-action-failed");
@@ -3505,21 +3552,116 @@ pub fn run_component(
 /// `3` when persistence itself was unavailable, which a sweep must not
 /// mistake for "nothing changed".
 pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
+    use crate::launch::{LegacyLaunchInputs, LegacyRecordPolicy};
     tilo_startup_metrics::mark("headless-setup-start");
-    let (state, mut autosave) = crate::persist::open(manifest_id);
-    if !autosave.is_enabled() {
-        tilo_startup_metrics::mark("headless-setup-failed");
-        eprintln!(
-            "headless: persistence unavailable: {}",
+    let records = crate::record::RecordSet::open(manifest_id);
+    let expected_index =
+        match app_state::DocStore::legacy_package_document_path(records.package_id()) {
+            Ok(path) => path,
+            Err(error) => {
+                tilo_startup_metrics::mark("headless-setup-failed");
+                eprintln!("headless: invalid namespace: {error}");
+                return 3;
+            }
+        };
+    let (state, autosave) = crate::persist::open(manifest_id);
+    let index = state.doc.clone();
+    let mut inputs = LegacyLaunchInputs::new(state, root, autosave);
+    inputs.records = LegacyRecordPolicy::AutomaticHeadless {
+        records,
+        index,
+        expected_index,
+    };
+    run_initialized(spec, inputs)
+}
+
+pub(crate) fn build_initialized_driver(
+    inputs: crate::launch::LegacyLaunchInputs,
+    viewport: (u32, u32),
+) -> Result<(Driver, crate::persist::Autosave), String> {
+    use crate::launch::LegacyRecordPolicy;
+    let autosave = &inputs.autosave;
+    // An explicitly disabled writer is not successful durability, and never
+    // causes this runner to reopen a different default store behind the app.
+    if inputs.persistence == crate::launch::LegacyPersistencePolicy::Host && !autosave.is_enabled()
+    {
+        return Err(format!(
+            "persistence unavailable: {}",
             autosave.last_error().unwrap_or_default()
-        );
-        return 3;
+        ));
     }
-    // An app whose root names a record must be driven against that record's
-    // document, not the room index — see `records` on `Driver`.
-    let room_index = state.doc.clone();
-    let mut driver = Driver::new(state, root, spec.viewport.unwrap_or(DEFAULT_VIEWPORT))
-        .with_record_persistence(manifest_id, room_index);
+    inputs.validate_persistence_ownership()?;
+    if let LegacyRecordPolicy::AutomaticHeadless {
+        records,
+        expected_index,
+        ..
+    } = &inputs.records
+    {
+        if autosave.package_id() != records.package_id()
+            || autosave.document_path() != expected_index
+            || app_state::DocStore::legacy_package_document_path(records.package_id())
+                .ok()
+                .as_ref()
+                != Some(expected_index)
+        {
+            return Err("custom persistence namespace requires explicit prepared inputs".into());
+        }
+    }
+    Ok(build_legacy_driver(inputs, viewport, Theme::dark(), true))
+}
+
+/// Inspect the same explicit record binding without requiring or flushing a
+/// writer. Legacy automatic headless persistence remains opt-in to headless
+/// execution; an audit must not activate that compatibility behavior.
+pub(crate) fn build_audit_driver(
+    inputs: crate::launch::LegacyLaunchInputs,
+    viewport: (u32, u32),
+    theme: Theme,
+) -> (Driver, crate::persist::Autosave) {
+    build_legacy_driver(inputs, viewport, theme, false)
+}
+
+fn build_legacy_driver(
+    inputs: crate::launch::LegacyLaunchInputs,
+    viewport: (u32, u32),
+    theme: Theme,
+    activate_automatic_records: bool,
+) -> (Driver, crate::persist::Autosave) {
+    use crate::launch::{LegacyLaunchInputs, LegacyRecordPolicy};
+    let LegacyLaunchInputs {
+        state,
+        root,
+        autosave,
+        records,
+        registry,
+        persistence: _,
+    } = inputs;
+    let mut driver = Driver::new_with_theme(state, root, viewport, theme);
+    *driver.action_registry_mut() = registry;
+    driver = match records {
+        LegacyRecordPolicy::None => driver,
+        LegacyRecordPolicy::Explicit { records, index } => driver.with_records(records, index),
+        LegacyRecordPolicy::AutomaticHeadless { records, index, .. }
+            if activate_automatic_records =>
+        {
+            driver.with_prepared_record_persistence(records, index)
+        }
+        LegacyRecordPolicy::AutomaticHeadless { .. } => driver,
+    };
+    (driver, autosave)
+}
+
+pub(crate) fn run_initialized(spec: &Spec, inputs: crate::launch::LegacyLaunchInputs) -> i32 {
+    let persistence = inputs.persistence;
+    let (mut driver, mut autosave) =
+        match build_initialized_driver(inputs, spec.viewport.unwrap_or(DEFAULT_VIEWPORT)) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                tilo_startup_metrics::mark("headless-setup-failed");
+                eprintln!("headless: {error}");
+                return 3;
+            }
+        };
 
     tilo_startup_metrics::mark("headless-setup-ready");
     let mut failure = drive_spec_actions(spec, &mut driver, |driver| {
@@ -3545,9 +3687,19 @@ pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
     tilo_startup_metrics::mark("headless-output-done");
     tilo_startup_metrics::mark("headless-durability-start");
     // The same two calls `App::exiting` makes, for the same reason.
-    autosave.request(driver.persistence_document());
-    autosave.flush();
-    if let Some(e) = autosave.last_error() {
+    let durability = if persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
+        driver
+            .root
+            .try_flush_owned_persistence()
+            .unwrap_or_else(|| Err("widget-owned persistence requires a checked flush hook".into()))
+    } else {
+        autosave.request(driver.persistence_document());
+        autosave.flush();
+        autosave
+            .last_error()
+            .map_or(Ok(()), |error| Err(error.to_owned()))
+    };
+    if let Err(e) = durability {
         tilo_startup_metrics::mark("headless-durability-failed");
         eprintln!("headless: state write failed: {e}");
         return 3;
@@ -3578,6 +3730,71 @@ fn write_headless_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_audit_preserves_explicit_record_index_theme_and_disabled_writer() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let mut state = State::new();
+        state
+            .doc
+            .put(automerge::ROOT, "body_marker", "body")
+            .unwrap();
+        let mut index = automerge::AutoCommit::new();
+        index.put(automerge::ROOT, "index_marker", "index").unwrap();
+        let inputs = crate::launch::LegacyLaunchInputs::new(
+            state,
+            Box::new(crate::widget::Text::new("audit")),
+            crate::persist::Autosave::disabled("audit-only fixture"),
+        )
+        .with_records(crate::record::RecordSet::in_memory(), index);
+        let (mut driver, autosave) =
+            build_audit_driver(inputs, (800, 600), Theme::light().with_text_scale(1.5));
+        assert!(!autosave.is_enabled());
+        assert!(
+            driver.records().is_some(),
+            "audit must retain the explicit record owner"
+        );
+        assert_eq!(driver.theme.text_scale, 1.5);
+        assert_eq!(
+            driver
+                .state
+                .doc
+                .get(automerge::ROOT, "body_marker")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_str(),
+            Some("body")
+        );
+        assert_eq!(
+            driver
+                .persistence_document()
+                .get(automerge::ROOT, "index_marker")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_str(),
+            Some("index")
+        );
+    }
+
+    #[test]
+    fn legacy_audit_does_not_activate_automatic_headless_record_policy() {
+        let mut inputs = crate::launch::LegacyLaunchInputs::new(
+            State::new(),
+            Box::new(crate::widget::Text::new("audit")),
+            crate::persist::Autosave::disabled("audit-only fixture"),
+        );
+        inputs.records = crate::launch::LegacyRecordPolicy::AutomaticHeadless {
+            records: crate::record::RecordSet::in_memory(),
+            index: automerge::AutoCommit::new(),
+            expected_index: std::path::PathBuf::from("unused-audit-namespace"),
+        };
+        let (driver, autosave) = build_audit_driver(inputs, (800, 600), Theme::light());
+        assert!(!autosave.is_enabled());
+        assert!(driver.records().is_none());
+    }
+
     use crate::widget::{Button, Checkbox, CodeEditor, Column, TextInput, TreeNode, TreeView};
     use automerge::transaction::Transactable;
 
@@ -4543,6 +4760,57 @@ mod tests {
             [Err(tilo_actions::DoorError::Unknown(_))]
         ));
         assert!(observed.pending.borrow().is_empty());
+    }
+
+    #[test]
+    fn startup_control_waits_for_terminal_without_committing_typing() {
+        use crate::widget::control_result_probe::Probe;
+        for succeeds in [true, false] {
+            let (mut probe, observed) = Probe::new(true);
+            probe.terminal_after = Some((3, succeeds));
+            probe.dirty_typing = true;
+            probe.owned_flush = Some(Ok(()));
+            observed.enqueue("run");
+            let inputs = crate::launch::LegacyLaunchInputs::new(
+                State::new(),
+                Box::new(probe),
+                crate::persist::Autosave::disabled("fixture owns storage"),
+            )
+            .with_widget_owned_persistence();
+            assert_eq!(
+                run_initialized(&Spec::default(), inputs),
+                if succeeds { 0 } else { 1 }
+            );
+            assert_eq!(observed.calls.get(), 1);
+            assert_eq!(observed.polls.get(), 3);
+            assert_eq!(
+                observed.commits.get(),
+                0,
+                "idle admission must not commit unrelated pending typing"
+            );
+            assert_eq!(observed.flushes.get(), 1);
+        }
+    }
+
+    #[test]
+    fn widget_owned_persistence_requires_checked_success() {
+        use crate::widget::control_result_probe::Probe;
+        for outcome in [None, Some(Err("disk full".into())), Some(Ok(()))] {
+            let succeeds = outcome == Some(Ok(()));
+            let (mut probe, observed) = Probe::new(false);
+            probe.owned_flush = outcome;
+            let inputs = crate::launch::LegacyLaunchInputs::new(
+                State::new(),
+                Box::new(probe),
+                crate::persist::Autosave::disabled("fixture owns storage"),
+            )
+            .with_widget_owned_persistence();
+            assert_eq!(
+                run_initialized(&Spec::default(), inputs),
+                if succeeds { 0 } else { 3 }
+            );
+            assert_eq!(observed.flushes.get(), 1);
+        }
     }
 
     struct LateRecordProbe {
