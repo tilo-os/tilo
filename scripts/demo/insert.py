@@ -4,9 +4,9 @@
 Everything is staged before a window appears. The operator performs one
 drag; the script stops after the picture lands.
 
-    ./scripts/yc-demo-insert.py              # operator performs the drag
-    ./scripts/yc-demo-insert.py --self-test  # automated drag
-    ./scripts/yc-demo-insert.py --dry-run    # staging only, headless
+    ./scripts/demo/insert.py              # operator performs the drag
+    ./scripts/demo/insert.py --self-test  # automated drag
+    ./scripts/demo/insert.py --dry-run    # staging only, headless
 
 Files opens on a home with
 `harbour.png` in it, the row is already selected, the document beside it
@@ -74,7 +74,7 @@ import time
 import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(HERE)
+REPO = os.path.dirname(os.path.dirname(HERE))
 
 # The nine-beat recorder, imported rather than copied: the session
 # environment, the capture thread and the composer are all fiddly and all
@@ -82,7 +82,7 @@ REPO = os.path.dirname(HERE)
 # it. Importing it runs definitions only — `main` is behind the usual
 # `__main__` guard.
 _spec = importlib.util.spec_from_file_location(
-    "yc_demo", os.path.join(HERE, "yc-demo.py"))
+    "yc_demo", os.path.join(HERE, "run.py"))
 yc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(yc)
 
@@ -368,7 +368,7 @@ def carries_bytes(blob: bytes, needle: bytes) -> bool:
     the document — that is what makes this readable without an Automerge
     binding. Columns over a size threshold are DEFLATE'd, so plausible
     compressed spans are inflated and searched too, the same way
-    `yc-demo.py` searches for text.
+    `run.py` searches for text.
     """
     if needle in blob:
         return True
