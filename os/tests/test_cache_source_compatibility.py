@@ -1,4 +1,6 @@
 import hashlib
+import subprocess
+import tempfile
 import importlib.util
 from pathlib import Path
 import unittest
@@ -32,5 +34,35 @@ class CacheAdmission(unittest.TestCase):
   with patch.object(c,'read_approval',return_value=a),patch.object(c,'git',side_effect=answers),patch.object(c,'_verify_base') as base,self.assertRaises(ValueError):
    c.verify('repo',c.CACHE_SOURCE,'approval','digest','native','reconstruction')
   base.assert_not_called()
+
+class DracutAdmission(unittest.TestCase):
+ def test_real_git_exact_child_paths_and_rootfs_isolation(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp)
+   def git(*args):
+    return subprocess.check_output(['git','-C',str(root),*args],stderr=subprocess.DEVNULL).decode().strip()
+   git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');git('config','core.autocrlf','false')
+   recipe=b'FROM base AS builder\nRUN compile\nFROM ${BASE_REF} AS rootfs\nRUN dracut old\nFROM rootfs AS split\n'
+   for name in c.DRACUT_PATHS[:-1]:
+    path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(recipe if name=='os/Containerfile' else b'old test\n')
+   git('add','.');git('commit','-qm','parent');parent=git('rev-parse','HEAD')
+   for name in c.DRACUT_PATHS:
+    (root/name).write_bytes(recipe.replace(b'dracut old',b'dracut corrected') if name=='os/Containerfile' else b'corrected test\n')
+   git('add','.');git('commit','-qm','local root correction');child=git('rev-parse','HEAD')
+   with patch.object(c,'CACHE_SOURCE',parent),patch.object(c,'DRACUT_SOURCE',child):
+    result=c.verify_dracut_successor(root,child)
+    self.assertEqual(set(result['sha256']),set(c.DRACUT_PATHS))
+    with self.assertRaises(ValueError):c.verify_dracut_successor(root,parent)
+   # Even an otherwise admitted exact child cannot change producer instructions.
+   git('reset','--soft',parent)
+   (root/'os/Containerfile').write_bytes(recipe.replace(b'RUN compile',b'RUN different compiler'))
+   git('add','.');git('commit','-qm','producer changed');bad=git('rev-parse','HEAD')
+   with patch.object(c,'CACHE_SOURCE',parent),patch.object(c,'DRACUT_SOURCE',bad),self.assertRaisesRegex(ValueError,'non-rootfs'):
+    c.verify_dracut_successor(root,bad)
+   git('reset','--soft',parent);(root/'Cargo.toml').write_bytes(b'extra input\n')
+   git('add','.');git('commit','-qm','extra input');bad=git('rev-parse','HEAD')
+   with patch.object(c,'CACHE_SOURCE',parent),patch.object(c,'DRACUT_SOURCE',bad),self.assertRaisesRegex(ValueError,'paths'):
+    c.verify_dracut_successor(root,bad)
+
 
 if __name__=='__main__':unittest.main()
