@@ -857,6 +857,27 @@ impl ChromeState {
     pub fn commit_workspace_name(&mut self) {
         if let Some(buf) = self.editing_workspace_name.take() {
             let trimmed = buf.trim();
+            // A locally-created or first-boot workspace can still be
+            // ownerless when the inline editor commits before the boot
+            // adoption pass. Claim only locally-governed rooms here; a
+            // foreign room remains closed to local mutation.
+            if !trimmed.is_empty() {
+                let claimant = self.local_user_id.clone();
+                let mut tree = self.tree_mut();
+                if let Some(active_room) = tree
+                    .active_workspace()
+                    .filter(|workspace| workspace.owner.is_none())
+                    .map(|workspace| workspace.room)
+                {
+                    tree.adopt_ownerless_workspaces_with(|room| {
+                        if *room == active_room {
+                            claimant.clone()
+                        } else {
+                            self.identity_source.local_user_for_room(room)
+                        }
+                    });
+                }
+            }
             if self.can_rename_active_workspace() && !trimmed.is_empty() {
                 let mut tree = self.tree_mut();
                 let room = if let Some(ws) = tree.active_workspace_mut() {
