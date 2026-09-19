@@ -16,7 +16,7 @@ const initialize=retryableMemo(init);
 return async function connectPeer(options={}){
   const {enrollmentBaseUrl='/qos-peer/enrollment',signal}=options;
   let lease,actionsV1,actionRevision=0n,actionRecovery=false,actionTimer=null,actionPolling=false;
-  let id,closed=false,closing=false,snapshot={phase:'authenticating',records:[]},connection,storage,namespace,raw,flush=Promise.resolve(),failed=false,generation=0;
+  let id,closed=false,closing=false,snapshot={phase:'authenticating',records:[]},connection,storage,namespace,raw,flush=Promise.resolve(),queuedPersist,failed=false,generation=0;
   const subscribers=new Set(),mounts=new Set(),failedMounts=new Set(),pendingMounts=new Set(),mountControllers=new Set();
   let reconnecting,closePromise,setup,operationId=0,surfaceId=0,healthRevision=0n,saving,admissionTimer=null,admissionDeadline=null,admissionRevision=0;
   const admissionWaiters=new Set();
@@ -26,19 +26,26 @@ return async function connectPeer(options={}){
   const report=(next,force=false)=>{if(next.health){if(next.health.admission||next.health.records)admissionRevision++;health={...health,...next.health,transport:{...health.transport,...next.health.transport,retry:health.transport.retry},failures:[...health.failures.filter(f=>!f.id.startsWith('runtime:')),...(next.health.failures??[])]};}health={...health,generation:snapshot.health?.generation??health.generation,admission:{...health.admission,deadlineAtMs:admissionDeadline}};const candidate={...snapshot,...next,health},changed=force||!samePublicValue(snapshot,candidate);if(changed){health={...health,generation:String(++healthRevision)};snapshot={...candidate,health};options.onStatus?.(snapshot);for(const listener of subscribers)listener(snapshot);}for(const waiter of admissionWaiters)waiter.check();};
   async function persist(publish=true){
     if(id===undefined||!storage||closed||failed)return;
-    flush=flush.catch(()=>{}).then(async()=>{
+    // Coalesce only work that has not started and is still the queue tail.
+    // A running drain or an intervening private-action write needs its own
+    // following barrier, so new writes can never join an already-settling run.
+    if(queuedPersist&&flush===queuedPersist.promise){queuedPersist.publish||=publish;return queuedPersist.promise;}
+    const request={publish};
+    request.promise=flush.catch(()=>{}).then(async()=>{
+      if(queuedPersist===request)queuedPersist=undefined;
       if(closed||failed)return;
       try{
         // The journal (including replay floors/outbox) and all canonical records
         // share this one strict IDB transaction. Network publication follows ack.
         const result=runtime.peer_pending_batch_bytes||runtime.peer_pending_batch
-          ?await commitPeerBatches({pending:()=>runtime.peer_pending_batch_bytes?runtime.peer_pending_batch_bytes(id):JSON.parse(runtime.peer_pending_batch(id)),commit:writes=>storage.commit(writes),acknowledge:value=>runtime.acknowledge_peer_storage_batch(id,JSON.stringify(value)),epoch:storage.epoch,publish:()=>{if(publish)runtime.peer_committed(id);}})
-          :await commitPeerWrites({pending:()=>JSON.parse(runtime.peer_pending_writes(id)),commit:writes=>storage.commit(writes),acknowledge:write=>runtime.acknowledge_storage(namespace.profile,namespace.device,BigInt(write.revision),undefined),publish:()=>{if(publish)runtime.peer_committed(id);}});
+          ?await commitPeerBatches({pending:()=>runtime.peer_pending_batch_bytes?runtime.peer_pending_batch_bytes(id):JSON.parse(runtime.peer_pending_batch(id)),commit:writes=>storage.commit(writes),acknowledge:value=>runtime.acknowledge_peer_storage_batch(id,JSON.stringify(value)),epoch:storage.epoch,publish:()=>{if(request.publish)runtime.peer_committed(id);}})
+          :await commitPeerWrites({pending:()=>JSON.parse(runtime.peer_pending_writes(id)),commit:writes=>storage.commit(writes),acknowledge:write=>runtime.acknowledge_storage(namespace.profile,namespace.device,BigInt(write.revision),undefined),publish:()=>{if(request.publish)runtime.peer_committed(id);}});
         clearFailure('storage');
         if(result.publicationError){connectionFailure(result.publicationError);coordinator.schedule();}
 
       }catch(error){failed=true;setFailure('storage',error);report({error:String(error),persistence:'failed'});throw error;}
     });
+    queuedPersist=request;flush=request.promise;
     return flush;
   }
   function pollActions(){
