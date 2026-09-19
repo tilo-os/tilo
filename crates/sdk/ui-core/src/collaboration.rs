@@ -55,6 +55,9 @@ use tokio::task::LocalSet;
 /// Every step before the report is a local syscall, so reaching this means
 /// something upstream is wedged.
 const SHOVEL_INIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// The worker must abandon a stuck primary RPC before the caller-side startup
+/// deadline so dropping a failed manager always closes its owned transports.
+const SDK_PRIMARY_ROUTE_TIMEOUT: Duration = Duration::from_millis(4_500);
 /// One absolute deadline for each host identity request/response exchange.
 /// The identity client drops a failed stream, so this also bounds shutdown of
 /// partial and late replies without blocking the shovel's LocalSet.
@@ -1805,6 +1808,10 @@ fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(
     })
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "the host identity transport is constructed and retained only on the shovel LocalSet"
+)]
 async fn sdk_join_identity_from_host(
     mut identity: runtime_identity::AsyncBrokerSigningIdentity,
     cluster_id: Uuid,
@@ -2069,10 +2076,12 @@ impl CollaborationManager {
         }
         match ready_rx.recv_timeout(SHOVEL_INIT_TIMEOUT) {
             Ok(result) => self.primary_route.accept(result).map_err(|error| {
-                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    error,
-                ))
+                let kind = if error == "collaboration primary route timed out" {
+                    std::io::ErrorKind::TimedOut
+                } else {
+                    std::io::ErrorKind::ConnectionRefused
+                };
+                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(kind, error))
             }),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(
                 runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
@@ -2996,17 +3005,23 @@ async fn drive_shovel(
                     record,
                 };
                 let key = spec.channel_id();
-                primary_result = ensure_sdk_route(
-                    &client,
-                    &presentation,
-                    participant_handle.as_deref(),
-                    participant_kind,
-                    &inbound_tx,
-                    &mut routes,
-                    &spec,
+                primary_result = match tokio::time::timeout(
+                    SDK_PRIMARY_ROUTE_TIMEOUT,
+                    ensure_sdk_route(
+                        &client,
+                        &presentation,
+                        participant_handle.as_deref(),
+                        participant_kind,
+                        &inbound_tx,
+                        &mut routes,
+                        &spec,
+                    ),
                 )
                 .await
-                .map(|()| spec);
+                {
+                    Ok(result) => result.map(|()| spec),
+                    Err(_) => Err("collaboration primary route timed out".to_string()),
+                };
                 primary = primary_result.is_ok().then_some(key);
             }
             SdkCommand::Primary(request) => {
@@ -5503,10 +5518,10 @@ mod tests {
         });
         let result = result_rx.recv_timeout(SHOVEL_INIT_TIMEOUT * 2 + Duration::from_secs(1));
         let elapsed = started.elapsed();
-        // Always unblock the fixture before asserting or joining the caller.
-        // The server cannot acknowledge before this caller observation.
-        drop(release);
         if result.is_err() {
+            // A broken worker-side deadline must not leave this test's broker
+            // wedged while reporting the regression.
+            drop(release);
             // Do not turn an observed timeout regression into an unbounded
             // join. Give the released fixture a bounded chance to shut down.
             if result_rx.recv_timeout(Duration::from_secs(2)).is_ok() || caller.is_finished() {
@@ -5518,16 +5533,13 @@ mod tests {
         match result.expect("manager must return within the bounded startup window") {
             Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
                 assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-                assert_eq!(
-                    error.to_string(),
-                    "collaboration primary route did not become ready in time"
-                );
+                assert_eq!(error.to_string(), "collaboration primary route timed out");
             }
             _ => panic!("unacknowledged Hello must never return a connected manager"),
         }
         assert!(
-            elapsed >= SHOVEL_INIT_TIMEOUT,
-            "must wait for the existing readiness deadline"
+            elapsed >= SDK_PRIMARY_ROUTE_TIMEOUT,
+            "must wait for the worker-side route deadline"
         );
         assert_eq!(
             attempt_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
@@ -5540,7 +5552,8 @@ mod tests {
         );
         stop_rx
             .recv_timeout(Duration::from_secs(2))
-            .expect("fixture broker stops after releasing delayed join");
+            .expect("timed-out primary join must cancel and close the fixture broker");
+        drop(release);
     }
 
     /// Stand up a fake `CollabService` on one end of a Unix socket pair;
