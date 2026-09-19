@@ -2,30 +2,20 @@
 # Format-check exactly the Rust files changed from a CI comparison base.
 set -euo pipefail
 
-repo="${TILO_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo="${TILO_REPO_ROOT:-$(cd "$script_dir/../.." && pwd)}"
 cd "$repo"
 
-base="${1:-}"
-before="${2:-}"
-if [ -z "$base" ] || [ "$base" = null ]; then
-    base="$before"
-fi
-if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ]; then
-    base=$(git rev-parse HEAD^)
-fi
-if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-    git fetch --no-tags --depth=1 origin "$base"
-fi
+# Use the same PR-versus-push semantics and shallow-history recovery as the
+# allow-reason gate; an unavailable comparison must fail both checks.
+range=$(python3 "$script_dir/check_changed_rust_allows.py" \
+    --root "$repo" --comparison-range "${1:-}" "${2:-}")
 
-if merge_base=$(git merge-base "$base" HEAD 2>/dev/null); then
-    range="$merge_base...HEAD"
-else
-    range="$base..HEAD"
-fi
-
-mapfile -d '' rust_files < <(
-    git diff --name-only -z --diff-filter=ACMRTUXB "$range" -- '*.rs'
-)
+# Process substitution hides git diff's exit status from mapfile/set -e.
+changed_paths=$(mktemp)
+trap 'rm -f -- "$changed_paths"' EXIT
+git diff --name-only -z --diff-filter=ACMRTUXB "$range" -- '*.rs' >"$changed_paths"
+mapfile -d '' rust_files <"$changed_paths"
 if [ "${#rust_files[@]}" -eq 0 ]; then
     echo "changed Rust formatting OK (no Rust files in $range)"
     exit 0
