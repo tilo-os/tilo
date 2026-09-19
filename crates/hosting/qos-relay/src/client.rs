@@ -129,6 +129,9 @@ pub enum ClientError {
     /// I/O.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// The private v2 sender has closed with its shared relay transport.
+    #[error("private transport closed")]
+    PrivateTransportClosed,
 }
 
 fn classify_connect_error(error: iroh::endpoint::ConnectError) -> ClientError {
@@ -785,8 +788,7 @@ impl RelayClient {
             return Err(ClientError::Codec("state uses send".into()));
         }
         crate::transport_v2::encode(&frame).map_err(|e| ClientError::Codec(e.to_string()))?;
-        tx.try_send(frame)
-            .map_err(|_| ClientError::Codec("private queue unavailable".into()))
+        tx.try_send(frame).map_err(private_send_error)
     }
 
     /// Receive authenticated source evidence from this exact relay session.
@@ -854,6 +856,15 @@ impl RelayClient {
         self.connection.close(0u32.into(), b"client closed");
         self.connection.closed().await;
         self.endpoint.close().await;
+    }
+}
+
+fn private_send_error<T>(error: tokio::sync::mpsc::error::TrySendError<T>) -> ClientError {
+    match error {
+        tokio::sync::mpsc::error::TrySendError::Full(_) => {
+            ClientError::Codec("private queue full".into())
+        }
+        tokio::sync::mpsc::error::TrySendError::Closed(_) => ClientError::PrivateTransportClosed,
     }
 }
 
@@ -1031,6 +1042,21 @@ mod scheduling_tests {
             target: [2; 32],
             message: ActionMessage::CatalogueRefresh,
         })
+    }
+
+    #[test]
+    fn private_queue_full_and_closed_have_distinct_errors() {
+        let (sender, receiver) = mpsc::channel(1);
+        sender.try_send(action()).unwrap();
+        assert!(matches!(
+            private_send_error(sender.try_send(action()).unwrap_err()),
+            ClientError::Codec(message) if message == "private queue full"
+        ));
+        drop(receiver);
+        assert!(matches!(
+            private_send_error(sender.try_send(action()).unwrap_err()),
+            ClientError::PrivateTransportClosed
+        ));
     }
 
     #[tokio::test]

@@ -249,10 +249,10 @@ impl PeerActionQueue {
         }
         session
             .enable_actions(room)
-            .map_err(|_| PeerActionAttachmentError::TransportClosed)?;
+            .map_err(attachment_send_error)?;
         session
             .register_action_broker(room, host)
-            .map_err(|_| PeerActionAttachmentError::TransportClosed)?;
+            .map_err(attachment_send_error)?;
         let mut watches: Vec<(CertifiedAction, qos_actions::InvocationId, ActionMessage)> =
             Vec::new();
         let mut transitions = self.transitions.subscribe();
@@ -263,7 +263,7 @@ impl PeerActionQueue {
                     Some(CertifiedActionEvent::Delivered(evidence)) => {
                         if evidence.action().room != room { return Err(PeerActionAttachmentError::Failed); }
                         let response = self.request(Some(evidence.clone()), None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?;
-                        send(&session, &evidence, response.clone()).map_err(|_| PeerActionAttachmentError::TransportClosed)?;
+                        send(&session, &evidence, response.clone()).map_err(attachment_send_error)?;
                         if let ActionMessage::Observation { invocation, ref update, uncertain, .. } = response {
                             if !uncertain && update.as_ref().is_some_and(|u| !u.is_terminal()) {
                                 if let Some(watch) = watches.iter_mut().find(|(old, id, _)| old.action().source == evidence.action().source && *id == invocation) { *watch = (evidence, invocation, response); }
@@ -292,7 +292,7 @@ impl PeerActionQueue {
                             if sequence(&update).zip(sequence(prior)).is_some_and(|(next, old)| next <= old) { continue; }
                         }
                         let response = self.request(Some(evidence.clone()), Some(*invocation), Some(update)).await.map_err(|_| PeerActionAttachmentError::Failed)?;
-                        if response != *previous { send(&session, evidence, response.clone()).map_err(|_| PeerActionAttachmentError::TransportClosed)?; *previous = response; }
+                        if response != *previous { send(&session, evidence, response.clone()).map_err(attachment_send_error)?; *previous = response; }
                     }
                     watches.retain(|(_, _, response)| matches!(response, ActionMessage::Observation { update: Some(update), uncertain: false, .. } if !update.is_terminal()));
                 }
@@ -330,7 +330,7 @@ fn send(
     session: &qos_relay::RelayCoeditSession,
     evidence: &CertifiedAction,
     message: ActionMessage,
-) -> Result<(), ()> {
+) -> Result<(), qos_relay::client::ClientError> {
     let request = evidence.action();
     session
         .send_action(DirectedAction {
@@ -340,7 +340,17 @@ fn send(
             target: request.source,
             message,
         })
-        .map_err(|_| ())
+}
+
+fn attachment_send_error(
+    error: qos_relay::client::ClientError,
+) -> PeerActionAttachmentError {
+    match error {
+        qos_relay::client::ClientError::PrivateTransportClosed => {
+            PeerActionAttachmentError::TransportClosed
+        }
+        _ => PeerActionAttachmentError::Failed,
+    }
 }
 
 #[cfg(test)]
@@ -403,6 +413,23 @@ mod tests {
         assert!(!*replacement_ready.borrow());
         replacement.0.send_replace(true);
         assert!(*replacement_ready.borrow());
+    }
+
+    #[test]
+    fn only_closed_private_transport_is_retryable() {
+        use qos_relay::client::ClientError;
+
+        assert_eq!(
+            attachment_send_error(ClientError::PrivateTransportClosed),
+            PeerActionAttachmentError::TransportClosed
+        );
+        for error in [
+            ClientError::Codec("invalid frame".into()),
+            ClientError::Codec("private queue full".into()),
+            ClientError::UnsupportedProtocol,
+        ] {
+            assert_eq!(attachment_send_error(error), PeerActionAttachmentError::Failed);
+        }
     }
 
     #[tokio::test]
