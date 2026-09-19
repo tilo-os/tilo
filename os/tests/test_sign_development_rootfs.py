@@ -40,6 +40,15 @@ class RootfsIdentityTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs['env'],
                          {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': '/root'})
 
+    def test_command_failure_reports_safe_stderr_and_redacts_secret_markers(self):
+        with patch.object(producer.subprocess, 'run', return_value=subprocess.CompletedProcess([], 125, b'', b'build detail')):
+            with self.assertRaisesRegex(ValueError, 'build detail'):
+                producer.command(['podman', 'build'])
+        with patch.object(producer.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, b'', b'Bearer hidden')):
+            with self.assertRaisesRegex(ValueError, 'diagnostic-redacted') as raised:
+                producer.command(['podman', 'build'])
+        self.assertNotIn('hidden', str(raised.exception))
+
     def image(self):
         return {'Id': IMAGE, 'Os': 'linux', 'Architecture': 'arm64',
                 'Labels': {'org.opencontainers.image.revision': REVISION}}

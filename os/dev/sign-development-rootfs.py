@@ -82,7 +82,11 @@ def command(arguments):
     result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             env=environment)
     if result.returncode:
-        raise ValueError(f'{Path(arguments[0]).name} failed (exit {result.returncode})')
+        detail = result.stderr[-2048:].decode('utf-8', errors='replace')
+        if re.search(r'(?i)(authorization|password|private[ _-]?key|bearer|token|BEGIN [A-Z ]+ KEY)', detail):
+            detail = 'diagnostic-redacted'
+        detail = ''.join(c if c in '\n\t' or ' ' <= c <= '~' else '?' for c in detail)
+        raise ValueError(f'{Path(arguments[0]).name} failed (exit {result.returncode}): {detail}')
     return result.stdout.decode()
 
 

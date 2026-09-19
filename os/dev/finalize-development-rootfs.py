@@ -31,6 +31,15 @@ FIELDS = {'schema', 'source_revision', 'source_dir', 'helpers_revision', 'receip
           'stage_timeout_seconds', 'publish_repository'}
 
 
+def public_failure_tail(data):
+    """Return bounded command diagnostics only when they contain no secret markers."""
+    text = bytes(data[-4096:]).decode('utf-8', errors='replace')
+    if re.search(r'(?i)(authorization|password|private[ _-]?key|bearer|token|BEGIN [A-Z ]+ KEY)', text):
+        return 'diagnostic-redacted'
+    text = ''.join(character if character in '\n\t' or ' ' <= character <= '~' else '?' for character in text)
+    return '\n'.join(text.splitlines()[-12:])[-2048:] or 'no-command-output'
+
+
 def validate_request(request):
     if set(request) not in (FIELDS, FIELDS | {'boot_profile'}) or request['schema'] != 1:
         raise ValueError('finalization request fields differ from schema1')
@@ -85,8 +94,10 @@ def run_bounded(arguments, environment, timeout):
                 data.extend(chunk)
                 if len(data) > 16 * 1024**2:
                     raise ValueError('finalization stage output exceeded bound')
-        if process.wait(timeout=max(0.01, deadline - time.monotonic())):
-            raise ValueError('finalization command failed; checkpoint not accepted')
+        returncode = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+        if returncode:
+            executable = Path(arguments[0]).name
+            raise ValueError(f'command-failed:{executable}:exit-{returncode}:{public_failure_tail(data)}')
         completed = True
         return bytes(data)
     finally:
@@ -356,9 +367,10 @@ def main():
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         driver = Driver(spool.document(args.request), args.helpers, args.evidence)
         print(json.dumps(driver.execute(), sort_keys=True))
-    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
         if driver:
             driver.status({'state': 'failed-or-interrupted', 'automatic_retry': False,
+                           'failure': str(error)[:4096],
                            'action': 'inspect live process and pending signing request before explicit new job'})
         parser.exit(1, 'finalization did not complete; inspect public checkpoint status and owned live handles\n')
     finally:

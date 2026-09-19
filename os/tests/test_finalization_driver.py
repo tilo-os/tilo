@@ -181,5 +181,16 @@ class FinalizationTests(unittest.TestCase):
         else:
             self.fail('descendant retained stdout after deadline')
 
+    def test_failed_command_retains_bounded_public_diagnostic(self):
+        script = 'import sys;print("useful loader failure");sys.exit(7)'
+        with self.assertRaisesRegex(ValueError, 'exit-7:useful loader failure'):
+            finalizer.run_bounded([sys.executable, '-c', script], dict(os.environ), 2)
+
+    def test_failed_command_redacts_secret_markers(self):
+        script = 'import sys;print("Authorization: secret");sys.exit(2)'
+        with self.assertRaisesRegex(ValueError, 'diagnostic-redacted') as raised:
+            finalizer.run_bounded([sys.executable, '-c', script], dict(os.environ), 2)
+        self.assertNotIn('secret', str(raised.exception))
+
 if __name__ == '__main__':
     unittest.main()
