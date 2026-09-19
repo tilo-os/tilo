@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject mutable third-party actions in Forgejo workflows.
+"""Reject mutable third-party actions in Forgejo workflow definitions.
 
 Remote actions execute code inside CI and therefore must use an immutable
 40-character commit SHA. Repository-local actions and explicit ``docker://``
@@ -35,7 +35,8 @@ class Violation:
 
 
 def workflow_files(directory: Path) -> list[Path]:
-    return sorted((*directory.glob("*.yml"), *directory.glob("*.yaml")))
+    """Return workflows and nested composite-action definitions."""
+    return sorted((*directory.rglob("*.yml"), *directory.rglob("*.yaml")))
 
 
 def audit(directory: Path) -> list[Violation]:
@@ -59,8 +60,8 @@ def main() -> int:
     parser.add_argument(
         "--workflows",
         type=Path,
-        default=ROOT / ".forgejo" / "workflows",
-        help="workflow directory to audit",
+        default=ROOT / ".forgejo",
+        help="Forgejo configuration tree to audit recursively",
     )
     args = parser.parse_args()
     violations = audit(args.workflows)
@@ -68,7 +69,10 @@ def main() -> int:
         print(violation.display(ROOT))
     if violations:
         return 1
-    print(f"workflow action pins OK ({len(workflow_files(args.workflows))} workflows)")
+    print(
+        "workflow action pins OK "
+        f"({len(workflow_files(args.workflows))} workflow/action definitions)"
+    )
     return 0
 
 
