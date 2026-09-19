@@ -188,6 +188,13 @@ impl CheckpointCadence {
     }
 }
 
+fn signed_commit_publication_due(
+    cadence: &mut CheckpointCadence,
+    now: std::time::Instant,
+) -> bool {
+    cadence.on_commit(now)
+}
+
 pub struct NativeSubscription {
     session: Arc<RelayCoeditSession>,
     actions: Option<AttachedActions>,
@@ -711,7 +718,12 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 timing.mark("apply_end");
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
                 timing.mark("publication_start");
-                let published = session.as_ref().filter(|s| s.is_ready()).ok_or_else(|| anyhow::anyhow!("signed commit publication pending; native peer unavailable")).and_then(|s| publish(&owner, s));
+                let published = if signed_commit_publication_due(&mut cadence, std::time::Instant::now()) {
+                    tracing::debug!(site = "signed_commit", "publish site");
+                    session.as_ref().filter(|s| s.is_ready()).ok_or_else(|| anyhow::anyhow!("signed commit publication pending; native peer unavailable")).and_then(|s| publish(&owner, s))
+                } else {
+                    Ok(())
+                };
                 timing.mark("publication_end");
                 timing.mark("runtime_committed_start");
                 if let Some(runtime) = actions.as_ref() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(signing.fail(problem)); } }
@@ -936,7 +948,7 @@ mod tests {
 
 #[cfg(test)]
 mod cadence_tests {
-    use super::CheckpointCadence;
+    use super::{CheckpointCadence, signed_commit_publication_due};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -988,5 +1000,19 @@ mod cadence_tests {
         // A tick shorter than IDLE after activity must not flush.
         assert!(!cadence.due_on_idle(start + CheckpointCadence::IDLE - Duration::from_millis(1)));
         assert!(cadence.pending);
+    }
+
+    #[test]
+    fn signed_app_commits_are_coalesced_by_the_host_cadence() {
+        let mut cadence = CheckpointCadence::new();
+        let start = Instant::now();
+        for offset in 0..50 {
+            assert!(!signed_commit_publication_due(
+                &mut cadence,
+                start + Duration::from_millis(offset),
+            ));
+        }
+        assert!(cadence.pending);
+        assert!(cadence.due_on_idle(start + Duration::from_millis(50) + CheckpointCadence::IDLE));
     }
 }

@@ -1816,9 +1816,11 @@ async fn desktop_open_through_broker(
     let operation = ActionMessage::InvokeBound { host, invocation, app_peer: surface["peer_id"].as_u64().unwrap().to_string(), app_id: APP_ID.into(), record_id: "".into(), resource: RESOURCE.into(), action: ACTION.into(), argument: Some(serde_json::json!({"command":serde_json::to_string(&command).unwrap()})), confirmation: None, revision: None };
     let prior = remote.rows().len();
     invoke_and_observe(client, remote, room, cert, native, host, invocation, operation.clone()).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
+    // Signed app commits share the host's five-second idle checkpoint cadence;
+    // leave scheduling margin beyond that deliberate publication boundary.
+    tokio::time::timeout(Duration::from_secs(7), async {
         while remote.rows().len() <= prior { apply_state(remote, client.recv().await.unwrap()); }
-    }).await.expect("native desktop record must replicate");
+    }).await.expect("native desktop record must replicate after the idle publication cadence");
     let records = remote.rows().len();
     invoke_and_observe(client, remote, room, cert, native, host, invocation, operation.clone()).await;
     assert_eq!(remote.rows().len(), records, "duplicate full UUID must not create another checked record");
