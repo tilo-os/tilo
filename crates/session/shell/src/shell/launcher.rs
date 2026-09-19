@@ -1077,6 +1077,13 @@ pub fn runtime_dir() -> PathBuf {
 /// Returns [`LaunchError::RegistryUnreadable`] if the app registry file
 /// cannot be read or parsed.
 pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
+    tracing::info!(
+        target: "tilo::app_registry",
+        system_registry = ?launcher::registry::system_registry_path(),
+        system_payload = ?std::env::var_os("TILO_APPS_SYSTEM_PAYLOAD_DIR"),
+        user_registry = ?launcher::registry::default_registry_path().ok(),
+        "reading installed application registry"
+    );
     let entries =
         launcher::registry::list_installed().map_err(|e| LaunchError::RegistryUnreadable {
             detail: e.to_string(),
@@ -1851,7 +1858,7 @@ fn launch_with_context(
             package_id: package_id.to_string(),
         });
     }
-    execute_installed(app, room, document, uri, tool_intent, media_handoff)
+    execute_installed(app, room, document, uri, tool_intent, media_handoff, None)
 }
 
 #[cfg(test)]
@@ -1888,13 +1895,16 @@ fn execute_installed(
     uri: Option<&str>,
     tool_intent: Option<&ToolIntent>,
     media_handoff: Option<MediaHandoffLaunch>,
+    capability_snapshot: Option<Vec<CapOverride>>,
 ) -> Result<InstalledApp, LaunchError> {
+    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch preflight begin");
     let socket = wayland_socket().ok_or(LaunchError::NoDisplay)?;
     let launcher_bin = selected_execution_program()?;
+    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launcher and display resolved");
 
     // A failure to write the capability file is not a launch failure —
     // the app starts with manifest-only permissions, the safe direction.
-    let capabilities = capabilities_for_app(&app.package_id);
+    let capabilities = capability_snapshot.unwrap_or_else(|| capabilities_for_app(&app.package_id));
     let capabilities_file = match write_capabilities_file(&app.package_id, &capabilities) {
         Ok(path) => path,
         Err(e) => {
@@ -1911,6 +1921,7 @@ fn execute_installed(
         .map_err(|error| LaunchError::IdentityUnavailable {
             detail: error.to_string(),
         })?;
+    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "identity selection resolved");
 
     let mut command = build_launch_command_for(
         &app,
@@ -1941,7 +1952,12 @@ fn execute_installed(
         "TILO_CONTINUITY_INSTANCE".to_string(),
         continuity_instance.to_string(),
     ));
+    command.env.push((
+        "TILO_STARTUP_METRICS_PATH".to_string(),
+        format!("/run/tilo/app/startup-{continuity_instance}.json"),
+    ));
     attach_continuity_instance(&app.package_id, continuity_instance);
+    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "continuity staged");
     if let Some((Some((schema, resume)), _)) = staged_resume {
         command.env.push((
             "TILO_CONTINUITY_RESUME_SCHEMA".to_string(),
@@ -1976,8 +1992,10 @@ fn execute_installed(
             app.package_id
         );
     }
+    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "governance projection staged");
     remember_launch(&app);
     let _ = spawn_detached(app.clone(), command);
+    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch worker queued");
     Ok(app)
 }
 
@@ -1992,6 +2010,50 @@ pub fn launch_in_workspace(
     workspace: &Workspace,
 ) -> Result<InstalledApp, LaunchError> {
     launch_document_in_workspace(package_id, workspace, None)
+}
+
+/// Queue a GUI launch without doing registry, identity, or filesystem work on
+/// the compositor thread.  The workspace inputs are cloned before the worker
+/// starts, so a later workspace switch cannot redirect this launch or widen
+/// its capabilities.
+///
+/// The ordinary synchronous helpers remain available to non-interactive
+/// callers that need their immediate error.  Desktop activation must use this
+/// path: registry verification and identity lookup can involve cold storage or
+/// D-Bus and must never stall input or presentation.
+pub fn queue_launch_in_workspace(
+    app: InstalledApp,
+    workspace: &Workspace,
+) -> Result<(), LaunchError> {
+    let package_id = app.package_id.clone();
+    let display_name = app.display_name.clone();
+    let room = workspace.room;
+    let capabilities = workspace.capabilities.clone();
+    std::thread::Builder::new()
+        .name("tilo-launch-preflight".to_string())
+        .spawn(move || {
+            let app_capabilities = capabilities
+                .into_iter()
+                .filter(|capability| capability.subject == Subject::app(&package_id))
+                .collect();
+            let outcome =
+                execute_installed(app, room, None, None, None, None, Some(app_capabilities));
+            if let Err(error) = outcome {
+                push_event(LaunchEvent {
+                    package_id,
+                    display_name,
+                    managed_agent_id: None,
+                    managed_workspace_id: None,
+                    kind: LaunchEventKind::SpawnFailed {
+                        detail: error.user_message(),
+                    },
+                });
+            }
+        })
+        .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
+            detail: error.to_string(),
+        })?;
+    Ok(())
 }
 
 /// [`launch_in_workspace`], additionally asking the app to open

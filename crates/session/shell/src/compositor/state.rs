@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 enum ForeignCommitCapture {
     NoBuffer,
     Removed,
-    DirectBuffer,
+    Shm,
     Dmabuf(u64),
 }
 
@@ -1737,12 +1737,10 @@ impl State {
             match &attrs.current().buffer {
                 Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
                     let outcome = match association {
-                        ForeignCommitCapture::DirectBuffer => {
-                            store().capture_commit(surface_id, buffer)
-                        }
                         ForeignCommitCapture::Dmabuf(token) => {
                             store().capture_commit_associated(surface_id, buffer, Some(token))
                         }
+                        ForeignCommitCapture::Shm => CaptureOutcome::Queued,
                         ForeignCommitCapture::NoBuffer | ForeignCommitCapture::Removed => return,
                     };
                     if let CaptureOutcome::Failed(reason) = outcome {
@@ -2570,33 +2568,51 @@ impl State {
         if !captured_here {
             return;
         }
-        let association = wl_compositor::with_states(surface, |states| {
+        let (association, blocker) = wl_compositor::with_states(surface, |states| {
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
             let buffer = match &attrs.pending().buffer {
-                Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => buffer,
+                Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => buffer.clone(),
                 Some(wl_compositor::BufferAssignment::Removed) => {
-                    return ForeignCommitCapture::Removed;
+                    return (ForeignCommitCapture::Removed, None);
                 }
-                None => return ForeignCommitCapture::NoBuffer,
-            };
-            let Some(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer).ok().cloned() else {
-                return ForeignCommitCapture::DirectBuffer;
+                None => return (ForeignCommitCapture::NoBuffer, None),
             };
             drop(attrs);
             let Some(client) = surface.client() else {
-                return ForeignCommitCapture::NoBuffer;
+                return (ForeignCommitCapture::NoBuffer, None);
             };
-            if let Some((token, barrier)) = crate::compositor::foreign::store()
-                .prepare_dmabuf_capture(surface_id, client, dmabuf)
-            {
-                wl_compositor::add_blocker(surface, barrier);
-                ForeignCommitCapture::Dmabuf(token)
-            } else {
-                ForeignCommitCapture::NoBuffer
+            if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer).cloned() {
+                if let Some((token, barrier)) = crate::compositor::foreign::store()
+                    .prepare_dmabuf_capture(surface_id, client, dmabuf)
+                {
+                    // `with_states` holds Smithay's PrivateSurfaceData mutex.
+                    // `add_blocker` takes that same non-reentrant mutex, so it
+                    // must happen after this callback returns. Doing it here
+                    // self-deadlocked the compositor on the first GPU-backed
+                    // app commit (most visibly Chat).
+                    return (ForeignCommitCapture::Dmabuf(token), Some(barrier));
+                }
+                return (ForeignCommitCapture::NoBuffer, None);
+            }
+            match crate::compositor::surface_readback::copy_shm_frame(&buffer) {
+                Ok(frame) => {
+                    if crate::compositor::foreign::store().prepare_shm_capture(surface_id, frame) {
+                        (ForeignCommitCapture::Shm, None)
+                    } else {
+                        (ForeignCommitCapture::NoBuffer, None)
+                    }
+                }
+                Err(error) => {
+                    crate::compositor::foreign::store().note_failure(surface_id, error.to_string());
+                    (ForeignCommitCapture::NoBuffer, None)
+                }
             }
         });
+        if let Some(blocker) = blocker {
+            wl_compositor::add_blocker(surface, blocker);
+        }
         wl_compositor::with_states(surface, |states| {
             states
                 .data_map
@@ -2614,14 +2630,16 @@ impl State {
     /// Re-evaluate transactions whose off-thread buffer capture completed.
     /// Called by the compositor loop on its owning thread; worker threads only
     /// flip barriers and enqueue owning client handles.
-    pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) {
+    pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) -> bool {
         let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
+        let changed = !completed.is_empty();
         for client in completed {
             let Some(client_state) = client.get_data::<ClientState>() else {
                 continue;
             };
             client_state.compositor_state.blocker_cleared(self, display);
         }
+        changed
     }
 }
 

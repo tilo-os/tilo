@@ -435,8 +435,7 @@ impl ApplicationsProvider {
             ) else {
                 continue;
             };
-            let package_id = app.package_id.clone();
-            let display_name = app.display_name.clone();
+            let launch_app = app.clone();
             // A declared category is a more useful second line than the version.
             let detail = app_detail(needle, &app);
             // Where the window will land leads the line, since it's the
@@ -450,7 +449,7 @@ impl ApplicationsProvider {
                 Some(subtitle),
                 presentation_score(needle, &app.package_id, score),
                 move |_doc, _root, chrome: &Chrome| {
-                    launch_installed_app(chrome, &package_id, &display_name)
+                    launch_resolved_installed_app(chrome, launch_app.clone())
                 },
             ));
         }
@@ -822,6 +821,20 @@ pub(crate) fn launch_installed_app(
     package_id: &str,
     display_name: &str,
 ) -> Result<(), ActionError> {
+    let app = launcher::installed_apps()
+        .map_err(|error| ActionError::Refused(error.user_message()))?
+        .into_iter()
+        .find(|app| app.package_id == package_id)
+        .ok_or_else(|| ActionError::Refused(format!("{display_name} is no longer installed")))?;
+    launch_resolved_installed_app(chrome, app)
+}
+
+fn launch_resolved_installed_app(
+    chrome: &Chrome,
+    app: launcher::InstalledApp,
+) -> Result<(), ActionError> {
+    let package_id = app.package_id.as_str();
+    let display_name = app.display_name.as_str();
     grant_user_home_to_file_manager(chrome, package_id);
     // If the room already has this app open, focus it rather than starting
     // a second copy. See `peer_windows::opened_for_the_room`.
@@ -870,10 +883,8 @@ pub(crate) fn launch_installed_app(
             st.strip_viewport(),
             st.open_target,
         );
-        tree.active_workspace().map(|ws| {
-            launcher::set_workspace_capabilities(ws.capabilities.clone());
-            launcher::launch_in_workspace(package_id, ws)
-        })
+        tree.active_workspace()
+            .map(|ws| launcher::queue_launch_in_workspace(app.clone(), ws))
     };
     // Non-blocking past resolution — only pre-fork failures land here, the
     // rest arrive as launch events drained each frame.

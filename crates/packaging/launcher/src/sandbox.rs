@@ -330,6 +330,24 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
             argv.extend(["--setenv".to_string(), key.to_string(), value]);
         }
     }
+    // The shell owns this path and always points it inside the app's one
+    // writable bind. Preserve it across `--clearenv` so startup checkpoints
+    // survive a compositor crash or forced reboot. Refuse arbitrary paths:
+    // this diagnostic must never turn into a sandbox write primitive.
+    if let Ok(value) = std::env::var("TILO_STARTUP_METRICS_PATH")
+        && value.starts_with("/run/tilo/app/startup-")
+        && value.ends_with(".json")
+        && value.len() <= 160
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_'))
+    {
+        argv.extend([
+            "--setenv".to_string(),
+            "TILO_STARTUP_METRICS_PATH".to_string(),
+            value,
+        ]);
+    }
 }
 
 fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload_mount: &Path) {
@@ -1069,6 +1087,54 @@ mod tests {
             setenv_value(&argv, "TILO_CONTINUITY_RESUME_HEX"),
             Some("7b7d")
         );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn argv_forwards_only_shell_owned_startup_metrics_paths() {
+        // SAFETY: serialized with every test that mutates process env.
+        unsafe {
+            std::env::set_var(
+                "TILO_STARTUP_METRICS_PATH",
+                "/run/tilo/app/startup-42-dead_beef.json",
+            );
+        }
+        let argv = build_bwrap_argv(
+            &mk_manifest("off"),
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        // SAFETY: same serialized scope as the write above.
+        unsafe {
+            std::env::remove_var("TILO_STARTUP_METRICS_PATH");
+        }
+        assert_eq!(
+            setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"),
+            Some("/run/tilo/app/startup-42-dead_beef.json")
+        );
+
+        // SAFETY: serialized with every test that mutates process env.
+        unsafe {
+            std::env::set_var("TILO_STARTUP_METRICS_PATH", "/home/user/metrics.json");
+        }
+        let argv = build_bwrap_argv(
+            &mk_manifest("off"),
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        // SAFETY: same serialized scope as the write above.
+        unsafe {
+            std::env::remove_var("TILO_STARTUP_METRICS_PATH");
+        }
+        assert_eq!(setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"), None);
     }
 
     #[test]
