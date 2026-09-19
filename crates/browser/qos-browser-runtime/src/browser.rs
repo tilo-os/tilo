@@ -771,6 +771,17 @@ pub fn semantic(
 pub(crate) fn write_json(w: &PendingWrite) -> serde_json::Value {
     serde_json::json!({"key":serde_json::to_string(&DiskKey::from(&w.key)).unwrap_or_default(),"bytes":w.value.bytes,"actor":w.value.actor,"revision":crate::revision_wire_value(w.revision)})
 }
+/// Copy binary persistence payloads directly into JS-owned buffers. A view into
+/// WASM memory could be invalidated while IndexedDB awaits its transaction.
+pub(crate) fn write_bytes(w: &PendingWrite) -> Result<JsValue, JsValue> {
+    let value = js_sys::Object::new();
+    js_sys::Reflect::set(&value, &"key".into(), &serde_json::to_string(&DiskKey::from(&w.key)).map_err(error)?.into())?;
+    js_sys::Reflect::set(&value, &"bytes".into(), &js_sys::Uint8Array::from(w.value.bytes.as_slice()))?;
+    let actor = w.value.actor.as_ref().map(|bytes| JsValue::from(js_sys::Uint8Array::from(bytes.as_slice()))).unwrap_or(JsValue::NULL);
+    js_sys::Reflect::set(&value, &"actor".into(), &actor)?;
+    js_sys::Reflect::set(&value, &"revision".into(), &crate::revision_wire_value(w.revision).into())?;
+    Ok(value.into())
+}
 #[wasm_bindgen]
 pub fn pending_writes(id: u64) -> Result<String, JsValue> {
     MOUNTS.with_borrow_mut(|m| {

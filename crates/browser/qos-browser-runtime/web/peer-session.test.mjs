@@ -3,6 +3,22 @@ import assert from 'node:assert/strict';
 import {createConnectPeer,pendingPeerRecoveryCount,retryPendingPeerRecovery} from './peer-session.mjs';
 import {recoverableClose,settleComponentClose} from './close-recovery.mjs';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
+test('typed persistence batches keep binary bytes and exact revisions through commit before acknowledgement',async()=>{
+ const f=fixture();let pending=true,committed=false,acknowledged=false;
+ const write={key:'{"type":"admission","workspace":"room"}',bytes:new Uint8Array([0,128,255]),actor:new Uint8Array([2,4]),revision:'9007199254740993'};
+ f.storage.epoch='test-epoch';
+ f.runtime.peer_pending_batch_bytes=()=>pending?{id:'1:1',writes:[write],records:[]}:{id:'0',writes:[],records:[]};
+ f.runtime.peer_pending_batch=()=>{throw Error('numeric JSON batch must not be used when binary API is available');};
+ f.runtime.peer_pending_writes=()=>{throw Error('legacy writes must not be used');};
+ f.storage.commit=async writes=>{
+  assert.equal(acknowledged,false);assert.equal(writes.length,1);
+  assert(writes[0].bytes instanceof Uint8Array);assert.deepEqual([...writes[0].bytes],[0,128,255]);
+  assert(writes[0].actor instanceof Uint8Array);assert.equal(writes[0].revision,'9007199254740993');committed=true;
+ };
+ f.runtime.acknowledge_peer_storage_batch=(_id,raw)=>{assert(committed);const value=JSON.parse(raw);assert.equal(value.batchId,'1:1');assert.equal(value.epoch,'test-epoch');assert.equal(value.result.ok,true);pending=false;acknowledged=true;};
+ f.runtime.peer_committed=()=>{assert(acknowledged);};
+ const peer=await f.connect();assert(acknowledged);await peer.dispose();
+});
 function fixture({enroll,recoveryClock}={}){
  let next=0,held=0,storageRefs=0,failConnect=false,failClose=false,failCommit=false,pendingWrite=false,attempts=0,gate;
  const mountGates=[],mountSignals=[],mountOptionsSeen=[];

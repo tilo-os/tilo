@@ -566,17 +566,38 @@ pub(crate) fn mark_failure(id:u32,failure:String){PEERS.with(|peers|if let Some(
 struct BatchResult { batch_id:String,epoch:String,observed_at_ms:f64,result:BatchOutcome }
 #[derive(Deserialize)]
 struct BatchOutcome {ok:bool,code:Option<String>}
-#[wasm_bindgen]
-pub fn peer_pending_batch(id:u32)->Result<String,JsValue>{
+fn encode_pending_batch<T>(id:u32, encode:impl FnOnce(&str,&[PendingWrite],&[qos_peer_state::DocumentRow])->Result<T,JsValue>)->Result<T,JsValue>{
     PEERS.with(|peers|{
         let peer=peers.borrow().get(&id).cloned().ok_or_else(||error("closed peer"))?;
         let writes=peer.cache.pending_writes();
-        if writes.is_empty(){return Ok(serde_json::json!({"id":"0","writes":[],"records":[]}).to_string())}
+        if writes.is_empty(){return encode("0",&[],&[])}
         let batch=peer.next_batch.get().checked_add(1).ok_or_else(||error("batch sequence exhausted"))?;peer.next_batch.set(batch);
         let id=format!("{}:{batch}",peer.id);
-        let values=writes.iter().map(|write|{let mut value=crate::browser::write_json(write);value["revision"]=write.revision.to_string().into();value}).collect::<Vec<_>>();
-        peer.batches.borrow_mut().insert(id.clone(),writes);
-        Ok(serde_json::json!({"id":id,"writes":values,"records":peer.state.borrow().rows()}).to_string())
+        let result=encode(&id,&writes,&peer.state.borrow().rows())?;
+        peer.batches.borrow_mut().insert(id,writes);
+        Ok(result)
+    })
+}
+#[wasm_bindgen]
+pub fn peer_pending_batch(id:u32)->Result<String,JsValue>{
+    encode_pending_batch(id,|id,writes,records|{
+        let values=writes.iter().map(crate::browser::write_json).collect::<Vec<_>>();
+        Ok(serde_json::json!({"id":id,"writes":values,"records":records}).to_string())
+    })
+}
+/// JS-owned typed buffers avoid expanding every binary byte into JSON digits.
+/// The Rust-owned batch remains the sole authority for acknowledgement.
+#[wasm_bindgen]
+pub fn peer_pending_batch_bytes(id:u32)->Result<JsValue,JsValue>{
+    encode_pending_batch(id,|id,writes,records|{
+        let result=js_sys::Object::new();
+        let values=js_sys::Array::new();
+        for write in writes { values.push(&crate::browser::write_bytes(write)?); }
+        js_sys::Reflect::set(&result,&"id".into(),&id.into())?;
+        js_sys::Reflect::set(&result,&"writes".into(),&values)?;
+        let records=js_sys::JSON::parse(&serde_json::to_string(records).map_err(error)?)?;
+        js_sys::Reflect::set(&result,&"records".into(),&records)?;
+        Ok(result.into())
     })
 }
 #[wasm_bindgen]
