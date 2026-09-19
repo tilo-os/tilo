@@ -1,4 +1,5 @@
 //! Browser journal framing: preserve the exact old postcard body on migration.
+#[cfg(test)]
 use automerge::transaction::Transactable;
 use qos_peer_state::{DocumentRow, NeighbourMsg};
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,7 @@ pub(crate) struct Journal {
 }
 impl Journal {
     /// Only matching committed record bytes and committed journal metadata prove a local basis.
+    #[cfg(test)]
     pub fn durable_heads(&self, app: &str, record: &str, bytes: &[u8]) -> Option<Vec<String>> {
         let document = automerge::AutoCommit::load(bytes).ok()?;
         let heads = document
@@ -24,10 +26,15 @@ impl Journal {
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        self.records
-            .iter()
+        self.match_document_heads(app, record, &heads)
+    }
+
+    /// Storage supplies heads of its exact committed bytes; the current journal
+    /// must independently agree before they can prove an atomic durable basis.
+    pub fn match_document_heads(&self, app: &str, record: &str, heads: &[String]) -> Option<Vec<String>> {
+        self.records.iter()
             .any(|row| row.app_id == app && row.record_id == record && row.heads == heads)
-            .then_some(heads)
+            .then(|| heads.to_vec())
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
@@ -66,7 +73,6 @@ impl Journal {
 #[derive(Default)]
 pub(crate) struct HealthProjection {
     journal: DecodedBytes<Journal>,
-    records: std::collections::BTreeMap<(String, String), DecodedBytes<Vec<String>>>,
 }
 const HEALTH_CACHE_BYTES: usize = 8 * 1024 * 1024;
 struct DecodedBytes<T> {
@@ -91,28 +97,7 @@ impl HealthProjection {
     pub fn journal(&mut self, bytes: &[u8]) -> Option<std::rc::Rc<Journal>> {
         self.journal.get(bytes, |bytes| Journal::decode(bytes).ok())
     }
-    pub fn durable_heads(&mut self, journal: &Journal, app: &str, record: &str, bytes: &[u8]) -> Option<Vec<String>> {
-        let key = (app.to_owned(), record.to_owned());
-        // At most 64 routes and 8 MiB of encoded record snapshots per peer.
-        // Oversized snapshots are decoded without retention by DecodedBytes.
-        let retained_except_current = |records: &std::collections::BTreeMap<(String, String), DecodedBytes<Vec<String>>>| {
-            records.iter().filter(|(route, _)| **route != key)
-                .map(|(_, entry)| entry.cached.as_ref().map_or(0, |(bytes, _)| bytes.len())).sum::<usize>()
-        };
-        while !self.records.is_empty()
-            && ((self.records.len() >= 64 && !self.records.contains_key(&key))
-                || retained_except_current(&self.records) + bytes.len().min(HEALTH_CACHE_BYTES) > HEALTH_CACHE_BYTES) {
-            self.records.pop_first();
-        }
-        let heads = self.records.entry(key).or_default().get(bytes, |bytes| {
-            let document = automerge::AutoCommit::load(bytes).ok()?;
-            Some(document.base_heads().iter().map(ToString::to_string).collect())
-        })?;
-        // Recheck the CURRENT committed journal every time; decoded bytes alone
-        // cannot establish an atomic durable record/journal basis.
-        journal.records.iter().any(|row| row.app_id == app && row.record_id == record && row.heads == *heads)
-            .then(|| (*heads).clone())
-    }
+
 }
 
 #[cfg(test)]
@@ -142,25 +127,25 @@ mod tests {
         assert!(cache.cached.is_none());
     }
     #[test]
-    fn decoded_heads_never_reuse_a_different_committed_journal_basis() {
+    fn known_heads_never_reuse_a_different_committed_journal_basis() {
         use automerge::{AutoCommit, ROOT};
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "text", "A").unwrap();
-        let bytes_a = doc.save();
+        doc.save();
         let heads_a = doc.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>();
         let mut journal = Journal { state: vec![], outbox: vec![], records: vec![DocumentRow {
             app_id: "app".into(), record_id: "record".into(), heads: heads_a.clone(),
         }], receipts: Default::default() };
         let mut projection = HealthProjection::default();
-        assert_eq!(projection.durable_heads(&journal, "app", "record", &bytes_a), Some(heads_a.clone()));
+        assert_eq!(journal.match_document_heads("app", "record", &heads_a), Some(heads_a.clone()));
         doc.put(ROOT, "text", "B").unwrap();
-        let bytes_b = doc.save();
+        doc.save();
         let heads_b = doc.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>();
         journal.records[0].heads = heads_b.clone();
-        assert!(projection.durable_heads(&journal, "app", "record", &bytes_a).is_none());
-        assert_eq!(projection.durable_heads(&journal, "app", "record", &bytes_b), Some(heads_b));
-        assert!(projection.durable_heads(&journal, "other-app", "record", &bytes_b).is_none());
-        assert!(projection.durable_heads(&journal, "app", "other-record", &bytes_b).is_none());
+        assert!(journal.match_document_heads("app", "record", &heads_a).is_none());
+        assert_eq!(journal.match_document_heads("app", "record", &heads_b), Some(heads_b.clone()));
+        assert!(journal.match_document_heads("other-app", "record", &heads_b).is_none());
+        assert!(journal.match_document_heads("app", "other-record", &heads_b).is_none());
         let encoded = journal.encode().unwrap();
         let first = projection.journal(&encoded).unwrap();
         assert!(std::rc::Rc::ptr_eq(&first, &projection.journal(&encoded).unwrap()));
@@ -240,6 +225,11 @@ mod tests {
             old_journal.durable_heads("app", "record", &old_record.bytes),
             Some(heads_a.clone())
         );
+        let committed_heads = cache.committed_document_heads(&record).unwrap().unwrap()
+            .iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(old_journal.match_document_heads("app", "record", &committed_heads), Some(heads_a.clone()));
+        assert!(journal(heads_b.clone()).match_document_heads("app", "record", &committed_heads).is_none(),
+            "new journal metadata cannot turn an old record acknowledgement into a new durable basis");
         assert_ne!(heads_a, heads_b);
         assert!(cache.flush(&record).is_err());
         assert!(cache.flush(&admission).is_err());
@@ -256,6 +246,8 @@ mod tests {
             cache.status(&record).unwrap().committed.unwrap().1.bytes,
             old_record.bytes
         );
+        assert_eq!(cache.committed_document_heads(&record).unwrap().unwrap()
+            .iter().map(ToString::to_string).collect::<Vec<_>>(), committed_heads);
     }
     #[test]
     fn legacy_bytes_and_operation_identity_survive_versioned_roundtrip() {

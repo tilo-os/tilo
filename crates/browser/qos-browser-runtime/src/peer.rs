@@ -633,7 +633,10 @@ fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>)->s
     let records=state.rows().iter().map(|row|{
         let key=storage_key(state.room(),&row.app_id,&row.record_id);
         let status=peer.cache.status(&key);
-        let durable_heads=status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(_,bytes)|peer.health_projection.borrow_mut().durable_heads(journal.as_ref()?,&row.app_id,&row.record_id,&bytes.bytes));
+        let durable_heads=journal.as_ref().and_then(|journal| {
+            let heads=peer.cache.committed_document_heads(&key)?.ok()?.iter().map(ToString::to_string).collect::<Vec<_>>();
+            journal.match_document_heads(&row.app_id,&row.record_id,&heads)
+        });
         let durable_basis=durable_heads.as_ref().map(|heads|serde_json::json!({"heads":heads}));
         let is_durable=durable_basis.is_some()&&durable_heads.as_ref()==Some(&row.heads);
         let failed=status.as_ref().is_some_and(|status|status.error.is_some())||journal_status.as_ref().is_some_and(|status|status.error.is_some());
