@@ -241,4 +241,10 @@ app packaging builds are currently explicit or scheduled; do not restore broad
 per-push triggers to obtain a development artifact. Use the existing workflow's
 manual dispatch and the smallest applicable app/architecture inputs instead.
 
+The existing CI scheduler owns runner slots, admission and queue order. Submit
+work normally; do not negotiate build slots with other agents, reserve workers,
+or repeatedly poll a queued job. Use automatic completion notifications and
+investigate concrete failures. Infrastructure maintenance coordination is a
+bounded operator task, never a prerequisite for ordinary development.
+
 After a successful normal `git push`, final CI status is automatically sent to this task when its runs finish. Keep relevant CI green before merging; use `fgj actions` to investigate failures.
