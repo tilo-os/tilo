@@ -412,6 +412,8 @@ async fn normal_host_serves_real_checked_application_catalogue() {
         4,
         "actual checked Writer insert-table must create exactly 2x2 cells"
     );
+    #[cfg(feature = "test-support")]
+    observe_native_publication(origin, &client, &mut remote).await;
     let (desktop_invocation, desktop_operation, desktop_records) = desktop_open_through_broker(&client, &mut remote, room, &cert, &native, broker_host, &catalogue).await;
     owner_and_room_isolation(
         origin,
@@ -1155,6 +1157,66 @@ async fn owner_and_room_isolation(
     second.close().await;
 }
 
+/// Replacement action registration can precede live delivery of its new checkpoint.
+/// Observe one fixed owner cut through normal relay admission before binding a command.
+#[cfg(feature = "test-support")]
+async fn observe_native_publication(
+    origin: &str,
+    client: &qos_relay::RelayClient,
+    remote: &mut qos_peer_state::StatePeer,
+) {
+    let started = Instant::now();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (code, target) = request(origin, "/status", None, None).await;
+        assert_eq!(code, 200);
+        assert_eq!(target["actions"], "ready");
+        assert_eq!(target["native_peer"], "subscribed");
+        let publication = &target["qualification"]["publication"];
+        assert!(!publication["room_heads"].as_array().unwrap().is_empty());
+        let receipts = publication["receipts"].as_array().unwrap();
+        assert_eq!(receipts.len(), target["records"].as_array().unwrap().len());
+        assert!(receipts.iter().all(|receipt| !receipt.is_null()));
+        let mut frames = 0usize;
+        loop {
+            let rows = remote.rows();
+            let heads = remote.admitted_room().map(|room| {
+                room.clone()
+                    .get_heads()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            });
+            let observed_receipts = rows
+                .iter()
+                .map(|row| remote.durable_coverage(&row.app_id, &row.record_id).unwrap())
+                .collect::<Vec<_>>();
+            if serde_json::json!(heads) == publication["room_heads"]
+                && serde_json::json!(rows) == target["records"]
+                && serde_json::json!(observed_receipts) == publication["receipts"]
+            {
+                break;
+            }
+            apply_state(remote, client.recv().await.expect("publication stream closed"));
+            frames += 1;
+        }
+        // A later legitimate commit is a failed precondition, not permission to
+        // move this target or rebind an already constructed command.
+        let (code, current) = request(origin, "/status", None, None).await;
+        assert_eq!(code, 200);
+        assert_eq!(current["generation"], target["generation"], "native publication target advanced");
+        assert_eq!(current["records"], target["records"]);
+        assert_eq!(&current["qualification"]["publication"], publication);
+        assert_eq!(current["actions"], "ready");
+        assert_eq!(current["native_peer"], "subscribed");
+        eprintln!(
+            "desktop_publication_barrier {}",
+            serde_json::json!({"generation": target["generation"], "room_heads": publication["room_heads"], "receipt_ids": receipts.iter().map(|receipt| &receipt["receipt_id"]).collect::<Vec<_>>(), "exact_rows_and_receipts": true, "frames": frames, "elapsed_us": started.elapsed().as_micros()})
+        );
+    })
+    .await
+    .expect("observer did not admit the fixed native publication within five seconds");
+}
+
 async fn desktop_open_through_broker(
     client: &qos_relay::RelayClient, remote: &mut qos_peer_state::StatePeer,
     room: uuid::Uuid, cert: &qos_user_identity::DeviceCert, native: &qos_user_identity::DeviceCert,
@@ -1162,6 +1224,7 @@ async fn desktop_open_through_broker(
 ) -> (qos_actions::InvocationId, qos_relay::peer_actions::ActionMessage, usize) {
     use qos_peer_state::desktop_command::*;
     use qos_relay::peer_actions::ActionMessage;
+    #[cfg(not(feature = "test-support"))]
     while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(100), client.recv()).await { apply_state(remote, event); }
     let mut tree = qos_desktop::WorkspaceTree::default();
     qos_desktop::projection::RoomProjection::apply_admitted_room(&mut tree, room.into(), remote.admitted_room().unwrap()).unwrap();

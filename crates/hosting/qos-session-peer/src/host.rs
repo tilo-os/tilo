@@ -242,7 +242,12 @@ impl LocalHost {
                 .context("packet relay HTTP listener unavailable")?
         )
         .parse()?;
-        let mode = RelayMode::Custom(RelayMap::from(packet_url.clone()));
+        // This private server starts HTTP relay service only; URL conversion
+        // otherwise advertises a default QAD listener that does not exist.
+        let mode = RelayMode::Custom(RelayMap::from(iroh_relay::RelayConfig::new(
+            packet_url.clone(),
+            None,
+        )));
         let workspace = qos_relay::room_workspace_id(owner.peer().room())?;
         let state = owner.root().join("relay");
         let config = RelayConfig {
@@ -650,7 +655,11 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         "action_registration": qualification.action_registration.as_ref().map(|hold| json!({
                             "armed": hold.barrier.is_some(),
                             "reached": hold.reached.load(std::sync::atomic::Ordering::Acquire),
-                        }))});
+                        })),
+                        "publication": {
+                            "room_heads": owner.peer().admitted_room().map(|room| room.clone().get_heads().iter().map(ToString::to_string).collect::<Vec<_>>()),
+                            "receipts": owner.peer().rows().iter().map(|row| owner.peer().durable_coverage(&row.app_id, &row.record_id)).collect::<Result<Vec<_>, _>>().map_err(anyhow::Error::msg)?,
+                        }});
                 }
                 status["native_subscription_generation"] = json!(subscription_generation);
                 let authorization=authorization.clone();let commands=enrollment_commands.clone();
@@ -694,4 +703,38 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     run_result?;
     flushed?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iroh::Watcher;
+
+    #[tokio::test]
+    async fn private_packet_map_matches_actual_server_capabilities() {
+        let temp = tempfile::tempdir().unwrap();
+        let owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+        // Exercise the real construction, including the exact mode cloned into
+        // the qOS relay endpoint and retained for every fresh native endpoint.
+        let host = LocalHost::start(&owner).await.unwrap();
+        let map = host.mode.relay_map();
+        let advertised = map.get(&host.packet_url).unwrap();
+        let actual_qad_port = host.packet.quic_addr().map(|address| address.port());
+        let advertised_qad_port = advertised.quic.as_ref().map(|config| config.port);
+        let status = host.relay.endpoint.home_relay_status().get();
+        let connected = status
+            .iter()
+            .any(|relay| relay.url() == &host.packet_url && relay.is_connected());
+        eprintln!(
+            "private_packet_capabilities {}",
+            json!({"server_qad_port": actual_qad_port, "map_qad_port": advertised_qad_port, "connected": connected, "url": host.packet_url})
+        );
+        host.shutdown().await.unwrap();
+        assert!(connected, "the actual private HTTP relay must be online");
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            advertised_qad_port, actual_qad_port,
+            "private endpoints must advertise only the packet server's real QAD listener"
+        );
+    }
 }
