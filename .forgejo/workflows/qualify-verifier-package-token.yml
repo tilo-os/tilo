@@ -1,4 +1,4 @@
-name: Qualification / built-in verifier package read
+name: Qualification / dedicated verifier package read
 on:
   workflow_dispatch:
 
@@ -9,9 +9,9 @@ jobs:
     container:
       image: docker.io/library/python@sha256:1a63a53928ce53d2b0baf08092a703f4840ac5dfbd61fd48802dbf48e08c801e
     steps:
-      - name: Read the exact verifier bundle using only this job token
+      - name: Read the exact verifier bundle using the package-read-only secret
         env:
-          TASK_TOKEN: ${{ github.token }}
+          TASK_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}
         run: |
           python3 -I - <<'PY'
           import hashlib, json, os, time, urllib.error, urllib.request
