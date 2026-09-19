@@ -184,11 +184,39 @@ pub fn run(_args: &[String]) {
         eprintln!("rich_text_editor_shots: failed to create output dir {dir}: {e}");
         return;
     }
-    if let Err(e) = shoot(&Theme::dark(), &PathBuf::from(&dir).join("rte-dark.png")) {
-        eprintln!("rich_text_editor_shots: failed to render dark shot: {e}");
-        return;
+    for (theme, tag) in shot_themes() {
+        if let Err(e) = shoot(&theme, &PathBuf::from(&dir).join(format!("rte-{tag}.png"))) {
+            eprintln!("rich_text_editor_shots: failed to render {tag} shot: {e}");
+            return;
+        }
     }
-    if let Err(e) = shoot(&Theme::light(), &PathBuf::from(&dir).join("rte-light.png")) {
-        eprintln!("rich_text_editor_shots: failed to render light shot: {e}");
+}
+
+/// The palettes to shoot: `QOS_SHOTS_THEME` names one (its tag is the name,
+/// lower-cased, non-alphanumerics as `-`); unset shoots dark and light. An
+/// unknown name is an error, never an empty run that exits 0.
+fn shot_themes() -> Vec<(Theme, String)> {
+    match std::env::var("QOS_SHOTS_THEME") {
+        Ok(name) => {
+            let Some(theme) = Theme::named(&name) else {
+                eprintln!("ui-shots: unknown QOS_SHOTS_THEME `{name}`");
+                std::process::exit(2)
+            };
+            let tag = name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        '-'
+                    }
+                })
+                .collect();
+            vec![(theme, tag)]
+        }
+        Err(_) => vec![
+            (Theme::dark(), "dark".to_string()),
+            (Theme::light(), "light".to_string()),
+        ],
     }
 }

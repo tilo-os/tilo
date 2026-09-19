@@ -27,6 +27,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -266,7 +267,7 @@ impl Popover {
                   f64's exact-integer range"
     )]
     pub fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let mut w = MIN_W.max(self.anchor.width());
         for label in &self.items {
             let tw = f64::from(tr.measure(label, fs, None).0);
@@ -372,42 +373,39 @@ impl Widget for Popover {
         let c = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.md);
 
-        // Drop shadow rings (themed black at low alpha) so the menu reads as
-        // floating above the content — the same 4-ring pattern the toolkit's
-        // popover chrome uses.
-        for (spread, alpha) in [(2.0_f64, 60u8), (5.0, 32), (9.0, 16), (14.0, 8)] {
-            let sr = Rect::new(
-                self.rect.x0 - spread,
-                self.rect.y0 - spread + 4.0,
-                self.rect.x1 + spread,
-                self.rect.y1 + spread + 4.0,
-            );
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                vello::peniko::Color::from_rgba8(0, 0, 0, alpha),
-                None,
-                &RoundedRect::from_rect(sr, radius + spread),
-            );
-        }
+        // A floating Panel casts the `e4` tier (HIG §9.1) through the one
+        // shadow painter, so its shadow follows the panel's own outline and
+        // its strength comes from the theme rather than a literal black
+        // ring stack that weighed the same on a paper-white ground.
+        crate::surface::shadow(
+            scene,
+            transform,
+            self.rect,
+            radius,
+            &theme.tokens.elevation.e4,
+        );
 
+        // Panel role (HIG §9.1): the panel ground, walked clear of both the
+        // desktop and the window card, with the derived panel edge as a
+        // crisp 1 px inset stroke — never a declared `border_standard`,
+        // which is invisible on the dark preset's raised tier.
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            c.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         for (idx, label) in self.items.iter().enumerate() {
             let row = self.row_rect(idx);
             let is_hl = idx == self.highlighted;

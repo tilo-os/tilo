@@ -194,6 +194,10 @@ impl FormSection {
 pub struct Field {
     parts: Parts,
     label_placement: Option<LabelPlacement>,
+    /// The control keeps its own width and sits at the trailing edge when
+    /// the label is beside it (a settings chooser), instead of filling the
+    /// control column.
+    trailing_control: bool,
     inherited: Option<SectionLayout>,
     effective: Option<FieldLayout>,
     group_needs: Option<(f32, f32)>,
@@ -217,6 +221,7 @@ impl Field {
                 }),
             ]),
             label_placement: None,
+            trailing_control: false,
             inherited: None,
             effective: None,
             group_needs: None,
@@ -248,6 +253,17 @@ impl Field {
     #[must_use]
     pub fn with_label_placement(mut self, value: Option<LabelPlacement>) -> Self {
         self.label_placement = value;
+        self
+    }
+    /// A compact chooser (dropdown, segmented switch) that keeps its own
+    /// width: it sits at the trailing edge of the row while the label is
+    /// beside it, and under the label's leading edge once the section stacks.
+    /// The beside/above decision is still the section's measured one, so
+    /// every row of a settings card switches together instead of each
+    /// deciding for itself. Help and validation copy stay with the control.
+    #[must_use]
+    pub fn with_trailing_control(mut self) -> Self {
+        self.trailing_control = true;
         self
     }
     pub fn effective_layout(&self) -> Option<FieldLayout> {
@@ -610,6 +626,25 @@ impl Widget for Field {
             LabelPlacement::Above => false,
             LabelPlacement::Beside => true,
         };
+        // A trailing control keeps the measured control need as its column
+        // (the section's shared need, so sibling choosers line up) and sits
+        // at the trailing edge beside its label, or leading once stacked.
+        let mut body_changed = false;
+        if self.trailing_control
+            && let Some(&body) = self.parts.nodes.get(1)
+            && let Ok(current) = tree.style(body)
+        {
+            let mut style = current.clone();
+            style.size.width = length(control);
+            style.justify_self = Some(if beside {
+                taffy::AlignItems::End
+            } else {
+                taffy::AlignItems::Start
+            });
+            if *current != style {
+                body_changed = tree.set_style(body, style).is_ok();
+            }
+        }
         let control_height = self
             .parts
             .nodes
@@ -656,9 +691,9 @@ impl Widget for Field {
         };
         style.gap.width = length(self.pair_gap);
         if *current == style {
-            return inset_changed;
+            return inset_changed || body_changed;
         }
-        tree.set_style(node, style).is_ok() || inset_changed
+        tree.set_style(node, style).is_ok() || inset_changed || body_changed
     }
     fn draw(
         &mut self,

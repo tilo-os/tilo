@@ -30,6 +30,17 @@ pub struct CustomThemeSpec {
 }
 
 impl CustomThemeSpec {
+    /// The `spacing_px` band a theme is actually built at. [`Self::validate`]
+    /// admits the schema-v1 contract (`2.0..=64.0`) so a settings file
+    /// written by an older build still opens, but the whole spacing scale is
+    /// proportional to `spacing_px` (`s3`), so 2 px would put `s1` under a
+    /// pixel and 64 px would put `s6` at 128; [`Theme::from_custom_spec`]
+    /// clamps to this band instead. Same range as the Themes app's spacing
+    /// control.
+    pub const SPACING_PX_MIN: f32 = 6.0;
+    /// See [`Self::SPACING_PX_MIN`].
+    pub const SPACING_PX_MAX: f32 = 22.0;
+
     /// # Errors
     ///
     /// Returns a static message describing which field is out of range —
@@ -292,13 +303,29 @@ impl Theme {
                 window_card: None,
             },
         );
-        theme.tokens.radii.sm = spec.radius_px * 0.5;
+        // `radius_px` is the `md` step and `spacing_px` the `s3` step; the
+        // rest of each scale follows in the stock proportions (radii
+        // 1:2:3:6, spacing 1:2:3:4:6:8:12:16) so a custom theme at the
+        // stock value reproduces the stock scale exactly and a denser one
+        // stays proportional on every step — `Column`'s `s6` inset is still
+        // twice `padding_standard`, a card's `s2`/`s4` pair keeps its 1:2.
+        // `Metrics` stay at their defaults: a gutter preference must not
+        // shrink a pointer target.
+        let radii = crate::tokens::Radii::default();
+        let radius_ratio = spec.radius_px / radii.md;
+        theme.tokens.radii.sm = radii.sm * radius_ratio;
         theme.tokens.radii.md = spec.radius_px;
-        theme.tokens.radii.lg = spec.radius_px * 1.5;
-        theme.tokens.radii.xl = spec.radius_px * 2.4;
-        theme.tokens.spacing.s2 = (spec.spacing_px * 0.66).max(2.0);
-        theme.tokens.spacing.s3 = spec.spacing_px;
-        theme.tokens.spacing.s4 = spec.spacing_px * 1.33;
+        theme.tokens.radii.lg = radii.lg * radius_ratio;
+        theme.tokens.radii.xl = radii.xl * radius_ratio;
+        // The schema admits 2..=64 px; the scale is built inside the usable
+        // band (see `CustomThemeSpec::SPACING_PX_MIN`) rather than rejecting
+        // the file and silently dropping the user's theme.
+        let spacing_px = spec.spacing_px.clamp(
+            CustomThemeSpec::SPACING_PX_MIN,
+            CustomThemeSpec::SPACING_PX_MAX,
+        );
+        theme.tokens.spacing =
+            crate::tokens::Spacing::BASE.scaled(spacing_px / crate::tokens::Spacing::BASE.s3);
         theme.tokens.typography.sans_family.clone_from(&spec.font);
         // Rebuild through the central funnel after shape/type edits so every
         // legacy shortcut and the terminal palette matches the token tree.
@@ -762,16 +789,8 @@ impl Theme {
     }
 
     fn multiply_dimensions(&mut self, factor: f32) {
-        let sp = &mut self.tokens.spacing;
-        sp.s0 *= factor;
-        sp.s1 *= factor;
-        sp.s2 *= factor;
-        sp.s3 *= factor;
-        sp.s4 *= factor;
-        sp.s6 *= factor;
-        sp.s8 *= factor;
-        sp.s12 *= factor;
-        sp.s16 *= factor;
+        self.tokens.spacing = self.tokens.spacing.scaled(factor);
+        self.tokens.metrics = self.tokens.metrics.scaled(factor);
 
         let r = &mut self.tokens.radii;
         r.sm *= factor;
@@ -806,6 +825,30 @@ impl Theme {
         self
     }
 
+    /// [`crate::tokens::Metrics::text_growth`] of this theme's
+    /// [`Theme::text_scale`]: how much a text-sized extent grows, never
+    /// below 1.
+    #[must_use]
+    pub fn text_growth(&self) -> f32 {
+        crate::tokens::Metrics::text_growth(self.text_scale)
+    }
+
+    /// The one factor the responsive shells multiply an authored,
+    /// text-sized breakpoint or pane width by: `ui_scale × text_growth()`.
+    ///
+    /// An app authors its shell inputs at 1× (`with_breakpoint(760.0)`,
+    /// `with_sidebar_width(260.0)`) and the shell resolves them against the
+    /// theme in `build_layout`, so at 200 % text a 760 px breakpoint pushes
+    /// at 1520 px — the window that has the room a 760 px window has at 1× —
+    /// without the app multiplying anything. `1.0` on a stock theme, so 1×
+    /// geometry is untouched. A width sized by icons rather than text (a
+    /// rail) follows [`Theme::ui_scale`] alone; the shells expose an
+    /// `icon_*` builder for it.
+    #[must_use]
+    pub fn responsive_scale(&self) -> f64 {
+        f64::from(self.ui_scale) * f64::from(self.text_growth())
+    }
+
     /// UI scale first so it grows the whole system, then text scale layers
     /// additional type growth on top.
     #[must_use]
@@ -833,6 +876,7 @@ mod tests {
     //! visible failure.
     use super::*;
     use crate::color_compat::ColorCompat;
+    use crate::tokens::Radii;
 
     use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
 
@@ -1359,6 +1403,160 @@ mod tests {
         assert_eq!(theme.tokens.radii.md, 13.0);
         assert_eq!(theme.tokens.spacing.s3, 17.0);
         assert_eq!(theme.tokens.typography.sans_family, "Inter");
+    }
+
+    fn quiet_ocean(radius_px: f32, spacing_px: f32) -> CustomThemeSpec {
+        CustomThemeSpec {
+            schema_version: CUSTOM_THEME_SCHEMA_VERSION,
+            id: "quiet-ocean".into(),
+            name: "Quiet Ocean".into(),
+            dark_base: true,
+            accent: [12, 120, 220],
+            accent_hover: [8, 96, 190],
+            surface_base: [9, 18, 30],
+            surface_raised: [18, 32, 48],
+            text_primary: [238, 244, 250],
+            text_dim: [170, 184, 199],
+            border: [48, 68, 88],
+            success: [50, 190, 110],
+            warning: [230, 170, 50],
+            danger: [225, 75, 80],
+            info: [70, 165, 230],
+            radius_px,
+            spacing_px,
+            font: "Inter".into(),
+        }
+    }
+
+    /// A custom theme's `spacing_px` is the `s3` step; every other step
+    /// follows in the stock 1:2:3:4:6:8:12:16 proportion, so the scale is a
+    /// scale and not three rewritten fields with the rest left at 12 px
+    /// defaults.
+    #[test]
+    fn custom_theme_spacing_rescales_the_whole_scale_proportionally() {
+        let theme = Theme::from_custom_spec(&quiet_ocean(8.0, 17.0)).unwrap();
+        let s = theme.tokens.spacing;
+        let unit = 17.0 / 3.0;
+        for (name, value, steps) in [
+            ("s0", s.s0, 0.0),
+            ("s1", s.s1, 1.0),
+            ("s2", s.s2, 2.0),
+            ("s3", s.s3, 3.0),
+            ("s4", s.s4, 4.0),
+            ("s6", s.s6, 6.0),
+            ("s8", s.s8, 8.0),
+            ("s12", s.s12, 12.0),
+            ("s16", s.s16, 16.0),
+        ] {
+            assert!(
+                (value - unit * steps).abs() < 1e-3,
+                "{name} = {value}, expected {} (17 px is the s3 step)",
+                unit * steps
+            );
+        }
+        assert_eq!(theme.padding_standard, 17.0);
+        assert_eq!(theme.gap_standard, 17.0);
+        assert_eq!(
+            theme.tokens.metrics,
+            crate::tokens::Metrics::BASE,
+            "a spacing preference never shrinks a pointer target or panel width"
+        );
+    }
+
+    /// The stock values reproduce the stock scales exactly — a custom theme
+    /// that only recolours must not quietly round every corner differently.
+    #[test]
+    fn custom_theme_at_stock_values_reproduces_the_stock_scales() {
+        let stock = Theme::dark();
+        let theme =
+            Theme::from_custom_spec(&quiet_ocean(stock.tokens.radii.md, stock.tokens.spacing.s3))
+                .unwrap();
+        assert_eq!(theme.tokens.spacing, stock.tokens.spacing);
+        assert_eq!(theme.tokens.radii.sm, stock.tokens.radii.sm);
+        assert_eq!(theme.tokens.radii.md, stock.tokens.radii.md);
+        assert_eq!(theme.tokens.radii.lg, stock.tokens.radii.lg);
+        assert_eq!(
+            theme.tokens.radii.xl, stock.tokens.radii.xl,
+            "the window card's xl corner is the stock 24, not 8 × 2.4 = 19.2"
+        );
+        assert_eq!(theme.tokens.radii.full, stock.tokens.radii.full);
+    }
+
+    /// The schema still admits 2..=64 px (a file written by an older build
+    /// opens), but the scale is built inside the usable band: 2 px would put
+    /// `s1` under a pixel and 64 px `s6` at 128.
+    #[test]
+    fn custom_theme_spacing_is_built_inside_the_usable_band() {
+        let too_dense = quiet_ocean(8.0, 2.0);
+        let too_loose = quiet_ocean(8.0, 64.0);
+        assert!(
+            too_dense.validate().is_ok(),
+            "the schema contract is unchanged"
+        );
+        assert!(too_loose.validate().is_ok());
+        let dense = Theme::from_custom_spec(&too_dense).unwrap();
+        let loose = Theme::from_custom_spec(&too_loose).unwrap();
+        assert_eq!(dense.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MIN);
+        assert_eq!(
+            dense.tokens.spacing.s1,
+            CustomThemeSpec::SPACING_PX_MIN / 3.0
+        );
+        assert_eq!(loose.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MAX);
+        assert_eq!(loose.padding_standard, CustomThemeSpec::SPACING_PX_MAX);
+        let inside = Theme::from_custom_spec(&quiet_ocean(8.0, 17.0)).unwrap();
+        assert_eq!(
+            inside.tokens.spacing.s3, 17.0,
+            "a value inside the band is untouched"
+        );
+        assert!(
+            Theme::from_custom_spec(&quiet_ocean(8.0, 1.0)).is_none(),
+            "below the schema minimum is still rejected, not clamped"
+        );
+    }
+
+    /// HIG §9.6: the one factor the responsive shells apply to an authored,
+    /// text-sized breakpoint or width — `ui_scale × text_scale.max(1.0)`.
+    #[test]
+    fn responsive_scale_is_ui_scale_times_text_growth_and_never_shrinks() {
+        assert_eq!(Theme::dark().responsive_scale(), 1.0);
+        assert_eq!(Theme::dark().text_growth(), 1.0);
+        assert_eq!(Theme::dark().with_text_scale(2.0).responsive_scale(), 2.0);
+        assert_eq!(
+            Theme::dark().with_text_scale(0.75).responsive_scale(),
+            1.0,
+            "smaller text never shrinks a pane below its authored geometry"
+        );
+        assert_eq!(Theme::dark().with_ui_scale(1.5).responsive_scale(), 1.5);
+        assert!(
+            (Theme::dark()
+                .with_ui_scale(1.5)
+                .with_text_scale(2.0)
+                .responsive_scale()
+                - 3.0)
+                .abs()
+                < 1e-9,
+            "ui and text growth compose"
+        );
+        assert!(
+            (Theme::dark().with_ui_scale(0.5).responsive_scale() - 0.5).abs() < 1e-9,
+            "ui_scale is a density knob and does go below 1"
+        );
+    }
+
+    /// `radius_px` is the `md` step; the others follow 1:2:3:6.
+    #[test]
+    fn custom_theme_radius_rescales_the_whole_scale_proportionally() {
+        let theme = Theme::from_custom_spec(&quiet_ocean(13.0, 12.0)).unwrap();
+        let r = theme.tokens.radii;
+        assert!((r.sm - 6.5).abs() < 1e-4);
+        assert_eq!(r.md, 13.0);
+        assert!((r.lg - 19.5).abs() < 1e-4);
+        assert!((r.xl - 39.0).abs() < 1e-4);
+        assert_eq!(
+            r.full,
+            Radii::default().full,
+            "full stays the pill sentinel"
+        );
     }
 
     #[test]

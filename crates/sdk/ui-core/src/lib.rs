@@ -88,6 +88,7 @@ pub mod gpu;
 pub mod gpu_video;
 pub mod graph_editor;
 pub mod headless;
+pub mod history_mode;
 pub mod history_source;
 #[cfg(all(windows, feature = "notifications"))]
 pub mod host_notifications;
@@ -137,6 +138,7 @@ pub mod status_bubble;
 pub mod surface;
 pub mod sysdirs;
 pub mod text_edit;
+pub mod text_metrics;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
@@ -255,6 +257,9 @@ pub use widget::{RouteError, RouteHandle, Router};
 // Audit-timeline widgets + their shared types. The `collab_types::OpClass` /
 // `ArtifactKind` re-exports flow through these widgets, so callers can build
 // a `HistoryEntry` without a direct dependency on the collab-types crate.
+pub use history_mode::{
+    HistoryController, HistoryError, HistoryResource, HistorySnapshot, PreviewSide, RestoreReview,
+};
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
 pub use widget::collaboration_overview::{CollaborationOverview, CollaborationOverviewAction};
 pub use widget::history::{
@@ -339,5 +344,9 @@ pub use permissions::{
 
 pub mod application;
 pub mod application_view;
+pub mod native_scenario;
+pub mod synthetic_input;
 
 pub mod bound_dispatch;
+
+mod presentation_feedback;
