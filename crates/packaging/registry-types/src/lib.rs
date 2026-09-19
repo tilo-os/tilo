@@ -68,8 +68,8 @@ pub mod verify;
 
 pub use change::{EntryAction, EntryChangeRequest, sign_change_request};
 pub use entry::{
-    ENTRY_DOMAIN, INDEX_DOMAIN, RegistryEntry, RegistryVersion, entry_signing_message,
-    index_signing_message, sign_entry,
+    ENTRY_DOMAIN, INDEX_DOMAIN, RegistryEntry, RegistryTarget, RegistryVersion,
+    entry_signing_message, index_signing_message, sign_entry,
 };
 pub use handshake::{PROTOCOL_VERSION, RegistryHandshake};
 pub use moderation::{
