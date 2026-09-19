@@ -197,6 +197,27 @@ jobs:
           cache-from: |
             type=registry,ref=code.sandbox.example/qos/tilo-builder-buildcache:${{ matrix.arch }}
             type=registry,ref=code.sandbox.example/qos/tilo-builder-buildcache:candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
+
+      # Forgejo's registry can reject the same blob when BuildKit pushes the
+      # image and cache concurrently. Reuse the completed local BuildKit graph,
+      # but give each registry exporter its own action invocation.
+      - name: Export build cache
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+          file: os/Containerfile.builder
+          platforms: ${{ matrix.platform }}
+          push: false
+          provenance: false
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            RUST_CHANNEL=${{ env.RUST_CHANNEL }}
+          tags: code.sandbox.example/qos/tilo-builder:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          cache-from: |
+            type=registry,ref=code.sandbox.example/qos/tilo-builder-buildcache:${{ matrix.arch }}
+            type=registry,ref=code.sandbox.example/qos/tilo-builder-buildcache:candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
           cache-to: type=registry,ref=code.sandbox.example/qos/tilo-builder-buildcache:${{ github.ref == 'refs/heads/main' && matrix.arch || format('candidate-{0}-{1}', github.sha, matrix.arch) }},mode=max
 
       - name: Install checksum-pinned Cosign
