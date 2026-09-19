@@ -1091,6 +1091,19 @@ pub trait Widget {
             .into_iter()
             .find_map(Widget::take_control_invocation)
     }
+    /// Report the admission result of one queued local control invocation.
+    /// `Accepted` means queued, not completed; confirmation remains an error
+    /// while the host offers its normal confirmation UI. This notification
+    /// grants no document authority and must not retry the invocation itself.
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        for child in self.children_mut() {
+            child.on_control_invocation_result(address, result);
+        }
+    }
     /// Recursively inventory action-native and explicitly legacy controls.
     /// Custom widgets that own an [`ActionEmitter`] should prepend its
     /// [`metadata`](ActionEmitter::metadata) to their descendants' inventory.
@@ -2193,5 +2206,200 @@ mod tests {
             last = invocation.arguments.get("value").cloned();
         }
         assert_eq!(last, Some(serde_json::Value::Bool(true)));
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod control_result_probe {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    #[derive(Clone, Default)]
+    pub(crate) struct Observed {
+        pub(crate) results:
+            Rc<RefCell<Vec<Result<ResourceOperationStart, tilo_actions::DoorError>>>>,
+        pub(crate) calls: Rc<Cell<usize>>,
+        pub(crate) pending: Rc<RefCell<VecDeque<tilo_actions::ControlInvocation>>>,
+    }
+    impl Observed {
+        pub(crate) fn enqueue(&self, action: &str) {
+            self.pending
+                .borrow_mut()
+                .push_back(tilo_actions::ControlInvocation {
+                    address: tilo_actions::ActionAddress::new("test.control-result", action),
+                    arguments: serde_json::Map::new(),
+                });
+        }
+    }
+    pub(crate) struct Probe {
+        observed: Observed,
+        accepted: bool,
+        pub(crate) confirmation: bool,
+    }
+    impl Probe {
+        pub(crate) fn new(accepted: bool) -> (Self, Observed) {
+            let observed = Observed::default();
+            (
+                Self {
+                    observed: observed.clone(),
+                    accepted,
+                    confirmation: false,
+                },
+                observed,
+            )
+        }
+    }
+    impl Widget for Probe {
+        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _: &Theme,
+            map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = tree.new_leaf(taffy::Style::default()).unwrap();
+            map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "test probe implements the Widget event contract"
+        )]
+        fn handle_event(
+            &mut self,
+            _: &WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            _: &mut AutoCommit,
+            _: &ObjId,
+            _: &mut bool,
+            _: &mut Option<NodeId>,
+            _: NodeId,
+            _: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "ControlResultProbe"
+        }
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            vello::kurbo::Rect::ZERO
+        }
+        fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
+            let mut contract = tilo_actions::ActionContract::default();
+            if self.accepted {
+                contract.execution = tilo_actions::ExecutionMode::Background { cancellable: false };
+                contract.result = tilo_actions::ResultSpec::Job;
+            }
+            if self.confirmation {
+                contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+            }
+            vec![
+                tilo_actions::Resource::new("test.control-result", "test", "Probe").with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "run",
+                        "Run",
+                        tilo_actions::OperationKind::Effect,
+                        "test.control-result.run",
+                        &(),
+                    )
+                    .unwrap()
+                    .with_contract(contract),
+                ),
+            ]
+        }
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            &["test.control-result.run"]
+        }
+        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+            self.observed.pending.borrow_mut().pop_front()
+        }
+        fn on_control_invocation_result(
+            &mut self,
+            _: &tilo_actions::ActionAddress,
+            result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+        ) {
+            self.observed.results.borrow_mut().push(result.clone());
+        }
+        fn start_resource_operation(
+            &mut self,
+            _: tilo_actions::InvocationId,
+            _: tilo_actions::OperationKind,
+            _: &str,
+            _: &[u8],
+            _: &AutoCommit,
+            _: &ObjId,
+        ) -> Result<Option<ResourceOperationStart>, String> {
+            self.observed
+                .calls
+                .set(self.observed.calls.get().saturating_add(1));
+            Ok(Some(if self.accepted {
+                ResourceOperationStart::Accepted
+            } else {
+                ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }))
+        }
+    }
+    thread_local! { static NEXT: RefCell<Option<Probe>> = const { RefCell::new(None) }; }
+    fn factory(
+        mut context: crate::application::HostContext,
+        _: crate::application::LaunchTarget,
+        _: crate::application::RestoreInput,
+    ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
+        context
+            .initialize_new_record(|_| Ok(()))
+            .map_err(crate::launch::LaunchError::Record)?;
+        Ok(crate::application::AppComponent::new(
+            context,
+            Box::new(NEXT.with_borrow_mut(|next| next.take().unwrap())),
+            tilo_actions::ActionRegistry::new(),
+        ))
+    }
+    pub(crate) fn component(
+        host: &crate::application_test_support::ProbeHost,
+        instance: u64,
+        accepted: bool,
+    ) -> (crate::application::AppComponent, Observed) {
+        let (probe, observed) = Probe::new(accepted);
+        NEXT.with_borrow_mut(|next| *next = Some(probe));
+        let definition = crate::application_test_support::definition(factory);
+        let target = crate::application::LaunchTarget::New;
+        let context = host
+            .prepare_with_permissions(
+                &definition,
+                instance,
+                &target,
+                crate::application_test_support::runner_permissions(),
+            )
+            .unwrap();
+        let component = definition
+            .instantiate(context, target, crate::application::RestoreInput::None)
+            .unwrap();
+        (component, observed)
+    }
+
+    impl AppWidget for Probe {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Editor
+        }
+        fn app_title(&self) -> &str {
+            "Control result probe"
+        }
+        fn app_icon(&self) -> IconDescriptor {
+            IconDescriptor::Glyph("P")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
     }
 }
