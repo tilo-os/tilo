@@ -1,0 +1,21 @@
+{
+  "trusted_revision": "769e0d1c3040834a6da7095f5a31a9a5b39f2ee8",
+  "protected_paths": [
+    ".forgejo"
+  ],
+  "reviewers": [
+    "claude"
+  ],
+  "runs": [
+    {
+      "workflow": "landing-fixture.yml",
+      "run_id": 22878,
+      "events": [
+        "push"
+      ],
+      "jobs": [
+        "fixture-tests"
+      ]
+    }
+  ]
+}

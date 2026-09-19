@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "repo": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "pr": 7,
+  "state": "merged_verified",
+  "created_at": "2026-09-19T00:25:12.134962+00:00",
+  "execute": true,
+  "policy_sha256": "269fcc748b9b4c95dc4f834c71c9c2df61a8fddb5f103e244316f0d4987b1729",
+  "limitations": [
+    "pilot only; final-read-to-merge rerun race is not eliminated",
+    "operator must supply complete trusted executable closure",
+    "credential identity is bound by operator-owned Secret and server whitelist"
+  ],
+  "head": "c34a3b29ab4818dfa78a55033fddc6a718fc8e24",
+  "base": "769e0d1c3040834a6da7095f5a31a9a5b39f2ee8",
+  "evidence": {
+    "pr": {
+      "number": 7,
+      "state": "open",
+      "draft": false,
+      "merged": false,
+      "head": {
+        "sha": "c34a3b29ab4818dfa78a55033fddc6a718fc8e24",
+        "ref": "probe-trusted-landing-candidate",
+        "repo": "qos/ci-workflow-pilot-20260918-9245-repeat"
+      },
+      "base": {
+        "sha": "769e0d1c3040834a6da7095f5a31a9a5b39f2ee8",
+        "ref": "main",
+        "repo": "qos/ci-workflow-pilot-20260918-9245-repeat"
+      }
+    },
+    "author": "xemmerling",
+    "base": "769e0d1c3040834a6da7095f5a31a9a5b39f2ee8",
+    "reviews": [
+      {
+        "id": 56,
+        "state": "APPROVED",
+        "commit_id": "c34a3b29ab4818dfa78a55033fddc6a718fc8e24",
+        "dismissed": false,
+        "official": true,
+        "user": "claude"
+      }
+    ],
+    "runs": [
+      {
+        "run": {
+          "id": 22878,
+          "status": "success",
+          "commit_sha": "c34a3b29ab4818dfa78a55033fddc6a718fc8e24",
+          "workflow_id": "landing-fixture.yml",
+          "event": "push",
+          "started": "2026-09-19T00:22:43Z",
+          "stopped": "2026-09-19T00:23:18Z",
+          "repository": {
+            "id": 59,
+            "full_name": "qos/ci-workflow-pilot-20260918-9245-repeat"
+          }
+        },
+        "jobs": [
+          {
+            "id": 83990,
+            "run_id": 22878,
+            "repo_id": 59,
+            "name": "fixture-tests",
+            "status": "success",
+            "attempt": 1,
+            "handle": "bdced747-80d8-4d59-b3f5-65d3743ee35e",
+            "task_id": 75348
+          }
+        ]
+      }
+    ]
+  },
+  "response_status": 200,
+  "readback": {
+    "merged": true,
+    "head": "c34a3b29ab4818dfa78a55033fddc6a718fc8e24",
+    "merge_commit_sha": "c34a3b29ab4818dfa78a55033fddc6a718fc8e24",
+    "merged_by": "qos-integrator",
+    "main": "c34a3b29ab4818dfa78a55033fddc6a718fc8e24"
+  }
+}

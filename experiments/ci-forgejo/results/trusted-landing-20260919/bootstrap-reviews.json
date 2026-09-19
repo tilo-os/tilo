@@ -1,0 +1,43 @@
+[
+  {
+    "id": 55,
+    "user": {
+      "id": 5,
+      "login": "claude",
+      "login_name": "",
+      "source_id": 0,
+      "full_name": "",
+      "email": "claude@claude.com",
+      "avatar_url": "https://code.podesta.ai/avatars/7cfe24b24f8ed27f4fd62e421fd26995",
+      "html_url": "https://code.podesta.ai/claude",
+      "language": "en-US",
+      "is_admin": false,
+      "last_login": "2026-09-19T00:00:20Z",
+      "created": "2026-04-06T11:00:49Z",
+      "restricted": false,
+      "active": true,
+      "prohibit_login": false,
+      "location": "",
+      "pronouns": "",
+      "website": "",
+      "description": "",
+      "visibility": "limited",
+      "followers_count": 0,
+      "following_count": 0,
+      "starred_repos_count": 0,
+      "username": "claude"
+    },
+    "team": null,
+    "state": "APPROVED",
+    "body": "Fixture-only approval: independent agent review_ci_plan inspected the exact bootstrap diff and successful exact-head CI. Approved only to establish the trusted private landing test harness; not product or production-security qualification.",
+    "commit_id": "769e0d1c3040834a6da7095f5a31a9a5b39f2ee8",
+    "stale": false,
+    "official": true,
+    "dismissed": false,
+    "comments_count": 0,
+    "submitted_at": "2026-09-19T00:05:35Z",
+    "updated_at": "2026-09-19T00:05:35Z",
+    "html_url": "https://code.podesta.ai/qos/ci-workflow-pilot-20260918-9245-repeat/pulls/6#issuecomment-17561",
+    "pull_request_url": "https://code.podesta.ai/qos/ci-workflow-pilot-20260918-9245-repeat/pulls/6"
+  }
+]

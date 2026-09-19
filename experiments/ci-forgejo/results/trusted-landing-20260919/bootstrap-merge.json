@@ -1,0 +1,15 @@
+{
+  "repo": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "pr": 6,
+  "head": "769e0d1c3040834a6da7095f5a31a9a5b39f2ee8",
+  "state": "merged_verified",
+  "scope": "independently reviewed bootstrap; establishes trusted harness, not final CLI qualification",
+  "response_status": 200,
+  "readback": {
+    "merged": true,
+    "head": "769e0d1c3040834a6da7095f5a31a9a5b39f2ee8",
+    "merge_commit_sha": "769e0d1c3040834a6da7095f5a31a9a5b39f2ee8",
+    "merged_by": "qos-integrator",
+    "main": "769e0d1c3040834a6da7095f5a31a9a5b39f2ee8"
+  }
+}

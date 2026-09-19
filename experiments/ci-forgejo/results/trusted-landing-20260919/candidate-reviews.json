@@ -1,0 +1,43 @@
+[
+  {
+    "id": 56,
+    "user": {
+      "id": 5,
+      "login": "claude",
+      "login_name": "",
+      "source_id": 0,
+      "full_name": "",
+      "email": "claude@claude.com",
+      "avatar_url": "https://code.podesta.ai/avatars/7cfe24b24f8ed27f4fd62e421fd26995",
+      "html_url": "https://code.podesta.ai/claude",
+      "language": "en-US",
+      "is_admin": false,
+      "last_login": "2026-09-19T00:10:36Z",
+      "created": "2026-04-06T11:00:49Z",
+      "restricted": false,
+      "active": true,
+      "prohibit_login": false,
+      "location": "",
+      "pronouns": "",
+      "website": "",
+      "description": "",
+      "visibility": "limited",
+      "followers_count": 0,
+      "following_count": 0,
+      "starred_repos_count": 0,
+      "username": "claude"
+    },
+    "team": null,
+    "state": "APPROVED",
+    "body": "Fixture-only approval: independent agent review_ci_plan inspected the exact data-only diff against the reviewed trusted workflow; current run 22878 passes on this exact head. Approved only for the private landing CLI qualification, not product or production-security qualification.",
+    "commit_id": "c34a3b29ab4818dfa78a55033fddc6a718fc8e24",
+    "stale": false,
+    "official": true,
+    "dismissed": false,
+    "comments_count": 0,
+    "submitted_at": "2026-09-19T00:24:30Z",
+    "updated_at": "2026-09-19T00:24:30Z",
+    "html_url": "https://code.podesta.ai/qos/ci-workflow-pilot-20260918-9245-repeat/pulls/7#issuecomment-17566",
+    "pull_request_url": "https://code.podesta.ai/qos/ci-workflow-pilot-20260918-9245-repeat/pulls/7"
+  }
+]

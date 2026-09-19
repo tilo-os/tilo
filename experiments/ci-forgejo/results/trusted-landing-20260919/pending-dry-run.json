@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "repo": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "pr": 7,
+  "state": "rejected",
+  "created_at": "2026-09-19T00:07:34.796542+00:00",
+  "execute": false,
+  "policy_sha256": "269fcc748b9b4c95dc4f834c71c9c2df61a8fddb5f103e244316f0d4987b1729",
+  "limitations": [
+    "pilot only; final-read-to-merge rerun race is not eliminated",
+    "operator must supply complete trusted executable closure",
+    "credential identity is bound by operator-owned Secret and server whitelist"
+  ],
+  "head": "c34a3b29ab4818dfa78a55033fddc6a718fc8e24",
+  "base": "769e0d1c3040834a6da7095f5a31a9a5b39f2ee8",
+  "evidence": {
+    "pr": {
+      "number": 7,
+      "state": "open",
+      "draft": false,
+      "merged": false,
+      "head": {
+        "sha": "c34a3b29ab4818dfa78a55033fddc6a718fc8e24",
+        "ref": "probe-trusted-landing-candidate",
+        "repo": "qos/ci-workflow-pilot-20260918-9245-repeat"
+      },
+      "base": {
+        "sha": "769e0d1c3040834a6da7095f5a31a9a5b39f2ee8",
+        "ref": "main",
+        "repo": "qos/ci-workflow-pilot-20260918-9245-repeat"
+      }
+    },
+    "author": "xemmerling",
+    "base": "769e0d1c3040834a6da7095f5a31a9a5b39f2ee8",
+    "reviews": [],
+    "runs": [
+      {
+        "run": {
+          "id": 22878,
+          "status": "waiting",
+          "commit_sha": "c34a3b29ab4818dfa78a55033fddc6a718fc8e24",
+          "workflow_id": "landing-fixture.yml",
+          "event": "push",
+          "started": "1970-01-01T00:00:00Z",
+          "stopped": "1970-01-01T00:00:00Z",
+          "repository": {
+            "id": 59,
+            "full_name": "qos/ci-workflow-pilot-20260918-9245-repeat"
+          }
+        },
+        "jobs": [
+          {
+            "id": 83990,
+            "run_id": 22878,
+            "repo_id": 59,
+            "name": "fixture-tests",
+            "status": "waiting",
+            "attempt": 1,
+            "handle": "bdced747-80d8-4d59-b3f5-65d3743ee35e",
+            "task_id": 0
+          }
+        ]
+      }
+    ]
+  },
+  "errors": [
+    "no allowed independent official approval on exact head",
+    "landing-fixture.yml: run not successful",
+    "landing-fixture.yml: missing valid latest job task",
+    "landing-fixture.yml: job 'fixture-tests' not successful",
+    "no allowed independent official approval on exact head",
+    "landing-fixture.yml: run not successful",
+    "landing-fixture.yml: missing valid latest job task",
+    "landing-fixture.yml: job 'fixture-tests' not successful"
+  ]
+}
