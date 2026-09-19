@@ -174,7 +174,8 @@ build_one() {
         # inheriting the lock descriptor and wedging every later build.
         exec flock --close '$target_rel/.build.lock' env \\
           CARGO_TARGET_DIR='$target_rel' \\
-          RUSTC_WRAPPER=sccache \\
+          RUSTC_WRAPPER= \\
+          RUSTC_WORKSPACE_WRAPPER=sccache \\
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-cpu=x86-64-v3 -C force-frame-pointers=yes -C relro-level=full -C link-arg=-Wl,-z,noexecstack -C link-arg=-Wl,-z,shstk -C link-arg=-fuse-ld=mold --remap-path-prefix=/build=.' \\
           cargo build --locked$quoted"
 }
@@ -195,7 +196,8 @@ build_shell_pair() {
         fi
         exec flock --close '$target_rel/.build.lock' env \\
           CARGO_TARGET_DIR='$target_rel' \\
-          RUSTC_WRAPPER=sccache \\
+          RUSTC_WRAPPER= \\
+          RUSTC_WORKSPACE_WRAPPER=sccache \\
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-cpu=x86-64-v3 -C force-frame-pointers=yes -C relro-level=full -C link-arg=-Wl,-z,noexecstack -C link-arg=-Wl,-z,shstk -C link-arg=-fuse-ld=mold --remap-path-prefix=/build=.' \\
           cargo build --locked -p shell --bin shell --no-default-features --features dev-session \\
             -p launcher --bin tilo-launcher"
