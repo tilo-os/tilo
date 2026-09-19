@@ -1,4 +1,16 @@
-# First native x86-64 collection qualification: review candidate
+# First native x86-64 collection qualification: historical record
+
+This directory preserves the reviewed first-qualification inputs and procedure.
+Its generator, tests, 29-file workflow policy and 12-file controller inventory
+belong to qOS commit `774a6886b01fbc219ff55cc1a80713e88c492d09`; reproduce them
+from a separate checkout of that exact commit, not from current main. Do not use
+the installation sequence below to overwrite a live policy or rerun a dispatch.
+It records the original empty-state procedure, not the current platform state.
+
+The shared-contract extraction requires a separately reviewed 13-file controller
+projection and new workflow trust closure. [PACKAGING-SERVICE.md](../PACKAGING-SERVICE.md)
+describes that boundary. These original policy JSON files and the original
+generator are retained unchanged; they are not a generator for the new contract.
 
 These are local, reviewable configuration files. Nothing here installs policy,
 changes Forgejo variables, unsuspends the controller, dispatches a build, or
@@ -59,10 +71,11 @@ It does **not** qualify the full collection, any app's interactive behavior, ARM
 or continuous packaging. In particular, historical artifact34748 is never used
 as a baseline. Full-collection success and independent replay remain the next gate.
 
-## Reproduce and verify locally
+## Reproduce the historical snapshot locally
 
-Run from a native Git/Python environment for this worktree (Windows Git worktrees
-may carry paths that WSL Git cannot resolve):
+Run the following only in the separate checkout of
+`774a6886b01fbc219ff55cc1a80713e88c492d09`, using native Git/Python for that
+checkout (Windows worktree paths may not resolve in WSL Git):
 
 ```sh
 python experiments/ci-forgejo/first-x86-qualification/prepare.py
@@ -82,7 +95,7 @@ the retained native Pod is the separate ABI evidence. The existing 80 packaging
 policy/service/coordinator/transport tests also pass. Resolver and app-release
 workflow contract tests cover the newly landed metadata and PR-plan changes.
 
-## One controlled qualification, after review
+## Original empty-state qualification procedure
 
 1. Start from the verified live state: the controller CronJob and policy ConfigMap
    are **absent**; only the qualified state PVC and credential Secrets are retained.
