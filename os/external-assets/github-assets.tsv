@@ -34,3 +34,7 @@ a5cb1a6ded7d2d7e92d550ba28edd21be2d1d4044662b399887351023e30ce64	dxvk-c3dd74b-LI
 1412a1c760bbd05db026b6c0d1657affd6631cd0a63cddb6f73cc6d4aa616148	nasm-2.16.03.tar.xz	https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/nasm-2.16.03.tar.xz
 # Fedora publishes virtio-win unsigned; pin the reviewed release by content.
 2f58eea024e0221a873032761dc3ed3262409cd80860b7b27d3d5a0f206616c9	virtio-win-0.1.302-1.noarch.rpm	https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-0.1.302-1.noarch.rpm
+# Native PDF capture tests use the same Chromium release as the Windows runtime.
+# SHA-256 values are published by GitHub release assets for chromium/8057.
+7788fa57a2996ebd21afc4090eb0a42b9f95ef3a72e7ef4c0756f1ea703c0415	pdfium-8057-linux-x64.tgz	https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8057/pdfium-linux-x64.tgz
+172094db7a92e0449339cb3a753668bcb26280dd484ea07fe98f61508f1409fa	pdfium-8057-linux-arm64.tgz	https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8057/pdfium-linux-arm64.tgz
