@@ -224,6 +224,30 @@ jobs:
           [[ $version =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]]
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Retain trusted coordinator plan provenance
+        if: github.event.inputs.coordinator_intent != ''
+        env:
+          COORDINATOR_ENABLED: ${{ vars.TILO_APP_COORDINATOR_QUALIFICATION }}
+          COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
+          COORDINATOR_POLICY_SHA256: ${{ github.event.inputs.coordinator_policy_sha256 }}
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
+          RESOLVED_BUILDER: ${{ steps.builder.outputs.image }}
+          REQUESTED_APPS: ${{ github.event.inputs.apps }}
+          REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
+          REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
+          REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
+          BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
+          BASELINE_RUN_ID: ${{ github.event.inputs.baseline_run_id }}
+          BASELINE_EVIDENCE: ${{ github.event.inputs.baseline_evidence }}
+          BASELINE_RECEIPT_SHA256: ${{ github.event.inputs.baseline_receipt_sha256 }}
+        run: python3 tools/app_packaging_plan.py
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: github.event.inputs.coordinator_intent != ''
+        with:
+          name: coordinator-plan-${{ github.run_attempt }}
+          path: coordinator-plan.json
+          if-no-files-found: error
+
   build:
     # PR compilation belongs to the focused CI lane. Packaging remains available
     # through workflow_dispatch (publish=false) before requesting publication.

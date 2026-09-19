@@ -9,8 +9,11 @@ import argparse
 import base64
 import hashlib
 import json
+import io
 from pathlib import Path
 import re
+import subprocess
+import zipfile
 
 import app_packaging_coordinator as core
 from resolve_ci_builder import resolve
@@ -20,6 +23,7 @@ WORKFLOW = 'release-apps.yml'
 REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
                   'tools/app_packaging_product.py', 'tools/app_packaging_coordinator.py',
                   'tools/app_packaging_qualification.py', 'tools/app_release.py',
+                  'tools/app_packaging_plan.py', 'tools/ci_select.py',
                   'dist/apps/app-collections.toml',
                   'tools/resolve_ci_builder.py', 'dist/apps/package-apps.sh',
                   'os/scripts/build-thin-apps.sh', 'tools/ci_select.py',
@@ -123,6 +127,83 @@ class ProductForgejo(core.Forgejo):
     def run(self, run_id):
         return self.call(f'repos/{REPO}/actions/runs/{run_id}')
 
+    def raw_api(self, path, maximum):
+        # The server metadata is checked before requesting this small artifact.
+        # Keep bytes raw: the ordinary call() method expects JSON API responses.
+        result = subprocess.run(['fgj', '--hostname', 'code.podesta.ai', 'api', path],
+                                capture_output=True, timeout=30, check=True)
+        require(len(result.stdout) <= maximum, 'plan API response exceeds byte bound')
+        return result.stdout
+
+    def artifact_bytes(self, artifact_id):
+        return self.raw_api(f'repos/{REPO}/actions/artifacts/{artifact_id}/zip', 256 * 1024)
+
+    def no_build_evidence(self, intent, run):
+        """Verify the trusted plan, never infer no-build from skipped jobs."""
+        # Check trusted executable provenance again when accepting artifacts,
+        # including reconciliation after a worker restart.
+        self.qualify_receipt(intent['desired'])
+        jobs_path = f'repos/{REPO}/actions/runs/{run["id"]}/jobs'
+        jobs = self.call(jobs_path)
+        require(isinstance(jobs, list), 'invalid jobs response')
+        plans = [job for job in jobs if job.get('name') == 'plan']
+        require(len(plans) == 1, 'exactly one trusted plan job required')
+        plan_job = plans[0]
+        require(type(plan_job.get('id')) is int and plan_job['id'] > 0 and
+                plan_job.get('repo_id') == 23 and plan_job.get('run_id') == run['id'] and plan_job.get('status') == 'success' and
+                type(plan_job.get('attempt')) is int and plan_job['attempt'] > 0 and
+                type(plan_job.get('task_id')) is int and plan_job['task_id'] > 0 and
+                isinstance(plan_job.get('handle'), str) and bool(plan_job['handle']), 'plan job is not a current success')
+        path = f'repos/{REPO}/actions/runs/{run["id"]}/artifacts?page=1&limit=50'
+        artifacts = self.call(path)
+        require(isinstance(artifacts, list) and len(artifacts) < 50, 'ambiguous/incomplete plan artifact listing')
+        name = f'coordinator-plan-{plan_job["attempt"]}'
+        matches = [item for item in artifacts if item.get('name') == name]
+        require(len(matches) == 1, 'current plan artifact missing or ambiguous')
+        artifact = matches[0]
+        require(type(artifact.get('id')) is int and artifact['id'] > 0 and artifact.get('run_id') == run['id'] and
+                artifact.get('expired') is False and type(artifact.get('size_in_bytes')) is int and
+                0 < artifact['size_in_bytes'] <= 256 * 1024, 'invalid plan artifact metadata')
+        raw = self.artifact_bytes(artifact['id'])
+        require(len(raw) <= 256 * 1024, 'plan artifact exceeds byte bound')
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            entries = archive.infolist()
+            require(len(entries) == 1 and entries[0].filename == 'coordinator-plan.json' and
+                    0 < entries[0].file_size <= 128 * 1024, 'invalid plan artifact inventory')
+            content = archive.read(entries[0])
+        log = self.raw_api(f'repos/{REPO}/actions/jobs/{plan_job["id"]}/logs', 8 * 1024 * 1024).decode('utf-8')
+        markers = re.findall(r'(?m)^(?:\d{4}-\d{2}-\d{2}T[0-9:.]+Z )?TILO_COORDINATOR_PLAN '
+                             + re.escape(intent['id']) + r' ([0-9a-f]{64})\r?$', log)
+        require(markers == [hashlib.sha256(content).hexdigest()], 'plan artifact not bound by trusted current job log')
+        document = json.loads(content)
+        require(document.get('schema') == 'tilo.coordinator-plan/v1' and type(document.get('run_id')) is int and
+                document['run_id'] == run['id'] and type(document.get('plan_attempt')) is int and
+                document['plan_attempt'] == plan_job['attempt'] and
+                document.get('source_sha') == intent['desired']['source_sha'] and
+                document.get('builder_image') == intent['desired']['builder_image'] and
+                document.get('inputs') == dispatch_inputs(intent), 'plan provenance does not match intent')
+        plan = document.get('plan')
+        require(isinstance(plan, dict) and type(plan.get('count')) is int and plan['count'] >= 0, 'invalid trusted plan')
+        for key in ('apps', 'packages', 'catalog'):
+            require(isinstance(plan.get(key), list) and len(plan[key]) == plan['count'], 'inconsistent trusted plan count')
+        # A rerun replacing this successful plan while downloading must not be
+        # accepted through an older artifact. No stale-attempt fallback exists.
+        current = self.run(run['id'])
+        keys = ('id', 'status', 'workflow_id', 'trigger_event', 'commit_sha', 'event_payload')
+        stable_run = (all(current.get(key) == run.get(key) for key in keys) and
+                      current.get('repository', {}).get('id') == 23 and
+                      current.get('repository', {}).get('full_name') == REPO)
+        require(self.call(jobs_path) == jobs and stable_run,
+                'run or current jobs changed during plan verification')
+        if plan['count'] != 0:
+            return None
+        require(plan.get('features') == [], 'zero-app plan has build features')
+        return core.NoBuildAcceptance({'schema': 'tilo.coordinator-no-build/v1',
+            'run_id': run['id'], 'desired': intent['desired'], 'inputs': dispatch_inputs(intent),
+            'plan_job_id': plan_job['id'], 'plan_attempt': plan_job['attempt'],
+            'plan_task_id': plan_job['task_id'], 'plan_handle': plan_job['handle'],
+            'artifact_id': artifact['id'], 'plan_sha256': hashlib.sha256(content).hexdigest()})
+
     def validate_run(self, intent, run):
         require(self.policy.get('enabled') is True and self.policy.get('qualification_only') is True and
                 intent['desired']['policy_sha256'] == self.policy_sha, 'active trusted policy changed or disabled')
@@ -137,6 +218,9 @@ class ProductForgejo(core.Forgejo):
                 type(run.get('id')) is int and run['id'] > 0,
                 'run does not match immutable nonpublishing intent')
         if run['status'] == 'success':
+            no_build = self.no_build_evidence(intent, run)
+            if no_build is not None:
+                return no_build
             if self.verifier is None:
                 raise core.VerificationRequired('independent final artifact verification is not installed')
             return validate_evidence(self.verifier(intent, run), intent['desired'], run['id'])

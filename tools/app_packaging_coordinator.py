@@ -28,6 +28,12 @@ class VerificationRequired(ValueError):
     """A completed build is not yet an independently verified packaging baseline."""
 
 
+class NoBuildAcceptance:
+    """Trusted validator result: handled source, not a new package baseline."""
+    def __init__(self, evidence):
+        self.evidence = evidence
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'))
 
@@ -132,7 +138,7 @@ def next_action(state):
     if state['active']:
         return 'poll' if state['active'].get('run_id') else 'reconcile-required'
     desired = state['desired']
-    if desired is None or desired == state['baseline']:
+    if desired is None or desired == state['baseline'] or desired == state.get('handled'):
         return 'idle'
     last = state['last_attempt']
     if last and last['desired'] == desired:
@@ -159,9 +165,15 @@ def accept_run(store, intent_id, run, validator=validate_run):
         intent.update(run_id=run['id'], status=run['status'], updated_at=time.time())
         if run['status'] in TERMINAL:
             if run['status'] == 'success':
-                state['baseline'] = intent['desired']
-                state['baseline_evidence'] = evidence
-                intent['verification'] = evidence
+                if isinstance(evidence, NoBuildAcceptance):
+                    state['handled'] = intent['desired']
+                    intent['outcome'] = 'verified-no-build'
+                    intent['verification'] = evidence.evidence
+                else:
+                    state['baseline'] = intent['desired']
+                    state['baseline_evidence'] = evidence
+                    state.pop('handled', None)
+                    intent['verification'] = evidence
             state['last_attempt'] = intent
             state['active'] = None
         store.record(intent)
