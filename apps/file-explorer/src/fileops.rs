@@ -379,40 +379,99 @@ fn transfer_into_with(
 
     let staging = stage_private_copy(src, dest_dir, observer).map_err(|error| error.to_string())?;
     if remove_source {
-        observer
-            .before_source_remove(src)
-            .map_err(|error| error.to_string())?;
-        if let Err(error) = remove_path(src) {
-            let source_may_be_partial = std::fs::symlink_metadata(src)
-                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
-            if source_may_be_partial {
-                staging.retain();
-                return Err(format!(
-                    "{error}; staged data retained at {}",
-                    staging.path.display()
-                ));
-            }
-            return Err(error.to_string());
+        let quarantine = match quarantine_source(src) {
+            Ok(path) => path,
+            Err(error) => return Err(staging.error_with_cleanup(error.to_string())),
+        };
+        let deletion = observer
+            .before_source_remove(&quarantine)
+            .and_then(|()| remove_path(&quarantine));
+        if let Err(error) = deletion {
+            return Err(restore_failed_cut(
+                src,
+                &quarantine,
+                &staging,
+                error.to_string(),
+            ));
         }
     }
 
     match publish_staging(&staging.path, dest_dir, &names, observer) {
-        Ok(destination) => Ok(destination),
-        Err(publish_error) if remove_source => {
-            match copy_tree_exclusive(&staging.path, src, &mut NoopTransferObserver) {
-                Ok(()) => Err(publish_error),
-                Err(restore_error) => {
-                    // Retain the private staging tree if restoration failed so
-                    // the selected data is never discarded.
-                    staging.retain();
-                    Err(format!(
-                        "{publish_error}; source restoration failed: {restore_error}; staged data retained at {}",
-                        staging.path.display()
-                    ))
-                }
-            }
+        Ok(destination) => {
+            staging.finish_success();
+            Ok(destination)
         }
-        Err(error) => Err(error),
+        Err(publish_error) if remove_source => Err(restore_failed_cut(
+            src,
+            Path::new(""),
+            &staging,
+            publish_error,
+        )),
+        Err(error) => Err(staging.error_with_cleanup(error)),
+    }
+}
+
+fn quarantine_source(src: &Path) -> std::io::Result<PathBuf> {
+    let parent = src
+        .parent()
+        .ok_or_else(|| std::io::Error::other("source has no parent directory"))?;
+    for _ in 0..32 {
+        let quarantine = parent.join(format!(".tilo-transfer-source-{}", uuid::Uuid::new_v4()));
+        match rename_noreplace(src, &quarantine) {
+            Ok(()) => {
+                if let Err(error) = mark_private_path(&quarantine) {
+                    return match rename_noreplace(&quarantine, src) {
+                        Ok(()) => Err(error),
+                        Err(rollback_error) => Err(std::io::Error::new(
+                            rollback_error.kind(),
+                            format!(
+                                "{error}; source rollback failed: {rollback_error}; original retained at {}",
+                                quarantine.display()
+                            ),
+                        )),
+                    };
+                }
+                return Ok(quarantine);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate private source quarantine",
+    ))
+}
+
+fn restore_failed_cut(
+    source: &Path,
+    quarantine: &Path,
+    staging: &StagingPath,
+    original_error: String,
+) -> String {
+    let quarantine_error = if quarantine.as_os_str().is_empty() {
+        None
+    } else {
+        remove_path(quarantine).err()
+    };
+    match copy_tree_exclusive(&staging.path, source, &mut NoopTransferObserver) {
+        Ok(()) => {
+            let mut error = staging.error_with_cleanup(original_error);
+            if let Some(quarantine_error) = quarantine_error {
+                error.push_str(&format!(
+                    "; partial source quarantine retained at {}: {quarantine_error}",
+                    quarantine.display()
+                ));
+            }
+            error
+        }
+        Err(restore_error) => {
+            staging.retain();
+            format!(
+                "{original_error}; source restoration failed: {restore_error}; staged data retained at {}",
+                staging.path.display()
+            )
+        }
     }
 }
 
@@ -493,12 +552,48 @@ impl StagingPath {
     fn retain(&self) {
         self.retain.set(true);
     }
+
+    fn error_with_cleanup(&self, error: String) -> String {
+        match remove_path(&self.container) {
+            Ok(()) => {
+                self.retain();
+                error
+            }
+            Err(cleanup_error) => {
+                self.retain();
+                format!(
+                    "{error}; private staging retained at {}: {cleanup_error}",
+                    self.path.display()
+                )
+            }
+        }
+    }
+
+    fn finish_success(&self) {
+        // Publication moved the payload out, so failure here can leave only
+        // an empty private container and must not make a successful transfer
+        // retry under another suffix.
+        if let Err(error) = remove_path(&self.container) {
+            tracing::warn!(
+                path = %self.container.display(),
+                %error,
+                "empty Files transfer staging container could not be removed"
+            );
+        }
+        self.retain();
+    }
 }
 
 impl Drop for StagingPath {
     fn drop(&mut self) {
         if !self.retain.get() {
-            let _ = remove_path(&self.container);
+            if let Err(error) = remove_path(&self.container) {
+                tracing::warn!(
+                    path = %self.container.display(),
+                    %error,
+                    "Files transfer staging cleanup failed during unwinding"
+                );
+            }
         }
     }
 }
@@ -510,7 +605,7 @@ fn stage_private_copy(
 ) -> std::io::Result<StagingPath> {
     for _ in 0..32 {
         let container = dest_dir.join(format!(".tilo-transfer-{}", uuid::Uuid::new_v4()));
-        match std::fs::create_dir(&container) {
+        match create_private_container(&container) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
@@ -525,8 +620,16 @@ fn stage_private_copy(
                 });
             }
             Err(error) => {
-                let _ = remove_path(&container);
-                return Err(error);
+                return match remove_path(&container) {
+                    Ok(()) => Err(error),
+                    Err(cleanup_error) => Err(std::io::Error::new(
+                        cleanup_error.kind(),
+                        format!(
+                            "{error}; private staging retained at {}: {cleanup_error}",
+                            path.display()
+                        ),
+                    )),
+                };
             }
         }
     }
@@ -640,32 +743,62 @@ fn copy_tree_exclusive(
     dest: &Path,
     observer: &mut impl TransferObserver,
 ) -> std::io::Result<()> {
-    let initial = std::fs::symlink_metadata(src)?;
-    observer.before_copy_source(src)?;
+    let parent_path = src
+        .parent()
+        .ok_or_else(|| std::io::Error::other("source has no parent directory"))?;
+    let name = src
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("source has no file name"))?;
+    let parent = cap_std::fs::Dir::open_ambient_dir(parent_path, cap_std::ambient_authority())?;
+    copy_capability_entry(&parent, name, src, dest, observer)
+}
 
+fn copy_capability_entry(
+    parent: &cap_std::fs::Dir,
+    name: &std::ffi::OsStr,
+    display_path: &Path,
+    dest: &Path,
+    observer: &mut impl TransferObserver,
+) -> std::io::Result<()> {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
+
+    let initial = parent.symlink_metadata(name)?;
+    observer.before_copy_source(display_path)?;
     if initial.file_type().is_symlink() {
-        return copy_symlink(src, dest);
+        let target = parent.read_link_contents(name)?;
+        return create_symlink(&target, dest);
     }
 
-    if initial.is_dir() {
-        let current = std::fs::symlink_metadata(src)?;
-        if !current.is_dir() || current.file_type().is_symlink() {
-            return Err(std::io::Error::other("source type changed during copy"));
-        }
+    let mut options = cap_std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .follow(FollowSymlinks::No)
+        .maybe_dir(true);
+    let opened = parent.open_with(name, &options)?.into_std();
+    let metadata = opened.metadata()?;
+
+    if metadata.is_dir() {
         std::fs::create_dir(dest)?;
-        for entry in std::fs::read_dir(src)? {
+        let source = cap_std::fs::Dir::from_std_file(opened);
+        for entry in source.entries()? {
             let entry = entry?;
-            copy_tree_exclusive(&entry.path(), &dest.join(entry.file_name()), observer)?;
+            let child_name = entry.file_name();
+            copy_capability_entry(
+                &source,
+                &child_name,
+                &display_path.join(&child_name),
+                &dest.join(&child_name),
+                observer,
+            )?;
         }
-        std::fs::set_permissions(dest, current.permissions())?;
+        std::fs::set_permissions(dest, metadata.permissions())?;
         return Ok(());
     }
-
-    let mut source = open_regular_file_nofollow(src)?;
-    let metadata = source.metadata()?;
-    if !metadata.is_file() || std::fs::symlink_metadata(src)?.file_type().is_symlink() {
+    if !metadata.is_file() {
         return Err(std::io::Error::other("source type changed during copy"));
     }
+
+    let mut source = opened;
     let mut destination = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -675,41 +808,66 @@ fn copy_tree_exclusive(
 }
 
 #[cfg(unix)]
-fn open_regular_file_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-}
-
-#[cfg(windows)]
-fn open_regular_file_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn open_regular_file_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
-    std::fs::File::open(path)
+fn create_symlink(target: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::symlink;
+    symlink(target, dest)
 }
 
 #[cfg(unix)]
-fn copy_symlink(src: &Path, dest: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::symlink;
+fn create_private_container(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700).create(path)
+}
 
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)?;
+#[cfg(not(windows))]
+fn mark_private_path(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn create_private_container(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(path)?;
+    if let Err(error) = mark_private_path(path) {
+        let _ = std::fs::remove_dir(path);
+        return Err(error);
     }
-    symlink(std::fs::read_link(src)?, dest)
+    Ok(())
+}
+
+#[cfg(windows)]
+fn mark_private_path(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn GetFileAttributesW(path: *const u16) -> u32;
+        fn SetFileAttributesW(path: *const u16, attributes: u32) -> i32;
+    }
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x0000_0002;
+    const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: `wide` is a live, NUL-terminated UTF-16 path buffer for both
+    // calls. Existing attributes are retained while adding Hidden.
+    let attributes = unsafe { GetFileAttributesW(wide.as_ptr()) };
+    if attributes == INVALID_FILE_ATTRIBUTES {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { SetFileAttributesW(wide.as_ptr(), attributes | FILE_ATTRIBUTE_HIDDEN) } != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_private_container(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(path)
 }
 
 #[cfg(not(unix))]
-fn copy_symlink(_src: &Path, _dest: &Path) -> std::io::Result<()> {
+fn create_symlink(_target: &Path, _dest: &Path) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "copying symbolic links is not supported on this platform",
@@ -784,6 +942,19 @@ mod tests {
                     .starts_with(".tilo-transfer-")
             }),
             "private transfer staging was cleaned"
+        );
+    }
+
+    fn assert_no_source_quarantine(directory: &Path) {
+        assert!(
+            fs::read_dir(directory).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".tilo-transfer-source-")
+            }),
+            "source quarantine was cleaned"
         );
     }
 
@@ -1066,17 +1237,20 @@ mod tests {
     #[test]
     fn failed_cut_source_deletion_publishes_nothing_and_cleans_staging() {
         let directory = tmp();
-        let source = directory.path().join("report.txt");
+        let source = directory.path().join("project");
         let destination = directory.path().join("destination");
-        fs::write(&source, b"selected bytes").unwrap();
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("first.txt"), b"first bytes").unwrap();
+        fs::write(source.join("second.txt"), b"second bytes").unwrap();
         fs::create_dir(&destination).unwrap();
 
         let mut observer = TestTransferObserver {
             force_staging: true,
-            before_source_remove: Some(Box::new(|_| {
+            before_source_remove: Some(Box::new(|quarantine| {
+                fs::remove_file(quarantine.join("first.txt"))?;
                 Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
-                    "injected source deletion failure",
+                    "injected partial source deletion failure",
                 ))
             })),
             ..Default::default()
@@ -1084,9 +1258,23 @@ mod tests {
         let result = transfer_into_with(&source, &destination, true, &mut observer);
 
         assert!(result.is_err());
-        assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+        assert_eq!(fs::read(source.join("first.txt")).unwrap(), b"first bytes");
+        assert_eq!(
+            fs::read(source.join("second.txt")).unwrap(),
+            b"second bytes"
+        );
         assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
         assert_no_transfer_staging(&destination);
+        assert_no_source_quarantine(directory.path());
+
+        let retried = move_into(&source, &destination).unwrap();
+        assert_eq!(retried, destination.join("project"));
+        assert_eq!(fs::read(retried.join("first.txt")).unwrap(), b"first bytes");
+        assert_eq!(
+            fs::read(retried.join("second.txt")).unwrap(),
+            b"second bytes"
+        );
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
     }
 
     #[cfg(unix)]
@@ -1122,6 +1310,49 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(fs::read(&outside).unwrap(), b"outside secret");
         assert_eq!(fs::read_link(&source).unwrap(), outside);
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        assert_no_transfer_staging(&destination);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_directory_swap_to_symlink_is_refused_without_traversal() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tmp();
+        let source = directory.path().join("project");
+        let saved_source = directory.path().join("saved-project");
+        let destination = directory.path().join("destination");
+        let outside = directory.path().join("outside");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), b"outside secret").unwrap();
+        fs::create_dir(&destination).unwrap();
+
+        let selected = source.clone();
+        let saved = saved_source.clone();
+        let target = outside.clone();
+        let mut swapped = false;
+        let mut observer = TestTransferObserver {
+            force_staging: true,
+            before_copy_source: Some(Box::new(move |path| {
+                if path == selected && !swapped {
+                    swapped = true;
+                    fs::rename(path, &saved)?;
+                    symlink(&target, path)?;
+                }
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let result = transfer_into_with(&source, &destination, false, &mut observer);
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(outside.join("secret.txt")).unwrap(),
+            b"outside secret"
+        );
+        assert!(saved_source.is_dir());
         assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
         assert_no_transfer_staging(&destination);
     }
