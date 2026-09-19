@@ -12,7 +12,7 @@
 //! them as not executed instead of counting an early return as a passing test.
 //! They still compile with every build and are runnable as one opt-in lane:
 //!
-//!   tilo-build test -p maps --test live_maps -- \
+//!   tilo-build test -p maps --test `live_maps` -- \
 //!     --ignored --nocapture --test-threads 1
 //!
 //! Set `MAPS_LIVE_OUT=/some/dir` to control where the inspection PNGs are
