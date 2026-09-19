@@ -86,6 +86,7 @@ class WorkerContract(unittest.TestCase):
                 'publish_repository': 'code.podesta.ai/qos/tilo-development',
                 'generation': 1, 'source_date_epoch': 1789690573, 'systemd_version': '259.1',
                 'minimum_free_bytes': 8 * 1024**3, 'stage_timeout_seconds': 1800,
+                'signing_response_timeout_seconds': 1800, 'prediction_stage_timeout_seconds': 5400,
                 **{key: 'registry.invalid/input@sha256:' + 'f' * 64
                    for key in ('base_ref', 'rpms_ref', 'kernel_ref', 'wpe_ref')}}
 

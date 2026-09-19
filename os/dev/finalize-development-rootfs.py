@@ -29,7 +29,8 @@ FIELDS = {'schema', 'source_revision', 'source_dir', 'helpers_revision', 'receip
           'public_bundle', 'manifest_sha256', 'target', 'new_public_bundle', 'new_manifest_sha256',
           'new_target', 'new_owner', 'architecture', 'generation', 'source_date_epoch', 'base_ref',
           'rpms_ref', 'kernel_ref', 'wpe_ref', 'signer', 'systemd_version', 'minimum_free_bytes',
-          'stage_timeout_seconds', 'publish_repository'}
+          'stage_timeout_seconds', 'signing_response_timeout_seconds',
+          'prediction_stage_timeout_seconds', 'publish_repository'}
 
 
 def validate_request(request):
@@ -65,10 +66,17 @@ def validate_request(request):
             or not re.fullmatch(re.escape(request['publish_repository']) + r':[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', request['new_target'])):
         raise ValueError('publication must use the bound development repository with a separate staging tag')
     bounds = {'generation': (1, 2**64 - 1), 'source_date_epoch': (0, 253402300799),
-              'minimum_free_bytes': (1024**3, 1024**4), 'stage_timeout_seconds': (60, 3600)}
+              'minimum_free_bytes': (1024**3, 1024**4), 'stage_timeout_seconds': (60, 3600),
+              'signing_response_timeout_seconds': (60, 1800),
+              # Leave fifteen minutes inside the workflow's 155-minute step
+              # deadline for launcher/export cleanup and failure evidence.
+              'prediction_stage_timeout_seconds': (300, 8400)}
     for name, (low, high) in bounds.items():
         if type(request[name]) is not int or not low <= request[name] <= high:
             raise ValueError('invalid finalization execution bound')
+    if request['prediction_stage_timeout_seconds'] <= (
+            request['signing_response_timeout_seconds'] + request['stage_timeout_seconds']):
+        raise ValueError('prediction deadline must exceed signing response and non-signing command budgets')
     if not re.fullmatch(r'259(?:[.][0-9]+)?(?:[-+][A-Za-z0-9_.+-]+)?', request['systemd_version']):
         raise ValueError('independently pinned systemd259 version required')
     return request
@@ -162,8 +170,10 @@ class Driver:
         self.receipts = []
         self.restored_stage5 = None
 
-    def command(self, arguments):
-        return self.runner([str(a) for a in arguments], self.environment, self.request['stage_timeout_seconds'])
+    def command(self, arguments, timeout=None):
+        if timeout is None:
+            timeout = self.request['stage_timeout_seconds']
+        return self.runner([str(a) for a in arguments], self.environment, timeout)
 
     def helper(self, name, arguments):
         raw = self.command(['/usr/bin/python3', self.dev / name, *arguments])
@@ -362,16 +372,23 @@ class Driver:
             return {'image_id': identifier, 'composefs_digest': seal, **self.publish_stage5(identifier)}
         resealed_id = self.stage(5, reseal)['image_id']
         def prediction():
+            deadline = time.monotonic() + q['prediction_stage_timeout_seconds']
+            def command(arguments, *, aggregate=False):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError('prediction stage exceeded aggregate deadline')
+                timeout = remaining if aggregate else min(q['stage_timeout_seconds'], remaining)
+                return self.command(arguments, timeout=timeout)
             # Existing helper accepts a mutable local alias. Confine it to this
             # request-owned alias; retain only immutable IDs in receipts.
             alias = 'localhost/tilo-finalization-' + self.binding + ':prediction'
-            self.command(['podman', '--remote=false', 'tag', resealed_id, alias])
+            command(['podman', '--remote=false', 'tag', resealed_id, alias])
             sys.path.insert(0, str(self.dev))
             trust = self.module('finalization_trust', 'development-trust.py')
             metadata = trust.validate(Path(q['new_public_bundle']), q['new_manifest_sha256'])
             self.environment['TILO_EFI_SIGNING_CERT_SHA256'] = metadata['identities']['efi-signing.crt']
-            self.command(['/bin/bash', self.dev / 'sign-target-prediction.sh', alias, q['signer']])
-            value = json.loads(self.command(['podman', '--remote=false', 'image', 'inspect', alias]))
+            command(['/bin/bash', self.dev / 'sign-target-prediction.sh', alias, q['signer']], aggregate=True)
+            value = json.loads(command(['podman', '--remote=false', 'image', 'inspect', alias]))
             return {'image_id': image_id('sha256:' + value[0]['Id'].removeprefix('sha256:')), 'composefs_digest': seal}
         final_id = self.stage(6, prediction)['image_id']
         def verify():
