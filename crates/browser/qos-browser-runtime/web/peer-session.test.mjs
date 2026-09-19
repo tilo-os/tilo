@@ -17,6 +17,26 @@ test('presentation bursts coalesce queued persistence behind an in-flight commit
  assert.equal(commits,1);
  assert(publications<=2,`one active and one queued run should cover the burst; saw ${publications}`);
 });
+test('presented frames without pending writes neither publish nor recompute peer health',async t=>{
+ const f=fixture();let publications=0;
+ const peer=await f.connect(),mount=await peer.mountDesktop({});
+ t.after(()=>peer.dispose());
+ // Settle every queued persistence run without forcing a publication.
+ const settle=async()=>{for(let i=0;i<5;i++){await new Promise(resolve=>setTimeout(resolve,0));await drain();}};
+ await settle();
+ f.runtime.peer_committed=()=>{publications++;};
+ for(let frame=0;frame<100;frame++)mount.present(1);
+ await settle();
+ assert.equal(publications,0,`idle presented frames must not call peer_committed; saw ${publications}`);
+ // The runtime reporting pending writes still commits and then publishes.
+ f.setFailCommit(false);f.status({phase:'ready',persistenceNeeded:true});
+ await settle();
+ assert(publications>=1,'a committed batch publishes');
+ const afterCommit=publications;
+ for(let frame=0;frame<100;frame++)mount.present(1);
+ await settle();
+ assert.equal(publications,afterCommit,'later idle frames stay silent');
+});
 test('a write arriving during publication gets a following persistence barrier',{timeout:1000},async t=>{
  const f=fixture();let revision=0,durable=0;const committed=[],second=deferred();
  f.runtime.peer_pending_writes=()=>JSON.stringify(revision>durable?[{revision:String(revision)}]:[]);

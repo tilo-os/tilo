@@ -24,22 +24,27 @@ return async function connectPeer(options={}){
   let health={version:1,generation:'0',transport:{phase:'connecting',authenticated:false,lastRelayContactAtMs:null,lastSessionPeerContactAtMs:null,retry:{attempt:0,nextAttemptAtMs:null,inFlight:false}},admission:{phase:'waiting',requiredRecords:[],pendingPrerequisites:0,deadlineAtMs:null},records:[],surfaces:[],capabilities:{automaticRecovery:true,retrySaving:true,recoverRenderer:true,durablePeerAcknowledgement:false},failures:[],recoveryOperations:[]};
   const timerSet=recoveryClock.setTimeout??globalThis.setTimeout,timerClear=recoveryClock.clearTimeout??globalThis.clearTimeout,now=recoveryClock.now??Date.now;
   const report=(next,force=false)=>{if(next.health){if(next.health.admission||next.health.records)admissionRevision++;health={...health,...next.health,transport:{...health.transport,...next.health.transport,retry:health.transport.retry},failures:[...health.failures.filter(f=>!f.id.startsWith('runtime:')),...(next.health.failures??[])]};}health={...health,generation:snapshot.health?.generation??health.generation,admission:{...health.admission,deadlineAtMs:admissionDeadline}};const candidate={...snapshot,...next,health},changed=force||!samePublicValue(snapshot,candidate);if(changed){health={...health,generation:String(++healthRevision)};snapshot={...candidate,health};options.onStatus?.(snapshot);for(const listener of subscribers)listener(snapshot);}for(const waiter of admissionWaiters)waiter.check();};
-  async function persist(publish=true){
+  // `force` publishes (peer_committed: outbox send plus a fresh health report)
+  // even when this run committed nothing. Presented frames pass false: without a
+  // commit there is nothing new to send, and the health report would be unchanged.
+  async function persist(publish=true,force=true){
     if(id===undefined||!storage||closed||failed)return;
     // Coalesce only work that has not started and is still the queue tail.
     // A running drain or an intervening private-action write needs its own
     // following barrier, so new writes can never join an already-settling run.
-    if(queuedPersist&&flush===queuedPersist.promise){queuedPersist.publish||=publish;return queuedPersist.promise;}
-    const request={publish};
+    if(queuedPersist&&flush===queuedPersist.promise){queuedPersist.publish||=publish;queuedPersist.force||=force;return queuedPersist.promise;}
+    const request={publish,force};
     request.promise=flush.catch(()=>{}).then(async()=>{
       if(queuedPersist===request)queuedPersist=undefined;
       if(closed||failed)return;
+      let committed=0;
+      const publication=()=>{if(request.publish&&(request.force||committed>0))runtime.peer_committed(id);};
       try{
         // The journal (including replay floors/outbox) and all canonical records
         // share this one strict IDB transaction. Network publication follows ack.
         const result=runtime.peer_pending_batch_bytes||runtime.peer_pending_batch
-          ?await commitPeerBatches({pending:()=>readPeerBatch(runtime,id),commit:writes=>storage.commit(writes),acknowledge:value=>runtime.acknowledge_peer_storage_batch(id,JSON.stringify(value)),epoch:storage.epoch,publish:()=>{if(request.publish)runtime.peer_committed(id);}})
-          :await commitPeerWrites({pending:()=>JSON.parse(runtime.peer_pending_writes(id)),commit:writes=>storage.commit(writes),acknowledge:write=>runtime.acknowledge_storage(namespace.profile,namespace.device,BigInt(write.revision),undefined),publish:()=>{if(request.publish)runtime.peer_committed(id);}});
+          ?await commitPeerBatches({pending:()=>readPeerBatch(runtime,id),commit:writes=>storage.commit(writes),acknowledge:value=>{if(value.result.ok)committed++;runtime.acknowledge_peer_storage_batch(id,JSON.stringify(value));},epoch:storage.epoch,publish:publication})
+          :await commitPeerWrites({pending:()=>JSON.parse(runtime.peer_pending_writes(id)),commit:writes=>storage.commit(writes),acknowledge:write=>{committed++;runtime.acknowledge_storage(namespace.profile,namespace.device,BigInt(write.revision),undefined);},publish:publication});
         clearFailure('storage');
         if(result.publicationError){connectionFailure(result.publicationError);coordinator.schedule();}
 
@@ -305,7 +310,7 @@ return async function connectPeer(options={}){
                 // cleanup must finish before retry; all security/GPU errors pass through.
                 if(sessionDesktop&&retryAdmission&&status.phase==='failed'&&status.error===admissionPending){admissionRejected=true;status={phase:'admitting'};}
                 else if(admissionRejected&&status.phase==='closed'&&status.persistence!=='failed'&&!status.error)status={...status,phase:'admitting'};
-                surfaceStatus(surface,status);mountOptions.onStatus?.({...status,surfaceId:surface});if(status.phase==='presented'||status.persistence==='committed')void persist().catch(()=>{});
+                surfaceStatus(surface,status);mountOptions.onStatus?.({...status,surfaceId:surface});if(status.phase==='presented'||status.persistence==='committed')void persist(true,false).catch(()=>{});
               }});
             }catch(error){
               if(current===allocation)allocation++;

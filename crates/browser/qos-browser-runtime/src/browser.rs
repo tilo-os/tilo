@@ -44,6 +44,19 @@ struct Config {
     peer: Option<u32>,
     #[serde(default)]
     mac: bool,
+    /// Milliseconds edits may wait before publication while typing continues.
+    /// Defaults to `PUBLICATION_WINDOW_MS`; zero publishes every changed frame.
+    #[serde(default)]
+    publication_window_ms: Option<u64>,
+}
+/// Default publication window: disabled. A 100 ms window measured 18.2 ms mean
+/// typing capacity against 24.3 ms, but with it the relay replayed the room's
+/// retained deltas back in bursts of hundreds (see the 2026-09-18 batching
+/// qualification), so the window stays at zero until that protocol interaction
+/// is understood. Hosts and benchmarks can still set `publication_window_ms`.
+const PUBLICATION_WINDOW_MS: u64 = 0;
+fn publication_schedule(window_ms: Option<u64>) -> RefCell<crate::admitted_records::PublicationSchedule> {
+    RefCell::new(crate::admitted_records::PublicationSchedule::new(std::time::Duration::from_millis(window_ms.unwrap_or(PUBLICATION_WINDOW_MS))))
 }
 use crate::storage_key::DiskKey;
 use crate::viewport::{Viewport, ViewportState};
@@ -63,6 +76,7 @@ struct Gpu {
 struct Mount {
     metrics: RefCell<crate::frame_metrics::FrameMetrics>,
     published_records: std::cell::RefCell<crate::admitted_records::PublishedRecords>,
+    publication: RefCell<crate::admitted_records::PublicationSchedule>,
     peer_suspended: bool,
     peer:Option<u32>,
     desktop:Option<crate::desktop_host::DesktopHandle>,
@@ -138,7 +152,7 @@ pub fn close(id: u64) -> Result<String, JsValue> {
     REQUESTS.with_borrow_mut(|r| r.remove(&id));
     MOUNTS.with_borrow_mut(|m| {
         let Some(mut mount)=m.remove(&id) else {return Ok("[]".into());};
-        mount.publish(id);
+        mount.publish_with(id, true);
         mount.frame.close_components();
         let reports=mount.frame.take_component_close_reports();
         for record in mount.owned_records(){let _=record.store.try_flush();}
@@ -272,6 +286,7 @@ impl ApplicationHandler<u64> for Runner {
                     let start = m.metric_start();
                     m.frame.send_host_event(&event);
                     m.metric_end("input", start);
+                    if matches!(event, WindowEvent::Focused(false)) { m.publish_records(id, true); }
                     if start.is_some() {
                         let demand = m.frame.frame_schedule();
                         let mut metrics = m.metrics.borrow_mut();
@@ -289,7 +304,19 @@ impl ApplicationHandler<u64> for Runner {
         let now = ui::clock::Instant::now();
         let mut deadline = None;
         MOUNTS.with_borrow(|mounts| {
-            for m in mounts.values() {
+            for (&id, m) in mounts.iter() {
+                // Deferred publication runs when its window elapses, independently
+                // of presentation; otherwise the loop wakes for it.
+                // The RefCell borrow must end before publishing re-borrows it mutably.
+                let due = if m.peer_suspended { None } else { m.publication.borrow().due() };
+                if let Some(due) = due {
+                    if due <= now {
+                        let start = m.metric_start();
+                        m.publish_records(id, true);
+                        m.metric_end("publish_flush", start);
+                    }
+                    else { deadline = Some(deadline.map_or(due, |old: ui::clock::Instant| old.min(due))); }
+                }
                 if m.peer_suspended || m.hidden || m.error.is_some() || m.gpu.is_none() || m.viewport.suspended() {
                     continue;
                 }
@@ -432,6 +459,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let mount = Mount {
         metrics: Default::default(),
         published_records: Default::default(),
+        publication: publication_schedule(config.publication_window_ms),
         peer_suspended: false,
         peer:config.peer,
         desktop:None,
@@ -472,7 +500,7 @@ fn begin_desktop(event_loop:&ActiveEventLoop,id:u64,canvas:web_sys::HtmlCanvasEl
     frame.set_platform_conventions(ui::platform::PlatformConventions::new(if config.mac{ui::platform::Platform::MacOs}else{ui::platform::Platform::Linux}));
     desktop.sync_global_search(&mut frame);
     let images=std::mem::take(&mut *desktop.images.borrow_mut());
-    let mount=Mount{metrics:Default::default(),published_records:Default::default(),peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,viewport:ViewportState::new(Viewport{width:size.width,height:size.height,dpr}),hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
+    let mount=Mount{metrics:Default::default(),published_records:Default::default(),publication:publication_schedule(config.publication_window_ms),peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,viewport:ViewportState::new(Viewport{width:size.width,height:size.height,dpr}),hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
     MOUNTS.with_borrow_mut(|mounts|mounts.insert(id,mount));emit(&status,serde_json::json!({"phase":"gpu-pending","id":id}));initialize_gpu(id,1,window);Ok(())
 }
 fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
@@ -684,15 +712,34 @@ impl Mount {
         self.metric_end("draw_publish", publish_start);
         Ok(())
     }
-    fn publish(&self, id: u64) {
-        let records_start = self.metric_start();
-        if let Some(peer)=self.peer.filter(|_| !self.peer_suspended) {
-            for record in self.owned_records(){
-                let id=if record.checkout.id.is_package_primary(){""}else{record.checkout.id.as_str()};
-                let published=self.published_records.borrow_mut().publish(peer,&record.app,&record.store,&record.checkout.id,|document|crate::peer::local_owned_document(peer,&record.app,id,document));
-                if let Err(error)=published{crate::peer::mark_failure(peer,error.clone());emit(&self.status,serde_json::json!({"phase":"failed","error":error}));return;}
-            }
+    /// Publish changed owned records to the peer, at most once per publication
+    /// window unless forced. Returns false after a failed publication, which has
+    /// already been reported.
+    fn publish_records(&self, _id: u64, force: bool) -> bool {
+        let Some(peer) = self.peer.filter(|_| !self.peer_suspended) else { return true; };
+        let changed: Vec<_> = self.owned_records().into_iter()
+            .filter(|record| self.published_records.borrow().changed(peer, &record.app, &record.store, &record.checkout.id))
+            .collect();
+        if changed.is_empty() { self.publication.borrow_mut().clear_due(); return true; }
+        let now = ui::clock::Instant::now();
+        let decision = if force { self.publication.borrow_mut().mark_published(now); crate::admitted_records::PublicationDecision::Now }
+            else { self.publication.borrow_mut().decide(now) };
+        if let crate::admitted_records::PublicationDecision::Deferred(_) = decision {
+            if self.metric_start().is_some() { self.metrics.borrow_mut().count("publish_deferred"); }
+            return true;
         }
+        for record in changed {
+            let id=if record.checkout.id.is_package_primary(){""}else{record.checkout.id.as_str()};
+            let published=self.published_records.borrow_mut().publish(peer,&record.app,&record.store,&record.checkout.id,|document|crate::peer::local_owned_document(peer,&record.app,id,document));
+            if let Err(error)=published{crate::peer::mark_failure(peer,error.clone());emit(&self.status,serde_json::json!({"phase":"failed","error":error}));return false;}
+        }
+        true
+    }
+    fn publish(&self, id: u64) { self.publish_with(id, false); }
+    /// `force` publishes deferred edits now (close, hide, suspension, focus loss, IME end).
+    fn publish_with(&self, id: u64, force: bool) {
+        let records_start = self.metric_start();
+        if !self.publish_records(id, force) { return; }
         self.metric_end("publish_records", records_start);
         let output_start = self.metric_start();
         let f = self.frame.frame_output();
@@ -733,6 +780,7 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
         let start = m.metric_start();
         m.frame.send_host_event(&WindowEvent::Ime(event));
         m.metric_end("input_ime", start);
+        if kind == "end" { m.publish_records(id, true); }
         m.pending = true;
         m.window.request_redraw();
         Ok(())
@@ -1045,6 +1093,7 @@ pub fn modifiers(
 pub fn visible(id: u64, visible: bool) {
     MOUNTS.with_borrow_mut(|mounts| {
         if let Some(m) = mounts.get_mut(&id) {
+            if !visible { m.publish_records(id, true); }
             m.hidden = !visible;
             if visible {
                 m.pending = true;
@@ -1139,7 +1188,7 @@ pub(crate) fn refresh_peer_mounts(peer:u32){
 }
 
 #[wasm_bindgen]
-pub fn rebind_peer(old:u32,new:u32){MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(old)){mount.peer=Some(new);mount.peer_suspended=false;mount.queue_resize();mount.frame.relayout();mount.pending=true;mount.window.request_redraw();});}
+pub fn rebind_peer(old:u32,new:u32){MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(old)){mount.peer=Some(new);mount.peer_suspended=false;mount.publication.borrow_mut().reset();mount.queue_resize();mount.frame.relayout();mount.pending=true;mount.window.request_redraw();});}
 
 #[wasm_bindgen]
 pub fn suspend_peer(peer:u32,suspended:bool)->Result<(),JsValue>{

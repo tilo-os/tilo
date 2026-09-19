@@ -287,12 +287,53 @@ pub(crate) fn prepare_remote_owned(records:&ui::record::RecordStore,id:&RecordId
  capture_owned(records,id)
 }
 
+/// Coalesces changed-document publication while edits keep arriving. Each
+/// publication captures the canonical owner, signs and encrypts a delta, encodes
+/// the journal, clones peer state and queues a strict IndexedDB commit; doing
+/// that at most once per window instead of once per keystroke bounds the work
+/// between rendered frames. Edits wait at most one window; hiding, closing,
+/// suspension, focus loss and IME end publish immediately. A zero window
+/// publishes every changed frame.
+pub(crate) struct PublicationSchedule {
+    window: std::time::Duration,
+    last: Option<ui::clock::Instant>,
+    due: Option<ui::clock::Instant>,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PublicationDecision { Now, Deferred(ui::clock::Instant) }
+impl PublicationSchedule {
+    pub(crate) fn new(window: std::time::Duration) -> Self { Self { window, last: None, due: None } }
+    /// Called when at least one owned record has unpublished changes.
+    pub(crate) fn decide(&mut self, now: ui::clock::Instant) -> PublicationDecision {
+        if let Some(last) = self.last && let Some(due) = last.checked_add(self.window) && now < due {
+            self.due = Some(due);
+            return PublicationDecision::Deferred(due);
+        }
+        self.mark_published(now);
+        PublicationDecision::Now
+    }
+    /// A publication ran now: scheduled, at its deadline, or as a forced flush.
+    pub(crate) fn mark_published(&mut self, now: ui::clock::Instant) { self.last = Some(now); self.due = None; }
+    /// Nothing is left to publish (another path already published the records).
+    pub(crate) fn clear_due(&mut self) { self.due = None; }
+    pub(crate) fn due(&self) -> Option<ui::clock::Instant> { self.due }
+    /// A different peer needs its own first publication without waiting.
+    pub(crate) fn reset(&mut self) { self.last = None; self.due = None; }
+}
+
 /// Tracks document publication separately from presentation.
 #[derive(Default)]
 pub(crate) struct PublishedRecords {
     heads: std::collections::HashMap<(u32, String, RecordId), Vec<automerge::ChangeHash>>,
 }
 impl PublishedRecords {
+    /// Whether `publish` would send anything. Unfinished typing always counts:
+    /// it must still pass through capture's canonical commit boundary.
+    pub(crate) fn changed(&self, peer: u32, app: &str, records: &ui::record::RecordStore, id: &RecordId) -> bool {
+        use automerge::transaction::Transactable;
+        let key = (peer, app.to_owned(), id.clone());
+        records.read(id, |doc| doc.pending_ops() != 0 || self.heads.get(&key).is_none_or(|heads| *heads != doc.base_heads())).unwrap_or(false)
+    }
     pub(crate) fn publish(
         &mut self, peer: u32, app: &str, records: &ui::record::RecordStore,
         id: &RecordId, send: impl FnOnce(automerge::AutoCommit) -> Result<(), String>,
@@ -351,6 +392,60 @@ mod publication_tests {
         assert!(published.publish(1, "test", &store, &id, |_| Err("storage failed".into())).is_err());
         assert!(published.publish(1, "test", &store, &id, |_| Ok(())).unwrap());
         assert!(!published.publish(1, "test", &store, &id, |_| panic!("already published")).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::*;
+    use automerge::transaction::Transactable;
+    use std::time::Duration;
+    #[test]
+    fn continuous_edits_publish_once_per_window_and_flushes_reset_the_deadline() {
+        let t0 = ui::clock::Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut schedule = PublicationSchedule::new(Duration::from_millis(100));
+        assert_eq!(schedule.decide(ms(0)), PublicationDecision::Now);
+        assert_eq!(schedule.decide(ms(30)), PublicationDecision::Deferred(ms(100)));
+        assert_eq!(schedule.decide(ms(60)), PublicationDecision::Deferred(ms(100)));
+        assert_eq!(schedule.due(), Some(ms(100)));
+        assert_eq!(schedule.decide(ms(100)), PublicationDecision::Now);
+        assert_eq!(schedule.due(), None);
+        assert_eq!(schedule.decide(ms(150)), PublicationDecision::Deferred(ms(200)));
+        schedule.mark_published(ms(160));
+        assert_eq!(schedule.due(), None);
+        assert_eq!(schedule.decide(ms(200)), PublicationDecision::Deferred(ms(260)));
+        schedule.clear_due();
+        assert_eq!(schedule.due(), None);
+        schedule.reset();
+        assert_eq!(schedule.decide(ms(201)), PublicationDecision::Now);
+    }
+    #[test]
+    fn a_zero_window_publishes_every_changed_frame() {
+        let now = ui::clock::Instant::now();
+        let mut schedule = PublicationSchedule::new(Duration::ZERO);
+        assert_eq!(schedule.decide(now), PublicationDecision::Now);
+        assert_eq!(schedule.decide(now), PublicationDecision::Now);
+        assert_eq!(schedule.due(), None);
+    }
+    #[test]
+    fn changed_records_are_detected_without_capturing_or_publishing() {
+        let store = ui::record::RecordStore::in_memory();
+        let id = RecordId::for_tab(989);
+        store.create_record(&RecordCheckout::new(id.clone(), ui::record::RecordKind::new("test"))).unwrap();
+        store.with(&id, |doc| { doc.put(automerge::ROOT, "text", "initial").unwrap(); doc.commit(); }).unwrap();
+        let mut published = PublishedRecords::default();
+        assert!(published.changed(1, "test", &store, &id));
+        published.publish(1, "test", &store, &id, |_| Ok(())).unwrap();
+        assert!(!published.changed(1, "test", &store, &id));
+        assert!(published.changed(2, "test", &store, &id), "another peer has not seen this document");
+        store.with(&id, |doc| { doc.put(automerge::ROOT, "text", "typing").unwrap(); }).unwrap();
+        assert!(published.changed(1, "test", &store, &id), "unfinished typing must reach the commit boundary");
+        store.with(&id, |doc| doc.commit()).unwrap();
+        assert!(published.changed(1, "test", &store, &id));
+        published.publish(1, "test", &store, &id, |_| Ok(())).unwrap();
+        assert!(!published.changed(1, "test", &store, &id));
+        assert!(!published.changed(1, "test", &store, &RecordId::for_tab(1)), "unknown records never publish");
     }
 }
 
