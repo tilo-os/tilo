@@ -221,7 +221,7 @@ class SelectorTests(unittest.TestCase):
         self.install_quality_helpers()
         for source in ci_select.QUALITY_ONLY_HELPERS:
             for extra in ("tools/unknown.py", ".forgejo/workflows/check.yml",
-                          "tools/policy/run.sh", "os/tests/security-boundaries.sh",
+                          "os/tests/security-boundaries.sh",
                           "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci/affected_packages.py"):
                 with self.subTest(source=source, extra=extra):
                     plan = ci_select.make_plan(self.metadata, self.root, [source, extra], 2)
@@ -263,6 +263,7 @@ class SelectorTests(unittest.TestCase):
             "os/Containerfile.builder",
             "os/tests/test_builder_candidate_workflow.py",
             "tools/ci/affected_packages.py",
+            "tools/policy/run.sh",
             "tools/tests/test_ci_check_aggregate.py",
             "tools/tests/test_ci_queue_relief.py",
             "tools/tests/test_ci_receipt.sh",
