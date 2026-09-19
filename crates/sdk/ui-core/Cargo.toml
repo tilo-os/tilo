@@ -10,7 +10,9 @@ autoexamples = false
 
 [package.metadata.cargo-machete]
 # build.rs probes optional system libraries through pkg-config.
-ignored = ["pkg-config"]
+# wgpu-hal is referenced through vello's wgpu re-export; the direct optional
+# dependency enables the qOS presentation-feedback feature in the patched HAL.
+ignored = ["pkg-config", "wgpu-hal"]
 
 [features]
 test-support = []
