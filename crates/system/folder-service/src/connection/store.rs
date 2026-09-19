@@ -2174,10 +2174,6 @@ impl ConnectionStore {
             false,
         )
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Keep operation/action/revision joins and the complete atomic durable-row transition together."
-    )]
     fn reduce_boundary_rows(
         &self,
         id: OperationId,
@@ -2206,36 +2202,66 @@ impl ConnectionStore {
         {
             return Err(StoreError::RecoveryRequired);
         }
+        let registrations = self.operation_registrations(&operation)?;
+        self.validate_regular_boundary(
+            &operation,
+            expected,
+            fence,
+            kind,
+            evidence,
+            selected,
+            &registrations,
+        )?;
+        connection.pending = None;
+        connection.revision = format::next(connection.revision)?;
+        operation.revision = connection.revision;
+        operation.stage = 7;
+        operation.native_boundary = Some(kind);
+        operation.native_boundary_evidence = evidence.cloned();
+        operation.decode()?;
+        Ok(vec![Row::Connection(connection), Row::Operation(operation)])
+    }
+    /// Canonical typed accounting check shared by event reduction and inert history closure.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One canonical typed accounting predicate is shared by ordinary reduction and historical closure."
+    )]
+    fn validate_regular_boundary(
+        &self,
+        operation: &format::Operation,
+        expected: u64,
+        fence: u64,
+        kind: u8,
+        evidence: Option<&format::BoundaryEvidence>,
+        selected: bool,
+        registrations: &[format::NativeRegistration],
+    ) -> Result<(), StoreError> {
         if operation.native_kind.is_some() {
             return Err(StoreError::RecoveryRequired);
         }
         operation.decode()?;
         if kind == 0 {
-            if (operation.stage != 0 && !self.verified_equality_is_untouched(&operation)?)
+            if (operation.stage != 0 && !self.verified_equality_is_untouched(operation)?)
                 || !operation.recovery.is_empty()
                 || operation.native_identity.is_none()
                 || evidence.is_some()
             {
                 return Err(StoreError::RecoveryRequired);
             }
-            for row in self.rows()? {
-                if let Row::NativeRegistration(registration) = row? {
-                    if registration.connection == id.connection.0
-                        && registration.serial == id.serial
-                        && (registration.intent.is_some()
-                            || registration.stage.is_some()
-                            || registration.outcome.is_some())
-                    {
-                        return Err(StoreError::RecoveryRequired);
-                    }
-                }
+            if registrations.iter().any(|registration| {
+                registration.intent.is_some()
+                    || registration.stage.is_some()
+                    || registration.outcome.is_some()
+            }) {
+                return Err(StoreError::RecoveryRequired);
             }
         } else {
             use super::transaction::native::descriptor as d;
             let evidence = evidence.ok_or(StoreError::RecoveryRequired)?;
-            let mut key = format::key(5, id.connection.0, id.serial);
-            key.extend(evidence.attempt.to_be_bytes());
-            let Some(Row::NativeRegistration(registration)) = self.row(&key)? else {
+            let Some(registration) = registrations
+                .iter()
+                .find(|registration| registration.attempt == evidence.attempt)
+            else {
                 return Err(StoreError::RecoveryRequired);
             };
             registration.validate()?;
@@ -2258,8 +2284,9 @@ impl ConnectionStore {
                 return Err(StoreError::StaleRevision);
             }
             if let Some(action) = &operation.action {
-                if body.selection != self.selected_descriptor(&operation, action)?
-                    || registration.side != 1 - body.direction
+                if body.selection != self.selected_descriptor(operation, action)?
+                    || registration.side
+                        != 1u8.checked_sub(body.direction).ok_or(StoreError::Corrupt)?
                 {
                     return Err(StoreError::RecoveryRequired);
                 }
@@ -2320,7 +2347,11 @@ impl ConnectionStore {
                 3 if matches!(operation.stage, 0 | 1 | 2 | 3 | 6)
                     && (matches!(
                         body.expected
-                            .get(1 - usize::from(body.direction))
+                            .get(
+                                1usize
+                                    .checked_sub(usize::from(body.direction))
+                                    .ok_or(StoreError::Corrupt)?
+                            )
                             .ok_or(StoreError::Corrupt)?,
                         d::State::Absent
                     ) || displaced.is_some())
@@ -2328,14 +2359,23 @@ impl ConnectionStore {
                 _ => return Err(StoreError::RecoveryRequired),
             }
         }
-        connection.pending = None;
-        connection.revision = format::next(connection.revision)?;
-        operation.revision = connection.revision;
-        operation.stage = 7;
-        operation.native_boundary = Some(kind);
-        operation.native_boundary_evidence = evidence.cloned();
-        operation.decode()?;
-        Ok(vec![Row::Connection(connection), Row::Operation(operation)])
+        Ok(())
+    }
+    fn operation_registrations(
+        &self,
+        operation: &format::Operation,
+    ) -> Result<Vec<format::NativeRegistration>, StoreError> {
+        self.rows()?
+            .filter_map(|row| match row {
+                Ok(Row::NativeRegistration(reg))
+                    if reg.connection == operation.connection && reg.serial == operation.serial =>
+                {
+                    Some(Ok(reg))
+                }
+                Err(error) => Some(Err(error)),
+                _ => None,
+            })
+            .collect()
     }
     fn reduce_read_reserve(
         &self,
@@ -3973,6 +4013,35 @@ impl ConnectionStore {
         }
         Ok(rows)
     }
+    /// Exact encoded framing and real log length, shared with future-phase preflight.
+    fn check_event_capacity(&self, event: &Event, encoded: usize) -> Result<(), StoreError> {
+        let framed = u64::try_from(encoded)
+            .map_err(|_| StoreError::LimitExceeded)?
+            .checked_add(44)
+            .ok_or(StoreError::LimitExceeded)?;
+        if matches!(event.change, Change::Fence { .. }) && framed > 512 {
+            return Err(StoreError::LimitExceeded);
+        }
+        let control = matches!(
+            event.change,
+            Change::Fence { .. } | Change::Disconnect { .. } | Change::DirectoryChainControl { .. }
+        );
+        let bound = if control {
+            16 * 1024 * 1024
+        } else {
+            15 * 1024 * 1024
+        };
+        if self
+            .log
+            .metadata()?
+            .len()
+            .checked_add(framed)
+            .is_none_or(|length| length > bound)
+        {
+            return Err(StoreError::LimitExceeded);
+        }
+        Ok(())
+    }
     fn prepare_rows(&self, rows: Vec<Row>) -> Result<PreparedRows, StoreError> {
         // Exact replacement deltas, including rows reconstructed by tiny events.
         // No state or persistence mutation is allowed during admission.
@@ -4320,12 +4389,6 @@ impl ConnectionStore {
             self.validate_verification_mode(&event.change, &recovery_checks, live_append)?;
             let mut prepared = self.prepare_rows(self.reduce(&event, &mut recovery_checks)?)?;
             let bytes = format::encode(&event)?;
-            let control = matches!(
-                event.change,
-                Change::Fence { .. }
-                    | Change::Disconnect { .. }
-                    | Change::DirectoryChainControl { .. }
-            );
             if matches!(event.change, Change::Fence { .. }) && bytes.len() + 44 > 512 {
                 return Err(StoreError::LimitExceeded);
             }
@@ -4340,14 +4403,7 @@ impl ConnectionStore {
             if !prepared.fits_overlay() {
                 return Err(StoreError::LimitExceeded);
             }
-            let bound = if control {
-                16 * 1024 * 1024
-            } else {
-                15 * 1024 * 1024
-            };
-            if self.log.metadata()?.len() + bytes.len() as u64 + 44 > bound {
-                return Err(StoreError::LimitExceeded);
-            }
+            self.check_event_capacity(&event, bytes.len())?;
             self.validate()?;
             self.validate_verification_mode(&event.change, &recovery_checks, live_append)?;
             let committed_sequence = format::next(self.sequence)?;

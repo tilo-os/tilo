@@ -678,33 +678,52 @@ impl ConnectionStore {
         {
             return Err(StoreError::RecoveryRequired);
         }
+        let registrations = self.operation_registrations(&operation)?;
+        Self::validate_directory_boundary(&operation, expected, fence, fact, &registrations)?;
+        connection.pending = None;
+        connection.revision = format::next(expected)?;
+        operation.revision = connection.revision;
+        operation.stage = 7;
+        operation.native_boundary = Some(fact.kind());
+        operation.native_directory_boundary = Some(fact.clone());
+        operation.decode()?;
+        Ok(vec![Row::Connection(connection), Row::Operation(operation)])
+    }
+    pub(super) fn validate_directory_boundary(
+        operation: &format::Operation,
+        expected: u64,
+        fence: u64,
+        fact: &format::DirectoryBoundaryFact,
+        registrations: &[format::NativeRegistration],
+    ) -> Result<(), StoreError> {
+        if operation.native_kind != Some(format::NativeOperationKind::DirectoryV1) {
+            return Err(StoreError::RecoveryRequired);
+        }
+        if super::chain::absent_first_directory(operation)? {
+            fact.validate_history_candidate()?;
+        } else {
+            fact.validate()?;
+        }
         match fact {
             format::DirectoryBoundaryFact::Untouched => {
                 if operation.stage != 0 {
                     return Err(StoreError::RecoveryRequired);
                 }
-                for row in self.rows()? {
-                    if let Row::NativeRegistration(reg) = row? {
-                        if reg.connection == id.connection.0
-                            && reg.serial == id.serial
-                            && (reg.native_kind != operation.native_kind
-                                || reg.intent.is_some()
-                                || reg.stage.is_some()
-                                || reg.outcome.is_some())
-                        {
-                            return Err(StoreError::RecoveryRequired);
-                        }
-                    }
+                if registrations.iter().any(|reg| {
+                    reg.native_kind != operation.native_kind
+                        || reg.intent.is_some()
+                        || reg.stage.is_some()
+                        || reg.outcome.is_some()
+                }) {
+                    return Err(StoreError::RecoveryRequired);
                 }
             }
             format::DirectoryBoundaryFact::Staged { attempt }
             | format::DirectoryBoundaryFact::Published { attempt, .. } => {
-                let mut key = format::key(5, id.connection.0, id.serial);
-                key.extend(attempt.to_be_bytes());
-                let Some(Row::NativeRegistration(reg)) = self.row(&key)? else {
+                let Some(reg) = registrations.iter().find(|reg| reg.attempt == *attempt) else {
                     return Err(StoreError::RecoveryRequired);
                 };
-                let (intent, stage) = Self::directory_registration_join(&operation, &reg)?;
+                let (intent, stage) = Self::directory_registration_join(operation, reg)?;
                 if reg.fence > fence
                     || intent.header.progress > expected
                     || stage.header.progress > expected
@@ -728,7 +747,7 @@ impl ConnectionStore {
                             return Err(StoreError::RecoveryRequired);
                         }
                         if let Some(bytes) = outcome {
-                            let value = super::chain::directory_descriptor(&operation, bytes)
+                            let value = super::chain::directory_descriptor(operation, bytes)
                                 .map_err(|_| StoreError::Corrupt)?;
                             value
                                 .joined_outcome(&intent, &stage)
@@ -742,14 +761,7 @@ impl ConnectionStore {
                 }
             }
         }
-        connection.pending = None;
-        connection.revision = format::next(expected)?;
-        operation.revision = connection.revision;
-        operation.stage = 7;
-        operation.native_boundary = Some(fact.kind());
-        operation.native_directory_boundary = Some(fact.clone());
-        operation.decode()?;
-        Ok(vec![Row::Connection(connection), Row::Operation(operation)])
+        Ok(())
     }
 }
 
