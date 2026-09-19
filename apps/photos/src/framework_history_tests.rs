@@ -1,4 +1,4 @@
-include!("../../../ui/tests/support/history_adapter_conformance.rs");
+include!("../../../crates/sdk/ui-core/tests/support/history_adapter_conformance.rs");
 use crate::{
     doc::PhotosDoc,
     model::{Edits, OpenImage, PhotoLibrary},

@@ -1,4 +1,4 @@
-include!("../../../ui/tests/support/history_adapter_conformance.rs");
+include!("../../../crates/sdk/ui-core/tests/support/history_adapter_conformance.rs");
 fn malformed_fixture(doc: &mut AutoCommit) {
     doc.put(ROOT, "merged", 7).unwrap();
 }

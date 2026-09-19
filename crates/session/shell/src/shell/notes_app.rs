@@ -1318,7 +1318,7 @@ mod framework_history_tests {
             .read(&checkout.id, |doc| doc.base_heads()[0])
             .unwrap();
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/assets/fonts"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
             "en-US",
         );
         let mut driver = ui::headless::Driver::new_with_controlled_inputs(
