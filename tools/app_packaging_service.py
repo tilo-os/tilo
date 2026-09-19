@@ -40,13 +40,15 @@ def allowed(path, method):
 
 class Transport:
     """Fixed-origin authenticated transport with bounded reads and no redirects."""
-    def __init__(self, token):
+    def __init__(self, token, read_only=False):
         product.require(isinstance(token, str) and token and not any(c.isspace() for c in token), 'invalid token file')
         self.token = token
+        self.read_only = read_only
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
     def request(self, path, data=None, maximum=MAX_JSON, output=None):
         method = 'GET' if data is None else 'POST'
+        product.require(not self.read_only or method == 'GET', 'reconciliation transport is read-only')
         product.require(allowed(path, method), 'API route or method is not permitted')
         product.require(type(maximum) is int and 0 < maximum <= MAX_BYTES, 'invalid response bound')
         body = core.canonical(data).encode() if data is not None else None
@@ -148,7 +150,10 @@ def invocation_lock(state_path):
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def invoke(state_path, policy_path, final_path, token_path, apply=False):
+def invoke(state_path, policy_path, final_path, token_path, apply=False, reconcile_run_id=None):
+    if reconcile_run_id is not None:
+        product.require(type(reconcile_run_id) is int and reconcile_run_id > 0, 'invalid reconciliation run ID')
+        product.require(apply, 'reconciliation requires --apply')
     if not apply:
         store = core.Store(state_path)
         try:
@@ -158,23 +163,34 @@ def invoke(state_path, policy_path, final_path, token_path, apply=False):
             if store.db:
                 store.db.close()
     with invocation_lock(state_path):
+        if reconcile_run_id is not None:
+            existing = core.Store(state_path)
+            try:
+                active = existing.read()['active']
+                product.require(active is not None, 'no active intent to reconcile')
+                product.require(active.get('run_id') in (None, reconcile_run_id),
+                                'run ID conflicts with active intent')
+            finally:
+                if existing.db:
+                    existing.db.close()
         policy_bytes = read_bounded(policy_path)
         policy = channel.read_json(policy_bytes)
         final_bytes = read_bounded(final_path)
         final_sha = validate_policy(policy, final_bytes)
         token = read_bounded(token_path, 4096).decode('ascii').strip()
-        transport = Transport(token)
+        transport = Transport(token, read_only=reconcile_run_id is not None)
         api = ManagedProduct(policy, transport)
         user = api.call('user')
         product.require(type(user.get('id')) is int and user['id'] == policy['service_user_id']
                         and user.get('is_admin') is False, 'unexpected or administrative service identity')
         repo = api.call(PREFIX)
         product.require(repo.get('id') == 23 and repo.get('full_name') == 'qos/qos', 'repository identity mismatch')
-        branch = api.call(PREFIX + '/branches/main')
-        product.require(branch.get('name') == 'main', 'main branch identity mismatch')
-        desired = product.validate_desired({'source_sha': branch['commit']['id'],
-            'builder_image': policy['builder_image'], 'collection': policy['collection'],
-            'architectures': policy['architectures'], 'policy_sha256': api.policy_sha})
+        if reconcile_run_id is None:
+            branch = api.call(PREFIX + '/branches/main')
+            product.require(branch.get('name') == 'main', 'main branch identity mismatch')
+            desired = product.validate_desired({'source_sha': branch['commit']['id'],
+                'builder_image': policy['builder_image'], 'collection': policy['collection'],
+                'architectures': policy['architectures'], 'policy_sha256': api.policy_sha})
         api.verifier = FinalArtifactAcceptance(api, ManagedReadOnly(transport), final_path, final_sha, bundle_token=token)
         # ConfigMap rotations cannot silently authorize work under a mixed pair
         # of files. These platform inputs must remain stable for one invocation.
@@ -189,7 +205,21 @@ def invoke(state_path, policy_path, final_path, token_path, apply=False):
         original_validate = api.validate_run
         def validate_run(intent, run):
             unchanged()
-            result = original_validate(intent, run)
+            if reconcile_run_id is not None:
+                product.require(type(run.get('id')) is int and run['id'] == reconcile_run_id,
+                                'API returned a different reconciliation run')
+                actor = run.get('trigger_user')
+                product.require(isinstance(actor, dict) and type(actor.get('id')) is int
+                                and actor['id'] == policy['service_user_id'] and actor.get('is_admin') is False,
+                                'run actor is not the dedicated service identity')
+            try:
+                result = original_validate(intent, run)
+            except core.VerificationRequired:
+                # Reconciliation may retain this run as awaiting-verification;
+                # policy rotation must prevent that state write as well.
+                if reconcile_run_id is not None:
+                    unchanged()
+                raise
             unchanged()
             return result
         api.validate_run = validate_run
@@ -197,9 +227,16 @@ def invoke(state_path, policy_path, final_path, token_path, apply=False):
         try:
             current = store.read()
             unchanged()
-            if current['desired'] != desired:
-                store.observe(current['sequence'] + 1, desired)
-            core.tick(store, api)
+            if reconcile_run_id is not None:
+                # Recheck the active source against current trusted files; do not
+                # observe main, replace the intent, or enter any dispatch path.
+                api.qualify_receipt(current['active']['desired'])
+                unchanged()
+                product.reconcile(store, api, reconcile_run_id)
+            else:
+                if current['desired'] != desired:
+                    store.observe(current['sequence'] + 1, desired)
+                core.tick(store, api)
             unchanged()
             state = store.read()
             return {'dry_run': False, 'next_action': core.next_action(state), 'state': state}
@@ -212,8 +249,10 @@ def main():
     for name in ('state', 'policy', 'final-policy', 'token-file'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--reconcile-run-id', type=int,
+                        help='recover an existing intent from this exact run using GET requests only; requires --apply')
     args = parser.parse_args()
-    result = invoke(args.state, args.policy, args.final_policy, args.token_file, args.apply)
+    result = invoke(args.state, args.policy, args.final_policy, args.token_file, args.apply, args.reconcile_run_id)
     print(json.dumps(result, sort_keys=True))
 
 
