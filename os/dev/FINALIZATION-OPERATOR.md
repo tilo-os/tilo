@@ -1,120 +1,139 @@
-# Finalization operator handshake
+# Reusable finalization operator
 
-Prepare the real retained receipt, exact request JSON and public bundles before
-dispatch. No placeholder receipt or request is acceptable. The source artifact
-must already exist; this helper does not dispatch CI or authorize signatures.
-The helper revision in the workflow must include `stage-finalization-worker.py`.
+`finalization-operator.py` replaces per-run bind/stage, pending-request polling,
+loader-response reuse, and handoff scripts. It manages public inputs and signed
+outputs; existing checkpoint validation and local signing tools keep their roles.
+It never dispatches/restarts a build, grants signing authorization, or installs an OS.
 
-## Local inputs, before the five-minute gate
+Use a trusted Linux root shell, the authenticated `fgj` (or WSL-visible `fgj.exe`)
+CLI, and the existing AWS/EKS broker connection used by `broker_signing_runner.py`.
+The broker adapter currently uses local user `xemmerling`, AWS profile
+`tilo-eks-operator`, and the existing on-prem broker context. Those infrastructure
+settings do not select hardware. The operation's `--hardware-profile` and request's
+architecture/boot profile describe the intended image.
 
-The existing operator signing installation is `/var/lib/tilo-development`.
-Its public bundle is `public`; the local signer executable is `signer/signer`.
-Use only the five public files, never the signer directory, as remote inputs.
-The persistent bundle manifest SHA256 observed on 2026-09-18 is
-`63dc37bc8bf026be8806e480a2f8cb67b0f7e7c4b1804d528b98845c3602f4f7`.
-Revalidate it against the request; do not silently substitute it for a different
-original build bundle. The raw artifact may have a different original identity.
+## Prepare once per immutable set of inputs
 
-Keep all local input files under trusted root-owned directories. Prepare a
-private local working directory for binding, signing context, used-request
-reservations and incoming/outgoing requests. Retain it across worker failure.
-Do not create a policy authorizing hashes copied from incoming signing requests.
-
-After the worker emits its identity, independently inspect the enclosing Pod and
-DinD container plus the full inner Docker ID/config ID/StartedAt/restart count.
-Construct the existing transport binding described in `REMOTE-SIGNING.md`.
-The signing context uses the exact Pod UID, **inner Docker ID** as container_id,
-inner tools config ID as image_id, source revision, new public manifest digest,
-new target and the actual job identifier. `context_sha256` is
-`signing_spool.context(context)`. Replacements require a new explicit operation;
-never refresh pins automatically.
-
-## Stage and release
-
-With a directly working existing kubectl context, the executable entry point is:
+Keep public inputs in a root-owned, non-writable ancestor chain, and create a new
+operation directory under `/var/lib/tilo-development/operations`. The parent must
+already exist. Use the exact helper archive SHA and tools image ID admitted for the
+finalizer. The archive's Git revision must match the prepared request.
 
 ```sh
-python3 os/dev/stage-finalization-worker.py stage \
-  --context "$EXISTING_CONTEXT" --binding "$PINNED_BINDING" \
-  --request "$EXACT_REQUEST_JSON" --signing-context "$PINNED_SIGNING_CONTEXT" \
-  --receipt "$AUTHENTICATED_RETAINED_RECEIPT" \
-  --original-public "$ORIGINAL_PUBLIC_BUNDLE" \
-  --new-public /var/lib/tilo-development/public
+operator=/trusted/checkout/os/dev/finalization-operator.py
+operation=/var/lib/tilo-development/operations/my-image
+python3 "$operator" --operation "$operation" init \
+  --request /trusted/prepared/request.json \
+  --helper-archive /trusted/prepared/helpers.tar \
+  --archive-sha256 "$helper_archive_sha256" \
+  --receipt /trusted/admitted/retained-rootfs.json \
+  --original-public /trusted/admitted/public-trust \
+  --new-public /trusted/prepared/public-trust \
+  --tools-image-id "$tools_image_id" \
+  --hardware-profile "$hardware_profile" \
+  --initial-free-bytes "$initial_free_bytes" \
+  --forgejo-host code.sandbox.example --repository qos/qos \
+  --dispatch-ref "$controller_branch"
 ```
 
-The current EKS operator route uses the existing authenticated broker Kubernetes
-API runner. For that route, replace the context argument above with
-`--context broker-authenticated-api --broker`. The same two options apply to
-`transfer-signing-spool.py list|fetch|deliver`. Run locally as root: the adapter
-uses the existing `xemmerling` AWS profile `tilo-eks-operator`, then the existing
-on-prem kubectl context `admin@tupo-production` to `deployment/sandbox-broker`. It loads the broker's
-existing EKS endpoint/CA config and supplies the fresh authorized operator token
-through stdin. No kubeconfig is copied or new service started.
+Initialization snapshots public files and helper contents once, then publishes
+`operation.json` last. Every later command verifies all snapshot hashes and the
+local `os/dev/*.py` implementation fingerprint. Keep this checkout for the
+operation's lifetime. A changed input or implementation requires a new operation;
+existing partial directories are never overwritten. No credentials enter this config.
 
-`broker_signing_runner.py` implements the existing `Transport.runner` contract;
-`stage(client, packet, request_raw)` also remains available for orchestration.
-The adapter admits only exact bound get/exec commands and fixed endpoint
-operations. Public payloads stream with byte/deadline bounds; tokens remain in
-memory/pipes and diagnostics are suppressed. The API EOF wrapper runs inside the
-tools container, so the enclosing DinD container needs no Python installation.
-`remote_call` retains all before/after identity checks. The earlier live fixture
-proved the existing API route; this production adapter and nested Docker route
-still require their own public-only live acceptance before actual signing.
+## Bind an actual attempt and stage
 
-The packet contains only the retained receipt and exact five-file public bundles
-as bounded base64 values, the pinned context, and exact request SHA256. The helper
-validates the retained receipt schema and both public identities. It checks the
-worker's request and helper/source revision markers, then reserves fresh private
-directories and installs bridge code **from the already pinned helper checkout**.
-No caller-supplied code, destination paths or private keys are transferred.
+Dispatch through the existing finalization workflow, then use its **API run ID**
+and actual attempt, not the run number displayed in its URL. The CLI authenticates
+the event's exact request bytes, helper revision, ref and unique `finalize` job.
+Task ID and worker/container identities are discovered from that authenticated job.
 
-The first authenticated operation returns the exact staged packet/context/request
-receipt. Only after its post-transfer identity check succeeds does the second
-operation atomically publish `/work/operator-ready` without overwrite. Partial
-staging fails closed; do not retry into its directories or release manually.
-This gate permits artifact authentication and finalization to start. It is not a
-signing authorization, image acceptance or installation approval.
+```sh
+python3 "$operator" --operation "$operation" wait \
+  --run-id "$run_id" --attempt "$attempt" --until running --timeout 300
+python3 "$operator" --operation "$operation" bind \
+  --run-id "$run_id" --attempt "$attempt"
+python3 "$operator" --operation "$operation" stage \
+  --run-id "$run_id" --attempt "$attempt"
+```
 
-## Service each signing request
+The running job can still be pulling its tools image. `bind` requires the inner
+worker to exist and verifies its exact image, request, source, helper bytes,
+permissions and capacity before reserving state. If it has not started yet, inspect
+the same job and repeat binding while the local run directory does not exist.
+Stage promptly within the workflow's operator gate. Once binding or staging has
+reserved a directory, inspect failures; do not delete partial state to force retry.
+An observation timeout does not mean the build failed and does not authorize restart.
+If the worker releases successfully but the response is lost, the local staging
+receipt is absent and `status` will not list its pending inputs. This CLI does not
+repair that ambiguity: reconcile the exact remote receive/release state before
+manual completion. Preserve the reservation throughout that investigation.
 
-Use `transfer-signing-spool.py` through the same bound Transport to fetch into a
-fresh private local directory. Establish the source independently of request
-metadata:
+## Pending inputs and signing handoff
 
-* Loader: authenticate the retained image/checkpoint and extract its original
-  architecture-specific systemd loader through the pinned operator channel.
-* UKI: obtain the selected unsigned UKI from the immutable resealed checkpoint;
+```sh
+python3 "$operator" --operation "$operation" status \
+  --run-id "$run_id" --attempt "$attempt"
+python3 "$operator" --operation "$operation" wait \
+  --run-id "$run_id" --attempt "$attempt" --until request --timeout 300 \
+  --ignore-request "$already_serviced_request_id"
+python3 "$operator" --operation "$operation" fetch \
+  --run-id "$run_id" --attempt "$attempt" --request-id "$request_id"
+python3 "$operator" --operation "$operation" handoff \
+  --run-id "$run_id" --attempt "$attempt"
+```
+
+`handoff` emits stable paths, hardware/architecture, and the exact context hash for
+checkpoint validation and signing. It does **not** export or validate a checkpoint.
+Authenticate the checkpoint/artifact independently, use
+`authorize-signing-input.py` with independently expected bytes, then
+`service-local-signing-request.py` with the existing explicit local policy.
+Write its response under the handoff's `responses/<request-id>` directory.
+These stages must not derive expected hashes or authorization from a worker request.
+
+Select the source according to the signing purpose:
+
+- Loader: extract the original architecture-specific systemd loader from the
+  authenticated retained image/checkpoint through the pinned operator channel.
+- UKI: use the selected unsigned UKI from the immutable resealed checkpoint;
   verify source recipe, public initramfs trust, composefs digest and generation.
-* Detached UKI/PCR: use the exact verified **local signed UKI response** already
-  produced, and independently recompute PCR policy using matching systemd259.
+- Detached UKI/PCR: use the exact verified local signed UKI response already
+  produced and independently recompute policy using the matching systemd version.
 
-Run `authorize-signing-input.py` with those independently verified input hashes,
-not a hash copied from the pending request. Its public authorization row belongs
-in the local root-owned policy with the validated public certificate/PCR-key
-paths. Then run `service-local-signing-request.py` as documented in
-`REMOTE-SIGNING.md`, and deliver its verified public response through the same
-bound Transport. Keep durable nonce/authorization reservations; interrupted key
-use is not automatically retried. No OS input is signed before authentication.
+Keep nonce/authorization reservations across interruptions. The detailed local
+policy and service procedure remains in [REMOTE-SIGNING.md](REMOTE-SIGNING.md).
 
-The staging helper deliberately does not infer these artifact authorizations.
-Checkpoint extraction/authentication and real nested-worker transport remain
-separate acceptance steps. Tests cover the filesystem/identity/gate protocol;
-they do not prove a real finalization, signing operation or boot.
+## Reuse a previously verified loader response
 
-## Reviewed assembly source selection
+For an unchanged boot loader, replace another private-key operation with:
 
-The request selects one explicitly admitted source/epoch pair:
-4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc /1789690573 or
-8fff1d6001b64a80bc730e87d3ffc529d2d9e70a /1789733507, or its reviewed
-DNS rootfs correction36c58be61ef1b25f24ae130c5ab4dde5d2350d45 /1789748444,
-or reviewed runtime-package policy successor
-b4f01a7d5437d015950c9b79be37e673b09b829c /1789749860.
-The workflow checks out the source emitted by request validation; the launcher
-checks that Git identity and emits matching source markers. Staging validates
-the retained receipt against this exact request, and the finalizer authenticates
-the retained image before signing. A different commit or mixed epoch is rejected.
-The native payload receipt retains its original4583 source/epoch independently.
+```sh
+python3 "$operator" --operation "$operation" reuse-loader \
+  --run-id "$run_id" --attempt "$attempt" --request-id "$request_id" \
+  --old-run-directory "$old_run_directory" --old-request-id "$old_request_id" \
+  --independent-loader /trusted/authenticated-checkpoint/loader.efi
+python3 "$operator" --operation "$operation" deliver \
+  --run-id "$run_id" --attempt "$attempt" --request-id "$request_id"
+```
 
-Use a helper archive containing this change and its exact reviewed SHA in local
-request preparation. The old2d135 launcher archive rejects8fff and must not be
-patched in memory. Tools image/crypto CLI/signing policy remain unchanged.
+Reuse requires byte-identical original/current/independently selected inputs,
+matching source revision, architecture, tools image, manifest and target, and exact
+old/new request/context bindings. The native verifier checks the retained EFI
+signature against the new operation's pinned public certificate and checks the PE
+envelope. Its measured hashes must match the output being published. Only the
+response nonce and runtime context change. There is no automatic reuse selection
+for UKIs or PCR policies. Delivery rechecks the actual worker identity around each transfer.
+
+## Focused verification
+
+```sh
+python3 -B -m unittest discover -s os/tests -p test_finalization_operator.py -v
+```
+
+Run on Linux as root: filesystem tests use disposable owner-only directories under
+`/root`. Tests exercise immutable input changes, archive traversal, exact event
+admission, transport-byte decoding, timeout/partial-state behavior, and retained
+loader context/bytes/publication order. Crypto itself is exercised by the existing
+loader-verifier tests; the operator test substitutes that verifier to prove that
+rejection prevents publication. No image build or active worker is used.
