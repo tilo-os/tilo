@@ -47,13 +47,16 @@ class CheckAggregateTests(unittest.TestCase):
         self.bash = ("C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash"))
         self.assertTrue(self.bash, "bash is required to observe the production aggregate")
 
-    def aggregate(self, select="success", security="success", affected="success", required="true", count="4"):
+    def aggregate(self, select="success", security="success", affected="success",
+                  required="true", security_required="true", count="4",
+                  event="pull_request"):
         with tempfile.TemporaryDirectory() as directory:
             summary = Path(directory) / "summary"
             result = subprocess.run(
                 [self.bash, "-c", step_script(self.workflow, "aggregate")],
                 env={**os.environ, "SELECT_RESULT": select, "SECURITY_RESULT": security,
                      "AFFECTED_RESULT": affected, "RUST_REQUIRED": required,
+                     "SECURITY_REQUIRED": security_required, "EVENT_NAME": event,
                      "SELECTED_COUNT": count, "GITHUB_STEP_SUMMARY": summary.as_posix()},
                 capture_output=True, text=True,
             )
@@ -69,6 +72,11 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("4 selected packages", summary)
 
+    def test_audited_pull_request_security_skip_passes_with_explanation(self):
+        code, summary = self.aggregate(security="skipped", security_required="false")
+        self.assertEqual(code, 0)
+        self.assertIn("Security checks not applicable", summary)
+
     def test_failed_or_unexpectedly_skipped_checks_fail(self):
         for overrides in [
             {"select": "failure"}, {"select": "skipped"},
@@ -80,16 +88,34 @@ class CheckAggregateTests(unittest.TestCase):
             {"required": ""}, {"count": "0"}, {"count": "unknown"},
             {"affected": "skipped", "required": "false", "count": "4"},
             {"affected": "success", "required": "false", "count": "0"},
+            {"security_required": ""}, {"security_required": "unknown"},
+            {"security_required": "false"},
         ]:
             with self.subTest(overrides=overrides):
                 self.assertNotEqual(self.aggregate(**overrides)[0], 0)
 
     def test_design_skip_does_not_mask_security_or_selector_failure(self):
-        for result in ("failure", "cancelled", "skipped", ""):
-            for job in ("select", "security"):
+        for job, results in (
+            ("select", ("failure", "cancelled", "skipped", "")),
+            ("security", ("failure", "cancelled", "")),
+        ):
+            for result in results:
                 with self.subTest(job=job, result=result):
-                    self.assertNotEqual(self.aggregate(
-                        affected="skipped", required="false", count="0", **{job: result})[0], 0)
+                    inputs = {
+                        "affected": "skipped",
+                        "required": "false",
+                        "count": "0",
+                        "security": "skipped",
+                        "security_required": "false",
+                        job: result,
+                    }
+                    self.assertNotEqual(self.aggregate(**inputs)[0], 0)
+
+    def test_security_skip_is_rejected_outside_pull_requests(self):
+        for event in ("push", "workflow_dispatch", ""):
+            with self.subTest(event=event):
+                self.assertNotEqual(self.aggregate(
+                    security="skipped", security_required="false", event=event)[0], 0)
 
     def test_wiring_and_failed_selector_pipeline(self):
         affected = section(self.workflow, "affected", 2)
@@ -99,6 +125,13 @@ class CheckAggregateTests(unittest.TestCase):
         checks = section(self.workflow, "checks", 2)
         self.assertIn("if: always()", checks)
         self.assertIn("needs: [select, security, affected]", checks)
+        security = section(self.workflow, "security", 2)
+        self.assertIn("if: needs.select.outputs.security_required == 'true'", security)
+        self.assertIn("needs: [builder, select]", security)
+        select = section(self.workflow, "select", 2)
+        self.assertIn("security_required: ${{ steps.plan.outputs.security_required }}", select)
+        self.assertIn("if [ '${{ github.event_name }}' = pull_request ]; then", select)
+        self.assertIn("selection_args+=(--allow-security-skip)", select)
         script = step_script(self.workflow, "plan")
         # Execute the production pipeline with failing selector and benign git.
         # This catches a missing pipefail even when tee exits successfully.
