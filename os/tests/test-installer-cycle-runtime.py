@@ -3,6 +3,7 @@ import copy
 import importlib.util
 from pathlib import Path
 import unittest
+import tempfile
 
 path = Path(__file__).resolve().parents[1] / "dev/verify-installer-cycle-runtime.py"
 spec = importlib.util.spec_from_file_location("probe", path)
@@ -31,6 +32,31 @@ def fixture(mode="prepared-alongside"):
 
 
 class RuntimeProof(unittest.TestCase):
+    def test_selected_entry_binds_actual_bootloader_report(self):
+        with tempfile.TemporaryDirectory() as d:
+            esp = Path(d); entries = esp / "loader/entries"; entries.mkdir(parents=True)
+            entry = entries / "tilo.conf"
+            entry.write_text("title Tilo\nefi /EFI/Linux/bootc/bootc_composefs-" + "a"*128 + ".efi\n")
+            raw = bytes(4) + "tilo.conf\0".encode("utf-16-le")
+            self.assertEqual(probe.selected_entry(esp, raw, "a"*128)["entry"], "tilo.conf")
+            with self.assertRaises(ValueError): probe.selected_entry(esp, raw, "b"*128)
+            entry.write_text(entry.read_text() + "options bypass=1\n")
+            with self.assertRaises(ValueError): probe.selected_entry(esp, raw, "a"*128)
+            with self.assertRaises(ValueError): probe.selected_entry(esp, bytes(4)+"../tilo.conf\0".encode("utf-16-le"), "a"*128)
+
+    def test_bootc_status_matches_retained_1164_schema(self):
+        e=fixture()[0]
+        doc={"status":{"type":None,"booted":{"incompatible":False,"ostree":None,
+            "composefs":{"verity":e["composefs_digest"],"missingVerityAllowed":False,"bootType":"Uki","bootloader":"systemd"},
+            "image":{"imageDigest":e["source_manifest_digest"],"architecture":"arm64",
+                     "image":{"image":e["installed_target"],"transport":"registry"}}}}}
+        probe.check_bootc_status(doc,e)
+        for field,value in (("verity","b"*128),("missingVerityAllowed",True),("bootType","uki"),("bootloader","grub")):
+            bad=copy.deepcopy(doc);bad["status"]["booted"]["composefs"][field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError):probe.check_bootc_status(bad,e)
+        bad=copy.deepcopy(doc);bad["status"]["booted"]["image"]["imageDigest"]="sha256:"+"f"*64
+        with self.assertRaises(ValueError):probe.check_bootc_status(bad,e)
+
     def test_both_real_fixture_layouts(self):
         for mode in ("prepared-alongside", "guided-alongside"):
             with self.subTest(mode=mode):
