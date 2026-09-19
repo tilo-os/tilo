@@ -65,6 +65,32 @@ class RepositoryLayoutTests(unittest.TestCase):
             ["tracked file is inside generated `target` directory: docs/target/README.md"],
         )
 
+    def test_flat_ci_tool_paths_are_rejected(self) -> None:
+        self.assertEqual(
+            checker.retired_source_root_violations(
+                [
+                    "tools/cargo-shim",
+                    "tools/check-build-env.sh",
+                    "tools/check_changed_rust_allows.py",
+                    "tools/ci-sccache.sh",
+                    "tools/ci_select.py",
+                    "tools/clippy-diff.sh",
+                    "tools/resolve_ci_builder.py",
+                    "tools/rustc-thin-app-wrapper.sh",
+                ]
+            ),
+            [
+                "tracked file uses retired source root `tools/cargo-shim`; move it under `tools/ci/cargo-shim`: tools/cargo-shim",
+                "tracked file uses retired source root `tools/check-build-env.sh`; move it under `tools/ci/check-build-env.sh`: tools/check-build-env.sh",
+                "tracked file uses retired source root `tools/check_changed_rust_allows.py`; move it under `tools/ci/check_changed_rust_allows.py`: tools/check_changed_rust_allows.py",
+                "tracked file uses retired source root `tools/ci-`; move it under `tools/ci/`: tools/ci-sccache.sh",
+                "tracked file uses retired source root `tools/ci_`; move it under `tools/ci/`: tools/ci_select.py",
+                "tracked file uses retired source root `tools/clippy-`; move it under `tools/ci/clippy-`: tools/clippy-diff.sh",
+                "tracked file uses retired source root `tools/resolve_ci_builder.py`; move it under `tools/ci/resolve_builder.py`: tools/resolve_ci_builder.py",
+                "tracked file uses retired source root `tools/rustc-thin-app-wrapper.sh`; move it under `tools/ci/rustc-thin-app-wrapper.sh`: tools/rustc-thin-app-wrapper.sh",
+            ],
+        )
+
     def test_retired_source_roots_are_rejected_with_their_replacements(self) -> None:
         self.assertEqual(
             checker.retired_source_root_violations(

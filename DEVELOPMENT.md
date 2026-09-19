@@ -51,7 +51,7 @@ artifact-backed VM orchestration remain planned work.
 For CI timing, use an explicit internal run ID from the Forgejo API:
 
 ```sh
-python3 tools/ci_timing_report.py --repo qos/qos --run 22684 --output target/ci-timing.json
+python3 tools/ci/timing_report.py --repo qos/qos --run 22684 --output target/ci-timing.json
 ```
 
 This uses your configured `fgj` authentication and reports queue time separately
@@ -79,7 +79,7 @@ git clone ssh://git@code.sandbox.example/qos/qos.git "$HOME/src/tilo-linux"
 cd "$HOME/src/tilo-linux"
 git switch -c codex/my-change
 findmnt -T "$PWD" -o FSTYPE,TARGET
-tools/check-build-env.sh
+tools/ci/check-build-env.sh
 cargo check -p shell --tests --locked
 ```
 
@@ -113,7 +113,7 @@ or in your build container or Nix shell. Rustup reads `rust-toolchain.toml`.
 Check dependencies with:
 
 ```bash
-tools/check-build-env.sh
+tools/ci/check-build-env.sh
 ```
 
 Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
@@ -680,7 +680,7 @@ For image-based hosts (Silverblue, Bazzite) where `/usr` is read-only and the
 libraries cannot be installed without `rpm-ostree` layering plus a reboot per base
 update. Create a local `.build-container` containing your distrobox name (for
 example, `printf '%s\n' tilo-build > .build-container`). This file is ignored by
-Git; there is no shared machine-specific default. Install `tools/cargo-shim`
+Git; there is no shared machine-specific default. Install `tools/ci/cargo-shim`
 as `cargo` on PATH; every invocation from the tree or a worktree routes into it.
 
 It also selects the sccache server, which this route requires: sccache's server

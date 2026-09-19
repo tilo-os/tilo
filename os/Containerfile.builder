@@ -91,5 +91,5 @@ RUN cargo install --locked cargo-nextest cargo-deny cargo-machete \
 
 # Match the workspace's own check so a stale image fails loudly rather than
 # compiling against the wrong libraries.
-COPY tools/check-build-env.sh /usr/local/bin/tilo-check-build-env
+COPY tools/ci/check-build-env.sh /usr/local/bin/tilo-check-build-env
 RUN chmod +x /usr/local/bin/tilo-check-build-env && tilo-check-build-env

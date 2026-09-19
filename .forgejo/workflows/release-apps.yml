@@ -28,7 +28,7 @@ on:
       - "tools/canonical_app_verifier.py"
       - "tools/create_app_receipt.py"
       - "tools/final_app_receipt.py"
-      - "tools/resolve_ci_builder.py"
+      - "tools/ci/**"
       - "tools/assemble_app_collection.py"
       - "dist/apps/assemble-collection.sh"
       - ".forgejo/actions/restore-cargo-downloads/**"
@@ -91,7 +91,7 @@ jobs:
         id: builder
         env:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-        run: python3 tools/resolve_ci_builder.py
+        run: python3 tools/ci/resolve_builder.py
       - name: Select only the affected apps or requested collection
         id: plan
         shell: bash
@@ -206,7 +206,7 @@ jobs:
       - name: Restore Cargo downloads
         uses: ./.forgejo/actions/restore-cargo-downloads
       - name: Prepare compiler cache
-        run: bash tools/ci-sccache.sh prepare
+        run: bash tools/ci/sccache.sh prepare
       - name: Build and verify selected qpkgs once for this architecture
         env:
           TILO_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
@@ -279,7 +279,7 @@ jobs:
           if-no-files-found: error
       - name: Report compiler-cache effectiveness
         if: always()
-        run: bash tools/ci-sccache.sh report || true
+        run: bash tools/ci/sccache.sh report || true
 
   publish:
     if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
