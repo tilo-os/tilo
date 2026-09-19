@@ -56,7 +56,7 @@ changes, while metadata comes from the working tree. The preview does not replac
 CI for the exact pushed head. Routine feedback is separate from the
 [continuous app packaging and manual OS release roadmap](ci-product-matrix.md).
 
-## Documentation feedback
+## Documentation and audited helper feedback
 
 Rust compilation is explicitly inapplicable when the complete change consists
 only of `docs/designs/*.md` and/or the audited files `AGENTS.md`, `DEVELOPMENT.md`,
@@ -65,6 +65,28 @@ not an exemption for all Markdown. Compiled docs such as
 `crates/sdk/ui-core/CHARTS.md`, packaging
 contracts and unknown paths keep normal selection. Mixed Rust changes still
 select their affected closure, and manual full checks override the exception.
+
+The exact source/test pairs in
+[`QUALITY_ONLY_HELPERS`](../tools/ci/affected_packages.py) also use mandatory
+quality CI without Rust compilation. This includes `check-changed-rustfmt.sh`,
+`check_changed_rust_allows.py`, and their shared
+`tools/tests/test_changed_rust_comparison.py`. Both the mapped source and test
+must exist; deleting either restores normal Rust selection. Unknown helpers,
+workflows and compiler wrappers retain normal selection, and mixing an audited
+helper with Rust or global build inputs still selects the affected closure or
+full workspace. Do not dispatch a full native check just to replace an intentional
+skipped Rust row for an audited helper edit.
+
+For a change to either lint helper, run its production-path regression tests
+locally without compiling Rust:
+
+```sh
+python3 -m unittest discover -s tools/tests -p 'test_changed_rust*.py'
+```
+
+This covers the original Rust-allow and rustfmt checks as well as their shared
+PR comparison regressions. CI's `tools/policy/run.sh` still discovers all
+`tools/tests/test_*.py`; the local subset does not replace required quality CI.
 
 The workflow retains a skipped sentinel matrix row because a literally empty
 matrix removed the job and stranded its aggregate on this Forgejo installation.
