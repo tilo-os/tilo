@@ -28,6 +28,12 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertEqual(self.check(source), 0)
         self.assertEqual(self.check(source.replace('\n', '\r\n')), 0)
 
+    def test_publisher_does_not_receive_registry_token_in_steps(self):
+        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+        before, publish = source.split('\n  publish:\n', 1)
+        publish = publish.replace('    steps:', '    steps:\n      - run: echo token\n        env:\n          FORBIDDEN: ${{ secrets.REGISTRY_TOKEN }}', 1)
+        self.assertNotEqual(self.check(before + '\n  publish:\n' + publish), 0)
+
     def test_disconnected_or_mutable_builder_fails(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
         for before, after in (

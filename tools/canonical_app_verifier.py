@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Receipt adapter for canonical Rust CLIs; does not implement cryptography."""
 import hashlib
+import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
@@ -32,7 +33,8 @@ class CanonicalVerifier:
     def run(self, binary, *args):
         expected = self.binary_hashes['tilo_pkg_sha256' if binary == self.pkg else 'tilo_runtime_bundle_sha256']
         require(file_sha(binary) == expected, 'canonical verifier binary changed')
-        completed = subprocess.run([str(binary), *map(str, args)], capture_output=True, text=True, timeout=120)
+        completed = subprocess.run([str(binary), *map(str, args)], capture_output=True, text=True, timeout=120,
+                                   env={'PATH': os.defpath, 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'})
         require(completed.returncode == 0, f'canonical verification failed ({binary.name}, exit {completed.returncode}): {completed.stderr.strip()}')
         return completed.stdout
 
