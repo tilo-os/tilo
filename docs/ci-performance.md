@@ -51,7 +51,8 @@ python3 tools/ci/affected_packages.py --base origin/main --head HEAD
 
 This reads locked Cargo metadata and Git changes; it does not compile Rust.
 The JSON distinguishes `selected` packages to check from `tested` packages to
-link and run. Uncommitted edits are not included, and the preview does not replace
+link and run. Use a clean checkout: the changed-file list covers committed
+changes, while metadata comes from the working tree. The preview does not replace
 CI for the exact pushed head. Routine feedback is separate from the
 [continuous app packaging and manual OS release roadmap](ci-product-matrix.md).
 
