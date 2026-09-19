@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
+sys.path.append(str(Path(__file__).parents[1] / 'apps'))
 import canonical_verifier_bundle as bundle
 import final_app_receipt as final
 import test_app_channel_manifest as fixtures

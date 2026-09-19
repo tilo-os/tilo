@@ -24,6 +24,23 @@ fn timeline_geometry_keeps_200_percent_text_legible_and_density_bounded() {
 }
 
 #[test]
+fn places_camera_feedback_is_presentation_only_and_respects_reduced_motion() {
+    let mut app = PhotosApp::new();
+    let original = app.places_viewport;
+    app.zoom_places_by(1.0);
+    assert!(app.places_viewport.zoom > original.zoom);
+    assert!(app.places_camera_feedback.is_some());
+    assert!(app.needs_animation_frame());
+
+    app.set_motion_reduced(true);
+    assert!(app.places_camera_feedback.is_none());
+    assert!(!app.needs_animation_frame());
+
+    app.zoom_places_by(1.0);
+    assert!(app.places_camera_feedback.is_none());
+}
+
+#[test]
 fn people_scan_cursor_only_advances_after_the_admitted_batch_succeeds() {
     let mut progress = PeopleScanProgress {
         next_offset: 12,
@@ -69,6 +86,26 @@ fn compact_header_rows_are_non_overlapping_at_200_percent() {
     assert!((album_actions.height() - 44.0).abs() < f64::EPSILON);
     assert!(album_actions.y1 <= header.timeline_y);
     assert!(header.timeline_y > 94.0);
+}
+
+#[test]
+fn compact_library_masthead_keeps_its_count_out_of_the_control_row() {
+    let header = compact_library_header_geometry(Rect::new(0.0, 94.0, 640.0, 820.0), false, false);
+    let title = Rect::new(12.0, header.title_y, 220.0, header.title_y + 24.0);
+    let count = Rect::new(12.0, header.count_y, 220.0, header.count_y + 18.0);
+
+    assert!(
+        title.y1 <= count.y0,
+        "the count must not read as a title suffix"
+    );
+    assert!(
+        count.y1 <= header.timeline_y,
+        "the first date group must remain below the compact library context"
+    );
+    assert!(
+        header.controls.x0 > count.x1,
+        "shared density and selection controls must retain their own hit lane"
+    );
 }
 
 #[test]
@@ -947,6 +984,61 @@ fn accessibility_exposes_and_routes_every_toolbar_control() {
         .expect("opened image has status text");
     assert_eq!(status.role, Role::StaticText);
     assert_eq!(status.live, Some(Politeness::Polite));
+}
+
+#[test]
+fn opened_viewer_exposes_shared_context_without_creating_a_second_metadata_store() {
+    let mut app = PhotosApp::new();
+    let mut doc = AutoCommit::new();
+    PhotosDoc::seed(&mut doc);
+    let image = OpenImage::from_path("/tmp/harbour.png", 1_200, 800);
+    PhotosDoc::set_image(&mut doc, Some(&image));
+    let mut library = PhotosDoc::library(&doc);
+    let photo = library
+        .photos
+        .first_mut()
+        .expect("opening creates a library record");
+    photo.captured_at = Some("2026-09-19 at dusk".to_owned());
+    photo.people = vec!["Ada".to_owned(), "Mina".to_owned()];
+    photo.tags = vec!["harbour".to_owned(), "travel".to_owned()];
+    photo.folder = Some("Weekends".to_owned());
+    photo.location = Some(crate::model::PhotoLocation {
+        latitude: 52.0,
+        longitude: 4.0,
+        label: Some("Harbour front".to_owned()),
+        provenance: crate::model::LocationProvenance::default(),
+    });
+    photo.analysis = Some(crate::model::ImageAnalysis {
+        description: "Two friends walking beside the harbour at dusk".to_owned(),
+        ..Default::default()
+    });
+    PhotosDoc::set_library(&mut doc, &library);
+    let before = PhotosDoc::library(&doc);
+    app.original = Some((image.path.clone(), shots_pattern(1_200, 800)));
+    app.refresh(&doc);
+
+    let canvas = app.accessibility_tree().children[1].clone();
+    let description = canvas
+        .description
+        .expect("open image carries its shared context");
+    for expected in [
+        "Two friends walking beside the harbour at dusk",
+        "2026-09-19 at dusk",
+        "Harbour front",
+        "Ada, Mina",
+        "harbour, travel",
+        "Weekends",
+    ] {
+        assert!(
+            description.contains(expected),
+            "missing {expected:?}: {description}"
+        );
+    }
+    let refreshed = PhotosDoc::library(&doc);
+    assert_eq!(
+        refreshed, before,
+        "viewer presentation must not write metadata"
+    );
 }
 
 #[test]

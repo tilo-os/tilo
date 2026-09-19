@@ -8,7 +8,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-SPEC = importlib.util.spec_from_file_location('canonical', Path(__file__).parents[1] / 'canonical_app_verifier.py')
+SPEC = importlib.util.spec_from_file_location(
+    'canonical', Path(__file__).parents[1] / 'apps/canonical_app_verifier.py'
+)
 c = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(c)
 

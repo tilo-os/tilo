@@ -1319,6 +1319,48 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn legacy_host_resumes_partial_identity_beneath_atomic_fedora_home_link() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TmpDir::new("legacy-host-fedora-home");
+        let real_home = tmp.path().join("var/home/alice");
+        let personal = real_home.join(".config/tilo/identity");
+        let identity_root = real_home.join(".local/share/tilo");
+        std::fs::create_dir_all(&real_home).unwrap();
+        symlink(tmp.path().join("var/home"), tmp.path().join("home")).unwrap();
+
+        // This is the exact durable state left by the former ELOOP: the
+        // personal record and owner claim landed, but reading the device key
+        // through /home -> /var/home failed before cert creation.
+        ensure_primary_identity(&personal).expect("seed personal identity");
+        let signer = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+            .expect("load seeded identity");
+        let linked_root = tmp.path().join("home/alice/.local/share/tilo");
+        let paths = IdentityPaths::under(&linked_root);
+        paths.ensure_directories().unwrap();
+        persist::write_public_key(&paths.user_pubkey, &signer.group_public_key()).unwrap();
+        assert!(!paths.device_privkey.exists());
+
+        assert_eq!(
+            ensure_collaboration_identity_for_legacy_linux_host(&personal, &paths)
+                .expect("resume the partial host identity"),
+            ProvisionOutcome::Existing
+        );
+        let cert = persist::read_device_cert(&paths.device_cert).expect("read completed cert");
+        verify_collaboration_identity(&personal, &paths, cert.issued_at_ns)
+            .expect("resumed identity chain verifies");
+        assert_eq!(
+            runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+                .expect("reload personal identity")
+                .group_public_key(),
+            signer.group_public_key(),
+            "resuming must never mint a replacement personal identity"
+        );
+        assert!(identity_root.join("device-private/keypair.bin").is_file());
+    }
+
     #[test]
     fn collaboration_setup_creates_one_verified_identity_chain() {
         let tmp = TmpDir::new("collaboration-identity");

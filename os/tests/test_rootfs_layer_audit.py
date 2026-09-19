@@ -1,5 +1,6 @@
 """Small archive streams prove hidden-layer scanning without image builds."""
 import gzip
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import importlib.util
 import io
@@ -71,17 +72,70 @@ class LayerAuditTests(unittest.TestCase):
             self.assertEqual(len(result['layers']), 1)
             self.assertEqual(result['layers'][0]['findings'], ['provided-private-material'])
 
-    def test_podman_aliases_reject_escape_unknown_duplicate_and_digest_mismatch(self):
+    def test_podman_aliases_reject_escape_unknown_and_digest_mismatch(self):
         for options in ({'target': '../../' + 'a' * 64 + '.tar'},
                         {'target': '../' + 'a' * 64 + '.tar'},
                         {'target': '/absolute.tar'},
                         {'target': '../x/layer.tar'},
-                        {'alias_name': 'unexpected-link'},
-                        {'duplicate': True}, {'wrong_digest': True}):
+                        {'alias_name': 'unexpected-link'}, {'wrong_digest': True}):
             with self.subTest(options=options):
                 stream, image = self.podman_archive(**options)
                 with self.assertRaises(audit.AuditError):
                     audit.audit_stream(io.BytesIO(stream), image, [SECRET])
+
+    def repeated_archive(self, aliases=False, order=None, unreferenced=False):
+        # The completed ARM image repeats this exact 1024-byte empty delta.
+        layers = [tar([('public', b'ok')]), bytes(1024), tar([('private', SECRET)])]
+        names = [hashlib.sha256(layer).hexdigest() + '.tar' for layer in layers]
+        sequence = [0, 1, 2, 1, 1]
+        config = json.dumps({'rootfs': {'type': 'layers',
+            'diff_ids': ['sha256:' + names[index][:-4] for index in sequence]}}).encode()
+        image = 'sha256:' + hashlib.sha256(config).hexdigest()
+        entries = list(zip(names, layers))
+        alias_names = []
+        for position, index in enumerate(sequence):
+            alias = tarfile.TarInfo(f'{position:064x}/layer.tar')
+            alias.type, alias.linkname = tarfile.SYMTYPE, '../' + names[index]
+            entries.append((alias, b'')); alias_names.append(alias.name)
+        if unreferenced:
+            extra = tar([('unreferenced', b'payload')])
+            entries.append((hashlib.sha256(extra).hexdigest() + '.tar', extra))
+        selected = [alias_names[position] if aliases else names[index]
+                    for position, index in enumerate(sequence)]
+        if order is not None:
+            selected = [selected[position] for position in order]
+        entries.extend([(image[7:] + '.json', config),
+                        ('manifest.json', json.dumps([{'Config': image[7:] + '.json',
+                                                       'Layers': selected}]).encode())])
+        return tar(entries), image, ['sha256:' + names[index][:-4] for index in sequence]
+
+    def test_repeated_layer_occurrences_keep_order_and_scan_unique_payloads_once(self):
+        for aliases in (False, True):
+            with self.subTest(aliases=aliases):
+                stream, image, ordered = self.repeated_archive(aliases=aliases)
+                with patch.object(audit, 'walk_tar', wraps=audit.walk_tar) as walker:
+                    result = audit.audit_stream(io.BytesIO(stream), image, [SECRET])
+                self.assertEqual(walker.call_count, 4)  # Outer archive + three payloads.
+                self.assertEqual(result['unique_layers_scanned'], 3)
+                self.assertEqual([row['diff_id'] for row in result['layers']], ordered)
+                self.assertEqual(result['status'], 'rejected-private-material')
+                self.assertEqual(result['layers'][2]['findings'], ['provided-private-material'])
+                self.assertTrue(all(not result['layers'][index]['findings'] for index in (0, 1, 3, 4)))
+                self.assertNotIn(SECRET.decode(), json.dumps(result))
+
+    def test_repeated_layers_still_require_exact_order_multiplicity_and_coverage(self):
+        for options in ({'order': [1, 0, 2, 3, 4]}, {'order': [0, 1, 2, 3]},
+                        {'order': [0, 1, 2, 3, 4, 4]}, {'unreferenced': True}):
+            with self.subTest(options=options):
+                stream, image, _ = self.repeated_archive(**options)
+                with self.assertRaisesRegex(audit.AuditError, 'identity mismatch'):
+                    audit.audit_stream(io.BytesIO(stream), image)
+
+    def test_repeated_occurrences_still_obey_layer_count_bound(self):
+        stream, image, _ = self.repeated_archive()
+        with patch.object(audit, 'MAX_LAYERS', 4):
+            with self.assertRaisesRegex(audit.AuditError, 'too many layer occurrences'):
+                audit.audit_stream(io.BytesIO(stream), image)
 
     def test_create_then_delete_secret_is_detected_in_earlier_layer(self):
         stream, image = docker([tar([('private.key', SECRET)]), tar([('.wh.private.key', b'')])])
@@ -169,6 +223,47 @@ class LayerAuditTests(unittest.TestCase):
         self.assertNotIn('--output', launch.call_args.args[0])
         kill.assert_called_once_with(12345, audit.signal.SIGKILL)
         child.wait.assert_called_once_with(timeout=10)
+
+    def test_cli_parser_failure_emits_safe_public_receipt_and_cleans_owned_export(self):
+        image = 'sha256:' + 'a' * 64
+        child = MagicMock(pid=12345, stdout=io.BytesIO(b'invalid'))
+        child.poll.return_value = None
+        child.wait.return_value = -9
+        output, diagnostics = io.StringIO(), io.StringIO()
+        with patch.object(sys, 'argv', ['audit', '--image-id', image]), \
+             patch.object(audit.subprocess, 'Popen', return_value=child), \
+             patch.object(audit.os, 'killpg', create=True) as kill, \
+             redirect_stdout(output), redirect_stderr(diagnostics):
+            code = audit.main()
+        result = json.loads(output.getvalue())
+        self.assertEqual(code, 1)
+        self.assertEqual(result['image_id'], image)
+        self.assertEqual(result['status'], 'failed-scoped-scan')
+        self.assertEqual(result['failure_reason'], 'truncated-archive')
+        self.assertEqual(result['failed_stage'], 'layer-export-and-scan')
+        self.assertFalse(result['installable'])
+        self.assertFalse(result['universal_secret_absence_proven'])
+        self.assertEqual(diagnostics.getvalue(), '')
+        kill.assert_called_once_with(12345, audit.signal.SIGKILL)
+
+    def test_cli_failure_receipts_never_copy_private_paths_or_exception_diagnostics(self):
+        image = 'sha256:' + 'a' * 64
+        for error, reason in ((OSError(SECRET.decode()), 'io-error'),
+                              (audit.AuditError(SECRET.decode()), 'unclassified-audit-error')):
+            with self.subTest(reason=reason):
+                output, diagnostics = io.StringIO(), io.StringIO()
+                with patch.object(sys, 'argv', ['audit', '--image-id', image,
+                                               '--private-file', SECRET.decode()]), \
+                     patch.object(audit, 'load_private', side_effect=error), \
+                     patch.object(audit, 'audit_image') as scan, \
+                     redirect_stdout(output), redirect_stderr(diagnostics):
+                    self.assertEqual(audit.main(), 1)
+                result = json.loads(output.getvalue())
+                self.assertEqual(result['failure_reason'], reason)
+                self.assertEqual(result['failed_stage'], 'private-comparison-input')
+                self.assertEqual(result['status'], 'failed-scoped-scan')
+                scan.assert_not_called()
+                self.assertNotIn(SECRET.decode(), output.getvalue() + diagnostics.getvalue())
 
     @unittest.skipUnless(hasattr(os, 'killpg'), 'process-group deadline requires POSIX')
     def test_real_stalled_export_is_terminated_at_deadline(self):

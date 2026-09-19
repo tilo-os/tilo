@@ -27,7 +27,7 @@ tools, not independently attested production tooling.
 
 The real audit used WSL Fedora Linux 42 system Python (standard library only),
 `app_channel_manifest.create_receipt(..., audit_only=True, canonical_binaries=...)`
-and `tools/canonical_app_verifier.py`. Both actual canonical commands were invoked:
+and `tools/apps/canonical_app_verifier.py`. Both actual canonical commands were invoked:
 
 ```sh
 tilo-pkg verify --trusted-key EXPLICIT_APP_KEY package.qpkg

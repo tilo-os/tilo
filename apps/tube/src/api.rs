@@ -36,6 +36,9 @@ use crate::model::{Category, Channel, Comment, Playlist, Segment, Video};
 const REQUEST_QUEUE_CAPACITY: usize = 32;
 const UPDATE_QUEUE_CAPACITY: usize = 128;
 const MAX_UPDATES_PER_POLL: usize = 32;
+const SPONSOR_ENDPOINT: &str = "https://sponsor.ajay.app/api/skipSegments";
+const DEARROW_ENDPOINT: &str = "https://sponsor.ajay.app/api/branding";
+const DISLIKE_ENDPOINT: &str = "https://returnyoutubedislikeapi.com/votes";
 
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
@@ -157,9 +160,17 @@ pub fn fetch_sponsor(
     client: &reqwest::blocking::Client,
     video_id: &str,
 ) -> anyhow::Result<Vec<Segment>> {
+    fetch_sponsor_at(client, SPONSOR_ENDPOINT, video_id)
+}
+
+fn fetch_sponsor_at(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    video_id: &str,
+) -> anyhow::Result<Vec<Segment>> {
     let cats = category_json();
     let resp = client
-        .get("https://sponsor.ajay.app/api/skipSegments")
+        .get(endpoint)
         .query(&[("videoID", video_id), ("categories", cats.as_str())])
         .send()?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -224,8 +235,16 @@ pub fn fetch_dearrow(
     client: &reqwest::blocking::Client,
     video_id: &str,
 ) -> anyhow::Result<(Option<String>, Option<String>)> {
+    fetch_dearrow_at(client, DEARROW_ENDPOINT, video_id)
+}
+
+fn fetch_dearrow_at(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    video_id: &str,
+) -> anyhow::Result<(Option<String>, Option<String>)> {
     let resp: serde_json::Value = client
-        .get("https://sponsor.ajay.app/api/branding")
+        .get(endpoint)
         .query(&[("videoID", video_id)])
         .send()?
         .error_for_status()?
@@ -302,8 +321,16 @@ pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String
 /// Returns `Err` if the request fails, the response isn't valid JSON, or it
 /// carries no dislike count.
 pub fn fetch_dislikes(client: &reqwest::blocking::Client, video_id: &str) -> anyhow::Result<u64> {
+    fetch_dislikes_at(client, DISLIKE_ENDPOINT, video_id)
+}
+
+fn fetch_dislikes_at(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    video_id: &str,
+) -> anyhow::Result<u64> {
     let resp: serde_json::Value = client
-        .get("https://returnyoutubedislikeapi.com/votes")
+        .get(endpoint)
         .query(&[("videoId", video_id)])
         .send()?
         .error_for_status()?
@@ -1017,6 +1044,51 @@ fn send_status(up_tx: &SyncSender<Update>, live: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+
+    fn serve_http(
+        responses: Vec<(&'static str, u16, &'static str)>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local HTTP fixture");
+        let address = listener.local_addr().expect("read fixture address");
+        let handle = std::thread::spawn(move || {
+            for (expected_target, status, body) in responses {
+                let (mut stream, _) = listener.accept().expect("accept fixture request");
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let count = stream.read(&mut chunk).expect("read fixture request");
+                    assert!(count > 0, "client closed before sending HTTP headers");
+                    request.extend_from_slice(&chunk[..count]);
+                    assert!(
+                        request.len() < 16 * 1024,
+                        "fixture request headers are bounded"
+                    );
+                }
+                let request = String::from_utf8(request).expect("request headers are UTF-8");
+                let request_line = request.lines().next().expect("request line");
+                assert!(
+                    request_line.starts_with(&format!("GET {expected_target}")),
+                    "unexpected request target: {request_line}"
+                );
+                if expected_target.ends_with("categories=") {
+                    assert!(
+                        !request_line.starts_with(&format!("GET {expected_target} HTTP/")),
+                        "SponsorBlock categories query must be populated"
+                    );
+                }
+                let reason = if status == 200 { "OK" } else { "Not Found" };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .expect("write fixture response");
+            }
+        });
+        (format!("http://{address}"), handle)
+    }
 
     #[test]
     fn category_json_lists_all() {
@@ -1071,32 +1143,42 @@ mod tests {
         ));
     }
 
-    /// Real-path check: actually call `SponsorBlock`, `DeArrow` and Return `YouTube`
-    /// Dislike and assert the parsed shapes. Honestly gated — it only touches
-    /// the network when `TUBE_NET_TESTS=1`, so offline/CI runs pass trivially
-    /// rather than being silently `#[ignore]`d. Run with:
-    /// `TUBE_NET_TESTS=1 cargo test -p tube live_branding_apis`.
     #[test]
-    fn live_branding_apis_reachable_when_enabled() {
-        if std::env::var("TUBE_NET_TESTS").is_err() {
-            eprintln!("skipping live branding test (set TUBE_NET_TESTS=1 to run it)");
-            return;
-        }
+    fn branding_clients_send_expected_queries_and_parse_http_responses() {
+        let (base, server) = serve_http(vec![
+            (
+                "/api/skipSegments?videoID=fixture&categories=",
+                200,
+                r#"[{"category":"outro","segment":[9.0,10.0],"votes":2},{"category":"sponsor","segment":[1.0,3.0],"votes":7}]"#,
+            ),
+            (
+                "/api/branding?videoID=fixture",
+                200,
+                r#"{"titles":[{"title":"Accurate title","votes":5,"original":false}],"thumbnails":[{"timestamp":12.5,"votes":4,"original":false}]}"#,
+            ),
+            ("/votes?videoId=fixture", 200, r#"{"dislikes":42}"#),
+            ("/api/skipSegments?videoID=none&categories=", 404, ""),
+        ]);
         let c = client();
-        // Despacito — stable, carries locked SponsorBlock segments, DeArrow
-        // branding, and a large crowdsourced dislike count.
-        let vid = "kJQP7kiw5Fk";
-        let segs = fetch_sponsor(&c, vid).expect("real SponsorBlock call");
-        assert!(!segs.is_empty(), "Despacito has community segments");
-        let (title, thumb) = fetch_dearrow(&c, vid).expect("real DeArrow call");
-        assert!(
-            title.is_some() || thumb.is_some(),
-            "DeArrow returns community branding for Despacito"
+        let segments = fetch_sponsor_at(&c, &format!("{base}/api/skipSegments"), "fixture")
+            .expect("SponsorBlock response");
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].category, Category::Sponsor);
+        assert_eq!(segments[0].votes, 7);
+
+        let (title, thumbnail) = fetch_dearrow_at(&c, &format!("{base}/api/branding"), "fixture")
+            .expect("DeArrow response");
+        assert_eq!(title.as_deref(), Some("Accurate title"));
+        assert!(thumbnail.is_some_and(|url| url.contains("time=12.5")));
+        assert_eq!(
+            fetch_dislikes_at(&c, &format!("{base}/votes"), "fixture").expect("dislike response"),
+            42
         );
-        let dislikes = fetch_dislikes(&c, vid).expect("real RYD call");
         assert!(
-            dislikes > 0,
-            "Despacito has crowdsourced dislikes ({dislikes})"
+            fetch_sponsor_at(&c, &format!("{base}/api/skipSegments"), "none")
+                .expect("404 means no segments")
+                .is_empty()
         );
+        server.join().expect("HTTP fixture completed");
     }
 }

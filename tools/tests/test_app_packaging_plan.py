@@ -45,6 +45,7 @@ class PlanProducerTests(unittest.TestCase):
             tools = root / 'tools'
             tools.mkdir()
             (tools / 'ci').mkdir()
+            (tools / 'apps').mkdir()
             for name in ('ci/python.py', 'ci/__init__.py', 'ci/resolve_builder.py',
                          'app_packaging_plan.py', 'app_packaging_qualification.py',
                          'app_packaging_product.py', 'app_packaging_coordinator.py'):
@@ -53,6 +54,7 @@ class PlanProducerTests(unittest.TestCase):
             for name in ('hashlib.py', 'json.py', 'sitecustomize.py', 'msvcrt.py', '_winapi.py'):
                 (tools / name).write_text(poison)
                 (root / name).write_text(poison)
+                (tools / 'apps' / name).write_text(poison)
             # Even an unchecked-hash cache for a pinned local dependency must
             # not execute in place of that dependency's verified source bytes.
             malicious = root / 'malicious.py'
@@ -109,6 +111,17 @@ class PlanProducerTests(unittest.TestCase):
         self.assertIn(self.desired['builder_image'], result.stdout)
         for name in ('ci_python.py', 'resolve_ci_builder.py', 'ci_select.py'):
             self.assertFalse((tools / name).exists())
+
+    def test_relocated_app_helper_runs_with_isolation(self):
+        tools = Path(plan.__file__).parent
+        result = subprocess.run([sys.executable, '-I', str(tools / 'ci/python.py'),
+                                 str(tools / 'apps/final_app_receipt.py'), '--help'],
+                                capture_output=True, text=True, check=True)
+        self.assertIn('bind-readback', result.stdout)
+        for name in ('app_release', 'app_package_isa', 'app_channel_manifest',
+                     'canonical_app_verifier', 'create_app_receipt', 'final_app_receipt',
+                     'assemble_app_collection'):
+            self.assertFalse((tools / (name + '.py')).exists())
 
     def test_real_qualification_guard_rejects_candidate_path_toolchain(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -79,10 +79,10 @@ const SHOT_SCENARIOS: &[&str] = &[
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new_with_args("dev.tilo.notes", live_root)
-            .open_state_with_args(open_state)
+            .max_positionals(1)
+            .prepare_legacy_with_args(prepare_launch)
             .shot_handler(render_shot)
-            .scenarios(SHOT_SCENARIOS)
-            .configure_app(configure_app),
+            .scenarios(SHOT_SCENARIOS),
     )?;
     Ok(())
 }
@@ -94,25 +94,28 @@ fn peer_id() -> &'static str {
     })
 }
 
-fn live_root(_args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
     let mut app = NotesApp::spawn_default().map_err(LaunchError::Operation)?;
     app.set_local_author(Some(peer_id().to_owned()));
+    if let Some(source) = args.positionals().first() {
+        app.queue_launch_markdown(source)
+            .map_err(LaunchError::Operation)?;
+    }
     Ok(Box::new(app))
 }
 
-fn open_state(_app_id: &'static str, _args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+fn prepare_launch(args: &LaunchArgs) -> Result<ui::launch::LegacyLaunchInputs, LaunchError> {
     let mut state = ui::State::new();
     state
         .doc
         .set_actor(automerge::ActorId::from(peer_id().as_bytes()));
-    (
-        state,
-        ui::persist::Autosave::disabled("Notes owns its workspace persistence"),
-    )
-}
-
-fn configure_app(app: &mut ui::App) {
-    notes::actions::register(app.action_registry_mut());
+    let root = live_root(args)?;
+    let autosave = ui::persist::Autosave::disabled("Notes owns its workspace persistence");
+    let mut registry = tilo_actions::ActionRegistry::new();
+    notes::actions::register(&mut registry);
+    Ok(ui::launch::LegacyLaunchInputs::new(state, root, autosave)
+        .with_registry(registry)
+        .with_widget_owned_persistence())
 }
 
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
