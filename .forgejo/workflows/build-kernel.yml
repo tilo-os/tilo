@@ -126,6 +126,23 @@ jobs:
       - name: Require the selected native kernel architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
 
+      - name: Install native kernel acceptance tools
+        run: |
+          set -euo pipefail
+          case '${{ matrix.arch }}' in
+            aarch64) apt_qemu=qemu-system-arm; fedora_qemu=qemu-system-aarch64;;
+            x86_64) apt_qemu=qemu-system-x86; fedora_qemu=qemu-system-x86;;
+            *) exit 2;;
+          esac
+          if command -v apt-get >/dev/null; then
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip python3 rpm rpm2cpio kmod "$apt_qemu"
+          else
+            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip python3 rpm kmod "$fedora_qemu"
+          fi
+          # Fail before compilation if the independent module parser is unavailable.
+          modinfo --version
+
       # The build FROMs the frozen RPM repo for its toolchain (rpm-build,
       # kernel-devel, gcc, ...) and the Fedora kernel SRPM.  Log in on every
       # run — build-only PRs also need registry read.
@@ -221,21 +238,6 @@ jobs:
           # compile.
           cache-to: type=registry,ref=code.podesta.ai/qos/qos-kernel-buildcache:${{ matrix.arch }},mode=min
           provenance: false
-
-      - name: Install native kernel acceptance tools
-        run: |
-          set -euo pipefail
-          case '${{ matrix.arch }}' in
-            aarch64) apt_qemu=qemu-system-arm; fedora_qemu=qemu-system-aarch64;;
-            x86_64) apt_qemu=qemu-system-x86; fedora_qemu=qemu-system-x86;;
-            *) exit 2;;
-          esac
-          if command -v apt-get >/dev/null; then
-            sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip python3 rpm rpm2cpio "$apt_qemu"
-          else
-            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip python3 rpm "$fedora_qemu"
-          fi
 
       - name: Boot the packaged native kernel and verify module signatures
         run: |
