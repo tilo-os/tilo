@@ -71,24 +71,9 @@ done
 
 gcc -O2 -Wall -Wextra -Werror -o "$work/init" \
   "$repo/os/tests/secureboot_vm_enroll.c"
-loader=$(ldd "$work/init" | awk '/ld-linux/ { print $1; exit }')
-libc=$(ldd "$work/init" | awk '/libc\.so/ { print $3; exit }')
-libgcc=$(ldd "$crypto" | awk '/libgcc_s/ { print $3; exit }')
 list="$work/initramfs.list"
-{
-  printf 'dir /sys 0755 0 0\n'
-  printf 'dir /lib64 0755 0 0\n'
-  printf 'file /init %s 0755 0 0\n' "$work/init"
-  printf 'file /tilo-crypto %s 0755 0 0\n' "$crypto"
-  for key in PK KEK db; do
-    printf 'file /%s.esl %s 0600 0 0\n' "$key" "$work/$key.esl"
-  done
-  printf 'file /PK.key %s 0600 0 0\n' "$work/PK.key"
-  printf 'file /PK.crt %s 0600 0 0\n' "$work/PK.crt"
-  printf 'file %s %s 0755 0 0\n' "$loader" "$loader"
-  printf 'file %s %s 0755 0 0\n' "$libc" "$libc"
-  printf 'file %s %s 0755 0 0\n' "$libgcc" "$libgcc"
-} > "$list"
+python3 "$repo/os/tests/secureboot_initramfs.py" "$list" \
+  --init "$work/init" --crypto "$crypto" --material-dir "$work"
 "$gen_cpio" -o "$work/enroll.cpio" "$list"
 
 cp "$firmware_vars" "$work/vars.enrolled.fd"
