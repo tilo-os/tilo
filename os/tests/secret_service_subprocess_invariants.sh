@@ -5,7 +5,7 @@ readonly consumers=(
   crates/system/accounts/src/vault.rs
   apps/totp/src/storage.rs
   crates/runtime/runtime-identity/src/secure_store.rs
-  shell/src/shell/collab_mls_authority.rs
+  crates/session/shell/src/shell/collab_mls_authority.rs
 )
 
 if rg -n 'Command::new\("secret-tool"\)|\.output\(\)|wait_with_output\(' "${consumers[@]}"; then

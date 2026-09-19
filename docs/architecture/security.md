@@ -28,7 +28,7 @@ Invite tokens are signed ed25519 blobs scoped to a workspace; see `docs/architec
 
 ## Sandbox: Bubblewrap profile
 
-Every app launched into a workspace runs through `bwrap`, whose argv is built by `tilo-launcher` (`crates/packaging/launcher`) from the package manifest and the capability grants the shell hands it. `SandboxProfile` (`shell/src/sandbox/profile.rs`) is the compositor-side *model* of that sandbox — the bind/env/uid shape and the seccomp + Landlock plumbing points. It is a value type, and nothing spawns an app through it:
+Every app launched into a workspace runs through `bwrap`, whose argv is built by `tilo-launcher` (`crates/packaging/launcher`) from the package manifest and the capability grants the shell hands it. `SandboxProfile` (`crates/session/shell/src/sandbox/profile.rs`) is the compositor-side *model* of that sandbox — the bind/env/uid shape and the seccomp + Landlock plumbing points. It is a value type, and nothing spawns an app through it:
 
 ```rust
 pub struct SandboxProfile {
@@ -68,7 +68,7 @@ The blocklist is conservative and expands as we learn. It is applied via `bwrap 
 
 ## Per-workspace Wayland bridge socket
 
-The compositor's main wayland socket lives at `$XDG_RUNTIME_DIR/wayland-1` (or whatever the listener registered). For each workspace, the bridge (`shell/src/compositor/bridge.rs`) binds an additional listening socket `$XDG_RUNTIME_DIR/tilo-ws-<ws_id>` and proxies its connections to the main socket.
+The compositor's main wayland socket lives at `$XDG_RUNTIME_DIR/wayland-1` (or whatever the listener registered). For each workspace, the bridge (`crates/session/shell/src/compositor/bridge.rs`) binds an additional listening socket `$XDG_RUNTIME_DIR/tilo-ws-<ws_id>` and proxies its connections to the main socket.
 
 The bridge:
 
@@ -80,7 +80,7 @@ Surfaces from sandbox A literally cannot adopt into workspace B — the bridge t
 
 ## Capability grants
 
-Capabilities are CRDT-persisted (`shell/src/shell/state.rs`):
+Capabilities are CRDT-persisted (`crates/session/shell/src/shell/state.rs`):
 
 ```rust
 pub enum Capability {
@@ -110,7 +110,7 @@ When an unscoped capability request arrives, a `PermissionPrompt` widget pushes 
 
 ### Portal D-Bus backend
 
-The compositor implements the `org.freedesktop.impl.portal.*` backend (`shell/src/portal/`) via `zbus`. We expose these impls under the service:
+The compositor implements the `org.freedesktop.impl.portal.*` backend (`crates/session/shell/src/portal/`) via `zbus`. We expose these impls under the service:
 
 | Interface                               | Methods                                | Capability flow                                   |
 |-----------------------------------------|----------------------------------------|---------------------------------------------------|
@@ -129,7 +129,7 @@ Step 3 needs something to empty that queue. The compositor drains `PromptQueueHa
 
 **The portal is served by the compositor**, in-process, in both native and hosted mode (`compositor::native::start_portal_backend`). It is not a separate daemon: the questions the portal answers are all about the live session — which workspace the caller is in, what it has been granted, what the person here decides now — and all of them live in the `WorkspaceTree` the compositor owns. The former `shell --portal-server-only` unit built its context on an empty tree and had no output to draw a dialog on, so it could answer none of them; it is removed, and D-Bus permits one owner per name, so leaving it in place would have been a race whose loser served nobody while looking healthy. `ServerHandle::owns_name` reports whether the name was actually acquired, and the compositor logs at error level when it was not.
 
-`xdg-desktop-portal`'s config (`os/usr/share/xdg-desktop-portal/portals/tilo.portal`) registers `org.freedesktop.impl.portal.desktop.tilo` as the backend for these interfaces. ScreenCast output streams use PipeWire (`shell/src/portal/screencast_pipewire.rs`); the provisioner is a seam (`MockScreenCastProvisioner` for headless/tests, a real libpipewire connection in the production OS build). RemoteDesktop seat injection reuses the same `RemoteInputSink`/seat path as peer-sync remote input.
+`xdg-desktop-portal`'s config (`os/usr/share/xdg-desktop-portal/portals/tilo.portal`) registers `org.freedesktop.impl.portal.desktop.tilo` as the backend for these interfaces. ScreenCast output streams use PipeWire (`crates/session/shell/src/portal/screencast_pipewire.rs`); the provisioner is a seam (`MockScreenCastProvisioner` for headless/tests, a real libpipewire connection in the production OS build). RemoteDesktop seat injection reuses the same `RemoteInputSink`/seat path as peer-sync remote input.
 
 `tests/portal_test.rs` exercises one round-trip per interface plus prompt-resolution branches. A `PromptResolver::AutoAllow` mode is used in tests so the round-trip doesn't need a human.
 
@@ -142,7 +142,7 @@ Step 3 needs something to empty that queue. The compositor drains `PromptQueueHa
 - **The dialog is the prompt.** Choosing a file in the compositor-owned dialog is the act of authorisation, and the grant names exactly the path chosen: read-only for `OpenFile`, read-write for `SaveFile`, session-scoped. A separate prompt must not grant a broad path before the user chooses one.
 - A path outside the profile is reachable only through a capability the user grants, which becomes a bind at the next launch of that app (`launcher::capabilities`). `SandboxProfile::apply_grants` mirrors the same rules compositor-side; the launcher is the enforcement point and a disagreement between the two is a bug in the mirror.
 
-  **Next launch is the operative phrase.** A confined app's mount namespace is fixed when `bwrap` creates it, so a grant made mid-session cannot add anything to the namespace the app is already living in. `shell/tests/portal_grant_reaches_sandbox.rs` asserts the grant→bind chain end to end; what it asserts is the *next* launch. For a running app the portal additionally publishes the pick through `shell::portal::doc_store`, which is where the three candidate mechanisms — a launch-time grant, a live re-bind, and a document store — are compared and one is chosen. The shipped store is `HostPathStore`, which is correct for callers sharing the compositor's namespace and reports `reaches_confined_apps() == false` rather than pretending otherwise; the compositor logs that at startup.
+  **Next launch is the operative phrase.** A confined app's mount namespace is fixed when `bwrap` creates it, so a grant made mid-session cannot add anything to the namespace the app is already living in. `crates/session/shell/tests/portal_grant_reaches_sandbox.rs` asserts the grant→bind chain end to end; what it asserts is the *next* launch. For a running app the portal additionally publishes the pick through `shell::portal::doc_store`, which is where the three candidate mechanisms — a launch-time grant, a live re-bind, and a document store — are compared and one is chosen. The shipped store is `HostPathStore`, which is correct for callers sharing the compositor's namespace and reports `reaches_confined_apps() == false` rather than pretending otherwise; the compositor logs that at startup.
 
 **The mount is the second enforcement point** (`crates/system/fs/src/acl.rs`). `fs --acl FILE` binds a capability list to the mount, and every `open`/`read`/`write` is answered by `collab_types::decide_capability` — the same function the compositor calls, so a path readable through one and not the other is a bug rather than a policy. Without `--acl` the mount keeps the Unix-veneer-only behaviour, which is the documented opt-out.
 
@@ -172,7 +172,7 @@ Not constrained: **ports** (a `NetHost` scope names a host and carries no port) 
 
 **A filtered grant is TCP-only.** The namespace is empty, so the sole route out is the gate socket, and both protocols it serves — SOCKS5 `CONNECT` and HTTP `CONNECT` — carry TCP. SOCKS5 `UDP ASSOCIATE` is refused outright, because a connectionless path carries no name for the policy to match. So an app under a host-scoped grant has no UDP egress at all: QUIC and HTTP/3 do not work, and a client that does not fall back to TCP is offline rather than slow. A grant of `*` shares the host network and is unaffected. This is a real behavioural constraint of choosing a name-filtering broker, not an oversight — there is no way to name a host in a UDP datagram.
 
-**What the permissions panel can express is narrower than what the gate enforces.** The composer's scope picker (`shell/src/shell/workspace_settings.rs`, `GRANT_CHOICES`) is a fixed list with one network entry, "Network access", which mints `NetHost("*")`. So the mechanism accepts a host-scoped grant and enforces it exactly, but the only grant a user can *make from the UI today* is the unrestricted one. Two consequences worth stating plainly:
+**What the permissions panel can express is narrower than what the gate enforces.** The composer's scope picker (`crates/session/shell/src/shell/workspace_settings.rs`, `GRANT_CHOICES`) is a fixed list with one network entry, "Network access", which mints `NetHost("*")`. So the mechanism accepts a host-scoped grant and enforces it exactly, but the only grant a user can *make from the UI today* is the unrestricted one. Two consequences worth stating plainly:
 
 - An app whose manifest enumerates endpoints is still filtered to them, because a `*` grant narrows to a declared allowlist rather than widening past it. This is the common case and it works.
 - An app whose manifest says `net.mode = "host"` is unrestricted once the user clicks the one network choice, and the UI offers no way to say "only `mail.example.com`". Closing this needs the composer to offer the package's declared endpoints as individual choices (the manifest is already parsed into `InstalledApp`), or a hostname text field. Until then, a host-scoped grant is reachable through the capability file and the manifest, not through the panel.
@@ -186,7 +186,7 @@ If the gate cannot start, the launch is **refused** rather than downgraded — s
 
 ## Input firewall (remote input)
 
-When a peer publishes `RemoteInput { peer, surface, event }`, the owner's compositor runs it through `State::review_remote_input` (`shell/src/compositor/state.rs`) — the single door between the network and the seat. The order below is the order that function reads in:
+When a peer publishes `RemoteInput { peer, surface, event }`, the owner's compositor runs it through `State::review_remote_input` (`crates/session/shell/src/compositor/state.rs`) — the single door between the network and the seat. The order below is the order that function reads in:
 
 0. **Host overrides** — the kill-switch latch, the session lock, then physical-input priority. All three are absolute and none looks at the event, so a flooding peer cannot delay any of them. The lock is checked here rather than falling out of the z-order test because the lock surface is not part of the tiled tree: the tiles under it stay laid out and stay topmost as far as the tree knows.
 1. The per-peer `read_only` flag. If set, drop.
@@ -197,7 +197,7 @@ When a peer publishes `RemoteInput { peer, surface, event }`, the owner's compos
 6. **Rate limit** — max 120 input events/s per remote peer; >10 clicks in 100 ms trips a one-second block on everything from that peer. Every event a peer offers is metered, including the ones another check refuses, so a flood of junk cannot buy a fresh budget.
 7. Inject into the compositor's `smithay::input::Seat`.
 
-Steps 3-6 live in `shell/src/network/input_firewall.rs`. Every one of them is **deny-biased**: a check that cannot answer refuses. A compositor that has published no screen refuses all remote input rather than passing it, and a button that arrives before any motion has established where the peer's pointer is has no coordinate to check and is refused.
+Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every one of them is **deny-biased**: a check that cannot answer refuses. A compositor that has published no screen refuses all remote input rather than passing it, and a button that arrives before any motion has established where the peer's pointer is has no coordinate to check and is refused.
 
 ## Host overrides
 
@@ -237,17 +237,17 @@ Steps 3-6 live in `shell/src/network/input_firewall.rs`. Every one of them is **
 | Sandbox escape via syscall | seccomp-bpf blocklist                                   | `sandbox/seccomp.rs`               |
 | Network exfil to an ungranted host | Empty netns + name-matched SOCKS5 egress gate   | `packaging/launcher/netgate.rs`    |
 | Clickjacking               | Z-order verification before remote input inject         | `network/input_firewall.rs`, over the tile order `compositor/client_input.rs` publishes |
-| Privilege escalation       | Owner-only grant authority + CRDT-persisted grants       | `shell/state.rs::Workspace.grants` |
-| Room takeover via replication | Governance written only by the room's authority, pinned from the invite signature | `shell/state.rs::apply_room_changes` |
+| Privilege escalation       | Owner-only grant authority + CRDT-persisted grants       | `crates/session/shell/src/shell/state.rs::Workspace.grants` |
+| Room takeover via replication | Governance written only by the room's authority, pinned from the invite signature | `crates/session/shell/src/shell/state.rs::apply_room_changes` |
 | Traffic snoop              | QUIC/TLS end-to-end                                     | Iroh                               |
 | Token forgery              | ed25519 signature + canonical payload + expiry          | `network/invite.rs`                |
 | Host takeover by peer      | Physical-input priority + `Super+Esc` kill switch        | `network/input_firewall.rs`, `compositor/native.rs` |
 
 ## Where to read first
 
-- `shell/src/sandbox/{mod.rs, profile.rs, spawn.rs, seccomp.rs}` — the bwrap profile + seccomp blob.
-- `shell/src/compositor/bridge.rs` — the per-workspace Wayland bridge socket.
-- `shell/src/portal/{mod.rs, file_chooser.rs, screencast.rs, screencast_pipewire.rs, remote_desktop.rs, camera.rs}` — D-Bus impls.
-- `shell/src/shell/state.rs` — `Capability`, `GrantScope`, `Workspace.grants`.
-- `shell/src/network/invite.rs` — invite tokens.
-- `shell/src/network/input_firewall.rs` — the remote-input checks, with each denial proven through `State::review_remote_input` in its `production_path` tests.
+- `crates/session/shell/src/sandbox/{mod.rs, profile.rs, spawn.rs, seccomp.rs}` — the bwrap profile + seccomp blob.
+- `crates/session/shell/src/compositor/bridge.rs` — the per-workspace Wayland bridge socket.
+- `crates/session/shell/src/portal/{mod.rs, file_chooser.rs, screencast.rs, screencast_pipewire.rs, remote_desktop.rs, camera.rs}` — D-Bus impls.
+- `crates/session/shell/src/shell/state.rs` — `Capability`, `GrantScope`, `Workspace.grants`.
+- `crates/session/shell/src/network/invite.rs` — invite tokens.
+- `crates/session/shell/src/network/input_firewall.rs` — the remote-input checks, with each denial proven through `State::review_remote_input` in its `production_path` tests.

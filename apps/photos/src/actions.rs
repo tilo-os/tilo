@@ -85,7 +85,9 @@ const MAX_RESOURCE_ID_CHARS: usize = 4_096;
 const MAX_ALBUM_ID_CHARS: usize = 160;
 const MAX_NAME_CHARS: usize = 256;
 const MAX_ALBUM_MEMBERS: usize = 4_096;
-pub(crate) const MAX_BATCH_PHOTOS: usize = 4_096;
+/// One atomic UI/action turn must remain interactive even in debug and on
+/// modest hardware. Larger library-wide jobs page through this bound.
+pub(crate) const MAX_BATCH_PHOTOS: usize = 256;
 const MAX_ANALYSIS_TEXT_CHARS: usize = crate::analysis::MAX_OCR_CHARS;
 const MAX_ANALYSIS_LABELS: usize = 64;
 const MAX_ANALYSIS_LABEL_CHARS: usize = 128;
@@ -422,6 +424,21 @@ pub enum MetadataPatch<T> {
     Set(T),
 }
 
+/// A field-level list decision for people and tags.
+///
+/// `Add` and `Remove` are intentionally separate from `Set`: a batch editor
+/// can add one label to hundreds of photographs without replacing labels a
+/// collaborator added while the sheet was open.  The action still carries the
+/// complete bounded target selection, so a stale selection refuses atomically.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum MetadataLabelsPatch {
+    Keep,
+    Clear,
+    Set(Vec<String>),
+    Add(Vec<String>),
+    Remove(Vec<String>),
+}
+
 /// Every collaborative operation on the open photograph.
 ///
 /// Each variant carries absolute post-action state. See the module docs for
@@ -478,8 +495,8 @@ pub enum PhotosAction {
     SetMetadataBatch {
         photo_ids: Vec<String>,
         folder: MetadataPatch<String>,
-        people: MetadataPatch<Vec<String>>,
-        tags: MetadataPatch<Vec<String>>,
+        people: MetadataLabelsPatch,
+        tags: MetadataLabelsPatch,
         captured_at: MetadataPatch<String>,
         location: MetadataPatch<PhotoLocation>,
     },
@@ -856,6 +873,14 @@ impl Action for PhotosAction {
                 captured_at,
                 location,
             } => {
+                let captured_at = match captured_at.as_deref() {
+                    Some(value) => Some(canonical_capture_at_value(value).ok_or_else(|| {
+                        ActionError::Refused(
+                            "reindexed capture time is not valid EXIF or ISO metadata".into(),
+                        )
+                    })?),
+                    None => None,
+                };
                 if validate_resource_id(photo_id).is_err()
                     || !valid_metadata(None, &[], &[], captured_at.as_deref())
                     || location
@@ -871,7 +896,7 @@ impl Action for PhotosAction {
                     ActionError::Refused("that photograph is no longer in the library".into())
                 })?;
                 if photo.captured_at.is_none() {
-                    photo.captured_at.clone_from(captured_at);
+                    photo.captured_at = captured_at;
                 }
                 if photo
                     .location
@@ -935,24 +960,28 @@ impl Action for PhotosAction {
                 if photo_ids.is_empty()
                     || photo_ids.len() > MAX_BATCH_PHOTOS
                     || photo_ids.iter().any(|id| validate_resource_id(id).is_err())
-                    || photo_ids.iter().enumerate().any(|(index, id)| {
-                        photo_ids
-                            .get(..index)
-                            .is_some_and(|previous| previous.contains(id))
-                    })
+                    || !unique_strings(photo_ids)
                 {
                     return Err(ActionError::Refused(
                         "favorite batch must contain unique, valid photograph ids".into(),
                     ));
                 }
                 let mut library = PhotosDoc::library(doc);
-                if !photo_ids.iter().all(|id| library.photo(id).is_some()) {
+                let selected: std::collections::HashSet<_> =
+                    photo_ids.iter().map(String::as_str).collect();
+                if library
+                    .photos
+                    .iter()
+                    .filter(|photo| selected.contains(photo.id.as_str()))
+                    .count()
+                    != selected.len()
+                {
                     return Err(ActionError::Refused(
                         "a selected photograph is no longer in the library".into(),
                     ));
                 }
                 for photo in &mut library.photos {
-                    if photo_ids.contains(&photo.id) {
+                    if selected.contains(photo.id.as_str()) {
                         photo.favorite = *favorite;
                     }
                 }
@@ -966,6 +995,14 @@ impl Action for PhotosAction {
                 tags,
                 captured_at,
             } => {
+                let captured_at = match captured_at {
+                    Some(value) => Some(canonical_capture_at_value(value).ok_or_else(|| {
+                        ActionError::Refused(
+                            "capture date/time must be a valid ISO 8601 value".into(),
+                        )
+                    })?),
+                    None => None,
+                };
                 if validate_resource_id(photo_id).is_err()
                     || !valid_metadata(folder.as_deref(), people, tags, captured_at.as_deref())
                 {
@@ -984,7 +1021,7 @@ impl Action for PhotosAction {
                 photo.folder.clone_from(folder);
                 photo.people.clone_from(people);
                 photo.tags.clone_from(tags);
-                photo.captured_at.clone_from(captured_at);
+                photo.captured_at = captured_at;
                 PhotosDoc::set_library(doc, &library);
                 Ok(())
             }
@@ -999,22 +1036,27 @@ impl Action for PhotosAction {
                 if photo_ids.is_empty()
                     || photo_ids.len() > MAX_BATCH_PHOTOS
                     || photo_ids.iter().any(|id| validate_resource_id(id).is_err())
-                    || photo_ids.iter().enumerate().any(|(index, id)| {
-                        photo_ids
-                            .get(..index)
-                            .is_some_and(|previous| previous.contains(id))
-                    })
+                    || !unique_strings(photo_ids)
                 {
                     return Err(ActionError::Refused(
                         "metadata batch must contain unique, valid photograph ids".into(),
                     ));
                 }
                 let mut library = PhotosDoc::library(doc);
-                if !photo_ids.iter().all(|id| library.photo(id).is_some()) {
+                let selected: std::collections::HashSet<_> =
+                    photo_ids.iter().map(String::as_str).collect();
+                if library
+                    .photos
+                    .iter()
+                    .filter(|photo| selected.contains(photo.id.as_str()))
+                    .count()
+                    != selected.len()
+                {
                     return Err(ActionError::Refused(
                         "a selected photograph is no longer in the library".into(),
                     ));
                 }
+                let captured_at = canonical_capture_patch(captured_at)?;
 
                 // Validate the complete post-action record for every photo
                 // before changing any of them. This is the atomicity boundary
@@ -1022,24 +1064,16 @@ impl Action for PhotosAction {
                 for photo in library
                     .photos
                     .iter()
-                    .filter(|photo| photo_ids.contains(&photo.id))
+                    .filter(|photo| selected.contains(photo.id.as_str()))
                 {
                     let next_folder = match folder {
                         MetadataPatch::Keep => photo.folder.clone(),
                         MetadataPatch::Clear => None,
                         MetadataPatch::Set(value) => Some(value.clone()),
                     };
-                    let next_people = match people {
-                        MetadataPatch::Keep => photo.people.clone(),
-                        MetadataPatch::Clear => Vec::new(),
-                        MetadataPatch::Set(value) => value.clone(),
-                    };
-                    let next_tags = match tags {
-                        MetadataPatch::Keep => photo.tags.clone(),
-                        MetadataPatch::Clear => Vec::new(),
-                        MetadataPatch::Set(value) => value.clone(),
-                    };
-                    let next_captured_at = match captured_at {
+                    let next_people = apply_label_patch(&photo.people, people);
+                    let next_tags = apply_label_patch(&photo.tags, tags);
+                    let next_captured_at = match &captured_at {
                         MetadataPatch::Keep => photo.captured_at.clone(),
                         MetadataPatch::Clear => None,
                         MetadataPatch::Set(value) => Some(value.clone()),
@@ -1068,24 +1102,16 @@ impl Action for PhotosAction {
                 for photo in library
                     .photos
                     .iter_mut()
-                    .filter(|photo| photo_ids.contains(&photo.id))
+                    .filter(|photo| selected.contains(photo.id.as_str()))
                 {
                     match folder {
                         MetadataPatch::Keep => {}
                         MetadataPatch::Clear => photo.folder = None,
                         MetadataPatch::Set(value) => photo.folder = Some(value.clone()),
                     }
-                    match people {
-                        MetadataPatch::Keep => {}
-                        MetadataPatch::Clear => photo.people.clear(),
-                        MetadataPatch::Set(value) => photo.people.clone_from(value),
-                    }
-                    match tags {
-                        MetadataPatch::Keep => {}
-                        MetadataPatch::Clear => photo.tags.clear(),
-                        MetadataPatch::Set(value) => photo.tags.clone_from(value),
-                    }
-                    match captured_at {
+                    photo.people = apply_label_patch(&photo.people, people);
+                    photo.tags = apply_label_patch(&photo.tags, tags);
+                    match &captured_at {
                         MetadataPatch::Keep => {}
                         MetadataPatch::Clear => photo.captured_at = None,
                         MetadataPatch::Set(value) => photo.captured_at = Some(value.clone()),
@@ -1103,11 +1129,7 @@ impl Action for PhotosAction {
                 if !valid_person_label(person)
                     || photo_ids.len() > MAX_BATCH_PHOTOS
                     || photo_ids.iter().any(|id| validate_resource_id(id).is_err())
-                    || photo_ids.iter().enumerate().any(|(index, id)| {
-                        photo_ids
-                            .get(..index)
-                            .is_some_and(|prior| prior.contains(id))
-                    })
+                    || !unique_strings(photo_ids)
                 {
                     return Err(ActionError::Refused(
                         "person membership must name a short label and unique valid photograph ids"
@@ -1116,7 +1138,15 @@ impl Action for PhotosAction {
                 }
                 let person = person.trim();
                 let mut library = PhotosDoc::library(doc);
-                if !photo_ids.iter().all(|id| library.photo(id).is_some()) {
+                let selected: std::collections::HashSet<_> =
+                    photo_ids.iter().map(String::as_str).collect();
+                if library
+                    .photos
+                    .iter()
+                    .filter(|photo| selected.contains(photo.id.as_str()))
+                    .count()
+                    != selected.len()
+                {
                     return Err(ActionError::Refused(
                         "a person membership photograph is no longer in the library".into(),
                     ));
@@ -1127,7 +1157,7 @@ impl Action for PhotosAction {
                 for photo in &library.photos {
                     let mut next_people = photo.people.clone();
                     let has_person = next_people.iter().any(|label| label == person);
-                    let should_have_person = photo_ids.contains(&photo.id);
+                    let should_have_person = selected.contains(photo.id.as_str());
                     if should_have_person && !has_person {
                         next_people.push(person.to_owned());
                     } else if !should_have_person && has_person {
@@ -1147,7 +1177,7 @@ impl Action for PhotosAction {
                 }
                 for photo in &mut library.photos {
                     let has_person = photo.people.iter().any(|label| label == person);
-                    let should_have_person = photo_ids.contains(&photo.id);
+                    let should_have_person = selected.contains(photo.id.as_str());
                     if should_have_person && !has_person {
                         photo.people.push(person.trim().to_owned());
                     } else if !should_have_person && has_person {
@@ -2077,6 +2107,7 @@ pub(crate) fn people_root_resource(library: &crate::model::PhotoLibrary) -> Reso
             "Use the opt-in signed local face model on a bounded local batch; suggestions remain private until approved",
         ));
     }
+    resource = resource.with_action(person_membership_with_name_spec());
     resource
 }
 
@@ -2087,7 +2118,7 @@ pub(crate) fn places_resource(library: &crate::model::PhotoLibrary) -> Resource 
     let count = library
         .photos
         .iter()
-        .filter(|photo| photo.location.is_some())
+        .filter(|photo| photo.location.as_ref().is_some_and(PhotoLocation::is_valid))
         .count();
     let mut resource = places_resource_from_count(count);
     for (key, label, photos) in place_counts(library).into_iter().take(TAG_CONTEXT_LIMIT) {
@@ -2120,6 +2151,9 @@ pub(crate) fn place_counts(library: &crate::model::PhotoLibrary) -> Vec<(String,
         let Some(location) = &photo.location else {
             continue;
         };
+        if !location.is_valid() {
+            continue;
+        }
         let key = location.place_key();
         let entry = counts
             .entry(key)
@@ -2927,7 +2961,193 @@ fn valid_metadata(
                 .len()
                 == values.len()
     }
-    folder.is_none_or(text) && captured_at.is_none_or(text) && labels(people) && labels(tags)
+    folder.is_none_or(text)
+        && captured_at.is_none_or(canonical_capture_at)
+        && labels(people)
+        && labels(tags)
+}
+
+fn unique_strings(values: &[String]) -> bool {
+    let mut seen = std::collections::HashSet::with_capacity(values.len());
+    values.iter().all(|value| seen.insert(value.as_str()))
+}
+
+/// Return the one wire spelling Photos accepts for a capture value.
+///
+/// Date-only values deliberately remain date-only; local date-times remain
+/// local (there is no invented timezone); and offset date-times retain both
+/// their authored UTC offset and their fractional-second precision.  This is
+/// a validation boundary, not a display formatter, so a collaborator cannot
+/// turn an unknown local time into a different instant by merely opening it.
+pub fn canonical_capture_at(value: &str) -> bool {
+    canonical_capture_at_value(value).as_deref() == Some(value)
+}
+
+pub(crate) fn canonical_capture_at_value(value: &str) -> Option<String> {
+    if value.chars().count() > 128 || value.chars().any(char::is_control) || !value.is_ascii() {
+        return None;
+    }
+    // EXIF's `YYYY:MM:DD HH:MM:SS` and a legacy space separator are accepted
+    // once at the action boundary and committed as ISO. All durable values
+    // therefore converge to one form.
+    let mut canonical = value.to_owned();
+    if canonical.as_bytes().get(4) == Some(&b':') && canonical.as_bytes().get(7) == Some(&b':') {
+        canonical.replace_range(4..5, "-");
+        canonical.replace_range(7..8, "-");
+    }
+    if canonical.as_bytes().get(10) == Some(&b' ') {
+        canonical.replace_range(10..11, "T");
+    }
+    if canonical.len() == 10 {
+        return valid_capture_date(&canonical).then_some(canonical);
+    }
+    let (body, offset) = if canonical.ends_with('Z') {
+        (&canonical[..canonical.len() - 1], Some("Z"))
+    } else if canonical.len() >= 6 {
+        let split = canonical.len() - 6;
+        let suffix = &canonical[split..];
+        if matches!(suffix.as_bytes().first(), Some(b'+' | b'-'))
+            && suffix.as_bytes().get(3) == Some(&b':')
+        {
+            (&canonical[..split], Some(suffix))
+        } else {
+            (canonical.as_str(), None)
+        }
+    } else {
+        (canonical.as_str(), None)
+    };
+    if body.len() < 16 || !valid_capture_date(&body[..10]) || body.as_bytes().get(10) != Some(&b'T')
+    {
+        return None;
+    }
+    let (whole_seconds, _fraction) = match body.split_once('.') {
+        Some((whole, fraction))
+            if fraction.len() <= 9
+                && !fraction.is_empty()
+                && fraction.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            (whole, Some(fraction.len()))
+        }
+        Some(_) => return None,
+        None => (body, None),
+    };
+    let minute_precision = whole_seconds.len() == 16;
+    let second_precision = whole_seconds.len() == 19;
+    if !minute_precision && !second_precision {
+        return None;
+    }
+    // An offset identifies an instant, so require seconds in its wire format.
+    if offset.is_some() && !second_precision {
+        return None;
+    }
+    if !valid_capture_time(whole_seconds, second_precision) {
+        return None;
+    }
+    if let Some(offset) = offset {
+        if offset != "Z" && !valid_capture_offset(offset) {
+            return None;
+        }
+    }
+    let mut result = body.to_owned();
+    if offset == Some("+00:00") || offset == Some("-00:00") || offset == Some("Z") {
+        result.push('Z');
+    } else if let Some(offset) = offset {
+        result.push_str(offset);
+    }
+    Some(result)
+}
+
+fn decimal(value: &[u8]) -> Option<u32> {
+    (!value.is_empty() && value.iter().all(u8::is_ascii_digit))
+        .then(|| std::str::from_utf8(value).ok()?.parse().ok())
+        .flatten()
+}
+
+fn valid_capture_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    let (Some(year), Some(month), Some(day)) = (
+        decimal(&bytes[..4]),
+        decimal(&bytes[5..7]),
+        decimal(&bytes[8..]),
+    ) else {
+        return false;
+    };
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+        2 => 28,
+        _ => return false,
+    };
+    day >= 1 && day <= days
+}
+
+fn valid_capture_time(value: &str, has_seconds: bool) -> bool {
+    let bytes = value.as_bytes();
+    let needed = if has_seconds { 19 } else { 16 };
+    if bytes.len() != needed
+        || bytes.get(13) != Some(&b':')
+        || (has_seconds && bytes.get(16) != Some(&b':'))
+    {
+        return false;
+    }
+    let hour = decimal(&bytes[11..13]);
+    let minute = decimal(&bytes[14..16]);
+    let second = has_seconds.then(|| decimal(&bytes[17..19])).flatten();
+    hour.is_some_and(|value| value <= 23)
+        && minute.is_some_and(|value| value <= 59)
+        && (!has_seconds || second.is_some_and(|value| value <= 59))
+}
+
+fn valid_capture_offset(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 6 || !matches!(bytes[0], b'+' | b'-') || bytes[3] != b':' {
+        return false;
+    }
+    decimal(&bytes[1..3]).is_some_and(|hour| hour <= 23)
+        && decimal(&bytes[4..]).is_some_and(|minute| minute <= 59)
+}
+
+fn canonical_capture_patch(
+    patch: &MetadataPatch<String>,
+) -> Result<MetadataPatch<String>, ActionError> {
+    match patch {
+        MetadataPatch::Keep => Ok(MetadataPatch::Keep),
+        MetadataPatch::Clear => Ok(MetadataPatch::Clear),
+        MetadataPatch::Set(value) => canonical_capture_at_value(value)
+            .filter(|value| canonical_capture_at(value))
+            .map(MetadataPatch::Set)
+            .ok_or_else(|| {
+                ActionError::Refused(
+                    "capture date/time must be a valid canonical ISO 8601 value".into(),
+                )
+            }),
+    }
+}
+
+fn apply_label_patch(current: &[String], patch: &MetadataLabelsPatch) -> Vec<String> {
+    match patch {
+        MetadataLabelsPatch::Keep => current.to_vec(),
+        MetadataLabelsPatch::Clear => Vec::new(),
+        MetadataLabelsPatch::Set(values) => values.clone(),
+        MetadataLabelsPatch::Add(values) => {
+            let mut next = current.to_vec();
+            for value in values {
+                if !next.contains(value) {
+                    next.push(value.clone());
+                }
+            }
+            next
+        }
+        MetadataLabelsPatch::Remove(values) => current
+            .iter()
+            .filter(|value| !values.contains(*value))
+            .cloned()
+            .collect(),
+    }
 }
 
 /// A person is a compact user-authored label.  This intentionally has the
@@ -3119,6 +3339,31 @@ fn person_membership_spec(person: &str) -> ActionSpec {
     .with_description("Replace this approved person's shared photograph membership atomically")
 }
 
+/// The People root exposes creation as the same complete-membership action
+/// used by each person resource. This lets an agent or assistive technology
+/// correct a mistaken shared group (set the old membership, then create the
+/// new one) without reaching into a visual review card.
+fn person_membership_with_name_spec() -> ActionSpec {
+    ActionSpec::typed(
+        "set-person-membership",
+        "Create or set person membership",
+        "An approved name and the complete JSON array of approved photos.photo:… ids",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("name", ParamType::Text, "approved person label"),
+            photo_ids_param(true, "JSON array of stable photo ids", 0),
+        ],
+        |args| {
+            encode(&PhotosAction::SetPersonMembership {
+                person: args.text("name").unwrap_or_default().trim().to_owned(),
+                photo_ids: membership_ids(args),
+            })
+        },
+    )
+    .reversible()
+    .with_description("Create a shared person or replace one person's complete approved membership")
+}
+
 /// Renaming to an existing label deliberately merges explicit labels.  It
 /// does not, and cannot, merge private local face clusters.
 fn person_rename_spec(person: &str) -> ActionSpec {
@@ -3217,10 +3462,14 @@ fn set_metadata_batch_spec() -> ActionSpec {
             ),
             ActionParam::required("apply_folder", ParamType::Boolean, "replace folder values"),
             ActionParam::optional("folder", ParamType::Text, "new folder; omit to clear"),
-            ActionParam::required("apply_people", ParamType::Boolean, "replace people labels"),
+            ActionParam::required("apply_people", ParamType::Boolean, "apply people operation"),
             ActionParam::optional("people", ParamType::Text, "comma-separated people labels"),
-            ActionParam::required("apply_tags", ParamType::Boolean, "replace tag labels"),
+            ActionParam::optional("people_mode", ParamType::Text, "set, add, remove, or clear")
+                .with_choices(["set", "add", "remove", "clear"]),
+            ActionParam::required("apply_tags", ParamType::Boolean, "apply tag operation"),
             ActionParam::optional("tags", ParamType::Text, "comma-separated tag labels"),
+            ActionParam::optional("tags_mode", ParamType::Text, "set, add, remove, or clear")
+                .with_choices(["set", "add", "remove", "clear"]),
             ActionParam::required(
                 "apply_captured_at",
                 ParamType::Boolean,
@@ -3249,15 +3498,17 @@ fn set_metadata_batch_spec() -> ActionSpec {
                         .map_or(MetadataPatch::Clear, MetadataPatch::Set)
                 }
             };
-            let labels_patch = |apply: &str, value: &str| {
+            let labels_patch = |apply: &str, value: &str, mode: &str| {
                 if !args.boolean(apply).unwrap_or(false) {
-                    MetadataPatch::Keep
+                    MetadataLabelsPatch::Keep
                 } else {
                     let labels = metadata_labels(args, value);
-                    if labels.is_empty() {
-                        MetadataPatch::Clear
-                    } else {
-                        MetadataPatch::Set(labels)
+                    match args.text(mode).unwrap_or("set") {
+                        "clear" => MetadataLabelsPatch::Clear,
+                        "add" => MetadataLabelsPatch::Add(labels),
+                        "remove" => MetadataLabelsPatch::Remove(labels),
+                        _ if labels.is_empty() => MetadataLabelsPatch::Clear,
+                        _ => MetadataLabelsPatch::Set(labels),
                     }
                 }
             };
@@ -3281,8 +3532,8 @@ fn set_metadata_batch_spec() -> ActionSpec {
             encode(&PhotosAction::SetMetadataBatch {
                 photo_ids: membership_ids(args),
                 folder: text_patch("apply_folder", "folder"),
-                people: labels_patch("apply_people", "people"),
-                tags: labels_patch("apply_tags", "tags"),
+                people: labels_patch("apply_people", "people", "people_mode"),
+                tags: labels_patch("apply_tags", "tags", "tags_mode"),
                 captured_at: text_patch("apply_captured_at", "captured_at"),
                 location,
             })
@@ -3290,7 +3541,7 @@ fn set_metadata_batch_spec() -> ActionSpec {
     )
     .reversible()
     .with_description(
-        "Atomically replace only the chosen folder, people, tags, date, and location dimensions",
+        "Atomically change chosen metadata: labels can be set, added, removed, or cleared without replacing unrelated values",
     )
 }
 
@@ -3639,7 +3890,7 @@ mod tests {
         let refreshed = PhotosDoc::photo(&doc, &id).unwrap();
         assert_eq!(
             refreshed.captured_at.as_deref(),
-            Some("2026:09:18 10:20:30")
+            Some("2026-09-18T10:20:30")
         );
         assert_eq!(
             refreshed.location.unwrap().label.as_deref(),
@@ -3727,6 +3978,36 @@ mod tests {
             .apply(&mut doc)
             .is_err()
         );
+    }
+
+    #[test]
+    fn deliberate_offline_map_locations_are_shared_and_addressable() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("pinned-place.png", 40, 20);
+        let id = photo.id.clone();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+        let location = PhotoLocation {
+            latitude: 52.520_008,
+            longitude: 13.404_954,
+            label: Some("Meeting point".to_owned()),
+            provenance: crate::model::LocationProvenance {
+                source: "map".to_owned(),
+                scope: "shared".to_owned(),
+            },
+        };
+        PhotosAction::SetPhotoLocation {
+            photo_id: id,
+            location: location.clone(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(location.is_valid());
+        let resource = PhotosResources
+            .resource(&doc, &place_resource_id(&location.place_key()))
+            .expect("map pin has one canonical place resource");
+        assert_eq!(resource.label, "Meeting point");
+        assert!(resource.actions.iter().any(|action| action.id == "open"));
     }
 
     #[test]
@@ -4281,6 +4562,16 @@ mod tests {
         }
         .apply(&mut doc)
         .unwrap();
+        let people = PhotosResources
+            .resource(&doc, "photos.people")
+            .expect("People is a canonical resource");
+        assert!(
+            people
+                .actions
+                .iter()
+                .any(|action| action.id == "set-person-membership"),
+            "a new person is necessary to split an approved mistaken group"
+        );
         assert_eq!(PhotosDoc::photo(&doc, &first_id).unwrap().people, ["Sam"]);
         assert_eq!(PhotosDoc::photo(&doc, &second_id).unwrap().people, ["Sam"]);
         let person = PhotosResources
@@ -5243,8 +5534,8 @@ mod tests {
         PhotosAction::SetMetadataBatch {
             photo_ids: vec![first.id.clone(), second.id.clone()],
             folder: MetadataPatch::Clear,
-            people: MetadataPatch::Keep,
-            tags: MetadataPatch::Set(vec!["trip".into(), "rain".into()]),
+            people: MetadataLabelsPatch::Keep,
+            tags: MetadataLabelsPatch::Set(vec!["trip".into(), "rain".into()]),
             captured_at: MetadataPatch::Set("2026-09-18 14:30".into()),
             location: MetadataPatch::Set(PhotoLocation {
                 latitude: 52.3676,
@@ -5266,7 +5557,7 @@ mod tests {
             library
                 .photos
                 .iter()
-                .all(|photo| photo.tags == ["trip", "rain"])
+                .all(|photo| photo.tags == ["rain", "trip"])
         );
         assert!(library.photos.iter().all(|photo| {
             photo
@@ -5280,14 +5571,143 @@ mod tests {
         PhotosAction::SetMetadataBatch {
             photo_ids: vec![first.id, "photos.photo:gone".into()],
             folder: MetadataPatch::Set("Must not apply".into()),
-            people: MetadataPatch::Keep,
-            tags: MetadataPatch::Keep,
+            people: MetadataLabelsPatch::Keep,
+            tags: MetadataLabelsPatch::Keep,
             captured_at: MetadataPatch::Keep,
             location: MetadataPatch::Keep,
         }
         .apply(&mut doc)
         .expect_err("a stale selection refuses the complete batch");
         assert_eq!(PhotosDoc::library(&doc), before);
+    }
+
+    #[test]
+    fn metadata_label_deltas_preserve_unrelated_labels_and_canonicalize_time() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut photo = portable_photo("/photos/delta.png", 20, 10);
+        photo.people = vec!["Sam".into(), "Noor".into()];
+        photo.tags = vec!["travel".into()];
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![photo.clone()],
+                albums: Vec::new(),
+            },
+        );
+        PhotosAction::SetMetadataBatch {
+            photo_ids: vec![photo.id.clone()],
+            folder: MetadataPatch::Keep,
+            people: MetadataLabelsPatch::Remove(vec!["Sam".into()]),
+            tags: MetadataLabelsPatch::Add(vec!["sunset".into()]),
+            captured_at: MetadataPatch::Set("2026-09-18 14:30".into()),
+            location: MetadataPatch::Keep,
+        }
+        .apply(&mut doc)
+        .expect("field-level label changes are valid");
+        let changed = PhotosDoc::photo(&doc, &photo.id).expect("photo remains");
+        assert_eq!(changed.people, ["Noor"]);
+        assert_eq!(changed.tags, ["sunset", "travel"]);
+        assert_eq!(changed.captured_at.as_deref(), Some("2026-09-18T14:30"));
+    }
+
+    #[test]
+    fn metadata_capture_validation_refuses_the_entire_batch() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let first = portable_photo("/photos/date-first.png", 20, 10);
+        let second = portable_photo("/photos/date-second.png", 20, 10);
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![first.clone(), second.clone()],
+                albums: Vec::new(),
+            },
+        );
+        let before = PhotosDoc::library(&doc);
+        PhotosAction::SetMetadataBatch {
+            photo_ids: vec![first.id, second.id],
+            folder: MetadataPatch::Set("Should not land".into()),
+            people: MetadataLabelsPatch::Keep,
+            tags: MetadataLabelsPatch::Keep,
+            captured_at: MetadataPatch::Set("2026-02-30T08:00Z".into()),
+            location: MetadataPatch::Keep,
+        }
+        .apply(&mut doc)
+        .expect_err("an impossible date is rejected before changing any field");
+        assert_eq!(PhotosDoc::library(&doc), before);
+        assert!(canonical_capture_at("2026-09-18T14:30:01.120+02:00"));
+        assert!(!canonical_capture_at("2026-09-18 14:30"));
+        assert!(!canonical_capture_at("2026-09-18T14:30Z"));
+    }
+
+    #[test]
+    fn metadata_batch_accepts_the_full_bounded_selection() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photos: Vec<_> = (0..MAX_BATCH_PHOTOS)
+            .map(|index| portable_photo(&format!("/photos/batch-{index}.png"), 20, 10))
+            .collect();
+        let ids = photos.iter().map(|photo| photo.id.clone()).collect();
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos,
+                albums: Vec::new(),
+            },
+        );
+        PhotosAction::SetMetadataBatch {
+            photo_ids: ids,
+            folder: MetadataPatch::Set("Archive".into()),
+            people: MetadataLabelsPatch::Add(vec!["Sam".into()]),
+            tags: MetadataLabelsPatch::Add(vec!["reviewed".into()]),
+            captured_at: MetadataPatch::Keep,
+            location: MetadataPatch::Keep,
+        }
+        .apply(&mut doc)
+        .expect("the documented maximum selection applies in one action");
+        assert!(PhotosDoc::library(&doc).photos.iter().all(|photo| {
+            photo.folder.as_deref() == Some("Archive")
+                && photo.people == ["Sam"]
+                && photo.tags == ["reviewed"]
+        }));
+    }
+
+    #[test]
+    fn concurrent_label_adds_converge_without_replacing_each_other() {
+        let mut base = AutoCommit::new();
+        PhotosDoc::seed(&mut base);
+        let photo = portable_photo("/photos/concurrent-labels.png", 20, 10);
+        PhotosDoc::set_library(
+            &mut base,
+            &crate::model::PhotoLibrary {
+                photos: vec![photo.clone()],
+                albums: Vec::new(),
+            },
+        );
+        let bytes = base.save();
+        let mut left = AutoCommit::load(&bytes).expect("copy left replica");
+        left.set_actor(automerge::ActorId::from([1; 16].as_slice()));
+        let mut right = AutoCommit::load(&bytes).expect("copy right replica");
+        right.set_actor(automerge::ActorId::from([2; 16].as_slice()));
+        for (doc, tag) in [(&mut left, "left"), (&mut right, "right")] {
+            PhotosAction::SetMetadataBatch {
+                photo_ids: vec![photo.id.clone()],
+                folder: MetadataPatch::Keep,
+                people: MetadataLabelsPatch::Keep,
+                tags: MetadataLabelsPatch::Add(vec![tag.into()]),
+                captured_at: MetadataPatch::Keep,
+                location: MetadataPatch::Keep,
+            }
+            .apply(doc)
+            .expect("offline add applies");
+        }
+        left.merge(&mut right).expect("replicas merge");
+        assert_eq!(
+            PhotosDoc::photo(&left, &photo.id).expect("photo").tags,
+            ["left", "right"],
+            "each label is a CRDT membership rather than a replaced vector"
+        );
     }
 
     #[test]

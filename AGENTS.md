@@ -50,7 +50,7 @@ Most user-facing design questions reduce to that one decision:
 
 Single Cargo workspace, no submodules. Prefer explicit paths over `git add -A`.
 
-- `shell/` — Wayland compositor (`smithay` + `vello`/`wgpu` + Iroh): workspaces, strips,
+- `crates/session/shell/` — Wayland compositor (`smithay` + `vello`/`wgpu` + Iroh): workspaces, strips,
   sandboxing, collaboration. Also the `tilo-control` CLI and the `shots` renderer.
 - `crates/sdk/ui-core/` — the internal toolkit behind `tilo-app`: retained-mode, CRDT-native. `wgpu`+`vello` (render), `taffy` (layout),
   `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
@@ -200,9 +200,9 @@ lock change as a real change: read the diff and rebuild before pushing. `--locke
 
 ## Traps that have cost real time
 
-- **Adding a field to `Workspace`/`WorkspaceTree`/`Strip` in `shell/src/shell/state.rs`
+- **Adding a field to `Workspace`/`WorkspaceTree`/`Strip` in `crates/session/shell/src/shell/state.rs`
   ripples to every by-field test fixture.** Symptom `E0063: missing field`;
-  `shell/tests/concept_parity_spec.rs` is 2200+ lines.
+  `crates/session/shell/tests/concept_parity_spec.rs` is 2200+ lines.
 - **`git worktree remove --force` permanently deletes untracked files.** `git status --short`
   and commit before removing.
 - **`git stash` is unsafe here** — the stash stack is shared across worktrees and concurrent
@@ -216,7 +216,7 @@ lock change as a real change: read the diff and rebuild before pushing. `--locke
 
 ## Verification covenant
 
-Declared in the header of `shell/tests/concept_parity_spec.rs` and applying to **all** tests:
+Declared in the header of `crates/session/shell/tests/concept_parity_spec.rs` and applying to **all** tests:
 never `#[ignore]` a failing test, never weaken an assertion, always assert on the production
 path rather than a tautological helper.
 

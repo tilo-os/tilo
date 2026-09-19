@@ -12,7 +12,7 @@ identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
 recipient_unit="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.service"
 recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
 release_workflow="$repo/.forgejo/workflows/build-image.yml"
-shell_main="$repo/shell/src/linux_main.rs"
+shell_main="$repo/crates/session/shell/src/linux_main.rs"
 
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' "$target"
 grep -Fqx 'After=graphical-session-pre.target' "$target"

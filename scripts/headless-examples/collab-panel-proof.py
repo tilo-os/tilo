@@ -310,21 +310,21 @@ def main() -> int:
     os.makedirs(shots, exist_ok=True)
 
     stale = freshness(SHELL, [
-        REPO / "shell" / "src" / "shell" / "overlay_host" / "mod.rs",
-        REPO / "shell" / "src" / "shell" / "topbar_chrome.rs",
-        REPO / "shell" / "src" / "compositor" / "frame.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "overlay_host" / "mod.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "topbar_chrome.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "compositor" / "frame.rs",
         # The roster: who the panel lists, and the state dump that
         # reports it. A binary older than either answers the last
         # question this script asks with code that is not under test.
-        REPO / "shell" / "src" / "shell" / "peer_presence.rs",
-        REPO / "shell" / "src" / "compositor" / "native.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "peer_presence.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "compositor" / "native.rs",
         # Where the name goes and when: the composer parks it against
         # the room, and the arrival of the peer that redeems the token
         # is what writes it into the room document. A binary older than
         # either answers the last question this script asks with code
         # that is not under test.
-        REPO / "shell" / "src" / "shell" / "network.rs",
-        REPO / "shell" / "src" / "shell" / "chrome_state.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "network.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "chrome_state.rs",
     ])
     if stale:
         print(f"REFUSING: {stale}\n  build first:  cargo build -p shell")

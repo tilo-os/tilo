@@ -62,7 +62,7 @@ The comparison is from production source, not a completed native qualification.
 | Storage | Package/record-scoped local persistence with a non-routable fallback context | Native data-directory convention |
 | Native windows | Shared winit runner with host decorations | Cocoa backend and basic About/Services/Hide/Quit menu |
 
-macOS also has a separate shell runner in `shell/src/compositor/macos.rs`. It
+macOS also has a separate shell runner in `crates/session/shell/src/compositor/macos.rs`. It
 restores a workspace tree and record store and constructs `ShellOverlayHost`,
 but passes peer synchronization as false. It is not evidence that standalone
 apps already provide connected sharing, or a reason to put a Linux desktop
@@ -197,10 +197,10 @@ must not be described as runtime-verified macOS behavior on a Windows machine.
 - `crates/sdk/ui-core/src/history_source/` and `crates/sdk/ui-core/src/widget/activity_timeline.rs`: shared history.
 - `crates/sdk/ui-core/src/collaboration.rs`, `crates/runtime/runtime-collab/` and
   `crates/runtime/runtime-portal/`: existing service client and transport boundary.
-- `shell/src/compositor/macos.rs`, `shell/src/compositor/hosted.rs` and
-  `shell/src/shell/overlay_host/mod.rs`: current host implementations and room policy.
-- `shell/src/shell/launcher.rs` and `shell/src/shell/collab_broker_capnp.rs`:
+- `crates/session/shell/src/compositor/macos.rs`, `crates/session/shell/src/compositor/hosted.rs` and
+  `crates/session/shell/src/shell/overlay_host/mod.rs`: current host implementations and room policy.
+- `crates/session/shell/src/shell/launcher.rs` and `crates/session/shell/src/shell/collab_broker_capnp.rs`:
   process attestation, service admission and filtered action-directory serving.
-- `shell/src/identity_broker.rs`, `crates/runtime/runtime-identity/src/secure_store.rs`
-  and `shell/src/shell/collab_mls_authority.rs`: identity and MLS custody boundaries.
+- `crates/session/shell/src/identity_broker.rs`, `crates/runtime/runtime-identity/src/secure_store.rs`
+  and `crates/session/shell/src/shell/collab_mls_authority.rs`: identity and MLS custody boundaries.
 - `docs/superpowers/specs/2026-09-12-macos-app-qualification.json`: qualification status.

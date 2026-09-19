@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import tomllib
 import unittest
 
 
@@ -32,17 +33,34 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "os/scripts/bake-runtime-bundle.sh", "tools/app_release.py",
             "tools/ci_select.py", "tools/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
-            "release/app-collections.toml",
+            "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/app_package_isa.py",
         ):
             self.write(relative, (ROOT / relative).read_text())
-        self.write("bin/cargo", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FIXTURE_CARGO_LOG\"\n")
+        self.write("bin/cargo", """#!/usr/bin/env python3
+import json, os, pathlib, sys, tomllib
+arch = os.environ['FIXTURE_ARCH']
+config = tomllib.loads(pathlib.Path('.cargo/config.toml').read_text())
+key = f'cfg(all(target_arch = "{arch}", target_os = "linux"))'
+expected = config['target'][key]['rustflags']
+actual = os.environ['CARGO_ENCODED_RUSTFLAGS'].split(chr(31))
+assert actual == expected, (actual, expected)
+with open(os.environ['FIXTURE_CARGO_LOG'], 'a') as log:
+    log.write(json.dumps({'args': sys.argv[1:], 'flags': actual}) + '\\n')
+""")
         self.write("bin/rustc", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_STDLIB\"\n")
         self.write("bin/uname", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_ARCH\"\n")
         self.write("stdlib/libstd-fixture.so", "fixture standard library")
         self.write("os/scripts/build-thin-apps.sh", """#!/bin/bash
 set -euo pipefail
+cargo build --locked --profile thin-app -p runtime-dylib -p calculator
 mkdir -p target/thin-app
-printf 'fixture calculator payload' > target/thin-app/calculator
+python3 - <<'ELF'
+import os, pathlib
+header = bytearray(64)
+header[:6] = bytes([127, 69, 76, 70, 2, 1])
+header[18:20] = (62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183).to_bytes(2, 'little')
+pathlib.Path('target/thin-app/calculator').write_bytes(header)
+ELF
 chmod +x target/thin-app/calculator
 printf 'fixture runtime dylib' > target/thin-app/libruntime_dylib.so
 """)
@@ -64,13 +82,16 @@ else:
     raise SystemExit('unexpected runtime fixture invocation')
 """)
         self.write("target/release/tilo-pkg", """#!/usr/bin/env python3
-import pathlib, sys
+import pathlib, sys, os, tomllib
 a = sys.argv[1:]
 if a[0] == 'pack':
+    manifest = tomllib.loads(pathlib.Path(a[a.index('--manifest')+1]).read_text())
+    arch = os.environ['FIXTURE_ARCH']
+    assert manifest['package']['isa'] == {arch: 'v3' if arch == 'x86_64' else 'armv8-a'}
     payload = pathlib.Path(a[a.index('--payload')+1])/'bin/calculator'
     pathlib.Path(a[a.index('--output')+1]).write_bytes(payload.read_bytes())
 elif a[0] == 'verify':
-    assert pathlib.Path(a[-1]).read_bytes() == b'fixture calculator payload'
+    assert len(pathlib.Path(a[-1]).read_bytes()) == 64
 else:
     raise SystemExit('unexpected qpkg fixture invocation')
 """)
@@ -79,7 +100,8 @@ else:
                         FIXTURE_STDLIB=str(self.root / "stdlib"), TILO_RELEASE_APPS="calculator",
                         SOURCE_DATE_EPOCH="123", GITHUB_SHA="1" * 40)
         for name in ("CARGO_TARGET_DIR", "TILO_APP_RELEASE_OUT", "QPKG_PUBLISHER_IDENTITY_FILE",
-                     "RUNTIME_BUNDLE_IDENTITY_FILE", "TRUST_LIST", "MAX_QPKG_BYTES"):
+                     "RUNTIME_BUNDLE_IDENTITY_FILE", "TRUST_LIST", "MAX_QPKG_BYTES",
+                     "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET"):
             self.env.pop(name, None)
 
     def write(self, relative, content):
@@ -112,9 +134,69 @@ exit 99
         self.assertIn("application qpkg is too large", result.stderr)
         self.assertIn("pack failed: app=calculator output=", result.stderr)
         self.assertIn("calculator-0.1.0-x86_64.qpkg", result.stderr)
-        self.assertIn("exit_status=37 binary_bytes=26 limit=5242880", result.stderr)
+        self.assertIn("exit_status=37 binary_bytes=64 limit=5242880", result.stderr)
         self.assertNotIn("verify must not run", result.stderr)
         self.assertNotIn("packed app=", result.stdout)
+
+    def test_missing_source_isa_is_staged_before_pack_on_both_architectures(self):
+        manifest = self.root / "apps/calculator/tilo-app.toml"
+        manifest.write_text(re.sub(r'\[package\.isa\]\s*x86_64 = "v3"\s*',
+                                   '', manifest.read_text()))
+        for architecture in ("x86_64", "aarch64"):
+            self.env["FIXTURE_ARCH"] = architecture
+            self.command("bash", "dist/apps/package-apps.sh")
+
+    def test_wrong_arch_payload_is_rejected_before_pack(self):
+        self.env["FIXTURE_ARCH"] = "aarch64"
+        self.write("os/scripts/build-thin-apps.sh",
+                   (self.root / "os/scripts/build-thin-apps.sh").read_text().replace(
+                       "62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183", "62"))
+        result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("expected a 64-bit little-endian aarch64 ELF", result.stderr)
+        self.assertFalse(list((self.root / "dist/app-release/qpkg").glob("*.qpkg")))
+
+    def test_unrecorded_compiler_override_fails_before_build(self):
+        for key, value in (("RUSTFLAGS", "-C target-cpu=native"),
+                           ("CARGO_ENCODED_RUSTFLAGS", "-C\x1ftarget-cpu=native"),
+                           ("CARGO_BUILD_TARGET", "aarch64-unknown-linux-gnu")):
+            with self.subTest(key=key):
+                env = dict(self.env, FIXTURE_ARCH="x86_64", **{key: value})
+                result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
+                                        env=env, text=True, capture_output=True, timeout=60)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"{key} overrides", result.stderr)
+                self.assertFalse((self.root / "cargo.log").exists())
+
+    def test_edited_cpu_and_feature_policy_is_rejected_by_actual_helper(self):
+        config = self.root / ".cargo/config.toml"
+        original = config.read_text()
+        for arch, cpu in (("x86_64", "x86-64-v3"), ("aarch64", "generic")):
+            for replacement in ('"-C", "target-cpu=native",',
+                                f'"-C", "target-cpu={cpu}", "-C", "target-feature=+aes",'):
+                with self.subTest(arch=arch, replacement=replacement):
+                    config.write_text(original.replace(f'"-C", "target-cpu={cpu}",', replacement))
+                    result = subprocess.run([
+                        "python3", "tools/app_package_isa.py", "flags", "--root", str(self.root),
+                        "--arch", arch], cwd=self.root, env=self.env,
+                        text=True, capture_output=True, timeout=10)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("unaudited", result.stderr)
+                    self.assertEqual(result.stdout, "")
+
+    def test_encoded_output_retains_every_audited_target_flag(self):
+        config = tomllib.loads((self.root / ".cargo/config.toml").read_text())
+        for arch in ("x86_64", "aarch64"):
+            with self.subTest(arch=arch):
+                result = self.command("python3", "tools/app_package_isa.py", "flags",
+                                      "--root", str(self.root), "--arch", arch)
+                flags = result.stdout.removesuffix("\n").split("\x1f")
+                key = f'cfg(all(target_arch = "{arch}", target_os = "linux"))'
+                self.assertEqual(flags, config["target"][key]["rustflags"])
+                for required in ("force-frame-pointers=yes", "relro-level=full",
+                                 "link-arg=-Wl,-z,noexecstack", "--remap-path-prefix=/build=."):
+                    self.assertIn(required, flags)
 
     def test_native_outputs_survive_actual_upload_selection_and_collection_assembly(self):
         for architecture in ("x86_64", "aarch64"):
@@ -122,9 +204,12 @@ exit 99
                 self.env["FIXTURE_ARCH"] = architecture
                 result = self.command("bash", "dist/apps/package-apps.sh")
                 self.assertIn("packing app=calculator binary=", result.stdout)
-                self.assertIn("binary_bytes=26", result.stdout)
+                self.assertIn("binary_bytes=64", result.stdout)
                 self.assertIn("packed app=calculator output=", result.stdout)
-                self.assertIn("qpkg_bytes=26 limit=5242880", result.stdout)
+                self.assertIn("qpkg_bytes=64 limit=5242880", result.stdout)
+                calls = [json.loads(line) for line in (self.root / "cargo.log").read_text().splitlines()]
+                self.assertTrue(any("--release" in call["args"] for call in calls))
+                self.assertTrue(any("thin-app" in call["args"] for call in calls))
                 out = self.root / "dist/app-release"
                 artifact = self.root / "download" / architecture
                 artifact.mkdir(parents=True)

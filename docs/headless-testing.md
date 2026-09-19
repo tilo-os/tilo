@@ -31,7 +31,7 @@ cargo run --bin shots --quiet -- --mode recording --scenario workspace_switch --
 cargo run --bin shots --quiet -- --mode window --scenario palette_typing
 ```
 
-Scenarios are defined in `shell/src/bin/shots/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
+Scenarios are defined in `crates/session/shell/src/bin/shots/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
 
 **No display server required.** `shots --mode offscreen` and `--mode recording` use `quick_ui::offscreen::OffscreenRenderer` — wgpu only, no window.
 
@@ -154,7 +154,7 @@ echo '{"op":"pointer_button","pressed":false}' | nc -U $TILO_TEST_CONTROL
 echo '{"op":"place_next_window","app_id":"org.example.App"}' | nc -U $TILO_TEST_CONTROL
 ```
 
-Full command reference: `shell/src/compositor/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
+Full command reference: `crates/session/shell/src/compositor/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
 
 ### Response shapes
 
@@ -312,17 +312,17 @@ written by the normal exit path, so a `SIGKILL`ed compositor loses them.
 
 | What | Where |
 |---|---|
-| `shots` binary | `shell/src/bin/shots/` |
-| Frame-loop metrics | `shell/src/compositor/metrics.rs` |
-| Presentation clock | `shell/src/compositor/pacing.rs` |
-| Render thread | `shell/src/compositor/present.rs` |
-| Load-generator client | `shell/src/bin/tilo-loadclient.rs` |
-| Scenario catalogue | `shell/src/bin/shots/scenario.rs::catalogue()` |
+| `shots` binary | `crates/session/shell/src/bin/shots/` |
+| Frame-loop metrics | `crates/session/shell/src/compositor/metrics.rs` |
+| Presentation clock | `crates/session/shell/src/compositor/pacing.rs` |
+| Render thread | `crates/session/shell/src/compositor/present.rs` |
+| Load-generator client | `crates/session/shell/src/bin/tilo-loadclient.rs` |
+| Scenario catalogue | `crates/session/shell/src/bin/shots/scenario.rs::catalogue()` |
 | Offscreen renderer | `crates/sdk/ui-core/src/offscreen.rs` |
-| `TILO_TEST_CONTROL` protocol | `shell/src/compositor/test_control.rs` |
-| Widget registry walk | `shell/src/compositor/frame.rs::walk_widget` |
-| Backend trait | `shell/src/compositor/backend/mod.rs` |
-| Headless backend impl | `shell/src/compositor/backend/headless.rs` |
+| `TILO_TEST_CONTROL` protocol | `crates/session/shell/src/compositor/test_control.rs` |
+| Widget registry walk | `crates/session/shell/src/compositor/frame.rs::walk_widget` |
+| Backend trait | `crates/session/shell/src/compositor/backend/mod.rs` |
+| Headless backend impl | `crates/session/shell/src/compositor/backend/headless.rs` |
 
 ## Per-app screenshots
 

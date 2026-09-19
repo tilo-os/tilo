@@ -2215,7 +2215,7 @@ RUN if ! printf '%s\n' "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" | grep -Eq '^[0-9a
 # install + graphical login by build-image.yml.
 COPY os/tests/collaborative-files-image-contract.sh /usr/libexec/tilo/collaborative-files-image-contract.sh
 COPY apps/file-explorer/tests/atspi_smoke.sh /usr/libexec/tilo/files-atspi-smoke.sh
-COPY shell/tests/native_atspi_smoke.sh /usr/libexec/tilo/native-atspi-smoke.sh
+COPY crates/session/shell/tests/native_atspi_smoke.sh /usr/libexec/tilo/native-atspi-smoke.sh
 COPY tools/atspi_external_client.py /usr/libexec/tilo/atspi-external-client.py
 COPY os/tests/installed_atspi_apps.sh /usr/libexec/tilo/installed-atspi-apps.sh
 RUN chmod 0755 /usr/libexec/tilo/collaborative-files-image-contract.sh \
