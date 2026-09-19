@@ -20,6 +20,22 @@ class RegistryServerImageWorkflowTests(unittest.TestCase):
         self.assertIn("github.ref == 'refs/heads/main'", login)
         self.assertIn("github.event_name == 'push'", login)
 
+    def test_pr_code_cannot_read_checkout_registry_credentials(self) -> None:
+        checkouts = self.source.split("      - uses: actions/checkout@", 1)[1]
+        applicability_checkout, checkouts = checkouts.split("\n      - name:", 1)
+        build_checkout = checkouts.split(
+            "      - name: Checkout the exact image source\n", 1
+        )[1].split("\n\n      - name:", 1)[0]
+        for checkout in (applicability_checkout, build_checkout):
+            self.assertIn("persist-credentials: false", checkout)
+            self.assertNotIn("REGISTRY_TOKEN", checkout)
+
+        before_login = self.source.split(
+            "      - name: Log in for main publication\n", 1
+        )[0].split("\n  build-test-publish:\n", 1)[1]
+        self.assertIn("container/test-image.sh", before_login)
+        self.assertNotIn("REGISTRY_TOKEN", before_login)
+
     def test_main_pushes_the_already_tested_sha_tag_and_retains_digest(self) -> None:
         build, publish = self.source.split(
             "      - name: Publish the exact image that passed the smoke test\n", 1
