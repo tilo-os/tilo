@@ -8,7 +8,6 @@ one database. No scheduler, production activation, retries or cancellation.
 import argparse
 import base64
 from contextlib import contextmanager
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -16,6 +15,8 @@ import sqlite3
 import subprocess
 import time
 import uuid
+
+from app_packaging_contract import canonical, receipt_key
 
 REPO = 'qos/ci-workflow-pilot-20260918-9245-repeat'
 WORKFLOW = 'packaging-coordinator-probe.yml'
@@ -32,14 +33,6 @@ class NoBuildAcceptance:
     """Trusted validator result: handled source, not a new package baseline."""
     def __init__(self, evidence):
         self.evidence = evidence
-
-
-def canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(',', ':'))
-
-
-def receipt_key(receipt):
-    return hashlib.sha256(canonical(receipt).encode()).hexdigest()
 
 
 def validate_receipt(receipt):
