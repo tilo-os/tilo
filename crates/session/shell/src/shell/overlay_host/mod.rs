@@ -2736,10 +2736,6 @@ impl ShellOverlayHost {
         (search_registry, room_records)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "constructor explicitly initializes the host's independent interaction surfaces"
-    )]
     pub fn new(content: Box<dyn Widget>) -> Self {
         let (search_registry, room_records) = Self::build_search_registry();
         Self::from_inputs(
@@ -2768,6 +2764,10 @@ impl ShellOverlayHost {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the host aggregate explicitly initializes each independent interaction surface"
+    )]
     fn from_inputs(content: Box<dyn Widget>, inputs: OverlayHostInputs) -> Self {
         let OverlayHostInputs {
             search_registry,
@@ -16335,6 +16335,29 @@ impl ShellOverlayHost {
         bounds
     }
 
+    fn participant_activity(
+        interactions: &[tilo_actions::SemanticInteraction],
+        presence: &PresenceCtx,
+        id: &str,
+        label: &str,
+    ) -> Option<String> {
+        interactions
+            .iter()
+            .find(|interaction| {
+                interaction.actor.id == id
+                    || presence
+                        .names
+                        .get(&ui::permissions::UserId(interaction.actor.id.clone()))
+                        .is_some_and(|name| name.eq_ignore_ascii_case(label))
+            })
+            .map(|interaction| {
+                format!(
+                    "{} · {}",
+                    interaction.action.label, interaction.resource.label
+                )
+            })
+    }
+
     fn draw_collaborators_dropdown(
         &mut self,
         scene: &mut Scene,
@@ -16377,18 +16400,8 @@ impl ShellOverlayHost {
                         }
                     });
                 }
-                if let Some(interaction) = interactions.iter().find(|interaction| {
-                    interaction.actor.id == row.id
-                        || presence
-                            .names
-                            .get(&ui::permissions::UserId(interaction.actor.id.clone()))
-                            .is_some_and(|name| name.eq_ignore_ascii_case(&row.label))
-                }) {
-                    row.activity = Some(format!(
-                        "{} · {}",
-                        interaction.action.label, interaction.resource.label
-                    ));
-                }
+                row.activity =
+                    Self::participant_activity(&interactions, presence, &row.id, &row.label);
             }
             let may_invite = self.may_invite_here();
             let following_pairs = self.roster_following_pairs(presence, &rows);
@@ -16399,21 +16412,8 @@ impl ShellOverlayHost {
                 .filter(|id| !id.trim().is_empty())
                 .unwrap_or_else(crate::shell::state::local_user_id);
             let own_label = ui::history_source::participant_display_label(&own_id);
-            let own_activity = interactions
-                .iter()
-                .find(|interaction| {
-                    interaction.actor.id == own_id
-                        || presence
-                            .names
-                            .get(&ui::permissions::UserId(interaction.actor.id.clone()))
-                            .is_some_and(|name| name.eq_ignore_ascii_case(&own_label))
-                })
-                .map(|interaction| {
-                    format!(
-                        "{} · {}",
-                        interaction.action.label, interaction.resource.label
-                    )
-                });
+            let own_activity =
+                Self::participant_activity(&interactions, presence, &own_id, &own_label);
             let own_initial = own_label
                 .chars()
                 .next()
@@ -18841,12 +18841,10 @@ impl ShellOverlayHost {
         let (room, local) = {
             let chrome = chrome_rc.borrow();
             let local = chrome.active_local_user();
-            let tree = chrome.tree();
-            let room = tree
-                .workspaces
-                .iter()
-                .find(|w| w.id == tree.active)
-                .map(|w| w.room.to_string());
+            let room = chrome
+                .tree()
+                .active_workspace()
+                .map(|workspace| workspace.room.to_string());
             (room, local)
         };
         let Some(room) = room else {
