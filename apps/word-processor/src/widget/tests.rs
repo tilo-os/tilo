@@ -5485,6 +5485,236 @@ fn failed_save_is_visible_and_keeps_the_document_modified() {
     );
 }
 
+#[test]
+fn failed_save_as_preserves_source_identity_and_recovery_for_picker_and_action() {
+    let dir = temp_dir("failed-save-as");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("source.md");
+    std::fs::write(&source, b"original source").unwrap();
+    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    wp.set_recovery_dir(dir.clone());
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "edited ");
+    wp.save_status = DocumentSaveStatus::Modified;
+    let recovery = wp.recovery_path();
+    std::fs::write(&recovery, b"unsaved recovery").unwrap();
+
+    for via_action in [false, true] {
+        // A directory cannot be replaced by a document, on every platform.
+        if via_action {
+            let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::SaveAs {
+                path: Some(dir.to_string_lossy().into_owned()),
+            })
+            .unwrap();
+            assert!(
+                wp.start_resource_operation(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                    &payload,
+                    &state.doc,
+                    &state.root,
+                )
+                .is_err()
+            );
+        } else {
+            wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
+                dir.clone(),
+            )));
+            wp.portal_purpose = Some(PortalPurpose::SaveAs);
+            wp.sync(&mut state.doc, &state.root);
+        }
+        assert_eq!(wp.path.as_deref(), Some(source.as_path()));
+        assert_eq!(wp.format, Some(WpFormat::Markdown));
+        assert!(wp.save_status == DocumentSaveStatus::Modified);
+        assert_eq!(std::fs::read(&source).unwrap(), b"original source");
+        assert_eq!(std::fs::read(&recovery).unwrap(), b"unsaved recovery");
+    }
+    // A subsequent ordinary Save still updates the original document.
+    wp.try_write_to_current_path(&state.doc).unwrap();
+    assert!(std::fs::read_to_string(&source).unwrap().contains("edited"));
+    assert!(!recovery.exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn export_only_save_as_preserves_editable_path_and_recovery() {
+    let dir = temp_dir("export-only-save-as");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("source.md");
+    std::fs::write(&source, b"original source").unwrap();
+    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    wp.set_recovery_dir(dir.clone());
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "edited ");
+    wp.save_status = DocumentSaveStatus::Modified;
+    let recovery = wp.recovery_path();
+    std::fs::write(&recovery, b"unsaved recovery").unwrap();
+    for extension in ["pdf", "epub"] {
+        let destination = dir.join(format!("export.{extension}"));
+        wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
+            destination.clone(),
+        )));
+        wp.portal_purpose = Some(PortalPurpose::SaveAs);
+        wp.sync(&mut state.doc, &state.root);
+        let bytes = std::fs::read(destination).unwrap();
+        assert!(bytes.starts_with(if extension == "pdf" { b"%PDF" } else { b"PK" }));
+        assert_eq!(wp.path.as_deref(), Some(source.as_path()));
+        assert_eq!(wp.format, Some(WpFormat::Markdown));
+        assert!(wp.save_status == DocumentSaveStatus::Modified);
+        assert_eq!(std::fs::read(&source).unwrap(), b"original source");
+        assert_eq!(std::fs::read(&recovery).unwrap(), b"unsaved recovery");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn open_pick_offers_destination_recovery_and_preserves_previous_recovery() {
+    let dir = temp_dir("open-recovery");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut state, mut wp) = bound();
+    wp.set_recovery_dir(dir.clone());
+    wp.set_file(dir.join("previous.md"), WpFormat::Markdown);
+    let previous_recovery = wp.recovery_path();
+    std::fs::write(&previous_recovery, b"previous unsaved work").unwrap();
+    assert!(wp.check_for_recovery());
+    let destination = dir.join("next.md");
+    std::fs::write(&destination, b"saved destination").unwrap();
+    let destination_recovery = wp.recovery.path_for(Some(&destination));
+    std::fs::write(&destination_recovery, b"destination unsaved work").unwrap();
+    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
+        destination.clone(),
+    )));
+    wp.portal_purpose = Some(PortalPurpose::OpenDocument);
+    wp.sync(&mut state.doc, &state.root);
+    assert_eq!(wp.path.as_deref(), Some(destination.as_path()));
+    assert!(wp.recovery.is_active());
+    assert_eq!(
+        std::fs::read(&destination_recovery).unwrap(),
+        b"destination unsaved work"
+    );
+    assert_eq!(
+        std::fs::read(&previous_recovery).unwrap(),
+        b"previous unsaved work"
+    );
+    assert!(
+        body_text(&wp, &state)
+            .join("\n")
+            .contains("saved destination")
+    );
+
+    let clean = dir.join("clean.md");
+    std::fs::write(&clean, b"clean document").unwrap();
+    wp.try_open_document_in_place(&mut state.doc, &clean)
+        .unwrap();
+    assert!(
+        !wp.recovery.is_active(),
+        "the previous document's offer must not follow the next document"
+    );
+    assert!(destination_recovery.exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn failed_open_preserves_document_bytes_caret_and_file_identity() {
+    let dir = temp_dir("failed-open");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("source.md");
+    std::fs::write(&source, b"original source").unwrap();
+    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    wp.set_recovery_dir(dir.clone());
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "unsaved ");
+    wp.save_status = DocumentSaveStatus::Modified;
+    let pending = state.doc.pending_ops();
+    assert!(
+        pending > 0,
+        "the failed import must preserve uncommitted edits"
+    );
+    let before = state.doc.clone().save();
+    let caret = wp.model_mut().caret().clone();
+    for extension in ["docx", "odt", "pdf", "epub"] {
+        let corrupt = dir.join(format!("corrupt.{extension}"));
+        std::fs::write(&corrupt, b"not a valid document archive").unwrap();
+        assert!(
+            wp.try_open_document_in_place(&mut state.doc, &corrupt)
+                .is_err()
+        );
+        assert_eq!(
+            state.doc.clone().save(),
+            before,
+            "failed {extension} import mutated the document"
+        );
+        assert_eq!(state.doc.pending_ops(), pending);
+        assert_eq!(wp.model_mut().caret(), &caret);
+        assert_eq!(wp.path.as_deref(), Some(source.as_path()));
+        assert!(wp.save_status == DocumentSaveStatus::Modified);
+        assert!(matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))));
+        assert_eq!(std::fs::read(&source).unwrap(), b"original source");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn successful_import_does_not_reuse_deleted_highest_block_id() {
+    let (mut state, mut wp) = bound();
+    wp.model_mut().insert_str(&mut state.doc, "keep");
+    wp.model_mut().enter(&mut state.doc);
+    let deleted_id = wp.model_mut().caret().block.clone();
+    wp.model_mut().backspace(&mut state.doc);
+    let containers = qdoc::model::open(&state.doc, &state.root).unwrap();
+    assert!(!qdoc::model::blocks_in_order(&state.doc, &containers).contains(&deleted_id));
+
+    assert!(wp.model_mut().replace_with_format(
+        &mut state.doc,
+        b"replacement document",
+        WpFormat::Markdown,
+    ));
+    let replacement_ids = qdoc::model::blocks_in_order(&state.doc, &containers);
+    assert!(!replacement_ids.is_empty());
+    assert!(
+        !replacement_ids.contains(&deleted_id),
+        "a deleted block's durable identity must not be resurrected by import"
+    );
+    assert!(
+        wp.model_mut()
+            .block_texts(&state.doc)
+            .join("\n")
+            .contains("replacement document")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn readonly_destination_save_as_preserves_source_and_destination() {
+    let dir = temp_dir("readonly-save-as");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("source.md");
+    let destination = dir.join("protected.md");
+    std::fs::write(&source, b"source bytes").unwrap();
+    std::fs::write(&destination, b"protected bytes").unwrap();
+    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    wp.set_recovery_dir(dir.clone());
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "edited ");
+    wp.save_status = DocumentSaveStatus::Modified;
+    let original_permissions = std::fs::metadata(&destination).unwrap().permissions();
+    let mut protected_permissions = original_permissions.clone();
+    protected_permissions.set_readonly(true);
+    std::fs::set_permissions(&destination, protected_permissions).unwrap();
+    let result = wp.try_write_to_path(&state.doc, &destination, WpFormat::Markdown);
+    // Restore the fixture attribute before asserting so failures leave no
+    // read-only temporary files behind.
+    std::fs::set_permissions(&destination, original_permissions).unwrap();
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
+    assert_eq!(std::fs::read(&destination).unwrap(), b"protected bytes");
+    assert_eq!(wp.path.as_deref(), Some(source.as_path()));
+    assert!(wp.save_status == DocumentSaveStatus::Modified);
+    assert!(matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A resolved **Open** pick replaces the running document in place: a blank
 /// editor, handed a chosen `.docx` on the drain path, adopts that file's text,
 /// path, and format — the Ctrl+O path, exercised without a live portal.
