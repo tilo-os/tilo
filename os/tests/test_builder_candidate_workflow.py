@@ -60,6 +60,10 @@ def action_inputs(block):
 
 
 class BuilderCandidates(unittest.TestCase):
+    def test_native_registry_writers_are_serialized(self):
+        build_job = BUILD.split('\n  build:\n', 1)[1].split('\n  images:\n', 1)[0]
+        self.assertEqual(build_job.count('\n      max-parallel: 1\n'), 1)
+
     def test_image_push_finishes_before_the_same_graph_exports_cache(self):
         image = step_block(BUILD, 'Build and push')
         cache = step_block(BUILD, 'Export build cache')
