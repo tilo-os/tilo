@@ -519,7 +519,7 @@ mod tests {
             use automerge::ReadDoc;
             if self.document.as_ref().is_some_and(|dirty| dirty.get()) {
                 vec![crate::close_admission::UnsavedDocument {
-                    save: tilo_actions::ActionAddress::new("test.quit", "save"),
+                    save: tilo_actions::ActionAddress::new("test.quit:root", "save"),
                     identity: "draft.md".into(),
                     revision: doc
                         .get(automerge::ROOT, "draft")
@@ -714,6 +714,15 @@ mod tests {
             .doc
             .put(automerge::ROOT, "draft", "pending edit")
             .unwrap();
+        let document = app.root_widget.unsaved_documents(&app.state.doc)[0].clone();
+        assert!(
+            tilo_actions::door::resolve(
+                &app.root_widget.resources(&app.state.doc),
+                &document.save,
+            )
+            .is_some(),
+            "the fixture's unsaved document must declare its canonical Save address"
+        );
         (app, dirty)
     }
 
