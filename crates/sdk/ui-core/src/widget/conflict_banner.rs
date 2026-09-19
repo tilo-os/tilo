@@ -28,9 +28,12 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
 
-/// Fixed banner height. Matches the activity-timeline filter strip
-/// (~36 px) so a banner stacked above a timeline feels rhythmic.
+/// Banner height at the default text scale. Matches the activity-timeline
+/// filter strip (~36 px) so a banner stacked above a timeline feels
+/// rhythmic; at larger text scales the band grows to hold the label line
+/// plus its padding (see [`ConflictBanner::banner_height`]).
 pub const BANNER_HEIGHT: f64 = 36.0;
 /// Padding between the banner edge and any content.
 const PADDING: f64 = 8.0;
@@ -73,6 +76,18 @@ pub struct ConflictBanner {
     on_review: Option<ReviewCallback>,
     on_dismiss: Option<DismissCallback>,
     dirty: bool,
+    /// Band height resolved from the theme at layout time
+    /// (`BANNER_HEIGHT` at the default text scale).
+    height: f64,
+    /// The theme's `sm` label size, recorded at `build_layout` so the
+    /// renderer-aware layout hook can measure the chip labels.
+    label_size: f32,
+    /// Measured `(width, height)` of the chip labels, resolved in layout by
+    /// [`Widget::adjust_layout_with_measure`] so the chip a click lands in is
+    /// the chip that is painted; `(0, 0)` until then, when the chips keep
+    /// their pinned widths.
+    review_label: (f32, f32),
+    dismiss_label: (f32, f32),
 }
 
 impl ConflictBanner {
@@ -90,7 +105,28 @@ impl ConflictBanner {
             on_review: None,
             on_dismiss: None,
             dirty: true,
+            height: BANNER_HEIGHT,
+            label_size: crate::tokens::TypeScale::default().sm,
+            review_label: (0.0, 0.0),
+            dismiss_label: (0.0, 0.0),
         }
+    }
+
+    /// A chip holds its measured label plus the banner padding each side,
+    /// floored at the pinned width so the 1× labels keep 64 px.
+    fn chip_width(pinned: f64, label: (f32, f32)) -> f64 {
+        text_band(pinned, f64::from(label.0), PADDING * 2.0)
+    }
+
+    /// The band the banner reserves under `theme`: its `sm` label line plus
+    /// the leading and trailing padding, floored at [`BANNER_HEIGHT`] so the
+    /// default text scale keeps the pinned 36 px.
+    pub fn banner_height(theme: &Theme) -> f64 {
+        text_band(
+            BANNER_HEIGHT,
+            type_line_height(theme.tokens.typography.scale.sm),
+            PADDING * 2.0,
+        )
     }
 
     /// Update the conflict count. Setting `0` makes the banner
@@ -145,9 +181,10 @@ impl ConflictBanner {
         // Right-anchored cluster: Dismiss is rightmost, Review sits
         // immediately to its left with a CHIP_GAP between.
         let x_dismiss_x1 = self.rect.x1 - PADDING;
-        let x_review_x1 = x_dismiss_x1 - CHIP_DISMISS_W - CHIP_GAP;
+        let x_review_x1 =
+            x_dismiss_x1 - Self::chip_width(CHIP_DISMISS_W, self.dismiss_label) - CHIP_GAP;
         Some(Rect::new(
-            x_review_x1 - CHIP_REVIEW_W,
+            x_review_x1 - Self::chip_width(CHIP_REVIEW_W, self.review_label),
             cy - chip_h / 2.0,
             x_review_x1,
             cy + chip_h / 2.0,
@@ -164,7 +201,7 @@ impl ConflictBanner {
         let cy = f64::midpoint(self.rect.y0, self.rect.y1);
         let x_dismiss_x1 = self.rect.x1 - PADDING;
         Some(Rect::new(
-            x_dismiss_x1 - CHIP_DISMISS_W,
+            x_dismiss_x1 - Self::chip_width(CHIP_DISMISS_W, self.dismiss_label),
             cy - chip_h / 2.0,
             x_dismiss_x1,
             cy + chip_h / 2.0,
@@ -185,32 +222,43 @@ impl ConflictBanner {
     }
 
     /// Paint one trailing chip (`Review` / `Dismiss`).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Conflict action painting combines render context, chip bounds, its label and cached measurement, and hover state."
+    )]
     fn draw_chip(
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        label: &str,
+        label: (&str, (f32, f32)),
         hovered: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        let (label, measured) = label;
+        // A Neutral button face (HIG §9.5): raised at rest, the theme's
+        // hover fill when hovered, edge derived from the face — not a white
+        // veneer that is invisible on a light palette.
         let body = if hovered {
-            theme.tokens.colors.surface_white_20
+            theme.bg_hover
         } else {
-            theme.tokens.colors.surface_white_10
+            theme.tokens.colors.surfaces.raised
         };
-        scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
-        scene.stroke(
-            &Stroke::new(1.0),
+        crate::surface::card(
+            scene,
             transform,
-            theme.tokens.colors.border_white_20,
-            None,
-            &shape,
+            rect,
+            f64::from(theme.tokens.radii.sm),
+            body,
         );
-        let text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-        let (lw, lh) = text_renderer.measure(label, text_size, None);
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        // Centre on the measurement the chip was sized from; a host that
+        // laid out without the renderer-aware hook measures here instead.
+        let (lw, lh) = if measured.0 > 0.0 {
+            measured
+        } else {
+            text_renderer.measure(label, text_size, None)
+        };
         text_renderer.draw_text(
             scene,
             label,
@@ -235,21 +283,23 @@ impl Widget for ConflictBanner {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.height = Self::banner_height(theme);
+        self.label_size = theme.tokens.typography.scale.sm;
         // In zero-conflict mode we collapse to height 0 so the
         // banner doesn't reserve room in the column it sits inside.
-        // Safe: BANNER_HEIGHT is a fixed 36.0px layout constant, far below
+        // Safe: the band is a small layout value (36 px at 1×), far below
         // f32's range.
         #[allow(
             clippy::cast_possible_truncation,
-            reason = "BANNER_HEIGHT is a fixed small layout constant (36.0px)"
+            reason = "the banner band is a small layout value (36px at the default scale)"
         )]
         let h: f32 = if self.conflict_count == 0 {
             0.0
         } else {
-            BANNER_HEIGHT as f32
+            self.height as f32
         };
         let node = taffy.leaf_node(Style {
             size: Size {
@@ -260,6 +310,21 @@ impl Widget for ConflictBanner {
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    /// The chip labels are measured here, during layout, so the chip rects
+    /// hit-testing reads are the rects paint draws — never a stale guess
+    /// from before the first frame. The banner's own style is unaffected.
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let size = renderer_type_size(text, self.label_size);
+        self.review_label = text.measure("Review", size, None);
+        self.dismiss_label = text.measure("Dismiss", size, None);
+        self.adjust_layout_style(taffy, node)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -301,16 +366,17 @@ impl Widget for ConflictBanner {
         );
         scene.stroke(&Stroke::new(1.0), transform, warn, None, &shape);
 
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let glyph_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
         let cy = f64::midpoint(self.rect.y0, self.rect.y1);
 
         let glyph = "!";
-        let (gw, gh) = text_renderer.measure(glyph, text_size + 2.0, None);
+        let (gw, gh) = text_renderer.measure(glyph, glyph_size, None);
         let glyph_x = self.rect.x0 + PADDING + (GLYPH_W - f64::from(gw)) / 2.0;
         text_renderer.draw_text(
             scene,
             glyph,
-            text_size + 2.0,
+            glyph_size,
             warn,
             translated(transform, glyph_x, cy - f64::from(gh) / 2.0),
             None,
@@ -328,6 +394,9 @@ impl Widget for ConflictBanner {
             None,
         );
 
+        // Chip widths come from the labels measured in layout (see
+        // `adjust_layout_with_measure`), the same measurement the chip
+        // centres its label with.
         if let Some(rect) = self.review_chip_rect() {
             Self::draw_chip(
                 scene,
@@ -335,7 +404,7 @@ impl Widget for ConflictBanner {
                 text_renderer,
                 theme,
                 rect,
-                "Review",
+                ("Review", self.review_label),
                 self.review_hovered,
             );
         }
@@ -346,7 +415,7 @@ impl Widget for ConflictBanner {
                 text_renderer,
                 theme,
                 rect,
-                "Dismiss",
+                ("Dismiss", self.dismiss_label),
                 self.dismiss_hovered,
             );
         }

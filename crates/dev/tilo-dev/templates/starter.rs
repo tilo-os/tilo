@@ -2,8 +2,8 @@ use ui::LocalState;
 use ui::tilo_actions;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Button, Checkbox, Dropdown, NumberInput, Slider, Text, TextInput, Widget, labeled_check,
-    labeled_field,
+    Actions, Button, Checkbox, Dropdown, Field, Form, FormPage, NumberInput, Section, Slider, Text,
+    TextInput, Widget, labeled_check,
 };
 
 fn update_profile(
@@ -204,16 +204,23 @@ pub fn app_root() -> Box<dyn Widget> {
     .expect("generated defaults match the exported profile action");
     let reset = Button::new("reset-form", "Reset form", None).on_action(reset_binding);
 
-    let root = Box::new(ui::column![
-        Text::new("starter-title").with_role(TextRole::Title),
-        labeled_field("starter-name-label", input),
-        labeled_check("starter-updates-label", updates_widget),
-        labeled_field("starter-refresh-label", refresh),
-        labeled_field("starter-volume-label", volume_widget),
-        labeled_field("starter-region-label", region_widget),
-        greeting,
-        reset,
-    ]);
+    let root = Box::new(FormPage::new(
+        "starter-title",
+        Form::new()
+            .section(
+                Section::new("starter-profile-title")
+                    .field(Field::new("starter-name-label", input))
+                    .content(Box::new(labeled_check(
+                        "starter-updates-label",
+                        updates_widget,
+                    )))
+                    .field(Field::new("starter-refresh-label", refresh))
+                    .field(Field::new("starter-volume-label", volume_widget))
+                    .field(Field::new("starter-region-label", region_widget))
+                    .content(Box::new(greeting)),
+            )
+            .with_actions(Actions::new(reset)),
+    ));
     ui::widget::resource_actions::immediate(root, resource, move |payload| {
         let args: serde_json::Map<String, serde_json::Value> =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;

@@ -17,11 +17,14 @@ use crate::input::{ControllerBinding, InputBinding, KeyboardBinding};
 use crate::interaction::{ControllerFamily, InteractionEnvironment, KeyboardFamily};
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::{TaffyTreeExt, Widget};
 
-const HEIGHT: f64 = 22.0;
+/// Height of a painted hint row; hosts that centre a hint in their own band
+/// (the shortcut recorder) offset by half of this rather than a literal.
+pub(crate) const HEIGHT: f64 = 22.0;
 const CAP_GAP: f64 = 3.0;
 const CAP_PAD_X: f64 = 6.0;
 const MIN_CAP_WIDTH: f64 = 22.0;
@@ -68,7 +71,8 @@ impl InputDeviceGlyph {
         let colors = &theme.tokens.colors;
         let stroke = Stroke::new(1.5);
         let ink = colors.text_primary;
-        let quiet = colors.neutral[2];
+        // A lift off the ground, not a ramp slot (HIG §9.2).
+        let quiet = colors.lift(1.0);
         if matches!(
             family,
             ControllerFamily::JoyConLeft | ControllerFamily::JoyConRight
@@ -528,7 +532,7 @@ fn paint_separator(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) -> f64 {
-    let size = theme.tokens.typography.scale.xs;
+    let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
     let (width, height) = text_renderer.measure(label, size, None);
     text_renderer.draw_text(
         scene,
@@ -584,7 +588,7 @@ fn token_rects(
     tokens
         .iter()
         .map(|(label, shape)| {
-            let size = token_text_size(label, theme);
+            let size = token_text_size(label, theme, text_renderer);
             let (text_width, _) = text_renderer.measure(label, size, None);
             let width = match shape {
                 HintShape::RoundButton => (f64::from(text_width) + CAP_PAD_X).max(height),
@@ -614,16 +618,10 @@ fn paint_token(
         HintShape::Gesture => 11.0,
         HintShape::Keycap => 5.0,
     };
-    let outline = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, transform, colors.neutral[2], None, &outline);
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        colors.neutral[5],
-        None,
-        &outline,
-    );
-    let size = token_text_size(label, theme);
+    // Keycap body is a lift off the ground with an edge derived from it
+    // (HIG §9.2, §9.5) — ramp slots were one fixed grey per theme.
+    crate::surface::card(scene, transform, rect, radius, colors.lift(1.0));
+    let size = token_text_size(label, theme, text_renderer);
     let (tw, th) = text_renderer.measure(label, size, None);
     text_renderer.draw_text_weighted(
         scene,
@@ -640,12 +638,15 @@ fn paint_token(
     );
 }
 
-fn token_text_size(label: &str, theme: &Theme) -> f32 {
-    if matches!(label, "←" | "→" | "↑" | "↓" | "×" | "○" | "□" | "△") {
-        theme.tokens.typography.scale.sm
-    } else {
-        theme.tokens.typography.scale.xs
-    }
+fn token_text_size(label: &str, theme: &Theme, text_renderer: &TextRenderer) -> f32 {
+    renderer_type_size(
+        text_renderer,
+        if matches!(label, "←" | "→" | "↑" | "↓" | "×" | "○" | "□" | "△") {
+            theme.tokens.typography.scale.sm
+        } else {
+            theme.tokens.typography.scale.xs
+        },
+    )
 }
 
 #[allow(
@@ -702,6 +703,8 @@ impl Widget for InputHint {
                     f64::from(theme.tokens.spacing.s6).max(height),
                 )),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));

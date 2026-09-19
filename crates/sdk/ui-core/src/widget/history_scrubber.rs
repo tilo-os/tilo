@@ -20,9 +20,11 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -54,8 +56,29 @@ const BUTTON_H: f64 = 28.0;
 const NAME_FIELD_W: f64 = 300.0;
 const BUTTON_Y_OFFSET: f64 = 24.0;
 const POPOVER_H: f64 = 36.0;
+/// Breathing room the popover's text stack keeps from its top and bottom
+/// edge — a hairline, half the smallest spacing step; a stack that cannot
+/// keep it drops its second line.
+const POPOVER_PAD_Y: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 const NATURAL_H_PLAIN: f64 = 140.0;
 const NATURAL_H_GROUPED: f64 = 168.0;
+
+/// The strip paints on its own `surfaces.raised` fill, where `Colors::lift`
+/// (base → raised) has nowhere left to go, so every tier inside it —
+/// segment, track, button hover — is **one ordered ramp** of translucent
+/// steps against that fill, polarity chosen the way `hairline_on` chooses
+/// it (HIG §9.3 caveat, §9.5). Ascending: odd segment, even segment, track,
+/// the segment under the handle / a hovered button.
+const WASH_FAINT: u8 = 20;
+const WASH_LOW: u8 = 36;
+const WASH_TRACK: u8 = 48;
+const WASH_MID: u8 = 64;
+
+/// One step of the strip's own ramp: `alpha` of white or black, whichever
+/// moves `surface` further.
+fn wash(surface: Color, alpha: u8) -> Color {
+    crate::tokens::colors::Colors::hairline_on(surface, alpha)
+}
 
 /// A tick index or entry count, widened for pixel-space layout math.
 /// Lossless in practice — a history never approaches `u32::MAX` entries —
@@ -459,8 +482,13 @@ impl HistoryScrubber {
         // Wide enough for a version name over a change description; the
         // renderer truncates whatever still overflows.
         let want: f64 = if self.groups.is_empty() { 220.0 } else { 260.0 };
-        let w = want.min(self.rect.width() - 16.0).max(80.0);
-        let x0 = (centre.x - w / 2.0).clamp(self.rect.x0 + 8.0, self.rect.x1 - 8.0 - w);
+        // Clamped to the same gutter as the track and the button row, so a
+        // popover pushed to either end lines up with the strip's content
+        // edge instead of overhanging it.
+        let w = want.min(self.rect.width() - 2.0 * TRACK_INSET).max(80.0);
+        let lo = self.rect.x0 + TRACK_INSET;
+        let hi = (self.rect.x1 - TRACK_INSET - w).max(lo);
+        let x0 = (centre.x - w / 2.0).clamp(lo, hi);
         let y0 = self.rect.y0 + 8.0;
         Rect::new(x0, y0, x0 + w, y0 + POPOVER_H)
     }
@@ -766,7 +794,9 @@ impl HistoryScrubber {
         }
         let colors = &theme.tokens.colors;
         let track = self.track_rect();
-        let size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
+        // `scale.xs` is the floor of the type scale; the band caption was
+        // three points under `sm`, which landed below it.
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
 
         // Segments abut at the tick each one ends on so every visible edge is
         // a boundary; spanning only first-tick..last-tick would leave a
@@ -787,14 +817,16 @@ impl HistoryScrubber {
             }
             let named = g.label.is_some();
             let contains_handle = self.current_tick >= g.start && self.current_tick <= g.end;
+            // Unnamed segments step up the strip's own ramp; the declared
+            // white veneers they replace were one fixed colour per theme.
             let fill = if named {
                 colors.accent[if contains_handle { 4 } else { 6 }]
             } else if contains_handle {
-                colors.surface_white_20
+                wash(colors.surfaces.raised, WASH_MID)
             } else if i % 2 == 0 {
-                colors.surface_white_10
+                wash(colors.surfaces.raised, WASH_LOW)
             } else {
-                colors.surface_white_5
+                wash(colors.surfaces.raised, WASH_FAINT)
             };
             let shape = RoundedRect::from_rect(seg, 3.0);
             scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
@@ -837,7 +869,7 @@ impl HistoryScrubber {
                 if named {
                     colors.accent[4]
                 } else {
-                    colors.border_white_20
+                    wash(colors.surfaces.raised, WASH_MID)
                 },
                 None,
                 &vello::kurbo::Line::new(
@@ -860,7 +892,10 @@ impl HistoryScrubber {
     }
 
     /// Used for every button so styling stays uniform.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Scrubber button painting combines render context, bounds and label, hover state, and primary/neutral styling."
+    )]
     fn draw_button(
         scene: &mut Scene,
         transform: Affine,
@@ -871,34 +906,45 @@ impl HistoryScrubber {
         hovered: bool,
         primary: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        let radius = f64::from(theme.tokens.radii.sm);
+        let shape = RoundedRect::from_rect(rect, radius);
+        let colors = &theme.tokens.colors;
+        // Primary: accent, ink chosen against it; the accent face is its own
+        // contrast step, so no edge (HIG §9.5 "selected accent, no edge").
+        // Neutral: the Button Neutral rest — the strip's raised fill under a
+        // derived edge — and one step up the strip's ramp on hover.
         let (fill, border, text_color) = if primary {
-            let fill = if hovered {
-                theme.tokens.colors.accent[4]
-            } else {
-                theme.tokens.colors.accent[5]
-            };
+            let fill = colors.accent[if hovered { 4 } else { 5 }];
             (
                 fill,
-                theme.tokens.colors.border_focus,
-                theme.tokens.colors.text_primary,
+                None,
+                colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST),
             )
         } else if hovered {
+            let fill = wash(colors.surfaces.raised, WASH_MID);
             (
-                theme.tokens.colors.surface_white_20,
-                theme.tokens.colors.border_white_20,
-                theme.tokens.colors.text_primary,
+                fill,
+                Some(crate::surface::edge_on(colors.surfaces.raised)),
+                colors.text_primary,
             )
         } else {
             (
-                theme.tokens.colors.surface_white_10,
-                theme.tokens.colors.border_white_20,
-                theme.tokens.colors.text_primary,
+                colors.surfaces.raised,
+                Some(crate::surface::edge_on(colors.surfaces.raised)),
+                colors.text_primary,
             )
         };
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-        scene.stroke(&Stroke::new(1.0), transform, border, None, &shape);
-        let size = theme.tokens.typography.scale.sm;
+        if let Some(border) = border {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                border,
+                None,
+                &crate::surface::edge_outline(rect, radius),
+            );
+        }
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let shown = fit(text_renderer, label, size, rect.width() - 10.0);
         let (w, h) = text_renderer.measure(&shown, size, None);
         text_renderer.draw_text(
@@ -926,7 +972,7 @@ impl HistoryScrubber {
         theme: &Theme,
     ) {
         let label = "No history yet";
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (w, h) = text_renderer.measure(label, size, None);
         text_renderer.draw_text(
             scene,
@@ -954,10 +1000,14 @@ impl HistoryScrubber {
     ) {
         let track = self.track_rect();
         let track_shape = RoundedRect::from_rect(track, 3.0);
+        // The unfilled track is a step of the strip's own ramp, not a ramp
+        // slot (`neutral[3]` is a shade the theme author never measured
+        // against this fill), under a derived edge like a Slider's.
+        let surface = theme.tokens.colors.surfaces.raised;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.neutral[3],
+            wash(surface, WASH_TRACK),
             None,
             &track_shape,
         );
@@ -977,6 +1027,17 @@ impl HistoryScrubber {
         self.draw_band(scene, transform, text_renderer, theme);
         self.draw_ticks(scene, transform, theme);
 
+        // The track's edge goes on last, after the played range and the
+        // ticks, so one outline encloses the whole track — played and
+        // unplayed alike — instead of stopping where the accent begins.
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(surface),
+            None,
+            &crate::surface::edge_outline(track, 3.0),
+        );
+
         let live_dot = Circle::new(self.live_state_dot_center(), 3.0);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -995,17 +1056,20 @@ impl HistoryScrubber {
             HANDLE_RADIUS
         };
         let handle_shape = Circle::new(handle, radius);
+        let handle_fill = theme.tokens.colors.text_primary;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.text_primary,
+            handle_fill,
             None,
             &handle_shape,
         );
+        // The ring derives from the handle's own fill, so it seats a light
+        // thumb on a dark strip and a dark thumb on a light one alike.
         scene.stroke(
             &Stroke::new(1.5),
             transform,
-            theme.tokens.colors.border_white_20,
+            crate::surface::edge_on(handle_fill),
             None,
             &handle_shape,
         );
@@ -1020,20 +1084,14 @@ impl HistoryScrubber {
         theme: &Theme,
     ) {
         let pop = self.popover_rect();
-        let pop_shape = RoundedRect::from_rect(pop, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // Overlay surface under an edge derived from it (HIG §9.5); the
+        // white veneer it replaces was invisible on a light overlay.
+        crate::surface::card(
+            scene,
             transform,
+            pop,
+            f64::from(theme.tokens.radii.sm),
             theme.tokens.colors.surfaces.overlay,
-            None,
-            &pop_shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_white_20,
-            None,
-            &pop_shape,
         );
         let Some(entry) = self.current_entry() else {
             return;
@@ -1059,53 +1117,55 @@ impl HistoryScrubber {
             Some(s)
         });
         let budget = pop.width() - 12.0;
-        if let Some(head) = group_line {
-            let head_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-            let sub_size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
-            let head = fit(text_renderer, &head, head_size, budget);
-            let (hw, _) = text_renderer.measure(&head, head_size, None);
+        let head_size = renderer_type_size(
+            text_renderer,
+            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
+        );
+        // The floor of the type scale, not three points under `sm`.
+        let sub_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+        let colors = &theme.tokens.colors;
+        // Each line is fitted to the width and measured at the size it is
+        // painted with; the stack is then centred as one block on the
+        // popover, each line on its own measured box rather than at two
+        // hand-picked offsets.
+        let mut lines: Vec<(String, f32, Color, f32, f32)> = Vec::new();
+        let mut push = |text_renderer: &mut TextRenderer, text: &str, size: f32, ink: Color| {
+            let drawn = fit(text_renderer, text, size, budget);
+            let (w, h) = text_renderer.measure(&drawn, size, None);
+            lines.push((drawn, size, ink, w, h));
+        };
+        match group_line {
+            Some(head) => {
+                push(text_renderer, &head, head_size, colors.text_primary);
+                push(text_renderer, &detail, sub_size, colors.text_dim);
+            }
+            None => push(text_renderer, &detail, head_size, colors.text_primary),
+        }
+        // The popover cannot grow — below it sit the band and the handle's
+        // reach — so when the two-line stack no longer fits its box (2×
+        // type), the change line yields and the version name stays; the
+        // screen reader still gets both. Painting both would have pushed the
+        // detail line down over the band.
+        let stack_h = |lines: &[(String, f32, Color, f32, f32)]| -> f64 {
+            lines.iter().map(|l| f64::from(l.4)).sum()
+        };
+        if lines.len() > 1 && stack_h(&lines) > pop.height() - POPOVER_PAD_Y * 2.0 {
+            lines.truncate(1);
+        }
+        let mut top = pop.center().y - stack_h(&lines) / 2.0;
+        for (drawn, size, ink, w, h) in &lines {
             text_renderer.draw_text(
                 scene,
-                &head,
-                head_size,
-                theme.tokens.colors.text_primary,
+                drawn,
+                *size,
+                *ink,
                 translated(
                     transform,
-                    (pop.x0 + (pop.width() - f64::from(hw)) / 2.0, pop.y0 + 5.0),
+                    (pop.x0 + (pop.width() - f64::from(*w)) / 2.0, top),
                 ),
                 None,
             );
-            let detail = fit(text_renderer, &detail, sub_size, budget);
-            let (dw, _) = text_renderer.measure(&detail, sub_size, None);
-            text_renderer.draw_text(
-                scene,
-                &detail,
-                sub_size,
-                theme.tokens.colors.text_dim,
-                translated(
-                    transform,
-                    (pop.x0 + (pop.width() - f64::from(dw)) / 2.0, pop.y0 + 21.0),
-                ),
-                None,
-            );
-        } else {
-            let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-            let drawn = fit(text_renderer, &detail, size, budget);
-            let (lw, lh) = text_renderer.measure(&drawn, size, None);
-            text_renderer.draw_text(
-                scene,
-                &drawn,
-                size,
-                theme.tokens.colors.text_primary,
-                translated(
-                    transform,
-                    (
-                        pop.x0 + (pop.width() - f64::from(lw)) / 2.0,
-                        pop.y0 + (pop.height() - f64::from(lh)) / 2.0,
-                    ),
-                ),
-                None,
-            );
+            top += f64::from(*h);
         }
     }
 
@@ -1130,7 +1190,7 @@ impl HistoryScrubber {
             // finish. Enter and Escape are the only two things it does; say so
             // where the buttons were, when there is room left over.
             let hint = "Enter to save \u{00b7} Esc to cancel";
-            let hint_size = (size - 2.0).max(9.0);
+            let hint_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
             let (hw, hh) = text_renderer.measure(hint, hint_size, None);
             if box_rect.x1 + 10.0 + f64::from(hw) <= last {
                 text_renderer.draw_text(
@@ -1217,20 +1277,15 @@ impl Widget for HistoryScrubber {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // The strip's own card: raised fill under an edge derived from it.
+        // The declared `border_standard` this replaces is three shades from
+        // the dark preset's raised surface and vanished there (HIG §9.5).
+        crate::surface::card(
+            scene,
             transform,
+            self.rect,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
         );
 
         if self.entries.is_empty() {
@@ -1799,6 +1854,134 @@ mod version_tests {
             derived: format!("{} edits", end.saturating_add(1).saturating_sub(start)),
             record_id: label.map(|_| format!("tilo:group:{start}")),
             open: false,
+        }
+    }
+
+    /// Relative luminance of the composited pixel at (`x`, `y`).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are non-negative pixel positions inside the test surface"
+    )]
+    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+            rgba,
+            w,
+            x.floor() as u32,
+            y.floor() as u32,
+        );
+        crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
+    }
+
+    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
+    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
+            .join(theme.name.to_lowercase());
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(name))
+    }
+
+    /// The strip, its neutral buttons and its track keep a **visible derived
+    /// edge** at 1× on both presets (HIG §9.5). Before, the strip wore
+    /// `border_standard` (three shades from the dark raised surface), the
+    /// buttons and segments literal white veneers, the track `neutral[3]`.
+    ///
+    /// Writes `$UX1X_F4_OUT/<theme>/history_scrubber.png` plus the harness
+    /// inspection when that variable is set; asserts regardless.
+    #[test]
+    fn ux1x_strip_buttons_and_track_edges_register_on_both_presets() {
+        use crate::offscreen::OffscreenRenderer;
+        const EDGE_MIN: f64 = 0.008;
+        let margin = 16.0;
+        // Evidence first, for both presets, so a failing assertion on one
+        // preset still leaves the other's PNG and inspection on disk.
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            if let Some(png) = ux1x_out(&theme, "history_scrubber.png") {
+                let mut mounted = with_versions(1000.0);
+                mounted.set_current_tick(19);
+                let h = mounted.natural_height() + 2.0 * margin;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a small test viewport"
+                )]
+                let harness = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(mounted),
+                    (1000, h as u32),
+                    theme.clone(),
+                );
+                harness.render_window_png(&png);
+                if let Ok(json) = harness.inspection_json() {
+                    std::fs::write(png.with_extension("inspection.json"), json)
+                        .expect("write inspection");
+                }
+            }
+        }
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut s = with_versions(1000.0);
+            s.set_current_tick(19);
+            let strip = Rect::new(margin, margin, margin + 1000.0, margin + s.natural_height());
+            s.set_rect(strip);
+            let (w, h) = (strip.x1 + margin, strip.y1 + margin);
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            s.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+            // Strip edge against its own fill, on the track's centre line
+            // (clear of the corner arcs; the track starts one `TRACK_INSET`
+            // in, so the columns beside the edge are bare fill).
+            let y = s.track_rect().center().y;
+            let edge = lum(strip.x0, y);
+            let fill = lum(strip.x0 + 3.0, y);
+            assert!(
+                (edge - fill).abs() >= EDGE_MIN,
+                "{}: strip edge {edge:.4} vs fill {fill:.4} did not register",
+                theme.name
+            );
+
+            // Neutral button (Preview): its left edge against its face.
+            let preview = s
+                .button_rect(ScrubButton::Preview)
+                .expect("the wide strip offers Preview");
+            let bedge = lum(preview.x0, preview.center().y);
+            let face = lum(preview.x0 + 3.0, preview.center().y);
+            assert!(
+                (bedge - face).abs() >= EDGE_MIN,
+                "{}: button edge {bedge:.4} vs face {face:.4} did not register",
+                theme.name
+            );
+
+            // Track: the unfilled track does not exist at tick 19 (fully
+            // played), so probe the band's odd segment against the strip.
+            let band = s.band_rect();
+            let seg = lum(band.x0 + 8.0, band.center().y + 6.0);
+            let beside = lum(band.x0 + 8.0, band.y1 + 3.0);
+            assert!(
+                (seg - beside).abs() >= EDGE_MIN,
+                "{}: band segment {seg:.4} vs strip {beside:.4} did not register",
+                theme.name
+            );
         }
     }
 
@@ -2481,5 +2664,91 @@ mod version_tests {
         dispatch(&mut s, &mouse_release());
         assert_eq!(s.current_tick(), 0);
         assert!(!s.wants_keyboard());
+    }
+
+    /// The popover is clamped to the same gutter as the track and the
+    /// button row, so pushed to either end it lines up with the strip's
+    /// content edge instead of overhanging it by the old 8 px.
+    #[test]
+    fn popover_never_overhangs_the_track_gutter() {
+        let mut s = scrubber(1000.0, 20);
+        let track = s.track_rect();
+
+        s.set_current_tick(19);
+        let at_end = s.popover_rect();
+        assert!(
+            at_end.x1 <= track.x1 + 1e-6,
+            "popover right edge {} overhangs the track end {}",
+            at_end.x1,
+            track.x1
+        );
+
+        s.set_current_tick(0);
+        let at_start = s.popover_rect();
+        assert!(
+            at_start.x0 >= track.x0 - 1e-6,
+            "popover left edge {} overhangs the track start {}",
+            at_start.x0,
+            track.x0
+        );
+    }
+
+    /// The popover cannot grow (the band and the handle sit right under
+    /// it), so at 2× the two-line stack yields its change line and the
+    /// version name stays inside the box — before, the detail line ran
+    /// down over the band. At 1× both lines still paint, inside.
+    #[test]
+    fn popover_text_stays_inside_its_box_at_every_text_scale() {
+        for (scale, expected_lines) in [(1.0_f32, 2_usize), (2.0, 1)] {
+            // A matched host: the theme's type steps carry the scale the
+            // renderer is set to, so the glyphs paint at 2x, not 4x (X1).
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut s = scrubber(1000.0, 20);
+            s.set_groups(vec![
+                group(0, 9, Some("Costs section")),
+                group(10, 19, Some("Headcount pass")),
+            ]);
+            s.set_current_tick(15);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let mut scene = Scene::new();
+            s.draw_popover(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            assert_eq!(
+                scene.encoding().resources.glyph_runs.len(),
+                expected_lines,
+                "at {scale}x the popover painted the wrong number of lines"
+            );
+            let pop = s.popover_rect();
+            let (w, h) = (1000_u32, 200_u32);
+            let rgba = crate::offscreen::OffscreenRenderer::new(w, h).render(&scene, Color::BLACK);
+            let mut ink_rows = Vec::new();
+            for y in 0..h as usize {
+                let row = &rgba[y * w as usize * 4..(y + 1) * w as usize * 4];
+                if row
+                    .chunks_exact(4)
+                    .any(|px| px[0] > 160 && px[1] > 160 && px[2] > 160)
+                {
+                    ink_rows.push(y);
+                }
+            }
+            let (top, bottom) = (
+                *ink_rows.first().expect("the popover painted a label"),
+                *ink_rows.last().expect("the popover painted a label"),
+            );
+            assert!(
+                f64::from(top as u32) >= pop.y0.floor() && f64::from(bottom as u32) < pop.y1.ceil(),
+                "at {scale}x label ink rows {top}..={bottom} leave the popover {pop:?}"
+            );
+        }
+    }
+
+    /// A strip narrower than its own gutters plus the popover's floor width
+    /// must degrade, not panic in `clamp`.
+    #[test]
+    fn popover_survives_a_strip_narrower_than_its_floor_width() {
+        let s = scrubber(60.0, 2);
+        let pop = s.popover_rect();
+        assert!(pop.width() > 0.0);
+        assert!((pop.x0 - TRACK_INSET).abs() < 1e-6);
     }
 }

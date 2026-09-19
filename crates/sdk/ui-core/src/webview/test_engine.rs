@@ -18,6 +18,7 @@ const HEADER_BAND_PX: u32 = 24;
 #[derive(Default)]
 struct Inner {
     history: Vec<String>,
+    history_snapshot: Option<(u32, Vec<usize>)>,
     /// `history.is_empty()` means nothing loaded yet.
     index: usize,
     width: u32,
@@ -98,6 +99,7 @@ impl TestEngine {
             }
         }
         *self.lock_frames() = Some(Frame {
+            trace_id: None,
             rgba: Arc::new(rgba),
             width,
             height,
@@ -105,6 +107,7 @@ impl TestEngine {
     }
 
     fn emit_navigation_locked(&self, inner: &mut Inner) {
+        inner.history_snapshot = None;
         let Some(uri) = inner.history.get(inner.index).cloned() else {
             return;
         };
@@ -123,6 +126,51 @@ impl TestEngine {
 }
 
 impl TestEngine {
+    fn emit_history_locked(
+        inner: &mut Inner,
+        request_id: u32,
+        direction: super::NavigationDirection,
+    ) {
+        let indices: Vec<_> = match direction {
+            super::NavigationDirection::Back => (0..inner.index).rev().take(12).collect(),
+            super::NavigationDirection::Forward => (inner.index.saturating_add(1)
+                ..inner.history.len())
+                .take(12)
+                .collect(),
+        };
+        let entries = indices
+            .iter()
+            .filter_map(|&index| {
+                inner.history.get(index).map(|url| super::NavigationEntry {
+                    id: u32::try_from(index.saturating_add(1)).unwrap_or(u32::MAX),
+                    url: url.clone(),
+                    title: format!("{url} — test page"),
+                })
+            })
+            .collect();
+        inner.history_snapshot = Some((request_id, indices));
+        inner.events.push(WebViewEvent::NavigationHistory {
+            request_id,
+            direction,
+            entries,
+        });
+    }
+
+    fn emit_media_locked(inner: &mut Inner, request_id: u64, element_id: Option<String>) {
+        let element = inner
+            .media_element
+            .clone()
+            .filter(|element| element_id.is_none_or(|id| element.element_id == id));
+        let event = element.map_or(
+            WebViewEvent::MediaElementUnavailable { request_id },
+            |element| WebViewEvent::MediaElement {
+                request_id,
+                element,
+            },
+        );
+        inner.events.push(event);
+    }
+
     /// Recovers the mutex if a panicking test callback poisoned it while
     /// holding the lock, rather than making every later call into the
     /// engine panic too.
@@ -149,6 +197,9 @@ impl WebViewEngine for TestEngine {
         let mut inner = self.lock_inner();
         inner.commands.push(cmd.clone());
         match cmd {
+            WebViewCommand::SetAudioMuted(muted) => {
+                inner.events.push(WebViewEvent::AudioMutedChanged(muted));
+            }
             WebViewCommand::Navigate(uri) => {
                 if !inner.history.is_empty() {
                     let cut = inner.index.saturating_add(1);
@@ -157,6 +208,25 @@ impl WebViewEngine for TestEngine {
                 inner.history.push(uri);
                 inner.index = inner.history.len().saturating_sub(1);
                 self.emit_navigation_locked(&mut inner);
+            }
+            WebViewCommand::RequestNavigationHistory {
+                request_id,
+                direction,
+            } => {
+                Self::emit_history_locked(&mut inner, request_id, direction);
+            }
+            WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
+                let index = usize::try_from(id.saturating_sub(1)).unwrap_or(usize::MAX);
+                if inner
+                    .history_snapshot
+                    .as_ref()
+                    .is_some_and(|(request, indices)| {
+                        *request == request_id && indices.contains(&index)
+                    })
+                {
+                    inner.index = index;
+                    self.emit_navigation_locked(&mut inner);
+                }
             }
             WebViewCommand::GoBack => {
                 if inner.index > 0 {
@@ -187,42 +257,42 @@ impl WebViewEngine for TestEngine {
             }
             // Input and filter commands are recorded (above) but have no
             // observable page effect in the test engine.
-            WebViewCommand::StopLoading
+            WebViewCommand::SetBlockingScripts(_)
+            | WebViewCommand::SetSiteExceptions(_)
+            | WebViewCommand::RequestSiteStatus { .. }
+            | WebViewCommand::Credentials(_)
+            | WebViewCommand::SiteAction { .. }
+            | WebViewCommand::StopLoading
+            | WebViewCommand::ExitFullscreen
             | WebViewCommand::MouseMove { .. }
             | WebViewCommand::MouseButton { .. }
             | WebViewCommand::Scroll { .. }
             | WebViewCommand::Key { .. }
             | WebViewCommand::SetFocused(_)
             | WebViewCommand::SetContentFilter(_)
+            | WebViewCommand::SetNativeFilterRules { .. }
             | WebViewCommand::SetContentFilters { .. }
             | WebViewCommand::SetUserScripts(_)
-            | WebViewCommand::ClearWebsiteData => {}
+            | WebViewCommand::ClearWebsiteData
+            | WebViewCommand::SetClearOnExit(_)
+            | WebViewCommand::ShowDeveloperTools
+            | WebViewCommand::PermissionDecision { .. }
+            | WebViewCommand::DownloadDecision { .. }
+            | WebViewCommand::Find { .. }
+            | WebViewCommand::ContextMenuAction { .. }
+            | WebViewCommand::StopFinding
+            | WebViewCommand::SetZoomLevel(_)
+            | WebViewCommand::CancelNativeDownload { .. }
+            | WebViewCommand::RetryDownload { .. }
+            | WebViewCommand::CancelAllDownloads => {}
             WebViewCommand::RequestMediaElement { request_id } => {
-                let event = inner.media_element.clone().map_or(
-                    WebViewEvent::MediaElementUnavailable { request_id },
-                    |element| WebViewEvent::MediaElement {
-                        request_id,
-                        element,
-                    },
-                );
-                inner.events.push(event);
+                Self::emit_media_locked(&mut inner, request_id, None);
             }
             WebViewCommand::RequestMediaElementById {
                 request_id,
                 element_id,
             } => {
-                let event = inner
-                    .media_element
-                    .clone()
-                    .filter(|element| element.element_id == element_id)
-                    .map_or(
-                        WebViewEvent::MediaElementUnavailable { request_id },
-                        |element| WebViewEvent::MediaElement {
-                            request_id,
-                            element,
-                        },
-                    );
-                inner.events.push(event);
+                Self::emit_media_locked(&mut inner, request_id, Some(element_id));
             }
             WebViewCommand::StartDownload { uri } => {
                 if !(uri.starts_with("http://") || uri.starts_with("https://")) {

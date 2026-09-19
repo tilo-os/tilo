@@ -11,6 +11,7 @@
 
 use super::{ParticipantKind, PresenceCtx};
 use crate::permissions::UserId;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use std::time::{Duration, Instant};
@@ -268,7 +269,10 @@ impl PresenceCtx {
     /// Draw a compact generic fallback for interactions an application has
     /// not yet projected onto domain geometry. This is an activity rail, not
     /// a cursor: it never moves focus or implies keyboard/mouse navigation.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "interaction rails combine scene resources and theme with viewport bounds and the time used to filter visible activity"
+    )]
     pub fn draw_interactions(
         &self,
         scene: &mut Scene,
@@ -348,7 +352,10 @@ impl PresenceCtx {
         entries
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "interaction cards combine scene resources and theme with the activity entry and its computed placement"
+    )]
     #[allow(
         clippy::cast_possible_truncation,
         reason = "card widths are bounded UI pixels; f32 text shaping precision is sufficient"
@@ -396,7 +403,7 @@ impl PresenceCtx {
             is_agent,
         );
         let actor_label = actor_label(self, &user, is_agent);
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let first = tr.elide_to_width(&actor_label, size, (rect.width() - 40.0) as f32);
         tr.draw_text_weighted(
             scene,

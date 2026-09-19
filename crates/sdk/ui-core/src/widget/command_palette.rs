@@ -18,6 +18,7 @@ use crate::icons::{self, Icon};
 use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::text_metrics::centered_text_top;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -450,6 +451,7 @@ pub struct CommandPalette {
     visible: Vec<usize>,
     cursor: usize,
     rect: Rect,
+    text_scale: f64,
     is_focused: bool,
     search_filter: SearchFilter,
     mode: PaletteMode,
@@ -517,6 +519,7 @@ impl CommandPalette {
             visible: Vec::new(),
             cursor: 0,
             rect: Rect::ZERO,
+            text_scale: 1.0,
             is_focused: false,
             search_filter: SearchFilter::default(),
             mode: PaletteMode::Search,
@@ -673,24 +676,29 @@ impl CommandPalette {
         self.rect = rect;
     }
 
+    /// Text scale used by layout and host-painted filter controls.
+    pub fn text_scale(&self) -> f64 {
+        self.text_scale
+    }
+
     /// Matches the size [`build_layout`] requests from taffy.
     pub fn desired_size(&self) -> (f64, f64) {
         // Sized off the row plan, not a row count, since headers and entries
         // have different heights; clamped so a big hit count doesn't grow
         // the card taller than the screen.
         let list = if self.rows.is_empty() {
-            EMPTY_STATE_HEIGHT
+            EMPTY_STATE_HEIGHT * self.text_scale
         } else {
             self.rows_height()
                 .clamp(self.row_height(), self.max_list_height())
         };
         let height = PADDING * 2.0
-            + INPUT_HEIGHT
+            + (INPUT_HEIGHT * self.text_scale)
             + PADDING
             + self.filter_block()
             + list
             + PADDING
-            + FOOTER_HEIGHT;
+            + (FOOTER_HEIGHT * self.text_scale);
         (self.card_width(), height)
     }
 
@@ -720,7 +728,7 @@ impl CommandPalette {
 
     fn visual_row_height(&self, row: &VisualRow) -> f64 {
         match row {
-            VisualRow::Header { .. } => HEADER_HEIGHT,
+            VisualRow::Header { .. } => HEADER_HEIGHT * self.text_scale,
             VisualRow::Entry(_) => self.row_height(),
         }
     }
@@ -740,7 +748,8 @@ impl CommandPalette {
             .filter(|r| matches!(r, VisualRow::Header { .. }))
             .count()
             .min(MAX_HEADERS_IN_VIEW);
-        Self::max_visible_rows() as f64 * self.row_height() + headers as f64 * HEADER_HEIGHT
+        Self::max_visible_rows() as f64 * self.row_height()
+            + headers as f64 * (HEADER_HEIGHT * self.text_scale)
     }
 
     fn filter_block(&self) -> f64 {
@@ -753,7 +762,7 @@ impl CommandPalette {
             return self.filter_strip_height() + PADDING;
         }
         match self.mode {
-            PaletteMode::Search => FILTER_STRIP_HEIGHT + PADDING,
+            PaletteMode::Search => (FILTER_STRIP_HEIGHT * self.text_scale) + PADDING,
             PaletteMode::Commands => 0.0,
         }
     }
@@ -766,15 +775,15 @@ impl CommandPalette {
             .iter()
             .any(|&i| self.entries.get(i).is_some_and(|e| e.description.is_some()));
         match self.mode {
-            PaletteMode::Search if !any_subtitle => ROW_HEIGHT,
-            _ => TWO_LINE_ROW_HEIGHT,
+            PaletteMode::Search if !any_subtitle => ROW_HEIGHT * self.text_scale,
+            _ => TWO_LINE_ROW_HEIGHT * self.text_scale,
         }
     }
 
     fn card_width(&self) -> f64 {
         match self.mode {
-            PaletteMode::Search => SEARCH_CARD_WIDTH,
-            PaletteMode::Commands => CMD_CARD_WIDTH,
+            PaletteMode::Search => SEARCH_CARD_WIDTH * self.text_scale,
+            PaletteMode::Commands => CMD_CARD_WIDTH * self.text_scale,
         }
     }
 
@@ -1046,6 +1055,7 @@ impl CommandPalette {
             {
                 // Pull the header back in rather than stranding its rows.
                 if start > 0
+                    && used + HEADER_HEIGHT * self.text_scale <= budget
                     && self
                         .rows
                         .get(start.saturating_sub(1))
@@ -1085,7 +1095,7 @@ impl CommandPalette {
 
     /// Shared by `row_rect` and `draw`.
     fn list_top_y(&self) -> f64 {
-        self.rect.y0 + PADDING + INPUT_HEIGHT + PADDING + self.filter_block()
+        self.rect.y0 + PADDING + (INPUT_HEIGHT * self.text_scale) + PADDING + self.filter_block()
     }
 
     pub fn row_at(&self, p: Point) -> Option<usize> {
@@ -1179,7 +1189,7 @@ impl CommandPalette {
             self.rect.x0 + PADDING,
             self.rect.y0 + PADDING,
             self.rect.x1 - PADDING,
-            self.rect.y0 + PADDING + INPUT_HEIGHT,
+            self.rect.y0 + PADDING + (INPUT_HEIGHT * self.text_scale),
         )
     }
 
@@ -1192,7 +1202,7 @@ impl CommandPalette {
     }
 
     pub fn filter_strip_row_height(&self) -> f64 {
-        FILTER_STRIP_HEIGHT
+        FILTER_STRIP_HEIGHT * self.text_scale
     }
 
     pub fn host_filter_strip_rows(&self) -> usize {
@@ -1209,13 +1219,13 @@ impl CommandPalette {
                   handful of rows, far below f64's exact-integer range"
     )]
     fn filter_strip_height(&self) -> f64 {
-        FILTER_STRIP_HEIGHT * self.host_filter_strip_rows() as f64
+        (FILTER_STRIP_HEIGHT * self.text_scale) * self.host_filter_strip_rows() as f64
     }
 
     pub fn footer_rect(&self) -> Rect {
         Rect::new(
             self.rect.x0 + PADDING,
-            self.rect.y1 - PADDING - FOOTER_HEIGHT,
+            self.rect.y1 - PADDING - (FOOTER_HEIGHT * self.text_scale),
             self.rect.x1 - PADDING,
             self.rect.y1 - PADDING,
         )
@@ -1233,13 +1243,18 @@ impl CommandPalette {
     ) {
         let colors = &theme.tokens.colors;
         let text_size = theme.tokens.typography.scale.base;
-        let text_y =
-            layout.input_rect.y0 + (layout.input_rect.height() - f64::from(text_size)) / 2.0;
         let mut tx = layout.input_rect.x0;
         let style = theme.tokens.typography.style(TextRole::Body);
         if let Some(arg) = &mut self.arg_state {
             if !arg.prompt.is_empty() {
                 let heading = format!("{}:  ", arg.prompt);
+                // Centre the heading on its measured line box, not the font size.
+                let (hw, hh) = text_renderer.measure(&heading, text_size, None);
+                let text_y = centered_text_top(
+                    layout.input_rect.y0,
+                    layout.input_rect.height(),
+                    f64::from(hh),
+                );
                 text_renderer.draw_text(
                     scene,
                     &heading,
@@ -1248,7 +1263,6 @@ impl CommandPalette {
                     transform.pre_translate(Vec2::new(tx, text_y)),
                     None,
                 );
-                let (hw, _) = text_renderer.measure(&heading, text_size, None);
                 tx += f64::from(hw);
             }
             arg.composition.draw(
@@ -1309,7 +1323,12 @@ impl CommandPalette {
         let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
 
         let active_fill = theme.tokens.colors.accent[5];
-        let idle_fill = Color::from_rgba8(255, 255, 255, 13); // white/5
+        // Idle scope chips are Selectors (HIG §9.5): no fill, outlined by a
+        // hairline derived against the panel ground they sit on — a white
+        // veneer disappeared on a light palette, and a base-relative lift
+        // reads as a well on a panel ground darker than `raised`.
+        let idle_fill = Color::TRANSPARENT;
+        let idle_edge = Some(crate::surface::edge_on(crate::chrome::panel_ground(theme)));
         let active_text = theme.tokens.colors.text_primary;
         let idle_text = theme.tokens.colors.text_dim;
 
@@ -1330,6 +1349,7 @@ impl CommandPalette {
                 label,
                 chip_text_size,
                 if active { active_fill } else { idle_fill },
+                if active { None } else { idle_edge },
                 if active { active_text } else { idle_text },
             );
             x += chip_w + 6.0;
@@ -1340,8 +1360,11 @@ impl CommandPalette {
         let ft_chip_w = f64::from(ft_w) + 16.0;
         let ft_chip = Self::chip_rect(strip, strip.x1 - ft_chip_w, ft_chip_w);
         let ft_on = self.search_filter.full_text;
-        let ft_active_fill = Color::from_rgba8(34, 197, 94, 51); // emerald-500/20
-        let ft_active_text = Color::from_rgba8(0x4a, 0xde, 0x80, 0xff); // emerald-400
+        // "On" is a semantic state the theme defines (HIG §9.4), not a
+        // Tailwind emerald that ignores the palette.
+        let success = theme.tokens.colors.semantic.success;
+        let ft_active_fill = success.with_alpha_factor(0.2);
+        let ft_active_text = success;
         Self::draw_chip(
             scene,
             transform,
@@ -1350,6 +1373,7 @@ impl CommandPalette {
             ft_label,
             chip_text_size,
             if ft_on { ft_active_fill } else { idle_fill },
+            if ft_on { None } else { idle_edge },
             if ft_on { ft_active_text } else { idle_text },
         );
 
@@ -1373,6 +1397,7 @@ impl CommandPalette {
                 label,
                 chip_text_size,
                 if active { active_fill } else { idle_fill },
+                if active { None } else { idle_edge },
                 if active { active_text } else { idle_text },
             );
             fx += chip_w + 6.0;
@@ -1396,12 +1421,22 @@ impl CommandPalette {
         label: &str,
         text_size: f32,
         body: Color,
+        edge: Option<Color>,
         text_color: Color,
     ) {
         // `rounded-full` ≈ half-height radius.
         let radius = chip.height() / 2.0;
         let shape = RoundedRect::from_rect(chip, radius);
         scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
+        if let Some(edge) = edge {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                edge,
+                None,
+                &crate::surface::edge_outline(chip, radius),
+            );
+        }
         let (w, h) = text_renderer.measure(label, text_size, None);
         let tx = f64::midpoint(chip.x0, chip.x1) - f64::from(w) / 2.0;
         let ty = f64::midpoint(chip.y0, chip.y1) - f64::from(h) / 2.0;
@@ -1424,16 +1459,25 @@ impl CommandPalette {
     ) {
         let colors = &theme.tokens.colors;
         let footer = self.footer_rect();
-        scene.stroke(
-            &Stroke::new(1.0),
+        // HIG §9.5: a separator inside a Panel derives against the panel
+        // ground and is inset `spacing.s3`, never full-bleed into the radius.
+        let ground = crate::chrome::panel_ground(theme);
+        // Centred on the half pixel so the 1 px rule fills the footer's
+        // first pixel row instead of smearing across two at half strength.
+        crate::surface::separator(
+            scene,
             transform,
-            colors.border_standard.with_alpha_factor(0.6),
-            None,
-            &vello::kurbo::Line::new(
-                Point::new(footer.x0 + 4.0, footer.y0),
-                Point::new(footer.x1 - 4.0, footer.y0),
-            ),
+            footer.x0,
+            footer.x1,
+            footer.y0 + 0.5,
+            f64::from(theme.tokens.spacing.s3),
+            ground,
         );
+        // Key chips are static hints resting on the panel: no fill, just a
+        // hairline derived against the panel ground (HIG §9.5) — never a
+        // white veneer that is invisible on a light palette, and not a
+        // base-relative lift that reads as a well on a darker ground.
+        let chip_edge = crate::surface::edge_on(ground);
 
         let size = (theme.tokens.typography.scale.xs).max(9.0);
         let dim = colors.text_dim;
@@ -1457,20 +1501,12 @@ impl CommandPalette {
             let (kw, kh) = text_renderer.measure(key, size, None);
             let chip_w = (f64::from(kw) + 10.0).max(chip_h);
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
-            let chip_shape = RoundedRect::from_rect(chip_rect, 4.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                colors.surface_white_5,
-                None,
-                &chip_shape,
-            );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                colors.border_white_10,
+                chip_edge,
                 None,
-                &chip_shape,
+                &crate::surface::edge_outline(chip_rect, 4.0),
             );
             text_renderer.draw_text(
                 scene,
@@ -1542,7 +1578,8 @@ impl CommandPalette {
         for row in window {
             match row {
                 VisualRow::Header { label, total } => {
-                    let hy = y + (HEADER_HEIGHT - f64::from(header_size)) / 2.0 + 2.0;
+                    let (_, height) = text_renderer.measure(label, header_size, None);
+                    let hy = y + (HEADER_HEIGHT * self.text_scale - f64::from(height)) / 2.0;
                     let upper = label.to_uppercase();
                     text_renderer.draw_text(
                         scene,
@@ -1562,7 +1599,7 @@ impl CommandPalette {
                         transform.pre_translate(Vec2::new(x1 - 12.0 - f64::from(cw), hy)),
                         None,
                     );
-                    y += HEADER_HEIGHT;
+                    y += HEADER_HEIGHT * self.text_scale;
                 }
                 VisualRow::Entry(entry_i) => {
                     let row_rect = Rect::new(x0, y, x1, y + rh);
@@ -1594,11 +1631,12 @@ impl CommandPalette {
     /// A selected row is the card plus an accent wash; ink chosen against
     /// the bare card would read a tier lower there. Resolve the composite
     /// once so paint and contrast checks agree.
-    pub(crate) fn row_ground(colors: &crate::tokens::Colors, selected: bool) -> Color {
+    pub(crate) fn row_ground(theme: &Theme, selected: bool) -> Color {
+        let ground = crate::chrome::panel_ground(theme);
         if selected {
-            crate::tokens::colors::over(colors.surfaces.raised, colors.accent[5], SELECTION_WASH)
+            crate::tokens::colors::over(ground, theme.tokens.colors.accent[5], SELECTION_WASH)
         } else {
-            colors.surfaces.raised
+            ground
         }
     }
 
@@ -1710,7 +1748,7 @@ impl CommandPalette {
                 &shape,
             );
             let ink = colors.ink_on(
-                Self::row_ground(colors, selected),
+                Self::row_ground(theme, selected),
                 colors.accent[5],
                 ON_CARD_SMALL_TEXT_CONTRAST,
             );
@@ -1788,7 +1826,7 @@ impl CommandPalette {
         platform: PlatformConventions,
     ) {
         let colors = &theme.tokens.colors;
-        let row_ground = Self::row_ground(colors, selected);
+        let row_ground = Self::row_ground(theme, selected);
         // Needs contrast against the selection wash: take the nearest
         // legible step from the theme's dim tone rather than promoting it
         // to the title's weight to survive.
@@ -1825,7 +1863,10 @@ impl CommandPalette {
         if let Some(desc) = &entry.description {
             let label = text_renderer.elide_to_width(&entry.label, label_size, px(avail));
             let sub = elide_middle(text_renderer, desc, desc_size, avail);
-            let block = f64::from(label_size) + 3.0 + f64::from(desc_size);
+            let (_, label_height) = text_renderer.measure(&label, label_size, None);
+            let (_, desc_height) = text_renderer.measure(&sub, desc_size, None);
+            let gap = 3.0 * f64::from(theme.text_scale);
+            let block = f64::from(label_height + desc_height) + gap;
             let ly = row.y0 + (row.height() - block) / 2.0;
             text_renderer.draw_text(
                 scene,
@@ -1840,12 +1881,13 @@ impl CommandPalette {
                 &sub,
                 desc_size,
                 subtitle_ink,
-                transform.pre_translate(Vec2::new(text_x, ly + f64::from(label_size) + 3.0)),
+                transform.pre_translate(Vec2::new(text_x, ly + f64::from(label_height) + gap)),
                 None,
             );
         } else {
             let label = text_renderer.elide_to_width(&entry.label, label_size, px(avail));
-            let ly = row.y0 + (row.height() - f64::from(label_size)) / 2.0;
+            let (_, height) = text_renderer.measure(&label, label_size, None);
+            let ly = row.y0 + (row.height() - f64::from(height)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &label,
@@ -1889,13 +1931,9 @@ impl CommandPalette {
             1.5,
         );
         let title_size = theme.tokens.typography.scale.sm;
-        let title = if self.query.is_empty() {
-            "Nothing to show".to_string()
-        } else {
-            format!("No results for \u{201c}{}\u{201d}", self.query)
-        };
+        let title = self.empty_results_title();
         let title = text_renderer.elide_to_width(&title, title_size, px(self.rect.width() - 48.0));
-        let (tw, _) = text_renderer.measure(&title, title_size, None);
+        let (tw, title_height) = text_renderer.measure(&title, title_size, None);
         text_renderer.draw_text(
             scene,
             &title,
@@ -1914,10 +1952,27 @@ impl CommandPalette {
             colors.text_dim,
             transform.pre_translate(Vec2::new(
                 cx - f64::from(hw) / 2.0,
-                cy + f64::from(title_size) + 6.0,
+                cy + f64::from(title_height) + 6.0,
             )),
             None,
         );
+    }
+
+    fn empty_results_title(&self) -> String {
+        if self.query.is_empty() {
+            "Nothing to show".to_string()
+        } else {
+            format!("No results for “{}”", self.query)
+        }
+    }
+
+    fn empty_results_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0 + PADDING,
+            self.list_top_y(),
+            self.rect.x1 - PADDING,
+            self.footer_rect().y0,
+        )
     }
 
     fn rebuild(&mut self) {
@@ -2019,9 +2074,10 @@ impl Widget for CommandPalette {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
         // `desired_size` is the single source of truth so a hand-placed
         // palette (`set_rect`) and a taffy-laid one agree.
         let (width, height) = self.desired_size();
@@ -2054,21 +2110,31 @@ impl Widget for CommandPalette {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // Theme typography is already scaled. Keep all legacy text paint and
+        // metric calls in that same space, restoring the child renderer after.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+        self.text_scale = f64::from(theme.text_scale);
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(self.rect, self.surface_radius_px());
+        // Panel role (HIG §9.1): panel ground + the derived panel edge as a
+        // crisp 1 px inset stroke. The declared `border_standard` sat within
+        // rounding distance of `raised` on the dark preset and read as no
+        // edge at all.
+        let radius = self.surface_radius_px();
+        let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         // ONE control for the query — the magnifier lives inside its rounded
@@ -2089,7 +2155,7 @@ impl Widget for CommandPalette {
         let (ring, ring_w) = if self.is_focused {
             (colors.accent[5].with_alpha_factor(0.45), 1.0)
         } else {
-            (colors.border_standard, 1.0)
+            (crate::surface::edge_on(colors.surfaces.base), 1.0)
         };
         scene.stroke(&Stroke::new(ring_w), transform, ring, None, &field_shape);
 
@@ -2121,6 +2187,7 @@ impl Widget for CommandPalette {
         }
 
         self.draw_footer(scene, transform, text_renderer, theme);
+        text_renderer.set_text_scale(renderer_scale);
     }
 
     fn handle_event(
@@ -2322,7 +2389,7 @@ impl Widget for CommandPalette {
             });
 
         let total = self.visible.len();
-        let result_children = (0..total)
+        let mut result_children: Vec<AccessNode> = (0..total)
             .filter_map(|visible_index| {
                 let rect = self.row_rect(visible_index)?;
                 let entry = self
@@ -2353,6 +2420,14 @@ impl Widget for CommandPalette {
                 Some(item)
             })
             .collect();
+        if total == 0 && self.arg_state.is_none() {
+            result_children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(self.empty_results_title())
+                    .with_description("Try fewer words, or widen the scope")
+                    .with_bounds(self.empty_results_rect()),
+            );
+        }
         node = node.with_children(vec![
             query_node,
             AccessNode::new(Role::List)
@@ -2377,6 +2452,9 @@ impl Widget for CommandPalette {
                 self.rect.x1 - PADDING,
                 self.footer_rect().y0,
             )),
+            [1, 0] if self.visible.is_empty() && self.arg_state.is_none() => {
+                Some(self.empty_results_rect())
+            }
             [1, ordinal] => self
                 .painted_entry_at(*ordinal)
                 .and_then(|visible_index| self.row_rect(visible_index)),
@@ -2510,6 +2588,89 @@ mod tests {
             event: ev,
             is_synthetic: false,
         }
+    }
+
+    #[test]
+    fn large_text_palette_reserves_painted_rows_and_scales_fonts_once() {
+        let mut p = CommandPalette::new();
+        p.push(
+            CommandEntry::new("files", "Open Files")
+                .description("Opens beside")
+                .group("Applications"),
+        );
+        p.push(
+            CommandEntry::new("editor", "Open Editor")
+                .description("Opens beside")
+                .group("Applications"),
+        );
+        p.open();
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tree = TaffyTree::new();
+        p.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
+        let (_, height) = p.desired_size();
+        p.set_rect(Rect::new(16.0, 96.0, 784.0, 96.0 + height));
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let (_, label_h) = tr.measure("Open Files", theme.tokens.typography.scale.sm / 2.0, None);
+        let (_, desc_h) = tr.measure("Opens beside", theme.tokens.typography.scale.xs / 2.0, None);
+        assert!(p.row_height() >= f64::from(label_h + desc_h) + 6.0);
+        let mut scene = Scene::new();
+        p.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let runs = &scene.encoding().resources.glyph_runs;
+        assert!(
+            runs.iter()
+                .all(|run| run.font_size <= theme.tokens.typography.scale.base)
+        );
+        assert!(
+            runs.iter()
+                .any(|run| (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01)
+        );
+        assert!(p.row_rect(1).unwrap().y1 <= p.footer_rect().y0);
+        tr.set_text_scale(1.0); // palette paint's already-scaled theme space
+        let mut rows_scene = Scene::new();
+        p.draw_result_rows(&mut rows_scene, Affine::IDENTITY, &mut tr, &theme);
+        let first = p.row_rect(0).unwrap();
+        let second = p.row_rect(1).unwrap();
+        let header = Rect::new(first.x0, p.list_top_y(), first.x1, first.y0);
+        for run in &rows_scene.encoding().resources.glyph_runs {
+            let top = f64::from(run.transform.translation[1]);
+            let (_, height) = tr.measure("Ag", run.font_size, None);
+            assert!(
+                [header, first, second]
+                    .iter()
+                    .any(|band| top >= band.y0 - 0.01 && top + f64::from(height) <= band.y1 + 0.01),
+                "painted glyph line escapes row/header: y={top}, h={height}"
+            );
+        }
+        let mut footer_scene = Scene::new();
+        p.draw_footer(&mut footer_scene, Affine::IDENTITY, &mut tr, &theme);
+        for run in &footer_scene.encoding().resources.glyph_runs {
+            let top = f64::from(run.transform.translation[1]);
+            let (_, height) = tr.measure("Ag", run.font_size, None);
+            assert!(
+                top >= p.footer_rect().y0 - 0.01
+                    && top + f64::from(height) <= p.footer_rect().y1 + 0.01
+            );
+        }
+    }
+
+    #[test]
+    fn empty_search_exposes_feedback_and_recovery() {
+        let mut p = CommandPalette::new();
+        p.open();
+        p.set_rect(Rect::new(20.0, 30.0, 380.0, 310.0));
+        p.set_query("missing");
+        let node = Widget::accessibility(&p).unwrap();
+        let results = &node.children[1];
+        assert!(results.children.iter().any(|child| child.name.as_deref()
+            == Some("No results for “missing”")
+            && child.description.as_deref() == Some("Try fewer words, or widen the scope")));
     }
 
     #[test]

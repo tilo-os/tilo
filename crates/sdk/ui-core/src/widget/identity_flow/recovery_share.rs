@@ -14,9 +14,10 @@ use std::fmt::Write as _;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
+#[cfg(test)]
+use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -24,7 +25,40 @@ use crate::text_selection::clipboard_copy;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::sheet::{
+    Align, BodyScroll, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, WordGrid, check_box_rect,
+    paint_check_row, paint_text, paragraph_height, resolve, with_layout_renderer,
+};
 use crate::widget::identity_flow::{IdentityRecord, ScreenOutcome};
+use crate::widget::modal_frame::ModalAction;
+
+const TITLE_READY: &str = "Your recovery words";
+const TITLE_UNAVAILABLE: &str = "Recovery is not ready yet";
+const EXPLANATION_READY: &str =
+    "Write these 24 words down. They restore your identity if you lose every device.";
+const EXPLANATION_UNAVAILABLE: &str = "Pair another trusted device first. qOS will show real \
+     recovery words only after the secure setup completes.";
+const ACK_LABEL: &str = "I've written them down somewhere safe";
+const COPY_LABEL: &str = "Copy to clipboard";
+const CONTINUE_LABEL: &str = "Continue";
+
+/// Action-row indices, in authoring order.
+const ACTION_COPY: usize = 0;
+const ACTION_CONTINUE: usize = 1;
+
+/// The mnemonic is 24 words; the grid never shows more.
+const WORD_COUNT: usize = 24;
+
+/// Every rect the screen paints and hit-tests, from one pass over the rows.
+#[derive(Clone, Debug, Default)]
+struct Plan {
+    explanation: Rect,
+    /// The word grid's area, when there are words to show.
+    grid: Option<Rect>,
+    ack_row: Rect,
+    clipboard: Option<Rect>,
+    bottom: f64,
+}
 
 /// Screen 2: recovery-share storage.
 pub struct RecoveryShareScreen {
@@ -44,6 +78,11 @@ pub struct RecoveryShareScreen {
     /// Most recent clipboard write status — surfaced so a sandbox
     /// failure ("clipboard owner refused") doesn't fail silently.
     clipboard_message: Option<String>,
+    /// The theme `build_layout` saw, so `apply_layout` can resolve the rows
+    /// without waiting for a paint.
+    layout_theme: Option<Theme>,
+    scroll: BodyScroll,
+    body_height: f64,
 }
 
 impl Default for RecoveryShareScreen {
@@ -66,6 +105,9 @@ impl RecoveryShareScreen {
             ack_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             clipboard_message: None,
+            layout_theme: None,
+            scroll: BodyScroll::default(),
+            body_height: 0.0,
         }
     }
 
@@ -123,7 +165,7 @@ impl RecoveryShareScreen {
             self.clipboard_message = Some("nothing to copy".to_string());
             return;
         }
-        let words: Vec<&str> = self.mnemonic.split_whitespace().take(24).collect();
+        let words: Vec<&str> = self.mnemonic.split_whitespace().take(WORD_COUNT).collect();
         let mut formatted = String::new();
         for (row, chunk) in words.chunks(4).enumerate() {
             if row > 0 {
@@ -144,7 +186,10 @@ impl RecoveryShareScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "recovery-share handling mirrors the host's Widget event signature while returning the screen transition"
+    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -175,7 +220,7 @@ impl RecoveryShareScreen {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.copy_rect.contains(self.last_cursor) {
+                if !self.mnemonic.is_empty() && self.copy_rect.contains(self.last_cursor) {
                     *handled = true;
                     self.copy_to_clipboard();
                     return ScreenOutcome::Stay;
@@ -191,288 +236,173 @@ impl RecoveryShareScreen {
                 }
                 ScreenOutcome::Stay
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if self.scroll.wheel(delta) {
+                    *handled = true;
+                }
+                ScreenOutcome::Stay
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if self.scroll.key(logical_key, self.body_height) {
+                    *handled = true;
+                }
+                ScreenOutcome::Stay
+            }
             _ => ScreenOutcome::Stay,
         }
     }
 
-    /// Backdrop scrim + the card shell. Returns the card's `Rect` so the
-    /// remaining draw helpers below can lay out relative to it without
-    /// recomputing it. Split out of `draw` to keep it under clippy's
-    /// line budget.
-    fn draw_backdrop_and_card(&self, scene: &mut Scene, transform: Affine, theme: &Theme) -> Rect {
-        let backdrop = Color::from_rgba8(0, 0, 0, 180);
-        scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
-
-        let card_w = 680.0;
-        let card_h = 540.0;
-        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
-        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
-        let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
-        let radius = 12.0;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        card
-    }
-
-    /// Title + subtitle. Split out of `draw` to keep it under clippy's
-    /// line budget.
-    fn draw_header(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        pad: f64,
-    ) {
-        text_renderer.draw_text(
-            scene,
-            if self.mnemonic.is_empty() {
-                "Recovery is not ready yet"
-            } else {
-                "Your recovery words"
-            },
-            22.0,
-            theme.tokens.colors.text_primary,
-            translated(transform, card.x0 + pad, card.y0 + pad),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            if self.mnemonic.is_empty() {
-                "Pair another trusted device first. Tilo will show real recovery words only after the secure setup completes."
-            } else {
-                "Write these 24 words down. They restore your identity if you lose every device."
-            },
-            13.0,
-            theme.tokens.colors.text_dim,
-            translated(transform, card.x0 + pad, card.y0 + pad + 32.0),
-            None,
-        );
-    }
-
-    /// The "Copy to clipboard" chip. Split out of `draw` to keep it under
-    /// clippy's line budget.
-    fn draw_copy_button(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let copy_bg = if self.copy_hovered {
-            theme.bg_hover
-        } else {
-            theme.tokens.colors.surfaces.base
+    /// One geometry pass for both `apply_layout` and `draw`; the
+    /// acknowledgement row's target is the part of it inside the body, so
+    /// once it scrolls under the action row it cannot take Continue's click.
+    fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) -> Resolved<Plan> {
+        let actions = self.actions();
+        let spec = SheetSpec {
+            title: self.title(),
+            max_width: GRID_SHEET_WIDTH,
+            actions: &actions,
         };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            copy_bg,
-            None,
-            &RoundedRect::from_rect(self.copy_rect, 8.0),
+        let mut scroll = self.scroll;
+        let resolved = resolve(
+            self.rect,
+            &spec,
+            &mut scroll,
+            text_renderer,
+            theme,
+            |rows, control_h, tr, theme| {
+                let plan = self.plan(rows, control_h, tr, theme);
+                let bottom = plan.bottom;
+                (plan, bottom)
+            },
         );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.copy_rect, 8.0),
-        );
-        let (cw, _) = text_renderer.measure("Copy to clipboard", 13.0, None);
-        text_renderer.draw_text(
-            scene,
-            "Copy to clipboard",
-            13.0,
-            theme.tokens.colors.text_primary,
-            translated(
-                transform,
-                self.copy_rect.x0 + (self.copy_rect.width() - f64::from(cw)) / 2.0,
-                self.copy_rect.y0 + (self.copy_rect.height() - 13.0) / 2.0,
-            ),
-            None,
-        );
+        self.scroll = scroll;
+        let body = resolved.sheet.body();
+        self.body_height = body.height();
+        self.ack_hit_rect = BodyScroll::visible(body, resolved.plan.ack_row);
+        self.ack_rect = BodyScroll::visible(body, check_box_rect(resolved.plan.ack_row, theme));
+        self.copy_rect = resolved.sheet.action(ACTION_COPY);
+        self.continue_rect = resolved.sheet.action(ACTION_CONTINUE);
+        resolved
     }
 
-    /// The 24-word grid: 6 rows × 4 cols. Split out of `draw` to keep it
-    /// under clippy's line budget.
+    fn title(&self) -> &'static str {
+        if self.mnemonic.is_empty() {
+            TITLE_UNAVAILABLE
+        } else {
+            TITLE_READY
+        }
+    }
+
+    fn explanation(&self) -> &'static str {
+        if self.mnemonic.is_empty() {
+            EXPLANATION_UNAVAILABLE
+        } else {
+            EXPLANATION_READY
+        }
+    }
+
+    fn actions(&self) -> [ModalAction<'static>; 2] {
+        [
+            ModalAction::secondary(COPY_LABEL)
+                .enabled(!self.mnemonic.is_empty())
+                .hovered(self.copy_hovered),
+            ModalAction::primary(CONTINUE_LABEL)
+                .enabled(self.is_continue_enabled())
+                .hovered(self.continue_hovered),
+        ]
+    }
+
+    /// Walk the body rows once: explanation, the word grid (one control
+    /// row per grid row, so the verify screen's blanks fit the same
+    /// cells), the acknowledgement row, any clipboard status.
+    fn plan(
+        &self,
+        mut rows: Rows,
+        control_h: f64,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Plan {
+        let sp = &theme.tokens.spacing;
+        let width = rows.width();
+        let explanation = rows.row(paragraph_height(
+            text_renderer,
+            theme,
+            Role::Body,
+            self.explanation(),
+            width,
+        ));
+        let word_count = self.words().len().min(WORD_COUNT);
+        let grid = (word_count > 0).then(|| {
+            rows.gap(sp.s6);
+            rows.row(WordGrid::height(word_count, control_h))
+        });
+        rows.gap(sp.s6);
+        let ack_row = rows.row(control_h);
+        let clipboard = self.clipboard_message.as_deref().map(|msg| {
+            rows.gap(sp.s2);
+            rows.row(paragraph_height(
+                text_renderer,
+                theme,
+                Role::Caption,
+                msg,
+                width,
+            ))
+        });
+        Plan {
+            explanation,
+            grid,
+            ack_row,
+            clipboard,
+            bottom: rows.bottom(),
+        }
+    }
+
+    /// The 24-word grid: ordinal in the label role, word in the value
+    /// role, each on its cell's centre line.
     fn draw_word_grid(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        card: Rect,
-        pad: f64,
+        area: Rect,
+        control_h: f64,
     ) {
-        let words = self.words();
-        let grid_x = card.x0 + pad;
-        let grid_y = card.y0 + 110.0;
-        let col_w = (card.width() - 2.0 * pad) / 4.0;
-        let row_h = 36.0;
-        for (i, word) in words.iter().take(24).enumerate() {
-            let row = i / 4;
-            let col = i % 4;
-            let x = grid_x + count_to_f64(col) * col_w;
-            let y = grid_y + count_to_f64(row) * row_h;
-            let prefix = format!("{:>2}.", i.saturating_add(1));
-            text_renderer.draw_text(
+        let grid = WordGrid::new(area, control_h, text_renderer, theme);
+        for (i, word) in self.words().iter().take(WORD_COUNT).enumerate() {
+            let (ordinal, cell) = grid.cell(i, theme);
+            paint_text(
                 scene,
-                &prefix,
-                12.0,
-                theme.tokens.colors.text_dim,
-                translated(transform, x, y + 6.0),
-                None,
+                transform,
+                text_renderer,
+                theme,
+                ordinal,
+                &format!("{}.", i.saturating_add(1)),
+                Role::Label,
+                Align::Start,
+                false,
             );
-            text_renderer.draw_text(
+            paint_text(
                 scene,
+                transform,
+                text_renderer,
+                theme,
+                cell,
                 word,
-                14.0,
-                theme.tokens.colors.text_primary,
-                translated(transform, x + 32.0, y + 4.0),
-                None,
+                Role::Value,
+                Align::Start,
+                false,
             );
         }
     }
-
-    /// The "I've written them down" checkbox row, plus any clipboard
-    /// status message beneath it. Split out of `draw` to keep it under
-    /// clippy's line budget.
-    fn draw_acknowledge_row(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        pad: f64,
-    ) {
-        let check_bg = if self.acknowledged {
-            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            check_bg,
-            None,
-            &RoundedRect::from_rect(self.ack_rect, 3.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.ack_rect, 3.0),
-        );
-        if self.acknowledged {
-            let mut p = vello::kurbo::BezPath::new();
-            p.move_to((self.ack_rect.x0 + 4.0, self.ack_rect.center().y));
-            p.line_to((self.ack_rect.x0 + 7.5, self.ack_rect.y1 - 4.0));
-            p.line_to((self.ack_rect.x1 - 3.0, self.ack_rect.y0 + 4.0));
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                Color::from_rgb8(255, 255, 255),
-                None,
-                &p,
-            );
-        }
-        text_renderer.draw_text(
-            scene,
-            "I've written them down somewhere safe",
-            13.0,
-            theme.tokens.colors.text_primary,
-            translated(transform, self.ack_rect.x1 + 8.0, self.ack_rect.y0 + 2.0),
-            None,
-        );
-        if let Some(msg) = &self.clipboard_message {
-            text_renderer.draw_text(
-                scene,
-                msg,
-                12.0,
-                theme.tokens.colors.text_dim,
-                translated(transform, card.x0 + pad, self.ack_rect.y1 + 8.0),
-                None,
-            );
-        }
-    }
-
-    /// The "Continue" button. Split out of `draw` to keep it under
-    /// clippy's line budget.
-    fn draw_continue_button(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let cont_enabled = self.is_continue_enabled();
-        let cont_bg = if !cont_enabled {
-            theme.tokens.colors.surfaces.base
-        } else if self.continue_hovered {
-            theme.bg_active
-        } else {
-            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-        };
-        let cont_text_color = if cont_enabled {
-            Color::from_rgb8(255, 255, 255)
-        } else {
-            theme.tokens.colors.text_dim
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cont_bg,
-            None,
-            &RoundedRect::from_rect(self.continue_rect, 8.0),
-        );
-        let (lw, _) = text_renderer.measure("Continue", 14.0, None);
-        text_renderer.draw_text(
-            scene,
-            "Continue",
-            14.0,
-            cont_text_color,
-            translated(
-                transform,
-                self.continue_rect.x0 + (self.continue_rect.width() - f64::from(lw)) / 2.0,
-                self.continue_rect.y0 + (self.continue_rect.height() - 14.0) / 2.0,
-            ),
-            None,
-        );
-    }
-}
-
-/// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
-/// pure `f64` matrix multiply-add with no overflow trap, so it cannot
-/// panic regardless of operand magnitude.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine composition is float matrix math and cannot panic"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
-/// Widens a grid row/column index to `f64` for layout math. Goes through
-/// `u32` (exactly representable in `f64`) with a saturating fallback
-/// rather than an `as` cast, so it's lossless for any realistic word
-/// count.
-fn count_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 impl Widget for RecoveryShareScreen {
@@ -481,13 +411,16 @@ impl Widget for RecoveryShareScreen {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = Some(theme.clone());
+        // The screen owns the viewport, so the sheet centres on the window
+        // rather than inside a fixed box at the origin.
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(900.0),
-                height: Dimension::length(640.0),
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
             ..Default::default()
         });
@@ -503,38 +436,11 @@ impl Widget for RecoveryShareScreen {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        let card_w = 680.0;
-        let card_h = 540.0;
-        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
-        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
-        let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
-        let pad = 32.0;
-        self.copy_rect = Rect::new(
-            card.x1 - pad - 140.0,
-            card.y0 + pad,
-            card.x1 - pad,
-            card.y0 + pad + 36.0,
-        );
-        // ~360 px label width is generous enough for any reasonable
-        // translation of "I've written them down somewhere safe".
-        self.ack_rect = Rect::new(
-            card.x0 + pad,
-            card.y1 - pad - 80.0,
-            card.x0 + pad + 18.0,
-            card.y1 - pad - 80.0 + 18.0,
-        );
-        self.ack_hit_rect = Rect::new(
-            self.ack_rect.x0,
-            self.ack_rect.y0 - 4.0,
-            self.ack_rect.x1 + 360.0,
-            self.ack_rect.y1 + 4.0,
-        );
-        self.continue_rect = Rect::new(
-            card.x1 - pad - 160.0,
-            card.y1 - pad - 44.0,
-            card.x1 - pad,
-            card.y1 - pad,
-        );
+        if let Some(theme) = self.layout_theme.clone() {
+            with_layout_renderer(&theme, |tr| {
+                self.resolve(&theme, tr);
+            });
+        }
     }
 
     fn draw(
@@ -545,13 +451,59 @@ impl Widget for RecoveryShareScreen {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let pad = 32.0;
-        let card = self.draw_backdrop_and_card(scene, transform, theme);
-        self.draw_header(scene, transform, text_renderer, theme, card, pad);
-        self.draw_copy_button(scene, transform, text_renderer, theme);
-        self.draw_word_grid(scene, transform, text_renderer, theme, card, pad);
-        self.draw_acknowledge_row(scene, transform, text_renderer, theme, card, pad);
-        self.draw_continue_button(scene, transform, text_renderer, theme);
+        let resolved = self.resolve(theme, text_renderer);
+        let actions = self.actions();
+        let spec = SheetSpec {
+            title: self.title(),
+            max_width: GRID_SHEET_WIDTH,
+            actions: &actions,
+        };
+        let sheet = &resolved.sheet;
+        let plan = &resolved.plan;
+        let control_h = sheet.control_height(theme);
+
+        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+        sheet.clip_body(scene, transform);
+        paint_text(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            plan.explanation,
+            self.explanation(),
+            Role::Body,
+            Align::Start,
+            true,
+        );
+        if let Some(area) = plan.grid {
+            self.draw_word_grid(scene, transform, text_renderer, theme, area, control_h);
+        }
+        let ack_hovered = self.ack_hit_rect.contains(self.last_cursor);
+        paint_check_row(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            plan.ack_row,
+            self.acknowledged,
+            ack_hovered,
+            ACK_LABEL,
+        );
+        if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_message.as_deref()) {
+            paint_text(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                msg,
+                Role::Caption,
+                Align::Start,
+                true,
+            );
+        }
+        scene.pop_layer();
+        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
     }
 
     fn handle_event(
@@ -631,5 +583,77 @@ mod tests {
         let mut s = RecoveryShareScreen::new();
         s.set_mnemonic(" alpha  beta  gamma ");
         assert_eq!(s.words(), vec!["alpha", "beta", "gamma"]);
+    }
+
+    /// With words the grid is six control-tall rows; without them there is
+    /// no grid and the acknowledgement row follows the explanation directly.
+    #[test]
+    fn plan_reserves_six_control_rows_for_twenty_four_words() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let body = Rect::new(100.0, 200.0, 740.0, 200.0);
+        let mut s = RecoveryShareScreen::new();
+        let bare = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+        assert!(bare.grid.is_none(), "no words, no grid");
+        assert_eq!(bare.ack_row.height(), 34.0);
+
+        s.set_mnemonic("a b c d e f g h i j k l m n o p q r s t u v w x");
+        let full = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+        let grid = full.grid.expect("24 words fill a grid");
+        assert!((grid.height() - 6.0 * 34.0).abs() < 1e-9);
+        assert_eq!((grid.x0, grid.x1), (body.x0, body.x1));
+        assert!(
+            (full.ack_row.y0 - grid.y1 - f64::from(theme.tokens.spacing.s6)).abs() < 1e-9,
+            "one group gap between the grid and the acknowledgement"
+        );
+        assert!((full.bottom - full.ack_row.y1).abs() < 1e-9);
+    }
+
+    /// At a large text scale the body outruns the card. The acknowledgement
+    /// row must then be clipped to the body, never under the action row —
+    /// and reachable by scrolling, since Continue depends on it.
+    #[test]
+    fn at_two_x_text_the_ack_row_never_overlaps_the_actions_and_scrolls_into_view() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut s = RecoveryShareScreen::new();
+        s.set_mnemonic("a b c d e f g h i j k l m n o p q r s t u v w x");
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = HashMap::new();
+        let node = s.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .expect("layout");
+        s.apply_layout(&taffy, node, Point::ORIGIN);
+        assert!(
+            s.scroll.max() > 0.0,
+            "24 words at 2× do not fit an 800 px window"
+        );
+        let actions = Rect::new(
+            s.copy_rect.x0.min(s.continue_rect.x0),
+            s.copy_rect.y0.min(s.continue_rect.y0),
+            s.copy_rect.x1.max(s.continue_rect.x1),
+            s.copy_rect.y1.max(s.continue_rect.y1),
+        );
+        assert!(
+            s.ack_hit_rect.intersect(actions).is_zero_area(),
+            "the acknowledgement target {:?} must not reach the action row {actions:?}",
+            s.ack_hit_rect
+        );
+        // Scroll to the bottom: the row is now inside the body and clickable.
+        assert!(s.scroll.key(&Key::Named(NamedKey::PageDown), s.body_height));
+        while s.scroll.key(&Key::Named(NamedKey::PageDown), s.body_height) {}
+        s.apply_layout(&taffy, node, Point::ORIGIN);
+        assert!(
+            s.ack_hit_rect.area() > 0.0,
+            "scrolled to the end, the row is a target"
+        );
+        assert!(s.ack_hit_rect.intersect(actions).is_zero_area());
+        assert!(s.ack_hit_rect.y1 <= s.continue_rect.y0);
     }
 }

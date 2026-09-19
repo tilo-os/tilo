@@ -401,8 +401,8 @@ impl Widget for UndoButton {
         )
     }
 
-    fn set_undo_status(&mut self, status: &UndoStatus) {
-        self.access.publish(status);
+    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> UndoStatus) {
+        self.access.publish(&status());
         // Surrender focus when the verb goes away. Undoing the last action
         // with the keyboard empties the stack under the control the user is
         // standing on: it drops out of `focusable_order` the same instant, so
@@ -515,7 +515,7 @@ mod tests {
         assert_eq!(node.description.as_deref(), Some("Nothing to undo"));
         assert!(!b.is_enabled(), "is_enabled must agree with the a11y state");
 
-        b.set_undo_status(&status(true, false));
+        b.set_undo_status(&mut || status(true, false));
         let node = Widget::accessibility(&b).unwrap();
         assert!(!node.state.disabled, "an action on the stack enables it");
         assert!(node.state.focusable);
@@ -529,8 +529,8 @@ mod tests {
     fn each_control_reads_its_own_verb() {
         let mut undo = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
         let mut redo = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
-        undo.set_undo_status(&status(true, false));
-        redo.set_undo_status(&status(true, false));
+        undo.set_undo_status(&mut || status(true, false));
+        redo.set_undo_status(&mut || status(true, false));
         assert!(undo.is_enabled(), "undo is available");
         assert!(!redo.is_enabled(), "redo is not, despite undo being");
         assert_eq!(
@@ -551,7 +551,7 @@ mod tests {
             "a disabled control must not ask the host to undo"
         );
 
-        b.set_undo_status(&status(true, false));
+        b.set_undo_status(&mut || status(true, false));
         click(&mut b);
         assert_eq!(b.take_undo_request(), Some(UndoRequest::Undo));
         assert_eq!(b.take_undo_request(), None, "one click, one undo");
@@ -570,7 +570,7 @@ mod tests {
         );
         assert_eq!(b.take_undo_request(), None);
 
-        b.set_undo_status(&status(false, true));
+        b.set_undo_status(&mut || status(false, true));
         assert!(b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT));
         assert_eq!(b.take_undo_request(), Some(UndoRequest::Redo));
     }
@@ -582,7 +582,7 @@ mod tests {
     #[test]
     fn a_control_that_goes_unavailable_surrenders_focus() {
         let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
-        b.set_undo_status(&status(true, false));
+        b.set_undo_status(&mut || status(true, false));
         b.set_focus(true);
         assert!(b.is_focused());
         assert!(
@@ -591,7 +591,7 @@ mod tests {
         );
 
         // The action is undone; the stack is empty.
-        b.set_undo_status(&status(false, true));
+        b.set_undo_status(&mut || status(false, true));
         assert!(!b.is_focused(), "focus is surrendered with the verb");
         let node = Widget::accessibility(&b).unwrap();
         assert!(!node.state.focused, "and is not reported to an AT");
@@ -608,7 +608,7 @@ mod tests {
         b.dirty = false;
         assert!(!b.needs_redraw(), "nothing has changed yet");
 
-        b.set_undo_status(&status(true, false));
+        b.set_undo_status(&mut || status(true, false));
         assert!(
             b.needs_redraw(),
             "gaining an undoable action must repaint the control"

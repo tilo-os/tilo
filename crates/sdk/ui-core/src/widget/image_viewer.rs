@@ -58,6 +58,73 @@ fn delta_f32(v: f64) -> f32 {
     v as f32
 }
 
+/// Pure photo viewport geometry shared by live widgets and immutable History.
+#[derive(Clone, Copy, Debug)]
+pub struct ImageViewport {
+    pub rect: Rect,
+    pub zoom: f64,
+    pub pan: Vec2,
+}
+impl ImageViewport {
+    pub fn base_scale(self, width: u32, height: u32) -> f64 {
+        if width == 0 || height == 0 || self.rect.width() <= 0. || self.rect.height() <= 0. {
+            return 0.;
+        }
+        (self.rect.width() / f64::from(width)).min(self.rect.height() / f64::from(height))
+    }
+    pub fn screen_to_image(self, width: u32, height: u32, screen: Vec2) -> Option<Vec2> {
+        let scale = self.base_scale(width, height) * self.zoom;
+        if !scale.is_finite() || scale <= 0. {
+            return None;
+        }
+        Some(Vec2::new(
+            (screen.x - self.rect.center().x) / scale - self.pan.x,
+            (screen.y - self.rect.center().y) / scale - self.pan.y,
+        ))
+    }
+    pub fn image_transform(self, width: u32, height: u32) -> Option<Affine> {
+        let scale = self.base_scale(width, height) * self.zoom;
+        if !scale.is_finite() || scale <= 0. || !self.pan.x.is_finite() || !self.pan.y.is_finite() {
+            return None;
+        }
+        let x = self.rect.center().x - f64::from(width) * scale * 0.5 + self.pan.x * scale;
+        let y = self.rect.center().y - f64::from(height) * scale * 0.5 + self.pan.y * scale;
+        Some(translated_and_scaled(Affine::IDENTITY, x, y, scale))
+    }
+    /// Paint only supplied pixels. No widget, event routing, or live service.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Affine composition is floating-point geometry"
+    )]
+    pub fn draw(
+        self,
+        image: &peniko::ImageData,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
+        let Some(image_transform) = self.image_transform(image.width, image.height) else {
+            return;
+        };
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.,
+            transform,
+            &self.rect,
+        );
+        scene.draw_image(image, transform * image_transform);
+        scene.pop_layer();
+    }
+}
+
 /// Interactive viewer for a pre-decoded [`peniko::ImageData`]. See module
 /// docs for the contract.
 pub struct ImageViewer {
@@ -112,41 +179,27 @@ impl ImageViewer {
         self.pan = p;
     }
 
+    fn viewport(&self) -> ImageViewport {
+        ImageViewport {
+            rect: self.rect,
+            zoom: f64::from(self.zoom),
+            pan: self.pan,
+        }
+    }
+
     /// Returns `0.0` if either the image or the viewport has a zero
     /// dimension — callers must check before using the result.
     fn base_scale(&self) -> f64 {
-        let iw = f64::from(self.image.width);
-        let ih = f64::from(self.image.height);
-        if iw <= 0.0 || ih <= 0.0 {
-            return 0.0;
-        }
-        let rw = self.rect.width();
-        let rh = self.rect.height();
-        if rw <= 0.0 || rh <= 0.0 {
-            return 0.0;
-        }
-        (rw / iw).min(rh / ih)
+        self.viewport()
+            .base_scale(self.image.width, self.image.height)
     }
 
     /// Inverse of the destination-quad transform built in `draw`.
     /// `None` when the effective scale is zero (degenerate image or
     /// viewport).
     fn screen_to_image(&self, screen: Vec2) -> Option<Vec2> {
-        let base = self.base_scale();
-        if base <= 0.0 {
-            return None;
-        }
-        let total_scale = base * f64::from(self.zoom);
-        // Centre of the rect — the image is anchored here at pan=0.
-        let cx = (self.rect.x0 + self.rect.x1) * 0.5;
-        let cy = (self.rect.y0 + self.rect.y1) * 0.5;
-        let dx = screen.x - cx;
-        let dy = screen.y - cy;
-        // Reverse the affine: subtract pan (image-space), divide by scale.
-        Some(Vec2::new(
-            dx / total_scale - self.pan.x,
-            dy / total_scale - self.pan.y,
-        ))
+        self.viewport()
+            .screen_to_image(self.image.width, self.image.height, screen)
     }
 }
 
@@ -190,55 +243,7 @@ impl Widget for ImageViewer {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Any region not covered by the scaled image gets the theme's
-        // base surface so the letterbox bars match adjacent chrome.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-
-        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
-            return;
-        }
-        if self.image.width == 0 || self.image.height == 0 {
-            return;
-        }
-
-        let base = self.base_scale();
-        if base <= 0.0 {
-            return;
-        }
-        let total_scale = base * f64::from(self.zoom);
-        let iw = f64::from(self.image.width);
-        let ih = f64::from(self.image.height);
-        let dw = iw * total_scale;
-        let dh = ih * total_scale;
-        let cx = (self.rect.x0 + self.rect.x1) * 0.5;
-        let cy = (self.rect.y0 + self.rect.y1) * 0.5;
-        // Centred on the rect midpoint, then translated by `pan *
-        // total_scale` (pan is image-space, so it scales with zoom).
-        let dx = cx - dw * 0.5 + self.pan.x * total_scale;
-        let dy = cy - dh * 0.5 + self.pan.y * total_scale;
-
-        // Clips so pan/zoom doesn't bleed over adjacent chrome when
-        // the image is bigger than its viewport.
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &self.rect,
-        );
-
-        // `draw_image` maps the image's unit pixel space directly into
-        // world space, so scale-then-translate composes the quad.
-        let img_transform = translated_and_scaled(transform, dx, dy, total_scale);
-        scene.draw_image(&self.image, img_transform);
-
-        scene.pop_layer();
+        self.viewport().draw(&self.image, scene, transform, theme);
     }
 
     /// `kurbo::Vec2`'s `Sub`/`AddAssign` below are plain f64 component-wise

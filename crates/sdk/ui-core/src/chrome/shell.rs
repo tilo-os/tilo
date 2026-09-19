@@ -13,6 +13,7 @@ use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 use crate::tokens::Colors;
+use crate::tokens::colors::HAIRLINE_MIN_DELTA;
 
 /// Opacity shared by every [`ChromeRole::Bar`] and [`ChromeRole::Panel`]
 /// surface — kept opaque because nothing here can blur a *backdrop* (vello
@@ -33,9 +34,9 @@ pub const HAIRLINE_ALPHA: u8 = 26;
 pub const PANEL_BORDER_ALPHA: u8 = 92;
 
 /// Smallest relative-luminance gap for a panel to read as its own surface
-/// rather than a slightly different patch of the desktop. Matches the
-/// toolkit's hairline threshold.
-const PANEL_MIN_DELTA: f64 = 0.02;
+/// rather than a slightly different patch of the desktop — the toolkit's
+/// hairline threshold, spelled once.
+const PANEL_MIN_DELTA: f64 = HAIRLINE_MIN_DELTA;
 
 /// Alphas [`panel_ground`] tries, ascending, when the declared overlay
 /// tier is swallowed by a ground the surface sits on — a ladder rather
@@ -181,6 +182,59 @@ pub fn selection_tier(theme: &Theme, state: SelectionState) -> SelectionTier {
         inner_glow: lifted.then(|| Colors::hairline_on(ground, GLOW_ALPHA)),
         scale: if state.pressed { PRESS_SCALE } else { 1.0 },
     }
+}
+
+/// Alpha ladder a lift walks when the base lift does not register on the
+/// ground a control actually sits on. The first step is the control
+/// hairline; the ladder only climbs where the ground is itself a wash of
+/// the same magnitude (a dark `panel_ground`, a near-black high-contrast
+/// base).
+pub const LIFT_ALPHA_STEPS: &[u8] = &[26, 40, 56, 72, 92, 120, 150];
+
+/// [`selection_tier`] for a control that sits on `ground` rather than on
+/// `surfaces.base` — a menu row on [`panel_ground`], a list row on a
+/// raised sidebar, a card on a sheet. The lift is measured against that
+/// ground: the base lift is kept where it registers there, so every chosen
+/// control stays in one family, and otherwise the tier walks
+/// [`LIFT_ALPHA_STEPS`] until it does. Hover is halfway from the ground to
+/// the active fill, as it is on the base.
+pub fn selection_tier_on(theme: &Theme, state: SelectionState, ground: Color) -> SelectionTier {
+    let colors = &theme.tokens.colors;
+    let lifted = state.active || state.pressed;
+    let active = lift_on(colors, ground);
+    let fill = if lifted {
+        active
+    } else if state.hover {
+        crate::tokens::colors::mix8(ground, active, HOVER_LIFT_T)
+    } else {
+        Color::TRANSPARENT
+    };
+    SelectionTier {
+        fill,
+        border: lifted.then(|| Colors::hairline_on(ground, HAIRLINE_ALPHA)),
+        inner_glow: lifted.then(|| Colors::hairline_on(ground, GLOW_ALPHA)),
+        scale: if state.pressed { PRESS_SCALE } else { 1.0 },
+    }
+}
+
+/// The active-tier fill on `ground`: `Colors::lift(1.0)` where that clears
+/// the ground by the hairline threshold, else the first ladder step that does.
+fn lift_on(colors: &Colors, ground: Color) -> Color {
+    use crate::a11y::relative_luminance;
+    let registers =
+        |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs() >= HAIRLINE_MIN_DELTA;
+    let base_lift = colors.lift(1.0);
+    if registers(base_lift) {
+        return base_lift;
+    }
+    let mut last = base_lift;
+    for alpha in LIFT_ALPHA_STEPS {
+        last = crate::tokens::colors::composite(Colors::hairline_on(ground, *alpha), ground);
+        if registers(last) {
+            return last;
+        }
+    }
+    last
 }
 
 // ---------- glass ----------
@@ -788,6 +842,60 @@ mod tests {
 
     /// Per theme: a fixed white wash would pass this on dark and fail on
     /// light.
+    #[test]
+    fn selection_tier_on_registers_on_every_ground_it_is_asked_about() {
+        use crate::a11y::relative_luminance;
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+        ] {
+            let colors = &theme.tokens.colors;
+            let grounds = [
+                ("base", colors.surfaces.base),
+                ("raised", colors.surfaces.raised),
+                ("panel_ground", panel_ground(&theme)),
+            ];
+            for (ground_name, ground) in grounds {
+                let delta = |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs();
+                let active = selection_tier_on(&theme, SelectionState::active(true), ground).fill;
+                let hover =
+                    selection_tier_on(&theme, SelectionState::new(false, true, false), ground).fill;
+                let idle =
+                    selection_tier_on(&theme, SelectionState::new(false, false, false), ground)
+                        .fill;
+                assert_eq!(
+                    idle.components[3], 0.0,
+                    "{name}/{ground_name}: idle is transparent"
+                );
+                assert!(
+                    delta(active) >= HAIRLINE_MIN_DELTA,
+                    "{name}/{ground_name}: active lift must register on its ground (Δ {:.4})",
+                    delta(active)
+                );
+                assert!(
+                    delta(hover) > 0.0 && delta(hover) < delta(active),
+                    "{name}/{ground_name}: hover sits between the ground and the active tier"
+                );
+            }
+            // On the base the ground-aware tier is the base tier, so the two
+            // vocabularies agree wherever the shell already uses the latter.
+            let base = colors.surfaces.base;
+            if delta_on(base, colors.lift(1.0)) >= HAIRLINE_MIN_DELTA {
+                assert_eq!(
+                    selection_tier_on(&theme, SelectionState::active(true), base).fill,
+                    selection_tier(&theme, SelectionState::active(true)).fill,
+                    "{name}: base tier unchanged"
+                );
+            }
+        }
+    }
+
+    fn delta_on(ground: Color, c: Color) -> f64 {
+        use crate::a11y::relative_luminance;
+        (relative_luminance(c) - relative_luminance(ground)).abs()
+    }
+
     #[test]
     fn selection_tiers_move_progressively_away_from_the_ground() {
         for (name, theme) in themes() {

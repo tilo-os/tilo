@@ -13,7 +13,9 @@ pub mod toolbar;
 
 pub use page::PageGeometry;
 pub use shell::{
-    ChromeRole, SelectionState, SelectionTier, fill_scrim, scrim_maps, selection_tier,
+    ChromeRole, GLOW_ALPHA, HAIRLINE_ALPHA, PANEL_BORDER_ALPHA, SelectionState, SelectionTier,
+    chrome_hairline, fill_scrim, glass_selector, panel_border, panel_ground, panel_shadow,
+    scrim_maps, selection_tier, selection_tier_on,
 };
 pub use status_bar::STATUS_BAR_HEIGHT;
-pub use toolbar::{LabelCue, TOOLBAR_HEIGHT, ToolbarItem};
+pub use toolbar::{LabelCue, TOOLBAR_HEIGHT, ToolbarItem, ToolbarMetrics, item_rects};

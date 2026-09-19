@@ -18,10 +18,11 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Fill};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -86,15 +87,120 @@ struct Menu {
     hover: Option<usize>,
 }
 
-const PAD: f64 = 10.0;
+// Rail geometry. The rail lays out with a [`RailMetrics`] value: the
+// constants below are the spacing scale's defaults restated, on the 4 px
+// grid, and form [`RailMetrics::DEFAULT`] — what `begin_frame` uses for a
+// host whose layout pass has no `Theme` in hand. `begin_frame_with_theme`
+// reads the same values from `theme.tokens` ([`RailMetrics::from_theme`]).
+//
+//   PAD 12 (= s3), GAP 12 (= s3), NUM_GUTTER 24 (= s6), HEADER_H 32 (= s8),
+//   ADD_H 36, ADD_MARGIN 8 (= s2), MENU_W 184, MENU_ROW_H 32 (= s8),
+//   MENU_SEP_H 8 (= s2), MENU_PAD 8 (= s2), MENU_ROW_INSET 4 (= s1)
+//
+// SCROLLBAR_W 6 is the one off-grid value: it matches the toolkit's shared
+// scrollbar so the rail's own bar reads as the same control.
+const PAD: f64 = 12.0;
 const GAP: f64 = 12.0;
-const NUM_GUTTER: f64 = 22.0;
+const NUM_GUTTER: f64 = 24.0;
 const SCROLLBAR_W: f64 = 6.0;
-const HEADER_H: f64 = 30.0;
-const ADD_H: f64 = 38.0;
+/// Inset of the scrollbar track from the rail's right edge.
+const SCROLLBAR_INSET: f64 = 2.0;
+const HEADER_H: f64 = 32.0;
+const ADD_H: f64 = 36.0;
+/// Gap under the add button, to the rail's bottom edge.
+const ADD_MARGIN: f64 = 8.0;
 const MENU_W: f64 = 184.0;
-const MENU_ROW_H: f64 = 30.0;
+const MENU_ROW_H: f64 = 32.0;
 const MENU_SEP_H: f64 = 8.0;
+/// Padding above the first and below the last menu row.
+const MENU_PAD: f64 = 8.0;
+/// Inset of a menu row (and of the menu from the rail's edges).
+const MENU_ROW_INSET: f64 = 4.0;
+
+/// The rail's geometry, on the spacing scale. [`RailMetrics::DEFAULT`]
+/// restates the scale as the constants above — what
+/// [`PageSidebar::begin_frame`] has always laid out with, for a host that
+/// runs its layout pass without a `Theme`. A host that has one calls
+/// [`PageSidebar::begin_frame_with_theme`] and the same values are read
+/// from `theme.tokens` instead, so a density change reaches the rail.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RailMetrics {
+    /// Inset around the list and the header label (`spacing.s3`).
+    pub pad: f64,
+    /// Vertical gap between thumbnails (`spacing.s3`).
+    pub gap: f64,
+    /// Width of the page-number gutter left of the thumbnails (`spacing.s6`).
+    pub num_gutter: f64,
+    /// Height of the panel header band (`spacing.s8`).
+    pub header_h: f64,
+    /// Height of the bottom add button (`metrics.bar_height` when themed;
+    /// the restated default is 36).
+    pub add_h: f64,
+    /// Gap under the add button, to the rail's bottom edge (`spacing.s2`).
+    pub add_margin: f64,
+    /// Width of the context-menu popover (no token; the constant is kept).
+    pub menu_w: f64,
+    /// Height of one menu row (`spacing.s8`).
+    pub menu_row_h: f64,
+    /// Height of the separator before Delete (`spacing.s2`).
+    pub menu_sep_h: f64,
+    /// Padding above the first and below the last menu row (`spacing.s2`).
+    pub menu_pad: f64,
+    /// Inset of a menu row, and of the menu from the rail's edges (`spacing.s1`).
+    pub menu_row_inset: f64,
+}
+
+impl RailMetrics {
+    /// The spacing scale restated, for a layout pass with no `Theme`.
+    pub const DEFAULT: Self = Self {
+        pad: PAD,
+        gap: GAP,
+        num_gutter: NUM_GUTTER,
+        header_h: HEADER_H,
+        add_h: ADD_H,
+        add_margin: ADD_MARGIN,
+        menu_w: MENU_W,
+        menu_row_h: MENU_ROW_H,
+        menu_sep_h: MENU_SEP_H,
+        menu_pad: MENU_PAD,
+        menu_row_inset: MENU_ROW_INSET,
+    };
+
+    /// The same geometry read from the theme's tokens. The add button is a
+    /// bar button (`metrics.bar_height`) rather than the restated 36; the
+    /// menu width has no token and keeps its constant.
+    #[must_use]
+    pub fn from_theme(theme: &Theme) -> Self {
+        let sp = &theme.tokens.spacing;
+        Self {
+            pad: f64::from(sp.s3),
+            gap: f64::from(sp.s3),
+            num_gutter: f64::from(sp.s6),
+            header_h: f64::from(sp.s8),
+            add_h: f64::from(theme.tokens.metrics.bar_height),
+            add_margin: f64::from(sp.s2),
+            menu_w: MENU_W,
+            menu_row_h: f64::from(sp.s8),
+            menu_sep_h: f64::from(sp.s2),
+            menu_pad: f64::from(sp.s2),
+            menu_row_inset: f64::from(sp.s1),
+        }
+    }
+}
+
+impl Default for RailMetrics {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// Renderer-relative size of every label the rail paints (header, page
+/// numbers, add button, menu rows): `scale.sm`, with the theme's text scale
+/// divided once by the renderer's text scale because the renderer applies
+/// it again.
+fn label_size(theme: &Theme, tr: &TextRenderer) -> f32 {
+    renderer_type_size(tr, theme.tokens.typography.scale.sm)
+}
 
 /// Widens a row/action count to `f64` for layout math, through `u32` (exact
 /// in `f64`) with a saturating fallback rather than an `as` cast — a page
@@ -136,6 +242,8 @@ pub struct PageSidebar {
     /// (the PDF reader owns a full left column); when false it paints only the
     /// thumbnail list inside `rect` (the slides rail supplies its own panel).
     draw_panel: bool,
+    /// Geometry this frame lays out and paints with; see [`RailMetrics`].
+    m: RailMetrics,
 
     // ---- per-frame inputs ----
     count: usize,
@@ -170,6 +278,7 @@ impl PageSidebar {
             add_label: String::new(),
             show_add: false,
             draw_panel: true,
+            m: RailMetrics::DEFAULT,
             count: 0,
             current: 0,
             rect: Rect::ZERO,
@@ -259,35 +368,65 @@ impl PageSidebar {
 
     // ---- geometry ----------------------------------------------------
 
+    /// [`Self::begin_frame`] with the geometry read from `theme`
+    /// ([`RailMetrics::from_theme`]) rather than the restated scale — the
+    /// variant for a host whose layout pass has a `Theme` in hand.
+    pub fn begin_frame_with_theme(
+        &mut self,
+        theme: &Theme,
+        rect: Rect,
+        count: usize,
+        current: usize,
+    ) {
+        self.m = RailMetrics::from_theme(theme);
+        self.begin_frame(rect, count, current);
+    }
+
     /// Recompute list geometry for this frame and clamp the scroll. Call once
     /// per frame before [`render`](Self::render) and before hit-testing.
+    /// Lays out with whatever [`RailMetrics`] the rail holds:
+    /// [`RailMetrics::DEFAULT`] unless [`Self::begin_frame_with_theme`] has
+    /// handed it the theme's.
     pub fn begin_frame(&mut self, rect: Rect, count: usize, current: usize) {
         self.rect = rect;
         self.count = count;
         self.current = current.min(count.saturating_sub(1));
 
-        let header_h = if self.draw_panel { HEADER_H } else { 0.0 };
-        let add_h = if self.show_add { ADD_H + 6.0 } else { 0.0 };
+        let header_h = if self.draw_panel {
+            self.m.header_h
+        } else {
+            0.0
+        };
+        let add_h = if self.show_add {
+            self.m.add_h + self.m.add_margin
+        } else {
+            0.0
+        };
         let top = rect.y0 + header_h;
         let bottom = (rect.y1 - add_h).max(top);
         self.list_vp = Rect::new(rect.x0, top, rect.x1, bottom);
 
-        let usable_w = self.list_vp.width() - 2.0 * PAD - NUM_GUTTER - SCROLLBAR_W;
+        let usable_w = self.list_vp.width() - 2.0 * self.m.pad - self.m.num_gutter - SCROLLBAR_W;
         self.thumb_w = usable_w.max(1.0);
         self.thumb_h = self.thumb_w * self.aspect;
-        self.list_top = self.list_vp.y0 + PAD;
+        self.list_top = self.list_vp.y0 + self.m.pad;
 
         let content_h = if count == 0 {
             0.0
         } else {
-            count_f64(count) * self.thumb_h + (count_f64(count) - 1.0) * GAP
+            count_f64(count) * self.thumb_h + (count_f64(count) - 1.0) * self.m.gap
         };
-        let view_h = (self.list_vp.height() - 2.0 * PAD).max(0.0);
+        let view_h = (self.list_vp.height() - 2.0 * self.m.pad).max(0.0);
         self.max_scroll = (content_h - view_h).max(0.0);
         self.scroll = self.scroll.clamp(0.0, self.max_scroll);
 
         self.add_rect = if self.show_add {
-            Rect::new(rect.x0 + PAD, rect.y1 - ADD_H, rect.x1 - PAD, rect.y1 - 6.0)
+            Rect::new(
+                rect.x0 + self.m.pad,
+                rect.y1 - self.m.add_margin - self.m.add_h,
+                rect.x1 - self.m.pad,
+                rect.y1 - self.m.add_margin,
+            )
         } else {
             Rect::ZERO
         };
@@ -297,13 +436,18 @@ impl PageSidebar {
     }
 
     fn list_metrics(&self) -> ListMetrics {
-        ListMetrics::uniform(self.list_top - self.scroll, self.thumb_h, GAP, self.count)
+        ListMetrics::uniform(
+            self.list_top - self.scroll,
+            self.thumb_h,
+            self.m.gap,
+            self.count,
+        )
     }
 
     /// The un-shifted screen rect of thumbnail `i` this frame.
     fn thumb_rect(&self, i: usize) -> Rect {
-        let x0 = self.list_vp.x0 + PAD + NUM_GUTTER;
-        let top = self.list_top - self.scroll + count_f64(i) * (self.thumb_h + GAP);
+        let x0 = self.list_vp.x0 + self.m.pad + self.m.num_gutter;
+        let top = self.list_top - self.scroll + count_f64(i) * (self.thumb_h + self.m.gap);
         Rect::new(x0, top, x0 + self.thumb_w, top + self.thumb_h)
     }
 
@@ -317,9 +461,9 @@ impl PageSidebar {
         if self.count == 0 {
             return;
         }
-        let top = count_f64(i) * (self.thumb_h + GAP);
+        let top = count_f64(i) * (self.thumb_h + self.m.gap);
         let bottom = top + self.thumb_h;
-        let view_h = (self.list_vp.height() - 2.0 * PAD).max(0.0);
+        let view_h = (self.list_vp.height() - 2.0 * self.m.pad).max(0.0);
         if top < self.scroll {
             self.scroll = top;
         } else if bottom > self.scroll + view_h {
@@ -446,22 +590,31 @@ impl PageSidebar {
         actions.push(MenuAction::Delete);
 
         // Height: one separator sits before Delete.
-        let h = count_f64(actions.len()) * MENU_ROW_H + MENU_SEP_H + 12.0;
+        let h = count_f64(actions.len()) * self.m.menu_row_h
+            + self.m.menu_sep_h
+            + 2.0 * self.m.menu_pad;
         let x0 =
-            at.x.min(self.rect.x1 - MENU_W - 4.0)
-                .max(self.rect.x0 + 4.0);
-        let y0 = at.y.min(self.rect.y1 - h - 4.0).max(self.rect.y0 + 4.0);
-        let rect = Rect::new(x0, y0, x0 + MENU_W, y0 + h);
+            at.x.min(self.rect.x1 - self.m.menu_w - self.m.menu_row_inset)
+                .max(self.rect.x0 + self.m.menu_row_inset);
+        let y0 =
+            at.y.min(self.rect.y1 - h - self.m.menu_row_inset)
+                .max(self.rect.y0 + self.m.menu_row_inset);
+        let rect = Rect::new(x0, y0, x0 + self.m.menu_w, y0 + h);
 
         let mut items = Vec::new();
-        let mut y = y0 + 6.0;
+        let mut y = y0 + self.m.menu_pad;
         for act in actions {
             if act == MenuAction::Delete {
-                y += MENU_SEP_H;
+                y += self.m.menu_sep_h;
             }
-            let row = Rect::new(x0 + 4.0, y, x0 + MENU_W - 4.0, y + MENU_ROW_H);
+            let row = Rect::new(
+                x0 + self.m.menu_row_inset,
+                y,
+                x0 + self.m.menu_w - self.m.menu_row_inset,
+                y + self.m.menu_row_h,
+            );
             items.push((act, row));
-            y += MENU_ROW_H;
+            y += self.m.menu_row_h;
         }
         self.menu = Some(Menu {
             index,
@@ -508,14 +661,29 @@ impl PageSidebar {
 
         if self.draw_panel {
             scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &self.rect);
-            let divider = Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1));
-            scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &divider);
+            // The rail's edge derives from its own surface (HIG §9.5) and
+            // sits on its last pixel column so it never bleeds onto the page.
+            let x = self.rect.x1 - 0.5;
+            let divider = Line::new((x, self.rect.y0), (x, self.rect.y1));
+            scene.stroke(
+                &Stroke::new(1.0),
+                base,
+                crate::surface::edge_on(c.surfaces.raised),
+                None,
+                &divider,
+            );
+            // The header is a section label: `scale.sm`, semibold, on the
+            // rail's padding and centred on its own measured line in the
+            // header band rather than nine pixels down.
+            let size = label_size(theme, tr);
+            let (_, lh) = tr.measure_weighted(&self.header, size, None, TextWeight::Semibold);
+            let hy = self.rect.y0 + (self.m.header_h - f64::from(lh)) / 2.0;
             tr.draw_text_weighted(
                 scene,
                 &self.header,
-                12.0,
+                size,
                 c.text_dim,
-                translated(base, self.rect.x0 + PAD + 2.0, self.rect.y0 + 9.0),
+                translated(base, self.rect.x0 + self.m.pad, hy),
                 None,
                 TextWeight::Semibold,
             );
@@ -550,7 +718,7 @@ impl PageSidebar {
         if let (Some(from), Some(ghost)) = (
             drag_from,
             self.drag.ghost_rect_sized(
-                self.list_vp.x0 + PAD + NUM_GUTTER,
+                self.list_vp.x0 + self.m.pad + self.m.num_gutter,
                 vello::kurbo::Size::new(self.thumb_w, self.thumb_h),
             ),
         ) {
@@ -561,21 +729,18 @@ impl PageSidebar {
                 base,
                 &self.list_vp,
             );
-            let shadow = RoundedRect::from_rect(shifted(ghost.inflate(2.0, 2.0), 4.0), 8.0);
-            scene.fill(
-                Fill::NonZero,
-                base,
-                Color::BLACK.with_alpha_factor(0.35),
-                None,
-                &shadow,
-            );
+            // A dragged page is genuinely lifted, so it casts the ramp's
+            // dragged-object shadow, shaped to its own corners (HIG §9.3),
+            // rather than a black wash nudged down four pixels.
+            let radius = f64::from(theme.tokens.radii.md);
+            crate::surface::shadow(scene, base, ghost, radius, &theme.tokens.elevation.e4);
             thumb(scene, tr, base, from, ghost);
             scene.stroke(
-                &Stroke::new(2.5),
+                &Stroke::new(2.0),
                 base,
                 theme.accent_primary,
                 None,
-                &RoundedRect::from_rect(ghost, 6.0),
+                &RoundedRect::from_rect(ghost, radius),
             );
             scene.pop_layer();
         }
@@ -597,37 +762,42 @@ impl PageSidebar {
         if self.max_scroll <= 0.0 {
             return;
         }
-        let c = &theme.tokens.colors;
-        let view_h = (self.list_vp.height() - 2.0 * PAD).max(1.0);
+        let view_h = (self.list_vp.height() - 2.0 * self.m.pad).max(1.0);
         let content_h = view_h + self.max_scroll;
         let track = Rect::new(
-            self.list_vp.x1 - SCROLLBAR_W - 2.0,
+            self.list_vp.x1 - SCROLLBAR_W - SCROLLBAR_INSET,
             self.list_top,
-            self.list_vp.x1 - 2.0,
+            self.list_vp.x1 - SCROLLBAR_INSET,
             self.list_top + view_h,
         );
         let frac = (view_h / content_h).clamp(0.08, 1.0);
-        let thumb_h = (view_h * frac).max(24.0);
+        let thumb_h = (view_h * frac).max(f64::from(theme.tokens.spacing.s6));
         let travel = view_h - thumb_h;
         let t = (self.scroll / self.max_scroll).clamp(0.0, 1.0);
         let ty = track.y0 + travel * t;
+        // Capsules: the radius is half the bar's width, not a literal.
+        let radius = SCROLLBAR_W / 2.0;
+        // The shared scrollbar tiers, so every rail's bar matches Scrollable's.
         scene.fill(
             Fill::NonZero,
             base,
-            c.text_primary.with_alpha_factor(0.07),
+            crate::widget::scrollbar::track_color(theme),
             None,
-            &RoundedRect::from_rect(track, 3.0),
+            &RoundedRect::from_rect(track, radius),
         );
         scene.fill(
             Fill::NonZero,
             base,
-            c.text_primary.with_alpha_factor(0.35),
+            crate::widget::scrollbar::thumb_color(theme, false),
             None,
-            &RoundedRect::from_rect(Rect::new(track.x0, ty, track.x1, ty + thumb_h), 3.0),
+            &RoundedRect::from_rect(Rect::new(track.x0, ty, track.x1, ty + thumb_h), radius),
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "page slot painting passes render context, page index and bounds to the thumbnail callback and selection decoration"
+    )]
     fn draw_slot<F>(
         &self,
         scene: &mut Scene,
@@ -645,8 +815,10 @@ impl PageSidebar {
 
         thumb(scene, tr, base, i, rect);
 
+        // The current page wears the focus-ring weight; the others a
+        // hairline. Both follow the thumbnail's `radii.md` corners.
         let (ring, w) = if is_current {
-            (theme.accent_primary, 2.5)
+            (theme.accent_primary, 2.0)
         } else {
             (c.text_primary.with_alpha_factor(0.12), 1.0)
         };
@@ -655,14 +827,20 @@ impl PageSidebar {
             base,
             ring,
             None,
-            &RoundedRect::from_rect(rect, 6.0),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
         );
 
-        // Right-aligned in the left gutter, vertically centred.
+        // Right-aligned in the left gutter, one `s2` short of the
+        // thumbnail, vertically centred on the measured line.
         let label = format!("{}", i.saturating_add(1));
-        let size = 11.0f32;
-        let (lw, lh) = tr.measure(&label, size, None);
-        let lx = self.list_vp.x0 + PAD + NUM_GUTTER - 6.0 - f64::from(lw);
+        let size = label_size(theme, tr);
+        let weight = if is_current {
+            TextWeight::Semibold
+        } else {
+            TextWeight::Regular
+        };
+        let (lw, lh) = tr.measure_weighted(&label, size, None, weight);
+        let lx = rect.x0 - f64::from(theme.tokens.spacing.s2) - f64::from(lw);
         let ly = rect.y0 + (rect.height() - f64::from(lh)) / 2.0;
         let col = if is_current {
             theme.accent_primary
@@ -674,13 +852,9 @@ impl PageSidebar {
             &label,
             size,
             col,
-            translated(base, lx.max(self.list_vp.x0 + 2.0), ly),
+            translated(base, lx.max(self.list_vp.x0 + SCROLLBAR_INSET), ly),
             None,
-            if is_current {
-                TextWeight::Semibold
-            } else {
-                TextWeight::Regular
-            },
+            weight,
         );
     }
 
@@ -694,29 +868,25 @@ impl PageSidebar {
         let c = &theme.tokens.colors;
         let r = self.add_rect;
         let hovered = r.contains(self.last_pointer);
+        // A Neutral control on the rail: its own surface with a derived
+        // edge (HIG §9.5); hover is the shared hover face, not an accent wash.
         let bg = if hovered {
-            theme.accent_primary.with_alpha_factor(0.16)
+            theme.bg_hover
         } else {
             c.surfaces.base
         };
-        let rr = RoundedRect::from_rect(r, 7.0);
-        scene.fill(Fill::NonZero, base, bg, None, &rr);
-        scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &rr);
+        crate::surface::card(scene, base, r, f64::from(theme.tokens.radii.md), bg);
         let label = format!("+  {}", self.add_label);
-        let size = 12.0f32;
-        let (tw, th) = tr.measure(&label, size, None);
+        let size = label_size(theme, tr);
+        let (tw, th) = tr.measure_weighted(&label, size, None, TextWeight::Semibold);
         let tx = r.x0 + (r.width() - f64::from(tw)) / 2.0;
         let ty = r.y0 + (r.height() - f64::from(th)) / 2.0;
         tr.draw_text_weighted(
             scene,
             &label,
             size,
-            if hovered {
-                theme.accent_primary
-            } else {
-                c.text_primary
-            },
-            translated(base, tx.max(r.x0 + 8.0), ty),
+            c.text_primary,
+            translated(base, tx.max(r.x0 + f64::from(theme.tokens.spacing.s2)), ty),
             None,
             TextWeight::Semibold,
         );
@@ -727,24 +897,41 @@ impl PageSidebar {
             return;
         };
         let c = &theme.tokens.colors;
-        let rr = RoundedRect::from_rect(menu.rect, 8.0);
+        // A popover over content: `radii.lg`, the floating-panel shadow
+        // shaped to its corners, hairline edge; rows are `radii.sm` details
+        // inside it, labels on the standard padding.
+        let radius = f64::from(theme.tokens.radii.lg);
+        let rr = RoundedRect::from_rect(menu.rect, radius);
+        crate::surface::shadow(scene, base, menu.rect, radius, &theme.tokens.elevation.e4);
+        // Panel role (HIG §9.1/§9.5): the panel ground with its derived
+        // border; the hovered row is the hover lift, never an accent wash.
         scene.fill(
             Fill::NonZero,
             base,
-            Color::BLACK.with_alpha_factor(0.30),
+            crate::chrome::panel_ground(theme),
             None,
-            &RoundedRect::from_rect(shifted(menu.rect.inflate(1.5, 1.5), 3.0), 9.0),
+            &rr,
         );
-        scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &rr);
-        scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &rr);
+        scene.stroke(
+            &Stroke::new(1.0),
+            base,
+            crate::chrome::panel_border(theme),
+            None,
+            &crate::surface::edge_outline(menu.rect, radius),
+        );
+        let size = label_size(theme, tr);
         for (idx, (act, row)) in menu.items.iter().enumerate() {
             if menu.hover == Some(idx) {
+                let tier = crate::chrome::selection_tier(
+                    theme,
+                    crate::chrome::SelectionState::new(false, true, false),
+                );
                 scene.fill(
                     Fill::NonZero,
                     base,
-                    theme.accent_primary.with_alpha_factor(0.16),
+                    tier.fill,
                     None,
-                    &RoundedRect::from_rect(*row, 5.0),
+                    &RoundedRect::from_rect(*row, f64::from(theme.tokens.radii.sm)),
                 );
             }
             let (label, col) = match act {
@@ -753,7 +940,6 @@ impl PageSidebar {
                 MenuAction::MoveDown => ("Move down", c.text_primary),
                 MenuAction::Delete => ("Delete", c.semantic.danger),
             };
-            let size = 12.5f32;
             let (_, th) = tr.measure(label, size, None);
             let ty = row.y0 + (row.height() - f64::from(th)) / 2.0;
             tr.draw_text(
@@ -761,7 +947,7 @@ impl PageSidebar {
                 label,
                 size,
                 col,
-                translated(base, row.x0 + 12.0, ty),
+                translated(base, row.x0 + f64::from(theme.padding_standard), ty),
                 None,
             );
         }
@@ -847,6 +1033,50 @@ mod tests {
         assert_eq!(v, vec!['a', 'b', 'b', 'c']);
         duplicate_after(&mut v, 99);
         assert_eq!(v, vec!['a', 'b', 'b', 'c']);
+    }
+
+    /// The themed metrics are the restated scale read from the tokens: the
+    /// same numbers at the default density, except the add button, which
+    /// becomes a bar button, and the menu width, which has no token. A
+    /// themed frame lays the rail out with them; a plain frame keeps the
+    /// defaults, so the existing hosts are untouched.
+    #[test]
+    fn themed_metrics_read_the_spacing_scale_the_constants_restate() {
+        let theme = Theme::dark();
+        let themed = RailMetrics::from_theme(&theme);
+        let d = RailMetrics::DEFAULT;
+        assert_eq!(
+            (themed.pad, themed.gap, themed.num_gutter, themed.header_h),
+            (d.pad, d.gap, d.num_gutter, d.header_h)
+        );
+        assert_eq!(
+            (
+                themed.add_margin,
+                themed.menu_row_h,
+                themed.menu_sep_h,
+                themed.menu_pad,
+                themed.menu_row_inset
+            ),
+            (
+                d.add_margin,
+                d.menu_row_h,
+                d.menu_sep_h,
+                d.menu_pad,
+                d.menu_row_inset
+            )
+        );
+        assert_eq!(themed.menu_w, d.menu_w);
+        assert_eq!(themed.add_h, f64::from(theme.tokens.metrics.bar_height));
+
+        let rect = Rect::new(0.0, 0.0, 200.0, 800.0);
+        let mut s = PageSidebar::new(1.0).with_add("Import…");
+        s.begin_frame_with_theme(&theme, rect, 3, 0);
+        assert_eq!(s.add_rect.height(), themed.add_h);
+        assert_eq!(s.thumb_rects()[0].1.x0, themed.pad + themed.num_gutter);
+        let mut plain = PageSidebar::new(1.0).with_add("Import…");
+        plain.begin_frame(rect, 3, 0);
+        assert_eq!(plain.add_rect.height(), d.add_h);
+        assert_eq!(plain.thumb_rects()[0].1.x0, d.pad + d.num_gutter);
     }
 
     #[test]

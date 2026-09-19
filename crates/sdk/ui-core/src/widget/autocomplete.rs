@@ -32,6 +32,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
@@ -455,7 +456,7 @@ impl Autocomplete {
         let color = if armed {
             Some(accent)
         } else if hovered {
-            Some(tokens.colors.surface_white_10)
+            Some(tokens.colors.overlay_medium)
         } else {
             None
         };
@@ -512,8 +513,10 @@ impl Autocomplete {
             renderer_font_size(tokens.typography.scale.base, text_renderer.text_scale());
         let detail_size =
             renderer_font_size(tokens.typography.scale.sm, text_renderer.text_scale());
-        let rendered_text_height = f64::from(tokens.typography.scale.base);
-        let rendered_detail_height = f64::from(tokens.typography.scale.sm);
+        let rendered_text_height = f64::from(text_renderer.measure(&s.label, text_size, None).1);
+        let rendered_detail_height = s.detail.as_ref().map_or(0.0, |detail| {
+            f64::from(text_renderer.measure(detail, detail_size, None).1)
+        });
         let large_text = self.text_scale >= 1.5;
         let icon_px = ICON_PX * self.text_scale.min(1.5);
         let mut x = row.x0 + ROW_PAD_X;
@@ -720,30 +723,30 @@ impl Widget for Autocomplete {
         let tokens = &theme.tokens;
         let accent = tokens.colors.accent.stops[ACCENT_PRIMARY_IDX];
         let shape = RoundedRect::from_rect(panel, f64::from(tokens.radii.md));
-        // Raised panel + hairline border, matching the toolkit's other popovers.
+        // The suggestion list is a Panel (HIG §9.1 / §9.5): panel ground and
+        // panel edge, like the toolkit's other popovers.
         scene.fill(
             Fill::NonZero,
             transform,
-            tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(panel, f64::from(tokens.radii.md)),
         );
 
-        let text_size =
-            renderer_font_size(tokens.typography.scale.base, text_renderer.text_scale());
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
 
         // No rows yet: render the lone status line (loading / no matches).
         if self.suggestions.is_empty() {
             if let Some(status) = &self.status {
-                let rendered_text_height = f64::from(tokens.typography.scale.base);
-                let ty = panel.y0 + (panel.height() - rendered_text_height) / 2.0;
+                let (_, status_h) = text_renderer.measure(status, text_size, None);
+                let ty = panel.y0 + (panel.height() - f64::from(status_h)) / 2.0;
                 text_renderer.draw_text(
                     scene,
                     status,

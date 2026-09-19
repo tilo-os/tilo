@@ -25,6 +25,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -203,16 +204,17 @@ impl Widget for QrWidget {
             let msg = format!("QR error: {err}");
             // Affine composition: pure `f64` matrix multiply, cannot panic
             // regardless of operand magnitude.
+            let inset = f64::from(theme.tokens.spacing.s2);
             #[allow(
                 clippy::arithmetic_side_effects,
                 reason = "Affine composition is float matrix math and cannot panic"
             )]
             let text_transform =
-                transform * Affine::translate((self.rect.x0 + 8.0, self.rect.y0 + 8.0));
+                transform * Affine::translate((self.rect.x0 + inset, self.rect.y0 + inset));
             text_renderer.draw_text(
                 scene,
                 &msg,
-                12.0,
+                renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 text_transform,
                 None,
@@ -230,14 +232,18 @@ impl Widget for QrWidget {
         if module <= 0.0 {
             return;
         }
+        // The code is square; centre it in a non-square allocation so the
+        // white surround stays symmetric instead of piling up on one side.
+        let origin_x = self.rect.x0 + (self.rect.width() - side) / 2.0;
+        let origin_y = self.rect.y0 + (self.rect.height() - side) / 2.0;
         let quiet = self.quiet_modules as f64 * module;
         for y in 0..self.matrix_size {
             for x in 0..self.matrix_size {
                 if !self.module(x, y) {
                     continue;
                 }
-                let px = self.rect.x0 + quiet + x as f64 * module;
-                let py = self.rect.y0 + quiet + y as f64 * module;
+                let px = origin_x + quiet + x as f64 * module;
+                let py = origin_y + quiet + y as f64 * module;
                 let cell = Rect::new(px, py, px + module, py + module);
                 scene.fill(Fill::NonZero, transform, dark, None, &cell);
             }

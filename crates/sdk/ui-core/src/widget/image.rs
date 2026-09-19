@@ -13,7 +13,7 @@
 //! call [`Image::from_rgba`] with bytes decoded elsewhere for other formats.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
@@ -29,6 +29,14 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
+
+/// The ink a decode failure is marked in when the caller has no `Theme` to
+/// offer ([`Image::paint_at`]): the default palette's `semantic.danger`,
+/// resolved once rather than by building a `Theme` per frame. Draw paths
+/// that hold a theme go through [`Image::paint_at_on`] or [`Widget::draw`]
+/// and take that palette's danger instead.
+static FALLBACK_ERROR_INK: LazyLock<Color> =
+    LazyLock::new(|| Theme::dark().tokens.colors.semantic.danger);
 
 /// How the image is fitted within the widget's rect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,9 +195,21 @@ impl Image {
     /// Paint the image into `scene` at `rect` under `transform`, without a
     /// surrounding layout pass — for consumers (e.g. the word processor's inline
     /// images) that position images themselves rather than via taffy.
+    ///
+    /// A decode failure is marked in the default palette's danger ink; a
+    /// caller that holds a `Theme` should prefer [`Self::paint_at_on`] so the
+    /// mark follows the live palette.
     pub fn paint_at(&mut self, scene: &mut Scene, transform: Affine, rect: Rect) {
         self.rect = rect;
-        self.paint(scene, transform);
+        self.paint(scene, transform, *FALLBACK_ERROR_INK);
+    }
+
+    /// [`Self::paint_at`] with the host's theme, so a decode failure paints
+    /// its mark in that palette's `semantic.danger` rather than the default
+    /// palette's. Prefer this from any draw path that holds a `Theme`.
+    pub fn paint_at_on(&mut self, scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+        self.rect = rect;
+        self.paint(scene, transform, theme.tokens.colors.semantic.danger);
     }
 
     /// Test-only helper: paint the widget into `scene` at `rect` with
@@ -198,7 +218,7 @@ impl Image {
     #[cfg(test)]
     pub fn draw_for_test(&mut self, scene: &mut Scene, rect: Rect) {
         self.rect = rect;
-        self.paint(scene, Affine::IDENTITY);
+        self.paint(scene, Affine::IDENTITY, *FALLBACK_ERROR_INK);
     }
 
     /// Resolve `self.source` into a cached [`PenikoImage`]. On
@@ -274,11 +294,11 @@ impl Image {
         clippy::arithmetic_side_effects,
         reason = "the `Affine::translate(..) * Affine::scale_non_uniform(..)` calls below compose 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
     )]
-    fn paint(&mut self, scene: &mut Scene, transform: Affine) {
+    fn paint(&mut self, scene: &mut Scene, transform: Affine, error_ink: Color) {
         self.ensure_cached();
 
         let Some(img) = self.cached.clone() else {
-            self.paint_error(scene, transform);
+            self.paint_error(scene, transform, error_ink);
             return;
         };
 
@@ -356,11 +376,12 @@ impl Image {
         }
     }
 
-    /// Paint the failure state: a red border and a "Image failed"
-    /// label. Drawn whenever `cached` is `None` after
-    /// `ensure_cached`.
-    fn paint_error(&self, scene: &mut Scene, transform: Affine) {
-        let red = Color::from_rgba8(220, 38, 38, 255);
+    /// Paint the failure state: a danger-coloured border and a "Image
+    /// failed" label. Drawn whenever `cached` is `None` after
+    /// `ensure_cached`. The colour is the theme's `semantic.danger`, not a
+    /// literal red, so it follows the palette (and high contrast) like every
+    /// other error mark.
+    fn paint_error(&self, scene: &mut Scene, transform: Affine, red: Color) {
         let stroke = Stroke::new(2.0);
         scene.stroke(&stroke, transform, red, None, &self.rect);
 
@@ -507,10 +528,10 @@ impl Widget for Image {
         scene: &mut Scene,
         transform: Affine,
         _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
+        theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        self.paint(scene, transform);
+        self.paint(scene, transform, theme.tokens.colors.semantic.danger);
     }
 
     fn handle_event(
