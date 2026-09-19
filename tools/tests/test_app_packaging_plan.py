@@ -127,8 +127,37 @@ class PlanProducerTests(unittest.TestCase):
             (root / 'apps/app_channel_manifest.py').unlink()
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn('pinned app helper unavailable', result.stderr)
+            self.assertIn('pinned local helper unavailable', result.stderr)
             self.assertNotIn('legacy shadow executed', result.stderr)
+
+    def test_pinned_app_root_and_ci_sources_defeat_package_shadowing(self):
+        for module, relative in (
+            ('app_channel_manifest', 'apps/app_channel_manifest.py'),
+            ('app_packaging_product', 'app_packaging_product.py'),
+            ('ci.resolve_builder', 'ci/resolve_builder.py'),
+            ('ci.affected_packages', 'ci/affected_packages.py'),
+        ):
+            with self.subTest(module=module), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / 'ci').mkdir()
+                (root / 'apps').mkdir()
+                shutil.copyfile(Path(plan.__file__).parent / 'ci/python.py', root / 'ci/python.py')
+                (root / 'ci/__init__.py').write_text('')
+                (root / 'ci.py').write_text('raise AssertionError("ci shadow executed")\n')
+                pinned = root / relative
+                pinned.write_text('VALUE = "pinned"\n')
+                shadow = pinned.with_suffix('')
+                shadow.mkdir()
+                (shadow / '__init__.py').write_text('raise AssertionError("package shadow executed")\n')
+                (root / 'entry.py').write_text(f'import {module} as pinned; print(pinned.VALUE)\n')
+                command = [sys.executable, '-I', str(root / 'ci/python.py'), str(root / 'entry.py')]
+                result = subprocess.run(command, capture_output=True, text=True, check=True)
+                self.assertEqual(result.stdout.strip(), 'pinned')
+                pinned.unlink()
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('pinned local helper unavailable: ' + module, result.stderr)
+                self.assertNotIn('shadow executed', result.stderr)
 
     def test_relocated_app_helper_runs_with_isolation(self):
         tools = Path(plan.__file__).parent
