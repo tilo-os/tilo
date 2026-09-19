@@ -420,6 +420,67 @@ class AppResourceActionContractTests(unittest.TestCase):
         violations, _ = contract.audit(root)
         self.assertEqual(violations, [])
 
+    def test_prepared_launch_installs_the_registered_registry(self):
+        source = (
+            "use tilo_actions::{ActionRegistry, ActionSpec};\n"
+            "pub fn register(_: &mut ActionRegistry) {}\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+        )
+        launch = "fn main() { LaunchSpec::new(root).prepare_legacy_with_args(prepare); }\n"
+        inputs = (
+            "fn inputs(args: &Args) -> Result<LegacyLaunchInputs, Error> { {\n"
+            " let mut registry = ActionRegistry::new();\n"
+            " actions::register(&mut registry);\n"
+            " Ok(ui::launch::LegacyLaunchInputs::new(state, widget, autosave)\n"
+            " .with_records(records, room.doc).with_registry(registry),) } }\n"
+        )
+        wrapper = (
+            "fn prepare(args: &Args) -> Result<LegacyLaunchInputs, Error> {\n"
+            " inputs(args).map_err(|error| Error::Operation(error.to_string())) }\n"
+        )
+        cases = {
+            "forwarded": (launch + wrapper + inputs, True),
+            "direct": (launch + inputs.replace("fn inputs(", "fn prepare("), True),
+            "disconnected": (
+                launch + wrapper + inputs.replace("with_registry(registry)", "with_registry(other)"),
+                False,
+            ),
+            "missing_installation": (
+                launch + wrapper + inputs.replace(".with_registry(registry)", ""), False,
+            ),
+            "shadowed_registry": (
+                launch + wrapper + inputs.replace(
+                    " Ok(", " let registry = ActionRegistry::new(); Ok("
+                ), False,
+            ),
+            "overwritten_registry": (
+                launch + wrapper + inputs.replace(
+                    ".with_registry(registry)", ".with_registry(registry).with_registry(other)"
+                ), False,
+            ),
+            "discarded_helper_result": (
+                launch + inputs + "fn prepare(args: &Args) -> Result<LegacyLaunchInputs, Error> {"
+                " inputs(args)?; Ok(LegacyLaunchInputs::new(state, widget, autosave)) }", False,
+            ),
+            "discarded_inputs": (
+                launch + wrapper + inputs.replace(
+                    "),) } }", "),); Ok(LegacyLaunchInputs::new(state, widget, autosave)) } }"
+                ), False,
+            ),
+            "dead_preparer": ("fn main() { launch(root); }" + wrapper + inputs, False),
+        }
+        for name, (main_source, accepted) in cases.items():
+            with self.subTest(name=name):
+                root = self.fixture(source)
+                (root / "apps/sample/src/main.rs").write_text(main_source, encoding="utf-8")
+                violations, _ = contract.audit(root)
+                if accepted:
+                    self.assertEqual(violations, [])
+                else:
+                    self.assertTrue(any("production app launch" in v.reason for v in violations))
+
     def test_new_opaque_search_activation_is_rejected(self):
         root = self.fixture(
             "use tilo_actions::ActionSpec;\n"
