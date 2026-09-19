@@ -4936,6 +4936,8 @@ mod tests {
             doc: &mut automerge::AutoCommit,
             _: &automerge::ObjId,
         ) -> bool {
+            use automerge::ReadDoc;
+
             if self.ready && matches!(action, crate::a11y::Action::Activate) {
                 doc.put(automerge::ROOT, "payload", "late record content")
                     .unwrap();
