@@ -48,7 +48,19 @@ def checked_bundle(files, expected):
             manifest != {'schema': 1, 'purpose': 'tilo-development',
                          'sha256': {n: spool.digest(files[n]) for n in trust.FILES}}):
         raise ValueError('public manifest binding differs')
-    return trust.identities({n: files[n] for n in trust.FILES})
+    inputs = {n: files[n] for n in trust.FILES}
+    # development-trust intentionally delegates public-key parsing to the
+    # native crypto helper, whose interface accepts filesystem paths.  Keep
+    # the remotely supplied bytes authoritative by materializing only this
+    # already manifest-verified snapshot into private temporary files.
+    with tempfile.TemporaryDirectory(prefix='tilo-finalization-public-', dir='/var/lib') as temporary:
+        directory = Path(temporary)
+        paths = {}
+        for name, data in inputs.items():
+            path = directory / name
+            spool.write_new(path, data)
+            paths[name] = path
+        return trust.identities(inputs, paths)
 
 
 def validate(packet, request_raw):
