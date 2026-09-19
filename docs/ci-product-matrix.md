@@ -30,7 +30,8 @@ Do not route Windows work onto Linux `runner` just because it is available.
 
 The planner reads the production installer's PowerShell AST allowlist without
 executing it. It rejects unknown applications, identifies the exact native label
-and MSVC host, emits one locked Cargo build for the selected packages, and records
+and MSVC host, emits one locked Cargo build for the selected packages plus the
+notification helper when Clocks is selected, and records
 relevant source/toolchain/runtime-helper input hashes. It does not download,
 compile, write Start entries, sign, publish or change a workflow trigger. Its hash
 inventory is diagnostic, not an artifact cache key or proof of dependency closure.
