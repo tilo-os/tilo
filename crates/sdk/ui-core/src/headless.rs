@@ -3257,6 +3257,18 @@ fn parse_key(spec: &str) -> Key {
         "ArrowDown" | "Down" => Key::Named(NamedKey::ArrowDown),
         "ArrowLeft" | "Left" => Key::Named(NamedKey::ArrowLeft),
         "ArrowRight" | "Right" => Key::Named(NamedKey::ArrowRight),
+        "F1" => Key::Named(NamedKey::F1),
+        "F2" => Key::Named(NamedKey::F2),
+        "F3" => Key::Named(NamedKey::F3),
+        "F4" => Key::Named(NamedKey::F4),
+        "F5" => Key::Named(NamedKey::F5),
+        "F6" => Key::Named(NamedKey::F6),
+        "F7" => Key::Named(NamedKey::F7),
+        "F8" => Key::Named(NamedKey::F8),
+        "F9" => Key::Named(NamedKey::F9),
+        "F10" => Key::Named(NamedKey::F10),
+        "F11" => Key::Named(NamedKey::F11),
+        "F12" => Key::Named(NamedKey::F12),
         "Home" => Key::Named(NamedKey::Home),
         "End" => Key::Named(NamedKey::End),
         other => Key::Character(other.into()),
@@ -3629,13 +3641,29 @@ fn build_legacy_driver(
 ) -> (Driver, crate::persist::Autosave) {
     use crate::launch::{LegacyLaunchInputs, LegacyRecordPolicy};
     let LegacyLaunchInputs {
-        state,
+        mut state,
         root,
         autosave,
-        records,
+        mut records,
         registry,
         persistence: _,
     } = inputs;
+    if activate_automatic_records
+        && let LegacyRecordPolicy::AutomaticHeadless { index, .. } = &mut records
+    {
+        // A custom opener may have cloned an outstanding transaction into
+        // both documents. Close that identical index transaction before any
+        // index-only writes can become part of it. fork() below closes the
+        // source transaction with the same default commit options.
+        let _ = index.get_heads();
+        // The package index and bootstrap state may share committed history,
+        // but must not independently author changes with the index's actor.
+        // fork() closes pending transactions before assigning a branch actor.
+        // Actual record admission later installs that record store's actor;
+        // authenticated action attribution remains the host's author identity.
+        let bootstrap = state.doc.fork();
+        state.adopt_doc(bootstrap);
+    }
     let mut driver = Driver::new_with_theme(state, root, viewport, theme);
     *driver.action_registry_mut() = registry;
     driver = match records {
@@ -3796,6 +3824,28 @@ mod tests {
     }
 
     use crate::widget::{Button, Checkbox, CodeEditor, Column, TextInput, TreeNode, TreeView};
+
+    #[test]
+    fn function_keys_do_not_type_their_names_into_a_focused_field() {
+        let mut driver = Driver::new(
+            State::new(),
+            Box::new(TextInput::local().with_id("function-key-field")),
+            (640, 160),
+        );
+        driver
+            .perform_named("function-key-field", &crate::a11y::Action::Focus)
+            .unwrap();
+        driver.type_text("keep");
+        for index in 1..=12 {
+            driver.key(&format!("F{index}"));
+        }
+        let snapshot = driver.inspection();
+        assert_eq!(
+            snapshot.root.semantics.unwrap().value.as_deref(),
+            Some("keep")
+        );
+    }
+
     use automerge::transaction::Transactable;
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -4886,9 +4936,17 @@ mod tests {
             doc: &mut automerge::AutoCommit,
             _: &automerge::ObjId,
         ) -> bool {
+            use automerge::ReadDoc;
+
             if self.ready && matches!(action, crate::a11y::Action::Activate) {
                 doc.put(automerge::ROOT, "payload", "late record content")
                     .unwrap();
+                let edits = doc
+                    .get(automerge::ROOT, "edit_count")
+                    .unwrap()
+                    .and_then(|(value, _)| value.to_u64())
+                    .unwrap_or(0);
+                doc.put(automerge::ROOT, "edit_count", edits + 1).unwrap();
                 true
             } else {
                 false
@@ -4989,6 +5047,240 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+    }
+
+    #[test]
+    fn automatic_record_bootstrap_commits_shared_pending_transaction_before_forking() {
+        use crate::launch::{LegacyLaunchInputs, LegacyRecordPolicy};
+        use automerge::{AutoCommit, ROOT, ReadDoc};
+        let mut state = State::new();
+        state
+            .doc
+            .put(ROOT, "pending_from_opener", "retained")
+            .unwrap();
+        assert!(state.doc.pending_ops() > 0);
+        let index = state.doc.clone();
+        let original_actor = index.get_actor().clone();
+        let mut inputs = LegacyLaunchInputs::new(
+            state,
+            Box::new(Button::new("plain-root", "Plain", None)),
+            crate::persist::Autosave::disabled("no writes in this fixture"),
+        );
+        inputs.records = LegacyRecordPolicy::AutomaticHeadless {
+            records: crate::record::RecordSet::in_memory(),
+            index,
+            expected_index: std::path::PathBuf::from("not-used-by-this-in-memory-fixture"),
+        };
+        let (mut driver, _) = build_legacy_driver(inputs, (400, 200), Theme::dark(), true);
+        let (_, index) = driver.record_persistence.as_mut().unwrap();
+        assert_eq!(
+            index.pending_ops(),
+            0,
+            "cloned opener transaction is closed before index mutation"
+        );
+        assert_eq!(
+            index.get_actor(),
+            &original_actor,
+            "index keeps its actual writer identity"
+        );
+        assert_ne!(driver.state.doc.get_actor(), &original_actor);
+        assert_eq!(
+            index.get_heads(),
+            driver.state.doc.get_heads(),
+            "identical pending input must commit to exactly the same hash"
+        );
+        index.put(ROOT, "index_only", "reference").unwrap();
+        driver
+            .state
+            .doc
+            .put(ROOT, "bootstrap_only", "loaded body")
+            .unwrap();
+        let mut joined = driver.state.doc.clone();
+        joined
+            .merge(index)
+            .expect("separate index/bootstrap authors cannot collide");
+        let reopened =
+            AutoCommit::load(&joined.save()).expect("persisted merged history must reload");
+        for (key, value) in [
+            ("pending_from_opener", "retained"),
+            ("index_only", "reference"),
+            ("bootstrap_only", "loaded body"),
+        ] {
+            assert_eq!(
+                reopened.get(ROOT, key).unwrap().unwrap().0.to_str(),
+                Some(value)
+            );
+        }
+    }
+
+    #[test]
+    fn automatic_record_restarts_keep_distinct_index_and_record_authors_and_fail_closed() {
+        const CHILD: &str = "TILO_RECORD_RESTART_TEST_CHILD";
+        const PACKAGE: &str = "dev.tilo.record-restart-test";
+        const ROOM: &str = "33333333-3333-4333-8333-333333333333";
+        if std::env::var_os(CHILD).is_some() {
+            use crate::record::{RecordCheckout, RecordId, RecordKind, RecordSet};
+            use automerge::{ActorId, AutoCommit, ROOT, ReadDoc};
+            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+            let mut original_record_actor = None;
+            let mut original_index_actor = None;
+            for expected in 1_u64..=3 {
+                let root = LateRecordProbe {
+                    frames: 0,
+                    checkout: checkout.clone(),
+                    ready: false,
+                };
+                let spec = Spec {
+                    actions: vec![
+                        Action::WaitForNamed {
+                            target: "record-ready".into(),
+                            timeout: std::time::Duration::from_secs(2),
+                        },
+                        Action::Perform {
+                            target: "record-ready".into(),
+                            semantic_target: None,
+                            action: crate::a11y::Action::Activate,
+                        },
+                    ],
+                    ..Spec::default()
+                };
+                assert_eq!(
+                    run(&spec, Box::new(root), PACKAGE),
+                    0,
+                    "actual headless restart {expected}"
+                );
+                let mut index_store = app_state::DocStore::open_with_manifest_id(PACKAGE).unwrap();
+                let index = index_store.load().unwrap().unwrap();
+                let mut record_store = app_state::DocStore::open_room_record(
+                    PACKAGE,
+                    ROOM,
+                    &checkout.id.storage_key(),
+                )
+                .unwrap();
+                let mut record = record_store.load().unwrap().unwrap();
+                let stored_bytes = std::fs::read(record_store.document_path()).unwrap();
+                AutoCommit::load(&stored_bytes)
+                    .expect("all saved record bytes must be loadable, not a fallback");
+                assert_eq!(
+                    record.get(ROOT, "edit_count").unwrap().unwrap().0.to_u64(),
+                    Some(expected)
+                );
+                assert!(index.get(ROOT, "edit_count").unwrap().is_none());
+                assert!(crate::record::room::holds(&index, &checkout.id));
+                assert_ne!(index_store.actor(), record_store.actor());
+                if let Some(actor) = &original_record_actor {
+                    assert_eq!(actor, record_store.actor());
+                }
+                if let Some(actor) = &original_index_actor {
+                    assert_eq!(actor, index_store.actor());
+                }
+                original_record_actor = Some(record_store.actor().clone());
+                original_index_actor = Some(index_store.actor().clone());
+                // The successful edit, not just the loaded document cursor,
+                // must carry the original record actor after admission.
+                let head = record.get_heads();
+                assert!(
+                    head.iter()
+                        .all(|hash| record.get_change_by_hash(hash).unwrap().actor_id()
+                            == record_store.actor())
+                );
+            }
+
+            for corrupt in [false, true] {
+                let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+                let mut shared =
+                    AutoCommit::new().with_actor(ActorId::from(b"duplicate-writer".as_slice()));
+                shared.put(ROOT, "seed", "base").unwrap();
+                shared.commit();
+                let mut incoming = shared.clone();
+                let mut stored = shared;
+                incoming.put(ROOT, "branch", "unsaved live edit").unwrap();
+                incoming.commit();
+                stored.put(ROOT, "branch", "original stored edit").unwrap();
+                stored.commit();
+                let mut store =
+                    app_state::DocStore::open_room_record(PACKAGE, ROOM, &want.id.storage_key())
+                        .unwrap();
+                store.save(&mut stored).unwrap();
+                let path = store.document_path().to_path_buf();
+                drop(store);
+                if corrupt {
+                    std::fs::write(&path, b"invalid automerge original bytes").unwrap();
+                }
+                let bytes = std::fs::read(&path).unwrap();
+                let mut records = RecordSet::open(PACKAGE);
+                let mut state = State::from_doc(incoming);
+                assert!(records.checkout(&mut state, None, &want));
+                assert_eq!(
+                    state.doc.get(ROOT, "branch").unwrap().unwrap().0.to_str(),
+                    Some("unsaved live edit")
+                );
+                let error = records.try_flush(&mut state.doc).unwrap_err();
+                assert!(
+                    error.contains("stored record"),
+                    "original record failure must reach checked flush: {error}"
+                );
+                drop(records);
+                assert_eq!(
+                    std::fs::read(&path).unwrap(),
+                    bytes,
+                    "failed read/merge must preserve exact original bytes"
+                );
+                if corrupt {
+                    let spec = Spec {
+                        actions: vec![Action::WaitForNamed {
+                            target: "record-ready".into(),
+                            timeout: std::time::Duration::from_secs(2),
+                        }],
+                        ..Spec::default()
+                    };
+                    let root = LateRecordProbe {
+                        frames: 0,
+                        checkout: want,
+                        ready: false,
+                    };
+                    assert_eq!(
+                        run(&spec, Box::new(root), PACKAGE),
+                        3,
+                        "actual headless execution must report the refused record load"
+                    );
+                    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+                }
+            }
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let stdout = temp.path().join("stdout.log");
+        let stderr = temp.path().join("stderr.log");
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "headless::tests::automatic_record_restarts_keep_distinct_index_and_record_authors_and_fail_closed", "--nocapture"])
+            .env(CHILD, "1").env("XDG_DATA_HOME", temp.path())
+            .env("TILO_PACKAGE_ID", PACKAGE).env("TILO_WORKSPACE_ID", ROOM)
+            .stdout(std::fs::File::create(&stdout).unwrap()).stderr(std::fs::File::create(&stderr).unwrap());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let mut child = command.spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("record restart regression timed out");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(
+            status.success(),
+            "{}\n{}",
+            std::fs::read_to_string(stdout).unwrap(),
+            std::fs::read_to_string(stderr).unwrap()
+        );
     }
 
     #[test]
