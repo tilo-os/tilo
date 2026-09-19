@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps"))
 import app_release  # noqa: E402
 
 
@@ -101,10 +101,10 @@ class AppReleaseTests(unittest.TestCase):
             "os/scripts/verify-elf-hardening.sh": "verification",
             "os/Containerfile.builder": "binary",
             "os/external-assets/github-assets.tsv": "binary",
-            "tools/canonical_app_verifier.py": "verification",
-            "tools/create_app_receipt.py": "verification",
-            "tools/final_app_receipt.py": "verification",
-            "tools/app_channel_manifest.py": "verification",
+            "tools/apps/canonical_app_verifier.py": "verification",
+            "tools/apps/create_app_receipt.py": "verification",
+            "tools/apps/final_app_receipt.py": "verification",
+            "tools/apps/app_channel_manifest.py": "verification",
             "tools/ci/__init__.py": "verification",
             "tools/ci/resolve_builder.py": "binary",
         }
@@ -122,12 +122,12 @@ class AppReleaseTests(unittest.TestCase):
     def test_plan_exposes_receipt_only_invalidation_without_binary_claim(self) -> None:
         args = SimpleNamespace(root=ROOT, config=ROOT / 'dist/apps/app-collections.toml',
                                tag='', apps='', base='baseline', collection='default')
-        with mock.patch.object(app_release, 'changed_paths', return_value=['tools/final_app_receipt.py']), \
+        with mock.patch.object(app_release, 'changed_paths', return_value=['tools/apps/final_app_receipt.py']), \
                 mock.patch.object(app_release.ci_select, 'cargo_metadata', return_value={'packages': []}):
             result = app_release.plan(args)
         self.assertGreater(result['count'], 0)
         self.assertEqual('release inputs changed: verification', result['reason'])
-        self.assertEqual({'binary': [], 'packaging': [], 'verification': ['tools/final_app_receipt.py']},
+        self.assertEqual({'binary': [], 'packaging': [], 'verification': ['tools/apps/final_app_receipt.py']},
                          result['input_classification'])
 
     def test_build_tool_dependency_and_shared_runtime_changes_select_fleet(self) -> None:

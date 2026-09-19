@@ -6,7 +6,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-SPEC = importlib.util.spec_from_file_location('channel', Path(__file__).parents[1] / 'app_channel_manifest.py')
+SPEC = importlib.util.spec_from_file_location(
+    'channel', Path(__file__).parents[1] / 'apps/app_channel_manifest.py'
+)
 c = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(c)
 
