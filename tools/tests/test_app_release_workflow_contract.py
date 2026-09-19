@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class AppReleaseWorkflowContract(unittest.TestCase):
     def check(self, workflow):
         script = (ROOT / 'os/tests/release_pipeline_invariants.sh').read_text()
-        start = script.index("grep -Fq 'release/app-collections.toml' \"$apps\"")
+        start = script.index("grep -Fq 'dist/apps/app-collections.toml' \"$apps\"")
         end = script.index("\ngrep -Fq 'TILO_APP_COLLECTION_SHA256'", start)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'release-apps.yml'
