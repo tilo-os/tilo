@@ -289,7 +289,6 @@ fn poisoned() -> NotAvailable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     fn metadata() -> wire::Response {
         wire::Response::Metadata {

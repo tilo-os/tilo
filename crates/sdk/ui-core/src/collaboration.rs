@@ -2012,11 +2012,12 @@ impl CollaborationManager {
     /// not stall the application's owner/frame thread.
     fn for_route_host_blocking(
         connector: HostSessionConnector,
-        app_id: String,
+        app_id: impl Into<String>,
         cluster_id: Uuid,
         record: Option<String>,
         handle: Option<String>,
     ) -> Result<Self, runtime_portal::NotAvailable> {
+        let app_id = app_id.into();
         let route = RouteSpec {
             app_id: app_id.clone(),
             cluster_id,
