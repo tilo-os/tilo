@@ -106,7 +106,7 @@ jobs:
           cp os/dev/audit-rootfs-layers.py "$context/dev/"
           cp os/dev/wpe-stage-artifact.py "$context/dev/"
           cp os/tests/{test_wpe_stage_artifact.py,development_wpe_artifact_native.py} "$context/"
-          cp os/tests/{test_retain_development_rootfs.py,test_import_development_rootfs.py,test_rebind_development_trust.py,test_initramfs_trust.py,initramfs_trust_native.py,test_complete_initramfs_rebind.py,test_rebind_development_rootfs.py,test_development_trust.py,development_retention_native.py,tls_registry_fixture.py} "$context/"
+          cp os/tests/{test_retain_development_rootfs.py,test_import_development_rootfs.py,test_rebind_development_trust.py,test_initramfs_trust.py,initramfs_trust_native.py,test_complete_initramfs_rebind.py,test_rebind_development_rootfs.py,test_development_trust.py,development_retention_native.py,tls_registry_fixture.py,test_tls_registry_fixture.py} "$context/"
           cp os/tests/{test_rootfs_layer_audit.py,development_layer_audit_native.py} "$context/"
           cp "$(command -v cosign)" "$context/cosign"
           RUSTC_WRAPPER= cargo build --locked --release -p tilo-crypto

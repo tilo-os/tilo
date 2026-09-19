@@ -49,6 +49,10 @@ pub struct PathBar {
     editing: bool,
     current: PathBuf,
     home: Option<PathBuf>,
+    // Completion and submission share the location captured when editing began.
+    // Navigation may update the breadcrumb context without replacing typed text.
+    edit_current: PathBuf,
+    edit_home: Option<PathBuf>,
     /// The workspace mounts, so the trail can name one instead of
     /// spelling out where it happens to be mounted.
     workspace_roots: Vec<PathBuf>,
@@ -66,6 +70,8 @@ impl PathBar {
             editing: false,
             current: PathBuf::new(),
             home: None,
+            edit_current: PathBuf::new(),
+            edit_home: None,
             workspace_roots: Vec::new(),
             sink,
             rect: Rect::ZERO,
@@ -98,9 +104,12 @@ impl PathBar {
     /// filesystem completion source, focus + select-all, and open the dropdown.
     pub fn begin_edit(&mut self) {
         self.editing = true;
-        let home = self.home.clone();
+        self.edit_current = self.current.clone();
+        self.edit_home = self.home.clone();
+        let home = self.edit_home.clone();
+        let current = self.edit_current.clone();
         self.field
-            .set_suggester(move |q| path_completions(q, home.as_deref()));
+            .set_suggester(move |q| path_completions_at(q, home.as_deref(), &current));
         self.field
             .set_text(&format_path(&self.current, self.home.as_deref()));
         self.field.begin_edit();
@@ -225,7 +234,8 @@ impl Widget for PathBar {
             );
             match self.field.take_outcome() {
                 AutocompleteOutcome::Accepted(value) => {
-                    let resolved = expand_tilde(value.trim_end_matches('/'), self.home.as_deref());
+                    let resolved =
+                        resolve_location(&value, self.edit_home.as_deref(), &self.edit_current);
                     push(&self.sink, FileCommand::OpenPath(resolved));
                     self.end_edit();
                 }
@@ -335,6 +345,21 @@ fn expand_tilde(input: &str, home: Option<&Path>) -> PathBuf {
     PathBuf::from(input)
 }
 
+/// Resolve a location against the folder being browsed, without removing root
+/// separators (`/` and `C:/` are not equivalent to empty text and `C:`).
+fn resolve_location(input: &str, home: Option<&Path>, current: &Path) -> PathBuf {
+    current.join(expand_tilde(input, home))
+}
+
+fn path_completions_at(input: &str, home: Option<&Path>, current: &Path) -> Vec<Suggestion> {
+    let resolved = resolve_location(input, home, current);
+    let mut query = resolved.to_string_lossy().into_owned();
+    if (input.is_empty() || input == "~") && !query.ends_with(std::path::is_separator) {
+        query.push(std::path::MAIN_SEPARATOR);
+    }
+    path_completions(&query, home)
+}
+
 /// The display form placed into the field for a completion: `~`-relative when
 /// under home, absolute otherwise, with a trailing `/` on directories so the
 /// next keystroke drills into it.
@@ -417,6 +442,125 @@ pub fn path_completions(input: &str, home: Option<&Path>) -> Vec<Suggestion> {
 mod tests {
     use super::*;
     use crate::command::new_sink;
+
+    #[test]
+    fn navigation_during_edit_keeps_completion_and_submission_on_the_same_location() {
+        use ui::a11y::Action;
+        use winit::event::{DeviceId, ElementState, KeyEvent, RawKeyEvent};
+        use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let before = fixture.path().join("before");
+        let after = fixture.path().join("after");
+        for directory in [&before, &after] {
+            std::fs::create_dir_all(directory.join("same-name")).unwrap();
+        }
+        for input in ["same-name", "~/same-name"] {
+            let sink = new_sink();
+            let mut bar = PathBar::new(sink.clone());
+            bar.set_path(before.clone(), Some(before.clone()), Vec::new());
+            bar.begin_edit();
+            // An asynchronous navigation updates the displayed folder while the
+            // location editor deliberately preserves the user's in-progress edit.
+            bar.set_path(after.clone(), Some(after.clone()), Vec::new());
+            let mut doc = AutoCommit::new();
+            assert!(bar.perform_action(
+                &Action::SetValue(input.into()),
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert_eq!(bar.field.suggestions().len(), 1);
+            assert_eq!(
+                resolve_location(&bar.field.suggestions()[0].value, Some(&before), &before),
+                before.join("same-name")
+            );
+
+            let key = Key::Named(NamedKey::Enter);
+            let event = WindowEvent::KeyboardInput {
+                device_id: DeviceId::dummy(),
+                event: KeyEvent::synthetic(
+                    RawKeyEvent {
+                        physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+                        state: ElementState::Pressed,
+                    },
+                    key.clone(),
+                    None,
+                    KeyLocation::Standard,
+                    false,
+                    None,
+                    key,
+                ),
+                is_synthetic: false,
+            };
+            let mut taffy = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut handled = false;
+            let mut focus = None;
+            bar.handle_event(
+                &event,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+            assert!(handled);
+            assert!(!bar.is_editing());
+            assert_eq!(
+                &*sink.borrow(),
+                &[FileCommand::OpenPath(before.join("same-name"))]
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_locations_preserve_roots_and_use_the_browsed_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("current");
+        std::fs::create_dir(&current).unwrap();
+        let child = current.join("child");
+        std::fs::create_dir(&child).unwrap();
+        assert_eq!(resolve_location("child", None, &current), child);
+        assert_eq!(
+            resolve_location("~", Some(root.path()), &current),
+            root.path()
+        );
+        let disk_root = crate::breadcrumbs::filesystem_root(&current);
+        assert_eq!(
+            resolve_location(&disk_root.display().to_string(), None, &current),
+            disk_root
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            resolve_location("C:/", None, &current),
+            PathBuf::from("C:/")
+        );
+    }
+
+    #[test]
+    fn relative_completions_read_the_browsed_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("current");
+        std::fs::create_dir(&current).unwrap();
+        let child = current.join("unique-child");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(child.join("nested.txt"), b"test").unwrap();
+        assert_eq!(path_completions_at("", None, &current).len(), 1);
+        assert_eq!(
+            path_completions_at("~", Some(&current), root.path()).len(),
+            1
+        );
+        let suggestions = path_completions_at("unique-ch", None, &current);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].label, "unique-child");
+        assert_eq!(PathBuf::from(&suggestions[0].value), child);
+        let nested = path_completions_at("unique-child/", None, &current);
+        assert_eq!(nested.len(), 1);
+        assert_eq!(nested[0].label, "nested.txt");
+    }
 
     #[test]
     fn completions_list_directory_entries_matching_the_prefix() {
