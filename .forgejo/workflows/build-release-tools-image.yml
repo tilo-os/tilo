@@ -120,6 +120,7 @@ jobs:
     timeout-minutes: 10
     env:
       IMAGE_REPOSITORY: code.sandbox.example/qos/tilo-release-tools
+      PUBLIC_IMAGE_REPOSITORY: code.sandbox.example/public/tilo-release-tools
       SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
@@ -159,15 +160,80 @@ jobs:
           printf '%s\n' "$inspection"
           digest=$(sed -n 's/^Digest:[[:space:]]*//p' <<<"$inspection" | head -1)
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          # The publish job starts before any step can log in, so its reviewed
+          # tools image must be anonymously pullable. Copy the exact tested
+          # multi-architecture index; never rebuild a public variant.
+          docker buildx imagetools create \
+            --tag "$PUBLIC_IMAGE_REPOSITORY:$tag" \
+            "$IMAGE_REPOSITORY@$digest"
+          public_inspection=$(docker buildx imagetools inspect "$PUBLIC_IMAGE_REPOSITORY:$tag")
+          printf '%s\n' "$public_inspection"
+          public_digest=$(sed -n 's/^Digest:[[:space:]]*//p' <<<"$public_inspection" | head -1)
+          [[ $public_digest == "$digest" ]]
+
+          anonymous_config=$(mktemp -d)
+          trap 'rm -rf "$anonymous_config"' EXIT
+          anonymous_index=$(DOCKER_CONFIG="$anonymous_config" \
+            docker buildx imagetools inspect "$PUBLIC_IMAGE_REPOSITORY@$public_digest" --raw)
+          expected_children=$(jq -c '
+            map({architecture:(if .architecture == "x86_64" then "amd64" else "arm64" end),digest})
+            | sort_by(.architecture)
+          ' <<<"$children")
+          actual_children=$(jq -c '
+            [.manifests[] | {architecture:.platform.architecture,digest}]
+            | sort_by(.architecture)
+          ' <<<"$anonymous_index")
+          [[ $actual_children == "$expected_children" ]]
+
           mkdir -p release-tools-image-receipt
-          jq -n --arg repository "$IMAGE_REPOSITORY" --arg tag "$tag" \
-            --arg digest "$digest" --arg image "$IMAGE_REPOSITORY@$digest" \
+          jq -n --arg repository "$PUBLIC_IMAGE_REPOSITORY" --arg tag "$tag" \
+            --arg digest "$public_digest" --arg image "$PUBLIC_IMAGE_REPOSITORY@$public_digest" \
+            --arg sourceImage "$IMAGE_REPOSITORY@$digest" \
             --arg sourceRevision "$SOURCE_REVISION" --argjson children "$children" \
-            '{schemaVersion:1,repository:$repository,tag:$tag,digest:$digest,image:$image,sourceRevision:$sourceRevision,children:$children}' \
+            '{schemaVersion:1,repository:$repository,tag:$tag,digest:$digest,image:$image,sourceImage:$sourceImage,sourceRevision:$sourceRevision,children:$children}' \
             > release-tools-image-receipt/release-tools-image.json
-          printf '### Release tools image\n\n`%s@%s`\n' "$IMAGE_REPOSITORY" "$digest" >> "$GITHUB_STEP_SUMMARY"
+          printf '### Public release tools image\n\n`%s@%s`\n' \
+            "$PUBLIC_IMAGE_REPOSITORY" "$public_digest" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: release-tools-image-receipt
           path: release-tools-image-receipt/release-tools-image.json
           if-no-files-found: error
+
+  verify-public:
+    needs: publish-index
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: runner
+          - arch: aarch64
+            platform: linux/arm64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          sparse-checkout: os/tests/release_tools_image.sh
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: release-tools-image-receipt
+          path: release-tools-image-receipt
+      - name: Pull and test the public image without credentials
+        run: |
+          set -euo pipefail
+          image=$(jq -er '.image' release-tools-image-receipt/release-tools-image.json)
+          [[ $image == code.sandbox.example/public/tilo-release-tools@sha256:* ]]
+          anonymous_config="$RUNNER_TEMP/release-tools-anonymous-docker"
+          rm -rf "$anonymous_config"
+          mkdir -m 0700 "$anonymous_config"
+          export DOCKER_CONFIG="$anonymous_config"
+          docker pull --platform '${{ matrix.platform }}' "$image"
+          bash os/tests/release_tools_image.sh "$image"
