@@ -809,7 +809,7 @@ mod tests {
 
         // Isolate a regressed blocking open in a test subprocess, so timeout
         // cleanup can always kill and reap it before removing the private FIFO.
-        let mut child = Command::new(std::env::current_exe().unwrap())
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "probe::tests::inspect_source_rejects_fifo_without_waiting_for_a_writer",
