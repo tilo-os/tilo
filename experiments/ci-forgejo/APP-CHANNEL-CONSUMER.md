@@ -251,8 +251,11 @@ trust-policy promotion. It reuses the existing registry pull/resolution credenti
 native build steps receive no new secret. Run it once per reviewed verifier version
 or builder-compatibility change, preserve accepted artifacts before expiry, and let
 the platform owner publish/promote the descriptors centrally. Application authors
-do not supply per-build verifier hashes. The workflow has not yet been dispatched
-or natively qualified by this change.
+do not supply per-build verifier hashes. The subsequent
+[x86-64 producer acceptance](results/native-verifier-23012/README.md) records a
+successful native build/startup and independent artifact verification. ARM remains
+pending; publication, policy promotion and representative signed-artifact replay
+remain separate gates.
 
 To package already-built native tools manually:
 
