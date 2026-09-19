@@ -95,6 +95,7 @@ pub mod transport_v2;
 pub mod peer_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod workspace;
+#[cfg(not(target_arch = "wasm32"))]
 mod workspace_io;
 
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
