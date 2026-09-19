@@ -67,6 +67,17 @@ Producer and consumer pod/job IDs may differ; each context must independently
 match the stable request fields. The option is never inferred, and a started
 later signing stage still blocks rather than retrying implicitly.
 
+The workflow exposes restore only as three all-or-none dispatch inputs: the
+prior internal run ID, its attempt, and an independently recorded canonical
+SHA256 of its stage-5 receipt. A task-scoped repository token reads that terminal failed
+or cancelled run and its uniquely named `finalization-RUN-ATTEMPT` artifact.
+Retrieval refuses the current/active run, redirects, expired or ambiguous
+artifacts, oversized responses, unexpected ZIP members, request/receipt-chain
+mismatches and legacy stage-5 receipts without immutable registry identities.
+It materializes only public receipts 01-05 into a new owner-only directory.
+When the three inputs are empty the workflow neither calls the retrieval helper
+nor passes `--restore-stage5`.
+
 Contract tests: `python3 os/tests/test_finalization_worker.py`. These test input,
 argv, directory-mode, bounded-receipt and cleanup behavior; they do not establish
 that a full remote finalization or OS boot has succeeded.
