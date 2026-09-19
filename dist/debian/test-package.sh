@@ -3,6 +3,7 @@ set -euo pipefail
 
 [[ $# -ge 1 ]] || { echo "usage: $0 tilo-session.deb [tilo-session-devel.deb]" >&2; exit 2; }
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+"$repo_root/dist/ci/require-disposable-session-test-env.sh"
 packages=()
 expect_devel=0
 for package in "$@"; do

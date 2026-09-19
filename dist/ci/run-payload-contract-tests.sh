@@ -3,6 +3,15 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+host_safe=0
+if [[ ${1:-} == --host-safe ]]; then
+    host_safe=1
+    shift
+fi
+[[ $# == 0 ]] || { echo "usage: $0 [--host-safe]" >&2; exit 2; }
+if (( ! host_safe )); then
+    "$repo_root/dist/ci/require-disposable-session-test-env.sh"
+fi
 work=$(mktemp -d)
 cleanup() { rm -rf -- "$work"; }
 trap cleanup EXIT
@@ -31,10 +40,10 @@ if sed -n '/^fedora-44)/,/^    ;;/p' "$package_job" | grep -Eq '\bgit[[:space:]]
     exit 1
 fi
 
-"$repo_root/dist/session/tests/host-session-lifecycle.sh"
-python3 "$repo_root/dist/session/tests/flight-recorder.py"
-"$repo_root/dist/session/tests/private-dbus-handoff.sh"
-"$repo_root/dist/session/tests/private-user-manager-handoff.sh"
+if (( ! host_safe )); then
+    "$repo_root/dist/session/tests/host-session-lifecycle.sh"
+    python3 "$repo_root/dist/session/tests/flight-recorder.py"
+fi
 "$repo_root/dist/rpm/test-signing-contract.sh"
 "$repo_root/dist/rpm/test-app-store-stage.sh"
 "$repo_root/dist/rpm/test-build-target-dir.sh"

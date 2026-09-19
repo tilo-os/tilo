@@ -151,6 +151,10 @@ sed \
   -e "s|readonly SHELL_BIN=/usr/bin/shell|readonly SHELL_BIN=$fake_shell|" \
   "$wrapper" >"$test_wrapper"
 chmod 0755 "$test_wrapper"
+grep -Fqx "readonly SYSTEMCTL=$fake_systemctl" "$test_wrapper"
+grep -Fqx "readonly SHELL_BIN=$fake_shell" "$test_wrapper"
+! grep -Fq '/usr/bin/systemctl' "$test_wrapper"
+! grep -Fq '/usr/bin/shell' "$test_wrapper"
 
 # Successful verification starts the desktop, preserves its exit status, and
 # tears down the Tilo target afterward.

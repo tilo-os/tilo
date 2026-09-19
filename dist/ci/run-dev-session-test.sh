@@ -4,7 +4,9 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-container=$(docker create --platform linux/amd64 \
+"$repo_root/dist/ci/require-disposable-session-test-env.sh"
+container=$(docker create --platform linux/amd64 --network none \
+    --env TILO_DISPOSABLE_TEST_ENV=1 \
     --entrypoint /bin/bash \
     docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316 \
     -lc "useradd --create-home tester && \

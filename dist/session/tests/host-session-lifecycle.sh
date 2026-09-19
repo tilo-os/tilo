@@ -78,6 +78,12 @@ sed \
     -e "s|FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder|FLIGHT_RECORDER=$work/tilo-flight-recorder|" \
     "$repo_root/dist/session/tilo-session-runner" >"$work/tilo-session"
 chmod 0755 "$work/tilo-session"
+grep -Fqx "SYSTEMCTL=$work/systemctl" "$work/tilo-session"
+grep -Fqx "SYSTEMD_CAT=$work/systemd-cat" "$work/tilo-session"
+grep -Fqx "DBUS_UPDATE=$work/dbus-update-activation-environment" "$work/tilo-session"
+grep -Fqx "FLIGHT_RECORDER=$work/tilo-flight-recorder" "$work/tilo-session"
+! grep -Fq '/usr/bin/systemctl' "$work/tilo-session"
+! grep -Fq '/usr/bin/dbus-update-activation-environment' "$work/tilo-session"
 
 # The shared runner is an internal package component, but it still fails
 # closed when a broken wrapper omits or supplies an unsafe compositor path.

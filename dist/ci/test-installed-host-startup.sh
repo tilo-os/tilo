@@ -5,6 +5,9 @@
 # runner's seat or relying on a nested display server.
 set -euo pipefail
 
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+"$repo_root/dist/ci/require-disposable-session-test-env.sh"
+
 [[ $# == 0 ]] || { echo "usage: $0" >&2; exit 2; }
 [[ $(id -u) == 0 ]] || { echo "installed host startup test must run as root" >&2; exit 2; }
 test -x /usr/bin/tilo-shell

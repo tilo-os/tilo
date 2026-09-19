@@ -306,6 +306,7 @@ arch=${TILO_EXPECT_ARCH:?missing TILO_EXPECT_ARCH}
 execution_arch=${TILO_EXECUTION_ARCH:-$arch}
 emulated=${TILO_EMULATED:-0}
 export TILO_EXPECT_ARCH="$arch"
+export TILO_DISPOSABLE_TEST_ENV=1
 
 stage=bootstrap
 record_failure() {

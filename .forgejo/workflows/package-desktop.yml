@@ -107,9 +107,17 @@ jobs:
             diagnostic=arch-version-drift
           elif ! grep -Fxq "%{!?tilo_version:%global tilo_version $(<dist/VERSION)}" dist/rpm/tilo-session.spec; then
             diagnostic=rpm-version-drift
-          elif ! dist/ci/run-dev-session-test.sh; then
+          elif ! dist/ci/test-session-test-isolation.sh; then
+            diagnostic=session-test-isolation
+          elif ! env -u DISPLAY -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
+            -u XAUTHORITY -u XDG_CURRENT_DESKTOP -u XDG_SESSION_ID \
+            -u DESKTOP_SESSION -u GDMSESSION \
+            TILO_DISPOSABLE_TEST_ENV=1 dist/ci/run-dev-session-test.sh; then
             diagnostic=dev-session-contract
-          elif ! dist/ci/run-payload-contract-tests.sh; then
+          elif ! env -u DISPLAY -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
+            -u XAUTHORITY -u XDG_CURRENT_DESKTOP -u XDG_SESSION_ID \
+            -u DESKTOP_SESSION -u GDMSESSION \
+            TILO_DISPOSABLE_TEST_ENV=1 dist/ci/run-payload-contract-tests.sh; then
             diagnostic=payload-contract
           elif ! os/tests/portal_config_validity.sh; then
             diagnostic=portal-contract
