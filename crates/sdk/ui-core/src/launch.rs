@@ -35,6 +35,13 @@ pub struct LegacyLaunchInputs {
     pub(crate) autosave: crate::persist::Autosave,
     pub(crate) records: LegacyRecordPolicy,
     pub(crate) registry: tilo_actions::ActionRegistry,
+    pub(crate) persistence: LegacyPersistencePolicy,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LegacyPersistencePolicy {
+    Host,
+    WidgetOwned,
 }
 
 pub(crate) enum LegacyRecordPolicy {
@@ -60,6 +67,7 @@ impl LegacyLaunchInputs {
             autosave,
             records: LegacyRecordPolicy::None,
             registry: tilo_actions::ActionRegistry::new(),
+            persistence: LegacyPersistencePolicy::Host,
         }
     }
 
@@ -79,6 +87,25 @@ impl LegacyLaunchInputs {
     pub fn with_registry(mut self, registry: tilo_actions::ActionRegistry) -> Self {
         self.registry = registry;
         self
+    }
+
+    /// Transitional ownership for a root with its own durable writer. Requires
+    /// a disabled host writer, no record set, and an implemented checked
+    /// `Widget::try_flush_owned_persistence` hook. Ordinary disabled writers
+    /// remain failures; this never opens a substitute store.
+    #[must_use]
+    pub fn with_widget_owned_persistence(mut self) -> Self {
+        self.persistence = LegacyPersistencePolicy::WidgetOwned;
+        self
+    }
+
+    pub(crate) fn validate_persistence_ownership(&self) -> Result<(), String> {
+        if self.persistence == LegacyPersistencePolicy::WidgetOwned
+            && (self.autosave.is_enabled() || !matches!(self.records, LegacyRecordPolicy::None))
+        {
+            return Err("widget-owned persistence cannot also use a host or record writer".into());
+        }
+        Ok(())
     }
 }
 type ShotFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
@@ -901,6 +928,9 @@ fn prepare_legacy_launch(
         };
         inputs
     };
+    inputs
+        .validate_persistence_ownership()
+        .map_err(LaunchError::Operation)?;
     Ok(PreparedLegacyLaunch { scope, inputs })
 }
 
@@ -935,8 +965,11 @@ fn build_native_app_with_constructor(
         autosave,
         records,
         registry,
+        persistence,
     } = prepared.inputs;
-    let mut app = construct(prepared.scope, state, root).with_autosave(autosave);
+    let mut app = construct(prepared.scope, state, root)
+        .with_autosave(autosave)
+        .with_legacy_persistence(persistence);
     if let LegacyRecordPolicy::Explicit { records, index } = records {
         app = app.with_records(records, index);
     }
@@ -1419,6 +1452,30 @@ mod tests {
     }
     fn wrong_namespace_open(_: &'static str) -> (State, crate::persist::Autosave) {
         crate::persist::open_for("dev.tilo.other-fixture").unwrap()
+    }
+
+    #[test]
+    fn widget_owned_persistence_rejects_mixed_record_owner_before_either_runner() {
+        let spec =
+            LaunchSpec::new("dev.tilo.launch-fixture", dummy_root).prepare_legacy_with_args(|_| {
+                Ok(LegacyLaunchInputs::new(
+                    State::new(),
+                    dummy_root(),
+                    crate::persist::Autosave::disabled("owned fixture"),
+                )
+                .with_records(
+                    crate::record::RecordSet::in_memory(),
+                    automerge::AutoCommit::new(),
+                )
+                .with_widget_owned_persistence())
+            });
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        assert!(
+            matches!(build_native_app_with_constructor(&spec, &args, |_, _, _| panic!("invalid ownership must fail before native construction")), Err(LaunchError::Operation(message)) if message.contains("cannot also use"))
+        );
+        assert!(
+            matches!(dispatch_legacy_headless(&spec, &args, &headless::Spec::default()), Err(LaunchError::Operation(message)) if message.contains("cannot also use"))
+        );
     }
     #[test]
     #[serial_test::serial]
