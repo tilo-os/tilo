@@ -16,7 +16,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertNotRegex(pr, r'(?m)^    (?:paths|paths-ignore):')
         plan = source.split('\n  plan:\n', 1)[1].split('\n  build:\n', 1)[0]
         self.assertNotRegex(plan, r'(?m)^    if:')
-        self.assertIn('python3 tools/app_release.py "${args[@]}"', plan)
+        self.assertIn('python3 -I tools/ci_python.py tools/app_release.py "${args[@]}"', plan)
         build = source.split('\n  build:\n', 1)[1].split('\n  publish:\n', 1)[0]
         condition = re.search(r'(?m)^    if: (.+)$', build).group(1)
         # Execute the production predicate, including both nonzero/zero plans.
@@ -63,7 +63,9 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         for before, after in (
             ('      builder_image: ${{ steps.builder.outputs.image }}', '      other: unused'),
             ('        id: builder', '        id: different'),
-            ('        run: python3 tools/resolve_ci_builder.py', '        run: echo skipped'),
+            ('        run: python3 -I tools/ci_python.py tools/resolve_ci_builder.py', '        run: echo skipped'),
+            ('        run: python3 -I tools/ci_python.py tools/resolve_ci_builder.py',
+             '        run: python3 tools/resolve_ci_builder.py'),
             ('    needs: plan', '    needs: other'),
             ('      image: ${{ needs.plan.outputs.builder_image }}',
              '      image: code.podesta.ai/qos/tilo-builder:latest'),

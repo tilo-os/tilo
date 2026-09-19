@@ -212,7 +212,7 @@ grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && grep -Fq 'tools/app_release.py --architecture-matrix' "$apps" \
   && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '      builder_image: ${{ steps.builder.outputs.image }}' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        id: builder' >/dev/null \
-  && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        run: python3 tools/resolve_ci_builder.py' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        run: python3 -I tools/ci_python.py tools/resolve_ci_builder.py' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '    needs: plan' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '      image: ${{ needs.plan.outputs.builder_image }}' >/dev/null \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
