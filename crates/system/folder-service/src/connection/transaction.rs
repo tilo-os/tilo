@@ -22,6 +22,40 @@ pub(super) struct InitialPreview {
     source: super::model::ObservedTree,
     destination: super::model::ObservedTree,
 }
+pub(super) enum WorkerReviewed {
+    Regular(ReviewedInitial),
+    Empty(AcceptedEmpty),
+}
+/// Move-only explicit review; cannot be decoded from persisted comparison data.
+pub(super) struct AcceptedEmpty {
+    record: super::store::ConnectionRecord,
+    lifetime: Weak<()>,
+    gate: Weak<AdmissionGate>,
+    preview: [u8; 32],
+}
+impl AcceptedEmpty {
+    pub(super) fn validate(
+        &self,
+        store: &ConnectionStore,
+        session: &TransactionSession,
+    ) -> Result<super::store::InitialEmptyBaselineV1, StoreError> {
+        store.executor_session(self.record.id, session)?;
+        session.require_idle()?;
+        if self.lifetime.strong_count() == 0
+            || !store.same_native_lifetime(&self.lifetime)
+            || !self.gate.ptr_eq(&Arc::downgrade(&session.gate))
+            || store.load_connection(self.record.id)? != self.record
+            || store.executor_position(self.record.id)? != (None, None)
+            || self.record.baseline_revision.is_some()
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        Ok(super::store::InitialEmptyBaselineV1::from_review(
+            &self.record,
+            self.preview,
+        ))
+    }
+}
 pub(super) struct ReviewedInitial {
     record: super::store::ConnectionRecord,
     lifetime: Weak<()>,
@@ -73,10 +107,11 @@ impl InitialPreview {
     pub(super) fn worker_accept(
         self,
         store: &ConnectionStore,
+        session: &TransactionSession,
         source: &super::endpoint::PinnedEndpoint,
         destination: &super::endpoint::PinnedEndpoint,
         cancel: &AtomicBool,
-    ) -> Result<Option<ReviewedInitial>, StoreError> {
+    ) -> Result<Option<WorkerReviewed>, StoreError> {
         use super::model::{Conflict, Decision, EntryState, Side};
         let fresh_source = super::endpoint::observe(source, cancel);
         let fresh_destination = super::endpoint::observe(destination, cancel);
@@ -87,6 +122,11 @@ impl InitialPreview {
             || fresh_destination != self.destination
         {
             return Err(StoreError::StaleRevision);
+        }
+        if self.worker_len() == 0 {
+            return self
+                .accept_empty(store, session)
+                .map(|value| Some(WorkerReviewed::Empty(value)));
         }
         let mut selection = None;
         for path in self.worker_paths() {
@@ -125,8 +165,25 @@ impl InitialPreview {
             }
         }
         selection
-            .map(|selection| self.accept(selection))
+            .map(|selection| self.accept(selection).map(WorkerReviewed::Regular))
             .transpose()
+    }
+    pub(super) fn accept_empty(
+        self,
+        store: &ConnectionStore,
+        session: &TransactionSession,
+    ) -> Result<AcceptedEmpty, StoreError> {
+        if !self.source.entries().is_empty() || !self.destination.entries().is_empty() {
+            return Err(StoreError::StaleRevision);
+        }
+        let accepted = AcceptedEmpty {
+            record: self.record,
+            lifetime: self.lifetime,
+            gate: Arc::downgrade(&session.gate),
+            preview: self.digest,
+        };
+        accepted.validate(store, session)?;
+        Ok(accepted)
     }
     fn from_observations(
         store: &ConnectionStore,
@@ -640,6 +697,9 @@ pub(super) fn plan_regular(
 pub(super) enum TransactionOutcome {
     InitialReview(InitialPreview),
     StructuralPending(StructuralPending),
+    VerifiedEmpty {
+        revision: super::store::Revision,
+    },
     Verified {
         operation: super::store::OperationReceipt,
         up_to_date: bool,
@@ -657,3 +717,6 @@ pub(super) enum TransactionOutcome {
 pub(super) use native::execute_next_directory;
 #[cfg(target_os = "linux")]
 pub(super) use native::linux::{execute_next_regular, execute_reviewed_initial, resolve_regular};
+
+#[cfg(target_os = "linux")]
+pub(super) use native::linux::initial_baseline::{InitialEmptyProof, execute_empty};

@@ -5,7 +5,7 @@ use super::{
         ConflictRecord, ConnectionPolicy, ConnectionRecord, ConnectionStore, EndpointBinding,
         Lifecycle, PageCursor, StoreError,
     },
-    transaction::{InitialPreview, ReviewedInitial, TransactionSession},
+    transaction::{InitialPreview, TransactionSession, WorkerReviewed},
 };
 use crate::connected::{
     ConflictInfo, ConflictPage, ConnectedService, ConnectionError, ConnectionId, ConnectionInfo,
@@ -123,7 +123,7 @@ struct Active {
     observer: Observer,
     pins: Option<Pins>,
     preview: Option<(ReviewId, InitialPreview)>,
-    reviewed: Option<ReviewedInitial>,
+    reviewed: Option<WorkerReviewed>,
     running: bool,
     attempts: u32,
     last_revision: Option<u64>,
@@ -451,6 +451,7 @@ impl Worker {
         let pins = active.pins.as_ref().ok_or(ConnectionError::StaleReview)?;
         let accepted = preview.worker_accept(
             &self.store,
+            &pins.session,
             &pins.source,
             &pins.destination,
             &AtomicBool::new(false),
@@ -524,7 +525,15 @@ impl Worker {
             #[cfg(test)]
             tests::before_native_step(id);
             let outcome = match active.reviewed.take() {
-                Some(reviewed) => transaction::execute_reviewed_initial(
+                Some(WorkerReviewed::Empty(reviewed)) => transaction::execute_empty(
+                    &mut self.store,
+                    reviewed,
+                    &pins.session,
+                    &pins.source,
+                    &pins.destination,
+                    &cancel,
+                ),
+                Some(WorkerReviewed::Regular(reviewed)) => transaction::execute_reviewed_initial(
                     &mut self.store,
                     reviewed,
                     &pins.session,
@@ -585,10 +594,6 @@ impl Worker {
         match outcome {
             transaction::TransactionOutcome::InitialReview(preview) => {
                 let entries = preview.worker_len();
-                if entries == 0 {
-                    set_phase(active, Phase::Pending(Pending::EmptyBaselineUnavailable));
-                    return;
-                }
                 let Some(generation) = self.generation.checked_add(1) else {
                     set_phase(
                         active,
@@ -603,6 +608,10 @@ impl Worker {
                 };
                 active.preview = Some((review.clone(), preview));
                 set_phase(active, Phase::AwaitingReview { review, entries });
+            }
+            transaction::TransactionOutcome::VerifiedEmpty { revision } => {
+                active.last_revision = Some(revision);
+                set_phase(active, Phase::UpToDate);
             }
             transaction::TransactionOutcome::Verified {
                 operation,

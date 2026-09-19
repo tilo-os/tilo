@@ -619,7 +619,7 @@ fn conflict_records_both_observed_versions() {
     assert!(conflict.preserved.is_empty());
 }
 
-thread_local! {static FAULT:std::cell::Cell<Option<(usize,bool)>>=const {std::cell::Cell::new(None)};}
+thread_local! {pub(super) static FAULT:std::cell::Cell<Option<(usize,bool)>>=const {std::cell::Cell::new(None)};}
 pub(super) fn fault() -> Result<(), StoreError> {
     FAULT.with(|fault| match fault.get() {
         Some((0, space)) => {

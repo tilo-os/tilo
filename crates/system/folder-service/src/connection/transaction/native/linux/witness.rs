@@ -54,8 +54,7 @@ pub(super) struct NamespaceWitness {
     reader: File,
     watches: Vec<Watch>,
     bindings: Vec<(i32, Role)>,
-    namespace_name: CString,
-    target_name: CString,
+    names: Option<(CString, CString)>,
     inventory: BTreeSet<Vec<u8>>,
     expected: Vec<Expected>,
     descriptors: BTreeMap<Vec<u8>, DescriptorEvidence>,
@@ -79,20 +78,44 @@ impl NamespaceWitness {
         name: CString,
         bootstrap: bool,
     ) -> io::Result<Self> {
+        let mut value = Self::reader(Some((name, target.name.clone())), !bootstrap)?;
+        value.watch(root, Role::Root)?;
+        value.watch(&target.directory, Role::Target)?;
+        if bootstrap {
+            value.expected.push(Expected {
+                role: Role::Root,
+                name: value.namespace_name()?.to_bytes().to_vec(),
+                mask: rules::CREATE | rules::ISDIR,
+            });
+        }
+        Ok(value)
+    }
+    fn namespace_name(&self) -> io::Result<&CStr> {
+        self.names
+            .as_ref()
+            .map(|names| names.0.as_c_str())
+            .ok_or_else(invalid)
+    }
+    fn target_name(&self) -> io::Result<&CStr> {
+        self.names
+            .as_ref()
+            .map(|names| names.1.as_c_str())
+            .ok_or_else(invalid)
+    }
+    fn reader(names: Option<(CString, CString)>, restarted: bool) -> io::Result<Self> {
         // SAFETY: fixed flags; successful call returns one new owned fd.
         let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        let mut value = Self {
+        Ok(Self {
             directory_phase: None,
             // SAFETY: fd belongs solely to this owner.
             reader: unsafe { File::from_raw_fd(fd) },
-            restarted: !bootstrap,
+            restarted,
             watches: Vec::new(),
             bindings: Vec::new(),
-            namespace_name: name,
-            target_name: target.name.clone(),
+            names,
             inventory: BTreeSet::new(),
             expected: Vec::new(),
             descriptors: BTreeMap::new(),
@@ -100,17 +123,58 @@ impl NamespaceWitness {
             failed: false,
             closed: false,
             buffer: vec![0; rules::EVENT_BUFFER].into_boxed_slice(),
-        };
-        value.watch(root, Role::Root)?;
-        value.watch(&target.directory, Role::Target)?;
-        if bootstrap {
-            value.expected.push(Expected {
-                role: Role::Root,
-                name: value.namespace_name.to_bytes().to_vec(),
-                mask: rules::CREATE | rules::ISDIR,
-            });
-        }
+        })
+    }
+    /// Operationless root guards share the authenticated watch/reader engine.
+    /// There are no namespace names, sentinel writes, or publication phases.
+    pub(super) fn empty_roots(roots: [&NativeDirectory; 2]) -> io::Result<Self> {
+        let mut value = Self::reader(None, false)?;
+        value.watch(roots[0], Role::Root)?;
+        value.watch(roots[1], Role::Target)?;
         Ok(value)
+    }
+    pub(super) fn check_empty_roots(&mut self, epoch: &mut NativeEpoch<'_>) -> Result<()> {
+        if self.names.is_some() || self.failed || self.watches.len() != 2 {
+            return Err(epoch.failure(EndpointError::Unverified));
+        }
+        let result = (|| {
+            self.passes
+                .enter()
+                .map_err(|_| epoch.failure(EndpointError::LimitExceeded))?;
+            let deadline = Instant::now() + std::time::Duration::from_secs(1);
+            for watch in &self.watches {
+                epoch.ep(watch.directory.validate())?;
+                if epoch.ep(object(watch.directory.file()))? != watch.identity {
+                    return Err(epoch.failure(EndpointError::IdentityChanged));
+                }
+                enumerate(epoch, &watch.directory, Inventory::exact(&[]), deadline)?;
+            }
+            epoch.check()?;
+            // Empty roots permit no namespace or metadata events, including a
+            // create/delete race whose final directory contents look unchanged.
+            // SAFETY: sole nonblocking reader and a valid bounded output buffer.
+            let count = unsafe {
+                libc::read(
+                    self.reader.as_raw_fd(),
+                    self.buffer.as_mut_ptr().cast(),
+                    self.buffer.len(),
+                )
+            };
+            if count != -1 || io::Error::last_os_error().raw_os_error() != Some(libc::EAGAIN) {
+                return Err(epoch.failure(EndpointError::Unstable));
+            }
+            for watch in &self.watches {
+                epoch.ep(watch.directory.validate())?;
+                if epoch.ep(object(watch.directory.file()))? != watch.identity {
+                    return Err(epoch.failure(EndpointError::IdentityChanged));
+                }
+            }
+            epoch.check()
+        })();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
     }
     pub(super) fn new_directory(
         root: &NativeDirectory,
@@ -301,7 +365,7 @@ impl NamespaceWitness {
                 Role::Namespace,
                 b"stage".to_vec(),
                 Role::Target,
-                self.target_name.to_bytes().to_vec(),
+                self.target_name()?.to_bytes().to_vec(),
             )
         } else {
             if !self.inventory.insert(b"displaced".to_vec()) {
@@ -309,7 +373,7 @@ impl NamespaceWitness {
             }
             (
                 Role::Target,
-                self.target_name.to_bytes().to_vec(),
+                self.target_name()?.to_bytes().to_vec(),
                 Role::Namespace,
                 b"displaced".to_vec(),
             )
@@ -458,7 +522,8 @@ impl NamespaceWitness {
             enumerate(epoch, &watch.directory, inventory, deadline)?;
         }
         let root = epoch.io(self.role(Role::Root))?;
-        epoch.io(sentinel(root.file(), &self.namespace_name))?;
+        let namespace_name = epoch.io(self.namespace_name())?;
+        epoch.io(sentinel(root.file(), namespace_name))?;
         for name in [c"intent", c"stage", c"displaced"] {
             if self.inventory.contains(name.to_bytes()) {
                 epoch.io(sentinel(namespace.file(), name))?;
@@ -468,21 +533,22 @@ impl NamespaceWitness {
             && !self.inventory.contains(b"stage".as_slice())
         {
             let target = epoch.io(self.role(Role::Target))?;
-            epoch.io(sentinel(target.file(), &self.target_name))?;
+            let target_name = epoch.io(self.target_name())?;
+            epoch.io(sentinel(target.file(), target_name))?;
         }
         let mut transcript = if let Some(phase) = self.directory_phase {
             Transcript::directory(
                 &self.bindings,
-                self.namespace_name.to_bytes(),
-                self.target_name.to_bytes(),
+                epoch.io(self.namespace_name())?.to_bytes(),
+                epoch.io(self.target_name())?.to_bytes(),
                 &self.expected,
                 phase,
             )
         } else {
             Transcript::new(
                 &self.bindings,
-                self.namespace_name.to_bytes(),
-                self.target_name.to_bytes(),
+                epoch.io(self.namespace_name())?.to_bytes(),
+                epoch.io(self.target_name())?.to_bytes(),
                 &self.expected,
             )
         }
