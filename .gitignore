@@ -70,3 +70,14 @@ os/dev/composefs/stage/
 # Vendored crates carry their own lock files; ours is the workspace one.
 vendor/*/Cargo.lock
 .gstack/
+
+# Local agent captures, logs, source snapshots and review scratch.
+/.superpowers/
+
+# Python bytecode is regenerated from source.
+__pycache__/
+*.pyc
+
+# Generated audit output; keep written design and review explanations.
+/docs/superpowers/audits/**/*.log
+/docs/superpowers/audits/**/*.json

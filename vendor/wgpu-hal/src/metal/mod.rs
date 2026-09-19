@@ -508,6 +508,8 @@ pub struct Device {
 }
 
 pub struct Surface {
+    #[cfg(feature = "qos-presentation-feedback")]
+    next_present_observer: Mutex<Option<Arc<dyn Fn(f64, u64) + Send + Sync>>>,
     render_layer: Mutex<Retained<CAMetalLayer>>,
     swapchain_format: RwLock<Option<wgt::TextureFormat>>,
     extent: RwLock<wgt::Extent3d>,
@@ -611,6 +613,22 @@ impl crate::Queue for Queue {
         texture: SurfaceTexture,
     ) -> Result<(), crate::SurfaceError> {
         autoreleasepool(|_| {
+            #[cfg(feature = "qos-presentation-feedback")]
+            if let Some(observer) = _surface.next_present_observer.lock().take() {
+                // The block owns reporting state, never the drawable itself.
+                // Metal retains/copies this block for asynchronous invocation.
+                let block = block2::RcBlock::new(
+                    move |drawable: NonNull<ProtocolObject<dyn MTLDrawable>>| {
+                        let drawable = unsafe { drawable.as_ref() };
+                        observer(drawable.presentedTime(), drawable.drawableID() as u64);
+                    },
+                );
+                unsafe {
+                    texture
+                        .drawable
+                        .addPresentedHandler(block2::RcBlock::as_ptr(&block))
+                };
+            }
             // We do not bother adjusting `command_buffer_created_not_submitted`
             // because we immediately commit this buffer.
             let command_buffer = self.shared.raw.commandBuffer().unwrap();

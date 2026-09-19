@@ -44,6 +44,10 @@ pub mod bluetooth;
 pub mod bluez;
 pub mod display;
 pub mod firmware;
+#[cfg(target_os = "linux")]
+pub mod linux_physical_gamepad;
+#[cfg(not(target_os = "linux"))]
+#[path = "unsupported_physical_gamepad.rs"]
 pub mod linux_physical_gamepad;
 pub mod linux_virtual_gamepad;
 pub mod modem;

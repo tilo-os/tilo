@@ -1,0 +1,17 @@
+[package]
+name = "runtime-connected"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "runtime_connected"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror.workspace = true
+tilo-connected-protocol = { path = "../../session/tilo-connected-protocol" }
+
+[lints]
+workspace = true

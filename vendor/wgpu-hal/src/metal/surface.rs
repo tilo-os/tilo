@@ -16,10 +16,36 @@ use super::OsFeatures;
 impl super::Surface {
     pub fn new(layer: Retained<CAMetalLayer>) -> Self {
         Self {
+            #[cfg(feature = "qos-presentation-feedback")]
+            next_present_observer: Mutex::new(None),
             render_layer: Mutex::new(layer),
             swapchain_format: RwLock::new(None),
             extent: RwLock::new(wgt::Extent3d::default()),
         }
+    }
+
+    /// Observe the next presentation on this surface, without changing its scheduling.
+    /// The caller must serialize registration and presentation on the owning worker.
+    /// The callback runs asynchronously, must not block or panic, and receives raw
+    /// Metal host time in seconds (zero means not presented) and drawable identity.
+    /// Missing callbacks are not evidence that a drawable was displayed or dropped.
+    ///
+    /// # Errors
+    /// Returns an error on unsupported OS versions or if an observer is already armed.
+    #[cfg(feature = "qos-presentation-feedback")]
+    pub fn observe_next_present(
+        &self,
+        observer: alloc::sync::Arc<dyn Fn(f64, u64) + Send + Sync>,
+    ) -> Result<(), &'static str> {
+        if !objc2::available!(macos = 10.15.4, ios = 10.3, tvos = 10.2, ..) {
+            return Err("drawable presentation feedback unavailable on this OS");
+        }
+        let mut pending = self.next_present_observer.lock();
+        if pending.is_some() {
+            return Err("a presentation observer is already armed");
+        }
+        *pending = Some(observer);
+        Ok(())
     }
 
     pub fn from_layer(layer: &CAMetalLayer) -> Self {

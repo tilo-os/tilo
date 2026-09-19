@@ -425,6 +425,12 @@ pub struct AclHandle {
 }
 
 impl AclHandle {
+    pub(crate) fn admission_lease(
+        &self,
+    ) -> Result<std::sync::RwLockReadGuard<'_, WorkspaceAcl>, ()> {
+        self.acl.read().map_err(|_| ())
+    }
+
     /// A handle over `acl`.
     pub fn new(acl: WorkspaceAcl) -> Self {
         let (revision_watch, _) = tokio::sync::watch::channel(0_u64);

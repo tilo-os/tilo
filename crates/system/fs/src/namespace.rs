@@ -16,9 +16,8 @@ use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use collab_types::{
-    ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1,
-    FileMutationParticipantRoleV1, FileMutationTransactionV1, FileNameV1, FileNodeKind,
-    FileRecordId,
+    ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileMutationParticipantRole,
+    FileMutationTransaction, FileNameV1, FileNodeKind, FileRecordId,
 };
 use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
@@ -335,6 +334,38 @@ impl Namespace {
         Ok(ns)
     }
 
+    /// Complete visible register operation IDs for a record and its ancestor
+    /// bindings. IDs retain same-value/ABA changes and losing concurrent values.
+    pub(crate) fn checked_record_frontier(
+        &self,
+        ino: u64,
+    ) -> Option<Vec<(String, String, Vec<String>)>> {
+        let mut id = self.ino_to_id.get(&ino)?.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut frontier = Vec::new();
+        while id != ROOT_ID {
+            if !seen.insert(id.clone()) {
+                return None;
+            }
+            let node = self.node(&id)?;
+            let mut keys = self.doc.keys(&node).collect::<Vec<_>>();
+            keys.sort();
+            for key in keys {
+                let mut operations = self
+                    .doc
+                    .get_all(&node, &key)
+                    .ok()?
+                    .into_iter()
+                    .map(|(_, operation)| operation.to_string())
+                    .collect::<Vec<_>>();
+                operations.sort();
+                frontier.push((id.clone(), key, operations));
+            }
+            id = read_str(&self.doc, &node, "parent")?;
+        }
+        Some(frontier)
+    }
+
     pub fn author(&self) -> &str {
         &self.author
     }
@@ -425,6 +456,34 @@ impl Namespace {
         self.rebuild_record_index();
         Ok(())
     }
+    /// Isolate a durable restore candidate from subsequent changes by the live
+    /// namespace actor. This is projection identity, never certified authorship.
+    pub(crate) fn begin_restore_projection(
+        &mut self,
+        workspace: uuid::Uuid,
+        record: FileRecordId,
+        intent: uuid::Uuid,
+    ) -> automerge::ActorId {
+        let original = self.doc.get_actor().clone();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"qos.namespace.restore-projection.v1\0");
+        hasher.update(workspace.as_bytes());
+        hasher.update(record.0.as_bytes());
+        hasher.update(intent.as_bytes());
+        hasher.update(original.to_bytes());
+        self.doc.set_actor(automerge::ActorId::from(
+            hasher.finalize().as_bytes().as_slice(),
+        ));
+        original
+    }
+
+    pub(crate) fn end_restore_projection(&mut self, original: automerge::ActorId) {
+        // save_incremental closes the candidate's pending transaction before
+        // returning to the live actor; retries retain these exact saved bytes.
+        let _ = self.doc.save_incremental();
+        self.doc.set_actor(original);
+    }
+
     pub fn prime_baseline(&mut self) {
         let _ = self.doc.save_incremental();
     }
@@ -1091,7 +1150,7 @@ impl Namespace {
     /// Returns an error when transaction verification or projection fails.
     pub fn apply_replacement_transaction(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         // Automerge transactions make the document edits atomic, but the
         // verified-record projection is maintained alongside the document.
@@ -1115,13 +1174,40 @@ impl Namespace {
     /// Returns an error when transaction verification or projection fails.
     pub fn apply_mutation_transaction(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         match transaction.manifest.operation {
-            collab_types::FileMutationOperationV1::ReplacementRename { .. } => {
+            collab_types::FileMutationOperation::RestoreContent { prior_revision, .. } => {
+                transaction
+                    .verify()
+                    .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
+                let participant = transaction
+                    .manifest
+                    .participants
+                    .first()
+                    .ok_or(TransactionProjectionError::InvalidTransaction)?;
+                let revision = participant
+                    .proposed_content_revision
+                    .ok_or(TransactionProjectionError::InvalidTransaction)?;
+                let ino = self
+                    .ensure_ino_for_record_id(participant.record_id)
+                    .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
+                let current = self.content_revision_for(ino);
+                if current == Some(revision) {
+                    return Ok(None);
+                }
+                if current != Some(prior_revision) {
+                    return Err(TransactionProjectionError::PreconditionFailed);
+                }
+                if !self.set_content_revision(ino, &revision, transaction.manifest.timestamp_ms) {
+                    return Err(TransactionProjectionError::ContentProjectionFailed);
+                }
+                Ok(Some(self.save_incremental()))
+            }
+            collab_types::FileMutationOperation::ReplacementRename { .. } => {
                 self.apply_replacement_transaction(transaction)
             }
-            collab_types::FileMutationOperationV1::KeepBothContentConflict { .. } => {
+            collab_types::FileMutationOperation::KeepBothContentConflict { .. } => {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_keep_both_transaction_in_place(transaction)?;
                 if delta.is_some() {
@@ -1130,7 +1216,7 @@ impl Namespace {
                 }
                 Ok(delta)
             }
-            collab_types::FileMutationOperationV1::MergeContentConflict { .. } => {
+            collab_types::FileMutationOperation::MergeContentConflict { .. } => {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_merge_transaction_in_place(transaction)?;
                 if delta.is_some() {
@@ -1150,13 +1236,13 @@ impl Namespace {
     /// or inconsistent with the resulting projection.
     pub fn apply_staged_merge_delta(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
         delta: &[u8],
     ) -> Result<(), TransactionProjectionError> {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperationV1::MergeContentConflict {
+        let collab_types::FileMutationOperation::MergeContentConflict {
             source_record,
             parent_record,
             source_name,
@@ -1169,7 +1255,7 @@ impl Namespace {
             .manifest
             .participants
             .first()
-            .filter(|participant| participant.role == FileMutationParticipantRoleV1::MergeSource)
+            .filter(|participant| participant.role == FileMutationParticipantRole::MergeSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let mut candidate = self.clone();
         let source_id = candidate
@@ -1208,12 +1294,12 @@ impl Namespace {
 
     fn apply_merge_transaction_in_place(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperationV1::MergeContentConflict {
+        let collab_types::FileMutationOperation::MergeContentConflict {
             source_record,
             parent_record,
             source_name,
@@ -1226,7 +1312,7 @@ impl Namespace {
             .manifest
             .participants
             .first()
-            .filter(|participant| participant.role == FileMutationParticipantRoleV1::MergeSource)
+            .filter(|participant| participant.role == FileMutationParticipantRole::MergeSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let source_id = self
             .unique_node_id_for_record(*source_record)
@@ -1270,13 +1356,13 @@ impl Namespace {
     /// or inconsistent with the resulting projection.
     pub fn apply_staged_keep_both_delta(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
         delta: &[u8],
     ) -> Result<(), TransactionProjectionError> {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperationV1::KeepBothContentConflict {
+        let collab_types::FileMutationOperation::KeepBothContentConflict {
             source_record,
             sibling_record,
             parent_record,
@@ -1291,13 +1377,13 @@ impl Namespace {
             .manifest
             .participants
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRoleV1::KeepBothSource)
+            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let sibling = transaction
             .manifest
             .participants
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRoleV1::KeepBothSibling)
+            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSibling)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let mut candidate = self.clone();
         let source_id = candidate
@@ -1351,12 +1437,12 @@ impl Namespace {
 
     fn apply_keep_both_transaction_in_place(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperationV1::KeepBothContentConflict {
+        let collab_types::FileMutationOperation::KeepBothContentConflict {
             source_record,
             sibling_record,
             parent_record,
@@ -1371,13 +1457,13 @@ impl Namespace {
             .manifest
             .participants
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRoleV1::KeepBothSource)
+            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSource)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let sibling = transaction
             .manifest
             .participants
             .iter()
-            .find(|participant| participant.role == FileMutationParticipantRoleV1::KeepBothSibling)
+            .find(|participant| participant.role == FileMutationParticipantRole::KeepBothSibling)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let source_id = self
             .unique_node_id_for_record(*source_record)
@@ -1445,15 +1531,18 @@ impl Namespace {
         Ok(Some(self.save_incremental()))
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Replacement projection keeps signature/participant checks, replay detection, namespace preconditions, rename, and revision installation in order."
+    )]
     fn apply_replacement_transaction_in_place(
         &mut self,
-        transaction: &FileMutationTransactionV1,
+        transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperationV1::ReplacementRename {
+        let collab_types::FileMutationOperation::ReplacementRename {
             source_parent,
             source_name,
             destination_parent,
@@ -1468,13 +1557,13 @@ impl Namespace {
             .manifest
             .participants
             .iter()
-            .find(|value| value.role == FileMutationParticipantRoleV1::Source)
+            .find(|value| value.role == FileMutationParticipantRole::Source)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let replaced_participant = transaction
             .manifest
             .participants
             .iter()
-            .find(|value| value.role == FileMutationParticipantRoleV1::Replaced)
+            .find(|value| value.role == FileMutationParticipantRole::Replaced)
             .ok_or(TransactionProjectionError::InvalidTransaction)?;
         let source_id = self
             .unique_node_id_for_record(*source_record)
@@ -2652,9 +2741,6 @@ mod tests {
         Hash::from([b; 32])
     }
 
-    // This end-to-end scenario intentionally exercises every durable phase of
-    // a two-record replacement transaction and its idempotent replay.
-    #[allow(clippy::too_many_lines)]
     #[test]
     fn root_is_inode_one_and_listable() {
         let mut ns = Namespace::new("a").unwrap();
@@ -2714,12 +2800,15 @@ mod tests {
 
     // This scenario intentionally covers every durable phase and replay of a
     // two-record replacement transaction in one linear assertion trace.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The signed two-record fixture verifies source replacement, victim tombstoning, emitted namespace delta, and idempotent replay together."
+    )]
     #[test]
     fn complete_replacement_transaction_moves_source_tombstones_victim_and_replays() {
         use collab_types::{
-            ContentHash, FILE_MUTATION_TRANSACTION_VERSION, FileMutationOperationV1,
-            FileMutationParticipantV1, FileMutationTransactionManifestV1, FileProvenance,
+            ContentHash, FILE_MUTATION_TRANSACTION_VERSION, FileMutationOperation,
+            FileMutationParticipant, FileMutationTransactionManifest, FileProvenance,
             FileVersionId, FileVersionV1,
         };
         use ed25519_dalek::SigningKey;
@@ -2769,12 +2858,12 @@ mod tests {
                 content_hash: Some(ContentHash([content_byte; 32])),
                 metadata_hash: ContentHash([content_byte + 2; 32]),
                 provenance: match role {
-                    FileMutationParticipantRoleV1::Source => FileProvenance::Rename,
-                    FileMutationParticipantRoleV1::Replaced => FileProvenance::Delete,
+                    FileMutationParticipantRole::Source => FileProvenance::Rename,
+                    FileMutationParticipantRole::Replaced => FileProvenance::Delete,
                     _ => unreachable!("replacement fixture role"),
                 },
             };
-            let mut participant = FileMutationParticipantV1 {
+            let mut participant = FileMutationParticipant {
                 record_id,
                 role,
                 expected_version,
@@ -2784,7 +2873,7 @@ mod tests {
                     parent: Some(root_record),
                     name: "destination.txt".into(),
                     kind: FileNodeKind::File,
-                    tombstoned: role == FileMutationParticipantRoleV1::Replaced,
+                    tombstoned: role == FileMutationParticipantRole::Replaced,
                     actor,
                     observed_at_ms: 2,
                 },
@@ -2806,25 +2895,25 @@ mod tests {
             participant(
                 source_record,
                 source_expected,
-                FileMutationParticipantRoleV1::Source,
+                FileMutationParticipantRole::Source,
                 1,
             ),
             participant(
                 victim_record,
                 victim_expected,
-                FileMutationParticipantRoleV1::Replaced,
+                FileMutationParticipantRole::Replaced,
                 2,
             ),
         ];
         participants.sort_by_key(|participant| participant.record_id);
-        let transaction = collab_types::FileMutationTransactionV1::signed(
-            FileMutationTransactionManifestV1 {
+        let transaction = collab_types::FileMutationTransaction::signed(
+            FileMutationTransactionManifest {
                 schema_version: FILE_MUTATION_TRANSACTION_VERSION,
                 transaction_id: Uuid::new_v4(),
                 workspace_id: Uuid::new_v4(),
                 actor,
                 timestamp_ms: 2,
-                operation: FileMutationOperationV1::ReplacementRename {
+                operation: FileMutationOperation::ReplacementRename {
                     source_parent: root_record,
                     source_name: "source.txt".into(),
                     destination_parent: root_record,

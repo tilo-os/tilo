@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use collab_types::{
     CanonicalError, ConflictResolution, ConflictStatus, ContentRevisionV1, FileActor,
-    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationTransactionV1, FileProvenance,
+    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationTransaction, FileProvenance,
     FileRecordError, FileRecordId, FileVersionId, FileVersionV1, Signature, VerifyError,
     canonical_bytes, prefer_conflict_resolution, sign_event, verify_event,
 };
@@ -81,7 +81,7 @@ pub enum RecordOperationV1 {
     /// enum discriminants in durable repositories.
     SetBinding(FileBindingV1),
     /// Stage the identical signed multi-record manifest in each participant.
-    PrepareTransaction(FileMutationTransactionV1),
+    PrepareTransaction(FileMutationTransaction),
     /// Mark this participant committed. Projection remains invisible until
     /// the repository proves matching commits for the exact participant set.
     CommitTransaction { transaction_id: uuid::Uuid },
@@ -351,7 +351,7 @@ pub struct RecordReplica {
     /// completeness decides whether projection may expose them.
     transaction_versions: HashMap<FileVersionId, FileVersionV1>,
     conflicts: HashMap<uuid::Uuid, FileConflictV1>,
-    transactions: HashMap<uuid::Uuid, (FileMutationTransactionV1, bool)>,
+    transactions: HashMap<uuid::Uuid, (FileMutationTransaction, bool)>,
     highest_sequence: HashMap<FileActor, u64>,
 }
 
@@ -385,7 +385,64 @@ struct RevisionStamp {
     sequence: u64,
 }
 
+impl BindingStamp {
+    fn for_binding(binding: &FileBindingV1, sequence: u64) -> Self {
+        Self {
+            observed_at_ms: binding.observed_at_ms,
+            sequence,
+            person: *binding.actor.person.as_bytes(),
+            device: *binding.actor.device.as_bytes(),
+        }
+    }
+}
+
+impl RevisionStamp {
+    fn for_version(version: &FileVersionV1, actor: FileActor, sequence: u64) -> Self {
+        Self {
+            timestamp_ms: version.timestamp_ms,
+            person: *actor.person.as_bytes(),
+            device: *actor.device.as_bytes(),
+            version: *version.id.0.as_bytes(),
+            sequence,
+        }
+    }
+}
+
 impl RecordReplica {
+    /// Apply a repository-verified complete participant using exactly the same
+    /// signed field ordering as ordinary operations. This mutates a projection
+    /// clone only; incomplete transactions never enter the live replica fields.
+    pub(crate) fn project_completed_participant(
+        &mut self,
+        participant: &collab_types::FileMutationParticipant,
+        commit_sequence: u64,
+    ) {
+        let binding = &participant.proposed_binding;
+        let stamp = BindingStamp::for_binding(binding, commit_sequence);
+        if participant.role != collab_types::FileMutationParticipantRole::RestoreContent
+            && self
+                .binding
+                .as_ref()
+                .is_none_or(|(current, _)| stamp > *current)
+        {
+            self.binding = Some((stamp, binding.clone()));
+        }
+        if let Some(revision) = participant.proposed_content_revision {
+            let stamp = RevisionStamp::for_version(
+                &participant.proposed_version,
+                participant.proposed_version.actor,
+                commit_sequence,
+            );
+            if self
+                .content_revision
+                .as_ref()
+                .is_none_or(|(current, _)| stamp > *current)
+            {
+                self.content_revision = Some((stamp, revision));
+            }
+        }
+    }
+
     /// Start an empty replica scoped to `record_id`.
     #[must_use]
     pub fn new(record_id: FileRecordId) -> Self {
@@ -451,7 +508,10 @@ impl RecordReplica {
 
     // Keep the exhaustive authenticated operation state machine together so a
     // newly added operation cannot bypass common sequence bookkeeping.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive authenticated operation state machine shares sequence validation and final sequence bookkeeping"
+    )]
     fn apply_verified(
         &mut self,
         envelope: &RecordEnvelopeV1,
@@ -475,12 +535,7 @@ impl RecordReplica {
 
         match &envelope.operation {
             RecordOperationV1::SetBinding(binding) => {
-                let stamp = BindingStamp {
-                    observed_at_ms: binding.observed_at_ms,
-                    sequence: envelope.sequence,
-                    person: *envelope.actor.person.as_bytes(),
-                    device: *envelope.actor.device.as_bytes(),
-                };
+                let stamp = BindingStamp::for_binding(binding, envelope.sequence);
                 if self
                     .binding
                     .as_ref()
@@ -564,13 +619,7 @@ impl RecordReplica {
                 {
                     return Err(RecordReplicationError::ContentRevisionMismatch);
                 }
-                let stamp = RevisionStamp {
-                    timestamp_ms: version.timestamp_ms,
-                    person: *envelope.actor.person.as_bytes(),
-                    device: *envelope.actor.device.as_bytes(),
-                    version: *revision.version_id.0.as_bytes(),
-                    sequence: envelope.sequence,
-                };
+                let stamp = RevisionStamp::for_version(version, envelope.actor, envelope.sequence);
                 if self
                     .content_revision
                     .as_ref()
@@ -646,13 +695,13 @@ impl RecordReplica {
     pub(crate) fn transaction_state(
         &self,
         transaction_id: uuid::Uuid,
-    ) -> Option<(&FileMutationTransactionV1, bool)> {
+    ) -> Option<(&FileMutationTransaction, bool)> {
         self.transactions
             .get(&transaction_id)
             .map(|(transaction, committed)| (transaction, *committed))
     }
 
-    pub(crate) fn transactions(&self) -> impl Iterator<Item = (&FileMutationTransactionV1, bool)> {
+    pub(crate) fn transactions(&self) -> impl Iterator<Item = (&FileMutationTransaction, bool)> {
         self.transactions
             .values()
             .map(|(transaction, committed)| (transaction, *committed))
@@ -793,8 +842,8 @@ mod tests {
     use collab_types::{
         CONTENT_REVISION_VERSION, ConflictResolution, ConflictStatus, ConflictStrategy,
         ContentHash, FILE_BINDING_VERSION, FILE_MUTATION_TRANSACTION_VERSION, FileConflictV1,
-        FileMutationOperationV1, FileMutationParticipantRoleV1, FileMutationParticipantV1,
-        FileMutationTransactionManifestV1, FileNodeKind, FilePropertiesV1, FileProvenance,
+        FileMutationOperation, FileMutationParticipant, FileMutationParticipantRole,
+        FileMutationTransactionManifest, FileNodeKind, FilePropertiesV1, FileProvenance,
         FileVersionId, IndexStatus, generate_keypair,
     };
 
@@ -879,7 +928,7 @@ mod tests {
         actor: FileActor,
         source: FileRecordId,
         replaced: FileRecordId,
-    ) -> FileMutationTransactionV1 {
+    ) -> FileMutationTransaction {
         let destination_parent = FileRecordId::new();
         let participant = |record_id, role| {
             let expected = FileVersionId::new();
@@ -892,12 +941,12 @@ mod tests {
                 content_hash: None,
                 metadata_hash: ContentHash([5; 32]),
                 provenance: match role {
-                    FileMutationParticipantRoleV1::Source => FileProvenance::Rename,
-                    FileMutationParticipantRoleV1::Replaced => FileProvenance::Delete,
+                    FileMutationParticipantRole::Source => FileProvenance::Rename,
+                    FileMutationParticipantRole::Replaced => FileProvenance::Delete,
                     _ => unreachable!("replacement fixture role"),
                 },
             };
-            let mut value = FileMutationParticipantV1 {
+            let mut value = FileMutationParticipant {
                 record_id,
                 role,
                 expected_version: expected,
@@ -907,7 +956,7 @@ mod tests {
                     parent: Some(destination_parent),
                     name: "destination.txt".into(),
                     kind: FileNodeKind::File,
-                    tombstoned: role == FileMutationParticipantRoleV1::Replaced,
+                    tombstoned: role == FileMutationParticipantRole::Replaced,
                     actor,
                     observed_at_ms: 5,
                 },
@@ -926,18 +975,18 @@ mod tests {
             value
         };
         let mut participants = vec![
-            participant(source, FileMutationParticipantRoleV1::Source),
-            participant(replaced, FileMutationParticipantRoleV1::Replaced),
+            participant(source, FileMutationParticipantRole::Source),
+            participant(replaced, FileMutationParticipantRole::Replaced),
         ];
         participants.sort_by_key(|value| value.record_id);
-        FileMutationTransactionV1::signed(
-            FileMutationTransactionManifestV1 {
+        FileMutationTransaction::signed(
+            FileMutationTransactionManifest {
                 schema_version: FILE_MUTATION_TRANSACTION_VERSION,
                 transaction_id: uuid::Uuid::new_v4(),
                 workspace_id: uuid::Uuid::new_v4(),
                 actor,
                 timestamp_ms: 5,
-                operation: FileMutationOperationV1::ReplacementRename {
+                operation: FileMutationOperation::ReplacementRename {
                     source_parent: FileRecordId::new(),
                     source_name: "source.txt".into(),
                     destination_parent,
@@ -1408,7 +1457,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Convergence matrix is intentionally one scenario.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture compares both signed resolution arrival orders and checks that conflict and visible content converge"
+    )] // Convergence matrix is intentionally one scenario.
     fn concurrent_resolution_proposals_converge_independent_of_arrival_order() {
         let (first_key, first_actor, record, mut auth) = fixture();
         let (second_key, second_device) = generate_keypair();

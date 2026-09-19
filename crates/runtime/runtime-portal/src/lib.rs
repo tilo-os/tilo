@@ -76,12 +76,20 @@ pub enum NotAvailable {
 /// service client and react to [`NotAvailable`] instead. Intended for
 /// telemetry, boot-time toggles, and friendly first-run messaging.
 pub fn is_tilo_native() -> bool {
-    env::var_os("TILO_WORKSPACE_ID").is_some()
+    native::connection_metadata_is_current() && env::var_os("TILO_WORKSPACE_ID").is_some()
 }
 
 /// Look up a service fd by canonical name (e.g. "collab", "fs"). `None` if
 /// the env var is unset, not a valid integer, or the fd isn't currently open.
 pub fn service_fd(name: &str) -> Option<RawFd> {
+    // Automatic native transfers belong to one exec process. Its later child
+    // may reuse these descriptor numbers for unrelated files or sockets, even
+    // in diagnostic/local modes that intentionally skip automatic bootstrap.
+    if (name.eq_ignore_ascii_case("collab") || name.eq_ignore_ascii_case("identity"))
+        && !native::connection_metadata_is_current()
+    {
+        return None;
+    }
     #[cfg(not(unix))]
     {
         let _ = name;
@@ -92,6 +100,9 @@ pub fn service_fd(name: &str) -> Option<RawFd> {
         let var_name = format!("TILO_SVC_{}_FD", name.to_uppercase());
         let raw = env::var(&var_name).ok()?;
         let fd: RawFd = raw.parse().ok()?;
+        if fd < 0 {
+            return None;
+        }
         // F_GETFD only needs to succeed; EBADF means the fd slot is empty.
         // SAFETY: we don't mutate the fd; if the slot is closed, fcntl
         // returns EBADF and we return None. We hand the BorrowedFd
@@ -165,6 +176,11 @@ impl CapnpClient {
             // SOCK_STREAM Unix socket. We checked F_GETFD on it before
             // this call (via service_fd) so the slot is at least open.
             let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+            // The launcher clears CLOEXEC only for the initial app exec. Once
+            // the SDK owns the connection, later children must not retain it.
+            fcntl(&owned, nix::fcntl::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC))
+                .map_err(io::Error::from)
+                .map_err(NotAvailable::ConnectionFailed)?;
             let std_stream = std::os::unix::net::UnixStream::from(owned);
             std_stream
                 .set_nonblocking(true)
@@ -316,3 +332,5 @@ mod tests {
 
 #[cfg(unix)]
 pub mod fd_transport;
+
+pub mod native;
