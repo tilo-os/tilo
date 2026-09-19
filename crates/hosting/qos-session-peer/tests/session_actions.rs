@@ -256,6 +256,15 @@ async fn normal_host_serves_real_checked_application_catalogue() {
         .await
         .unwrap();
     endpoint.online().await;
+    #[cfg(feature = "test-support")]
+    let observer_binding = ObserverBinding {
+        endpoint: endpoint.clone(),
+        relay: serde_json::from_value(metadata["relay_address"].clone()).unwrap(),
+        root: cert.user_public_key,
+        host: host_cert.device_public_key,
+        cert: cert.clone(),
+        key: key.clone(),
+    };
     let client = RelayClient::connect_v2_to_enrolled_home_peer(
         endpoint,
         serde_json::from_value(metadata["relay_address"].clone()).unwrap(),
@@ -383,10 +392,11 @@ async fn normal_host_serves_real_checked_application_catalogue() {
     };
     assert_eq!(table_cells(&remote), 0);
     #[cfg(feature = "test-support")]
-    active_replacement(
+    let client = active_replacement(
         &mut host,
         origin,
-        &client,
+        client,
+        &observer_binding,
         &mut remote,
         room,
         &cert,
@@ -396,6 +406,10 @@ async fn normal_host_serves_real_checked_application_catalogue() {
         operation.clone(),
     )
     .await;
+    #[cfg(feature = "test-support")]
+    let first_observation = ActionMessage::Status { invocation };
+    #[cfg(not(feature = "test-support"))]
+    let first_observation = operation.clone();
     invoke_and_observe(
         &client,
         &mut remote,
@@ -404,7 +418,7 @@ async fn normal_host_serves_real_checked_application_catalogue() {
         &native,
         broker_host,
         invocation,
-        operation.clone(),
+        first_observation,
     )
     .await;
     assert_eq!(
@@ -908,11 +922,343 @@ fn active_replacement_state_delta_is_a_provable_retained_tail() {
     );
 }
 
+// The observer owns its identity/state independently of a replaceable transport.
+#[cfg(feature = "test-support")]
+struct ObserverBinding {
+    endpoint: iroh::Endpoint,
+    relay: iroh_base::EndpointAddr,
+    root: [u8; 32],
+    host: [u8; 32],
+    cert: qos_user_identity::DeviceCert,
+    key: SigningKey,
+}
+
+#[cfg(feature = "test-support")]
+enum ObserverEvent {
+    State(qos_relay::transport::Envelope),
+    Action(qos_relay::transport_v2::EnvelopeV2),
+    Ended,
+}
+
+#[cfg(feature = "test-support")]
+async fn observer_event(client: &qos_relay::RelayClient) -> ObserverEvent {
+    tokio::select! {
+        state = client.recv() => state.map(ObserverEvent::State).unwrap_or(ObserverEvent::Ended),
+        action = client.recv_action() => action.map(ObserverEvent::Action).unwrap_or(ObserverEvent::Ended),
+    }
+}
+
+#[cfg(feature = "test-support")]
+async fn connect_observer(
+    binding: &ObserverBinding,
+    room: uuid::Uuid,
+    remote: &mut qos_peer_state::StatePeer,
+    deadline: Instant,
+) -> Result<(qos_relay::RelayClient, usize), String> {
+    use qos_relay::{transport::Envelope, transport_v2::EnvelopeV2};
+    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
+        let client = qos_relay::RelayClient::connect_v2_to_enrolled_home_peer(
+            binding.endpoint.clone(),
+            binding.relay.clone(),
+            binding.root,
+            binding.host,
+            binding.cert.clone(),
+            binding.key.clone(),
+            qos_user_identity::RevocationList::new(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        client
+            .send(Envelope::Subscribe {
+                workspace_id: qos_relay::room_workspace_id(&room.to_string()).unwrap(),
+            })
+            .map_err(|_| "observer Subscribe failed")?;
+        let mut frames = 0;
+        loop {
+            match observer_event(&client).await {
+                ObserverEvent::State(Envelope::Ready { .. }) => break,
+                ObserverEvent::State(event) => {
+                    if matches!(event, Envelope::Delta { .. }) {
+                        frames += 1;
+                    }
+                    apply_state(remote, event);
+                }
+                ObserverEvent::Action(_) => {
+                    return Err("action before observer replay Ready".into());
+                }
+                ObserverEvent::Ended => return Err("observer ended during recovery replay".into()),
+            }
+        }
+        client
+            .send_action(EnvelopeV2::EnableActions { room })
+            .map_err(|_| "observer EnableActions failed")?;
+        client
+            .send_action(EnvelopeV2::EnableBrokerClient { room })
+            .map_err(|_| "observer EnableBrokerClient failed")?;
+        Ok((client, frames))
+    })
+    .await
+    .map_err(|_| "observer recovery exceeded the original deadline".to_string())?
+}
+
+#[cfg(feature = "test-support")]
+async fn replace_observer_after_eof(
+    ended: qos_relay::RelayClient,
+    binding: &ObserverBinding,
+    room: uuid::Uuid,
+    remote: &mut qos_peer_state::StatePeer,
+    replacements: &mut u8,
+    deadline: Instant,
+) -> Result<(qos_relay::RelayClient, usize), String> {
+    if *replacements != 0 {
+        return Err("second observer EOF".into());
+    }
+    *replacements += 1;
+    // close() would also close the shared endpoint. Retire only this transport.
+    drop(ended);
+    connect_observer(binding, room, remote, deadline).await
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
+    use qos_session_peer::host::{LocalHost, publish};
+    use qos_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, persist};
+    use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
+
+    // Capture a weak handle only: retaining a Connection would change drop semantics.
+    #[derive(Debug, Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Option<iroh::endpoint::WeakConnectionHandle>>>);
+    impl iroh::endpoint::EndpointHooks for Capture {
+        async fn after_handshake(
+            &self,
+            connection: &iroh::endpoint::Connection,
+        ) -> iroh::endpoint::AfterHandshakeOutcome {
+            *self.0.lock().unwrap() = Some(connection.weak_handle());
+            iroh::endpoint::AfterHandshakeOutcome::accept()
+        }
+    }
+    impl Capture {
+        fn close_connection(&self) {
+            self.0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .upgrade()
+                .unwrap()
+                .close(0u32.into(), b"fixture observer closure");
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+    let paths = persist::IdentityPaths::under(owner.root().join("identity"));
+    let native_key = persist::read_device_key(&paths.device_privkey).unwrap();
+    let root_key = persist::read_signing_key(&paths.user_privkey).unwrap();
+    let key = SigningKey::from_bytes(&[92; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: root_key.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "observer recovery fixture".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: qos_relay::clock::now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    qos_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
+    let mut candidate = owner.peer().clone();
+    candidate
+        .admit_certificate(cert.clone(), &native_key, web_time::SystemTime::now())
+        .unwrap();
+    owner
+        .commit_admission(candidate, owner.directory().to_vec())
+        .unwrap();
+    let host = LocalHost::start(&owner).await.unwrap();
+    let mut native = host.connect(&owner).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !native.is_ready() {
+            if let qos_relay::Inbound::Delta { author, data } = native.recv().await.unwrap() {
+                owner
+                    .receive(
+                        qos_peer_state::TransportOrigin::RelayDelta(author),
+                        postcard::from_bytes(&data).unwrap(),
+                    )
+                    .unwrap();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let capture = Capture::default();
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(
+            host.packet_url.clone(),
+        )))
+        .hooks(capture.clone())
+        .bind()
+        .await
+        .unwrap();
+    endpoint.online().await;
+    let endpoint_id = endpoint.id();
+    let room = owner.peer().room().parse().unwrap();
+    let binding = ObserverBinding {
+        endpoint: endpoint.clone(),
+        relay: host.address.clone(),
+        root: cert.user_public_key,
+        host: owner.host_certificate().device_public_key,
+        cert,
+        key,
+    };
+    let mut remote = qos_peer_state::StatePeer::new(
+        owner.peer().room(),
+        owner.peer().authority().clone(),
+        owner.peer().certificates(),
+        RevocationList::new(),
+        web_time::SystemTime::now(),
+    )
+    .unwrap();
+    let (client, _) = connect_observer(
+        &binding,
+        room,
+        &mut remote,
+        Instant::now() + Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    publish(&owner, &native).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        // Leave one actual checkpoint unadmitted so recovery must do more than
+        // count replay frames: it must fill the missing document in this peer.
+        let mut omitted_chat = false;
+        for _ in 0..owner.outgoing().len() {
+            let event = client.recv().await.unwrap();
+            let qos_relay::transport::Envelope::Delta { delta, .. } = &event else {
+                panic!("expected the owner's retained publication");
+            };
+            let qos_relay::coedit::CoeditPayload::Checkpoint { body, .. } =
+                qos_relay::coedit::CoeditPayload::decode(delta).unwrap() else {
+                    panic!("expected the initial checkpoint basis");
+                };
+            if matches!(postcard::from_bytes::<qos_peer_state::NeighbourMsg>(&body).unwrap(),
+                qos_peer_state::NeighbourMsg::AppDocument { app_id, .. } if app_id == "dev.qos.chat") {
+                omitted_chat = true;
+            } else {
+                apply_state(&mut remote, event);
+            }
+        }
+        assert!(omitted_chat);
+        assert!(remote.document("dev.qos.chat", "").is_none());
+    })
+    .await
+    .unwrap();
+    // Retain a local mutation absent from the owner/relay's checkpoint basis.
+    let row = remote
+        .rows()
+        .into_iter()
+        .find(|r| r.app_id == "dev.qos.notes")
+        .unwrap();
+    let mut doc = AutoCommit::load(&remote.document(&row.app_id, &row.record_id).unwrap()).unwrap();
+    doc.set_actor(ui::automerge::ActorId::from(
+        binding.cert.device_public_key.to_vec(),
+    ));
+    let _ = doc.save_incremental();
+    doc.put(
+        ROOT,
+        "observer-local-proof",
+        "must survive transport replacement",
+    )
+    .unwrap();
+    doc.commit();
+    remote
+        .signed_mutation(
+            &row.app_id,
+            &row.record_id,
+            collab_types::DocumentMutation::Incremental(doc.save_incremental()),
+            &binding.key,
+            web_time::SystemTime::now(),
+        )
+        .unwrap();
+    let mut expected_rows = owner.peer().rows();
+    *expected_rows
+        .iter_mut()
+        .find(|r| r.app_id == row.app_id)
+        .unwrap() = remote
+        .rows()
+        .into_iter()
+        .find(|r| r.app_id == row.app_id)
+        .unwrap();
+    let certificates = remote.certificates();
+    capture.close_connection();
+    let deadline = Instant::now() + Duration::from_millis(3800);
+    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
+        loop {
+            if matches!(observer_event(&client).await, ObserverEvent::Ended) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("real connection closure must end a receive lane");
+    let mut replacements = 0;
+    let (client, replayed) = replace_observer_after_eof(
+        client,
+        &binding,
+        room,
+        &mut remote,
+        &mut replacements,
+        deadline,
+    )
+    .await
+    .expect("first EOF must replay using the same owner");
+    assert!(
+        replayed > 0,
+        "recovery must admit actual retained frames before Ready"
+    );
+    assert_eq!(binding.endpoint.id(), endpoint_id);
+    assert_eq!(replacements, 1);
+    assert_eq!(
+        remote.rows(),
+        expected_rows,
+        "replay must fill Chat and preserve the local Notes mutation"
+    );
+    assert!(remote.document("dev.qos.chat", "").is_some());
+    assert_eq!(
+        remote.durable_coverage("dev.qos.chat", "").unwrap(),
+        owner.peer().durable_coverage("dev.qos.chat", "").unwrap()
+    );
+    assert_eq!(remote.certificates(), certificates);
+    assert_ne!(
+        remote.rows(),
+        owner.peer().rows(),
+        "local state was replaced by owner state"
+    );
+    capture.close_connection();
+    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
+        loop {
+            if matches!(observer_event(&client).await, ObserverEvent::Ended) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(replace_observer_after_eof(client, &binding, room, &mut remote,
+        &mut replacements, deadline).await, Err(error) if error == "second observer EOF")
+    );
+    assert_eq!(replacements, 1);
+    endpoint.close().await;
+    native.into_client().close().await;
+    host.shutdown().await.unwrap();
+}
+
 #[cfg(feature = "test-support")]
 async fn active_replacement(
     host: &mut Host,
     origin: &str,
-    client: &qos_relay::RelayClient,
+    client: qos_relay::RelayClient,
+    binding: &ObserverBinding,
     remote: &mut qos_peer_state::StatePeer,
     room: uuid::Uuid,
     cert: &qos_user_identity::DeviceCert,
@@ -920,7 +1266,7 @@ async fn active_replacement(
     broker_host: uuid::Uuid,
     invocation: qos_actions::InvocationId,
     operation: qos_relay::peer_actions::ActionMessage,
-) {
+) -> qos_relay::RelayClient {
     use qos_relay::{
         peer_actions::{ActionMessage, DirectedAction},
         transport::Envelope,
@@ -1019,77 +1365,141 @@ async fn active_replacement(
             signature: [0; 64],
         })
         .unwrap();
-    // Endpoint::online takes about 3s on this isolated relay. Keep the
-    // observation below the 4s hold and unchanged 5s signer deadline.
+    // This one absolute budget includes Notes delivery, transport replacement,
+    // replay/capability restoration and authenticated pending Status.
     let deadline = Instant::now() + Duration::from_millis(3800);
-    loop {
-        let status = request(origin, "/status", None, None).await.1;
-        assert_eq!(
-            status["qualification"]["held"], true,
-            "response was not held while delivering state: {status}"
-        );
-        assert_eq!(status["qualification"]["expired"], false);
-        if status["qualification"]["workers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|worker| {
-                worker["app"] == row.app_id
-                    && worker["record"] == row.record_id
-                    && worker["heads"]
-                        .as_array()
-                        .unwrap()
-                        .contains(&serde_json::json!(head))
-            })
-        {
-            break;
+    let client = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
+        loop {
+            let status = request(origin, "/status", None, None).await.1;
+            assert_eq!(
+                status["qualification"]["held"], true,
+                "response was not held while delivering state: {status}"
+            );
+            assert_eq!(status["qualification"]["expired"], false);
+            if status["qualification"]["workers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|worker| {
+                    worker["app"] == row.app_id
+                        && worker["record"] == row.record_id
+                        && worker["heads"]
+                            .as_array()
+                            .unwrap()
+                            .contains(&serde_json::json!(head))
+                })
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "incoming state did not reach checked Notes worker: {status}"
+            );
+            tokio::select! {
+                state = client.recv() => apply_state(remote, state.unwrap()),
+                event = client.recv_action() => if let EnvelopeV2::Delivered { action, source_user } = event.unwrap() {
+                    if action.request_id == request_id {
+                        assert_eq!(source_user, native.user_public_key); assert_eq!(action.source, native.device_public_key); assert_eq!(action.target, cert.device_public_key); assert_eq!(action.room, room);
+                        assert!(matches!(action.message, ActionMessage::Observation { update: Some(ref update), uncertain: false, .. } if !update.is_terminal()), "held old-generation invocation completed or lost custody: {:?}", action.message);
+                    }
+                },
+                _ = tokio::time::sleep(Duration::from_millis(5)) => {},
+            }
         }
-        assert!(
-            Instant::now() < deadline,
-            "incoming state did not reach checked Notes worker: {status}"
-        );
-        tokio::select! {
-            state = client.recv() => apply_state(remote, state.unwrap()),
-            event = client.recv_action() => if let EnvelopeV2::Delivered { action, source_user } = event.unwrap() {
-                if action.request_id == request_id {
-                    assert_eq!(source_user, native.user_public_key); assert_eq!(action.source, native.device_public_key); assert_eq!(action.target, cert.device_public_key); assert_eq!(action.room, room);
-                    assert!(matches!(action.message, ActionMessage::Observation { update: Some(ref update), uncertain: false, .. } if !update.is_terminal()), "held old-generation invocation completed or lost custody: {:?}", action.message);
+        writeln!(host.0.stdin.as_mut().unwrap(), "reconnect").unwrap();
+        let mut client = client;
+        let mut replacements = 0;
+        let mut pending = qos_browser_runtime::action_client::PendingActions::default();
+        let mut status_request = None;
+        let mut observed_pending = false;
+        loop {
+            let status = request(origin, "/status", None, None).await.1;
+            assert_eq!(status["qualification"]["held"], true,
+                "old completion escaped replacement boundary: {status}");
+            assert_eq!(status["qualification"]["expired"], false);
+            assert!(Instant::now() < deadline, "active replacement did not become ready: {status}");
+            let native_ready = status["actions"] == "ready"
+                && status["native_subscription_generation"].as_u64().unwrap() > generation;
+            if native_ready && observed_pending { break; }
+            if native_ready && status_request.is_none() {
+                let id = uuid::Uuid::new_v4();
+                let directed = DirectedAction {
+                    room, request_id: id, source: cert.device_public_key,
+                    target: native.device_public_key,
+                    message: ActionMessage::Status { invocation },
+                };
+                pending.insert(directed.clone()).unwrap();
+                status_request = Some(id);
+                // An ended outbound queue still requires actual receive EOF to
+                // enter recovery. Without EOF/proof the same deadline fails.
+                let _ = client.send_action(EnvelopeV2::Directed(directed));
+            }
+            let event = tokio::select! {
+                event = observer_event(&client) => Some(event),
+                _ = tokio::time::sleep(Duration::from_millis(5)) => None,
+            };
+            match event {
+                Some(ObserverEvent::State(state)) => apply_state(remote, state),
+                Some(ObserverEvent::Action(event)) => {
+                    if let EnvelopeV2::Delivered { action, source_user } = &event {
+                        if action.request_id == request_id {
+                            assert_eq!(*source_user, native.user_public_key);
+                            assert_eq!(action.source, native.device_public_key);
+                            assert_eq!(action.target, cert.device_public_key);
+                            assert_eq!(action.room, room);
+                            assert!(matches!(action.message, ActionMessage::Observation { update: Some(ref update), uncertain: false, .. } if !update.is_terminal()),
+                                "held old-generation invocation completed or lost custody: {:?}", action.message);
+                        }
+                    }
+                    if pending.receive(event, native.user_public_key) {
+                        let message = pending.take(status_request.unwrap()).unwrap();
+                        if let ActionMessage::Observation {
+                            host, invocation: id, update: Some(update), uncertain, ..
+                        } = message {
+                            assert_eq!(host, broker_host);
+                            assert_eq!(id, invocation);
+                            assert!(!uncertain);
+                            assert!(!update.is_terminal(), "held original invocation completed prematurely: {update:?}");
+                            observed_pending = true;
+                        } else {
+                            panic!("original invocation lost pending custody: {message:?}");
+                        }
+                    }
                 }
-            },
-            _ = tokio::time::sleep(Duration::from_millis(5)) => {},
-        }
-    }
-    writeln!(host.0.stdin.as_mut().unwrap(), "reconnect").unwrap();
-    loop {
-        let status = request(origin, "/status", None, None).await.1;
-        assert_eq!(
-            status["qualification"]["held"], true,
-            "old completion escaped replacement boundary: {status}"
-        );
-        assert_eq!(status["qualification"]["expired"], false);
-        if status["actions"] == "ready"
-            && status["native_subscription_generation"].as_u64().unwrap() > generation
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "active replacement did not become ready: {status}"
-        );
-        tokio::select! {
-            state = client.recv() => apply_state(remote, state.unwrap()),
-            event = client.recv_action() => if let EnvelopeV2::Delivered { action, source_user } = event.unwrap() {
-                if action.request_id == request_id {
-                    assert_eq!(source_user, native.user_public_key); assert_eq!(action.source, native.device_public_key); assert_eq!(action.target, cert.device_public_key); assert_eq!(action.room, room);
-                    assert!(matches!(action.message, ActionMessage::Observation { update: Some(ref update), uncertain: false, .. } if !update.is_terminal()), "held old-generation invocation completed or lost custody: {:?}", action.message);
+                Some(ObserverEvent::Ended) => {
+                    eprintln!("observer EOF after native reconnect; replacement attempt={}", replacements + 1);
+                    // Nothing observed on the ended transport may release the hold.
+                    pending = Default::default();
+                    status_request = None;
+                    observed_pending = false;
+                    let (replacement, frames) = {
+                        let recovery = replace_observer_after_eof(
+                            client, binding, room, remote, &mut replacements, deadline);
+                        tokio::pin!(recovery);
+                        loop {
+                            tokio::select! {
+                                result = &mut recovery => break result.expect("observer recovery failed"),
+                                _ = tokio::time::sleep(Duration::from_millis(5)) => {
+                                    let status = request(origin, "/status", None, None).await.1;
+                                    assert_eq!(status["qualification"]["held"], true,
+                                        "old completion escaped during observer recovery: {status}");
+                                    assert_eq!(status["qualification"]["expired"], false);
+                                }
+                            }
+                        }
+                    };
+                    client = replacement;
+                    eprintln!("observer replay Ready; replacements={replacements}; frames={frames}");
                 }
-            },
-            _ = tokio::time::sleep(Duration::from_millis(5)) => {},
+                None => {},
+            }
         }
-    }
+        eprintln!("original invocation authenticated pending after native replacement; observer replacements={replacements}");
+        client
+    }).await.expect("Notes/replacement/Status exceeded the original 3.8s held-action deadline");
     writeln!(host.0.stdin.as_mut().unwrap(), "qualification release").unwrap();
-    // The caller now resumes the full original identity on the replacement.
-    // Any stale old-session completion must neither detach it nor rerun effect.
+    // Terminal recovery is Status for this original UUID, never an implicit Invoke.
+    client
 }
 
 async fn owner_and_room_isolation(
