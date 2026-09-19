@@ -4,10 +4,10 @@
 # pass.
 set -euo pipefail
 
-label="${1:?usage: ci-measure.sh <label> -- <command...>}"
+label="${1:?usage: tools/ci/measure.sh <label> -- <command...>}"
 shift
 [ "${1:-}" = "--" ] && shift
-[ "$#" -gt 0 ] || { echo "ci-measure.sh: no command given" >&2; exit 2; }
+[ "$#" -gt 0 ] || { echo "tools/ci/measure.sh: no command given" >&2; exit 2; }
 
 timing="$(mktemp -t ci-measure-XXXXXX)"
 trap 'rm -f "$timing"' EXIT

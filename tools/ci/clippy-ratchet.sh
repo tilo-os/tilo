@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Clippy violations may go down, never up.
 #
-#   tools/clippy-ratchet.sh            # compare against tools/clippy-baseline.txt
-#   tools/clippy-ratchet.sh --update   # record the current counts as the baseline
+#   tools/ci/clippy-ratchet.sh            # compare against tools/ci/clippy-baseline.txt
+#   tools/ci/clippy-ratchet.sh --update   # record the current counts as the baseline
 #
 # The workspace has existing Clippy debt. Compare per-lint counts with a
 # committed baseline so violations can only decrease.
@@ -18,8 +18,8 @@
 #     never linted. So a non-zero exit from clippy is a failure, never a pass.
 
 set -uo pipefail
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
-BASELINE="$ROOT/tools/clippy-baseline.txt"
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+BASELINE="$ROOT/tools/ci/clippy-baseline.txt"
 cd "$ROOT"
 
 tmp_manifest=$(mktemp) || exit 2
@@ -112,7 +112,7 @@ if regressed:
     print("\nthese went up:")
     for k, (was, now) in sorted(regressed.items(), key=lambda x: x[1][0] - x[1][1]):
         print(f"  {k}: {was} -> {now}")
-    print("\nFix them, or if the increase is deliberate run tools/clippy-ratchet.sh --update")
+    print("\nFix them, or if the increase is deliberate run tools/ci/clippy-ratchet.sh --update")
     sys.exit(1)
 if improved:
     print(f"{improved} fewer than the baseline — run --update to lock it in")
