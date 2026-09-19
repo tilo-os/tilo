@@ -104,15 +104,30 @@ COPY tools/ci/check-build-env.sh /usr/local/bin/tilo-check-build-env
 RUN chmod +x /usr/local/bin/tilo-check-build-env && tilo-check-build-env
 
 # Keep the optional CI linker in the final layer so it does not invalidate the
-# expensive native dependencies or Rust tools above. Workflows must select the
-# wrapper explicitly; release and production links continue using their current
-# linker until the native CI canary is qualified on both architectures.
-RUN dnf install -y --setopt=install_weak_deps=False mold \
+# expensive native dependencies or Rust tools above. Fedora 42's aarch64 mold
+# pulls in a mimalloc build that uses ARM LSE atomics, while the native CI pool
+# includes ARMv8.0 Graviton 1 hosts. Use mold's checksum-pinned baseline binary
+# on both architectures so the qualification covers one consistent toolchain.
+ARG MOLD_VERSION=2.40.4
+ARG MOLD_SHA256_X86_64=4c999e19ffa31afa5aa429c679b665d5e2ca5a6b6832ad4b79668e8dcf3d8ec1
+ARG MOLD_SHA256_AARCH64=c799b9ccae8728793da2186718fbe53b76400a9da396184fac0c64aa3298ec37
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    case "$(uname -m)" in \
+      x86_64) mold_arch=x86_64; mold_sha="$MOLD_SHA256_X86_64" ;; \
+      aarch64) mold_arch=aarch64; mold_sha="$MOLD_SHA256_AARCH64" ;; \
+      *) echo "unsupported mold architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac \
+    && archive="mold-${MOLD_VERSION}-${mold_arch}-linux.tar.gz" \
+    && source="mold-${MOLD_VERSION}-${mold_arch}-linux" \
+    && echo "${mold_sha}  /tilo-assets/${archive}" | sha256sum -c - \
+    && tar -xzf "/tilo-assets/${archive}" -C /tmp \
+    && install -m 0755 "/tmp/${source}/bin/mold" /usr/local/bin/mold \
+    && install -m 0755 "/tmp/${source}/bin/ld.mold" /usr/local/bin/ld.mold \
     && mkdir -p /usr/local/share/tilo-builder \
-    && rpm -q --qf '%{NEVRA}\n' mold \
-        | tee /usr/local/share/tilo-builder/mold-nevra.txt \
-    && mold --version \
-    && dnf clean all
+    && printf '%s  %s\n' "$mold_sha" "$archive" \
+        > /usr/local/share/tilo-builder/mold-source.txt \
+    && rm -rf "/tmp/${source}" \
+    && mold --version
 COPY tools/ci/native-mold-linker.sh /usr/local/bin/tilo-ci-mold
 RUN --mount=type=bind,source=tools/ci/verify-native-mold.sh,target=/tmp/verify-native-mold.sh,ro \
     chmod 0755 /usr/local/bin/tilo-ci-mold \
