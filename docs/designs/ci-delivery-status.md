@@ -6,9 +6,10 @@ authorization. Broader experiments and the production roadmap remain incomplete.
 
 ## Deployed relief versus experiments
 
-The latest shipped product checkpoint is `ce0eff803` and infrastructure checkpoint
-is `46e7edc` (2026-09-19). The deployed broker image is
-`05cdedb0b219a27b04ba5461bed0f6617ef63d9801f649745ea611ca7660131d`.
+The coordinating task's latest shipped product checkpoint is `5ade281b0` and
+infrastructure checkpoint is `0370999` (2026-09-19), with deployed broker image
+digest prefix `51b503`. Product receipts and the infrastructure operator's runtime
+observations below supersede the earlier `ce0eff803`/`46e7edc` snapshot.
 These are observations, not permanent health guarantees or proof that every
 main revision is green. The [emergency runbook](../ci-emergency-relief.md)
 on main records deployment details, recovery and per-run validation; that file
@@ -22,8 +23,9 @@ Focused contract commands, runtime handoff repair and narrow documentation
 applicability are also integrated. Hardware bring-up requests remain outside the
 heavy-run cleanup policy. Continuous dependency-aware packaging remains unfinished.
 
-Routine automatic merging is still unimplemented. Task-branch/PR instructions and
-private protection experiments do not create a deployed integration service.
+The private exact-head automatic landing CLI has succeeded against real CI and
+independent review. Product integration remains read-only, with execution hard
+denied; the private success does not create a deployed product integration service.
 
 ## Latest verified progress and remaining rollout gates
 
@@ -35,8 +37,9 @@ private protection experiments do not create a deployed integration service.
   compilation while keeping mandatory quality tests. All 183 current Python
   tests passed. Actual run 22884 completed selection and skipped the native
   sentinel without allocating a runner. Unknown/mixed/deleted/workflow changes
-  and explicit full requests retain native coverage. Its security job still
-  waited on general capacity; this does not establish a green aggregate.
+  and explicit full requests retain native coverage. The later security run
+  22905 passed all 64 checks in 74 seconds. This qualifies that security execution,
+  not every native job or the complete main aggregate.
 - The default native builder is now resolved once to an immutable manifest
   digest. Actual authenticated run 22806 verified that the API's digest equals
   the raw registry index SHA and contains x86-64/ARM64 descriptors. App packaging
@@ -55,8 +58,9 @@ private protection experiments do not create a deployed integration service.
   retained a 5 GiB root reserve, leaving only 79.135 GiB available after tooling,
   below the unchanged 80 GiB admission guard. Fresh scratch filesystems now use
   `mkfs.ext4 -m0`; existing disks and OS root filesystems are untouched. Both
-  broker replicas are healthy and 331 installed-runtime tests passed. Retry 9404's
-  fresh worker command has the fix; its actual free-space receipt is still needed.
+  broker replicas were healthy and 331 installed-runtime tests passed at that
+  checkpoint. Retry 9404 subsequently reported 84.13 GiB usable space and passed
+  the unchanged admission guard. Admission success is not OS build or boot success.
 - Cloud runtime inspection found QEMU in unlimited, incorrectly interpreted
   systemd-style cgroup paths. Kata guest-agent timeouts terminated affected workers;
   the underlying stall cause is not yet proven. A reviewed isolated-node canary
@@ -65,10 +69,14 @@ private protection experiments do not create a deployed integration service.
   116 seconds for cold pull/extraction, successful Rust/Cargo commands and a
   180-second observation hold. Actual QEMU inherited the intended 31 GiB Pod cap,
   with a measured 12.62 GiB peak and no observed workload OOM/guest loss. Temporary
-  configuration/resources were removed and original node settings restored;
-  root's reservation taint remains briefly for the next bounded qualification.
+  configuration/resources and the reservation taint were removed, and original
+  node settings restored.
   Startup and post-success teardown errors remain diagnostic leads. The 20 GiB
   overhead was a test budget, not a production setting or fleet qualification.
+  A reviewed follow-up using 3 GiB overhead remains pending; it is not a measured
+  safe fleet budget. Both inspected nodes now have 60 GiB shared-memory capacity,
+  with a 54 GiB admission bound. This bounded capacity change does not establish
+  cloud cgroup correctness or eliminate guest-agent failures.
 - AWS EBS seed support and a bounded clean-source/snapshot/clone pilot are prepared
   and disabled. Live CSI/storage prerequisites were inspected. Actual clone and
   image-reuse acceptance wait for safe runtime accounting and capacity.
@@ -89,16 +97,24 @@ private protection experiments do not create a deployed integration service.
   rejected without retry. A partial x86 update preserved ARM identity, and a new
   process rejected higher-generation older source. Its tiny artifact receipts are
   fixtures; real package verification and consumer migration remain necessary.
+- Product `5ade281b0` ships the current packaging receipt improvements. Committed
+  receipt wiring is distinct from completed current-toolkit artifact validation
+  and from enabling continuous publication; those acceptance gates remain below.
 - Native x86-64 and ARM64 mold compatibility passed small pinned-Rust dev/thin-LTO
-  fixtures with ELF hardening intact. Candidate image run 22862 stopped at signing
-  role authorization before either native build; nothing was published. Defaults
-  remain unchanged pending image qualification and representative measurements.
+  fixtures with ELF hardening intact. The early candidate image run 22862 stopped
+  at signing role authorization. Its second attempt ([UI run 9398](https://code.podesta.ai/qos/qos/actions/runs/9398),
+  API run 22862) succeeded for x86 job 83941 and published digest
+  `a7dc0b6feb44cad8d7a51c4309b794ad6872ff5e565c176f2e2f7cbb35a67f41`;
+  ARM job 83940 remains waiting. No shared alias or default was promoted.
+  Multiarch acceptance still requires ARM and representative measurements. The
+  subsequent builder rollup integrates the current cache composite and passes
+  28 scoped builder/mold/cache tests plus release guards; it is not yet deployed.
 - The immutable app builder wiring initially tripped a stale literal-image guard.
   Fix `6625e7ad3`, shipped in `ce0eff803`, checks the actual resolver/output/job
   dependency instead. Both full shell guard suites and four regression tests pass,
   including CRLF and large job bodies; that does not establish live CI success.
 
-The latest observed main checkpoint's lint (22821) passed after 23 seconds of
+An earlier observed main checkpoint's lint (22821) passed after 23 seconds of
 queueing and 178 seconds of execution; its check run (22820) started after one
 second. The private coordinator fixture used a global uncached worker and waited
 221 seconds, which is not a production qOS quality-lane latency measurement.
@@ -158,7 +174,23 @@ second. The private coordinator fixture used a global uncached worker and waited
   could not edit protection or access the product repository, and could not merge
   without approval. Direct author push and author merge were rejected. The green
   status was synthetic; author/reviewer retained administrative policy-edit power.
-  Product grants, trusted CI provenance and the automatic worker remain unqualified.
+  That permission experiment did not qualify product grants, trusted CI provenance
+  or an automatic worker; the later private landing result follows below.
+
+- The subsequent [trusted landing pilot](../../experiments/ci-forgejo/results/trusted-landing-20260919/)
+  used independently reviewed bootstrap PR 6 and data-only PR 7. Actual candidate
+  run 22878/job 83990 succeeded; `claude` supplied exact-head approval 56 and the
+  restricted `qos-integrator` CLI landed `c34a3b29ab4818dfa78a55033fddc6a718fc8e24`
+  once, with durable intent and exact main/merge/actor readback. This supersedes
+  synthetic-status-only evidence for that bounded fixture. Product permissions
+  and execution remain disabled; author/reviewer administrator powers and the
+  final observation-to-merge race remain broader production gates.
+- The [product read-only audit](../../experiments/ci-forgejo/results/product-readonly-20260919/README.md)
+  found all four open candidates blocked at its captured base: no independent
+  approvals, stale bases and failed/cancelled required checks. Trusted applicability
+  now handles explicit PR reporting skips and independently recomputed zero-Rust
+  proofs, rejecting deleted/renamed/mode-changed inputs. Complete native matrix
+  derivation and product execution qualification remain required.
 
 ## Validation of this implementation
 
@@ -217,7 +249,7 @@ so that consumer remains unqualified. No website state was changed.
 | Requirement | Evidence still needed |
 | --- | --- |
 | Cheap normal branch/PR path | Qualify the implemented trigger split on Forgejo; implement trusted affected-policy classification and relevant required proof before automatic merging |
-| Automatic routine integration and independent review | Implement trusted worker; qualify CI provenance, simultaneous merges, ordinary author/reviewer permissions and recovery; restricted integrator enforcement is proven only in the private pilot |
+| Automatic routine integration and independent review | Promote the successful private CLI into a separately qualified product worker; complete trusted matrix policy, atomic readiness, ordinary author/reviewer permissions and recovery; product execution remains disabled |
 | First useful retained baseline | Discover/admit actual bootable image and unsigned inputs; preserve digests, trust, source/helper identities and separate VM/board evidence |
 | Targeted real installer/desktop testing | Supported commands consume that baseline, restore disposable state and produce actual test results without unrelated compilation/assembly |
 | End-to-end feedback measurements | Extend verified production quality startup/queue results to native compilation, AWS snapshots/transfers, linking, finalization/signing and tests |
