@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "check_atspi_endpoint_contract.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "policy/check_atspi_endpoint_contract.py"
 SPEC = importlib.util.spec_from_file_location("check_atspi_endpoint_contract", SCRIPT)
 contract = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -41,7 +41,7 @@ class AtspiEndpointContractTests(unittest.TestCase):
                 "drop(native_accessibility);",
                 "drop(display);",
             ])
-            repository = SCRIPT.parent.parent
+            repository = SCRIPT.parents[2]
             for name in (
                 "apps/file-explorer/tilo-app.toml",
                 "apps/photos/tilo-app.toml",
