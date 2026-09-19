@@ -48,7 +48,7 @@ class PlanProducerTests(unittest.TestCase):
                          'app_packaging_product.py', 'app_packaging_coordinator.py', 'resolve_ci_builder.py'):
                 shutil.copyfile(Path(plan.__file__).with_name(name), tools / name)
             poison = "open('shadow-executed', 'w').write('bad'); raise RuntimeError('candidate module executed')\n"
-            for name in ('hashlib.py', 'json.py', 'sitecustomize.py'):
+            for name in ('hashlib.py', 'json.py', 'sitecustomize.py', 'msvcrt.py', '_winapi.py'):
                 (tools / name).write_text(poison)
                 (root / name).write_text(poison)
             # Even an unchecked-hash cache for a pinned local dependency must
@@ -92,6 +92,19 @@ class PlanProducerTests(unittest.TestCase):
         self.assertEqual(len(calls), 6)
         self.assertTrue(all('python3 -I tools/ci_python.py tools/' in line for line in calls))
         self.assertIn('tools/ci_python.py', product.REQUIRED_PATHS)
+
+    def test_real_qualification_guard_rejects_candidate_path_toolchain(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / '.cargo').mkdir()
+            (root / '.cargo/config.toml').write_text('')
+            (root / 'rust-toolchain.toml').write_text('[toolchain]\npath="candidate/toolchain"')
+            tools = Path(plan.__file__).parent
+            result = subprocess.run([sys.executable, '-I', str(tools / 'ci_python.py'),
+                                     str(tools / 'app_packaging_qualification.py')], cwd=root,
+                                    env=dict(os.environ, **self.env), capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('never a candidate path', result.stderr)
 
     def test_guard_and_real_plan_count_must_agree(self):
         for field, value in [('count', False), ('count', 1), ('apps', ['terminal']), ('catalog', [{}])]:
