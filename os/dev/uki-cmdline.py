@@ -9,6 +9,7 @@
     uki-cmdline.py replace OLD=VALUE NEW=VALUE [UKI]
     uki-cmdline.py osrel [UKI]
     uki-cmdline.py set-osrel KEY=VALUE [KEY=VALUE ...] UKI
+    uki-cmdline.py boot-digest UKI
 
 Run on a booted machine: the ESP is mounted at /boot on the sealed layout, so the
 UKI is under /boot/EFI/Linux and root can write it. With no path it finds the single
@@ -293,7 +294,8 @@ def default_uki():
 
 def main(argv):
     if len(argv) < 2 or argv[1] not in (
-        "show", "blank", "remove", "set", "append", "replace", "osrel", "set-osrel"
+        "show", "blank", "remove", "set", "append", "replace", "osrel", "set-osrel",
+        "boot-digest"
     ):
         raise SystemExit(__doc__)
     action = argv[1]
