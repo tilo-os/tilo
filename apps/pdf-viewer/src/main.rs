@@ -67,13 +67,13 @@ fn prepare_launch(args: &LaunchArgs) -> Result<ui::launch::LegacyLaunchInputs, L
     // diverging copies share an Automerge actor and cannot safely merge later.
     let records = ui::RecordSet::open(APP_ID);
     let (room, autosave) = ui::persist::open_room(APP_ID, records.home());
+    let state = ui::State::new();
+    let root = build_widget(args)?;
     let mut registry = tilo_actions::ActionRegistry::new();
     pdf_viewer::actions::register(&mut registry);
-    Ok(
-        ui::launch::LegacyLaunchInputs::new(ui::State::new(), build_widget(args)?, autosave)
-            .with_records(records, room.doc)
-            .with_registry(registry),
-    )
+    Ok(ui::launch::LegacyLaunchInputs::new(state, root, autosave)
+        .with_records(records, room.doc)
+        .with_registry(registry))
 }
 
 fn shot(args: &LaunchArgs) -> Result<(), LaunchError> {
