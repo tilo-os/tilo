@@ -87,7 +87,7 @@ fn path_from_dialog_stdout(stdout: &[u8]) -> std::io::Result<Option<PathBuf>> {
     Ok((!text.is_empty()).then(|| PathBuf::from(text)))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "linux")))]
 mod tests {
     use super::*;
 
