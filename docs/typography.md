@@ -67,7 +67,7 @@ let pull_quote = Text::new("Make the important thing unmistakable.")
 code. New code should prefer complete styles.
 
 Every application crate is kept behind this public boundary by
-`tools/check_app_text_contract.py`, which runs in the fast lint workflow and
+`tools/policy/check_app_text_contract.py`, which runs in the fast lint workflow and
 the pre-commit hook. Applications may compose `Text`, the shared input/editor
 widgets, `RichTextLayout`, or `TextRenderer` for a custom-painted
 surface. They may not depend on the private shaping crates, instantiate a

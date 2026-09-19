@@ -14,7 +14,7 @@ import sys
 from typing import Any
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 PATHS_KEY = re.compile(r"^(?P<indent>\s*)paths:\s*(?:#.*)?$")
 LIST_ITEM = re.compile(r"^\s*-\s*(?P<value>.+?)\s*$")
 

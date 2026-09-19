@@ -146,8 +146,16 @@ if [[ ${TILO_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     # bind path inside the runner is not a real path from the daemon's view.
     copy_in_log=$log_dir/copy-in.log
     set +e
-    docker cp "$repo_root/." "$container:/workspace" 2>&1 | tee "$copy_in_log"
-    container_status=${PIPESTATUS[0]}
+    # Each architecture runs five distros serially. Do not copy earlier distro
+    # artifacts (or a local Cargo target) into every subsequent build container.
+    bash "$repo_root/dist/ci/archive-package-source.sh" "$repo_root" \
+        2> "$copy_in_log" | docker cp - "$container:/" \
+        2> >(tee -a "$copy_in_log" >&2)
+    copy_pipeline_status=("${PIPESTATUS[@]}")
+    container_status=${copy_pipeline_status[0]}
+    if (( container_status == 0 )); then
+        container_status=${copy_pipeline_status[1]}
+    fi
     set -e
     if (( container_status != 0 )); then
         {
