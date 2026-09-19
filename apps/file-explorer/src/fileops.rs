@@ -170,10 +170,27 @@ pub fn purge_entries(entries: &[PathBuf]) -> Result<usize, String> {
 /// Pick a non-colliding path for `name` inside `dir`. If `dir/name` is
 /// free it's returned as-is; otherwise a numeric suffix is inserted
 /// before the extension: `report.txt` → `report 2.txt` → `report 3.txt`.
-pub fn unique_destination(dir: &Path, name: &str) -> PathBuf {
+///
+/// # Errors
+/// Returns an error if a candidate cannot be inspected or all supported suffixes
+/// are occupied. Never falls back to an occupied directory entry.
+pub fn unique_destination(dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let is_free = |candidate: &Path| match std::fs::symlink_metadata(candidate) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(crate::i18n::t_args(
+            "files-destination-inspect-failed",
+            &[
+                crate::i18n::arg("path", candidate.to_string_lossy().into_owned()),
+                crate::i18n::arg("error", error.to_string()),
+            ],
+        )),
+    };
+    // A dangling link still occupies its directory entry. Following it here
+    // would let a later copy create its target, or a move replace the link.
     let candidate = dir.join(name);
-    if !candidate.exists() {
-        return candidate;
+    if is_free(&candidate)? {
+        return Ok(candidate);
     }
     let path = Path::new(name);
     let stem = path
@@ -187,12 +204,17 @@ pub fn unique_destination(dir: &Path, name: &str) -> PathBuf {
             None => format!("{stem} {n}"),
         };
         let trial = dir.join(trial_name);
-        if !trial.exists() {
-            return trial;
+        if is_free(&trial)? {
+            return Ok(trial);
         }
     }
-    // Pathological fallback — extremely unlikely.
-    dir.join(name)
+    Err(crate::i18n::t_args(
+        "files-destination-names-exhausted",
+        &[
+            crate::i18n::arg("name", name),
+            crate::i18n::arg("path", dir.to_string_lossy().into_owned()),
+        ],
+    ))
 }
 
 /// Create a new folder named `name` (deduplicated) inside `parent`.
@@ -207,7 +229,7 @@ pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
         Err(_) if name.trim().is_empty() => return Err(crate::i18n::t("files-folder-name-empty")),
         Err(error) => return Err(error),
     };
-    let dest = unique_destination(parent, name);
+    let dest = unique_destination(parent, name)?;
     std::fs::create_dir(&dest).map_err(|e| e.to_string())?;
     Ok(dest)
 }
@@ -277,7 +299,7 @@ pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or_else(|| crate::i18n::t("files-source-no-name"))?;
-    let dest = unique_destination(dest_dir, &name);
+    let dest = unique_destination(dest_dir, &name)?;
     copy_recursive(src, &dest).map_err(|e| e.to_string())?;
     Ok(dest)
 }
@@ -303,7 +325,7 @@ pub fn move_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     if source_parent.is_some() && source_parent == destination_dir {
         return Err("the item is already in this folder".into());
     }
-    let dest = unique_destination(dest_dir, &name);
+    let dest = unique_destination(dest_dir, &name)?;
     if let Ok(()) = std::fs::rename(src, &dest) {
         Ok(dest)
     } else {
@@ -443,14 +465,26 @@ mod tests {
         let d = tmp();
         let root = d.path();
         // Free name is returned verbatim.
-        assert_eq!(unique_destination(root, "a.txt"), root.join("a.txt"));
+        assert_eq!(
+            unique_destination(root, "a.txt").unwrap(),
+            root.join("a.txt")
+        );
         fs::write(root.join("a.txt"), b"x").unwrap();
-        assert_eq!(unique_destination(root, "a.txt"), root.join("a 2.txt"));
+        assert_eq!(
+            unique_destination(root, "a.txt").unwrap(),
+            root.join("a 2.txt")
+        );
         fs::write(root.join("a 2.txt"), b"x").unwrap();
-        assert_eq!(unique_destination(root, "a.txt"), root.join("a 3.txt"));
+        assert_eq!(
+            unique_destination(root, "a.txt").unwrap(),
+            root.join("a 3.txt")
+        );
         // Extension-less names.
         fs::create_dir(root.join("folder")).unwrap();
-        assert_eq!(unique_destination(root, "folder"), root.join("folder 2"));
+        assert_eq!(
+            unique_destination(root, "folder").unwrap(),
+            root.join("folder 2")
+        );
     }
 
     #[test]
@@ -586,5 +620,116 @@ mod tests {
         assert!(moved.exists());
         assert!(!f.exists());
         assert_eq!(moved.parent().unwrap(), destdir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_and_move_propagate_destination_metadata_failure() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("report.txt");
+        let destination = directory.path().join("destination");
+        fs::write(&source, b"selected bytes").unwrap();
+        symlink("destination", &destination).unwrap();
+        let candidate = destination.join("report.txt");
+        let metadata_error = fs::symlink_metadata(&candidate).unwrap_err();
+        let expected = crate::i18n::t_args(
+            "files-destination-inspect-failed",
+            &[
+                crate::i18n::arg("path", candidate.to_string_lossy().into_owned()),
+                crate::i18n::arg("error", metadata_error.to_string()),
+            ],
+        );
+        for result in [
+            copy_into(&source, &destination),
+            move_into(&source, &destination),
+        ] {
+            let error = result.unwrap_err();
+            assert_eq!(error, expected);
+            assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+            assert_eq!(
+                fs::read_link(&destination).unwrap(),
+                PathBuf::from("destination")
+            );
+        }
+    }
+
+    #[test]
+    fn exhausted_destination_names_do_not_overwrite_existing_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("report.txt");
+        let destination = directory.path().join("destination");
+        fs::write(&source, b"selected bytes").unwrap();
+        fs::create_dir(&destination).unwrap();
+        let occupied = destination.join("report.txt");
+        fs::write(&occupied, b"existing bytes").unwrap();
+        for suffix in 2..10_000 {
+            fs::write(
+                destination.join(format!("report {suffix}.txt")),
+                b"suffix bytes",
+            )
+            .unwrap();
+        }
+        assert!(copy_into(&source, &destination).is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+        assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
+        assert!(move_into(&source, &destination).is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+        assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 9_999);
+        for suffix in 2..10_000 {
+            assert_eq!(
+                fs::read(destination.join(format!("report {suffix}.txt"))).unwrap(),
+                b"suffix bytes"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_and_move_preserve_dangling_destination_entries() {
+        use std::os::unix::fs::symlink;
+
+        for move_source in [false, true] {
+            for numbered_collision in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let source = directory.path().join("report.txt");
+                let destination = directory.path().join("destination");
+                let outside = directory.path().join("unselected-target.txt");
+                fs::write(&source, b"selected bytes").unwrap();
+                fs::create_dir(&destination).unwrap();
+                let occupied = destination.join("report.txt");
+                let (link, expected) = if numbered_collision {
+                    fs::write(&occupied, b"existing bytes").unwrap();
+                    (
+                        destination.join("report 2.txt"),
+                        destination.join("report 3.txt"),
+                    )
+                } else {
+                    (occupied.clone(), destination.join("report 2.txt"))
+                };
+                symlink(&outside, &link).unwrap();
+                let result = if move_source {
+                    move_into(&source, &destination)
+                } else {
+                    copy_into(&source, &destination)
+                }
+                .unwrap();
+                assert_eq!(result, expected);
+                assert_eq!(fs::read(&result).unwrap(), b"selected bytes");
+                assert_eq!(fs::read_link(&link).unwrap(), outside);
+                assert!(
+                    !outside.exists(),
+                    "copy must not write through the destination link"
+                );
+                assert_eq!(source.exists(), !move_source);
+                if !move_source {
+                    assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+                }
+                if numbered_collision {
+                    assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
+                }
+            }
+        }
     }
 }
