@@ -3,7 +3,7 @@ import importlib.util
 import unittest
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "check_shell_copy_contract.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "policy/check_shell_copy_contract.py"
 SPEC = importlib.util.spec_from_file_location("check_shell_copy_contract", SCRIPT)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
