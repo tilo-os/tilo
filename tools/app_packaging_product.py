@@ -15,6 +15,7 @@ import re
 import subprocess
 import threading
 import time
+import tomllib
 import zipfile
 
 import app_packaging_coordinator as core
@@ -23,6 +24,7 @@ from resolve_ci_builder import resolve
 REPO = 'qos/qos'
 WORKFLOW = 'release-apps.yml'
 REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
+                  'rust-toolchain.toml', '.cargo/config.toml',
                   'tools/ci_python.py',
                   'tools/app_packaging_product.py', 'tools/app_packaging_coordinator.py',
                   'tools/app_packaging_qualification.py', 'tools/app_release.py',
@@ -43,6 +45,40 @@ REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
 def require(value, message):
     if not value:
         raise ValueError(message)
+
+
+def validate_cargo_inputs(toolchain_bytes, config_bytes):
+    """Constrain the reviewed Cargo/Rustup inputs used by metadata selection."""
+    toolchain = tomllib.loads(toolchain_bytes.decode('utf-8')).get('toolchain', {})
+    require(isinstance(toolchain, dict) and 'path' not in toolchain and
+            isinstance(toolchain.get('channel'), str) and
+            re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', toolchain['channel']),
+            'metadata requires a pinned release toolchain, never a candidate path')
+    config = tomllib.loads(config_bytes.decode('utf-8'))
+
+    def no_includes(value):
+        if isinstance(value, dict):
+            require('include' not in value and 'config-include' not in value,
+                    'Cargo configuration includes are outside trusted input closure')
+            for item in value.values():
+                no_includes(item)
+        elif isinstance(value, list):
+            for item in value:
+                no_includes(item)
+    no_includes(config)
+
+
+def validate_local_cargo_inputs(root):
+    root = Path(root)
+    for override in ('rust-toolchain', '.cargo/config'):
+        require(not (root / override).exists() and not (root / override).is_symlink(),
+                'untrusted Cargo/Rustup precedence override: ' + override)
+    require(not (root / '.cargo').is_symlink(), 'Cargo directory must not be a symlink')
+    for path in ('rust-toolchain.toml', '.cargo/config.toml'):
+        require((root / path).is_file() and not (root / path).is_symlink(),
+                'Cargo policy requires regular source files: ' + path)
+    validate_cargo_inputs((root / 'rust-toolchain.toml').read_bytes(),
+                          (root / '.cargo/config.toml').read_bytes())
 
 
 def bounded_output(command, maximum, timeout=30):
@@ -162,6 +198,20 @@ class ProductForgejo(core.Forgejo):
         require(isinstance(paths, dict) and REQUIRED_PATHS <= set(paths), 'incomplete trusted workflow policy')
         repository = self.call('repos/' + REPO)
         require(repository.get('id') == 23 and repository.get('full_name') == REPO, 'repository identity mismatch')
+        # Directory listings prove absence without treating arbitrary HTTP errors
+        # as "not found". Nested package configs are not read by root metadata.
+        for directory, forbidden, required, kind in (
+                ('', 'rust-toolchain', '.cargo', 'dir'),
+                ('.cargo', 'config', 'config.toml', 'file')):
+            listing = self.call(f'repos/{REPO}/contents/{directory}?ref={receipt["source_sha"]}')
+            require(isinstance(listing, list) and all(isinstance(item, dict) for item in listing),
+                    'Cargo source directory listing unavailable')
+            require(not any(item.get('name') == forbidden for item in listing),
+                    'untrusted Cargo/Rustup precedence override: ' + forbidden)
+            matches = [item for item in listing if item.get('name') == required]
+            require(len(matches) == 1 and matches[0].get('type') == kind,
+                    'Cargo source directory entry must be regular: ' + required)
+        cargo_inputs = {}
         for path, expected in paths.items():
             require(isinstance(path, str) and re.fullmatch('[A-Za-z0-9_./-]+', path) and
                     '..' not in path.split('/') and not path.startswith('/'), 'unsafe policy path')
@@ -169,6 +219,10 @@ class ProductForgejo(core.Forgejo):
             blob = self.call(f'repos/{REPO}/contents/{path}?ref={receipt["source_sha"]}')
             raw = base64.b64decode(blob['content'], validate=True)
             require(hashlib.sha256(raw).hexdigest() == expected, 'workflow/helper differs from trusted policy: ' + path)
+            if path in ('rust-toolchain.toml', '.cargo/config.toml'):
+                require(blob.get('type') == 'file', 'Cargo policy input must be a regular file')
+                cargo_inputs[path] = raw
+        validate_cargo_inputs(cargo_inputs['rust-toolchain.toml'], cargo_inputs['.cargo/config.toml'])
 
     def dispatch(self, intent):
         return self.call(f'repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches', {
