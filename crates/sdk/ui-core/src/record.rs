@@ -1520,7 +1520,7 @@ impl RecordStore {
         if set.pending.contains_key(&want.id) || set.open.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
         }
-        let mut owner = app_state::DocStore::open_canonical_at(&set.package_id, &directory)?;
+        let owner = app_state::DocStore::open_canonical_at(&set.package_id, &directory)?;
         if owner.load_canonical()?.is_some() {
             return Err(RecordOpenError::Busy);
         }
