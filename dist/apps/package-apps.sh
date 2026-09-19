@@ -57,9 +57,10 @@ features=$(jq -r '.features | join(",")' "$runtime_plan")
 # The Rust dylib ABI includes dependency crate hashes and Cargo unifies
 # features across the selected graph.  Always build the shared runtime against
 # the complete default collection, even when only a few changed qpkgs will be
-# emitted below.  This makes the runtime root independent of the partial app
-# selection and therefore safe to combine with unchanged qpkgs.
-INCLUDE_PACKAGES="${runtime_packages[*]}" APP_FEATURES="$features" \
+# emitted below. Only filter binary targets: removing package roots would alter
+# feature unification and invalidate unchanged qpkgs against the shared runtime.
+INCLUDE_PACKAGES="${runtime_packages[*]}" BUILD_APP_PACKAGES="${packages[*]}" \
+    APP_FEATURES="$features" \
     "$repo_root/os/scripts/build-thin-apps.sh"
 mapfile -t app_binaries < <(
     jq -r --arg root "$thin_app_dir" \

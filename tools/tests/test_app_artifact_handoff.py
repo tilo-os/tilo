@@ -53,6 +53,7 @@ with open(os.environ['FIXTURE_CARGO_LOG'], 'a') as log:
         self.write("stdlib/libstd-fixture.so", "fixture standard library")
         self.write("os/scripts/build-thin-apps.sh", """#!/bin/bash
 set -euo pipefail
+test "$BUILD_APP_PACKAGES" = calculator
 cargo build --locked --profile thin-app -p runtime-dylib -p calculator
 mkdir -p target/thin-app
 python3 - <<'ELF'
