@@ -6,7 +6,7 @@ import subprocess
 import uuid
 
 import app_packaging_product as product
-from resolve_ci_builder import resolve
+from ci.resolve_builder import resolve
 
 
 def validate(env, ancestor=None):

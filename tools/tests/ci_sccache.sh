@@ -24,14 +24,14 @@ export GITHUB_ENV="$work/github-env"
 export RUSTC=/fixture/rustc
 
 FAKE_SCCACHE_STATUS=0 FAKE_SCCACHE_PROBE_STATUS=0 \
-  bash "$repo/tools/ci-sccache.sh" prepare > "$work/healthy.log"
+  bash "$repo/tools/ci/sccache.sh" prepare > "$work/healthy.log"
 grep -Fxq "RUSTC_WRAPPER=$work/bin/sccache" "$GITHUB_ENV"
 grep -Fxq 'SCCACHE_S3_KEY_PREFIX=tilo/test' "$GITHUB_ENV"
 grep -Fq 'remote compiler cache enabled: sccache 0.test' "$work/healthy.log"
 
 : > "$GITHUB_ENV"
 FAKE_SCCACHE_STATUS=0 FAKE_SCCACHE_PROBE_STATUS=1 \
-  bash "$repo/tools/ci-sccache.sh" prepare > "$work/bad-credentials.log" 2>&1
+  bash "$repo/tools/ci/sccache.sh" prepare > "$work/bad-credentials.log" 2>&1
 grep -Fxq 'RUSTC_WRAPPER=' "$GITHUB_ENV"
 ! grep -Fq 'SCCACHE_S3_KEY_PREFIX=' "$GITHUB_ENV"
 grep -Fq 'sccache wrapper or backend is unavailable; compiling normally' \
@@ -39,7 +39,7 @@ grep -Fq 'sccache wrapper or backend is unavailable; compiling normally' \
 
 : > "$GITHUB_ENV"
 FAKE_SCCACHE_STATUS=1 FAKE_SCCACHE_PROBE_STATUS=0 \
-  bash "$repo/tools/ci-sccache.sh" prepare > "$work/down.log" 2>&1
+  bash "$repo/tools/ci/sccache.sh" prepare > "$work/down.log" 2>&1
 grep -Fxq 'RUSTC_WRAPPER=' "$GITHUB_ENV"
 ! grep -Fq 'SCCACHE_S3_KEY_PREFIX=' "$GITHUB_ENV"
 grep -Fq 'sccache wrapper or backend is unavailable; compiling normally' "$work/down.log"
@@ -47,7 +47,7 @@ grep -Fq 'sccache wrapper or backend is unavailable; compiling normally' "$work/
 FAKE_SCCACHE_STATUS=0 FAKE_SCCACHE_PROBE_STATUS=0 \
   bash -c '
     unset GITHUB_ENV RUSTC_WRAPPER
-    source "$1/tools/ci-sccache.sh" prepare-shell
+    source "$1/tools/ci/sccache.sh" prepare-shell
     test "$RUSTC_WRAPPER" = "$2/bin/sccache"
   ' _ "$repo" "$work" > "$work/shell.log"
 grep -Fq 'remote compiler cache enabled: sccache 0.test' "$work/shell.log"

@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import unittest
 
-SCRIPT = Path(__file__).resolve().parents[1] / 'clippy-diff.sh'
+SCRIPT = Path(__file__).resolve().parents[1] / 'ci/clippy-diff.sh'
 
 
 class ClippyTargetIsolationTests(unittest.TestCase):
@@ -15,15 +15,15 @@ class ClippyTargetIsolationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / 'repo'
             root.mkdir()
-            (root / 'tools').mkdir()
-            shutil.copyfile(SCRIPT, root / 'tools/clippy-diff.sh')
+            (root / 'tools/ci').mkdir(parents=True)
+            shutil.copyfile(SCRIPT, root / 'tools/ci/clippy-diff.sh')
             def git(*args):
                 return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()
             git('init', '-q')
             git('config', 'user.name', 'Fixture')
             git('config', 'user.email', 'fixture@example.invalid')
             (root / 'lib.rs').write_text('base\n')
-            git('add', 'lib.rs', 'tools/clippy-diff.sh')
+            git('add', 'lib.rs', 'tools/ci/clippy-diff.sh')
             git('commit', '-qm', 'base')
             base = git('rev-parse', 'HEAD')
             (root / 'lib.rs').write_text('head\n')
@@ -56,7 +56,7 @@ if is_head and os.environ['MODE']=='introduced':
                        CALLS=str(calls), FIXTURE_ROOT=str(root), MODE=mode,
                        CARGO_TARGET_DIR=str(Path(tmp) / 'must-not-be-used'))
             env.pop('SCCACHE_RECACHE', None)
-            result = subprocess.run(['bash', str(root / 'tools/clippy-diff.sh'), base, '-p', 'fixture'],
+            result = subprocess.run(['bash', str(root / 'tools/ci/clippy-diff.sh'), base, '-p', 'fixture'],
                                     cwd=root, env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 1 if mode == 'introduced' else 0, result.stderr)
             records = [json.loads(line) for line in calls.read_text().splitlines()]
