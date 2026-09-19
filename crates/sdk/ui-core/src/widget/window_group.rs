@@ -677,6 +677,12 @@ impl WindowGroup {
         true
     }
 
+    /// Select a tab on behalf of an explicit shell navigation command.
+    /// Unlike model reconciliation, this publishes a writeback edge.
+    pub fn activate_tab(&mut self, id: u64) -> bool {
+        self.bar.activate(id)
+    }
+
     pub fn cycle_active_tab(&mut self, dir: i32) -> bool {
         let n = self.bar.tabs().len();
         if n < 2 || dir.signum() == 0 {
