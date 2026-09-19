@@ -954,7 +954,14 @@ fn block_map(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<(usize, ObjId)>
 pub(crate) fn valid_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "paragraph" | "divider" | "heading1" | "heading2" | "heading3"
+        "paragraph"
+            | "quote"
+            | "divider"
+            | "heading1"
+            | "heading2"
+            | "heading3"
+            | "table:0"
+            | "table:1"
     ) || kind
         .strip_prefix("bullet:")
         .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n <= 5))

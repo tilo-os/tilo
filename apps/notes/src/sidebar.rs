@@ -628,9 +628,8 @@ impl NoteTreeView {
         menu.push(MenuItem::icon_action(Icon::Image, "Insert image", || {}));
         menu.push(MenuItem::separator());
         menu.push(MenuItem::icon_action(Icon::Trash2, "Delete", || {}));
-        // The separator sits between "Duplicate" and "Delete"; keep the
-        // action list aligned to the *action* rows only (see the index
-        // remap in `apply_menu_selection`).
+        // Selection uses the shared menu's item indices, including separators
+        // (see `apply_menu_selection`).
         menu.open_at([num::f32_of_f64(at.x), num::f32_of_f64(at.y)]);
         self.menu = menu;
         self.dirty = true;
@@ -1106,12 +1105,39 @@ impl Widget for NoteTreeView {
                     .with_bounds(rect),
             );
         }
+        if self.menu.is_open()
+            && let Some(menu) = self.menu.accessibility()
+        {
+            children.push(menu);
+        }
         Some(
             AccessNode::new(Role::Tree)
                 .with_name("Pages")
                 .with_state(AccessState::new().focusable(true).focused(self.is_focused))
                 .with_children(children),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !self
+            .menu
+            .perform_semantic_action(target, action, state, path)
+        {
+            return false;
+        }
+        if let Some(index) = self.menu.take_selection() {
+            // Exactly the queue used by pointer and keyboard menu activation.
+            // The app drains it through its canonical document action boundary.
+            self.apply_menu_selection(index);
+        }
+        self.dirty = true;
+        true
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
@@ -2316,6 +2342,73 @@ mod tests {
         tree.menu_target = Some(page);
         tree.apply_menu_selection(3);
         assert_eq!(tree.take_transfer(), Some(SidebarTransfer::CopyLink(page)));
+    }
+
+    #[test]
+    fn page_menu_semantics_activate_the_same_queued_page_action() {
+        let mut workspace = Workspace::new();
+        let page = workspace.create_page(None);
+        let mut tree = NoteTreeView::new();
+        tree.sync_from_workspace(&workspace);
+        tree.open_context_menu(page, Point::ZERO);
+        let node = tree.accessibility().unwrap();
+        let menu = node
+            .children
+            .iter()
+            .find(|node| node.role == ui::a11y::Role::Menu)
+            .unwrap();
+        assert_eq!(menu.state.expanded, Some(true));
+        assert_eq!(
+            menu.children
+                .iter()
+                .map(|item| item.name.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "New child",
+                "Rename",
+                "Duplicate",
+                "Copy note link",
+                "Export Markdown",
+                "Insert image",
+                "Delete"
+            ]
+        );
+        assert!(
+            menu.children
+                .iter()
+                .all(|item| item.role == ui::a11y::Role::MenuItem)
+        );
+        let target = menu.children.last().unwrap().action_target.clone().unwrap();
+        let mut doc = AutoCommit::new();
+        let before = doc.get_heads();
+        assert!(!tree.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Increment,
+            &mut doc,
+            &ObjId::Root
+        ));
+        assert!(tree.take_events().is_empty());
+        assert!(tree.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &ObjId::Root
+        ));
+        assert!(matches!(tree.take_events().as_slice(), [OutEvent::Delete(id)] if *id == page));
+        assert_eq!(
+            doc.get_heads(),
+            before,
+            "sidebar activation only queues; app owns document admission"
+        );
+        assert!(
+            !tree.perform_semantic_action(
+                &target,
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &ObjId::Root
+            ),
+            "closed menu target is stale"
+        );
     }
 
     #[test]
