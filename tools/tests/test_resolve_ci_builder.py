@@ -171,6 +171,11 @@ class MetadataTransportTests(unittest.TestCase):
 
     def test_safe_errno_category_and_immutable_pin_never_opens_network(self):
         self.assertEqual(resolver.failure(URLError(OSError(errno.ECONNRESET, self.token))), ('OS_ECONNRESET', True))
+        for name in ('ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ENETUNREACH', 'EHOSTUNREACH', 'EPIPE'):
+            with self.subTest(errno=name):
+                self.assertEqual(resolver.failure(URLError(OSError(getattr(errno, name), self.token))),
+                                 ('OS_' + name, True))
+        self.assertEqual(resolver.failure(URLError(OSError(errno.ETIMEDOUT, self.token))), ('TIMEOUT', True))
         self.assertEqual(resolver.failure(URLError(ssl.SSLCertVerificationError(1, self.token))),
                          ('TLS_CERTIFICATE', False))
         with patch.object(resolver, 'build_opener') as build:
