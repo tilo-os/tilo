@@ -30,12 +30,14 @@ health guarantee.
 | Infrastructure `3e2e8ba` | Deploys repository-scoped full-builder seed clones with broker image `48a5bf...`. Actual repository 23 snapshot cloning is proven; its first observed job used a public image, so this is not private-builder cache-hit evidence. |
 | Infrastructure `a970175` | Deploys broker `c80bd455...` with both AX41 v2 seeds. Both replicas Ready with zero restarts at acceptance. Normal repository 23 control and lint jobs received isolated snapshot clones and created their pinned containers without a pull event; timings below. |
 | Infrastructure `64d2359` | Broker `ef490a74...` disables unrelated generic pre-pull only after verifying qOS repository scope. Global reserve, readiness and lifecycle behavior remain. Both replicas Ready with zero restarts; 316 installed-runtime tests passed. |
-| Infrastructure `021fb14` | Current broker `8d313aa7...` adds priority 1000 with `preemptionPolicy: Never` only for actual disk-heavy demand, not speculative reserves. Both replicas Ready; 326 installed-runtime tests passed. EKS bootstrap persistence follows in `d1fdf88`. |
+| Infrastructure `021fb14` | Broker `8d313aa7...` adds priority 1000 with `preemptionPolicy: Never` only for actual disk-heavy demand, not speculative reserves. Both replicas Ready; 326 installed-runtime tests passed. EKS bootstrap persistence follows in `d1fdf88`. |
+| Infrastructure `46e7edc` | Current broker `05cdedb0...` formats fresh ephemeral scratch filesystems with `mkfs.ext4 -m0`. Existing disks remain untouched. Both replicas healthy; 331 installed-runtime tests passed. Actual retry free-space acceptance remains to be recorded. |
+| `qos/qos` `ce0eff803` | Includes `6625e7ad3`, updating the stale literal app-builder guard to verify the resolver, output and job dependency. Both complete shell guard suites and four regression tests passed; this is not a claim that all live CI at this checkpoint passed. |
 
 Broker image:
 
 ```text
-code.sandbox.example/podestaai/sandbox-broker@sha256:8d313aa76ff57f9589defbad60e6817278547d2a6a84b204799d342349b0b0a4
+code.sandbox.example/podestaai/sandbox-broker@sha256:05cdedb0b219a27b04ba5461bed0f6617ef63d9801f649745ea611ca7660131d
 ```
 
 The broker runs as Deployment `sandbox-broker` in namespace `sandbox-broker`.
@@ -45,7 +47,7 @@ five-second intervals. Startup-probe recovery is healthy independently of the
 performance patch. The `c568...` image patched a source-tree copy, while the running
 broker imported its implementation from `site-packages`; the intended performance
 guard therefore did **not** take effect. Infrastructure `506195f` replaces that
-image with the imported-module correction. The current `021fb14` deployment
+image with the imported-module correction. The current `46e7edc` deployment
 retains that correction, the exclusive quality lane, and `ffbd0a1` cleanup guards
 that tolerate completed resources and protect live runners. Green probes and
 source changes alone do not prove end-to-end improvement; the production
@@ -53,8 +55,10 @@ measurement below is the evidence for the fast-quality path. No Forgejo server
 Deployment was changed by these coalescer/broker rollouts.
 
 The existing manual OS request 9331 received a fresh disk-demand worker at
-23:29:52 UTC with priority 1000 and preemption disabled. At 23:32 it was still
-Pending without a node: priority does not create capacity or evict active work.
+23:29:52 UTC with priority 1000 and preemption disabled. It was still Pending
+without a node at 23:32 and actually started at 23:40:50: priority does not create
+capacity or evict active work. Its subsequent disk-space failure and fresh-worker
+recovery procedure are described below.
 Do not reproduce the attempted pending-pod replacement procedure: with the
 original Job's `backoffLimit: 0`, deleting even an unstarted adopted pod exhausted
 the Job. No active build was interrupted; normal broker reconciliation created
@@ -66,6 +70,38 @@ rerun once, preserving its compiled sibling jobs. The underlying host/runtime
 failure remains under investigation. Likewise, AWS workers without snapshot
 seeds still pull the full builder: the on-prem warm measurements below do not
 establish fast cloud startup.
+
+### Fresh scratch filesystem recovery
+
+Manual OS run 9331 exposed a 100 GiB ephemeral data filesystem whose default
+root reserve consumed about 5 GiB. After tooling, only 79.135 GiB was available,
+below the **unchanged 80 GiB** admission guard. Broker `05cdedb0...` now uses
+`mkfs.ext4 -m0` when initializing a fresh scratch disk. This changes disposable
+CI data filesystems, not OS root-filesystem policy or already formatted volumes.
+
+For a targeted retry:
+
+1. Confirm the failed request's exact revision, target and terminal job state.
+   Preserve its logs and checkpoints; leave independent active jobs alone.
+2. Confirm the deployed broker image above, then inspect the newly created
+   worker's manifest for its requested 100 GiB PVC and fresh-format `-m0` command.
+   An existing worker does not acquire the change merely because the broker rolled.
+3. Read the actual build's free-space/admission receipt after tooling installation.
+   Require at least 80 GiB at the checked data path; PVC capacity alone is not proof
+   of usable filesystem space. Retry 9404's fresh worker had the corrected command
+   at the last observation; its actual free-space receipt is still outstanding.
+4. If it still fails, inspect the mounted filesystem, used bytes and provisioning
+   result before another targeted retry. Do not lower the guard, reformat an
+   existing disk, run reserve-changing commands against active volumes, or delete
+   a worker to force this update. Preserve manual hardware/signing work.
+
+Cloud runtime correction is a separate, **not fleet-deployed** canary. Inspection
+found unlimited QEMU cgroup paths and guest-agent timeouts; the underlying stall
+cause remains unproven. The isolated-node preflight stopped when the readiness
+label was reconciled back. Reservation taint isolation and autoscaler protection
+must hold before that experiment proceeds. AWS EBS seed support/pilot remains
+**disabled** pending safe runtime accounting, capacity and actual clone/image-reuse
+acceptance. Neither the scratch fix nor on-prem seed timings qualifies AWS reuse.
 
 ## What stays protected
 
@@ -98,7 +134,8 @@ retain Rust coverage, and explicit full checks override the skip.
 
 ## Current validation limits and next work
 
-The product checkpoint `0975d89a87367b8625e8bb3b6d898cf997a684af` is deployed.
+The earlier deployed product checkpoint `0975d89a87367b8625e8bb3b6d898cf997a684af`
+provided the following historical timing evidence.
 Its production lint [run 9257](https://code.sandbox.example/qos/qos/actions/runs/9257)
 (API run 22696, job 83334) finished **successfully**. The timing record in
 `target/main-fast-quality-timing.json` and a fresh exact-run API readback agree:
@@ -216,14 +253,17 @@ Run these read-only commands on an operations host with the configured contexts:
 
 ```sh
 fgj --hostname code.sandbox.example api repos/qos/qos/branches/main
-fgj --hostname code.sandbox.example api repos/qos/qos/actions/runs/22695
-fgj --hostname code.sandbox.example api repos/qos/qos/actions/runs/22695/jobs
-fgj --hostname code.sandbox.example api repos/qos/qos/actions/runs/22696
+fgj --hostname code.sandbox.example api repos/qos/qos/actions/runs/RUN_ID
+fgj --hostname code.sandbox.example api repos/qos/qos/actions/runs/RUN_ID/jobs
 kubectl -n forgejo get cronjob qos-ci-queue-coalescer
 kubectl -n forgejo get jobs -l app=qos-ci-queue-coalescer
 kubectl -n sandbox-broker get deployment sandbox-broker
 kubectl -n sandbox-broker rollout status deployment/sandbox-broker --timeout=180s
 ```
+
+Replace `RUN_ID` with the request under investigation and match its full commit
+SHA. Forgejo UI run numbers and API run IDs differ; do not substitute one for the
+other or use the historical timing runs above as the current health check.
 
 Inspect a specific coalescer Job's logs before taking action. Do not print the
 token Secret. The infrastructure policy and runbook live in
