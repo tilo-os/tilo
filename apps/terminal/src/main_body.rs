@@ -1539,6 +1539,10 @@ impl TerminalWidget {
         Widget::get_rect(&self.context_menu)
     }
     #[cfg(test)]
+    pub fn context_menu_is_open(&self) -> bool {
+        self.context_menu.is_open()
+    }
+    #[cfg(test)]
     pub fn context_menu_find_rect(&self) -> Option<Rect> {
         self.context_menu.item_rect(self.find_menu_index?)
     }
