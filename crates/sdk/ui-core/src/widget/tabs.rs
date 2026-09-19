@@ -1245,6 +1245,17 @@ impl TabBar {
         }
     }
 
+    /// Select a tab as an explicit navigation action and publish the same
+    /// one-shot activation edge as pointer, keyboard, or accessibility input.
+    pub fn activate(&mut self, id: u64) -> bool {
+        if !self.tabs.iter().any(|tab| tab.id == id) {
+            return false;
+        }
+        self.active_id = id;
+        self.pending_activation = Some(id);
+        true
+    }
+
     /// Drain the tab selected by pointer, keyboard, or accessibility input.
     /// Programmatic reconciliation deliberately does not populate this edge.
     pub fn take_activation(&mut self) -> Option<u64> {
@@ -5149,6 +5160,16 @@ mod tests {
             None,
             "a programmatic insert is not a click"
         );
+    }
+
+    #[test]
+    fn explicit_navigation_publishes_one_activation_edge() {
+        let mut b = bar();
+        assert!(b.activate(3));
+        assert_eq!(b.active_id(), 3);
+        assert_eq!(b.take_activation(), Some(3));
+        assert_eq!(b.take_activation(), None);
+        assert!(!b.activate(999));
     }
 
     /// The shape a window group imposes on its tab strip. `MAX_CONTENT` (used by
