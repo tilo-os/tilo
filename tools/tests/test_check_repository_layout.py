@@ -76,10 +76,13 @@ class RepositoryLayoutTests(unittest.TestCase):
                     "tools/ci_select.py",
                     "tools/clippy-diff.sh",
                     "tools/resolve_ci_builder.py",
+                    "tools/Run-ImagerEphemeralRunner.ps1",
+                    "tools/run-imager-ephemeral-runner.sh",
                     "tools/rustc-thin-app-wrapper.sh",
                 ]
             ),
             [
+                "tracked file uses retired source root `tools/Run-ImagerEphemeralRunner.ps1`; move it under `tools/ci/runners/imager-ephemeral-windows.ps1`: tools/Run-ImagerEphemeralRunner.ps1",
                 "tracked file uses retired source root `tools/cargo-shim`; move it under `tools/ci/cargo-shim`: tools/cargo-shim",
                 "tracked file uses retired source root `tools/check-build-env.sh`; move it under `tools/ci/check-build-env.sh`: tools/check-build-env.sh",
                 "tracked file uses retired source root `tools/check_changed_rust_allows.py`; move it under `tools/ci/check_changed_rust_allows.py`: tools/check_changed_rust_allows.py",
@@ -87,6 +90,7 @@ class RepositoryLayoutTests(unittest.TestCase):
                 "tracked file uses retired source root `tools/ci_`; move it under `tools/ci/`: tools/ci_select.py",
                 "tracked file uses retired source root `tools/clippy-`; move it under `tools/ci/clippy-`: tools/clippy-diff.sh",
                 "tracked file uses retired source root `tools/resolve_ci_builder.py`; move it under `tools/ci/resolve_builder.py`: tools/resolve_ci_builder.py",
+                "tracked file uses retired source root `tools/run-imager-ephemeral-runner.sh`; move it under `tools/ci/runners/imager-ephemeral-linux.sh`: tools/run-imager-ephemeral-runner.sh",
                 "tracked file uses retired source root `tools/rustc-thin-app-wrapper.sh`; move it under `tools/ci/rustc-thin-app-wrapper.sh`: tools/rustc-thin-app-wrapper.sh",
             ],
         )
