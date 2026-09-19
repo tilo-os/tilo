@@ -1997,18 +1997,25 @@ ARG TILO_PUBLIC_TRUST_MANIFEST_SHA256
 ARG TILO_TARGET_IMGREF
 ARG TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY
 COPY --from=public-trust / /run/tilo-public-trust/
-COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /run/tilo-official-trust/
-COPY os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py /run/tilo-trust-tools/
-COPY os/etc/containers/policy.json /etc/containers/policy.json
-COPY os/etc/containers/registries.d/code.sandbox.example.yaml /etc/containers/registries.d/code.sandbox.example.yaml
+# One temporary directory avoids four full-OS snapshots for tiny static inputs.
+# Install individual files below so existing parent-directory modes stay intact.
+COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem \
+    os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py \
+    os/etc/containers/policy.json os/etc/containers/registries.d/code.sandbox.example.yaml \
+    /run/tilo-trust-inputs/
 RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \
-    PATH="/run/tilo-build-tools:$PATH" python3 /run/tilo-trust-tools/install-public-trust.py \
+    mkdir -p /run/tilo-official-trust /run/tilo-trust-tools /etc/containers/registries.d \
+ && cp -a /run/tilo-trust-inputs/cosign.pub /run/tilo-trust-inputs/tpm2-pcr-signing.public.pem /run/tilo-official-trust/ \
+ && cp -a /run/tilo-trust-inputs/*.py /run/tilo-trust-tools/ \
+ && cp -a /run/tilo-trust-inputs/policy.json /etc/containers/policy.json \
+ && cp -a /run/tilo-trust-inputs/code.sandbox.example.yaml /etc/containers/registries.d/code.sandbox.example.yaml \
+ && PATH="/run/tilo-build-tools:$PATH" python3 /run/tilo-trust-tools/install-public-trust.py \
       --source /run/tilo-public-trust --official /run/tilo-official-trust \
       --destination /usr/share/tilo --mode "$TILO_PUBLIC_TRUST_MODE" \
       --manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256" \
       --registry-owner "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
       --target-ref "$TILO_TARGET_IMGREF" --image-root / \
- && rm -rf /run/tilo-public-trust /run/tilo-official-trust /run/tilo-trust-tools
+ && rm -rf /run/tilo-public-trust /run/tilo-official-trust /run/tilo-trust-tools /run/tilo-trust-inputs
 
 # Container signature policy: REQUIRE a valid cosign signature for
 # code.sandbox.example/qos/tilo (everything else stays permissive), so a tampered or
