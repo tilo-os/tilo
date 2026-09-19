@@ -131,7 +131,21 @@ def runtime_root(tree):
     return tomllib.loads(manifests[0].read_text())['root_hash']
 
 
-def merge(plan, built, baseline, output, architecture):
+def merge(plan, built, baseline, output, architecture, selected_apps):
+    catalog = {app['name']: app for app in plan['catalog']}
+    selected = set(selected_apps)
+    channel.require(len(catalog) == len(plan['catalog']), 'duplicate catalog app')
+    channel.require(len(selected) == len(selected_apps) and selected <= set(catalog),
+                    'selected apps must be a unique subset of the collection')
+    for app in catalog.values():
+        channel.require(all(re.fullmatch('[A-Za-z0-9][A-Za-z0-9._+-]*', value)
+                            for value in (app['name'], app['version'])), 'unsafe package identity')
+    # A changed app cannot be replaced by an older same-version signed package.
+    # Check the trusted selector output completely before copying any baseline.
+    for name in selected:
+        path = built / 'qpkg' / f"{name}-{catalog[name]['version']}-{architecture}.qpkg"
+        channel.require(path.is_file() and not path.is_symlink(),
+                        f'selected app missing from current build: {name}')
     output.mkdir()
     reused = []
     for app in plan['catalog']:
@@ -140,6 +154,7 @@ def merge(plan, built, baseline, output, architecture):
         filename = f'{name}-{version}-{architecture}.qpkg'
         path = built / 'qpkg' / filename
         if not path.is_file():
+            channel.require(name not in selected, f'selected app missing from current build: {name}')
             channel.require(baseline is not None, 'missing package without verified baseline')
             path = baseline / 'qpkg' / filename
             reused.append(filename)
@@ -156,6 +171,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     for name in ('source-sha', 'builder-image', 'collection', 'architecture', 'trust-policy-sha256', 'coordinator-policy-sha256', 'intent', 'run-id', 'source-epoch'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--selected-apps', required=True, help='Exact space-separated needs.plan.outputs.apps')
     parser.add_argument('--baseline-proof', type=Path)
     parser.add_argument('--baseline-proof-sha256', default='')
     parser.add_argument('--baseline-source', default='')
@@ -173,7 +189,7 @@ def main():
             args.architecture, args.coordinator_policy_sha256, args.work, policy)
     plan = channel.read_json(args.plan.read_bytes())
     selected = args.work / 'selected'
-    reused = merge(plan, args.built, baseline, selected, args.architecture)
+    reused = merge(plan, args.built, baseline, selected, args.architecture, args.selected_apps.split())
     environment = {'PATH': os.defpath, 'TILO_APP_COLLECTION_PLAN': str(args.plan.resolve()),
         'TILO_APP_ARCH': args.architecture, 'TILO_APP_QPKG_DIR': str(selected.resolve()),
         'TILO_APP_RUNTIME_DIR': str((args.built / 'runtime').resolve()),
