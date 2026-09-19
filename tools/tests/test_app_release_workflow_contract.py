@@ -20,7 +20,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             self.assertNotIn('fetch-depth: 0', block)
 
         plan = source.split('\n  plan:\n', 1)[1].split('\n  build:\n', 1)[0]
-        self.assertIn('app_release_history.py fetch-base "$1"', plan)
+        self.assertIn('app_release_history.py \\\n              fetch-base "$1" "$GITHUB_SHA"', plan)
         self.assertIn('require-main-ancestor "$GITHUB_SHA"', plan)
         self.assertNotIn('+refs/heads/main:refs/remotes/origin/main', plan)
         publish = source.split('\n  publish:\n', 1)[1]

@@ -165,7 +165,8 @@ jobs:
           set -euo pipefail
           args=(--github-output "$GITHUB_OUTPUT")
           use_base() {
-            python3 -I tools/ci/python.py tools/ci/app_release_history.py fetch-base "$1"
+            python3 -I tools/ci/python.py tools/ci/app_release_history.py \
+              fetch-base "$1" "$GITHUB_SHA"
             args+=(--base "$1")
           }
           case "$GITHUB_REF" in
