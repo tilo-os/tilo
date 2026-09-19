@@ -752,18 +752,10 @@ impl PhotosDoc {
                     .flatten()
             }),
             people: field("photo_people")
-                .and_then(|map| {
-                    Self::conflicting_at::<Vec<String>>(doc, &map, id)
-                        .into_iter()
-                        .next()
-                })
+                .map(|map| Self::label_membership(doc, &map, id))
                 .unwrap_or_default(),
             tags: field("photo_tags")
-                .and_then(|map| {
-                    Self::conflicting_at::<Vec<String>>(doc, &map, id)
-                        .into_iter()
-                        .next()
-                })
+                .map(|map| Self::label_membership(doc, &map, id))
                 .unwrap_or_default(),
             captured_at: field("photo_captured_at").and_then(|map| {
                 Self::conflicting_at::<Option<String>>(doc, &map, id)
@@ -929,6 +921,94 @@ impl PhotosDoc {
             .collect()
     }
 
+    /// Read one labels field.  New documents store each membership under its
+    /// own CRDT key; the scalar-vector branch keeps old shared libraries
+    /// readable until their next metadata edit migrates them.
+    fn label_membership(doc: &AutoCommit, parent: &ObjId, photo_id: &str) -> Vec<String> {
+        let rows: Vec<_> = doc
+            .get_all(parent, photo_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(value, id)| matches!(value, Value::Object(ObjType::Map)).then_some(id))
+            .collect();
+        if rows.is_empty() {
+            return Self::conflicting_at::<Vec<String>>(doc, parent, photo_id)
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+        }
+        let mut candidates = std::collections::BTreeSet::new();
+        for row in &rows {
+            candidates.extend(doc.keys(row));
+        }
+        candidates
+            .into_iter()
+            .filter(|label| {
+                rows.iter().any(|row| {
+                    doc.get_all(row, label).is_ok_and(|values| {
+                        // Add wins a concurrent removal, including across
+                        // conflicting map objects created while two legacy
+                        // replicas migrate the same scalar list.
+                        values.into_iter().any(|(value, _)| {
+                            matches!(value, Value::Scalar(value) if matches!(value.as_ref(), ScalarValue::Boolean(true)))
+                        })
+                    })
+                })
+            })
+            .collect()
+    }
+
+    /// Project list changes to independent membership keys.  This makes a
+    /// tag added offline on one replica commute with a different tag added on
+    /// another, while `Set`/`Clear` remain explicit writes of the memberships
+    /// they actually change.
+    fn write_label_delta(
+        doc: &mut AutoCommit,
+        parent: &ObjId,
+        photo_id: &str,
+        before: &[String],
+        after: &[String],
+    ) {
+        let rows: Vec<_> = doc
+            .get_all(parent, photo_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(value, id)| matches!(value, Value::Object(ObjType::Map)).then_some(id))
+            .collect();
+        let migrated = rows.is_empty();
+        if migrated {
+            let _ = doc.delete(parent, photo_id);
+            let labels = after
+                .iter()
+                .cloned()
+                .map(|label| {
+                    (
+                        label,
+                        automerge::hydrate::Value::Scalar(ScalarValue::Boolean(true)),
+                    )
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+            let value = automerge::hydrate::Value::Map(labels.into());
+            let Some(_row) = doc
+                .batch_create_object(parent, photo_id, &value, false)
+                .ok()
+            else {
+                return;
+            };
+            return;
+        }
+        for label in before.iter().filter(|label| !after.contains(*label)) {
+            for row in &rows {
+                let _ = doc.put(row, label, false);
+            }
+        }
+        for label in after.iter().filter(|label| !before.contains(*label)) {
+            for row in &rows {
+                let _ = doc.put(row, label, true);
+            }
+        }
+    }
+
     fn str_at(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<String> {
         match doc.get(parent, key) {
             Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
@@ -1021,7 +1101,7 @@ impl PhotosDoc {
         // transaction and turns a 3k import into thousands of commits.
         if before.photos.is_empty() && after.albums.is_empty() && doc.keys(&photos).next().is_none()
         {
-            for (order_index, photo) in (doc.length(&photo_order)..).zip(after.photos.iter()) {
+            for photo in &after.photos {
                 Self::write_columnar_photo_delta(
                     doc,
                     &photo_core,
@@ -1037,8 +1117,13 @@ impl PhotosDoc {
                     None,
                     photo,
                 );
-                let _ = doc.insert(&photo_order, order_index, &photo.id);
             }
+            let order_values: Vec<_> = after
+                .photos
+                .iter()
+                .map(|photo| automerge::hydrate::Value::Scalar(photo.id.clone().into()))
+                .collect();
+            let _ = doc.splice(&photo_order, 0, 0, order_values);
             Self::sync_metadata_index(doc, root, after);
             return;
         }
@@ -1257,10 +1342,10 @@ impl PhotosDoc {
                 Self::write_json_at(doc, folder, &photo.id, &photo.folder);
             }
             if !photo.people.is_empty() {
-                Self::write_json_at(doc, people, &photo.id, &photo.people);
+                Self::write_label_delta(doc, people, &photo.id, &[], &photo.people);
             }
             if !photo.tags.is_empty() {
-                Self::write_json_at(doc, tags, &photo.id, &photo.tags);
+                Self::write_label_delta(doc, tags, &photo.id, &[], &photo.tags);
             }
             if photo.captured_at.is_some() {
                 Self::write_json_at(doc, captured, &photo.id, &photo.captured_at);
@@ -1292,10 +1377,22 @@ impl PhotosDoc {
             Self::write_json_at(doc, folder, &photo.id, &photo.folder);
         }
         if old.map(|value| &value.people) != Some(&photo.people) {
-            Self::write_json_at(doc, people, &photo.id, &photo.people);
+            Self::write_label_delta(
+                doc,
+                people,
+                &photo.id,
+                &old.expect("existing photo").people,
+                &photo.people,
+            );
         }
         if old.map(|value| &value.tags) != Some(&photo.tags) {
-            Self::write_json_at(doc, tags, &photo.id, &photo.tags);
+            Self::write_label_delta(
+                doc,
+                tags,
+                &photo.id,
+                &old.expect("existing photo").tags,
+                &photo.tags,
+            );
         }
         if old.and_then(|value| value.captured_at.as_ref()) != photo.captured_at.as_ref() {
             Self::write_json_at(doc, captured, &photo.id, &photo.captured_at);
@@ -1655,6 +1752,64 @@ mod tests {
     fn merge(left: &mut AutoCommit, right: &mut AutoCommit) -> PhotoLibrary {
         left.merge(right).expect("replicas merge");
         PhotosDoc::library(left)
+    }
+
+    #[test]
+    fn concurrent_legacy_label_migrations_keep_original_and_offline_adds() {
+        use crate::actions::{MetadataLabelsPatch, MetadataPatch};
+
+        let mut base = replica(1);
+        let mut item = photo("legacy-labels");
+        item.tags = vec!["original".into()];
+        PhotosDoc::set_library(
+            &mut base,
+            &PhotoLibrary {
+                photos: vec![item.clone()],
+                ..Default::default()
+            },
+        );
+
+        // Recreate the pre-membership-map wire shape so both offline replicas
+        // independently perform the migration while adding a different tag.
+        let root = PhotosDoc::library_roots(&base)
+            .into_iter()
+            .next()
+            .expect("library root");
+        let tags = PhotosDoc::map_at(&base, &root, "photo_tags").expect("tags map");
+        base.delete(&tags, &item.id).expect("remove membership map");
+        PhotosDoc::write_json_at(&mut base, &tags, &item.id, &item.tags);
+
+        let bytes = base.save();
+        let mut left = AutoCommit::load(&bytes).expect("left replica");
+        left.set_actor(automerge::ActorId::from([2; 16].as_slice()));
+        let mut right = AutoCommit::load(&bytes).expect("right replica");
+        right.set_actor(automerge::ActorId::from([3; 16].as_slice()));
+        for (doc, tag) in [(&mut left, "left"), (&mut right, "right")] {
+            PhotosAction::SetMetadataBatch {
+                photo_ids: vec![item.id.clone()],
+                folder: MetadataPatch::Keep,
+                people: MetadataLabelsPatch::Keep,
+                tags: MetadataLabelsPatch::Add(vec![tag.into()]),
+                captured_at: MetadataPatch::Keep,
+                location: MetadataPatch::Keep,
+            }
+            .apply(doc)
+            .expect("offline migration applies");
+        }
+
+        let mut left_first = copy(&mut left);
+        let mut right_for_left = copy(&mut right);
+        let left_result = merge(&mut left_first, &mut right_for_left);
+        let mut right_first = copy(&mut right);
+        let mut left_for_right = copy(&mut left);
+        let right_result = merge(&mut right_first, &mut left_for_right);
+        for library in [left_result, right_result] {
+            assert_eq!(
+                library.photo(&item.id).expect("photo").tags,
+                ["left", "original", "right"],
+                "conflicting migration maps must be unioned in either merge order"
+            );
+        }
     }
 
     #[test]
