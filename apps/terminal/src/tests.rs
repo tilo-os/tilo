@@ -1029,9 +1029,9 @@ fn paste_shortcuts_queue_the_same_canonical_confirmed_action() {
         assert_eq!(intent.address.action, "paste");
         let resources = widget.resources(&doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
-        assert_eq!(spec.params.len(), 1);
-        assert_eq!(spec.params[0].name.as_ref(), "text");
-        assert!(spec.params[0].required);
+        assert_eq!(spec.params().len(), 1);
+        assert_eq!(spec.params()[0].name.as_ref(), "text");
+        assert!(spec.params()[0].required);
         assert!(spec.build_json(&serde_json::Map::new()).is_err());
         assert_eq!(
             spec.contract.confirmation,
@@ -2630,7 +2630,7 @@ fn denied_terminal_menu_rows_are_disabled_while_local_rows_remain_usable() {
         &mut doc,
         &ROOT,
     ));
-    assert!(widget.context_menu.is_open());
+    assert!(widget.context_menu_is_open());
 
     send_key(
         &mut widget,
