@@ -20,6 +20,8 @@
 
 mod client;
 pub use client::BrokerSigningIdentity;
+mod async_client;
+pub use async_client::AsyncBrokerSigningIdentity;
 pub use runtime_portal::NotAvailable;
 
 #[cfg(unix)]
