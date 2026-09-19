@@ -56,4 +56,5 @@ def validate(env, ancestor=None):
 
 
 if __name__ == '__main__':
-    validate(os.environ)
+    if validate(os.environ):
+        product.validate_local_cargo_inputs('.')

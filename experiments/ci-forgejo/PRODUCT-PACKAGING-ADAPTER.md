@@ -133,11 +133,25 @@ baseline does not claim a downloadable release has been published.
    it records handled work without advancing package/publication evidence.
    Every plan-job Python helper runs through pinned `tools/ci_python.py` using
    `python3 -I`. The launcher appends local tools after standard-library paths
+   and prevents absent platform-specific standard modules from falling back to
+   candidate files (for example, the Windows `msvcrt` probe on Linux),
    and uses a fresh private bytecode cache namespace, so candidate modules,
    `PYTHONPATH`/user site hooks and candidate `__pycache__` cannot replace those
    imports. The local import closure is plan → qualification → product →
    coordinator/resolver, and app selector → ci_select; all are required pins.
    The immutable CI image remains trusted for its interpreter and system site.
+   Cargo metadata also executes a toolchain: the policy pins
+   `rust-toolchain.toml` and `.cargo/config.toml`. Source directory listings prove
+   that legacy precedence overrides `rust-toolchain` and `.cargo/config` are
+   absent; failed listings are errors, never interpreted as absence. Both the
+   source verifier and workflow guard reject path toolchains and configuration
+   includes, which would extend the executable trust closure. The workflow guard
+   repeats the local regular-file/override checks before selecting apps.
+   Metadata runs at the checkout root with `--locked --no-deps`, so member-package
+   Cargo configs and build scripts are not executed. Activation still requires
+   runner-owned checkout parents, PATH, CARGO_HOME, RUSTUP_HOME, environment and
+   Rustup override database: these inherited configuration sources must not be
+   writable by candidate jobs. This patch does not qualify that platform boundary.
    This path is locally tested, not operationally qualified: a live fixture must
    establish that `GITHUB_RUN_ID` is the API's internal run ID and that
    `github.run_attempt` identifies the current plan job's `attempt`, including a
