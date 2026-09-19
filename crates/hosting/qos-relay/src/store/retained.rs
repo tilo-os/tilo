@@ -19,35 +19,66 @@ fn invalid(message: &str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, message).into()
 }
 
-/// Validate the complete frame, workspace and retained payload before using it
-/// as coverage. Authentication happens at ingress, not in this disk decoder.
-pub(super) fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditPayload)> {
+/// Parse framing separately from proof: metadata routing may preserve a known
+/// prefix with unknown trailing bytes, but that prefix never grants coverage.
+fn framed_envelope(bytes: &[u8]) -> Option<(Envelope, &[u8])> {
     let prefix: [u8; 4] = bytes.get(..4)?.try_into().ok()?;
     if usize::try_from(u32::from_le_bytes(prefix)).ok()? != bytes.len().checked_sub(4)? {
         return None;
     }
-    let Envelope::Delta {
-        workspace_id,
-        author_device_public_key,
-        delta,
-        ..
-    } = crate::transport::decode(bytes.get(4..)?).ok()?
+    postcard::take_from_bytes(bytes.get(4..)?).ok()
+}
+
+/// Validate EVERY enclosing representation before granting proof authority.
+/// Authentication happens at ingress, not in this disk decoder.
+pub(super) fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditPayload)> {
+    let (
+        Envelope::Delta {
+            workspace_id,
+            author_device_public_key,
+            delta,
+            ..
+        },
+        rest,
+    ) = framed_envelope(bytes)?
+    else {
+        return None;
+    };
+    if workspace_id != workspace || !rest.is_empty() {
+        return None;
+    }
+    Some((author_device_public_key, complete_coedit_payload(&delta)?))
+}
+
+/// Used with an independently validated complete outer frame during replay.
+pub(super) fn complete_coedit_payload(delta: &[u8]) -> Option<CoeditPayload> {
+    let (payload, rest) = postcard::take_from_bytes(delta).ok()?;
+    rest.is_empty().then_some(payload)
+}
+
+/// Routing metadata only. Preserve the entire original frame even when its
+/// wrappers have unknown suffixes; callers must use `payload` for proof.
+fn identity(bytes: &[u8], workspace: u64) -> Option<([u8; 32], [u8; 32], bool)> {
+    let (
+        Envelope::Delta {
+            workspace_id,
+            author_device_public_key,
+            delta,
+            ..
+        },
+        _,
+    ) = framed_envelope(bytes)?
     else {
         return None;
     };
     if workspace_id != workspace {
         return None;
     }
-    Some((author_device_public_key, CoeditPayload::decode(&delta)?))
-}
-
-pub(super) fn identity(bytes: &[u8], workspace: u64) -> Option<([u8; 32], [u8; 32], bool)> {
-    let (author, payload) = payload(bytes, workspace)?;
-    let (channel, checkpoint) = match payload {
+    let (channel, checkpoint) = match CoeditPayload::decode(&delta)? {
         CoeditPayload::Checkpoint { channel, .. } => (channel, true),
         CoeditPayload::RetainedDelta { channel, .. } => (channel, false),
     };
-    Some((author, channel, checkpoint))
+    Some((author_device_public_key, channel, checkpoint))
 }
 
 fn checkpoint_key(bytes: &[u8], workspace: u64) -> Option<blake3::Hash> {
@@ -532,7 +563,10 @@ impl RetainBuild {
                         let old_key = checkpoint_key(&record.bytes, self.workspace);
                         self.duplicate |= old_key.is_some_and(|old| Some(old) == self.key)
                             || covers(&record.bytes, &self.bytes, self.workspace);
-                        self.opaque |= old_key.is_some()
+                        // Prefix metadata may only make retention more conservative:
+                        // an unproved checkpoint keeps opaque receipt ordering.
+                        self.opaque |= identity(&record.bytes, self.workspace)
+                            .is_some_and(|(_, _, checkpoint)| checkpoint)
                             && !covers(&record.bytes, &record.bytes, self.workspace);
                     } else {
                         self.duplicate |= record.bytes == self.bytes;
@@ -726,7 +760,7 @@ impl WorkspaceStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn message(checkpoint: bool, value: u8) -> Vec<u8> {
@@ -771,6 +805,64 @@ mod tests {
             signature: [0; 64],
         })
         .unwrap()
+    }
+
+    pub(crate) fn wrapper_suffix(bytes: &[u8], outer: bool) -> Vec<u8> {
+        let mut bytes = bytes.to_vec();
+        if outer {
+            bytes.extend_from_slice(b"fixture extension");
+            let length = (bytes.len() - 4) as u32;
+            bytes[..4].copy_from_slice(&length.to_le_bytes());
+        } else {
+            let mut envelope = crate::transport::decode(&bytes[4..]).unwrap();
+            let Envelope::Delta { delta, .. } = &mut envelope else {
+                panic!()
+            };
+            delta.extend_from_slice(b"fixture extension");
+            bytes = crate::transport::encode(&envelope).unwrap();
+        }
+        bytes
+    }
+
+    fn unproved_wrapper_is_preserved(outer: bool) {
+        use automerge::transaction::Transactable;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let mut document = automerge::AutoCommit::new();
+        document.put(automerge::ROOT, "first", 1).unwrap();
+        let initial = frame(true, document.save(), 1);
+        let unproved = wrapper_suffix(&initial, outer);
+        store.retain_checkpoint(&[9; 32], &unproved).unwrap();
+        document.put(automerge::ROOT, "next", 2).unwrap();
+        let later = frame(true, document.save(), 2);
+        store.retain_checkpoint(&[9; 32], &later).unwrap();
+        let replay = WorkspaceStore::open(tmp.path(), 7, false)
+            .unwrap()
+            .load_retained()
+            .unwrap();
+        assert!(
+            replay.contains(&unproved),
+            "unproved enclosing bytes must survive collection"
+        );
+        assert!(
+            replay == vec![unproved.clone(), later.clone()],
+            "unproved checkpoints must preserve opaque receipt order"
+        );
+        let incoming = wrapper_suffix(&later, outer);
+        store.retain_checkpoint(&[9; 32], &incoming).unwrap();
+        assert!(
+            store.load_retained().unwrap().contains(&incoming),
+            "unproved incoming wrapper must not be deduplicated by its prefix"
+        );
+    }
+
+    #[test]
+    fn unproved_outer_wrapper_is_preserved() {
+        unproved_wrapper_is_preserved(true);
+    }
+    #[test]
+    fn unproved_coedit_wrapper_is_preserved() {
+        unproved_wrapper_is_preserved(false);
     }
 
     // Two one-change snapshots from the review probe: the malformed document

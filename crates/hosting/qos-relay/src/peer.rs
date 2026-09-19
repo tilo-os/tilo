@@ -1132,6 +1132,22 @@ pub(crate) struct StateDelivery {
     _budget: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
     live: Arc<std::sync::atomic::AtomicBool>,
 }
+impl StateDelivery {
+    fn current_subscription(
+        &self,
+        runtime: &crate::workspace::WorkspaceRuntime,
+        peer: &AuthenticatedPeer,
+        outbound: &mpsc::Sender<Envelope>,
+    ) -> bool {
+        self.live.load(std::sync::atomic::Ordering::SeqCst)
+            && current_session(runtime, peer, outbound)
+            && runtime
+                .state_sessions
+                .get(&peer.device_public_key)
+                .is_some_and(|current| Arc::ptr_eq(&current.live, &self.live))
+    }
+}
+
 struct StateCommit {
     envelope: Arc<Envelope>,
     pending: HashMap<[u8; 32], std::path::PathBuf>,
@@ -1506,15 +1522,28 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
     {
         tracing::info!(phase="server_delta_writer", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
     }
-    let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+    let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+    // A connection can unsubscribe and subscribe again on the same channel.
+    // Check the captured lease after the membership wait, before either writing
+    // or fencing: stale work must not affect the replacement subscription.
     if !session_peer_authorized(peer, session)
         || !state_member(&runtime, peer)
-        || !current_session(&runtime, peer, session.outbound)
-        || delivery
-            .source
-            .as_ref()
-            .is_some_and(|source| !source.authorized(&runtime))
+        || !delivery.current_subscription(&runtime, peer, session.outbound)
     {
+        return Ok(());
+    }
+    if delivery
+        .source
+        .as_ref()
+        .is_some_and(|source| !source.authorized(&runtime))
+    {
+        if matches!(&delivery.envelope, LiveEnvelope::Selected(_)) {
+            // CURRENT already committed this activation. A missing half cannot
+            // be retried live after semantic suppression; reconnect needs the
+            // durable basis. The exact recipient lease was checked above.
+            let _ = session.disconnect.try_send(());
+            runtime.remove_subscriber_session(&peer.device_public_key, session.outbound);
+        }
         return Ok(());
     }
     drop(runtime);
@@ -1533,14 +1562,15 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
             session.v2,
         )?)
         .await?;
-    if let Some(path) = delivery.cleanup {
+    if let Some(path) = &delivery.cleanup {
+        let path = path.clone();
         // Enqueue is never receipt. Exact cleanup is admitted only after the
         // complete frame write, and is ordered against commits/replay.
         let owner = crate::persistence::handle(&workspace).await;
         let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
         if session_peer_authorized(peer, session)
             && state_member(&runtime, peer)
-            && current_session(&runtime, peer, session.outbound)
+            && delivery.current_subscription(&runtime, peer, session.outbound)
         {
             owner.read(1, move |_| {
                 if !delivery.live.load(std::sync::atomic::Ordering::SeqCst) {
@@ -4211,3 +4241,7 @@ mod private_transport_tests {
 
 #[cfg(test)]
 mod state_tests;
+
+#[cfg(test)]
+#[path = "peer_state_delivery_tests.rs"]
+mod state_delivery_tests;

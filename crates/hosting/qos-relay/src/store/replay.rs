@@ -253,7 +253,7 @@ impl ReplaySnapshot {
         } = &envelope
         {
             if *workspace_id == self.workspace_id {
-                let payload = crate::coedit::CoeditPayload::decode(delta);
+                let payload = super::retained::complete_coedit_payload(delta);
                 if let Some(payload) = &payload {
                     let body = match payload {
                         crate::coedit::CoeditPayload::Checkpoint { body, .. }
@@ -281,6 +281,8 @@ impl ReplaySnapshot {
             .stats
             .peak_frame_bytes
             .max(bytes.capacity() + decoded + encoded.capacity());
+        // Exact outer re-encoding rejects every unconsumed Envelope suffix;
+        // `retained` independently requires complete Coedit consumption.
         let coverage = !meta.pending && retained && encoded == bytes[4..];
         drop(encoded);
         let v2 = crate::transport_v2::state_payload(&envelope)

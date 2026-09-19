@@ -929,3 +929,71 @@ fn initial_shell_conflicting_sequences_or_missing_tail_dependencies_preserve_inp
         }
     }
 }
+
+fn shell_selection_preserves_unproved_wrapper(outer: bool) {
+    use super::{
+        bounded::{Step, WorkLimit},
+        shell_selection::Publication,
+    };
+    let meta = producer_metadata();
+    let authority = RetentionAuthority::new(
+        meta["room"].as_str().unwrap(),
+        serde_json::from_value(meta["authority"].clone()).unwrap(),
+    )
+    .unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let id = crate::room_workspace_id(authority.room()).unwrap();
+    let mut store = WorkspaceStore::open(tmp.path(), id, true).unwrap();
+    store.bind_shell_authority(authority.clone()).unwrap();
+    let raw = producer_frame(&meta, &meta["baseline"][0], 1);
+    let unproved = retained::tests::wrapper_suffix(&raw, outer);
+    retain_frame(&store, &unproved);
+    for group in ["baseline", "checkpoint2"] {
+        for row in meta[group].as_array().unwrap() {
+            retain_frame(&store, &producer_frame(&meta, row, 2));
+        }
+    }
+    assert!(
+        store.load_retained().unwrap().contains(&unproved),
+        "selection cannot retire an unproved wrapper"
+    );
+    let incoming =
+        retained::tests::wrapper_suffix(&producer_frame(&meta, &meta["baseline"][0], 3), outer);
+    let Envelope::Delta { delta, .. } = crate::transport::decode(&incoming[4..]).unwrap() else {
+        panic!()
+    };
+    let (channel, _, _) = parts(CoeditPayload::decode(&delta).unwrap());
+    let mut build = store
+        .start_retain(&channel, None, incoming.clone())
+        .unwrap();
+    let outcome = loop {
+        if let Step::Done(outcome) = build.step(WorkLimit::default()).unwrap() {
+            break outcome;
+        }
+    };
+    assert_eq!(
+        outcome.publication,
+        Publication::Original,
+        "selection cannot suppress an unproved incoming wrapper"
+    );
+    assert!(outcome.written > 0);
+    drop(build);
+    drop(store);
+    let mut store = WorkspaceStore::open(tmp.path(), id, true).unwrap();
+    store.bind_shell_authority(authority).unwrap();
+    let replay = replay_frames(&store);
+    assert!(replay.contains(&crate::transport::decode(&unproved[4..]).unwrap()));
+    assert!(replay.contains(&crate::transport::decode(&incoming[4..]).unwrap()));
+    let retained = store.load_retained().unwrap();
+    assert!(retained.contains(&unproved));
+    assert!(retained.contains(&incoming));
+}
+
+#[test]
+fn shell_selection_preserves_unproved_outer_wrapper() {
+    shell_selection_preserves_unproved_wrapper(true);
+}
+#[test]
+fn shell_selection_preserves_unproved_coedit_wrapper() {
+    shell_selection_preserves_unproved_wrapper(false);
+}

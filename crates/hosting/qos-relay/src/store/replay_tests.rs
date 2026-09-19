@@ -827,3 +827,20 @@ fn disposable_reclamation_finishes_when_selected_child_and_root_disappear() {
         Step::Done(())
     ));
 }
+
+#[test]
+fn unproved_coedit_wrapper_cannot_supply_replay_duplicate_coverage() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(temp.path(), 7, false).unwrap();
+    let bytes = super::super::retained::tests::wrapper_suffix(&frame(1, 10, 1), false);
+    store.retain_delta(&[9; 32], 1, &bytes).unwrap();
+    let pending = store.enqueue_pending(&[2; 32], 1, &bytes).unwrap();
+    let mut snapshot = snapshot(&store);
+    assert_eq!(
+        prepare(&store, &mut snapshot).total_frames,
+        2,
+        "unproved wrappers must be replayed independently"
+    );
+    assert!(pending.exists());
+    assert!(store.load_retained().unwrap().contains(&bytes));
+}
