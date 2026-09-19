@@ -1,5 +1,10 @@
 //! Async identity-broker client for host-owned app transports.
 
+#![allow(
+    clippy::future_not_send,
+    reason = "host transports and their identity client are confined to the SDK worker LocalSet"
+)]
+
 use std::io;
 use std::pin::Pin;
 use std::time::Duration;
@@ -40,10 +45,6 @@ impl std::fmt::Debug for AsyncBrokerSigningIdentity {
     }
 }
 
-#[allow(
-    clippy::future_not_send,
-    reason = "host transports and their identity client are confined to the SDK worker LocalSet"
-)]
 impl AsyncBrokerSigningIdentity {
     /// Request metadata over a caller-owned connected async transport.
     ///
@@ -205,15 +206,15 @@ impl AsyncBrokerSigningIdentity {
         })
         .await;
         match result {
-            Ok(Ok(response)) => {
+            Ok(Ok(response)) if tokio::time::Instant::now() < deadline => {
                 self.stream = Some(stream);
                 Ok(response)
             }
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
+            Ok(Ok(_)) | Err(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "identity broker exchange timed out",
             ))),
+            Ok(Err(error)) => Err(error),
         }
     }
 
@@ -334,6 +335,31 @@ mod tests {
         (identity, server_task.await.unwrap())
     }
 
+    async fn assert_raw_response_poisoned(bytes: Vec<u8>, expected: io::ErrorKind) {
+        let (mut identity, mut server) = connected(Duration::from_secs(1)).await;
+        let broker = tokio::spawn(async move {
+            assert!(matches!(
+                read_request(&mut server).await,
+                wire::Request::CollaborationJoin { .. }
+            ));
+            server.write_all(&bytes).await.unwrap();
+            server.shutdown().await.unwrap();
+        });
+        assert_eq!(
+            error_kind(identity.sign_collaboration_join("workspace").await),
+            expected
+        );
+        assert_eq!(
+            error_kind(
+                identity
+                    .sign_collaboration_op("workspace", "app", "record", b"op")
+                    .await
+            ),
+            io::ErrorKind::BrokenPipe
+        );
+        broker.await.unwrap();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn stalled_metadata_obeys_one_absolute_deadline() {
         let (client, mut server) = tokio::io::duplex(64);
@@ -451,29 +477,20 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_response_poison_prevents_reuse() {
-        let (mut identity, mut server) = connected(Duration::from_secs(1)).await;
-        let broker = tokio::spawn(async move {
-            assert!(matches!(
-                read_request(&mut server).await,
-                wire::Request::CollaborationJoin { .. }
-            ));
-            let oversized = u32::try_from(super::super::client::MAX_IDENTITY_FRAME_BYTES + 1)
-                .unwrap()
-                .to_le_bytes();
-            server.write_all(&oversized).await.unwrap();
-        });
-        assert_eq!(
-            error_kind(identity.sign_collaboration_join("workspace").await),
-            io::ErrorKind::InvalidData
-        );
-        assert_eq!(
-            error_kind(
-                identity
-                    .sign_collaboration_op("workspace", "app", "record", b"op")
-                    .await
-            ),
-            io::ErrorKind::BrokenPipe
-        );
-        broker.await.unwrap();
+        let oversized = u32::try_from(super::super::client::MAX_IDENTITY_FRAME_BYTES + 1)
+            .unwrap()
+            .to_le_bytes();
+        assert_raw_response_poisoned(oversized.to_vec(), io::ErrorKind::InvalidData).await;
+    }
+
+    #[tokio::test]
+    async fn partial_header_and_body_poison_prevent_reuse() {
+        assert_raw_response_poisoned(vec![1, 0], io::ErrorKind::UnexpectedEof).await;
+        assert_raw_response_poisoned(vec![2, 0, 0, 0, 1], io::ErrorKind::UnexpectedEof).await;
+    }
+
+    #[tokio::test]
+    async fn malformed_postcard_response_poison_prevents_reuse() {
+        assert_raw_response_poisoned(vec![1, 0, 0, 0, 255], io::ErrorKind::InvalidData).await;
     }
 }
