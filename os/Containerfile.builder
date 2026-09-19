@@ -50,6 +50,14 @@ RUN dnf install -y \
       gnome-text-editor qt6-qtbase-examples libreoffice-writer \
     && dnf clean all
 
+# Required by production PDF capture tests. Use the same verified external
+# asset context as sccache; runtime/library upgrades do not touch Fedora packages.
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    --mount=type=bind,source=tools/ci/install-pdfium.sh,target=/tmp/install-pdfium.sh,ro \
+    --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
+    bash /tmp/install-pdfium.sh /tilo-assets /usr /tmp/tilo-assets.tsv
+ENV TILO_PDFIUM_LIB=/usr/lib64/libpdfium.so
+
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
