@@ -18,6 +18,16 @@ cleanup() {
   # non-authoritative: trust-test failures come from the assertions above, not
   # an already-vanished socket in this disposable directory.
   gpgconf --homedir "$GNUPGHOME" --kill all >/dev/null 2>&1 || true
+  # A deliberately failed production cleanup may leave its private public-key
+  # directory behind. Recover only the recorded, tightly scoped fixture path.
+  if [[ -f $work/cleanup-keyring ]]; then
+    local leftover
+    leftover=$(cat "$work/cleanup-keyring")
+    if [[ $leftover =~ ^/var/tmp/tilo-imager-release-keyring\.[[:alnum:]]{6}$ && ! -L $leftover ]]; then
+      gpgconf --homedir "$leftover" --kill gpg-agent >/dev/null 2>&1 || true
+      rm -rf -- "$leftover" || true
+    fi
+  fi
   find "$work" -depth -delete 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -133,6 +143,70 @@ else
 fi
 grep -Fq 'verified 9 Linux and installer artifacts' "$work/cleanup-failure.out"
 printf 'ok    vanished agent sockets are tolerated and other cleanup errors fail closed\n'
+
+# Exercise cleanup around the actual signed release verification. The wrappers
+# model disappearing agent sockets and hard cleanup failures deterministically;
+# GnuPG still imports and verifies the real fixture except for one explicit
+# import failure used to prove preservation of the original exit status.
+mkdir "$work/cleanup-bin"
+export TILO_TEST_REAL_GPG="$(command -v gpg)"
+export TILO_TEST_REAL_GPGCONF="$(command -v gpgconf)"
+export TILO_TEST_REAL_RM="$(command -v rm)"
+export TILO_TEST_CLEANUP_STATE="$work/cleanup-keyring"
+cat > "$work/cleanup-bin/gpgconf" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $# == 4 && $1 == --homedir && $3 == --kill && $4 == all ]]
+[[ $2 =~ ^/var/tmp/tilo-imager-release-keyring\.[[:alnum:]]{6}$ && $GNUPGHOME == "$2" ]]
+printf '%s\n' "$2" > "$TILO_TEST_CLEANUP_STATE"
+"$TILO_TEST_REAL_GPGCONF" "$@"
+[[ ${TILO_TEST_CLEANUP_MODE:-} != stop-failure ]]
+EOF
+cat > "$work/cleanup-bin/find" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} != /var/tmp/tilo-imager-release-keyring.* || " $* " != *' -delete '* ]]; then
+  exec "$TILO_TEST_REAL_FIND" "$@"
+fi
+[[ $# == 4 && $1 == "$(cat "$TILO_TEST_CLEANUP_STATE")" \
+   && $2 == -ignore_readdir_race && $3 == -depth && $4 == -delete ]]
+# Simulate a socket disappearing just before recursive deletion encounters it.
+touch "$1/S.gpg-agent.fixture"
+"$TILO_TEST_REAL_RM" -f -- "$1/S.gpg-agent.fixture"
+if [[ ${TILO_TEST_CLEANUP_MODE:-} == remove-failure ]]; then exit 29; fi
+exec "$TILO_TEST_REAL_FIND" "$@"
+EOF
+cat > "$work/cleanup-bin/gpg" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${TILO_TEST_IMPORT_FAILURE:-0} == 1 && $* == *--import* ]]; then exit 37; fi
+exec "$TILO_TEST_REAL_GPG" "$@"
+EOF
+chmod +x "$work/cleanup-bin/"*
+run_cleanup_case() {
+  local mode=$1 import_failure=$2 expected_status=$3 status=0 keyring
+  "$TILO_TEST_REAL_RM" -f -- "$TILO_TEST_CLEANUP_STATE"
+  PATH="$work/cleanup-bin:$PATH" TILO_TEST_CLEANUP_MODE="$mode" \
+    TILO_TEST_IMPORT_FAILURE="$import_failure" TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" \
+    "$verify" "$assets" >"$work/cleanup.out" 2>"$work/cleanup.err" || status=$?
+  [[ $status == "$expected_status" ]] || {
+    cat "$work/cleanup.err" >&2
+    echo "cleanup case $mode/$import_failure returned $status, expected $expected_status" >&2
+    exit 1
+  }
+  keyring=$(cat "$TILO_TEST_CLEANUP_STATE")
+  if [[ $mode == remove-failure ]]; then
+    [[ -d $keyring ]]
+    "$TILO_TEST_REAL_RM" -rf -- "$keyring"
+  else
+    [[ ! -e $keyring ]]
+  fi
+}
+run_cleanup_case disappearing-socket 0 0
+run_cleanup_case remove-failure 0 29
+run_cleanup_case stop-failure 0 1
+run_cleanup_case remove-failure 1 37
+printf 'ok    isolated keyring cleanup tolerates vanished sockets and preserves trust failures\n'
 
 # Upgrade the actual signed release fixture to a schema-2 board catalog.
 cp "$catalog" "$work/v1.json"
