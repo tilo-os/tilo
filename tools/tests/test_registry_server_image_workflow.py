@@ -38,6 +38,18 @@ class RegistryServerImageWorkflowTests(unittest.TestCase):
         self.assertRegex(containerfile, r"FROM gcr\.io/distroless/cc-debian12:nonroot@sha256:[0-9a-f]{64}")
         self.assertIn("USER 65532:65532", containerfile)
 
+    def test_smoke_state_is_visible_to_the_runner_docker_daemon(self) -> None:
+        smoke = (
+            ROOT / "crates/packaging/registry-server/container/test-image.sh"
+        ).read_text()
+        self.assertIn('docker volume create "$volume"', smoke)
+        self.assertIn(
+            '--mount "type=volume,source=$volume,target=/var/lib/tilo-registry"',
+            smoke,
+        )
+        self.assertNotIn("type=bind", smoke)
+        self.assertIn('docker volume rm -f "$volume"', smoke)
+
 
 if __name__ == "__main__":
     unittest.main()
