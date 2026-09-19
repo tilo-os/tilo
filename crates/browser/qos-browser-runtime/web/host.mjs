@@ -44,10 +44,10 @@ export async function mountDesktop(target,options={}) {
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
   delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;
-  let semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,navigation,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
+  let semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,navigation,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
   const inputScope=createInputScope({active,read:()=>desktopOwnership?runtime.desktop_input_ownership(id):undefined,onChange:()=>{
-    hiddenKeys?.invalidate();semanticKeys?.invalidate();const canceled=composition?.cancel();composing=false;editor.value='';pasteShift=false;
-    if(canceled)replaceEditor();
+    hiddenKeys?.invalidate();semanticKeys?.invalidate();composition?.cancel();semantic?.revokeInput();composing=false;editor.value='';pasteShift=false;
+    replaceEditor();
   }});
   const handoff=createFocusHandoff({scope:inputScope,epoch:()=>externalFocusEpoch,focus:state=>{
     (state.ime?editor:canvas).focus({preventScroll:true});
@@ -59,7 +59,7 @@ export async function mountDesktop(target,options={}) {
     const current=inputScope.capture();
     if(current&&current.activation!==gesture.scope.activation){localActivationGesture=undefined;void handoff.complete(gesture.scope,gesture.epoch);}
   }
-  const semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report,{
+  semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report,{
     keydown:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keydown(...args);},
     keyup:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keyup(...args);},
     blur:owner=>{inputScope.capture();if(active())semanticKeys?.blur(owner);},

@@ -610,3 +610,15 @@ test('retired semantic editors reject focus, selection and keyboard release call
  bridge.update(snapshot({role:'TextInput',value:'saved',action_target:'draft',state:{focusable:true}}));const old=root.children[0];old.dispatchEvent(event('compositionstart'));current={sequence:'2',activation:'2',owner:'chat'};old.dispatchEvent(event('compositionend',{data:'old'}));
  for(const type of ['focus','select','keyup','blur'])old.dispatchEvent(event(type,{key:'Enter'}));assert.deepEqual(calls,[]);assert.deepEqual(keys,[]);
 });
+test('plain semantic editor lifetime is revoked on same-owner reselection and away/back',()=>{
+ for(const away of [false,true]){
+  let current={sequence:'1',activation:'1',owner:'chat'};const calls=[];const scope={capture:()=>({...current}),valid:s=>s.sequence===current.sequence&&s.activation===current.activation&&s.owner===current.owner,owns:path=>current.owner===path};
+  const root=new Element('div');const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{},undefined,scope);
+  bridge.update(snapshot({role:'TextInput',value:'saved',action_target:'draft',state:{focusable:true},text_selection:{anchor:5,focus:5}}));const old=root.children[0];document.activeElement=old;
+  if(away){current={sequence:'2',activation:'2',owner:'other'};bridge.revokeInput();}
+  current={sequence:away?'3':'2',activation:away?'3':'2',owner:'chat'};bridge.revokeInput();
+  old.value='stale';old.dispatchEvent(event('input',{inputType:'insertText',data:'stale'}));old.setSelectionRange(0,0);old.dispatchEvent(event('select'));
+  assert.deepEqual(calls,[]);assert.notEqual(root.children[0],old);
+  const fresh=root.children[0];fresh.value='fresh';fresh.dispatchEvent(event('input',{inputType:'insertText',data:'fresh'}));assert.equal(calls[0]?.[3],'fresh');
+ }
+});

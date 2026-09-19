@@ -36,7 +36,11 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
     host.setAttribute('aria-activedescendant',element.id);
     host.setAttribute('aria-owns',[previousOwns,element.id].filter(Boolean).join(' '));
   }
-  function authorized(element){return element.qosState.active&&elements.get(element.qosState.key)===element&&(!inputScope||inputScope.owns(element.qosOwnerPath));}
+  function authorized(element){
+    const state=element.qosState;if(!state.active||elements.get(state.key)!==element)return false;
+    const owned=!inputScope||inputScope.owns(element.qosOwnerPath);
+    return owned&&state.active&&elements.get(state.key)===element;
+  }
   function currentComposition(element){
     const state=element.qosState;
     if(state.compositionScope&&!inputScope.valid(state.compositionScope)){state.composing=false;state.compositionScope=null;state.canceledComposition=true;state.compositionBase=null;restoreCanonical(element);replaceCanceledEditor(element);}
@@ -53,6 +57,10 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
     state.active=false;element.route=undefined;elements.set(state.key,next);restoreCanonical(next);
     const focused=document.activeElement===element;element.replaceWith(next);
     if(focused&&authorized(next)){next.qosState.reconcilingFocus=true;try{next.focus({preventScroll:true});}finally{next.qosState.reconcilingFocus=false;}}
+  }
+  function revokeInput(){
+    pendingFocus=undefined;clearActiveDescendant();
+    for(const element of [...elements.values()])if(element.qosEditable)replaceCanceledEditor(element);
   }
   function act(element,action,value='',anchor=0,focus=0){
     const state=element.qosState;
@@ -346,5 +354,5 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
     }
     root.dataset.nodeCount=String(elements.size);
   }
-  return {update,close(){pendingFocus=undefined;clearActiveDescendant();for(const element of elements.values()){shortcuts?.blur?.(element);element.qosState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();recoveries.clear();root.replaceChildren();elements.clear();}};
+  return {update,revokeInput,close(){pendingFocus=undefined;clearActiveDescendant();for(const element of elements.values()){shortcuts?.blur?.(element);element.qosState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();recoveries.clear();root.replaceChildren();elements.clear();}};
 }

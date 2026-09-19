@@ -124,3 +124,15 @@ test('every retired hidden editor listener rejects old input and focus callbacks
  assert.deepEqual(f.delivered,[]);assert.deepEqual(keys,[]);
  f.host.editor.dispatchEvent(new DomEvent('paste',{clipboardData:{getData:()=> 'new'}}));assert.deepEqual(f.delivered,[['paste']]);
 });
+test('plain hidden editor lifetime is revoked by each exact counter and away/back',async()=>{
+ for(const mode of ['same-owner','sequence','activation','away-back']){
+  const f=await fixture();await f.host.navigation.dispatch({kind:'select',generation:'g',route:'writer'});const old=f.host.editor;f.delivered.length=0;
+  if(mode==='away-back'){await f.host.navigation.dispatch({kind:'select',generation:'g',route:'chat'});await f.host.navigation.dispatch({kind:'select',generation:'g',route:'writer'});}
+  else if(mode==='same-owner')await f.host.navigation.dispatch({kind:'select',generation:'g',route:'writer'});
+  else{f.state={...f.state,[mode]:String(Number(f.state[mode])+1)};f.update({phase:'presented',frames:2});await tick();}
+  old.dispatchEvent(new DomEvent('beforeinput',{inputType:'insertText',data:'stale'}));old.dispatchEvent(new DomEvent('input',{data:'stale'}));
+  assert.deepEqual(f.delivered.filter(([kind])=>kind==='commit'),[],mode);
+  assert.notEqual(f.host.editor,old);f.host.editor.dispatchEvent(new DomEvent('beforeinput',{inputType:'insertText',data:'fresh'}));
+  assert.deepEqual(f.delivered.filter(([kind])=>kind==='commit'),[['commit','fresh']]);
+ }
+});
