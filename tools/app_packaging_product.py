@@ -166,6 +166,28 @@ def dispatch_inputs(intent):
             'baseline_receipt_sha256': core.receipt_key(evidence) if compatible else ''}
 
 
+def run_inputs_match(intent, actual):
+    """Compare Forgejo's persisted inputs with the immutable request semantics.
+
+    Forgejo 16.0.3 omits empty string inputs and inserts the workflow's
+    verify_final_receipt=false default (observed in production run23344).
+    Only these explicitly known defaults may differ from the request. Keep the
+    canonical plan/intent representation unchanged, including baseline proof.
+    """
+    expected = dispatch_inputs(intent)
+    expected['verify_final_receipt'] = 'false'
+    if not isinstance(actual, dict) or not set(actual) <= set(expected):
+        return False
+    if any(type(value) is not str for value in actual.values()):
+        return False
+    normalized = dict(actual)
+    for key in ('apps', 'baseline_sha', 'baseline_run_id',
+                'baseline_evidence', 'baseline_receipt_sha256'):
+        normalized.setdefault(key, '')
+    normalized.setdefault('verify_final_receipt', 'false')
+    return normalized == expected
+
+
 def validate_evidence(proof, desired, run_id, final_policy_sha=None):
     require(isinstance(proof, dict) and proof.get('schema') == 'tilo.coordinator-verification/v1', 'invalid verification proof')
     require(type(run_id) is int and run_id > 0 and proof.get('run_id') == run_id, 'verification run mismatch')
@@ -244,7 +266,7 @@ class ProductForgejo(core.Forgejo):
         self.validate_baseline_policy(intent)
         return self.call(f'repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches', {
             'ref': intent['desired']['source_sha'], 'return_run_info': True,
-            'inputs': dispatch_inputs(intent)})
+            'inputs': dict(dispatch_inputs(intent), verify_final_receipt='false')})
 
     def run(self, run_id):
         return self.call(f'repos/{REPO}/actions/runs/{run_id}')
@@ -334,7 +356,7 @@ class ProductForgejo(core.Forgejo):
                 run.get('trigger_event') == 'workflow_dispatch' and
                 run.get('commit_sha') == intent['desired']['source_sha'] and
                 payload.get('ref') == intent['desired']['source_sha'] and
-                payload.get('inputs') == dispatch_inputs(intent) and
+                run_inputs_match(intent, payload.get('inputs')) and
                 type(run.get('id')) is int and run['id'] > 0,
                 'run does not match immutable nonpublishing intent')
         if run['status'] == 'success':
