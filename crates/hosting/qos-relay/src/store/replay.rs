@@ -821,7 +821,14 @@ impl WorkDiscard {
                     let name = entry.file_name();
                     if let Some(kind) = existing_kind(entry)? {
                         if kind.is_dir()
-                            && ["sort", "shell-sort", "extras-sort", "pins", "index"]
+                            && [
+                                "sort",
+                                "shell-sort",
+                                "extras-sort",
+                                "extras-sort-fallback",
+                                "pins",
+                                "index",
+                            ]
                                 .iter()
                                 .any(|s| name == *s)
                         {
@@ -906,7 +913,11 @@ fn owned_work_file(dir: &std::ffi::OsStr, name: &std::ffi::OsStr) -> bool {
         name.strip_suffix(".frame").is_some_and(|s| is_hex(s, 16))
     } else if dir == "index" {
         name.strip_suffix(".idx").is_some_and(|s| is_hex(s, 64))
-    } else if dir == "sort" || dir == "shell-sort" || dir == "extras-sort" {
+    } else if dir == "sort"
+        || dir == "shell-sort"
+        || dir == "extras-sort"
+        || dir == "extras-sort-fallback"
+    {
         name.strip_suffix(".run")
             .and_then(|s| s.split_once('-'))
             .is_some_and(|(a, b)| is_hex(a, 16) && is_hex(b, 16))

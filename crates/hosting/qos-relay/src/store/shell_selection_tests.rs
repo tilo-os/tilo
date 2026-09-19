@@ -545,6 +545,42 @@ fn shell_selection_readiness_fallback_rebuilds_sorter_before_prior_basis() {
     for frame in cp2_frames.iter().chain(std::iter::once(&t2_frame)) {
         assert!(stored.contains(frame), "unresolved original was not retained");
     }
+    let work = reopened.root.join("store-work-v1");
+    let mut replay_work = fs::read_dir(&work)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("replay-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(replay_work.len(), 1);
+    let work_root = replay_work.pop().unwrap();
+    let fallback_sort = work_root.join("extras-sort-fallback");
+    assert!(fs::read_dir(&fallback_sort).unwrap().next().is_some());
+    let mut discard = build.into_discard().unwrap();
+    while matches!(discard.step(WorkLimit::default()).unwrap(), Step::More) {}
+    assert!(!work_root.exists(), "fallback sort survived direct discard");
+
+    let abandoned = work.join("replay-11111111111111111111111111111111");
+    let abandoned_sort = abandoned.join("extras-sort-fallback");
+    fs::create_dir_all(&abandoned_sort).unwrap();
+    fs::write(
+        abandoned_sort.join("0000000000000000-0000000000000000.run"),
+        b"sorted metadata",
+    )
+    .unwrap();
+    let mut reclaimer = reopened.start_work_reclamation().unwrap();
+    while matches!(
+        reclaimer.step(WorkLimit::default()).unwrap(),
+        Step::More
+    ) {}
+    assert!(
+        !abandoned.exists(),
+        "fallback sort survived startup reclamation"
+    );
     drop(reopened);
 
     let unbound = WorkspaceStore::open(tmp.path(), workspace_id, true).unwrap();
