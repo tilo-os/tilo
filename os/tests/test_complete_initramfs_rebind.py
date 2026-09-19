@@ -15,6 +15,21 @@ gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 
 
+class DriverArtifactTests(unittest.TestCase):
+    def test_real_archive_rejects_omitted_drivers_but_keeps_btrfs(self):
+        import tempfile
+        from test_initramfs_trust import cpio, KEY, verifier
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / 'initramfs'
+            image.write_bytes(cpio([(verifier.KEY, KEY), ('usr/lib/modules/test/kernel/fs/btrfs/btrfs.ko.zst', b'fixture')]))
+            self.assertEqual(gate.verify_artifact(image, KEY)['omitted_kernel_drivers_verified'], ['ext4', 'xfs'])
+            for driver in ('ext4', 'xfs'):
+                for suffix in ('', '.xz', '.gz', '.zst'):
+                    image.write_bytes(cpio([(verifier.KEY, KEY), (f'usr/lib/modules/test/kernel/fs/{driver}/{driver}.ko{suffix}', b'fixture')]))
+                    with self.subTest(driver=driver, suffix=suffix), self.assertRaisesRegex(ValueError, 'filesystem driver'):
+                        gate.verify_artifact(image, KEY)
+
+
 @unittest.skipUnless(hasattr(os, 'getuid') and os.getuid() == 0
                      and shutil.which('cosign') and fixtures.fixtures.trust.CRYPTO.is_file(),
                      'native root Rust-crypto fixture required')

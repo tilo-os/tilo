@@ -8,6 +8,7 @@ import unittest
 
 
 MODULE_PATH = Path(__file__).parents[1] / "check_repository_layout.py"
+OPENSSL_RUNTIME_INVARIANT = MODULE_PATH.parents[1] / "os/tests/no_openssl_runtime.sh"
 SPEC = importlib.util.spec_from_file_location("check_repository_layout", MODULE_PATH)
 assert SPEC and SPEC.loader
 checker = importlib.util.module_from_spec(SPEC)
@@ -15,6 +16,17 @@ SPEC.loader.exec_module(checker)
 
 
 class RepositoryLayoutTests(unittest.TestCase):
+    def test_runtime_source_policy_scans_existing_canonical_roots(self) -> None:
+        source = OPENSSL_RUNTIME_INVARIANT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'runtime_source_roots=("$repo/os/usr" "$repo/apps" "$repo/crates")',
+            source,
+        )
+        self.assertIn('if [ ! -d "$root" ]', source)
+        self.assertIn('"${runtime_source_roots[@]}"', source)
+        self.assertNotIn('"$repo/shell"', source)
+
     def test_source_and_curated_shot_directories_are_allowed(self) -> None:
         self.assertEqual(
             checker.generated_artifact_violations(
