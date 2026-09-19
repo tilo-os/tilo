@@ -3,7 +3,7 @@
 Build this small tool once for the machine running installer acceptance:
 
 ```sh
-cargo build --release --locked --manifest-path apps/imager/profile-tool/Cargo.toml
+cargo build --release --locked --manifest-path tools/imager-profile/Cargo.toml
 ```
 
 The independent Cargo workspace resolves only serde, JSON, SHA-256 and platform
@@ -29,7 +29,7 @@ the production secret-free profile and verifies the complete block by reading
 it back through that same handle. It cannot create a target or accept a block
 device. The existing `embed-profile` Imager example delegates to the same CLI.
 
-`cargo test --locked --manifest-path apps/imager/profile-tool/Cargo.toml` checks
+`cargo test --locked --manifest-path tools/imager-profile/Cargo.toml` checks
 the shared model and writes a temporary image consumed by the real live-media
 profile extractor. It also checks unchanged image content before the reserved
 tail and rejection of undersized files, symlinks and FIFOs.

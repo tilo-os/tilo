@@ -414,7 +414,7 @@ passes while proving nothing.
 
 ## Opening an app the machine does not have
 
-`scripts/install-on-open-demo.py` drives the one flow that cannot be
+`scripts/demo/install-on-open.py` drives the one flow that cannot be
 exercised from an installed package, because its subject is a package
 that is not installed: typing the name of an app the configured
 registries offer, pressing Enter, and getting a tab.
@@ -423,8 +423,8 @@ registries offer, pressing Enter, and getting a tab.
 cargo build -p shell -p sheets -p install -p launcher
 cargo build -p app-catalogue --bins --examples
 
-scripts/install-on-open-demo.py --out target/install-on-open
-scripts/install-on-open-demo.py --backend winit --stage-only   # drive it yourself
+scripts/demo/install-on-open.py --out target/install-on-open
+scripts/demo/install-on-open.py --backend winit --stage-only   # drive it yourself
 ```
 
 It packs the real Sheets binary into a signed `.qpkg`, serves it from a

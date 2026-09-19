@@ -13,7 +13,7 @@ So the demo gets its own HOME. Nothing here is wired into the shell; it
 is purely the environment the demo processes are launched with, which is
 why it cannot regress a normal session.
 
-    env $(scripts/demo-home.py --print-env) ./target/debug/shell ...
+    env $(scripts/demo/home.py --print-env) ./target/debug/shell ...
 
 Note the environment has to go to the *compositor*, not to cargo: staging
 cargo's HOME breaks the build shim. Build first, then run the binary.
@@ -23,7 +23,7 @@ hyphenated, so `import demo_home` cannot resolve it. Load it by path:
 
     import importlib.util, pathlib
     spec = importlib.util.spec_from_file_location(
-        "demo_home", pathlib.Path(__file__).parent / "demo-home.py")
+        "demo_home", pathlib.Path(__file__).parent / "home.py")
     demo_home = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(demo_home)
     env = demo_home.stage()             # -> dict of environment overrides
@@ -70,7 +70,7 @@ def stage(root: Path | None = None, *, fresh: bool = True) -> dict[str, str]:
     `fresh=True` removes any previous stage so a re-run of the demo starts
     from a known state rather than accumulating edits from the last take.
     """
-    root = Path(root) if root else Path(__file__).resolve().parent.parent / "target" / "demo-home"
+    root = Path(root) if root else Path(__file__).resolve().parents[2] / "target" / "demo-home"
 
     if fresh and root.exists():
         shutil.rmtree(root)

@@ -52,7 +52,7 @@ encoder="${TILO_PROFILE_ENCODER:-}"
 encoder_sha="${TILO_PROFILE_ENCODER_SHA256:-}"
 if [ "$build_profile_encoder" -eq 1 ]; then
   [ -z "$encoder$encoder_sha" ] || { echo 'choose prebuilt encoder or --build-profile-encoder' >&2; exit 2; }
-  encoder_command=(cargo run --quiet --release --locked --manifest-path "$dev_dir/../../apps/imager/profile-tool/Cargo.toml" --)
+  encoder_command=(cargo run --quiet --release --locked --manifest-path "$dev_dir/../../tools/imager-profile/Cargo.toml" --)
   encoder_sha=explicit-local-build
 else
   [[ "$encoder" = /* ]] && [ -f "$encoder" ] && [ ! -L "$encoder" ] && [ -x "$encoder" ] \
