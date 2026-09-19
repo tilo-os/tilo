@@ -140,6 +140,15 @@ mod component_adapter {
         fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
             Some(self.component.callback_binding())
         }
+        // Local feedback belongs to the emitting component. The host delivers
+        // bound results through with_live_component; generic tree recursion
+        // must neither cross into another record nor revive a closed owner.
+        fn on_control_invocation_result(
+            &mut self,
+            _: &tilo_actions::ActionAddress,
+            _: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+        ) {
+        }
         fn visit_components(
             &mut self,
             request: &mut crate::bound_dispatch::ComponentRequest<'_>,
