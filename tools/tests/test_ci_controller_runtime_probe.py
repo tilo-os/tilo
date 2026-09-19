@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import controller_runtime_probe as probe
@@ -12,6 +13,23 @@ import controller_runtime_probe as probe
 class RuntimeProbePreparationTests(unittest.TestCase):
     def test_actual_reviewed_source_hashes_match(self):
         self.assertEqual(probe.SOURCE_HASHES, probe.checked_source())
+
+    def test_source_hashes_follow_configmap_projection_symlinks(self):
+        source = Path(probe.__file__).parent
+        with tempfile.TemporaryDirectory() as directory:
+            mount = Path(directory) / 'tools'
+            timestamp = mount / '..timestamp'
+            timestamp.mkdir(parents=True)
+            for name in probe.SOURCE_HASHES:
+                relative = name.removeprefix('tools/')
+                destination = timestamp / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((source / relative).read_bytes())
+            (timestamp / 'controller_runtime_probe.py').write_bytes(Path(probe.__file__).read_bytes())
+            link = mount / 'controller_runtime_probe.py'
+            link.symlink_to(timestamp / link.name)
+            with patch.object(probe, '__file__', str(link)):
+                self.assertEqual(probe.SOURCE_HASHES, probe.checked_source())
 
     def test_committed_crash_intent_reopens_in_another_process_and_cleans_only_fixture(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -31,8 +31,11 @@ def require(value, message):
 
 
 def checked_source():
-    root = Path(__file__).resolve().parents[1]
-    actual = {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in SOURCE_HASHES}
+    # Kubernetes resolves ConfigMap links into a timestamped directory beneath
+    # the mount. Anchor to this helper's sibling modules, not the mount's parent.
+    root = Path(__file__).resolve().parent
+    actual = {path: hashlib.sha256((root / path.removeprefix('tools/')).read_bytes()).hexdigest()
+              for path in SOURCE_HASHES}
     require(actual == SOURCE_HASHES, 'controller/service/launcher differ from reviewed source')
     return actual
 
