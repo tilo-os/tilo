@@ -29,7 +29,7 @@ with no coordinator inputs is preserved.
 
 ## Baseline semantics and verification seam
 
-A successful workflow alone does **not** advance the product baseline. It stays
+A successful workflow alone does **not** advance the product baseline. A build stays
 active with status `awaiting-verification`, blocking later desired sources. A
 trusted verifier callback must independently verify the authenticated final
 artifacts, then return:
@@ -52,7 +52,23 @@ artifacts, then return:
 
 This is a trusted-code callback return contract, **not** an importable JSON proof
 or a flag in a candidate artifact. No CLI verifier provider exists yet. Therefore
-the current adapter cannot autonomously finish a successful product run.
+the current adapter cannot autonomously accept a successful package build.
+
+Zero-app plans have a separate cheap completion path. The existing trusted plan
+job uploads `coordinator-plan-<plan attempt>` and logs its intent-bound content
+SHA-256. The adapter rechecks the pinned workflow/planner helper bytes, exact run
+and current successful plan job/attempt/task/handle, bounded artifact metadata and
+bytes, log digest, source/builder/intent/baseline/scope inputs and empty plan lists.
+It rereads run/jobs before accepting. A skipped build or uploaded zero-count JSON
+without this provenance is insufficient. Plan verification remains outside the
+SQLite write transaction; the same intent fingerprint is rechecked at commit.
+
+This result records `handled=desired` and `outcome=verified-no-build`, clears the
+active intent and permits newer pending work. It preserves the previous verified
+package baseline and its evidence exactly. The next incremental build still
+diffs from that package baseline. An empty first bootstrap leaves the baseline
+null. Repeated ticks/restarts for the handled desired receipt remain idle. A later
+verified package build clears the handled marker when installing its new baseline.
 
 Integrate the existing independent artifact-verification work instead of
 reimplementing signing/parsing: `final_app_receipt.verify(tree, pkg, runtime,
@@ -103,8 +119,8 @@ baseline does not claim a downloadable release has been published.
    New desired revisions can be recorded during replay; a concurrent change to
    the active intent rejects the stale result. Two-connection tests exercise both
    cases. The callback still requires fresh artifact provenance checks.
-   A zero-app plan also needs an authenticated no-change proof tied to the prior
-   verified artifact set; a skipped build alone must not advance the baseline.
+   The implemented zero-app path requires the trusted plan provenance above;
+   it records handled work without advancing package/publication evidence.
 3. Provision a dedicated least-privilege product qualification identity and
    protected credentials; the existing integrator identity has pilot-only access.
    The default interactive fgj administrator profile is not a service identity.
