@@ -141,7 +141,7 @@ class AppReleaseTests(unittest.TestCase):
         catalog = app_release.app_catalog(ROOT)
         self.assertEqual(
             app_release.resolve_collection(
-                "default", catalog, app_release.config(ROOT / "release/app-collections.toml")
+                "default", catalog, app_release.config(ROOT / "dist/apps/app-collections.toml")
             ),
             sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS)),
         )
