@@ -167,6 +167,15 @@ impl Admission {
         self.choices.clear();
         self.pending.borrow_mut().clear();
     }
+
+    /// Retire the current decision before an explicit choice re-evaluates the
+    /// close request. Ordinary duplicate native close requests leave the
+    /// presentation intact, including its session and focused control.
+    pub(crate) fn retire_presentation(&mut self) {
+        self.dialog = None;
+        self.choices.clear();
+        self.pending.borrow_mut().clear();
+    }
 }
 
 fn resource_for(session: uuid::Uuid, choices: &[Choice]) -> Resource {
