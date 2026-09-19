@@ -209,6 +209,7 @@ pub trait Backend {
         self.submit_frame(&frame.scene, output);
     }
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent));
+
     fn outputs(&self) -> &[Output];
 
     /// The presentation interval of the display this backend drives, if

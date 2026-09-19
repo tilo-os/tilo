@@ -44,9 +44,12 @@ package_tilo-session() {
   cd "$srcdir/payload"
   install -Dm755 bin/tilo-shell bin/tilo-launcher -t "$pkgdir/usr/bin"
   install -Dm755 libexec/tilo-unlock-helper libexec/tilo-session \
-    libexec/tilo-session-runner -t "$pkgdir/usr/lib/tilo"
+    libexec/tilo-session-runner libexec/tilo-flight-recorder \
+    -t "$pkgdir/usr/lib/tilo"
   sed -i 's#/usr/libexec/tilo-session-runner#/usr/lib/tilo/tilo-session-runner#' \
     "$pkgdir/usr/lib/tilo/tilo-session"
+  sed -i 's#/usr/libexec/tilo-flight-recorder#/usr/lib/tilo/tilo-flight-recorder#' \
+    "$pkgdir/usr/lib/tilo/tilo-session-runner"
   install -Dm644 pam/tilo-unlock "$pkgdir/etc/pam.d/tilo-unlock"
   install -Dm644 wayland-sessions/tilo.desktop -t "$pkgdir/usr/share/wayland-sessions"
   sed -i 's#/usr/libexec/tilo-session#/usr/lib/tilo/tilo-session#' \

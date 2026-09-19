@@ -24,11 +24,15 @@ esac
 SYSTEMCTL=/usr/bin/systemctl
 SYSTEMD_CAT=/usr/bin/systemd-cat
 DBUS_UPDATE=/usr/bin/dbus-update-activation-environment
+FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder
 SESSION_TARGET=tilo-graphical-session.target
 target_started=0
 environment_imported=0
 shell_pid=
 logout_request=
+flight_log=
+flight_pipe=
+flight_relay_pid=
 
 # `DesktopNames=tilo` in the .desktop entry selects tilo-portals.conf;
 # display managers export it as XDG_CURRENT_DESKTOP, but not every one does,
@@ -57,7 +61,20 @@ if [ ! -x "$DBUS_UPDATE" ]; then
     exit 1
 fi
 
+if [ ! -x "$FLIGHT_RECORDER" ]; then
+    echo "tilo-session: $FLIGHT_RECORDER is missing or not executable" >&2
+    exit 1
+fi
+
 stop_target() {
+    if [ -n "$flight_relay_pid" ]; then
+        wait "$flight_relay_pid" 2>/dev/null || true
+        flight_relay_pid=
+    fi
+    if [ -n "$flight_pipe" ]; then
+        rm -f -- "$flight_pipe"
+        flight_pipe=
+    fi
     if [ -n "$logout_request" ]; then
         rm -f -- "$logout_request"
         logout_request=
@@ -214,6 +231,33 @@ rm -f -- "$logout_request"
 TILO_SESSION_LOGOUT_REQUEST=$logout_request
 export TILO_SESSION_LOGOUT_REQUEST
 
+# Keep a small persistent flight recorder in addition to journald. Abrupt
+# resets, boot-loader fallback, and journal vacuuming must not erase the only
+# evidence from a failed graphical login. The file contains compositor/app
+# diagnostics only; retain one previous session. A bounded
+# relay keeps only the latest 4 MiB while still streaming every byte to
+# journald, so a pathological app cannot fill the home filesystem.
+flight_dir=${XDG_STATE_HOME:-$HOME/.local/state}/tilo/session-logs
+mkdir -p -- "$flight_dir"
+chmod 0700 "$flight_dir"
+if [ -f "$flight_dir/latest.log" ]; then
+    tail -c 4194304 -- "$flight_dir/latest.log" >"$flight_dir/previous.log.tmp" || true
+    mv -f -- "$flight_dir/previous.log.tmp" "$flight_dir/previous.log"
+fi
+flight_log=$flight_dir/latest.log
+: >"$flight_log"
+chmod 0600 "$flight_log"
+printf 'tilo-flight-record-v1 start=%s pid=%s shell=%s\n' \
+    "$(date --iso-8601=seconds)" "$$" "$TILO_SHELL" >>"$flight_log"
+export TILO_PAINT_STATS=1
+export TILO_LOOP_TIMING=1
+flight_pipe=$session_runtime/flight-record-$$.pipe
+rm -f -- "$flight_pipe"
+mkfifo -m 0600 -- "$flight_pipe"
+"$FLIGHT_RECORDER" "$flight_log" <"$flight_pipe" |
+    "$SYSTEMD_CAT" --identifier=tilo-session --level-prefix=false &
+flight_relay_pid=$!
+
 # --host-desktop-session is the package-owned, distro-neutral declaration that
 # this is a session added to an existing Linux installation. It keeps device
 # identity material in this login's XDG data tree and selects the reduced
@@ -238,13 +282,18 @@ set +e
 # user returns to another desktop.  systemd-cat execs the command and relays
 # its exit status/signals; disabling level-prefix parsing prevents app output
 # from forging journal priorities.
-"$SYSTEMD_CAT" --identifier=tilo-session --level-prefix=false \
-    "$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" &
+"$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" \
+    >"$flight_pipe" 2>&1 &
 shell_pid=$!
 wait "$shell_pid"
 status=$?
 set -e
 shell_pid=
+wait "$flight_relay_pid" 2>/dev/null || true
+flight_relay_pid=
+printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s\n' \
+    "$(date --iso-8601=seconds)" "$status" "$([ -e "$logout_request" ] && printf yes || printf no)" \
+    >>"$flight_log"
 if [ -e "$logout_request" ]; then
     status=0
 else

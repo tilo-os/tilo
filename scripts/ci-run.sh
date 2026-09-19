@@ -36,12 +36,18 @@ trap cleanup EXIT
 
 echo "==> ${label}: $*"
 start=$(date +%s)
+progress_script="$(dirname "${BASH_SOURCE[0]}")/../tools/ci_process_progress.py"
 # Forgejo's runner terminates a step after 15 minutes without output. Cargo can
 # legitimately be silent that long while linking a large workspace target, so
 # emit one compact progress line per minute until the command exits.
 (
     while sleep 60; do
         echo "==> ${label}: still running ($(( $(date +%s) - start ))s)"
+        # A wrapper heartbeat alone cannot distinguish work from a stuck child.
+        # Numeric descendant CPU/RSS/I/O counters let successive receipts show
+        # progress without exposing process arguments or environment secrets.
+        timeout 5s python3 "$progress_script" --root-pid "$$" 2>/dev/null ||
+            echo 'CI_PROCESS_PROGRESS=unavailable'
     done
 ) &
 heartbeat_pid=$!

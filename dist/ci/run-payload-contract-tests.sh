@@ -25,6 +25,7 @@ if sed -n '/^fedora-44)/,/^    ;;/p' "$package_job" | grep -Eq '\bgit[[:space:]]
 fi
 
 "$repo_root/dist/session/tests/host-session-lifecycle.sh"
+python3 "$repo_root/dist/session/tests/flight-recorder.py"
 "$repo_root/dist/session/tests/private-dbus-handoff.sh"
 "$repo_root/dist/session/tests/private-user-manager-handoff.sh"
 "$repo_root/dist/rpm/test-signing-contract.sh"
@@ -61,6 +62,7 @@ for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" \
 done
 install -m755 "$repo_root/dist/session/tilo-session" "$fhs/usr/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$fhs/usr/libexec/tilo-session-runner"
+install -m755 "$repo_root/dist/session/tilo-flight-recorder.py" "$fhs/usr/libexec/tilo-flight-recorder"
 install -m755 "$repo_root/dist/session/tilo-session-dev" "$fhs/usr/libexec/tilo-session-dev"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$fhs/usr/share/wayland-sessions/tilo.desktop"
 install -m644 "$repo_root/dist/session/tilo-dev.desktop" "$fhs/usr/share/wayland-sessions/tilo-dev.desktop"
@@ -89,6 +91,7 @@ for target in "$nix/bin/tilo-shell" "$nix/bin/tilo-launcher" \
 done
 install -m755 "$repo_root/dist/session/tilo-session" "$nix/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$nix/libexec/tilo-session-runner"
+install -m755 "$repo_root/dist/session/tilo-flight-recorder.py" "$nix/libexec/tilo-flight-recorder"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$nix/share/wayland-sessions/tilo.desktop"
 install -m644 "$repo_root/os/etc/pam.d/tilo-unlock" "$nix/etc/pam.d/tilo-unlock"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" \
@@ -106,6 +109,7 @@ sed -i \
     -e 's#SYSTEMCTL=/usr/bin/systemctl#SYSTEMCTL=/nix/store/fixture-systemd/bin/systemctl#' \
     -e 's#SYSTEMD_CAT=/usr/bin/systemd-cat#SYSTEMD_CAT=/nix/store/fixture-systemd/bin/systemd-cat#' \
     -e 's#DBUS_UPDATE=/usr/bin/dbus-update-activation-environment#DBUS_UPDATE=/nix/store/fixture-dbus/bin/dbus-update-activation-environment#' \
+    -e "s#FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder#FLIGHT_RECORDER=$nix/libexec/tilo-flight-recorder#" \
     "$nix/libexec/tilo-session-runner"
 sed -i \
     -e "s#Exec=/usr/libexec/tilo-session#Exec=$nix/libexec/tilo-session#" \
