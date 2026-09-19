@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 
 use crate::model::{RelationKind, RelationRef};
 use crate::session::Session;
@@ -17,6 +17,9 @@ use ui::theme::Theme;
 
 const ROW_H: f64 = 24.0;
 const INDENT: f64 = 14.0;
+/// Height of the "SCHEMA" heading band above the first row; paint,
+/// hit-testing and the visible-row budget all use this one value.
+const HEADER_H: f64 = 26.0;
 
 /// What a click in the tree resolved to.
 #[derive(Clone, Debug)]
@@ -54,7 +57,14 @@ pub struct SchemaTree {
     selected: Option<RelationRef>,
     /// Rows produced by the last `draw`, used for hit-testing.
     rows: Vec<Row>,
+    /// Row pitch and header band measured at the top of the last `draw`
+    /// (`ROW_H` / `HEADER_H` at 1×), read by paint, `visible_rows` and `hit`.
+    row_h: f64,
+    header_h: f64,
 }
+
+/// The widest row text: table/schema names at 12.5 px (a 15.6 px line).
+const NAME_FONT: f32 = 12.5;
 
 impl Default for SchemaTree {
     fn default() -> Self {
@@ -74,7 +84,28 @@ impl SchemaTree {
             expanded_tables: HashSet::new(),
             selected: None,
             rows: Vec::new(),
+            row_h: ROW_H,
+            header_h: HEADER_H,
         }
+    }
+
+    /// Re-measure the row pitch and header band with the renderer this draw
+    /// paints with, so 2× text gets 2× rows instead of overprinting 24 px.
+    fn measure_bands(&mut self, tr: &mut TextRenderer) {
+        // 1×: a 12.5 px name measures 15.6 px, so 4 px of padding either side
+        // stays inside the 24 px row; the 10 px "SCHEMA" label (12.5 px) with
+        // 6 px either side stays inside the 26 px header.
+        let name_h = f64::from(tr.measure("Ag", NAME_FONT, None).1);
+        let header_label_h = f64::from(tr.measure("Ag", 10.0, None).1);
+        self.row_h = (name_h + 2.0 * 4.0).max(ROW_H);
+        self.header_h = (header_label_h + 2.0 * 6.0).max(HEADER_H);
+    }
+
+    /// Top-of-line y that centres `s` at `size` inside the row starting at `y`
+    /// — replaces the per-site `y + 4/5/6` nudges, which only fit 1× text.
+    fn text_top(&self, tr: &mut TextRenderer, s: &str, size: f32, y: f64) -> f64 {
+        let (_, lh) = tr.measure(s, size, None);
+        y + (self.row_h - f64::from(lh)) / 2.0
     }
 
     pub fn set_rect(&mut self, rect: Rect) {
@@ -120,7 +151,7 @@ impl SchemaTree {
     }
 
     fn visible_rows(&self) -> usize {
-        (((self.rect.height() - 30.0) / ROW_H).floor()).max(0.0) as usize
+        (((self.rect.height() - self.header_h) / self.row_h).floor()).max(0.0) as usize
     }
 
     /// Build the flattened row list from the current schema + expansion
@@ -169,11 +200,11 @@ impl SchemaTree {
         if !self.rect.contains(p) {
             return None;
         }
-        let body_top = self.rect.y0 + 26.0;
+        let body_top = self.rect.y0 + self.header_h;
         if p.y < body_top {
             return None;
         }
-        let rel = ((p.y - body_top) / ROW_H).floor() as usize;
+        let rel = ((p.y - body_top) / self.row_h).floor() as usize;
         let idx = self.scroll + rel;
         match self.rows.get(idx)? {
             Row::Schema { name } => Some(TreeClick::ToggleSchema(name.clone())),
@@ -210,27 +241,29 @@ impl SchemaTree {
         session: &Session,
     ) {
         let r = self.rect;
+        self.measure_bands(tr);
 
-        // Section header.
+        // Section header, centred on the measured header band.
+        let (_, hh) = tr.measure("SCHEMA", 10.0, None);
         tr.draw_text(
             scene,
             "SCHEMA",
             10.0,
             theme.text_dim,
-            t * Affine::translate((r.x0 + 14.0, r.y0 + 6.0)),
+            t * Affine::translate((r.x0 + 14.0, r.y0 + (self.header_h - f64::from(hh)) / 2.0)),
             None,
         );
 
         // Rebuild rows each frame (cheap; schema is small).
         self.rows = self.build_rows(session);
 
-        let body_top = r.y0 + 26.0;
+        let body_top = r.y0 + self.header_h;
         let vis = self.visible_rows();
 
         for vi in 0..vis {
             let idx = self.scroll + vi;
             let Some(row) = self.rows.get(idx) else { break };
-            let y = body_top + vi as f64 * ROW_H;
+            let y = body_top + vi as f64 * self.row_h;
             match row {
                 Row::Schema { name } => {
                     self.draw_schema_row(scene, t, tr, theme, session, name, r, y);
@@ -267,32 +300,35 @@ impl SchemaTree {
     ) {
         let open = self.expanded_schemas.contains(name);
         let tri = if open { "▾" } else { "▸" };
+        let tri_y = self.text_top(tr, tri, 11.0, y);
         tr.draw_text(
             scene,
             tri,
             11.0,
             theme.text_dim,
-            t * Affine::translate((r.x0 + 8.0, y + 5.0)),
+            t * Affine::translate((r.x0 + 8.0, tri_y)),
             None,
         );
+        let name_y = self.text_top(tr, name, NAME_FONT, y);
         tr.draw_text(
             scene,
             name,
-            12.5,
+            NAME_FONT,
             theme.text_primary,
-            t * Affine::translate((r.x0 + 24.0, y + 4.0)),
+            t * Affine::translate((r.x0 + 24.0, name_y)),
             None,
         );
         // Table count.
         if let Some(s) = session.schema.schemas.iter().find(|s| s.name == *name) {
             let cnt = format!("{}", s.tables.len());
             let (cw, _) = tr.measure(&cnt, 11.0, None);
+            let cnt_y = self.text_top(tr, &cnt, 11.0, y);
             tr.draw_text(
                 scene,
                 &cnt,
                 11.0,
                 theme.text_dim,
-                t * Affine::translate((r.x1 - f64::from(cw) - 12.0, y + 5.0)),
+                t * Affine::translate((r.x1 - f64::from(cw) - 12.0, cnt_y)),
                 None,
             );
         }
@@ -315,7 +351,7 @@ impl SchemaTree {
         y: f64,
     ) {
         let p = theme.db();
-        let row_rect = Rect::new(r.x0 + 4.0, y, r.x1 - 4.0, y + ROW_H);
+        let row_rect = Rect::new(r.x0 + 4.0, y, r.x1 - 4.0, y + self.row_h);
         let hover = row_rect.contains(self.cursor);
         let relation = RelationRef {
             schema: schema.to_string(),
@@ -343,12 +379,13 @@ impl SchemaTree {
         let tri = if open { "▾" } else { "▸" };
         let info = session.schema.find_relation(schema, name);
         let is_view = info.is_some_and(|t| t.kind == RelationKind::View);
+        let tri_y = self.text_top(tr, tri, 10.0, y);
         tr.draw_text(
             scene,
             tri,
             10.0,
             theme.text_dim,
-            t * Affine::translate((r.x0 + INDENT + 4.0, y + 6.0)),
+            t * Affine::translate((r.x0 + INDENT + 4.0, tri_y)),
             None,
         );
         // Table/view glyph.
@@ -358,21 +395,26 @@ impl SchemaTree {
         } else {
             theme.accent_primary
         };
+        let glyph_y = self.text_top(tr, glyph, 12.0, y);
         tr.draw_text(
             scene,
             glyph,
             12.0,
             gcolor,
-            t * Affine::translate((r.x0 + INDENT + 18.0, y + 4.0)),
+            t * Affine::translate((r.x0 + INDENT + 18.0, glyph_y)),
             None,
         );
+        // Elide rather than wrap: a wrapped name would paint into the next row.
+        let name_max = (r.width() - INDENT - 80.0).max(24.0) as f32;
+        let name = tr.elide_to_width(name, NAME_FONT, name_max);
+        let name_y = self.text_top(tr, &name, NAME_FONT, y);
         tr.draw_text(
             scene,
-            name,
-            12.5,
+            &name,
+            NAME_FONT,
             theme.text_primary,
-            t * Affine::translate((r.x0 + INDENT + 36.0, y + 4.0)),
-            Some((r.width() - INDENT - 80.0) as f32),
+            t * Affine::translate((r.x0 + INDENT + 36.0, name_y)),
+            None,
         );
         // Row count badge.
         if let Some(info) = info
@@ -380,12 +422,13 @@ impl SchemaTree {
         {
             let badge = format!("{rc}");
             let (bw, _) = tr.measure(&badge, 10.5, None);
+            let badge_y = self.text_top(tr, &badge, 10.5, y);
             tr.draw_text(
                 scene,
                 &badge,
                 10.5,
                 theme.text_dim,
-                t * Affine::translate((r.x1 - f64::from(bw) - 14.0, y + 5.0)),
+                t * Affine::translate((r.x1 - f64::from(bw) - 14.0, badge_y)),
                 None,
             );
         }
@@ -410,7 +453,7 @@ impl SchemaTree {
         y: f64,
     ) {
         let p = theme.db();
-        let row_rect = Rect::new(r.x0 + 4.0, y, r.x1 - 4.0, y + ROW_H);
+        let row_rect = Rect::new(r.x0 + 4.0, y, r.x1 - 4.0, y + self.row_h);
         let hover = row_rect.contains(self.cursor);
         if hover {
             scene.fill(
@@ -428,30 +471,37 @@ impl SchemaTree {
                 (theme.type_color(c), c)
             });
 
-        // Type icon chip.
-        let chip = Rect::new(
-            r.x0 + INDENT * 2.0 + 6.0,
-            y + 4.0,
-            r.x0 + INDENT * 2.0 + 22.0,
-            y + 20.0,
-        )
-        .to_rounded_rect(4.0);
+        // Type icon chip (one `s4` square), centred on the row; its glyph
+        // centred on the chip.
+        let chip_side = f64::from(theme.tokens.spacing.s4);
+        let chip_y0 = y + (self.row_h - chip_side) / 2.0;
+        let chip_x0 = r.x0 + INDENT * 2.0 + 6.0;
+        let chip = Rect::new(chip_x0, chip_y0, chip_x0 + chip_side, chip_y0 + chip_side)
+            .to_rounded_rect(4.0);
         scene.fill(Fill::NonZero, t, icon_color, None, &chip);
+        let (iw, ih) = tr.measure(icon, 10.0, None);
         tr.draw_text(
             scene,
             icon,
             10.0,
-            Color::from_rgb8(20, 20, 20),
-            t * Affine::translate((r.x0 + INDENT * 2.0 + 10.0, y + 5.0)),
+            theme.tokens.colors.on_surface(icon_color).ink,
+            t * Affine::translate((
+                chip_x0 + (chip_side - f64::from(iw)) / 2.0,
+                chip_y0 + (chip_side - f64::from(ih)) / 2.0,
+            )),
             None,
         );
+        // Elide rather than wrap: a wrapped column would paint into the next row.
+        let text_max = (r.width() - INDENT * 2.0 - 40.0).max(24.0) as f32;
+        let text = tr.elide_to_width(text, 11.5, text_max);
+        let text_y = self.text_top(tr, &text, 11.5, y);
         tr.draw_text(
             scene,
-            text,
+            &text,
             11.5,
             theme.text_dim,
-            t * Affine::translate((r.x0 + INDENT * 2.0 + 30.0, y + 5.0)),
-            Some((r.width() - INDENT * 2.0 - 40.0) as f32),
+            t * Affine::translate((r.x0 + INDENT * 2.0 + 30.0, text_y)),
+            None,
         );
     }
 

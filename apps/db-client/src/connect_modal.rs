@@ -11,7 +11,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -510,38 +510,58 @@ impl ConnectModal {
         theme: &Theme,
         root: Rect,
     ) {
-        // Scrim.
+        // Scrim: the theme's own dimming tier.
         scene.fill(
             Fill::NonZero,
             t,
-            Color::from_rgba8(0, 0, 0, 150),
+            theme.tokens.colors.surfaces.scrim,
             None,
             &root,
         );
 
         let pw = 460.0;
-        let ph = if self.engine == Engine::Sqlite {
-            320.0
+        // The sheet is as tall as its content (title band, engine selector,
+        // 56 px per field row, the password note, the action row), so the
+        // actions sit one `s6` group step under the last field instead of
+        // floating at the bottom of a fixed-height panel (HIG §7b).
+        let sp = &theme.tokens.spacing;
+        let field_rows = if self.engine == Engine::Sqlite {
+            2.0
         } else {
-            512.0
+            4.0
         };
+        let note_h = if self.engine == Engine::Sqlite {
+            0.0
+        } else {
+            f64::from(sp.s6)
+        };
+        let ph = 20.0
+            + 36.0
+            + 48.0
+            + field_rows * 56.0
+            + note_h
+            + f64::from(sp.s6)
+            + 32.0
+            + f64::from(sp.s4);
         let px = root.x0 + (root.width() - pw) / 2.0;
         let py = root.y0 + (root.height() - ph) / 2.0;
         let panel = Rect::new(px, py, px + pw, py + ph);
         self.panel = panel;
+        // A floating dialog is a Panel: the shell's panel ground and its
+        // derived border, so the sheet has an edge on the dark preset too.
         scene.fill(
             Fill::NonZero,
             t,
-            theme.bg_primary,
+            ui::chrome::panel_ground(theme),
             None,
             &panel.to_rounded_rect(12.0),
         );
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            theme.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &panel.to_rounded_rect(12.0),
+            &ui::surface::edge_outline(panel, 12.0),
         );
 
         let mut y = py + 20.0;
@@ -574,7 +594,10 @@ impl ConnectModal {
     }
 
     /// Engine selector segmented control. Returns the Y position beneath it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "engine selector painting shares the render context and the panel origin, width and row position"
+    )]
     fn draw_engine_selector(
         &mut self,
         scene: &mut Scene,
@@ -600,18 +623,13 @@ impl ConnectModal {
             } else {
                 theme.bg_app
             };
-            scene.fill(Fill::NonZero, t, bg, None, &seg.to_rounded_rect(6.0));
-            if !active {
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    t,
-                    theme.border_standard,
-                    None,
-                    &seg.to_rounded_rect(6.0),
-                );
+            if active {
+                scene.fill(Fill::NonZero, t, bg, None, &seg.to_rounded_rect(6.0));
+            } else {
+                ui::surface::card(scene, t, seg, 6.0, bg);
             }
             let fg = if active {
-                Color::WHITE
+                theme.tokens.colors.on_surface(theme.accent_primary).ink
             } else {
                 theme.text_primary
             };
@@ -631,7 +649,10 @@ impl ConnectModal {
 
     /// The engine-dependent field set (`SQLite` file path, or the network
     /// host/port/db/user/password rows). Returns the Y position beneath it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "connection field painting shares the render context and panel geometry across engine-specific rows"
+    )]
     fn draw_fields(
         &mut self,
         scene: &mut Scene,
@@ -822,25 +843,26 @@ impl ConnectModal {
         field: Field,
     ) {
         let focused = self.focus == Some(field);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            theme.bg_app,
-            None,
-            &r.to_rounded_rect(6.0),
-        );
-        let border = if focused {
-            theme.border_focus
+        if focused {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                theme.bg_app,
+                None,
+                &r.to_rounded_rect(6.0),
+            );
+            scene.stroke(
+                &Stroke::new(1.5),
+                t,
+                theme.border_focus,
+                None,
+                &r.to_rounded_rect(6.0),
+            );
         } else {
-            theme.border_standard
-        };
-        scene.stroke(
-            &Stroke::new(if focused { 1.5 } else { 1.0 }),
-            t,
-            border,
-            None,
-            &r.to_rounded_rect(6.0),
-        );
+            // Rest: the field's derived edge (a declared border vanished on
+            // the dark panel ground).
+            ui::surface::card(scene, t, r, 6.0, theme.bg_app);
+        }
         // The shared plain-chrome input paints text, selection and caret. Its
         // secret mode renders one bullet per character and keeps the value out
         // of accessibility and IME surrounding-text surfaces. Explicit user

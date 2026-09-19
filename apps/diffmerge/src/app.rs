@@ -35,7 +35,20 @@ use crate::diff_view::DiffView;
 use crate::merge_view::MergeView;
 use crate::samples;
 
+/// Minimum toolbar band; the measured control height plus its vertical
+/// breathing room wins when the text scale makes the labels taller.
 const TOOLBAR_H: f64 = 48.0;
+/// Minimum toolbar control height.
+const TOOLBAR_CONTROL_H: f64 = 28.0;
+/// Text sizes the toolbar controls paint with (`SegmentedFace` default and the
+/// explicit `ButtonFace::text_size`); the measurements below use the same.
+const TOOLBAR_SEGMENT_FONT: f32 = 13.0;
+const TOOLBAR_BUTTON_FONT: f32 = 12.5;
+/// Horizontal label padding inside a segment / button, wide and compact.
+const SEGMENT_PAD_X: f64 = 11.0;
+const SEGMENT_PAD_X_COMPACT: f64 = 9.0;
+const BUTTON_PAD_X: f64 = 10.0;
+const BUTTON_PAD_X_COMPACT: f64 = 8.0;
 
 fn diff_open_request() -> PickRequest {
     PickRequest::open("Open a file to compare", "Open")
@@ -138,6 +151,9 @@ pub struct DiffMergeApp {
     /// semantic action, not a draw-order index, so responsive layout never
     /// moves focus to a different operation.
     toolbar_focus: Option<Action>,
+    /// Measured toolbar band height from the last draw (see
+    /// [`Self::measure_toolbar`]); the content rect starts below it.
+    toolbar_h: f64,
 }
 
 impl DiffMergeApp {
@@ -231,6 +247,7 @@ impl DiffMergeApp {
             last_status: String::new(),
             shots_status: false,
             toolbar_focus: None,
+            toolbar_h: TOOLBAR_H,
         }
     }
 
@@ -246,10 +263,34 @@ impl DiffMergeApp {
         // transient bubble (see `draw_status_bubble`), not a bottom strip.
         Rect::new(
             self.rect.x0,
-            self.rect.y0 + TOOLBAR_H,
+            self.rect.y0 + self.toolbar_h,
             self.rect.x1,
             self.rect.y1,
         )
+    }
+
+    /// Give both views the content rect. Called from `apply_layout` and again
+    /// from `draw` when the measured toolbar height changed, so the views are
+    /// never painted a frame behind the band above them.
+    fn place_views(&mut self) {
+        let content = self.content_rect();
+        self.diff.place(content);
+        self.merge.place(content);
+    }
+
+    /// `(control_h, toolbar_h)` measured from the label sizes the controls
+    /// paint with, floored at the design minimums.
+    fn measure_toolbar(tr: &mut TextRenderer) -> (f64, f64) {
+        let seg_h = f64::from(
+            tr.measure_weighted("Ag", TOOLBAR_SEGMENT_FONT, None, TextWeight::Medium)
+                .1,
+        );
+        let btn_h = f64::from(
+            tr.measure_weighted("Ag", TOOLBAR_BUTTON_FONT, None, TextWeight::Regular)
+                .1,
+        );
+        let control_h = (seg_h.max(btn_h) + 10.0).max(TOOLBAR_CONTROL_H);
+        (control_h, (control_h + 20.0).max(TOOLBAR_H))
     }
 
     fn act(&mut self, action: Action) {
@@ -321,12 +362,17 @@ impl DiffMergeApp {
     /// updated by the chip handler for immediate feedback and is reconciled from
     /// the document on the next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::DiffmergeAction) {
+        self.merge.reconcile_content(doc);
+        if !self.merge.context_matches(doc) {
+            return;
+        }
         self.actions.dispatch_with_context(
             doc,
             crate::actions::DIFFMERGE_ACTION_TYPE,
             action,
             tilo_actions::ActionContext::for_action("org.tilo.Diff", "Diff", action),
         );
+        self.merge.acknowledge_content(doc);
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -339,11 +385,20 @@ impl DiffMergeApp {
     /// The presentation context Ctrl+K needs to build the merge resource tree.
     /// `None` unless a three-way merge with at least one change hunk is the
     /// active mode — the diff mode is read-only and mutates nothing.
-    pub(crate) fn merge_resource_ctx(&self) -> Option<crate::actions::MergeResourceCtx> {
+    pub(crate) fn merge_resource_ctx(
+        &self,
+        doc: &AutoCommit,
+    ) -> Option<crate::actions::MergeResourceCtx> {
         if self.mode != Mode::Merge {
             return None;
         }
-        self.merge.resource_ctx()
+        if self.merge.context_matches(doc) {
+            return self.merge.resource_ctx();
+        }
+        crate::doc::MergeDoc::has_merged(doc).then(|| crate::actions::MergeResourceCtx {
+            title: "Saved merge output · original inputs unavailable".into(),
+            model: crate::model::MergeModel::default(),
+        })
     }
 
     pub(crate) fn diff_resource_ctx(&self) -> Option<crate::actions::DiffResourceCtx> {
@@ -526,24 +581,26 @@ impl DiffMergeApp {
         // both modes and every action reachable, but trade desktop prose for
         // familiar short labels so controls never paint over each other.
         let compact = r.width() < 640.0;
-        let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
+        // Every control is sized from its measured label with the exact style
+        // it is painted in (`len * 7.x` estimates clipped longer locales and
+        // fell apart at 200% text), and the band grows with the control height.
+        let (seg_h, toolbar_h) = Self::measure_toolbar(tr);
+        self.toolbar_h = toolbar_h;
+        let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + toolbar_h);
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &bar);
+        // The bar's bottom rule is derived against the bar (HIG §9.5).
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
-            &Line::new(
-                Point::new(r.x0, r.y0 + TOOLBAR_H),
-                Point::new(r.x1, r.y0 + TOOLBAR_H),
-            ),
+            &Line::new(Point::new(r.x0, bar.y1), Point::new(r.x1, bar.y1)),
         );
 
         // Mode segmented control (shared pill-style segmented control). The OS
         // titlebar carries the app name, so no self-drawn wordmark here — the
         // mode control claims the reclaimed left slot.
-        let seg_y = r.y0 + 10.0;
-        let seg_h = 28.0;
+        let seg_y = r.y0 + (toolbar_h - seg_h) / 2.0;
         let mode_labels: [&str; 2] = if compact {
             ["Diff", "Merge"]
         } else {
@@ -552,10 +609,16 @@ impl DiffMergeApp {
         let mode_actions = [Action::ModeDiff, Action::ModeMerge];
         let selected = usize::from(self.mode == Mode::Merge);
         let mut mode_rects: Vec<Rect> = Vec::with_capacity(mode_labels.len());
+        let seg_pad = if compact {
+            SEGMENT_PAD_X_COMPACT
+        } else {
+            SEGMENT_PAD_X
+        };
         let mut x = r.x0 + if compact { 8.0 } else { 16.0 };
         for label in mode_labels {
-            let w = label.len() as f64 * if compact { 7.0 } else { 7.4 }
-                + if compact { 18.0 } else { 22.0 };
+            let (lw, _) =
+                tr.measure_weighted(label, TOOLBAR_SEGMENT_FONT, None, TextWeight::Medium);
+            let w = f64::from(lw) + 2.0 * seg_pad;
             mode_rects.push(Rect::new(x, seg_y, x + w, seg_y + seg_h));
             x += w + if compact { 4.0 } else { 6.0 };
         }
@@ -613,9 +676,15 @@ impl DiffMergeApp {
                 ("‹ Prev", Action::PrevChange),
             ]
         };
+        let btn_pad = if compact {
+            BUTTON_PAD_X_COMPACT
+        } else {
+            BUTTON_PAD_X
+        };
         for (label, action) in actions {
-            let w = label.len() as f64 * if compact { 6.8 } else { 7.2 }
-                + if compact { 16.0 } else { 20.0 };
+            let (lw, _) =
+                tr.measure_weighted(label, TOOLBAR_BUTTON_FONT, None, TextWeight::Regular);
+            let w = f64::from(lw) + 2.0 * btn_pad;
             let btn = Rect::new(rx - w, seg_y, rx, seg_y + seg_h);
             Button::paint(
                 scene,
@@ -624,7 +693,7 @@ impl DiffMergeApp {
                 theme,
                 &ButtonFace::new(btn, label)
                     .radius(6.0)
-                    .text_size(12.5)
+                    .text_size(TOOLBAR_BUTTON_FONT)
                     .weight(TextWeight::Regular)
                     .focused(self.toolbar_focus == Some(*action))
                     .hovered(btn.contains(self.cursor)),
@@ -923,6 +992,30 @@ impl Default for DiffMergeApp {
 }
 
 impl Widget for DiffMergeApp {
+    fn document_action_applied(
+        &mut self,
+        action: &tilo_actions::EncodedAction,
+        before: &[ChangeHash],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) {
+        if action.type_id == crate::actions::DIFFMERGE_ACTION_TYPE
+            && doc
+                .clone()
+                .fork_at(before)
+                .ok()
+                .is_some_and(|prior| self.merge.context_matches(&prior))
+        {
+            self.merge.acknowledge_content(doc);
+        } else {
+            self.merge.reconcile_content(doc);
+        }
+    }
+
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::DIFFMERGE_OPERATION_TYPE]
     }
@@ -1133,22 +1226,11 @@ impl Widget for DiffMergeApp {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        // Drive the active view to the content rect directly so mode switches
-        // don't require a taffy rebuild to position correctly.
-        let content = self.content_rect();
-        let new_origin = Point::new(content.x0, content.y0);
-        match self.mode {
-            Mode::Diff => {
-                if let Some(n) = self.diff_node {
-                    self.diff.apply_layout(taffy, n, new_origin);
-                }
-            }
-            Mode::Merge => {
-                if let Some(n) = self.merge_node {
-                    self.merge.apply_layout(taffy, n, new_origin);
-                }
-            }
-        }
+        // Drive both views to the content rect directly so mode switches
+        // don't require a taffy rebuild to position correctly, and so the
+        // views end at the window bottom rather than a toolbar's height below
+        // it (the taffy content node is the full root height).
+        self.place_views();
     }
 
     fn draw(
@@ -1161,6 +1243,14 @@ impl Widget for DiffMergeApp {
     ) {
         let c = &theme.tokens.colors;
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
+
+        // Measure the toolbar band first so the views are placed below the
+        // height this frame will actually paint.
+        let (_, toolbar_h) = Self::measure_toolbar(tr);
+        if toolbar_h != self.toolbar_h {
+            self.toolbar_h = toolbar_h;
+            self.place_views();
+        }
 
         match self.mode {
             Mode::Diff => self.diff.draw(scene, transform, tr, theme, presence),
@@ -1184,6 +1274,7 @@ impl Widget for DiffMergeApp {
         _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        self.merge.reconcile_content(state);
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
@@ -1355,6 +1446,7 @@ impl Widget for DiffMergeApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        self.merge.reconcile_content(state);
         if !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus) {
             return false;
         }
@@ -1776,11 +1868,19 @@ mod tests {
     /// Run the real five-pass frame so the merge panel lays out and draws,
     /// which is what populates the resolution-chip hit rects.
     fn draw_merge_frame(app: &mut DiffMergeApp, viewport: (f32, f32)) {
+        draw_frame_scaled(app, viewport, 1.0);
+    }
+
+    /// Lay out and paint one frame at `text_scale`, the way the launcher's
+    /// `--text-scale` does: the theme's type tokens and the renderer's scale
+    /// move together.
+    fn draw_frame_scaled(app: &mut DiffMergeApp, viewport: (f32, f32), text_scale: f32) {
         use std::collections::HashMap;
         let (w, h) = viewport;
-        let theme = Theme::dark();
+        let theme = Theme::dark().with_text_scale(text_scale);
         let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(text_scale);
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let child = app.build_layout(&mut taffy, &theme, &mut node_map);
@@ -1929,6 +2029,170 @@ mod tests {
         rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
         assert!(rects.iter().all(|rect| rect.x0 >= 0.0 && rect.x1 <= 390.0));
         assert!(rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0));
+    }
+
+    /// Every toolbar control is sized from its measured label and centred on
+    /// the measured bar, at 1× and at 200% text; the content starts below the
+    /// bar that was actually painted.
+    #[test]
+    fn toolbar_controls_fit_their_measured_labels_at_every_text_scale() {
+        let mut widths_at_1x: Vec<f64> = Vec::new();
+        for scale in [1.0f32, 2.0] {
+            let mut app = DiffMergeApp::new_demo();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            draw_frame_scaled(&mut app, (800.0, 700.0), scale);
+
+            assert_eq!(
+                app.tool_hits.len(),
+                6,
+                "{scale}x: two modes and four actions"
+            );
+            let mut rects: Vec<_> = app.tool_hits.iter().map(|hit| hit.rect).collect();
+            rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+            for rect in &rects {
+                assert!(
+                    rect.x0 >= 0.0 && rect.x1 <= 800.0,
+                    "{scale}x: control {rect:?} leaves the window"
+                );
+                assert!(
+                    (rect.center().y - app.toolbar_h / 2.0).abs() < 0.01,
+                    "{scale}x: control {rect:?} is off the bar's centre line"
+                );
+                assert!(
+                    rect.y1 <= app.toolbar_h + 0.01,
+                    "{scale}x: control escapes the bar"
+                );
+            }
+            assert!(
+                rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0),
+                "{scale}x: toolbar controls overlap: {rects:?}"
+            );
+            let active = match app.mode {
+                Mode::Diff => app.diff.get_rect(),
+                Mode::Merge => app.merge.get_rect(),
+            };
+            assert!(
+                (active.y0 - app.toolbar_h).abs() < 0.01,
+                "{scale}x: content {active:?} does not start below the painted bar {}",
+                app.toolbar_h
+            );
+            assert!(
+                (active.y1 - 700.0).abs() < 0.01,
+                "{scale}x: content ends at the window"
+            );
+
+            let widths: Vec<f64> = app.tool_hits.iter().map(|hit| hit.rect.width()).collect();
+            if scale == 1.0 {
+                assert_eq!(app.toolbar_h, TOOLBAR_H, "1x keeps the design minimum");
+                widths_at_1x = widths;
+            } else {
+                assert!(app.toolbar_h > TOOLBAR_H, "200% text needs a taller bar");
+                for (wide, narrow) in widths.iter().zip(&widths_at_1x) {
+                    assert!(wide > narrow, "a scaled label needs a wider control");
+                }
+            }
+        }
+    }
+
+    /// Every resolution chip paints inside the pane that owns it, at 800 and
+    /// 1200 wide and at 200% text: chip widths are measured, and the long
+    /// "Take …" labels fall back to the short form when they cannot fit.
+    #[test]
+    fn merge_chips_stay_inside_their_pane() {
+        for (w, h, scale) in [
+            (800.0f32, 700.0f32, 1.0f32),
+            (1200.0, 800.0, 1.0),
+            (800.0, 900.0, 2.0),
+        ] {
+            let mut app = DiffMergeApp::new_demo();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            draw_frame_scaled(&mut app, (w, h), scale);
+            let pane = app.merge.get_rect();
+            let hits = app.merge.chip_hits();
+            assert!(
+                !hits.is_empty(),
+                "{w}x{h}@{scale}: the demo merge has chips"
+            );
+            let (_, _, chip_h) = app.merge.metrics_for_test();
+            let compact = pane.width() < 640.0;
+            let pane_x0 = if compact {
+                pane.x0
+            } else {
+                pane.x0 + pane.width() * 2.0 / 3.0
+            };
+            for (rect, hunk, _) in &hits {
+                assert!(
+                    rect.x0 >= pane_x0 - 0.01,
+                    "{w}x{h}@{scale}: chip for hunk {hunk} {rect:?} starts before its pane"
+                );
+                assert!(
+                    rect.x1 <= pane.x1 - 8.0 + 0.01,
+                    "{w}x{h}@{scale}: chip for hunk {hunk} {rect:?} runs past the pane edge"
+                );
+                assert!((rect.height() - chip_h).abs() < 0.01);
+            }
+        }
+    }
+
+    /// Row pitch, header band and chip band follow the renderer's measured
+    /// line height, so 200% text does not overprint 19px rows.
+    #[test]
+    fn merge_rows_follow_the_scaled_line_height() {
+        let mut one = DiffMergeApp::new_demo();
+        let mut state = ui::State::new();
+        one.sync(&mut state.doc, &state.root);
+        draw_frame_scaled(&mut one, (1200.0, 800.0), 1.0);
+        let (row_1, header_1, chip_1) = one.merge.metrics_for_test();
+        let content_1 = one.merge.content_height_for_test();
+
+        let mut two = DiffMergeApp::new_demo();
+        let mut state = ui::State::new();
+        two.sync(&mut state.doc, &state.root);
+        draw_frame_scaled(&mut two, (1200.0, 800.0), 2.0);
+        let (row_2, header_2, chip_2) = two.merge.metrics_for_test();
+        let content_2 = two.merge.content_height_for_test();
+
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let line_2 = f64::from(tr.measure("Ag", 12.5, None).1);
+        assert!(
+            row_2 >= line_2,
+            "row pitch {row_2} shorter than the 2x line {line_2}"
+        );
+        assert!(row_2 > row_1 * 1.5 && header_2 > header_1 && chip_2 > chip_1);
+        assert!(content_2 > content_1 * 1.5, "spans grow with the rows");
+    }
+
+    /// The two-way diff shares the same contract: rows, header and the
+    /// line-number gutter grow with the measured text.
+    #[test]
+    fn diff_rows_and_gutter_follow_the_scaled_line_height() {
+        let mut one = DiffMergeApp::new_demo();
+        one.act(Action::ModeDiff);
+        let mut state = ui::State::new();
+        one.sync(&mut state.doc, &state.root);
+        draw_frame_scaled(&mut one, (1200.0, 800.0), 1.0);
+        let (row_1, header_1, gutter_1) = one.diff.metrics_for_test();
+
+        let mut two = DiffMergeApp::new_demo();
+        two.act(Action::ModeDiff);
+        let mut state = ui::State::new();
+        two.sync(&mut state.doc, &state.root);
+        draw_frame_scaled(&mut two, (1200.0, 800.0), 2.0);
+        let (row_2, header_2, gutter_2) = two.diff.metrics_for_test();
+
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let line_2 = f64::from(tr.measure("Ag", 13.0, None).1);
+        let digits_2 = f64::from(tr.measure("0000", 12.0, None).0);
+        assert!(row_2 >= line_2 && row_2 > row_1 * 1.5);
+        assert!(header_2 > header_1);
+        assert!(
+            gutter_2 >= digits_2 + 16.0 && gutter_2 > gutter_1,
+            "gutter {gutter_2} cannot hold four 2x digits ({digits_2})"
+        );
     }
 
     /// Pointer, keyboard, and assistive activation all select the same compact
@@ -2322,6 +2586,50 @@ mod tests {
             crate::doc::MergeDoc::resolutions(&state.doc),
             vec![(hunk, "theirs".to_string())],
             "the pointer-driven resolution was recorded in the CRDT"
+        );
+    }
+}
+
+#[cfg(test)]
+mod history_input_tests {
+    use super::*;
+    use crate::doc::MergeDoc;
+    #[test]
+    fn restored_output_invalidates_queued_hunks_even_with_same_label_and_choices() {
+        let mut app = DiffMergeApp::new_demo();
+        app.mode = Mode::Merge;
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let hunk = app.merge.model().change_indices()[0];
+        app.merge.resolve(hunk, crate::actions::HunkChoice::Theirs);
+        let pending = app.merge.take_pending_action().unwrap();
+        MergeDoc::set_merged(
+            &mut doc,
+            "Restored output without matching original inputs\n",
+        );
+        let heads = doc.get_heads();
+        assert!(
+            Widget::resources(&app, &doc)
+                .iter()
+                .flat_map(|r| &r.children)
+                .all(|r| r.kind != "diffmerge.conflict")
+        );
+        app.perform_action(&mut doc, &pending);
+        assert_eq!(doc.get_heads(), heads);
+        assert_eq!(
+            MergeDoc::merged_text(&doc),
+            "Restored output without matching original inputs\n"
+        );
+        assert!(!app.perform_semantic_action(
+            &format!("diffmerge.merge.resolve:{hunk}:ours"),
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            MergeDoc::merged_text(&doc),
+            "Restored output without matching original inputs\n"
         );
     }
 }
