@@ -7162,9 +7162,13 @@ impl App {
     /// keystroke still finds it on disk.
     fn autosave_flush(&mut self) {
         if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
-            if let Err(error) = self.root.try_flush_owned_persistence().unwrap_or_else(|| {
-                Err("widget-owned persistence requires a checked flush hook".into())
-            }) {
+            if let Err(error) = self
+                .root_widget
+                .try_flush_owned_persistence()
+                .unwrap_or_else(|| {
+                    Err("widget-owned persistence requires a checked flush hook".into())
+                })
+            {
                 tracing::error!(%error, "widget-owned persistence failed during shutdown");
                 eprintln!("tilo: notebook save failed during shutdown: {error}");
             }
