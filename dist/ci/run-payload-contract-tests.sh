@@ -7,11 +7,18 @@ work=$(mktemp -d)
 cleanup() { rm -rf -- "$work"; }
 trap cleanup EXIT
 true_bin=$(type -P true)
+native_arch=$(uname -m)
+case "$native_arch" in
+    x86_64) package_arch=amd64; other_arch=arm64 ;;
+    aarch64) package_arch=arm64; other_arch=amd64 ;;
+    *) echo "unsupported fixture architecture: $native_arch" >&2; exit 1 ;;
+esac
 
 # Minimal distro images need not install Git merely to make the reusable OS
 # payload reproducible. The outer runner resolves both source values and passes
 # them through the packaging boundary.
 package_job="$repo_root/dist/ci/run-package-job.sh"
+python3 "$repo_root/dist/ci/tests/test_package_source_transfer.py"
 grep -Fq -- '--env SOURCE_DATE_EPOCH="$source_epoch"' "$package_job"
 grep -Fq -- '--env GITHUB_SHA="$source_revision"' "$package_job"
 test "$(grep -Fc 'source tools/ci/sccache.sh prepare-shell' "$package_job")" -eq 3
@@ -74,7 +81,82 @@ install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" \
 install -m644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target" \
     "$fhs/usr/lib/systemd/user/tilo-graphical-session.target"
 install -m644 "$repo_root/LICENSE" "$fhs/usr/share/licenses/tilo-session/LICENSE"
-TILO_EXPECT_ARCH=amd64 "$repo_root/dist/verify-payload.sh" "$fhs"
+TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs"
+if TILO_EXPECT_ARCH="$other_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+    echo "payload verifier accepted the other architecture's native binaries" >&2
+    exit 1
+fi
+# Keep dependency inspection fail-closed: an unavailable/failing inspector is
+# not evidence of a fully resolved payload. Exercise the production verifier
+# against real child processes, while retaining real ELF architecture checks.
+mkdir "$work/verifier-bin"
+cat > "$work/verifier-bin/ldd" <<'EOF'
+#!/usr/bin/env bash
+case "$TILO_TEST_LDD_MODE" in
+    error) echo 'fixture inspector failed' >&2; exit 7 ;;
+    unavailable) exec /nonexistent/tilo-test-dependency-inspector ;;
+    empty) exit 0 ;;
+    missing) echo 'libfixture.so => not found'; exit 0 ;;
+    missing-stderr) echo 'libfixture.so => not found' >&2; exit 0 ;;
+    *) exit 99 ;;
+esac
+EOF
+chmod +x "$work/verifier-bin/ldd"
+for mode in error unavailable empty missing missing-stderr; do
+    if PATH="$work/verifier-bin:$PATH" TILO_TEST_LDD_MODE="$mode" \
+        TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" \
+        >"$work/verifier-$mode.log" 2>&1; then
+        echo "payload verifier accepted $mode dependency inspection" >&2
+        exit 1
+    fi
+    case "$mode" in
+        error) grep -Fq 'fixture inspector failed' "$work/verifier-$mode.log" ;;
+        unavailable) grep -Fq 'dependency inspection failed' "$work/verifier-$mode.log" ;;
+        empty) grep -Fq 'empty dependency inspection' "$work/verifier-$mode.log" ;;
+        missing*) grep -Fq 'unresolved shared library' "$work/verifier-$mode.log" ;;
+    esac
+done
+# Both legitimate static forms bypass ldd only after real ELF inspection.
+# Build minimal native executables; a missing compiler/inspector fails this
+# contract rather than silently skipping an architecture's coverage.
+printf 'void _start(void) { for (;;) {} }\n' > "$work/static.c"
+for link_mode in -static -static-pie; do
+    cc -nostdlib "$link_mode" -Wl,-e,_start "$work/static.c" -o "$work/static"
+    for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" \
+                  "$fhs/usr/libexec/tilo-unlock-helper"; do
+        install -m755 "$work/static" "$target"
+    done
+    PATH="$work/verifier-bin:$PATH" TILO_TEST_LDD_MODE=error \
+        TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs"
+    if TILO_EXPECT_ARCH="$other_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+        echo "payload verifier accepted the other architecture's static binaries" >&2
+        exit 1
+    fi
+done
+cat > "$work/verifier-bin/readelf" <<'EOF'
+#!/usr/bin/env bash
+echo 'fixture ELF inspector failed' >&2
+exit 4
+EOF
+chmod +x "$work/verifier-bin/readelf"
+if PATH="$work/verifier-bin:$PATH" TILO_TEST_LDD_MODE=error \
+    TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" \
+    >"$work/verifier-readelf.log" 2>&1; then
+    echo "payload verifier accepted unobservable static ELF headers" >&2
+    exit 1
+fi
+grep -Fq 'ELF dependency inspection failed' "$work/verifier-readelf.log"
+# A shared object or relocatable object is not a static executable merely
+# because it has neither an interpreter nor shared-library dependencies.
+for object_mode in -shared -c; do
+    cc -nostdlib -fPIC "$object_mode" "$work/static.c" -o "$work/not-executable"
+    install -m755 "$work/not-executable" "$fhs/usr/bin/tilo-shell"
+    if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+        echo "payload verifier accepted $object_mode output as a static executable" >&2
+        exit 1
+    fi
+done
+install -m755 "$true_bin" "$fhs/usr/bin/tilo-shell"
 "$repo_root/dist/verify-devel-payload.sh" "$fhs"
 
 sed -i 's#^TryExec=.*#TryExec=/wrong#' "$fhs/usr/share/wayland-sessions/tilo-dev.desktop"
@@ -115,7 +197,11 @@ sed -i \
     -e "s#Exec=/usr/libexec/tilo-session#Exec=$nix/libexec/tilo-session#" \
     -e "s#TryExec=/usr/bin/tilo-shell#TryExec=$nix/bin/tilo-shell#" \
     "$nix/share/wayland-sessions/tilo.desktop"
-"$repo_root/dist/ci/verify-nix-result.sh" "$nix" amd64
+"$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$package_arch"
+if "$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$other_arch" >/dev/null 2>&1; then
+    echo "Nix verifier accepted the other architecture's native binaries" >&2
+    exit 1
+fi
 
 # The OS hand-off is deterministic and contains only the three native binaries
 # already install-tested by the distro package lane.
@@ -126,14 +212,14 @@ for binary in shell tilo-launcher tilo-unlock-helper; do
 done
 SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \
     "$repo_root/dist/desktop/package-os-payload.sh" \
-    "$payload_bin" x86_64 "$work/payload-a"
+    "$payload_bin" "$native_arch" "$work/payload-a"
 SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \
     "$repo_root/dist/desktop/package-os-payload.sh" \
-    "$payload_bin" x86_64 "$work/payload-b"
-cmp "$work/payload-a/tilo-desktop-os-x86_64.tar.gz" \
-    "$work/payload-b/tilo-desktop-os-x86_64.tar.gz"
+    "$payload_bin" "$native_arch" "$work/payload-b"
+cmp "$work/payload-a/tilo-desktop-os-$native_arch.tar.gz" \
+    "$work/payload-b/tilo-desktop-os-$native_arch.tar.gz"
 mkdir "$work/payload-unpacked"
-tar -xzf "$work/payload-a/tilo-desktop-os-x86_64.tar.gz" \
+tar -xzf "$work/payload-a/tilo-desktop-os-$native_arch.tar.gz" \
     -C "$work/payload-unpacked"
 (cd "$work/payload-unpacked" && sha256sum --check --strict SHA256SUMS)
 

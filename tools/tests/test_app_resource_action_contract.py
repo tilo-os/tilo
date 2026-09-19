@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "check_app_resource_action_contract.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "policy/check_app_resource_action_contract.py"
 SPEC = importlib.util.spec_from_file_location("check_app_resource_action_contract", SCRIPT)
 contract = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -314,9 +314,9 @@ class AppResourceActionContractTests(unittest.TestCase):
             " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
             "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
         )
-        tools = root / "tools"
-        tools.mkdir()
-        (tools / contract.BASELINE).write_text(
+        baseline = root / contract.BASELINE
+        baseline.parent.mkdir(parents=True)
+        baseline.write_text(
             '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
             encoding="utf-8",
         )
@@ -339,9 +339,9 @@ class AppResourceActionContractTests(unittest.TestCase):
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
             " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
         )
-        tools = root / "tools"
-        tools.mkdir()
-        (tools / contract.BASELINE).write_text(
+        baseline = root / contract.BASELINE
+        baseline.parent.mkdir(parents=True)
+        baseline.write_text(
             '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
             encoding="utf-8",
         )

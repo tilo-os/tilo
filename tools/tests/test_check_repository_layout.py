@@ -7,8 +7,8 @@ import tempfile
 import unittest
 
 
-MODULE_PATH = Path(__file__).parents[1] / "check_repository_layout.py"
-OPENSSL_RUNTIME_INVARIANT = MODULE_PATH.parents[1] / "os/tests/no_openssl_runtime.sh"
+MODULE_PATH = Path(__file__).parents[1] / "policy/check_repository_layout.py"
+OPENSSL_RUNTIME_INVARIANT = MODULE_PATH.parents[2] / "os/tests/no_openssl_runtime.sh"
 SPEC = importlib.util.spec_from_file_location("check_repository_layout", MODULE_PATH)
 assert SPEC and SPEC.loader
 checker = importlib.util.module_from_spec(SPEC)
