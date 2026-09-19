@@ -8,10 +8,10 @@ use qdoc::snapshot::{BlockView, NoteView};
 use std::collections::HashMap;
 use ui::richtext::{BaselineShift, FontFamily, RichSpan};
 
-type BlockRuns = (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>);
+pub(super) type BlockRuns = (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>);
 type ChangeDecoRanges = (Vec<(usize, usize)>, Vec<(usize, usize)>);
 
-fn char_has(index: usize, marks: &[MarkSpan], name: &str) -> bool {
+pub(super) fn char_has(index: usize, marks: &[MarkSpan], name: &str) -> bool {
     marks
         .iter()
         .any(|mark| mark.name == name && index >= mark.start && index < mark.end)
@@ -47,7 +47,7 @@ pub(super) fn char_font_family(index: usize, marks: &[MarkSpan]) -> Option<FontF
 
 const LINK_RGB: [u8; 3] = [0x1a, 0x56, 0xc4];
 
-fn char_color(index: usize, marks: &[MarkSpan]) -> Option<[u8; 3]> {
+pub(super) fn char_color(index: usize, marks: &[MarkSpan]) -> Option<[u8; 3]> {
     if char_has(index, marks, "link") {
         return Some(LINK_RGB);
     }
@@ -66,7 +66,7 @@ pub(super) fn char_highlight(index: usize, marks: &[MarkSpan]) -> Option<[u8; 3]
         .and_then(parse_hex_rgb)
 }
 
-fn char_baseline(index: usize, marks: &[MarkSpan]) -> BaselineShift {
+pub(super) fn char_baseline(index: usize, marks: &[MarkSpan]) -> BaselineShift {
     if char_has(index, marks, "super") {
         BaselineShift::Super
     } else if char_has(index, marks, "sub") {
@@ -155,12 +155,126 @@ fn build_runs(block: &BlockView, show_markup: bool) -> BlockRuns {
     (runs, underlines, decoration_ranges(block, "strike"))
 }
 
-#[cfg(test)]
 pub(super) fn block_runs(block: &BlockView) -> BlockRuns {
-    build_runs(block, false)
+    let chars: Vec<char> = block.text.chars().collect();
+    let len = chars.len();
+    // Run key: f32 size as bits so the tuple is comparable. Highlight (background)
+    // and super/subscript baseline join the key so a change in either splits runs.
+    let key = |i: usize| {
+        (
+            char_has(i, &block.marks, "strong"),
+            char_has(i, &block.marks, "em"),
+            char_font_size(i, &block.marks).map(f32::to_bits),
+            char_font_family(i, &block.marks),
+            char_color(i, &block.marks),
+            char_highlight(i, &block.marks),
+            char_baseline(i, &block.marks),
+        )
+    };
+    let mut runs = Vec::new();
+    for (i, j, k) in mark_style_segments(len, &block.marks, key) {
+        let (bold, italic, size_bits, family, color, background, baseline) = k;
+        runs.push(RichSpan {
+            text: chars.get(i..j).unwrap_or(&[]).iter().collect(),
+            bold,
+            italic,
+            size: size_bits.map(f32::from_bits),
+            family,
+            color,
+            background,
+            baseline,
+        });
+    }
+    if runs.is_empty() {
+        runs.push(RichSpan::new(""));
+    }
+    let deco = |name: &str| {
+        block
+            .marks
+            .iter()
+            .filter(|m| m.name == name)
+            .map(|m| {
+                (
+                    char_to_byte(&block.text, m.start),
+                    char_to_byte(&block.text, m.end),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    // Links render underlined as well as blue.
+    let mut underlines = deco("underline");
+    underlines.extend(deco("link"));
+    (runs, underlines, deco("strike"))
 }
 pub(super) fn block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRuns {
-    build_runs(block, show_markup)
+    if !show_markup {
+        return block_runs(block);
+    }
+    let chars: Vec<char> = block.text.chars().collect();
+    let len = chars.len();
+    // An `ins` run is green, a `del` run red.
+    let track_color = |i: usize| -> Option<[u8; 3]> {
+        if char_has(i, &block.marks, qdoc::schema::MARK_INS) {
+            Some(INSERTION_RGB)
+        } else if char_has(i, &block.marks, qdoc::schema::MARK_DEL) {
+            Some(DELETION_RGB)
+        } else {
+            None
+        }
+    };
+    // The run key now also folds in the tracked-change review colour, which
+    // overrides any explicit `color` mark over the same range (review colour
+    // wins for legibility).
+    let key = |i: usize| {
+        (
+            char_has(i, &block.marks, "strong"),
+            char_has(i, &block.marks, "em"),
+            char_font_size(i, &block.marks).map(f32::to_bits),
+            char_font_family(i, &block.marks),
+            track_color(i).or_else(|| char_color(i, &block.marks)),
+            char_highlight(i, &block.marks),
+            char_baseline(i, &block.marks),
+        )
+    };
+    let mut runs = Vec::new();
+    for (i, j, k) in mark_style_segments(len, &block.marks, key) {
+        let (bold, italic, size_bits, family, color, background, baseline) = k;
+        runs.push(RichSpan {
+            text: chars.get(i..j).unwrap_or(&[]).iter().collect(),
+            bold,
+            italic,
+            size: size_bits.map(f32::from_bits),
+            family,
+            color,
+            background,
+            baseline,
+        });
+    }
+    if runs.is_empty() {
+        runs.push(RichSpan::new(""));
+    }
+    let deco = |name: &str| {
+        block
+            .marks
+            .iter()
+            .filter(|m| m.name == name)
+            .map(|m| {
+                (
+                    char_to_byte(&block.text, m.start),
+                    char_to_byte(&block.text, m.end),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut underlines = deco("underline");
+    underlines.extend(deco("link"));
+    let strikes = deco("strike");
+    // NOTE: the `ins`/`del` review decorations (underline for ins, strike for
+    // del) are *not* added here — they are drawn in the body pass in the review
+    // colour (`draw_rich` paints these decorations in the block ink, which would
+    // mismatch the coloured glyphs). Keeping them out of the shaped layout also
+    // keeps `block_runs`'s underline/strike contract unchanged.
+    (runs, underlines, strikes)
 }
 
 pub(super) fn block_change_decos(block: &BlockView) -> ChangeDecoRanges {
@@ -313,4 +427,34 @@ pub(super) fn note_text(note: &NoteView) -> String {
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+pub(super) fn mark_style_segments<K: PartialEq>(
+    len: usize,
+    marks: &[MarkSpan],
+    mut key: impl FnMut(usize) -> K,
+) -> Vec<(usize, usize, K)> {
+    if len == 0 {
+        return Vec::new();
+    }
+    let mut boundaries = vec![0, len];
+    for mark in marks {
+        boundaries.push(mark.start.min(len));
+        boundaries.push(mark.end.min(len));
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    let mut segments: Vec<(usize, usize, K)> = Vec::new();
+    for pair in boundaries.windows(2) {
+        let [start, end] = pair else { continue };
+        let style = key(*start);
+        if let Some((_, previous_end, previous_style)) = segments.last_mut()
+            && *previous_style == style
+        {
+            *previous_end = *end;
+        } else {
+            segments.push((*start, *end, style));
+        }
+    }
+    segments
 }

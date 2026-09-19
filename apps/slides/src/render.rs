@@ -11,7 +11,7 @@ use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
-use crate::assets::{ImageState, ImageStore};
+use crate::assets::{ImageLookup, ImageState};
 use crate::model::{Element, ElementKind, Palette, SLIDE_W, Slide, TextAlign};
 
 /// Map a point from slide space to destination pixels.
@@ -47,7 +47,7 @@ pub fn draw_slide(
     slide: &Slide,
     dest: Rect,
     corner: f64,
-    images: &ImageStore,
+    images: &dyn ImageLookup,
 ) {
     let s = dest.width() / SLIDE_W;
     let bg = palette.slide_bg(slide.background);
@@ -105,7 +105,7 @@ fn draw_element(
     e: &Element,
     dest: Rect,
     s: f64,
-    images: &ImageStore,
+    images: &dyn ImageLookup,
 ) {
     let er = element_dest(dest, s, e);
     match e.kind {
@@ -180,7 +180,7 @@ fn draw_image_element(
     e: &Element,
     er: Rect,
     s: f64,
-    images: &ImageStore,
+    images: &dyn ImageLookup,
 ) {
     let radius = (e.radius.max(4.0) * s).max(2.0);
     let frame = RoundedRect::from_rect(er, radius);

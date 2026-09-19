@@ -53,6 +53,16 @@ impl StyleMenu {
         self.menu.close();
     }
 
+    pub(crate) fn menu_mut(&mut self) -> &mut ContextMenu {
+        &mut self.menu
+    }
+
+    pub(crate) fn take_selection(&mut self) -> Option<StyleMenuAction> {
+        self.menu
+            .take_selection()
+            .and_then(|index| self.actions.get(index).cloned())
+    }
+
     /// Consume a click while open. An outside click dismisses the menu; a row
     /// click returns its typed action and also dismisses it.
     pub(crate) fn click(&mut self, point: Point) -> Option<StyleMenuAction> {

@@ -464,7 +464,44 @@ const MAX_ACTION_BLOB_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TABLE_DIMENSION: usize = 100;
 const MAX_TABLE_CELLS: usize = 10_000;
 
-/// Validate an action against one materialized point-in-time view of `doc`.
+/// Read only the addressed block while matching qdoc's snapshot membership:
+/// a region block must be a map with a byte-valued order key. Missing or
+/// non-Text text projects to the empty string, just as `materialize_block` does.
+fn splice_target_len(
+    doc: &AutoCommit,
+    c: &Containers,
+    region: RegionKind,
+    id: &str,
+) -> Option<usize> {
+    use automerge::{ObjType, ScalarValue, Value};
+    use qdoc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
+
+    let optional_region = |cached: &Option<ObjId>, key: &str| {
+        cached.clone().or_else(|| match doc.get(&c.root, key) {
+            Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
+            _ => None,
+        })
+    };
+    let container = match region {
+        RegionKind::Body => c.blocks.clone(),
+        RegionKind::Header => optional_region(&c.header, KEY_HEADER)?,
+        RegionKind::Footer => optional_region(&c.footer, KEY_FOOTER)?,
+    };
+    let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&container, id) else {
+        return None;
+    };
+    match doc.get(&block, BLOCK_ORDER) {
+        Ok(Some((Value::Scalar(value), _))) if matches!(value.as_ref(), ScalarValue::Bytes(_)) => {}
+        _ => return None,
+    }
+    let text = match doc.get(&block, BLOCK_TEXT) {
+        Ok(Some((Value::Object(ObjType::Text), text))) => doc.text(&text).unwrap_or_default(),
+        _ => String::new(),
+    };
+    Some(text.chars().count())
+}
+
+/// Validate an action against one immutable point-in-time view of `doc`.
 ///
 /// This is intentionally separate from the write helpers: an invalid action
 /// must make **no mutation**, never a partly-applied collection of valid
@@ -473,6 +510,20 @@ const MAX_TABLE_CELLS: usize = 10_000;
 /// offsets.  The caller maps `false` to an explicit [`ActionError::Refused`],
 /// preserving a useful stale-target result without leaving a partial edit.
 fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Containers) -> bool {
+    // Typing addresses a single block. Avoid materializing unrelated text,
+    // marks, images and regions on every keystroke; retain the same bounds.
+    if let WordProcessorAction::SpliceText {
+        region,
+        block,
+        at,
+        del,
+        ins,
+    } = action
+    {
+        return splice_target_len(doc, c, *region, block)
+            .is_some_and(|len| *at <= len && *del <= len.saturating_sub(*at))
+            && ins.chars().take(MAX_ACTION_TEXT_CHARS + 1).count() <= MAX_ACTION_TEXT_CHARS;
+    }
     ActionValidator::new(doc, c).validate(action)
 }
 
@@ -3403,6 +3454,154 @@ mod tests {
         let encoded = encode(action);
         let mut tx = LocalTransport::new();
         tilo_actions::dispatch(doc, action, encoded, &mut tx).unwrap();
+    }
+
+    #[test]
+    fn splice_validation_matches_snapshot_without_scanning_regions() {
+        use automerge::{ObjType, ScalarValue};
+        use qdoc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
+        let (mut state, ids) = seeded("Aé🦀é\n");
+        let c = qdoc::model::open(&state.doc, &state.root).unwrap();
+        for region in [RegionKind::Header, RegionKind::Footer] {
+            let action = WordProcessorAction::SpliceText {
+                region,
+                block: ids[0].clone(),
+                at: 0,
+                del: 0,
+                ins: "x".into(),
+            };
+            assert!(!action_is_valid(&action, &state.doc, &c), "absent region");
+        }
+        // Keep c from before lazy header/footer creation to exercise fallback lookup.
+        let header = state
+            .doc
+            .put_object(&c.root, KEY_HEADER, ObjType::Map)
+            .unwrap();
+        let footer = state
+            .doc
+            .put_object(&c.root, KEY_FOOTER, ObjType::Map)
+            .unwrap();
+        for container in [&c.blocks, &header, &footer] {
+            for id in [
+                "valid",
+                "missing_text",
+                "scalar_text",
+                "object_text",
+                "missing_order",
+                "bad_order",
+            ] {
+                let obj = state.doc.put_object(container, id, ObjType::Map).unwrap();
+                if id != "missing_order" {
+                    if id == "bad_order" {
+                        state.doc.put(&obj, BLOCK_ORDER, "invalid").unwrap();
+                    } else {
+                        state
+                            .doc
+                            .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(vec![]))
+                            .unwrap();
+                    }
+                }
+                if id == "scalar_text" {
+                    state
+                        .doc
+                        .put(&obj, BLOCK_TEXT, "not a text object")
+                        .unwrap();
+                } else if id == "object_text" {
+                    state
+                        .doc
+                        .put_object(&obj, BLOCK_TEXT, ObjType::Map)
+                        .unwrap();
+                } else if id != "missing_text" {
+                    let text = state
+                        .doc
+                        .put_object(&obj, BLOCK_TEXT, ObjType::Text)
+                        .unwrap();
+                    state.doc.splice_text(&text, 0, 0, "Aé🦀é").unwrap();
+                }
+            }
+            state
+                .doc
+                .put(container, "scalar_block", "not a block")
+                .unwrap();
+            state
+                .doc
+                .put_object(container, "deleted", ObjType::Map)
+                .unwrap();
+            state.doc.delete(container, "deleted").unwrap();
+        }
+        let snap = qdoc::model::materialize(&state.doc, &c);
+        for region in [RegionKind::Body, RegionKind::Header, RegionKind::Footer] {
+            let blocks = match region {
+                RegionKind::Body => &snap.blocks,
+                RegionKind::Header => &snap.header,
+                RegionKind::Footer => &snap.footer,
+            };
+            for id in [
+                ids[0].as_str(),
+                "valid",
+                "missing_text",
+                "scalar_text",
+                "object_text",
+                "missing_order",
+                "bad_order",
+                "scalar_block",
+                "deleted",
+            ] {
+                for at in [0, 1, 5, 6, usize::MAX] {
+                    for del in [0, 1, 5, usize::MAX] {
+                        let action = WordProcessorAction::SpliceText {
+                            region,
+                            block: id.into(),
+                            at,
+                            del,
+                            ins: "🦀".into(),
+                        };
+                        let expected = blocks.iter().find(|b| b.id == id).is_some_and(|b| {
+                            let len = b.text.chars().count();
+                            at <= len && del <= len.saturating_sub(at)
+                        });
+                        let before = qdoc::model::ordered_keys_scan_count();
+                        assert_eq!(
+                            action_is_valid(&action, &state.doc, &c),
+                            expected,
+                            "{action:?}"
+                        );
+                        assert_eq!(
+                            qdoc::model::ordered_keys_scan_count(),
+                            before,
+                            "single-block validation must not scan regions"
+                        );
+                    }
+                }
+            }
+        }
+        for (count, expected) in [
+            (MAX_ACTION_TEXT_CHARS, true),
+            (MAX_ACTION_TEXT_CHARS + 1, false),
+        ] {
+            let action = WordProcessorAction::SpliceText {
+                region: RegionKind::Body,
+                block: ids[0].clone(),
+                at: 0,
+                del: 0,
+                ins: "é".repeat(count),
+            };
+            assert_eq!(action_is_valid(&action, &state.doc, &c), expected);
+        }
+        state.doc.commit();
+        let before = state.save();
+        let action = WordProcessorAction::SpliceText {
+            region: RegionKind::Body,
+            block: ids[0].clone(),
+            at: usize::MAX,
+            del: 1,
+            ins: "x".into(),
+        };
+        assert!(matches!(
+            action.apply(&mut state.doc),
+            Err(ActionError::Refused(_))
+        ));
+        assert_eq!(state.save(), before, "invalid splice must make no writes");
     }
 
     /// A text splice through an action mutates the document, and replays

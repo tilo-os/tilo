@@ -23,7 +23,66 @@ use crate::i18n::{arg, t, t_args};
 use crate::num;
 use crate::paint_context::PaintContext;
 
+/// Classic 1× bar height, the floor of the measured [`FindMetrics::bar_h`].
 pub(crate) const HEIGHT: f64 = 42.0;
+/// Classic 1× field height / width, toggle and action widths and the
+/// match-count slot: the floors the measured metrics grow from.
+const FIELD_H: f64 = 26.0;
+const FIELD_W: f64 = 188.0;
+/// A field never shrinks below this, whatever the canvas width.
+const FIELD_MIN_W: f64 = 72.0;
+const TOGGLE_W: [f64; 3] = [30.0, 26.0, 30.0];
+const ACTION_W: [f64; 5] = [28.0, 28.0, 72.0, 40.0, 28.0];
+const COUNT_W: f64 = 78.0;
+/// Seams on the base grid (HIG §7b): the three mode toggles read as one
+/// segmented group (`s1`), the action buttons are siblings (`s2`); the 5 px
+/// field radius.
+const TOGGLE_SEAM: f64 = ui::tokens::Spacing::BASE.s1 as f64;
+const ACTION_SEAM: f64 = ui::tokens::Spacing::BASE.s2 as f64;
+const FIELD_RADIUS: f64 = 5.0;
+/// Type roles (renderer input; scaled once): chip labels, field/action text.
+const LABEL_FONT: f32 = 12.5;
+const ACTION_FONT: f32 = 13.0;
+
+/// Geometry of the bar for the renderer that paints it, refreshed by
+/// [`FindBar::measure`] before the host reserves the band, so the reserved
+/// height and the painted controls come from one measurement. Every slot is
+/// the measured text plus a spacing token, floored at its classic 1× value.
+#[derive(Clone, Copy)]
+struct FindMetrics {
+    bar_h: f64,
+    /// 1 (classic) or 2: when the controls no longer fit one row of the bar
+    /// (a 2× text scale, a narrow canvas) the replace field and the actions
+    /// move to a second row rather than running off the window.
+    rows: usize,
+    field_h: f64,
+    field_w: f64,
+    lh_label: f64,
+    toggle_w: [f64; 3],
+    action_w: [f64; 5],
+    count_w: f64,
+    s2: f64,
+    s3: f64,
+}
+
+impl Default for FindMetrics {
+    fn default() -> Self {
+        Self {
+            bar_h: HEIGHT,
+            rows: 1,
+            field_h: FIELD_H,
+            field_w: FIELD_W,
+            lh_label: f64::from(LABEL_FONT) * 1.25,
+            toggle_w: TOGGLE_W,
+            action_w: ACTION_W,
+            count_w: COUNT_W,
+            s2: 8.0,
+            s3: 12.0,
+        }
+    }
+}
+
+const TOGGLE_LABELS: [&str; 3] = ["Aa", "W", ".*"];
 
 pub(crate) type FindMatch = (String, usize, usize);
 
@@ -81,6 +140,7 @@ pub(crate) struct FindBar {
     options: SearchOptions,
     regex_error: bool,
     pointer: Point,
+    metrics: FindMetrics,
 }
 
 impl Default for FindBar {
@@ -102,6 +162,7 @@ impl Default for FindBar {
             options: SearchOptions::default(),
             regex_error: false,
             pointer: Point::ZERO,
+            metrics: FindMetrics::default(),
         }
     }
 }
@@ -134,7 +195,82 @@ impl FindBar {
     }
 
     pub(crate) fn height(&self) -> f64 {
-        if self.open { HEIGHT } else { 0.0 }
+        if self.open { self.metrics.bar_h } else { 0.0 }
+    }
+
+    /// Resolve the bar's geometry against the renderer about to paint it and
+    /// the `bar_w` it will span. The host calls this before asking for
+    /// [`Self::height`], so the band it reserves and the controls painted
+    /// into it agree at every text scale and width: when one row cannot hold
+    /// every control, the fields shrink towards their classic width and, if
+    /// that is still not enough, the bar takes a second row.
+    pub(crate) fn measure(&mut self, tr: &mut TextRenderer, theme: &Theme, bar_w: f64) {
+        let sp = &theme.tokens.spacing;
+        let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
+        let scale = f64::from(tr.text_scale());
+        let lh_label = f64::from(tr.measure("Ag", LABEL_FONT, None).1);
+        let lh_action = f64::from(tr.measure("Ag", ACTION_FONT, None).1);
+        // The fields hold 13 px `TextInput`s: their line box plus `s2`.
+        let field_h = (lh_action + s2).max(FIELD_H);
+        let mut toggle_w = TOGGLE_W;
+        for (w, label) in toggle_w.iter_mut().zip(TOGGLE_LABELS) {
+            *w = (f64::from(tr.measure(label, LABEL_FONT, None).0) + 2.0 * s2).max(*w);
+        }
+        let mut action_w = ACTION_W;
+        let actions = [
+            "↑".to_string(),
+            "↓".to_string(),
+            t("find-replace"),
+            t("find-replace-all"),
+            "✕".to_string(),
+        ];
+        for (w, label) in action_w.iter_mut().zip(&actions) {
+            *w = (f64::from(tr.measure(label, ACTION_FONT, None).0) + 2.0 * s2).max(*w);
+        }
+        // The count slot holds the widest readout it can show.
+        let widest_count = [
+            t("find-no-results"),
+            t("find-bad-pattern"),
+            t_args("find-count", &[arg("cur", 999_i64), arg("total", 999_i64)]),
+        ]
+        .iter()
+        .map(|text| f64::from(tr.measure(text, LABEL_FONT, None).0))
+        .fold(0.0, f64::max);
+        let count_w = (widest_count + s2).max(COUNT_W);
+        let toggles_w = toggle_w.iter().sum::<f64>() + 2.0 * TOGGLE_SEAM;
+        let actions_w = action_w.iter().sum::<f64>() + 4.0 * ACTION_SEAM;
+        // One row: find field, toggles, replace field, count, actions.
+        let field_w = FIELD_W * scale;
+        let one_row = 2.0 * s3 + field_w + s2 + toggles_w + s2 + field_w + s2 + count_w + actions_w;
+        let (rows, field_w) = if one_row <= bar_w {
+            (1, field_w)
+        } else {
+            // Two rows: find field + toggles + count above, replace field +
+            // actions below. Each field yields down to the classic width
+            // (and beyond, on a very narrow canvas) so its row fits.
+            let room_top = bar_w - 2.0 * s3 - s2 - toggles_w - s2 - count_w;
+            let room_bottom = bar_w - 2.0 * s3 - s2 - actions_w;
+            (2, field_w.min(room_top).min(room_bottom).max(FIELD_MIN_W))
+        };
+        let bar_h = (rows as f64 * (field_h + s2) + s2).max(HEIGHT);
+        self.metrics = FindMetrics {
+            bar_h,
+            rows,
+            field_h,
+            field_w,
+            lh_label,
+            toggle_w,
+            action_w,
+            count_w,
+            s2,
+            s3,
+        };
+    }
+
+    /// The clickable rects of this frame's controls, in draw order.
+    #[cfg(test)]
+    pub(crate) fn button_rects(&self) -> Vec<Rect> {
+        self.buttons.iter().map(|(_, rect)| *rect).collect()
     }
 
     pub(crate) fn matches(&self) -> &[FindMatch] {
@@ -489,20 +625,33 @@ impl FindBar {
             None,
             &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
         );
-        let cy = f64::midpoint(bar.y0, bar.y1);
-        let field_y = cy - 13.0;
+        let m = self.metrics;
+        // Rows are `field_h` bands `s2` apart, `s2` in from the bar's top.
+        let row_cy = |row: f64| bar.y0 + m.s2 + m.field_h / 2.0 + row * (m.field_h + m.s2);
+        let cy = row_cy(0.0);
+        let field_y = cy - m.field_h / 2.0;
         let mut ctx = DrawCtx {
             scene,
             transform,
             tr,
             palette,
         };
-        let mut x = bar.x0 + 12.0;
+        let mut x = bar.x0 + m.s3;
         x = self.draw_find_field(&mut ctx, theme, presence, field_y, x);
-        x = self.draw_mode_toggles(&mut ctx, field_y, cy, x) + 8.0;
-        x = self.draw_replace_field(&mut ctx, theme, presence, field_y, x);
-        x = self.draw_match_count(&mut ctx, cy, x) + 78.0;
-        self.draw_action_buttons(&mut ctx, field_y, cy, x);
+        x = self.draw_mode_toggles(&mut ctx, field_y, cy, x) + m.s2;
+        if m.rows > 1 {
+            // The count closes the first row; the replace field and the
+            // actions take the second, from the bar's left inset.
+            self.draw_match_count(&mut ctx, cy, x);
+            let cy2 = row_cy(1.0);
+            let field_y2 = cy2 - m.field_h / 2.0;
+            let x2 = self.draw_replace_field(&mut ctx, theme, presence, field_y2, bar.x0 + m.s3);
+            self.draw_action_buttons(&mut ctx, field_y2, cy2, x2);
+        } else {
+            x = self.draw_replace_field(&mut ctx, theme, presence, field_y, x);
+            x = self.draw_match_count(&mut ctx, cy, x) + m.count_w;
+            self.draw_action_buttons(&mut ctx, field_y, cy, x);
+        }
     }
 
     /// The find field itself, plus its bad-pattern outline. Returns the `x`
@@ -515,7 +664,8 @@ impl FindBar {
         field_y: f64,
         x: f64,
     ) -> f64 {
-        let find_rect = Rect::new(x, field_y, x + 188.0, field_y + 26.0);
+        let m = self.metrics;
+        let find_rect = Rect::new(x, field_y, x + m.field_w, field_y + m.field_h);
         self.query.set_placeholder(&t("find-find"));
         self.query.apply_layout_external(find_rect);
         Widget::draw(
@@ -532,45 +682,63 @@ impl FindBar {
                 ctx.transform,
                 ctx.palette.danger,
                 None,
-                &vello::kurbo::RoundedRect::from_rect(find_rect, 5.0),
+                &vello::kurbo::RoundedRect::from_rect(find_rect, FIELD_RADIUS),
             );
         }
         self.buttons.push((Action::FocusFind, find_rect));
-        x + 196.0
+        x + m.field_w + m.s2
     }
 
     /// The case/word/regex toggle chips. Returns the `x` past the last one.
     fn draw_mode_toggles(&mut self, ctx: &mut DrawCtx, field_y: f64, cy: f64, mut x: f64) -> f64 {
+        let m = self.metrics;
+        let [case_w, word_w, regex_w] = m.toggle_w;
+        let [case_l, word_l, regex_l] = TOGGLE_LABELS;
         for (action, label, width, active) in [
-            (Action::ToggleCase, "Aa", 30.0, self.options.case_sensitive),
-            (Action::ToggleWord, "W", 26.0, self.options.whole_word),
-            (Action::ToggleRegex, ".*", 30.0, self.options.regex),
+            (
+                Action::ToggleCase,
+                case_l,
+                case_w,
+                self.options.case_sensitive,
+            ),
+            (Action::ToggleWord, word_l, word_w, self.options.whole_word),
+            (Action::ToggleRegex, regex_l, regex_w, self.options.regex),
         ] {
-            let rect = Rect::new(x, field_y, x + width, field_y + 26.0);
-            let (background, foreground) = if active {
-                (ctx.palette.accent, ctx.palette.on_accent)
+            let rect = Rect::new(x, field_y, x + width, field_y + m.field_h);
+            // Rest: the chip face with its derived edge; active: the accent
+            // fill alone (a chosen accent never carries a hairline).
+            let foreground = if active {
+                ctx.scene.fill(
+                    Fill::NonZero,
+                    ctx.transform,
+                    ctx.palette.accent,
+                    None,
+                    &vello::kurbo::RoundedRect::from_rect(rect, FIELD_RADIUS),
+                );
+                ctx.palette.on_accent
             } else {
-                (ctx.palette.chip, ctx.palette.text_dim)
+                ui::surface::card(
+                    ctx.scene,
+                    ctx.transform,
+                    rect,
+                    FIELD_RADIUS,
+                    ctx.palette.chip,
+                );
+                ctx.palette.text_dim
             };
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                background,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, 5.0),
-            );
-            let text_x =
-                rect.x0 + (width - num::f64_of_usize(label.chars().count()) * 7.2).max(4.0) / 2.0;
+            // Centred on the measured label box, not a per-glyph estimate.
+            let (label_w, label_h) = ctx.tr.measure(label, LABEL_FONT, None);
+            let text_x = rect.x0 + (width - f64::from(label_w)).max(0.0) / 2.0;
             ctx.tr.draw_text(
                 ctx.scene,
                 label,
-                12.5,
+                LABEL_FONT,
                 foreground,
-                ctx.transform * Affine::translate((text_x, cy - 8.0)),
+                ctx.transform * Affine::translate((text_x, cy - f64::from(label_h) / 2.0)),
                 None,
             );
             self.buttons.push((action, rect));
-            x += width + 5.0;
+            x += width + TOGGLE_SEAM;
         }
         x
     }
@@ -584,7 +752,8 @@ impl FindBar {
         field_y: f64,
         x: f64,
     ) -> f64 {
-        let replace_rect = Rect::new(x, field_y, x + 188.0, field_y + 26.0);
+        let m = self.metrics;
+        let replace_rect = Rect::new(x, field_y, x + m.field_w, field_y + m.field_h);
         self.replacement.set_placeholder(&t("find-replace-with"));
         self.replacement.apply_layout_external(replace_rect);
         Widget::draw(
@@ -596,7 +765,7 @@ impl FindBar {
             presence,
         );
         self.buttons.push((Action::FocusReplace, replace_rect));
-        x + 196.0
+        x + m.field_w + m.s2
     }
 
     /// The "N of M" (or error/empty) readout. Returns the `x` past it.
@@ -622,9 +791,9 @@ impl FindBar {
         ctx.tr.draw_text(
             ctx.scene,
             &count,
-            12.5,
+            LABEL_FONT,
             count_color,
-            ctx.transform * Affine::translate((x, cy - 7.0)),
+            ctx.transform * Affine::translate((x, cy - self.metrics.lh_label / 2.0)),
             None,
         );
         x
@@ -632,33 +801,35 @@ impl FindBar {
 
     /// Prev/Next/Replace/Replace All/Close.
     fn draw_action_buttons(&mut self, ctx: &mut DrawCtx, field_y: f64, cy: f64, mut x: f64) {
+        let m = self.metrics;
+        let [prev_w, next_w, replace_w, all_w, close_w] = m.action_w;
         for (action, label, width) in [
-            (Action::Prev, "↑".to_string(), 28.0),
-            (Action::Next, "↓".to_string(), 28.0),
-            (Action::Replace, t("find-replace"), 72.0),
-            (Action::ReplaceAll, t("find-replace-all"), 40.0),
-            (Action::Close, "✕".to_string(), 28.0),
+            (Action::Prev, "↑".to_string(), prev_w),
+            (Action::Next, "↓".to_string(), next_w),
+            (Action::Replace, t("find-replace"), replace_w),
+            (Action::ReplaceAll, t("find-replace-all"), all_w),
+            (Action::Close, "✕".to_string(), close_w),
         ] {
-            let rect = Rect::new(x, field_y, x + width, field_y + 26.0);
-            ctx.scene.fill(
-                Fill::NonZero,
+            let rect = Rect::new(x, field_y, x + width, field_y + m.field_h);
+            ui::surface::card(
+                ctx.scene,
                 ctx.transform,
+                rect,
+                FIELD_RADIUS,
                 ctx.palette.chip,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, 5.0),
             );
-            let text_x =
-                rect.x0 + (width - num::f64_of_usize(label.chars().count()) * 7.2).max(6.0) / 2.0;
+            let (label_w, label_h) = ctx.tr.measure(&label, ACTION_FONT, None);
+            let text_x = rect.x0 + (width - f64::from(label_w)).max(0.0) / 2.0;
             ctx.tr.draw_text(
                 ctx.scene,
                 &label,
-                13.0,
+                ACTION_FONT,
                 ctx.palette.text,
-                ctx.transform * Affine::translate((text_x, cy - 8.0)),
+                ctx.transform * Affine::translate((text_x, cy - f64::from(label_h) / 2.0)),
                 None,
             );
             self.buttons.push((action, rect));
-            x += width + 6.0;
+            x += width + ACTION_SEAM;
         }
     }
 

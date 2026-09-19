@@ -13,7 +13,6 @@ use ui::theme::Theme;
 use ui::widget::{ColorSwatchPicker, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -233,21 +232,10 @@ impl CompactSwatchPalette {
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
-        let card = vello::kurbo::RoundedRect::from_rect(self.rect, 8.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &card,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &card,
-        );
+        // A floating panel: panel ground + panel border + elevation (HIG
+        // §9.1), never a raised fill with the declared `border_standard`.
+        let radius = f64::from(theme.tokens.radii.md);
+        crate::widget::paint_panel(scene, transform, theme, self.rect, radius);
         text.draw_text(
             scene,
             &self.title,
@@ -257,19 +245,12 @@ impl CompactSwatchPalette {
             None,
         );
         let clear = vello::kurbo::RoundedRect::from_rect(self.clear_rect, 5.0);
-        scene.fill(
-            Fill::NonZero,
+        ui::surface::card(
+            scene,
             transform,
+            self.clear_rect,
+            5.0,
             theme.tokens.colors.surfaces.base,
-            None,
-            &clear,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &clear,
         );
         if self.clear_focused {
             scene.stroke(
