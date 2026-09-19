@@ -5685,7 +5685,6 @@ fn successful_import_does_not_reuse_deleted_highest_block_id() {
     );
 }
 
-#[cfg(windows)]
 #[test]
 fn readonly_destination_save_as_preserves_source_and_destination() {
     let dir = temp_dir("readonly-save-as");
@@ -6518,4 +6517,118 @@ fn render_responsive_review_shots() {
         &dir,
         "responsive-760-highlight-palette",
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn canonical_save_preserves_symlink_target_and_private_permissions() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let dir = temp_dir("save-link-permissions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("private.md");
+    let link = dir.join("document.md");
+    std::fs::write(&target, b"original source").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+    symlink("private.md", &link).unwrap();
+    let (mut state, mut wp, _) = crate::open_document(&link).unwrap();
+    wp.set_recovery_dir(dir.clone());
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "edited ");
+    wp.save_status = DocumentSaveStatus::Modified;
+    let payload =
+        serde_json::to_vec(&crate::actions::WordProcessorOperation::Save { path: None }).unwrap();
+    wp.start_resource_operation(
+        tilo_actions::InvocationId::new(),
+        tilo_actions::OperationKind::Effect,
+        crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+        &payload,
+        &state.doc,
+        &state.root,
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        std::fs::read_link(&link).unwrap(),
+        std::path::PathBuf::from("private.md")
+    );
+    assert!(
+        String::from_utf8(std::fs::read(&target).unwrap())
+            .unwrap()
+            .contains("edited")
+    );
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+        0o600
+    );
+    assert_eq!(wp.path.as_deref(), Some(link.as_path()));
+    assert!(wp.save_status == DocumentSaveStatus::Clean);
+    // The public export/save API has the same target and permission contract.
+    crate::save_document(&state, &link, WpFormat::Markdown).unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+        0o600
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn unsupported_link_save_as_keeps_source_identity_and_bytes() {
+    use std::os::unix::fs::symlink;
+    let dir = temp_dir("save-unsupported-link");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("source.md");
+    let target = dir.join("target.md");
+    let linked = dir.join("hardlink.md");
+    let dangling = dir.join("dangling.md");
+    std::fs::write(&source, b"source bytes").unwrap();
+    std::fs::write(&target, b"target bytes").unwrap();
+    std::fs::hard_link(&target, &linked).unwrap();
+    symlink("missing.md", &dangling).unwrap();
+    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    wp.set_recovery_dir(dir.clone());
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "edited ");
+    wp.save_status = DocumentSaveStatus::Modified;
+    for destination in [&linked, &dangling] {
+        let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::SaveAs {
+            path: Some(destination.to_string_lossy().into_owned()),
+        })
+        .unwrap();
+        assert!(
+            wp.start_resource_operation(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                &payload,
+                &state.doc,
+                &state.root,
+            )
+            .is_err()
+        );
+        assert_eq!(wp.path.as_deref(), Some(source.as_path()));
+        assert!(wp.save_status == DocumentSaveStatus::Modified);
+        assert_eq!(std::fs::read(&source).unwrap(), b"source bytes");
+        assert_eq!(std::fs::read(&target).unwrap(), b"target bytes");
+        assert_eq!(std::fs::read(&linked).unwrap(), b"target bytes");
+        assert!(
+            std::fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!dir.join("missing.md").exists());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
