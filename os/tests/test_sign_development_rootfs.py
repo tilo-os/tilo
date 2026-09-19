@@ -20,6 +20,14 @@ REVISION = 'b' * 40
 
 
 class RootfsIdentityTests(unittest.TestCase):
+    def test_loader_layer_uses_verified_hashes_without_target_crypto_tools(self):
+        containerfile = (DEV.parent / 'Containerfile.development-loader').read_text()
+        self.assertIn('ARG ORIGINAL_SHA256', containerfile)
+        self.assertIn('ARG SIGNED_SHA256', containerfile)
+        self.assertIn('verify-authenticode-envelope.py', containerfile)
+        self.assertNotIn('/usr/bin/openssl', containerfile)
+        self.assertNotIn('verify-development-loader.py', containerfile)
+
     def test_podman_preserves_explicit_local_storage_without_caller_secrets(self):
         settings = {name: '/fixture/' + name.lower() for name in producer.LOCAL_STORAGE_ENVIRONMENT}
         settings.update({'PATH': '/untrusted/bin', 'UNRELATED_SECRET': 'not-for-child',
