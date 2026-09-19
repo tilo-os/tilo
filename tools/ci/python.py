@@ -5,7 +5,8 @@ Invoke with python3 -I: candidate cwd, PYTHONPATH and user site hooks must never
 enter interpreter startup. Local helper imports remain available after stdlib.
 """
 import runpy
-from importlib.machinery import PathFinder
+from importlib.machinery import PathFinder, SourceFileLoader
+from importlib.util import spec_from_file_location
 import sys
 import tempfile
 from pathlib import Path
@@ -26,22 +27,43 @@ class StandardLibraryOnly:
 
 
 
-class RelocatedAppModules:
-    """Resolve app helpers only from their pinned subsystem paths."""
-    names = frozenset(('app_release', 'app_package_isa', 'app_channel_manifest',
-                       'canonical_app_verifier', 'create_app_receipt',
-                       'final_app_receipt', 'assemble_app_collection'))
+class TrustedLocalModules:
+    """Load reviewed local imports from exact source files, never package lookup."""
+    sources = {
+        'ci': 'ci/__init__.py',
+        'ci.resolve_builder': 'ci/resolve_builder.py',
+        'ci.affected_packages': 'ci/affected_packages.py',
+        'app_release': 'apps/app_release.py',
+        'app_package_isa': 'apps/app_package_isa.py',
+        'app_channel_manifest': 'apps/app_channel_manifest.py',
+        'canonical_app_verifier': 'apps/canonical_app_verifier.py',
+        'create_app_receipt': 'apps/create_app_receipt.py',
+        'final_app_receipt': 'apps/final_app_receipt.py',
+        'assemble_app_collection': 'apps/assemble_app_collection.py',
+        'app_packaging_plan': 'app_packaging_plan.py',
+        'app_packaging_qualification': 'app_packaging_qualification.py',
+        'app_packaging_product': 'app_packaging_product.py',
+        'app_packaging_coordinator': 'app_packaging_coordinator.py',
+        'app_packaging_service': 'app_packaging_service.py',
+        'accept_app_artifacts': 'accept_app_artifacts.py',
+        'assemble_verified_apps': 'assemble_verified_apps.py',
+        'canonical_verifier_bundle': 'canonical_verifier_bundle.py',
+    }
 
     def __init__(self, directory):
-        self.directory = str(directory)
+        self.directory = directory
 
     def find_spec(self, fullname, path=None, target=None):
-        if fullname not in self.names:
+        relative = self.sources.get(fullname)
+        if relative is None:
             return None
-        spec = PathFinder.find_spec(fullname, [self.directory], target)
-        if spec is None:
-            raise ModuleNotFoundError('pinned app helper unavailable: ' + fullname, name=fullname)
-        return spec
+        source = self.directory / relative
+        if not source.is_file():
+            raise ModuleNotFoundError('pinned local helper unavailable: ' + fullname, name=fullname)
+        return spec_from_file_location(
+            fullname, source, loader=SourceFileLoader(fullname, str(source)),
+            submodule_search_locations=[str(source.parent)] if fullname == 'ci' else None,
+        )
 
 
 def main():
@@ -61,7 +83,7 @@ def main():
         # Builtin/Frozen importers keep precedence. In particular, subprocess
         # probes msvcrt on Linux: absence must stay ImportError, not tools/msvcrt.
         sys.meta_path.insert(sys.meta_path.index(PathFinder), StandardLibraryOnly(sys.path))
-        sys.meta_path.insert(sys.meta_path.index(PathFinder), RelocatedAppModules(tools / 'apps'))
+        sys.meta_path.insert(sys.meta_path.index(PathFinder), TrustedLocalModules(tools))
         sys.path.append(str(tools))
         sys.argv = [str(script), *sys.argv[2:]]
         runpy.run_path(str(script), run_name='__main__')
