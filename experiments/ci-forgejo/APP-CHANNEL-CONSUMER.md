@@ -174,3 +174,42 @@ signed package IDs and digests. Historical package signatures are not per-app Gi
 source attestations. Versioned tag URLs without a full source/content identity are
 intentionally refused by binding; this first opt-in qualification uses manual main
 publication's full-SHA package version.
+
+## Nonpublishing coordinator collection artifacts
+
+The guarded coordinator path now has `qualify-collection`, after native builds.
+It invokes `tools/assemble_verified_apps.py`, reuses already-built canonical tools,
+and never compiles or publishes packages. It produces one immutable workflow
+artifact named `final-app-collection-ARCH`, containing only the complete tarball,
+`final-publication-receipt.json` and `assembly-provenance.json`. The receipt remains
+unpublished. The assembly record reports source/builder/intent and reused package
+names; these self-reported fields are evidence to compare, not independent trust.
+
+For an incremental run, the coordinator supplies its retained independently
+verified baseline proof and canonical JSON hash. The helper checks its exact
+source, builder, collection and policy scope; reads that exact successful dispatch
+run; resolves one unexpired architecture artifact and its numeric ID; and requires
+the downloaded receipt's hash to match the coordinator proof. The tarball must
+match that pinned receipt before bounded extraction. Traversal, links, sparse files,
+duplicate paths and excessive entries/expanded bytes are rejected. Only exact
+current catalog members are reused; partial reuse requires the same runtime root.
+Final canonical verification covers the complete newly assembled archive.
+
+The job uses the existing repository task token for GET requests only. There is no
+publisher OIDC credential, new service, credential fallback or registry write.
+API redirects are refused so credentials cannot escape the configured origin.
+Actual read-only API inspection confirmed Forgejo `commit_sha`, bare artifact lists,
+and artifact `run_id` fields. Historical artifact permission for the built-in task
+token remains unqualified: unauthorized/expired/missing artifacts fail explicitly.
+
+Remaining integration requirements are centralized in the disabled coordinator,
+not instructions for each author agent: independently verify the run/source/builder
+against its dispatch intent, download and canonically replay the resulting artifact,
+then supply the cached verification proof to its short state transaction. Workflow
+success alone does not advance the baseline. The existing independently reviewed
+final receipt policy/tool hashes must be provisioned before qualification. No live
+dispatch or publication was performed for this change. If selection yields zero
+builds, this stage produces no proof and cannot advance the baseline; a deliberate
+no-op identity policy is still needed instead of treating a skipped job as verified.
+The final artifact retention period also bounds incremental reuse; expiration
+requires an explicit full build rather than silently trusting mutable channels.
