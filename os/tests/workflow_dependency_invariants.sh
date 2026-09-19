@@ -61,11 +61,13 @@ else
   fail=1
 fi
 
-if grep -Fq "cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}" "$check_workflow" \
-   && grep -Fq "cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}" "$workflows/lint.yml"; then
-  printf 'ok    busy main retains complete check and lint verification runs\n'
+if grep -Fq 'group: check-${{ github.event_name }}-${{ github.sha }}' "$check_workflow" \
+   && grep -Fq 'cancel-in-progress: false' "$check_workflow" \
+   && grep -Fq 'group: lint-${{ github.event_name }}-${{ github.sha }}' "$workflows/lint.yml" \
+   && grep -Fq 'cancel-in-progress: false' "$workflows/lint.yml"; then
+  printf 'ok    every check and lint event retains an independent result\n'
 else
-  printf 'main verification may starve under continuous integration\n' >&2
+  printf 'check or lint events may replace required results\n' >&2
   fail=1
 fi
 
