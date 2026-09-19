@@ -75,6 +75,11 @@ impl DesktopHandle {
         &self, frame: &mut ui::headless::FrameHarness, path: &str,
         target: Option<&str>, action: &ui::a11y::Action,
     ) -> Result<(), String> {
+        if matches!(action, ui::a11y::Action::SetValue(_) | ui::a11y::Action::SetSelection { .. })
+            && frame.inspection().keyboard_focus_owner.as_deref() != Some(path)
+        {
+            return Err("semantic text input does not own keyboard focus".into());
+        }
         let active = active_route(&self.tree.borrow()).and_then(|route| route.ids().ok()).map(|route| route.3);
         let owner = frame.semantic_owner_instance(path);
         let switches_app = target.is_some_and(|target| target.starts_with("tab:"))
@@ -4504,8 +4509,8 @@ mod tests {
                 .find(|entry| entry["label"] == label).unwrap()["route"].clone()
         ).unwrap();
         let notes_instance = route("Notes").ids().unwrap().3;
-        let (composer, _) = browser_semantic_route(&frame, "Message composer");
-        frame.perform_semantic_named(&composer, None, &ui::a11y::Action::Focus).unwrap();
+        let (composer, composer_target) = browser_semantic_route(&frame, "Message composer");
+        frame.perform_semantic_named(&composer, Some(&composer_target), &ui::a11y::Action::Focus).unwrap();
         frame.relayout();
         handle.finish_local_activation(&mut frame);
         let activation = handle.activation_sequence.get();
@@ -4565,6 +4570,25 @@ mod tests {
         let owner = frame.inspection().keyboard_focus_owner.unwrap();
         assert_eq!(frame.semantic_owner_instance(&owner), Some(notes_instance));
         assert!(!composer_focused(&frame), "Chat composer must clear its semantic focused flag");
+        for action in [
+            ui::a11y::Action::SetValue("stale browser textarea value".into()),
+            ui::a11y::Action::SetSelection { anchor: 0, focus: 0 },
+        ] {
+            assert!(
+                handle.perform_semantic_input(
+                    &mut frame,
+                    &composer,
+                    Some(&composer_target),
+                    &action,
+                ).is_err(),
+                "a stale semantic text route must not operate after another control owns focus: {action:?}",
+            );
+            assert_eq!(
+                chat.store.read(&chat.checkout.id, |doc| doc.clone().save()).unwrap(),
+                chat_before,
+                "rejected stale semantic text input must not mutate Chat: {action:?}",
+            );
+        }
         frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
             "must not reach previous app".into(),
         )));
