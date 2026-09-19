@@ -18,6 +18,14 @@ import app_packaging_qualification as guard
 POLICY = {'enabled': True, 'qualification_only': True, 'trusted_files': {}}
 
 
+def cargo_listing(path):
+    if '/contents/?' in path:
+        return [{'name': '.cargo', 'type': 'dir'}]
+    if '/contents/.cargo?' in path:
+        return [{'name': 'config.toml', 'type': 'file'}]
+    return None
+
+
 def desired(char='a'):
     return {'source_sha': char * 40, 'builder_image': 'code.podesta.ai/qos/tilo-builder@sha256:' + 'd' * 64,
             'collection': 'default', 'architectures': ['x86_64', 'aarch64'],
@@ -331,16 +339,16 @@ class ProductTests(unittest.TestCase):
     def test_qualification_requires_exact_trusted_workflow_bytes(self):
         import base64
         import hashlib
-        content = b'trusted-reviewed-content'
+        content = b'[toolchain]\nchannel="1.97.1"\n'
         policy = dict(POLICY, trusted_files={path: hashlib.sha256(content).hexdigest()
                                             for path in product.REQUIRED_PATHS})
         api = product.ProductForgejo(policy)
         receipt = dict(desired(), policy_sha256=api.policy_sha)
         api.call = lambda path: ({'id': 23, 'full_name': product.REPO} if path == 'repos/' + product.REPO
-                                 else {'content': base64.b64encode(content).decode()})
+                                 else cargo_listing(path) or {'type': 'file', 'content': base64.b64encode(content).decode()})
         api.qualify_receipt(receipt)
         api.call = lambda path: ({'id': 23, 'full_name': product.REPO} if path == 'repos/' + product.REPO
-                                 else {'content': base64.b64encode(b'unreviewed').decode()})
+                                 else cargo_listing(path) or {'type': 'file', 'content': base64.b64encode(b'unreviewed').decode()})
         with self.assertRaises(ValueError):
             api.qualify_receipt(receipt)
 
@@ -355,7 +363,7 @@ class ProductTests(unittest.TestCase):
     def test_qualification_rejects_missing_or_changed_assembly_helpers(self):
         import base64
         import hashlib
-        content = b'reviewed-helper'
+        content = b'[toolchain]\nchannel="1.97.1"\n'
         files = {path: hashlib.sha256(content).hexdigest() for path in product.REQUIRED_PATHS}
         for helper in ('tools/assemble_verified_apps.py', 'tools/final_app_receipt.py',
                        'tools/app_channel_manifest.py', 'dist/apps/assemble-collection.sh',
@@ -372,10 +380,12 @@ class ProductTests(unittest.TestCase):
                 def read(path):
                     if path == 'repos/' + product.REPO:
                         return {'id': 23, 'full_name': product.REPO}
+                    if cargo_listing(path) is not None:
+                        return cargo_listing(path)
                     value = b'changed-helper' if '/contents/' + helper + '?' in path else content
-                    return {'content': base64.b64encode(value).decode()}
+                    return {'type': 'file', 'content': base64.b64encode(value).decode()}
                 api.call = read
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, 'differs from trusted policy'):
                     api.qualify_receipt(dict(desired(), policy_sha256=api.policy_sha))
 
     def test_concurrent_reconciliation_cannot_overwrite_attached_run(self):
