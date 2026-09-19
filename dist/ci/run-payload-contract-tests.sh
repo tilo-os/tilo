@@ -7,6 +7,12 @@ work=$(mktemp -d)
 cleanup() { rm -rf -- "$work"; }
 trap cleanup EXIT
 true_bin=$(type -P true)
+native_arch=$(uname -m)
+case "$native_arch" in
+    x86_64) package_arch=amd64; other_arch=arm64 ;;
+    aarch64) package_arch=arm64; other_arch=amd64 ;;
+    *) echo "unsupported fixture architecture: $native_arch" >&2; exit 1 ;;
+esac
 
 # Minimal distro images need not install Git merely to make the reusable OS
 # payload reproducible. The outer runner resolves both source values and passes
@@ -75,7 +81,11 @@ install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" \
 install -m644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target" \
     "$fhs/usr/lib/systemd/user/tilo-graphical-session.target"
 install -m644 "$repo_root/LICENSE" "$fhs/usr/share/licenses/tilo-session/LICENSE"
-TILO_EXPECT_ARCH=amd64 "$repo_root/dist/verify-payload.sh" "$fhs"
+TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs"
+if TILO_EXPECT_ARCH="$other_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+    echo "payload verifier accepted the other architecture's native binaries" >&2
+    exit 1
+fi
 "$repo_root/dist/verify-devel-payload.sh" "$fhs"
 
 sed -i 's#^TryExec=.*#TryExec=/wrong#' "$fhs/usr/share/wayland-sessions/tilo-dev.desktop"
@@ -116,7 +126,11 @@ sed -i \
     -e "s#Exec=/usr/libexec/tilo-session#Exec=$nix/libexec/tilo-session#" \
     -e "s#TryExec=/usr/bin/tilo-shell#TryExec=$nix/bin/tilo-shell#" \
     "$nix/share/wayland-sessions/tilo.desktop"
-"$repo_root/dist/ci/verify-nix-result.sh" "$nix" amd64
+"$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$package_arch"
+if "$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$other_arch" >/dev/null 2>&1; then
+    echo "Nix verifier accepted the other architecture's native binaries" >&2
+    exit 1
+fi
 
 # The OS hand-off is deterministic and contains only the three native binaries
 # already install-tested by the distro package lane.
@@ -127,14 +141,14 @@ for binary in shell tilo-launcher tilo-unlock-helper; do
 done
 SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \
     "$repo_root/dist/desktop/package-os-payload.sh" \
-    "$payload_bin" x86_64 "$work/payload-a"
+    "$payload_bin" "$native_arch" "$work/payload-a"
 SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \
     "$repo_root/dist/desktop/package-os-payload.sh" \
-    "$payload_bin" x86_64 "$work/payload-b"
-cmp "$work/payload-a/tilo-desktop-os-x86_64.tar.gz" \
-    "$work/payload-b/tilo-desktop-os-x86_64.tar.gz"
+    "$payload_bin" "$native_arch" "$work/payload-b"
+cmp "$work/payload-a/tilo-desktop-os-$native_arch.tar.gz" \
+    "$work/payload-b/tilo-desktop-os-$native_arch.tar.gz"
 mkdir "$work/payload-unpacked"
-tar -xzf "$work/payload-a/tilo-desktop-os-x86_64.tar.gz" \
+tar -xzf "$work/payload-a/tilo-desktop-os-$native_arch.tar.gz" \
     -C "$work/payload-unpacked"
 (cd "$work/payload-unpacked" && sha256sum --check --strict SHA256SUMS)
 
