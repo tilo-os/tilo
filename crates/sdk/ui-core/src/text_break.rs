@@ -254,7 +254,9 @@ impl OffsetMap {
     }
 }
 
-pub(crate) fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usize>> {
+/// Return Unicode word-like spans in original UTF-8 byte coordinates.
+/// Uses the same ICU segmentation as toolkit word selection and movement.
+pub fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usize>> {
     use icu_segmenter::WordSegmenter;
     thread_local! {
         static SEGMENTER: WordSegmenter = WordSegmenter::new_auto();
@@ -268,7 +270,16 @@ pub(crate) fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Ra
                 let [first, second] = window else {
                     return None;
                 };
-                second.1.is_word_like().then_some(first.0..second.0)
+                let range = first.0..second.0;
+                // ICU4X 1.5 can tag a word ending in an Extend scalar as
+                // None before whitespace despite finding the correct span.
+                // Retain that complete segment when it contains a letter or
+                // number, preserving ICU's boundaries and attached marks.
+                let word_like = second.1.is_word_like()
+                    || text
+                        .get(range.clone())
+                        .is_some_and(|word| word.chars().any(char::is_alphanumeric));
+                word_like.then_some(range)
             })
             .collect::<Vec<_>>()
             .into_iter()
@@ -278,6 +289,27 @@ pub(crate) fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Ra
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_words_retain_trailing_combining_marks() {
+        for (text, expected) in [
+            ("test\u{301}", vec!["test\u{301}"]),
+            ("test\u{301} ", vec!["test\u{301}"]),
+            (
+                "e\u{301}test test\u{301} 123\u{301}",
+                vec!["e\u{301}test", "test\u{301}", "123\u{301}"],
+            ),
+        ] {
+            let words: Vec<_> = unicode_word_ranges(text)
+                .map(|range| text.get(range).expect("UTF-8 word range"))
+                .collect();
+            assert_eq!(
+                words, expected,
+                "the complete source word remains word-like"
+            );
+        }
+        assert!(unicode_word_ranges("\u{301} , .").next().is_none());
+    }
 
     #[test]
     fn cjk_has_opportunities_without_ascii_spaces() {

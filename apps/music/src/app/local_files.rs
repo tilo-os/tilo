@@ -35,7 +35,20 @@ impl MusicApp {
         } else {
             0
         };
-        if let Some(request_id) = self.apply_resource_playback(playback)? {
+        let request = self.apply_resource_playback(playback)?;
+        self.register_playback_start(invocation, request, frames_before, resuming)
+    }
+
+    /// Cache hits still need decoder evidence. Only an already loaded source
+    /// being resumed may reuse prior PCM together with confirmed playback.
+    pub(super) fn register_playback_start(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        request: Option<u64>,
+        frames_before: u64,
+        resuming: bool,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(request_id) = request {
             self.begin_resource_stream_invocation(invocation, request_id);
         } else {
             let request = self
@@ -536,6 +549,104 @@ mod tests {
         check_cached_source_switch(true);
     }
 
+    #[test]
+    #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
+    fn cached_play_actions_wait_for_decoder_success_or_failure() {
+        for queue_item in [false, true] {
+            for valid_audio in [false, true] {
+                check_cached_play_action(queue_item, valid_audio);
+            }
+        }
+    }
+
+    #[cfg(feature = "audio")]
+    fn check_cached_play_action(queue_item: bool, valid_audio: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cached.wav");
+        wav(&path);
+        let bytes = if valid_audio {
+            std::fs::read(path).unwrap()
+        } else {
+            b"Hash-valid cache content is not necessarily decodable audio".to_vec()
+        };
+        let mut app = MusicApp::new_for_shot();
+        app.set_offline_for_shot();
+        app.seed_sample_library();
+        let mut doc = automerge::AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let id = app.lib.tracks.keys().next().unwrap().clone();
+        app.media_cache
+            .install_bytes(&app.media_cache_root, &id, &bytes, 1_000_000)
+            .unwrap();
+        app.pb.queue = vec![id.clone()];
+        let resource_id = if queue_item {
+            crate::actions::queue_item_resource_id(0, &id)
+        } else {
+            crate::actions::track_resource_id(&id)
+        };
+        let resource = tilo_actions::ResourceProvider::resource(&app, &doc, &resource_id).unwrap();
+        let action = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "play")
+            .unwrap();
+        let encoded = action.build_json(&serde_json::Map::new()).unwrap();
+        let invocation = tilo_actions::InvocationId::new();
+        assert_eq!(
+            app.start_resource_operation(
+                invocation,
+                action.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        );
+        assert_eq!(app.resource_stream_invocation.as_ref().unwrap().2, 0);
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .is_none()
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let update = loop {
+            app.tick();
+            if let Some(update) =
+                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+            {
+                break update;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cached decoder never settled"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        if valid_audio {
+            assert!(matches!(
+                update,
+                tilo_actions::InvocationUpdate::Succeeded { .. }
+            ));
+            assert!(app.audio.frames_rendered() > 0);
+            assert_eq!(app.audio.audio_sink_is_real(), Some(true));
+        } else {
+            assert!(matches!(
+                update,
+                tilo_actions::InvocationUpdate::Failed { .. }
+            ));
+            assert_eq!(app.audio.frames_rendered(), 0);
+            assert!(!app.pb.playing);
+            assert!(app.playback_error.is_some());
+        }
+        assert!(
+            app.worker.is_none(),
+            "cached playback must not use a network resolver"
+        );
+        app.audio.stop();
+    }
+
     #[cfg(feature = "audio")]
     fn check_cached_source_switch(paused_selection: bool) {
         let dir = tempfile::tempdir().unwrap();
@@ -743,6 +854,80 @@ mod tests {
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         app.audio.stop();
+    }
+
+    #[test]
+    #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
+    fn local_file_row_restart_previous_and_repeat_match_canonical_restart_position() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("restart.wav");
+        wav(&path);
+        let file = crate::local_file::LocalFile::open(path.to_str().unwrap(), None).unwrap();
+        for route in ["row", "previous", "repeat-one", "canonical"] {
+            let mut app = MusicApp::new_for_shot();
+            let mut doc = automerge::AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            let id = file.track.id.clone();
+            app.local_file = Some(file.clone());
+            app.pb.current = Some(id.clone());
+            app.pb.queue = vec![id.clone()];
+            app.pb.position_ms = 1000;
+            app.playhead_ms = 1000.0;
+            let mut invocation = None;
+            match route {
+                "row" => app.on_play(std::sync::Arc::new(vec![id.clone()]), 0, &mut doc),
+                "previous" => app.on_prev(&mut doc),
+                "repeat-one" => {
+                    app.pb.repeat = crate::model::RepeatMode::One;
+                    app.pb.playing = true;
+                    app.auto_advance();
+                }
+                "canonical" => {
+                    let resource_id = crate::actions::queue_item_resource_id(0, &id);
+                    let resource =
+                        tilo_actions::ResourceProvider::resource(&app, &doc, &resource_id).unwrap();
+                    let action = resource
+                        .actions
+                        .iter()
+                        .find(|action| action.id == "play")
+                        .unwrap();
+                    let encoded = action.build_json(&serde_json::Map::new()).unwrap();
+                    let request = tilo_actions::InvocationId::new();
+                    assert_eq!(
+                        app.start_resource_operation(
+                            request,
+                            tilo_actions::OperationKind::Effect,
+                            &encoded.type_id,
+                            &encoded.payload,
+                            &doc,
+                            &automerge::ROOT
+                        )
+                        .unwrap(),
+                        Some(ui::widget::ResourceOperationStart::Accepted)
+                    );
+                    invocation = Some(request);
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                app.pb.position_ms, 0,
+                "{route} retained the previous saved position"
+            );
+            assert_eq!(app.playhead_ms, 0.0);
+            wait_for_audio(&mut app);
+            assert!(
+                app.audio.position_ms().unwrap_or(u64::MAX) < 500,
+                "{route} sought to the old position instead of restarting"
+            );
+            if let Some(invocation) = invocation {
+                assert!(matches!(
+                    app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+                    Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+                ));
+            }
+            app.audio.stop();
+        }
     }
 
     fn wav(path: &std::path::Path) {
