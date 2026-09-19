@@ -625,6 +625,103 @@ mod tests {
     }
 
     #[test]
+    fn copy_and_move_retry_when_a_file_destination_is_claimed_after_selection() {
+        for remove_source in [false, true] {
+            let directory = tmp();
+            let source = directory.path().join("report.txt");
+            let destination = directory.path().join("destination");
+            fs::write(&source, b"selected bytes").unwrap();
+            fs::create_dir(&destination).unwrap();
+
+            let mut raced = false;
+            let transferred = transfer_into(&source, &destination, remove_source, |candidate| {
+                if !raced {
+                    raced = true;
+                    fs::write(candidate, b"competitor bytes").unwrap();
+                }
+            })
+            .unwrap();
+
+            assert!(raced, "the test forced the post-selection collision");
+            assert_eq!(transferred, destination.join("report 2.txt"));
+            assert_eq!(
+                fs::read(destination.join("report.txt")).unwrap(),
+                b"competitor bytes"
+            );
+            assert_eq!(fs::read(&transferred).unwrap(), b"selected bytes");
+            assert_eq!(source.exists(), !remove_source);
+        }
+    }
+
+    #[test]
+    fn copy_and_move_retry_when_a_directory_destination_is_claimed_after_selection() {
+        for remove_source in [false, true] {
+            let directory = tmp();
+            let source = directory.path().join("project");
+            let destination = directory.path().join("destination");
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("selected.txt"), b"selected bytes").unwrap();
+            fs::create_dir(&destination).unwrap();
+
+            let mut raced = false;
+            let transferred = transfer_into(&source, &destination, remove_source, |candidate| {
+                if !raced {
+                    raced = true;
+                    fs::create_dir(candidate).unwrap();
+                    fs::write(candidate.join("competitor.txt"), b"competitor bytes").unwrap();
+                }
+            })
+            .unwrap();
+
+            assert!(raced, "the test forced the post-selection collision");
+            assert_eq!(transferred, destination.join("project 2"));
+            assert_eq!(
+                fs::read(destination.join("project/competitor.txt")).unwrap(),
+                b"competitor bytes"
+            );
+            assert_eq!(
+                fs::read(transferred.join("selected.txt")).unwrap(),
+                b"selected bytes"
+            );
+            assert_eq!(source.exists(), !remove_source);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_and_move_retry_symlinks_without_replacing_the_racing_entry() {
+        use std::os::unix::fs::symlink;
+
+        for remove_source in [false, true] {
+            let directory = tmp();
+            let source = directory.path().join("selected-link");
+            let destination = directory.path().join("destination");
+            symlink("selected-target", &source).unwrap();
+            fs::create_dir(&destination).unwrap();
+
+            let mut raced = false;
+            let transferred = transfer_into(&source, &destination, remove_source, |candidate| {
+                if !raced {
+                    raced = true;
+                    symlink("competitor-target", candidate).unwrap();
+                }
+            })
+            .unwrap();
+
+            assert_eq!(transferred, destination.join("selected-link 2"));
+            assert_eq!(
+                fs::read_link(destination.join("selected-link")).unwrap(),
+                PathBuf::from("competitor-target")
+            );
+            assert_eq!(
+                fs::read_link(&transferred).unwrap(),
+                PathBuf::from("selected-target")
+            );
+            assert_eq!(fs::symlink_metadata(&source).is_ok(), !remove_source);
+        }
+    }
+
+    #[test]
     fn recursive_copy_and_move_refuse_a_destination_inside_the_source() {
         let d = tmp();
         let source = d.path().join("source");
