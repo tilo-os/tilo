@@ -4,6 +4,11 @@
 //! conflicts refer to [`FileRecordId`] so a rename or move cannot silently
 //! change what was shared or which history belongs to a file.
 
+mod history_read;
+pub use history_read::*;
+mod checked_history;
+pub use checked_history::*;
+
 use serde::de::{self, MapAccess, SeqAccess, Visitor, value::MapAccessDeserializer};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
@@ -33,6 +38,7 @@ pub const MAX_VERSION_PARENTS: usize = 8;
 pub const MAX_CONFLICT_VERSIONS: usize = 8;
 pub const FILE_MUTATION_TRANSACTION_VERSION: u16 = 1;
 pub const FILE_MUTATION_TRANSACTION_VERSION_V2: u16 = 2;
+pub const FILE_MUTATION_TRANSACTION_VERSION_V3: u16 = 3;
 pub const MAX_TRANSACTION_PARTICIPANTS: usize = 8;
 pub const FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN: &str =
     "tilo.collaborative-fs.file-mutation-transaction.v1";
@@ -498,13 +504,22 @@ pub enum FileProvenance {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub enum FileMutationParticipantRoleV1 {
+pub enum FileMutationParticipantRole {
     Source,
     Replaced,
     KeepBothSource,
     KeepBothSibling,
     MergeSource,
+    RestoreContent,
 }
+
+/// Source compatibility for the original replacement-rename transaction API.
+///
+/// The transaction model now spans separately validated schema versions, so
+/// new code must use [`FileMutationParticipantRole`] instead of implying that
+/// every role is valid in schema version 1.
+#[deprecated(note = "use FileMutationParticipantRole with the manifest schema gate")]
+pub type FileMutationParticipantRoleV1 = FileMutationParticipantRole;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -516,9 +531,9 @@ pub enum ConflictMergeCodecV1 {
 /// Complete authenticated post-state proposed for one transaction participant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FileMutationParticipantV1 {
+pub struct FileMutationParticipant {
     pub record_id: FileRecordId,
-    pub role: FileMutationParticipantRoleV1,
+    pub role: FileMutationParticipantRole,
     pub expected_version: FileVersionId,
     pub proposed_binding: FileBindingV1,
     pub proposed_version: FileVersionV1,
@@ -526,18 +541,21 @@ pub struct FileMutationParticipantV1 {
     pub projection_hash: ContentHash,
 }
 
+#[deprecated(note = "use FileMutationParticipant with the manifest schema gate")]
+pub type FileMutationParticipantV1 = FileMutationParticipant;
+
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
 struct ParticipantProjectionView<'a> {
     record_id: FileRecordId,
-    role: FileMutationParticipantRoleV1,
+    role: FileMutationParticipantRole,
     expected_version: FileVersionId,
     proposed_binding: &'a FileBindingV1,
     proposed_version: &'a FileVersionV1,
     proposed_content_revision: &'a Option<ContentRevisionV1>,
 }
 
-impl FileMutationParticipantV1 {
+impl FileMutationParticipant {
     fn projection_view(&self) -> ParticipantProjectionView<'_> {
         ParticipantProjectionView {
             record_id: self.record_id,
@@ -581,15 +599,16 @@ impl FileMutationParticipantV1 {
             return Err(FileRecordError::InvalidTransactionParticipant);
         }
         let valid_parents = match self.role {
-            FileMutationParticipantRoleV1::Source | FileMutationParticipantRoleV1::Replaced => {
+            FileMutationParticipantRole::Source | FileMutationParticipantRole::Replaced => {
                 self.proposed_version.parents == [self.expected_version]
             }
-            FileMutationParticipantRoleV1::KeepBothSource
-            | FileMutationParticipantRoleV1::MergeSource => self
+            FileMutationParticipantRole::KeepBothSource
+            | FileMutationParticipantRole::MergeSource
+            | FileMutationParticipantRole::RestoreContent => self
                 .proposed_version
                 .parents
                 .contains(&self.expected_version),
-            FileMutationParticipantRoleV1::KeepBothSibling => {
+            FileMutationParticipantRole::KeepBothSibling => {
                 self.proposed_version.parents.is_empty()
             }
         };
@@ -607,24 +626,32 @@ impl FileMutationParticipantV1 {
             _ => return Err(FileRecordError::InvalidTransactionParticipant),
         }
         let valid_role = match self.role {
-            FileMutationParticipantRoleV1::Source => {
+            FileMutationParticipantRole::Source => {
                 !self.proposed_binding.tombstoned
                     && matches!(
                         self.proposed_version.provenance,
                         FileProvenance::Rename | FileProvenance::Move
                     )
             }
-            FileMutationParticipantRoleV1::Replaced => {
+            FileMutationParticipantRole::Replaced => {
                 self.proposed_binding.tombstoned
                     && self.proposed_version.provenance == FileProvenance::Delete
             }
-            FileMutationParticipantRoleV1::KeepBothSource
-            | FileMutationParticipantRoleV1::MergeSource => {
+            FileMutationParticipantRole::KeepBothSource
+            | FileMutationParticipantRole::MergeSource => {
                 !self.proposed_binding.tombstoned
                     && self.proposed_binding.kind == FileNodeKind::File
                     && self.proposed_version.provenance == FileProvenance::ConflictResolution
             }
-            FileMutationParticipantRoleV1::KeepBothSibling => {
+            FileMutationParticipantRole::RestoreContent => {
+                !self.proposed_binding.tombstoned
+                    && self.proposed_binding.kind == FileNodeKind::File
+                    && matches!(
+                        self.proposed_version.provenance,
+                        FileProvenance::Restore { .. }
+                    )
+            }
+            FileMutationParticipantRole::KeepBothSibling => {
                 !self.proposed_binding.tombstoned
                     && self.proposed_binding.kind == FileNodeKind::File
                     && self.proposed_version.provenance == FileProvenance::Create
@@ -639,7 +666,13 @@ impl FileMutationParticipantV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub enum FileMutationOperationV1 {
+pub enum FileMutationOperation {
+    RestoreContent {
+        request: CheckedHistoryRequestV1,
+        selected_version: FileVersionId,
+        prior_revision: ContentRevisionV1,
+        compensates: Option<Uuid>,
+    },
     ReplacementRename {
         source_parent: FileRecordId,
         source_name: FileNameV1,
@@ -670,28 +703,35 @@ pub enum FileMutationOperationV1 {
     },
 }
 
+/// Source compatibility for callers of the original schema-1 API.
+#[deprecated(note = "use FileMutationOperation with the manifest schema gate")]
+pub type FileMutationOperationV1 = FileMutationOperation;
+
 /// Canonical manifest signed once and copied unchanged into every prepare.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FileMutationTransactionManifestV1 {
+pub struct FileMutationTransactionManifest {
     pub schema_version: u16,
     pub transaction_id: Uuid,
     pub workspace_id: Uuid,
     pub actor: FileActor,
     pub timestamp_ms: u64,
-    pub operation: FileMutationOperationV1,
+    pub operation: FileMutationOperation,
     /// Strictly sorted by stable record ID, with no duplicates.
-    pub participants: Vec<FileMutationParticipantV1>,
+    pub participants: Vec<FileMutationParticipant>,
 }
+
+#[deprecated(note = "use FileMutationTransactionManifest")]
+pub type FileMutationTransactionManifestV1 = FileMutationTransactionManifest;
 
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
 struct TransactionSigningView<'a> {
     domain: &'static str,
-    manifest: &'a FileMutationTransactionManifestV1,
+    manifest: &'a FileMutationTransactionManifest,
 }
 
-impl FileMutationTransactionManifestV1 {
+impl FileMutationTransactionManifest {
     /// Validate the complete, operation-specific atomic transaction manifest.
     ///
     /// # Errors
@@ -705,7 +745,9 @@ impl FileMutationTransactionManifestV1 {
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if !matches!(
             self.schema_version,
-            FILE_MUTATION_TRANSACTION_VERSION | FILE_MUTATION_TRANSACTION_VERSION_V2
+            FILE_MUTATION_TRANSACTION_VERSION
+                | FILE_MUTATION_TRANSACTION_VERSION_V2
+                | FILE_MUTATION_TRANSACTION_VERSION_V3
         ) {
             return Err(FileRecordError::UnsupportedMutationTransactionVersion(
                 self.schema_version,
@@ -727,7 +769,52 @@ impl FileMutationTransactionManifestV1 {
             participant.validate(self.actor)?;
         }
         match &self.operation {
-            FileMutationOperationV1::ReplacementRename {
+            FileMutationOperation::RestoreContent {
+                request,
+                selected_version,
+                prior_revision,
+                compensates,
+            } => {
+                request
+                    .validate()
+                    .map_err(|_| FileRecordError::InvalidTransactionParticipant)?;
+                prior_revision.validate()?;
+                let participant = self
+                    .participants
+                    .first()
+                    .ok_or(FileRecordError::InvalidTransactionParticipants)?;
+                let action_valid = match request.operation {
+                    CheckedHistoryOperationV1::Restore { version_id } => {
+                        version_id == *selected_version && compensates.is_none()
+                    }
+                    CheckedHistoryOperationV1::Undo { restore_intent } => {
+                        *compensates == Some(restore_intent)
+                    }
+                    CheckedHistoryOperationV1::Redo { undo_intent } => {
+                        *compensates == Some(undo_intent)
+                    }
+                };
+                if self.schema_version != FILE_MUTATION_TRANSACTION_VERSION_V3
+                    || self.participants.len() != 1
+                    || request.intent_id != self.transaction_id
+                    || request.review.workspace_id != self.workspace_id
+                    || request.review.record_id != participant.record_id
+                    || prior_revision.record_id != participant.record_id
+                    || prior_revision.version_id != participant.expected_version
+                    || selected_version.0.is_nil()
+                    || participant.role != FileMutationParticipantRole::RestoreContent
+                    || participant.proposed_version.provenance
+                        != (FileProvenance::Restore {
+                            from: *selected_version,
+                        })
+                    || participant.proposed_version.timestamp_ms != self.timestamp_ms
+                    || !action_valid
+                {
+                    return Err(FileRecordError::InvalidTransactionParticipant);
+                }
+                Ok(())
+            }
+            FileMutationOperation::ReplacementRename {
                 source_parent,
                 source_name,
                 destination_parent,
@@ -747,10 +834,11 @@ impl FileMutationTransactionManifestV1 {
                 let source = self
                     .participants
                     .iter()
-                    .find(|participant| participant.role == FileMutationParticipantRoleV1::Source);
-                let replaced = self.participants.iter().find(|participant| {
-                    participant.role == FileMutationParticipantRoleV1::Replaced
-                });
+                    .find(|participant| participant.role == FileMutationParticipantRole::Source);
+                let replaced = self
+                    .participants
+                    .iter()
+                    .find(|participant| participant.role == FileMutationParticipantRole::Replaced);
                 let (Some(source), Some(replaced)) = (source, replaced) else {
                     return Err(FileRecordError::InvalidTransactionParticipants);
                 };
@@ -765,7 +853,7 @@ impl FileMutationTransactionManifestV1 {
                 }
                 Ok(())
             }
-            FileMutationOperationV1::KeepBothContentConflict {
+            FileMutationOperation::KeepBothContentConflict {
                 source_record,
                 sibling_record,
                 parent_record,
@@ -794,10 +882,10 @@ impl FileMutationTransactionManifestV1 {
                     return Err(FileRecordError::InvalidKeepBothTransaction);
                 }
                 let source = self.participants.iter().find(|participant| {
-                    participant.role == FileMutationParticipantRoleV1::KeepBothSource
+                    participant.role == FileMutationParticipantRole::KeepBothSource
                 });
                 let sibling = self.participants.iter().find(|participant| {
-                    participant.role == FileMutationParticipantRoleV1::KeepBothSibling
+                    participant.role == FileMutationParticipantRole::KeepBothSibling
                 });
                 let (Some(source), Some(sibling)) = (source, sibling) else {
                     return Err(FileRecordError::InvalidTransactionParticipants);
@@ -821,7 +909,7 @@ impl FileMutationTransactionManifestV1 {
                 }
                 Ok(())
             }
-            FileMutationOperationV1::MergeContentConflict {
+            FileMutationOperation::MergeContentConflict {
                 source_record,
                 parent_record,
                 source_name,
@@ -852,7 +940,7 @@ impl FileMutationTransactionManifestV1 {
                 let Some(source) = self.participants.first() else {
                     return Err(FileRecordError::InvalidMergeTransaction);
                 };
-                if source.role != FileMutationParticipantRoleV1::MergeSource
+                if source.role != FileMutationParticipantRole::MergeSource
                     || source.record_id != *source_record
                     || source.expected_version != *current_version
                     || source.proposed_binding.parent != Some(*parent_record)
@@ -889,15 +977,20 @@ fn valid_file_name(name: &FileNameV1) -> bool {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FileMutationTransactionV1 {
-    pub manifest: FileMutationTransactionManifestV1,
+pub struct FileMutationTransaction {
+    pub manifest: FileMutationTransactionManifest,
     pub signature: Signature,
 }
 
-impl FileMutationTransactionV1 {
+#[deprecated(note = "use FileMutationTransaction")]
+pub type FileMutationTransactionV1 = FileMutationTransaction;
+
+impl FileMutationTransaction {
     fn signing_view(&self) -> TransactionSigningView<'_> {
         TransactionSigningView {
-            domain: if self.manifest.schema_version == FILE_MUTATION_TRANSACTION_VERSION_V2 {
+            domain: if self.manifest.schema_version == FILE_MUTATION_TRANSACTION_VERSION_V3 {
+                "qos.collaborative-fs.file-mutation-transaction.v3"
+            } else if self.manifest.schema_version == FILE_MUTATION_TRANSACTION_VERSION_V2 {
                 FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN_V2
             } else {
                 FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN
@@ -913,7 +1006,7 @@ impl FileMutationTransactionV1 {
     /// Returns an error for an invalid manifest, mismatched device key, or
     /// canonical signing failure.
     pub fn signed(
-        manifest: FileMutationTransactionManifestV1,
+        manifest: FileMutationTransactionManifest,
         signing_key: &ed25519_dalek::SigningKey,
     ) -> Result<Self, FileMutationTransactionError> {
         manifest.validate()?;
@@ -1489,11 +1582,11 @@ mod tests {
 
     fn transaction_participant(
         record_id: FileRecordId,
-        role: FileMutationParticipantRoleV1,
+        role: FileMutationParticipantRole,
         parent: FileRecordId,
         name: &str,
         actor: FileActor,
-    ) -> FileMutationParticipantV1 {
+    ) -> FileMutationParticipant {
         let expected_version = FileVersionId::new();
         let proposed_version = FileVersionV1 {
             id: FileVersionId::new(),
@@ -1504,12 +1597,12 @@ mod tests {
             content_hash: None,
             metadata_hash: ContentHash([record_id.0.as_bytes()[0]; 32]),
             provenance: match role {
-                FileMutationParticipantRoleV1::Source => FileProvenance::Rename,
-                FileMutationParticipantRoleV1::Replaced => FileProvenance::Delete,
+                FileMutationParticipantRole::Source => FileProvenance::Rename,
+                FileMutationParticipantRole::Replaced => FileProvenance::Delete,
                 _ => unreachable!("replacement fixture role"),
             },
         };
-        let mut participant = FileMutationParticipantV1 {
+        let mut participant = FileMutationParticipant {
             record_id,
             role,
             expected_version,
@@ -1519,7 +1612,7 @@ mod tests {
                 parent: Some(parent),
                 name: name.into(),
                 kind: FileNodeKind::File,
-                tombstoned: role == FileMutationParticipantRoleV1::Replaced,
+                tombstoned: role == FileMutationParticipantRole::Replaced,
                 actor,
                 observed_at_ms: 44,
             },
@@ -1552,27 +1645,27 @@ mod tests {
         let mut participants = vec![
             transaction_participant(
                 source_record,
-                FileMutationParticipantRoleV1::Source,
+                FileMutationParticipantRole::Source,
                 destination_parent,
                 "destination.txt",
                 actor,
             ),
             transaction_participant(
                 replaced_record,
-                FileMutationParticipantRoleV1::Replaced,
+                FileMutationParticipantRole::Replaced,
                 destination_parent,
                 "destination.txt",
                 actor,
             ),
         ];
         participants.sort_by_key(|participant| participant.record_id);
-        let manifest = FileMutationTransactionManifestV1 {
+        let manifest = FileMutationTransactionManifest {
             schema_version: FILE_MUTATION_TRANSACTION_VERSION,
             transaction_id: Uuid::new_v4(),
             workspace_id: Uuid::new_v4(),
             actor,
             timestamp_ms: 44,
-            operation: FileMutationOperationV1::ReplacementRename {
+            operation: FileMutationOperation::ReplacementRename {
                 source_parent,
                 source_name: "source.txt".into(),
                 destination_parent,
@@ -1582,7 +1675,7 @@ mod tests {
             },
             participants,
         };
-        let signed = FileMutationTransactionV1::signed(manifest, &key).unwrap();
+        let signed = FileMutationTransaction::signed(manifest, &key).unwrap();
         signed.verify().unwrap();
 
         let mut reordered = signed.clone();
@@ -1599,7 +1692,7 @@ mod tests {
         assert!(forged.verify().is_err());
     }
 
-    fn merge_manifest() -> FileMutationTransactionManifestV1 {
+    fn merge_manifest() -> FileMutationTransactionManifest {
         let key = SigningKey::from_bytes(&[42; 32]);
         let actor = FileActor {
             person: Ed25519PublicKey([7; 32]),
@@ -1620,9 +1713,9 @@ mod tests {
             metadata_hash: ContentHash([9; 32]),
             provenance: FileProvenance::ConflictResolution,
         };
-        let mut participant = FileMutationParticipantV1 {
+        let mut participant = FileMutationParticipant {
             record_id,
-            role: FileMutationParticipantRoleV1::MergeSource,
+            role: FileMutationParticipantRole::MergeSource,
             expected_version: current,
             proposed_binding: FileBindingV1 {
                 schema_version: FILE_BINDING_VERSION,
@@ -1646,13 +1739,13 @@ mod tests {
             projection_hash: ContentHash([0; 32]),
         };
         participant.projection_hash = participant.computed_projection_hash().unwrap();
-        FileMutationTransactionManifestV1 {
+        FileMutationTransactionManifest {
             schema_version: FILE_MUTATION_TRANSACTION_VERSION_V2,
             transaction_id: Uuid::new_v4(),
             workspace_id: Uuid::new_v4(),
             actor,
             timestamp_ms: 50,
-            operation: FileMutationOperationV1::MergeContentConflict {
+            operation: FileMutationOperation::MergeContentConflict {
                 source_record: record_id,
                 parent_record: parent,
                 source_name: "merge.txt".into(),
@@ -1667,12 +1760,61 @@ mod tests {
     }
 
     #[test]
+    fn checked_restore_manifest_binds_review_selection_and_exact_result() {
+        let mut manifest = merge_manifest();
+        manifest.schema_version = 3;
+        let selected = FileVersionId::new();
+        let participant = &mut manifest.participants[0];
+        participant.role = FileMutationParticipantRole::RestoreContent;
+        participant.proposed_version.provenance = FileProvenance::Restore { from: selected };
+        participant.projection_hash = participant.computed_projection_hash().unwrap();
+        let prior = ContentRevisionV1 {
+            version_id: participant.expected_version,
+            ..participant.proposed_content_revision.unwrap()
+        };
+        manifest.operation = FileMutationOperation::RestoreContent {
+            request: CheckedHistoryRequestV1 {
+                schema_version: 1,
+                intent_id: manifest.transaction_id,
+                review: FileRestoreReviewV1 {
+                    schema_version: 1,
+                    workspace_id: manifest.workspace_id,
+                    record_id: participant.record_id,
+                    mount_lifetime: Uuid::new_v4(),
+                    frontier: [9; 32],
+                },
+                operation: CheckedHistoryOperationV1::Restore {
+                    version_id: selected,
+                },
+            },
+            selected_version: selected,
+            prior_revision: prior,
+            compensates: None,
+        };
+        let mut mislabeled_v1 = manifest.clone();
+        mislabeled_v1.schema_version = FILE_MUTATION_TRANSACTION_VERSION;
+        assert_eq!(
+            mislabeled_v1.validate(),
+            Err(FileRecordError::InvalidTransactionParticipant)
+        );
+        manifest.validate().unwrap();
+        let mut forged = manifest.clone();
+        if let FileMutationOperation::RestoreContent { request, .. } = &mut forged.operation {
+            request.review.record_id = FileRecordId::new();
+        }
+        assert!(forged.validate().is_err());
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let signed = FileMutationTransaction::signed(manifest, &key).unwrap();
+        signed.verify().unwrap();
+    }
+
+    #[test]
     fn merge_manifest_binds_exact_conflict_current_base_and_codec_requirements() {
         let valid = merge_manifest();
         valid.validate().unwrap();
 
         let mut qdoc = valid.clone();
-        if let FileMutationOperationV1::MergeContentConflict {
+        if let FileMutationOperation::MergeContentConflict {
             base_version,
             codec,
             ..
@@ -1684,7 +1826,7 @@ mod tests {
         qdoc.validate().unwrap();
 
         let mut stale_current = valid.clone();
-        if let FileMutationOperationV1::MergeContentConflict {
+        if let FileMutationOperation::MergeContentConflict {
             current_version, ..
         } = &mut stale_current.operation
         {
@@ -1696,7 +1838,7 @@ mod tests {
         );
 
         let mut missing_base = valid.clone();
-        if let FileMutationOperationV1::MergeContentConflict { base_version, .. } =
+        if let FileMutationOperation::MergeContentConflict { base_version, .. } =
             &mut missing_base.operation
         {
             *base_version = None;
@@ -1707,7 +1849,7 @@ mod tests {
         );
 
         let mut member_as_base = valid;
-        if let FileMutationOperationV1::MergeContentConflict {
+        if let FileMutationOperation::MergeContentConflict {
             conflict_versions,
             base_version,
             ..
