@@ -33,9 +33,14 @@ concurrency:
 
 jobs:
   signing-preflight:
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
+    container:
+      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout signing policy
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
