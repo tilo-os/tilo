@@ -143,6 +143,15 @@ impl AsyncBrokerSigningIdentity {
         self.threshold == 1 && self.total_shares == 1
     }
 
+    /// Whether another request can safely use the framed stream.
+    ///
+    /// Complete broker refusals retain alignment and return `true`. Transport,
+    /// framing, timeout, and protocol failures drop the stream and return
+    /// `false`, allowing the owning session to fail closed immediately.
+    pub fn is_usable(&self) -> bool {
+        self.stream.is_some()
+    }
+
     /// Ask the host for a certified collaboration-join proof.
     ///
     /// # Errors
@@ -349,6 +358,7 @@ mod tests {
             error_kind(identity.sign_collaboration_join("workspace").await),
             expected
         );
+        assert!(!identity.is_usable());
         assert_eq!(
             error_kind(
                 identity
@@ -398,6 +408,7 @@ mod tests {
             error_kind(identity.sign_collaboration_join("workspace").await),
             io::ErrorKind::TimedOut
         );
+        assert!(!identity.is_usable());
         assert_eq!(
             error_kind(
                 identity
@@ -465,6 +476,7 @@ mod tests {
             error_kind(identity.sign_collaboration_join("workspace").await),
             io::ErrorKind::PermissionDenied
         );
+        assert!(identity.is_usable());
         assert_eq!(
             identity
                 .sign_collaboration_op("workspace", "app", "record", b"op")
