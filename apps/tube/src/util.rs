@@ -130,13 +130,17 @@ mod tests {
     }
 
     #[test]
-    fn fnv_is_stable() {
-        assert_eq!(fnv1a("abc"), fnv1a("abc"));
+    fn fnv_matches_the_published_vector_and_distinguishes_inputs() {
+        assert_eq!(fnv1a("abc"), 0x1a47_e90b);
         assert_ne!(fnv1a("abc"), fnv1a("abd"));
     }
 
     #[test]
-    fn gradient_is_deterministic() {
-        assert_eq!(seed_gradient("x"), seed_gradient("x"));
+    fn gradient_has_distinct_stops_and_varies_by_seed() {
+        let x = seed_gradient("x");
+        let y = seed_gradient("y");
+
+        assert_ne!(x.0, x.1);
+        assert_ne!(x, y);
     }
 }
