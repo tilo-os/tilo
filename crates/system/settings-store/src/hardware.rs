@@ -1382,6 +1382,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn process_start_identity_rejects_pid_reuse_shape() {
         let current = process_start_ticks(std::process::id())
             .expect("the current Linux process has /proc stat data");
@@ -1398,6 +1399,12 @@ mod tests {
             Some(stale.publisher_start_ticks)
         );
     }
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn unavailable_linux_process_identity_is_not_invented() {
+        assert_eq!(process_start_ticks(std::process::id()), None);
+    }
+
     #[test]
     fn shortcut_parser_normalises_and_rejects_plain_letters() {
         assert_eq!(KeyChord::parse("meta + K").unwrap().display(), "Super+k");
