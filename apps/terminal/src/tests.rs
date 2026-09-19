@@ -1257,6 +1257,282 @@ fn terminal_context_menu_keyboard_gestures_do_not_reach_the_process() {
 }
 
 #[test]
+fn short_terminal_menu_scrolls_to_find_before_keyboard_activation() {
+    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+    use vello::{Scene, kurbo::Affine};
+    use winit::keyboard::{Key, NamedKey};
+    for height in [120.0, 160.0] {
+        let (mut widget, writes) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        let viewport = Rect::new(0.0, 0.0, 320.0, height);
+        widget.force_geometry(viewport, 10.0, 20.0);
+        widget.force_grid(vec!["one".into(), "two".into()]);
+        widget.open_context_menu_at(viewport.center());
+        widget.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark().with_text_scale(2.0),
+            &PresenceCtx::empty(),
+        );
+        // Up enters the final actionable row, which is Find below the short-
+        // viewport threshold. The shared menu scrolls its clipped row into view.
+        send_key(
+            &mut widget,
+            &mut doc,
+            Key::Named(NamedKey::ArrowUp),
+            false,
+            false,
+        );
+        let row = widget.context_menu_find_rect().expect("Find row");
+        assert!(
+            row.area() > 0.0,
+            "Find must be painted after keyboard navigation"
+        );
+        assert_eq!(row.intersect(viewport), row);
+        send_key(
+            &mut widget,
+            &mut doc,
+            Key::Named(NamedKey::Enter),
+            false,
+            false,
+        );
+        assert!(widget.find_test_state().0);
+        assert!(
+            widget.take_control_invocation().is_none(),
+            "Find is local presentation"
+        );
+        assert!(drain_writes(&writes).is_empty());
+    }
+}
+
+#[test]
+fn menu_clear_uses_real_app_permission_and_confirmation_admission() {
+    use ui::a11y::Action;
+    use ui::permissions::{Actor, PermissionContext, Role};
+
+    for role in [Role::Viewer, Role::Editor] {
+        let (mut widget, writes) = build_test_widget();
+        let mut state = State::new();
+        widget.sync(&mut state.doc, &state.root);
+        widget.open_context_menu_at(vello::kurbo::Point::new(20.0, 20.0));
+        let mut app = ui::App::new(state, Box::new(widget));
+        app.set_permission_ctx(PermissionContext::from_capabilities(
+            Actor::person(Some(role), "terminal-menu-user"),
+            vec![],
+        ));
+        app.init_layout();
+        app.refresh_semantic_tree();
+        let clear = app
+            .semantic_tree()
+            .iter()
+            .find(|node| {
+                node.name.as_deref() == Some("Clear screen")
+                    && node.role == ui::a11y::Role::MenuItem
+            })
+            .expect("Clear menu row");
+        let clear_id = clear.id.clone();
+        let owner = clear.widget_taffy_id.expect("menu owner");
+        let accepted = app
+            .invoke_semantic_action(&clear_id, "activate", None)
+            .unwrap();
+        assert_eq!(accepted, role == Role::Editor);
+        // The public assistive dispatch drains exactly the same pending
+        // controls as the native event loop, without a window or test bypass.
+        app.dispatch_a11y_action(ui::accesskit::NodeId(owner + 1), &Action::Focus);
+        assert!(
+            drain_writes(&writes).is_empty(),
+            "no PTY effect before explicit confirmation"
+        );
+        assert_eq!(
+            app.action_palette()
+                .is_some_and(|palette| palette.is_open()),
+            role == Role::Editor
+        );
+
+        // A viewer can still discover and open local Find; its query is not
+        // a terminal command and does not need write access to the process.
+        if role == Role::Viewer {
+            app.refresh_semantic_tree();
+            let label = ui::i18n::I18nManager::lookup("terminal-find-scrollback", None);
+            let find = app
+                .semantic_tree()
+                .iter()
+                .find(|node| {
+                    node.role == ui::a11y::Role::MenuItem
+                        && node.name.as_deref() == Some(label.as_str())
+                })
+                .expect("local Find row")
+                .id
+                .clone();
+            assert!(app.invoke_semantic_action(&find, "activate", None).unwrap());
+            app.refresh_semantic_tree();
+            assert!(
+                app.semantic_tree()
+                    .iter()
+                    .any(|node| node.role == ui::a11y::Role::TextInput
+                        && node.name.as_deref() == Some("Find in scrollback"))
+            );
+            assert!(drain_writes(&writes).is_empty());
+        }
+    }
+}
+
+thread_local! {
+    static MENU_COMPONENT_WIDGET: std::cell::RefCell<Option<TerminalWidget>> = const { std::cell::RefCell::new(None) };
+}
+
+fn menu_component_factory(
+    mut context: ui::application::HostContext,
+    _: ui::application::LaunchTarget,
+    _: ui::application::RestoreInput,
+) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
+    let mut widget = MENU_COMPONENT_WIDGET
+        .with_borrow_mut(Option::take)
+        .expect("explicit test terminal");
+    context
+        .initialize_new_record(|doc| {
+            widget.init_crdt(doc, &ROOT);
+            Ok(())
+        })
+        .unwrap();
+    Ok(ui::application::AppComponent::new(
+        context,
+        Box::new(widget),
+        ui::tilo_actions::ActionRegistry::new(),
+    ))
+}
+
+#[test]
+fn confirmed_menu_clear_checks_live_component_permissions_and_writes_exact_bytes() {
+    use std::{cell::RefCell, rc::Rc};
+    use ui::application::{
+        ApplicationDefinition, ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput,
+    };
+    use ui::permissions::{Actor, PermissionContext, Role, UserId};
+    const APP_ID: &str = "dev.tilo.terminal";
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("state");
+    let mut owners = ui::record::RecordOwners::new(root.clone());
+    let records = owners.open(APP_ID, "terminal-menu-room").unwrap();
+    let views = Rc::new(
+        ui::application_view::InstanceViewStore::new(
+            root,
+            "terminal-menu-device",
+            "terminal-menu-room",
+        )
+        .unwrap(),
+    );
+    let permissions = Rc::new(RefCell::new(PermissionContext::permissive()));
+    let definition = ApplicationDefinition {
+        app_id: APP_ID,
+        title: "Terminal",
+        icon: ui::IconDescriptor::Glyph("T"),
+        record_kind: ui::record::RecordKind::new("terminal"),
+        required: vec![],
+        optional: vec![],
+        create: menu_component_factory,
+    };
+    let (mut widget, writes) = build_test_widget();
+    widget.open_context_menu_at(vello::kurbo::Point::new(20.0, 20.0));
+    let semantics = widget.accessibility().unwrap();
+    let clear = semantics
+        .children
+        .iter()
+        .find(|node| node.role == ui::a11y::Role::Menu)
+        .unwrap()
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some("Clear screen"))
+        .unwrap();
+    widget.perform_semantic_action(
+        clear.action_target.as_deref().unwrap(),
+        &ui::a11y::Action::Activate,
+        &mut AutoCommit::new(),
+        &ROOT,
+    );
+    let intent = widget
+        .take_control_invocation()
+        .expect("menu queues a canonical intent");
+    assert_eq!(intent.address.action, "clear");
+    assert!(drain_writes(&writes).is_empty());
+    MENU_COMPONENT_WIDGET.with_borrow_mut(|slot| *slot = Some(widget));
+    let context = HostContext::prepare(
+        &definition,
+        records,
+        views,
+        "terminal-menu-device".into(),
+        17,
+        permissions.clone(),
+        UserId("terminal-menu-user".into()),
+        ui::tilo_actions::ActionContext::default(),
+        &LaunchTarget::New,
+    )
+    .unwrap();
+    let component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    let mut driver = ui::headless::Driver::from_component(
+        component,
+        (800, 480),
+        ComponentRunnerInputs {
+            theme: ui::Theme::dark(),
+            text_renderer: ui::TextRenderer::new(),
+        },
+    )
+    .unwrap();
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: 17,
+        address: intent.address,
+    };
+    *permissions.borrow_mut() = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Viewer), "terminal-menu-user"),
+        vec![],
+    );
+    assert!(
+        driver
+            .invoke_bound_action_confirmed(&address, &intent.arguments)
+            .is_err(),
+        "confirmation never grants a Viewer process write access"
+    );
+    assert!(drain_writes(&writes).is_empty());
+    *permissions.borrow_mut() = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Editor), "terminal-menu-user"),
+        vec![],
+    );
+    assert!(
+        driver
+            .invoke_bound_action(&address, &intent.arguments)
+            .is_err(),
+        "Editor must still confirm the existing privileged contract"
+    );
+    assert!(drain_writes(&writes).is_empty());
+    assert!(matches!(
+        driver
+            .invoke_bound_action_confirmed(&address, &intent.arguments)
+            .unwrap(),
+        ui::widget::ResourceOperationStart::Completed(_)
+    ));
+    assert_eq!(
+        drain_writes(&writes),
+        vec![0x0c],
+        "the admitted menu action writes Clear exactly once"
+    );
+    *permissions.borrow_mut() = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Viewer), "terminal-menu-user"),
+        vec![],
+    );
+    assert!(
+        driver
+            .invoke_bound_action_confirmed(&address, &intent.arguments)
+            .is_err(),
+        "later role revocation is checked again"
+    );
+    assert!(drain_writes(&writes).is_empty());
+    driver.close_components();
+}
+
+#[test]
 fn find_in_scrollback_is_local_reveals_matches_and_reflows_at_large_text() {
     use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
     use vello::{Scene, kurbo::Affine};
@@ -2069,6 +2345,30 @@ fn context_menu_is_keyboard_navigable_and_semantically_complete() {
         Key::Named(NamedKey::Enter),
         false,
         false,
+    );
+    assert!(
+        widget.selection().is_none(),
+        "menu selection waits for host admission"
+    );
+    let intent = widget
+        .take_control_invocation()
+        .expect("canonical select-all intent");
+    assert_eq!(intent.address.action, "select-all");
+    let resources = widget.resources(&doc);
+    let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
+    assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
+    assert_eq!(
+        spec.contract.confirmation,
+        ui::tilo_actions::ConfirmationPolicy::Confirm
+    );
+    let encoded = spec.build_json(&intent.arguments).unwrap();
+    // This focused keyboard-selection regression supplies the host's accepted
+    // operation after checking the queued contract. The separate App/component
+    // tests cover denial, confirmation and live role revocation.
+    assert!(
+        widget
+            .invoke_resource_operation(spec.kind, &encoded.type_id, &encoded.payload, &doc, &ROOT)
+            .unwrap()
     );
     assert_eq!(
         widget.selection(),

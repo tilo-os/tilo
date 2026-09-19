@@ -391,7 +391,7 @@ mod tests {
             .iter()
             .map(|action| action.id.as_str())
             .collect();
-        assert_eq!(ids, vec!["send", "run", "interrupt", "clear"]);
+        assert_eq!(ids, vec!["send", "run", "interrupt", "clear", "paste"]);
         assert!(
             terminal
                 .actions
@@ -428,7 +428,25 @@ mod tests {
                 .iter()
                 .map(|action| action.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["history-top", "history-live", "copy-visible"]
+            vec![
+                "history-top",
+                "history-live",
+                "copy-visible",
+                "copy-selection",
+                "select-all"
+            ]
+        );
+        assert!(
+            transcript
+                .actions
+                .iter()
+                .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
+                .all(|action| {
+                    action.contract.confirmation == ui::tilo_actions::ConfirmationPolicy::Confirm
+                        && action.contract.risk == ui::tilo_actions::RiskLevel::Privileged
+                        && action.contract.retry == ui::tilo_actions::RetryPolicy::AtMostOnce
+                }),
+            "clipboard and selection-publication effects retain explicit admission contracts"
         );
     }
 
