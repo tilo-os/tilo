@@ -50,6 +50,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/native-mold-linker.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/verify-native-mold.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/dispatch_merge.py": "tools/tests/test_ci_merge_dispatch.py",
+    "tools/ci/workflow_applicability.py": "tools/tests/test_workflow_applicability.py",
     "tools/policy/run.sh": "tools/tests/test_ci_select.py",
     "tools/policy/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
     "tools/policy/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",
@@ -69,6 +70,10 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "tools/tests/test_ci_native_mold.py",
         "tools/tests/test_cosign_install_action.py",
     ),
+    ".forgejo/workflows/build-kernel.yml": (
+        "tools/tests/test_workflow_applicability.py",
+        "os/tests/workflow_dependency_invariants.sh",
+    ),
     ".forgejo/workflows/check.yml": (
         "tools/tests/test_ci_check_aggregate.py",
         "tools/tests/test_ci_queue_relief.py",
@@ -80,6 +85,8 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     ),
     ".forgejo/workflows/tilo-relay.yaml": (
         "tools/tests/test_workflow_package_paths.py",
+        "tools/tests/test_workflow_applicability.py",
+        "os/tests/workflow_dependency_invariants.sh",
     ),
 }
 NATIVE_RUNNERS = {"x86_64": "runner", "aarch64": "runner-arm64"}
