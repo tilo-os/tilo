@@ -45,6 +45,9 @@ CACHE_TRUST = 'e5241775387c6afb39d2e6bf8350a59a8aa478b3'
 CACHE_API = 'f6881005fc62dd54cba7dbe7c241149151adfd74'
 CACHE_VIEWER = 'a89fe484328ff4206c35f842c07c3824b9df18ef'
 CACHE_SOURCE = '317eb82f7178b14623350f933088093cd3cdfd23'
+DRACUT_SOURCE = 'ca33fae89a24415584518a0dbbe4db0535935931'
+DRACUT_PATHS = ('os/Containerfile', 'os/tests/boot_chain_invariants.sh',
+                'os/tests/kernel_hardening_invariants.sh', 'os/tests/test_initramfs_module_policy.py')
 
 
 def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_sha256):
@@ -54,7 +57,7 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
     require(set(approval) == {'schema', 'purpose', 'assembly_source_revision',
         'previous_approval_json', 'previous_approval_sha256', 'wpe_bridge'}, 'cache admission schema differs')
     require(type(approval['schema']) is int and approval['schema'] == 2
-        and approval['assembly_source_revision'] == revision == CACHE_SOURCE,
+        and approval['assembly_source_revision'] == revision and revision in (CACHE_SOURCE, DRACUT_SOURCE),
         'cache admission requires exact reviewed source')
     require(git(repo, 'show', '-s', '--format=%P', CACHE_SOURCE).decode().strip() == CACHE_VIEWER
         and git(repo, 'show', '-s', '--format=%P', CACHE_VIEWER).decode().strip() == CACHE_API
@@ -67,6 +70,7 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
                                  (CACHE_VIEWER, CACHE_SOURCE, 'os/Containerfile')):
         require(git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', parent, child)
                 == name.encode() + b'\0', 'cache correction path differs')
+    dracut_correction = verify_dracut_successor(repo, revision) if revision == DRACUT_SOURCE else None
     # Exact commit pins bind the reviewed relocation, guarded API, SSH dependency and build-only trust parser bytes;
     # they are not an extensible allowlist of build-script changes.
     previous = approval['previous_approval_json'].encode()
@@ -88,7 +92,28 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
     result.update(approval=approval, approval_sha256=digest, assembly_source_revision=revision,
         assembly_epoch=int(git(repo, 'show', '-s', '--format=%ct', revision)), changes=changes,
         layer_epoch_anchor=CACHE_BASE, layer_epoch=int(git(repo, 'show', '-s', '--format=%ct', CACHE_BASE)))
+    if dracut_correction is not None:
+        result['dracut_source_correction'] = dracut_correction
     return result
+
+
+def verify_dracut_successor(repo, revision):
+    require(revision == DRACUT_SOURCE
+        and git(repo, 'show', '-s', '--format=%P', revision).decode().strip() == CACHE_SOURCE,
+        'dracut correction requires exact reviewed parent and source')
+    require(git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', CACHE_SOURCE, revision)
+        == b''.join(name.encode() + b'\0' for name in DRACUT_PATHS),
+        'dracut correction paths differ')
+    verify_rootfs(git(repo, 'show', CACHE_SOURCE + ':os/Containerfile'),
+                  git(repo, 'show', revision + ':os/Containerfile'))
+    # The pinned test changes are not producer inputs. Verify the complete
+    # producer prefix has no tests-directory input before retaining native bins.
+    prefix = git(repo, 'show', revision + ':os/Containerfile').split(b'FROM ${BASE_REF} AS rootfs\n')[0]
+    require(all(name.encode() not in prefix for name in DRACUT_PATHS[1:])
+        and not re.search(rb'^COPY[^\n]*[ \t]os/tests/?[ \t]', prefix, re.M),
+        'dracut tests reached a producer stage')
+    return dict(parent_revision=CACHE_SOURCE, revision=revision,
+        sha256={name: sha(git(repo, 'show', revision + ':' + name)) for name in DRACUT_PATHS})
 
 
 TRUST_TOOL_STAGE = (b'# Public trust parsing is a build-only operation. The pinned base supplies the\n'
