@@ -1,9 +1,21 @@
-# Prepared controller durable-runtime qualification
+# Controller durable-runtime qualification
 
-Prepared against reviewed controller source `d4e96bedb`; not scheduled or run on
-Kubernetes. The scope is **simulated-dispatch-crash/storage/lock qualification
-only**, not live packaging acceptance. No Forgejo request, credential, policy,
-package publication or application build participates.
+Passed on Kubernetes on 2026-09-19 against reviewed controller source `d4e96bedb`
+and helper `a52ff85a4`. The scope is **simulated-dispatch-crash/storage/lock qualification
+only**, not live packaging acceptance. The probe makes no Forgejo API request,
+mounts no credentials or policy, and performs no package publication or application
+build. Kubelet uses the existing registry pull secret to start the pinned image.
+
+Two successful Pods shared the actual 1Gi ZFS RWO state PVC. Write Pod
+`cb787a38-6c78-4dc6-85f0-212a83c383f4` and restart Pod
+`47b4f2e3-4923-4b36-a71f-7e51f5d4d3cb` observed the same committed intent
+`3c5a8577-2072-4508-94e7-0efcffd196d5`. The initial source-projection failure
+was fixed and regression-tested before those successful attempts. Both Pods and
+their temporary ConfigMap were removed; the restart helper removed its fixture
+files and the PVC was retained. Sanitized source hashes, exact Pod identities,
+security settings and results are in infra's
+`apps/forgejo/packaging-controller/qualification/controller-runtime.json`.
+The production controller remains disabled.
 
 The trusted helper is `tools/controller_runtime_probe.py`, invoked through the
 reviewed `tools/ci/python.py` launcher. Mount the reviewed source read-only and
