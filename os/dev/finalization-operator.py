@@ -451,6 +451,16 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--operation', type=Path, required=True)
     sub = ap.add_subparsers(dest='command', required=True)
+    diagnostic = sub.add_parser('diagnose-checkpoint', help='read-only diagnostics for a pinned legacy checkpoint exporter')
+    diagnostic.add_argument('--run-directory', type=Path, required=True)
+    diagnostic.add_argument('--purpose', choices=('loader', 'live-uki', 'target-uki'), required=True)
+    export = sub.add_parser('export-checkpoint', help='publish authenticated checkpoint metadata without large EFI transport')
+    export.add_argument('--run-directory', type=Path, required=True)
+    export.add_argument('--purpose', choices=('loader', 'live-uki', 'target-uki'), required=True)
+    materialize = sub.add_parser('materialize-checkpoint', help='match a fetched signing input to checkpoint metadata')
+    materialize.add_argument('--run-directory', type=Path, required=True)
+    materialize.add_argument('--purpose', choices=('live-uki', 'target-uki'), required=True)
+    materialize.add_argument('--request-directory', type=Path, required=True)
     init = sub.add_parser('init')
     for name in ('request', 'helper-archive', 'receipt', 'original-public', 'new-public'):
         init.add_argument('--' + name, type=Path, required=True)
@@ -474,7 +484,17 @@ def main():
             p.add_argument('--independent-loader', type=Path, required=True)
     a = ap.parse_args()
     require(os.geteuid() == 0, 'trusted local root operation required')
-    if a.command == 'init':
+    if a.command == 'diagnose-checkpoint':
+        import checkpoint_export
+        result = checkpoint_export.diagnose(a.operation, a.run_directory, a.purpose, spool)
+    elif a.command == 'export-checkpoint':
+        import checkpoint_export
+        result = checkpoint_export.export_metadata(a.operation, a.run_directory, a.purpose, spool)
+    elif a.command == 'materialize-checkpoint':
+        import checkpoint_export
+        result = checkpoint_export.materialize(
+            a.operation, a.run_directory, a.purpose, a.request_directory, spool)
+    elif a.command == 'init':
         result = initialize(a)
     else:
         c, q = load(a.operation)
