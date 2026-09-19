@@ -12,17 +12,21 @@ import subprocess
 import sys
 import tomllib
 
+TOOLS = Path(__file__).resolve().parents[1]
+ROOT = TOOLS.parent
+if str(TOOLS) not in sys.path:
+    sys.path.append(str(TOOLS))
+
 from ci import affected_packages as ci_select
 
 
-ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "dist/apps/app-collections.toml"
 BINARY_INPUTS = {
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
     "dist/apps/app-collections.toml",
-    "tools/app_package_isa.py",
+    "tools/apps/app_package_isa.py",
     "tools/ci/rustc-thin-app-wrapper.sh",
     "os/scripts/build-thin-apps.sh",
     "os/Containerfile.builder",
@@ -34,17 +38,17 @@ BINARY_INPUTS = {
 PACKAGING_INPUTS = {
     "dist/apps/package-apps.sh",
     "dist/apps/assemble-collection.sh",
-    "tools/assemble_app_collection.py",
+    "tools/apps/assemble_app_collection.py",
     "os/scripts/bake-runtime-bundle.sh",
 }
 VERIFICATION_INPUTS = {
-    "tools/app_release.py",
+    "tools/apps/app_release.py",
     "tools/ci/__init__.py",
     "tools/ci/affected_packages.py",
-    "tools/app_channel_manifest.py",
-    "tools/canonical_app_verifier.py",
-    "tools/create_app_receipt.py",
-    "tools/final_app_receipt.py",
+    "tools/apps/app_channel_manifest.py",
+    "tools/apps/canonical_app_verifier.py",
+    "tools/apps/create_app_receipt.py",
+    "tools/apps/final_app_receipt.py",
     "os/scripts/verify-elf-hardening.sh",
     ".forgejo/workflows/release-apps.yml",
 }

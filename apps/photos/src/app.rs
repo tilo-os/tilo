@@ -23,6 +23,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -32,15 +33,17 @@ use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
+use ui::animation::{Animated, Curve, Transition};
+use ui::chrome::fill_scrim;
 use ui::icons::{Icon, draw_icon};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexedScrollbar,
-    EmptyState, ImageViewer, ModalAction, ModalFrame, ModalHit, ModalLayout, ModalSpec,
-    ProgressBar, ScrollMetrics, SearchField, SegmentedFace, TextInput, TextInputKind, ToggleGroup,
-    Widget,
+    Button, ButtonFace, ButtonStyle, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind,
+    DateIndexedScrollbar, EmptyState, ImageViewer, ModalAction, ModalFrame, ModalHit, ModalLayout,
+    ModalSpec, ProgressBar, ScrollMetrics, SearchField, SegmentedFace, TextInput, TextInputKind,
+    ToggleGroup, Widget,
 };
 use winit::keyboard::{Key, NamedKey};
 
@@ -297,10 +300,16 @@ fn compact_library_header_geometry(
             timeline_y: album_actions.y1 + 10.0,
         }
     } else {
-        let albums_y = top + 24.0;
+        // A compact library still needs one quiet line of context beneath its
+        // title.  Without it, the icon-only density controls read as an
+        // unrelated toolbar and a small library has no indication that its
+        // chronology is complete.  Give the count its own baseline rather
+        // than squeezing it into the title/control row.
+        let count_y = top + 26.0;
+        let albums_y = top + 50.0;
         CompactHeaderGeometry {
             title_y: top,
-            count_y: top + 3.0,
+            count_y,
             controls: Rect::new(
                 bounds.x1 - 118.0,
                 bounds.y0 + 8.0,
@@ -621,6 +630,7 @@ enum SelectionHit {
     EditDetails,
     ChooseAlbum,
     CancelDestinationChooser,
+    CloseDestinationChooser,
     ApplyDestination,
     PreviousDestinationPage,
     NextDestinationPage,
@@ -964,6 +974,36 @@ struct Rendered {
     rgba: Rgba,
 }
 
+/// The compact, explicitly shared context shown beside an open photograph.
+///
+/// This is a projection of the library record, not a second metadata store:
+/// it gives the viewer useful orientation without turning a filename or a
+/// device-local EXIF read into collaboration state.  The persistent editor
+/// remains the library's canonical metadata action surface.
+#[derive(Clone, Debug)]
+struct ViewerDetails {
+    name: String,
+    dimensions: String,
+    edited: bool,
+    favorite: bool,
+    description: Option<String>,
+    captured_at: Option<String>,
+    place: Option<String>,
+    people: Vec<String>,
+    tags: Vec<String>,
+    folder: Option<String>,
+}
+
+fn viewer_copy(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let clipped: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{clipped}…")
+    } else {
+        clipped
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "library mode and the three independent transient album-editor flags have distinct event and reconciliation lifecycles"
@@ -979,6 +1019,9 @@ pub struct PhotosApp {
     original: Option<(String, Rgba)>,
     rendered: Option<Rendered>,
     viewer: Option<ImageViewer>,
+    /// Bounded presentation projection for the open-view information card.
+    /// It is refreshed from the document and never written back from paint.
+    viewer_details: Option<ViewerDetails>,
     buttons: Vec<(Hit, Button)>,
     pending: Rc<Cell<Option<Hit>>>,
     /// Where the last export went, or why it failed. Shown in the status line
@@ -1045,6 +1088,9 @@ pub struct PhotosApp {
     /// visually and semantically separated from shared approved labels.
     people_mode: bool,
     people_selection: Option<PeopleSelection>,
+    /// The person review sheet enters with the shared motion primitive.  The
+    /// renderer snaps it open when reduced motion is requested.
+    people_detail_transition: Transition,
     people_merge_mode: bool,
     people_show_hidden: bool,
     people_review_page: usize,
@@ -1098,6 +1144,12 @@ pub struct PhotosApp {
     collection_page_pending: Rc<Cell<Option<CollectionPageHit>>>,
     places_map_bounds: Rect,
     places_drag_origin: Option<Point>,
+    /// A short local response to a map pan or zoom. It deliberately animates
+    /// only presentation geometry—camera position itself stays immediate so
+    /// keyboard, pointer, agents, and screen readers all observe the same
+    /// completed operation at once.
+    places_camera_feedback: Option<Animated<f64>>,
+    places_motion_reduced: bool,
     /// Count for the always-addressable Favorites virtual collection. This is
     /// a scalar projection of the shared library, so paint never walks the
     /// document and the chip stays bounded even for a very large collection.
@@ -1204,6 +1256,12 @@ pub struct PhotosApp {
     /// Tab order within the active section plus Cancel and Save.
     metadata_editor_focus: usize,
     metadata_editor_hits: Vec<(MetadataEditorHit, Rect)>,
+    /// The metadata sheet is laid out over the media canvas, but its command
+    /// controls are still real toolkit buttons. Keeping them retained gives
+    /// hover/press/focus treatment, native action publication and keyboard
+    /// activation to the same controls a pointer user sees.
+    metadata_editor_buttons: Vec<(MetadataEditorHit, Button)>,
+    metadata_editor_pending: Rc<Cell<Option<MetadataEditorHit>>>,
     /// At most two viewportfuls of decoded thumbnails.  Originals are never
     /// scanned at draw time, and a large library cannot turn a frame into a
     /// disk-I/O loop.
@@ -1794,6 +1852,7 @@ impl PhotosApp {
             .map(|_| thumbnail_job_tx);
         let pending: Rc<Cell<Option<Hit>>> = Rc::new(Cell::new(None));
         let album_page_pending: Rc<Cell<Option<AlbumEditorHit>>> = Rc::new(Cell::new(None));
+        let metadata_editor_pending: Rc<Cell<Option<MetadataEditorHit>>> = Rc::new(Cell::new(None));
         let timeline_density_pending: Rc<Cell<Option<TimelineHit>>> = Rc::new(Cell::new(None));
         let collection_page_pending: Rc<Cell<Option<CollectionPageHit>>> = Rc::new(Cell::new(None));
         let people_pending = Rc::new(RefCell::new(None));
@@ -1814,6 +1873,7 @@ impl PhotosApp {
             original: None,
             rendered: None,
             viewer: None,
+            viewer_details: None,
             buttons,
             pending,
             notice: None,
@@ -1860,6 +1920,7 @@ impl PhotosApp {
             people_scan_progress: PeopleScanProgress::load(),
             people_mode: false,
             people_selection: None,
+            people_detail_transition: Transition::closed(),
             people_merge_mode: false,
             people_show_hidden: false,
             people_review_page: 0,
@@ -1903,6 +1964,8 @@ impl PhotosApp {
             collection_page_pending,
             places_map_bounds: Rect::ZERO,
             places_drag_origin: None,
+            places_camera_feedback: None,
+            places_motion_reduced: false,
             library_favorite_count: 0,
             library_offset: 0,
             library_albums: Vec::new(),
@@ -1981,6 +2044,8 @@ impl PhotosApp {
             metadata_editor_section: MetadataEditorSection::Organize,
             metadata_editor_focus: 0,
             metadata_editor_hits: Vec::new(),
+            metadata_editor_buttons: build_metadata_editor_buttons(&metadata_editor_pending),
+            metadata_editor_pending,
             library_thumbnails: HashMap::new(),
             thumbnail_unavailable: HashSet::new(),
             original_decode_failed: None,
@@ -2343,7 +2408,7 @@ impl PhotosApp {
                 );
             }
             let page_size = if self.canvas_rect.width() < 760.0 {
-                5
+                2
             } else {
                 8
             };
@@ -2408,10 +2473,14 @@ impl PhotosApp {
                     false,
                 );
             }
-            let total = self
-                .people_approved
-                .len()
-                .max(self.people_controller.all_clusters().count());
+            let total = self.people_approved.len().max(
+                self.people_controller
+                    .all_clusters()
+                    .filter(|cluster| {
+                        self.people_show_hidden || (!cluster.hidden && !cluster.rejected)
+                    })
+                    .count(),
+            );
             if start.saturating_add(page_size) < total {
                 push(PeopleIntent::Page(true), "Next".to_owned(), false, false);
             }
@@ -2537,6 +2606,8 @@ impl PhotosApp {
                 .unwrap_or_default(),
         };
         self.people_selection = Some(selection);
+        self.people_detail_transition
+            .set_open(true, Duration::from_millis(190), Curve::EaseOut);
         self.people_merge_mode = false;
         self.people_delete_confirm = false;
         self.people_name_input.set_text(&initial);
@@ -2550,6 +2621,11 @@ impl PhotosApp {
                 if self.people_selection.is_some() {
                     self.people_selection = None;
                     self.people_merge_mode = false;
+                    self.people_detail_transition.set_open(
+                        false,
+                        Duration::from_millis(160),
+                        Curve::EaseOut,
+                    );
                 } else {
                     self.library_destination = LibraryDestination::Timeline;
                     self.people_mode = false;
@@ -2848,6 +2924,9 @@ impl PhotosApp {
         self.show_people();
         if self.people_controller.cluster(cluster_id).is_some() {
             self.select_people_item(PeopleSelection::Suggestion(cluster_id.to_owned()));
+            // Acceptance shots exercise the settled visual state. Live entry
+            // still starts the shared transition in `select_people_item`.
+            self.people_detail_transition = Transition::open();
         }
     }
 
@@ -2999,7 +3078,7 @@ impl PhotosApp {
                     self.selection_album_page = 0;
                 }
             }
-            SelectionHit::CancelDestinationChooser => {
+            SelectionHit::CancelDestinationChooser | SelectionHit::CloseDestinationChooser => {
                 self.selection_album_chooser = false;
             }
             SelectionHit::ApplyDestination => {
@@ -3073,6 +3152,45 @@ impl PhotosApp {
         };
     }
 
+    /// Apply a local map-camera change and give the marker layer a restrained
+    /// settle cue. The viewport is presentation state, so the animation never
+    /// delays a semantic action or writes shared metadata.
+    fn set_places_viewport(&mut self, viewport: crate::places::MapViewport) {
+        let viewport = viewport.clamped();
+        if self.places_viewport == viewport {
+            return;
+        }
+        self.places_viewport = viewport;
+        if !self.places_motion_reduced {
+            self.places_camera_feedback = Some(Animated::new(
+                1.0,
+                0.0,
+                Duration::from_millis(180),
+                Curve::EaseOut,
+            ));
+        }
+    }
+
+    fn zoom_places_by(&mut self, delta: f64) {
+        self.set_places_viewport(crate::places::MapViewport {
+            zoom: self.places_viewport.zoom + delta,
+            ..self.places_viewport
+        });
+    }
+
+    fn places_camera_feedback(&mut self) -> f64 {
+        let Some(feedback) = self.places_camera_feedback else {
+            return 0.0;
+        };
+        let value = feedback.current(Instant::now());
+        if feedback.done(Instant::now()) {
+            self.places_camera_feedback = None;
+            0.0
+        } else {
+            value
+        }
+    }
+
     /// Open the exact durable collection behind a Places resource or marker.
     /// This reads only shared metadata, so it remains usable offline and
     /// deliberately fails if a collaborator removed the addressed place.
@@ -3094,9 +3212,11 @@ impl PhotosApp {
         self.places_open_key = Some(place_key.to_owned());
         self.places_list_mode = true;
         self.places_page = 0;
-        self.places_viewport.latitude = location.latitude;
-        self.places_viewport.longitude = location.longitude;
-        self.places_viewport.zoom = 12.0;
+        self.set_places_viewport(crate::places::MapViewport {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            zoom: 12.0,
+        });
         self.notice = Some(format!(
             "Showing {} shared photograph{} at this place offline",
             photos.len(),
@@ -4263,6 +4383,29 @@ impl PhotosApp {
         if !self.metadata_editor {
             return false;
         }
+        // The sheet floats over a custom media surface, so dispatch its
+        // retained controls explicitly. They still use the normal widget
+        // event contract and publish the same action surface as every other
+        // button in the app.
+        for (_, button) in &mut self.metadata_editor_buttons {
+            let mut sink = None;
+            button.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                doc,
+                path,
+                handled,
+                &mut sink,
+                node_id,
+                taffy,
+            );
+        }
+        if let Some(hit) = self.metadata_editor_pending.take() {
+            self.activate_metadata_editor_hit(hit, doc);
+            *handled = true;
+            return true;
+        }
         if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == winit::event::ElementState::Pressed
         {
@@ -4633,11 +4776,53 @@ impl PhotosApp {
         Ok(())
     }
 
+    /// Project the open photograph's portable library record into the small
+    /// viewer card. Content identity wins; old path-only records retain their
+    /// legacy match so opening one still has useful context.
+    fn viewer_details_for(doc: &AutoCommit, open: &OpenImage, edits: Edits) -> ViewerDetails {
+        let photo = PhotosDoc::library(doc).photos.into_iter().find(|photo| {
+            match (&open.content, &photo.image.content) {
+                (Some(open_content), Some(photo_content)) => open_content == photo_content,
+                (None, None) => open.path == photo.image.path,
+                _ => false,
+            }
+        });
+        let (width, height) = open.edited_size(&edits);
+        ViewerDetails {
+            name: open.name.clone(),
+            dimensions: format!("{width} × {height}"),
+            edited: !edits.is_identity(),
+            favorite: photo.as_ref().is_some_and(|photo| photo.favorite),
+            description: photo
+                .as_ref()
+                .and_then(|photo| photo.analysis.as_ref())
+                .map(|analysis| analysis.description.trim())
+                .filter(|description| !description.is_empty())
+                .map(str::to_owned),
+            captured_at: photo.as_ref().and_then(|photo| photo.captured_at.clone()),
+            place: photo.as_ref().and_then(|photo| {
+                photo
+                    .location
+                    .as_ref()
+                    .filter(|location| location.is_valid())
+                    .map(crate::model::PhotoLocation::display_name)
+            }),
+            people: photo
+                .as_ref()
+                .map_or_else(Vec::new, |photo| photo.people.clone()),
+            tags: photo
+                .as_ref()
+                .map_or_else(Vec::new, |photo| photo.tags.clone()),
+            folder: photo.and_then(|photo| photo.folder),
+        }
+    }
+
     /// Re-derive the rendering if the path or the edits have moved.
     fn refresh(&mut self, doc: &AutoCommit) {
         let Some(open) = PhotosDoc::image(doc) else {
             self.rendered = None;
             self.viewer = None;
+            self.viewer_details = None;
             self.original = None;
             self.canvas_state = if self.notice.is_some() {
                 CanvasState::Error
@@ -4647,6 +4832,7 @@ impl PhotosApp {
             return;
         };
         let edits = PhotosDoc::edits(doc);
+        self.viewer_details = Some(Self::viewer_details_for(doc, &open, edits));
 
         // Load the original if this is a picture we have not decoded yet. A
         // peer may have opened it, so this is not only the local Open path.
@@ -4852,7 +5038,7 @@ impl PhotosApp {
                 |(path, _)| path.rsplit('/').next().unwrap_or(path).to_owned(),
             )
         };
-        let (image_name, image_description) = match self.rendered.as_ref() {
+        let (image_name, mut image_description) = match self.rendered.as_ref() {
             Some(rendered) if rendered.edits.is_identity() => {
                 (image_label(), tr("photos-image-help"))
             }
@@ -4862,6 +5048,41 @@ impl PhotosApp {
             ),
             None => self.empty_state_text(),
         };
+        if let Some(details) = self.viewer_details.as_ref() {
+            let mut shared = Vec::new();
+            if let Some(description) = details.description.as_deref() {
+                shared.push(format!("{}: {description}", tr("photos-description")));
+            }
+            if let Some(captured_at) = details.captured_at.as_deref() {
+                shared.push(format!("{}: {captured_at}", tr("photos-captured")));
+            }
+            if let Some(place) = details.place.as_deref() {
+                shared.push(format!("{}: {place}", tr("photos-place")));
+            }
+            if !details.people.is_empty() {
+                shared.push(format!(
+                    "{}: {}",
+                    tr("photos-people"),
+                    details.people.join(", ")
+                ));
+            }
+            if !details.tags.is_empty() {
+                shared.push(format!(
+                    "{}: {}",
+                    tr("photos-tags"),
+                    details.tags.join(", ")
+                ));
+            }
+            if let Some(folder) = details.folder.as_deref() {
+                shared.push(format!("{}: {folder}", tr("photos-folder")));
+            }
+            if !shared.is_empty() {
+                image_description.push_str(". ");
+                image_description.push_str(&tr("photos-shared-details"));
+                image_description.push_str(": ");
+                image_description.push_str(&shared.join(". "));
+            }
+        }
         let canvas = if self.library_mode {
             let mut cards = Vec::new();
             cards.extend(self.places_hits.iter().filter_map(|(hit, bounds)| {
@@ -5400,6 +5621,11 @@ impl PhotosApp {
                             "photos:selection:destination-cancel",
                             false,
                         ),
+                        SelectionHit::CloseDestinationChooser => (
+                            "Close destination chooser",
+                            "photos:selection:destination-close",
+                            false,
+                        ),
                         SelectionHit::ApplyDestination => (
                             "Use selected destination album",
                             "photos:selection:destination-apply",
@@ -5465,6 +5691,11 @@ impl PhotosApp {
                     );
                 }
                 if self.metadata_editor {
+                    // The inspector owns the interaction scope. Keeping the
+                    // dimmed grid's cards in the a11y tree would let a screen
+                    // reader activate controls that pointer and keyboard users
+                    // correctly cannot reach while editing details.
+                    cards.clear();
                     let fields: &[(&str, &str, &TextInput)] = match self.metadata_editor_section {
                         MetadataEditorSection::Organize => &[
                             ("Folder", "folder", &self.metadata_folder_input),
@@ -5531,6 +5762,52 @@ impl PhotosApp {
                             AccessNode::new(Role::Button)
                                 .with_name(name)
                                 .with_bounds(*bounds)
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    ..Default::default()
+                                })
+                                .with_action_target(target),
+                        );
+                    }
+                    for (hit, button) in &self.metadata_editor_buttons {
+                        let bounds = button.get_rect();
+                        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+                            continue;
+                        }
+                        let (name, target) = match hit {
+                            MetadataEditorHit::Save => {
+                                ("Save photo details", "photos:metadata:save")
+                            }
+                            MetadataEditorHit::Cancel => {
+                                ("Cancel photo details", "photos:metadata:cancel")
+                            }
+                            MetadataEditorHit::Organize => {
+                                ("Organize fields", "photos:metadata:organize")
+                            }
+                            MetadataEditorHit::TimeAndPlace => {
+                                ("Time and place fields", "photos:metadata:time-and-place")
+                            }
+                            MetadataEditorHit::ClearFolder => {
+                                ("Clear folder", "photos:metadata:clear-folder")
+                            }
+                            MetadataEditorHit::ClearPeople => {
+                                ("Clear people", "photos:metadata:clear-people")
+                            }
+                            MetadataEditorHit::ClearTags => {
+                                ("Clear tags", "photos:metadata:clear-tags")
+                            }
+                            MetadataEditorHit::ClearCapturedAt => {
+                                ("Clear capture time", "photos:metadata:clear-captured-at")
+                            }
+                            MetadataEditorHit::ClearLocation => {
+                                ("Clear location", "photos:metadata:clear-location")
+                            }
+                            MetadataEditorHit::PlaceOnMap => continue,
+                        };
+                        cards.push(
+                            AccessNode::new(Role::Button)
+                                .with_name(name)
+                                .with_bounds(bounds)
                                 .with_state(AccessState {
                                     focusable: true,
                                     ..Default::default()
@@ -5995,46 +6272,32 @@ impl PhotosApp {
             }
             match command {
                 "toggle-list" => self.places_list_mode = !self.places_list_mode,
-                "zoom-in" => {
-                    self.places_viewport.zoom =
-                        (self.places_viewport.zoom + 1.0).min(crate::places::MAX_ZOOM)
-                }
-                "zoom-out" => {
-                    self.places_viewport.zoom =
-                        (self.places_viewport.zoom - 1.0).max(crate::places::MIN_ZOOM)
-                }
-                "pan-left" => {
-                    self.places_viewport = self.places_viewport.panned(
-                        44.0,
-                        0.0,
-                        self.places_map_bounds.width(),
-                        self.places_map_bounds.height(),
-                    )
-                }
-                "pan-right" => {
-                    self.places_viewport = self.places_viewport.panned(
-                        -44.0,
-                        0.0,
-                        self.places_map_bounds.width(),
-                        self.places_map_bounds.height(),
-                    )
-                }
-                "pan-up" => {
-                    self.places_viewport = self.places_viewport.panned(
-                        0.0,
-                        44.0,
-                        self.places_map_bounds.width(),
-                        self.places_map_bounds.height(),
-                    )
-                }
-                "pan-down" => {
-                    self.places_viewport = self.places_viewport.panned(
-                        0.0,
-                        -44.0,
-                        self.places_map_bounds.width(),
-                        self.places_map_bounds.height(),
-                    )
-                }
+                "zoom-in" => self.zoom_places_by(1.0),
+                "zoom-out" => self.zoom_places_by(-1.0),
+                "pan-left" => self.set_places_viewport(self.places_viewport.panned(
+                    44.0,
+                    0.0,
+                    self.places_map_bounds.width(),
+                    self.places_map_bounds.height(),
+                )),
+                "pan-right" => self.set_places_viewport(self.places_viewport.panned(
+                    -44.0,
+                    0.0,
+                    self.places_map_bounds.width(),
+                    self.places_map_bounds.height(),
+                )),
+                "pan-up" => self.set_places_viewport(self.places_viewport.panned(
+                    0.0,
+                    44.0,
+                    self.places_map_bounds.width(),
+                    self.places_map_bounds.height(),
+                )),
+                "pan-down" => self.set_places_viewport(self.places_viewport.panned(
+                    0.0,
+                    -44.0,
+                    self.places_map_bounds.width(),
+                    self.places_map_bounds.height(),
+                )),
                 _ => {
                     let Some(key) = command.strip_prefix("open:") else {
                         return false;
@@ -6201,6 +6464,7 @@ impl PhotosApp {
                     "edit-details" => SelectionHit::EditDetails,
                     "choose-album" => SelectionHit::ChooseAlbum,
                     "destination-cancel" => SelectionHit::CancelDestinationChooser,
+                    "destination-close" => SelectionHit::CloseDestinationChooser,
                     "destination-apply" => SelectionHit::ApplyDestination,
                     "destination-previous" => SelectionHit::PreviousDestinationPage,
                     "destination-next" => SelectionHit::NextDestinationPage,
@@ -7020,6 +7284,190 @@ impl PhotosApp {
         s
     }
 
+    /// Paint a quiet information card over the viewer rather than giving the
+    /// photograph a competing permanent sidebar.  The card uses only the
+    /// portable, explicitly shared library record, so a collaborator sees
+    /// the same description, people, and place without this surface ever
+    /// reading device-local EXIF or paths.
+    fn draw_viewer_details(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        use vello::peniko::Fill;
+
+        let Some(details) = self.viewer_details.as_ref() else {
+            return;
+        };
+        // On short windows, preserving a usable, contain-fit photograph is
+        // more valuable than placing a card over most of it. The full shared
+        // detail is still present in the image accessibility description.
+        if self.canvas_rect.width() < 340.0 || self.canvas_rect.height() < 300.0 {
+            return;
+        }
+        let compact = self.canvas_rect.width() < 720.0 || theme.text_scale > 1.25;
+        let horizontal_inset = if compact { 14.0 } else { 20.0 };
+        let card_width = if compact {
+            self.canvas_rect.width() - horizontal_inset * 2.0
+        } else {
+            self.canvas_rect.width().min(460.0)
+        };
+        let has_caption = details.description.is_some();
+        let card_height = if compact {
+            if has_caption { 138.0 } else { 112.0 }
+        } else if has_caption {
+            148.0
+        } else {
+            120.0
+        };
+        let card = Rect::new(
+            self.canvas_rect.x0 + horizontal_inset,
+            self.canvas_rect.y1 - card_height - horizontal_inset,
+            self.canvas_rect.x0 + horizontal_inset + card_width,
+            self.canvas_rect.y1 - horizontal_inset,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.window_card.with_alpha(0.94),
+            None,
+            &RoundedRect::from_rect(card, theme.radius_standard),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(card, theme.radius_standard),
+        );
+
+        let icon = Rect::new(
+            card.x0 + 14.0,
+            card.y0 + 14.0,
+            card.x0 + 34.0,
+            card.y0 + 34.0,
+        );
+        draw_icon(
+            scene,
+            transform,
+            icon,
+            Icon::Image,
+            theme.accent_primary,
+            1.4,
+        );
+        let title_right = if details.favorite {
+            card.x1 - 38.0
+        } else {
+            card.x1 - 14.0
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            &viewer_copy(&details.name, if compact { 34 } else { 52 }),
+            16.0,
+            theme.text_primary,
+            transform * Affine::translate((card.x0 + 42.0, card.y0 + 13.0)),
+            Some((title_right - card.x0 - 42.0) as f32),
+            TextWeight::Semibold,
+        );
+        if details.favorite {
+            draw_icon(
+                scene,
+                transform,
+                Rect::new(
+                    card.x1 - 30.0,
+                    card.y0 + 14.0,
+                    card.x1 - 14.0,
+                    card.y0 + 30.0,
+                ),
+                Icon::Star,
+                theme.accent_primary,
+                1.6,
+            );
+        }
+        let state = if details.edited {
+            format!("{} · {}", details.dimensions, tr("photos-edited"))
+        } else {
+            format!("{} · {}", details.dimensions, tr("photos-shared-details"))
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            &state,
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((card.x0 + 42.0, card.y0 + 37.0)),
+            Some((card.x1 - card.x0 - 56.0) as f32),
+            TextWeight::Regular,
+        );
+
+        let mut y = card.y0 + 62.0;
+        if let Some(description) = details.description.as_deref() {
+            text_renderer.draw_text_weighted(
+                scene,
+                &viewer_copy(description, if compact { 76 } else { 108 }),
+                13.0,
+                theme.text_primary,
+                transform * Affine::translate((card.x0 + 14.0, y)),
+                Some((card.width() - 28.0) as f32),
+                TextWeight::Regular,
+            );
+            y += 24.0;
+        }
+        let mut context = Vec::new();
+        if let Some(captured_at) = details.captured_at.as_deref() {
+            context.push(format!("{}: {captured_at}", tr("photos-captured")));
+        }
+        if let Some(place) = details.place.as_deref() {
+            context.push(format!("{}: {place}", tr("photos-place")));
+        }
+        if context.is_empty() {
+            context.push(tr("photos-no-shared-context"));
+        }
+        text_renderer.draw_text_weighted(
+            scene,
+            &viewer_copy(&context.join(" · "), if compact { 56 } else { 76 }),
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((card.x0 + 14.0, y)),
+            Some((card.width() - 28.0) as f32),
+            TextWeight::Regular,
+        );
+        y += 21.0;
+        let mut labels = Vec::new();
+        if !details.people.is_empty() {
+            labels.push(format!(
+                "{}: {}",
+                tr("photos-people"),
+                details.people.join(", ")
+            ));
+        }
+        if !details.tags.is_empty() {
+            labels.push(
+                details
+                    .tags
+                    .iter()
+                    .map(|tag| format!("#{tag}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+        if let Some(folder) = details.folder.as_deref() {
+            labels.push(format!("{}: {folder}", tr("photos-folder")));
+        }
+        if !labels.is_empty() && y < card.y1 - 10.0 {
+            text_renderer.draw_text_weighted(
+                scene,
+                &viewer_copy(&labels.join(" · "), if compact { 56 } else { 78 }),
+                12.0,
+                theme.text_dim,
+                transform * Affine::translate((card.x0 + 14.0, y)),
+                Some((card.width() - 28.0) as f32),
+                TextWeight::Regular,
+            );
+        }
+    }
+
     fn refresh_search_provider(
         &self,
         doc: &AutoCommit,
@@ -7259,22 +7707,30 @@ impl PhotosApp {
         );
         let wide = content.width() >= 760.0;
         let overview = self.people_selection.is_none();
-        let body_y = content.y0
-            + if overview {
-                if wide { 132.0 } else { 168.0 }
-            } else if wide {
-                112.0
-            } else {
-                90.0
-            };
+        // Keep the navigation and recognition card in separate vertical
+        // bands.  The former implementation put the card *over* the
+        // segmented navigation, leaving a very confusing invisible route
+        // control in the People overview.
+        let recognition_top = content.y0 + 118.0;
+        let recognition_bottom = recognition_top + if wide { 86.0 } else { 122.0 };
+        let body_y = if overview {
+            recognition_bottom + 30.0
+        } else {
+            content.y0 + 124.0
+        };
         let mut action_row = 0usize;
         let approved_count = self
             .people_controls
             .iter()
             .filter(|control| matches!(control.intent, PeopleIntent::OpenApproved(_)))
             .count();
-        let columns = if content.width() >= 1_100.0 {
-            4
+        let people_lane_w = if overview && wide {
+            (content.width() * 0.67).max(420.0)
+        } else {
+            content.width()
+        };
+        let columns = if overview && wide {
+            if people_lane_w >= 760.0 { 3 } else { 2 }
         } else if wide {
             3
         } else {
@@ -7282,22 +7738,22 @@ impl PhotosApp {
         };
         let gap = 12.0;
         let card_width = if wide {
-            (content.width() - gap * (columns - 1) as f64) / columns as f64
+            (people_lane_w - gap * (columns - 1) as f64) / columns as f64
         } else {
             content.width()
         };
         self.people_name_bounds = Rect::ZERO;
         if self.people_selection.is_some() && !self.people_merge_mode {
             let form_x = if wide {
-                content.x0 + content.width() * 0.48
+                content.x0 + content.width() * 0.52
             } else {
                 content.x0
             };
             self.people_name_bounds = Rect::new(
                 form_x,
-                body_y + if wide { 84.0 } else { 142.0 },
+                body_y + if wide { 116.0 } else { 338.0 },
                 content.x1,
-                body_y + if wide { 128.0 } else { 186.0 },
+                body_y + if wide { 160.0 } else { 382.0 },
             );
         }
         let mut approved_index = 0usize;
@@ -7311,28 +7767,28 @@ impl PhotosApp {
                     content.y0 + 44.0,
                 ),
                 PeopleIntent::ToggleRecognition if !wide => Rect::new(
-                    content.x0,
-                    content.y0 + 76.0,
+                    content.x0 + 12.0,
+                    recognition_top + 64.0,
                     content.x0 + (content.width() - 8.0) * 0.5,
-                    content.y0 + 120.0,
+                    recognition_top + 108.0,
                 ),
                 PeopleIntent::ToggleRecognition => Rect::new(
                     content.x1 - 356.0,
-                    content.y0 + 70.0,
+                    recognition_top + 21.0,
                     content.x1 - 182.0,
-                    content.y0 + 114.0,
+                    recognition_top + 65.0,
                 ),
                 PeopleIntent::Scan | PeopleIntent::CancelScan if !wide => Rect::new(
                     content.x0 + (content.width() + 8.0) * 0.5,
-                    content.y0 + 76.0,
-                    content.x1,
-                    content.y0 + 120.0,
+                    recognition_top + 64.0,
+                    content.x1 - 12.0,
+                    recognition_top + 108.0,
                 ),
                 PeopleIntent::Scan | PeopleIntent::CancelScan => Rect::new(
                     content.x1 - 170.0,
-                    content.y0 + 70.0,
+                    recognition_top + 21.0,
                     content.x1,
-                    content.y0 + 114.0,
+                    recognition_top + 65.0,
                 ),
                 PeopleIntent::OpenApproved(_) => {
                     let index = approved_index;
@@ -7341,31 +7797,37 @@ impl PhotosApp {
                         let row = index / columns;
                         let column = index % columns;
                         let x = content.x0 + column as f64 * (card_width + gap);
-                        let y = body_y + 30.0 + row as f64 * 150.0;
-                        Rect::new(x + 10.0, y + 94.0, x + card_width - 10.0, y + 138.0)
+                        let y = body_y + 34.0 + row as f64 * 236.0;
+                        Rect::new(x + 12.0, y + 176.0, x + card_width - 12.0, y + 220.0)
                     } else {
-                        let y = body_y + 30.0 + index as f64 * 64.0;
-                        Rect::new(content.x1 - 120.0, y + 14.0, content.x1 - 10.0, y + 58.0)
+                        let y = body_y + 34.0 + index as f64 * 92.0;
+                        Rect::new(content.x1 - 122.0, y + 20.0, content.x1 - 12.0, y + 64.0)
                     }
                 }
                 PeopleIntent::OpenSuggestion(_) => {
                     let index = suggestion_index;
                     suggestion_index += 1;
-                    let approved_rows = approved_count.div_ceil(columns);
-                    let section_y = if wide {
-                        body_y + 48.0 + approved_rows as f64 * 150.0
+                    if overview && wide {
+                        let lane_x = content.x0 + people_lane_w + 20.0;
+                        let y = body_y + 34.0 + index as f64 * 164.0;
+                        Rect::new(lane_x + 108.0, y + 92.0, content.x1 - 12.0, y + 136.0)
                     } else {
-                        body_y + 48.0 + approved_count as f64 * 64.0
-                    };
-                    if wide {
-                        let row = index / columns;
-                        let column = index % columns;
-                        let x = content.x0 + column as f64 * (card_width + gap);
-                        let y = section_y + 30.0 + row as f64 * 150.0;
-                        Rect::new(x + 10.0, y + 94.0, x + card_width - 10.0, y + 138.0)
-                    } else {
-                        let y = section_y + 30.0 + index as f64 * 64.0;
-                        Rect::new(content.x1 - 120.0, y + 14.0, content.x1 - 10.0, y + 58.0)
+                        let approved_rows = approved_count.div_ceil(columns);
+                        let section_y = if wide {
+                            body_y + 42.0 + approved_rows as f64 * 236.0
+                        } else {
+                            body_y + 42.0 + approved_count as f64 * 92.0
+                        };
+                        if wide {
+                            let row = index / columns;
+                            let column = index % columns;
+                            let x = content.x0 + column as f64 * (card_width + gap);
+                            let y = section_y + 36.0 + row as f64 * 236.0;
+                            Rect::new(x + 12.0, y + 176.0, x + card_width - 12.0, y + 220.0)
+                        } else {
+                            let y = section_y + 36.0 + index as f64 * 92.0;
+                            Rect::new(content.x1 - 122.0, y + 20.0, content.x1 - 12.0, y + 64.0)
+                        }
                     }
                 }
                 PeopleIntent::BrowseApproved
@@ -7378,25 +7840,25 @@ impl PhotosApp {
                     let row = action_row;
                     action_row += 1;
                     let x = if wide {
-                        content.x0 + content.width() * 0.48
+                        content.x0 + content.width() * 0.52
                     } else {
                         content.x0
                     };
                     Rect::new(
                         x,
-                        body_y + if wide { 142.0 } else { 200.0 } + row as f64 * 52.0,
+                        body_y + if wide { 176.0 } else { 392.0 } + row as f64 * 52.0,
                         content.x1,
-                        body_y + if wide { 186.0 } else { 244.0 } + row as f64 * 52.0,
+                        body_y + if wide { 220.0 } else { 436.0 } + row as f64 * 52.0,
                     )
                 }
                 PeopleIntent::MergeApprovedInto(_) | PeopleIntent::MergeSuggestionWith(_) => {
                     let row = action_row;
                     action_row += 1;
                     Rect::new(
-                        content.x0 + if wide { content.width() * 0.48 } else { 0.0 },
-                        body_y + 80.0 + row as f64 * 52.0,
+                        content.x0 + if wide { content.width() * 0.52 } else { 0.0 },
+                        body_y + if wide { 176.0 } else { 392.0 } + row as f64 * 52.0,
                         content.x1,
-                        body_y + 124.0 + row as f64 * 52.0,
+                        body_y + if wide { 220.0 } else { 436.0 } + row as f64 * 52.0,
                     )
                 }
                 PeopleIntent::ToggleHidden if !wide => Rect::new(
@@ -8312,14 +8774,42 @@ impl PhotosApp {
             } else {
                 let mosaic_columns = if covers.len() == 1 { 1 } else { 2 };
                 let mosaic_rows = covers.len().div_ceil(mosaic_columns);
+                // A slim gutter makes an album cover read as a collection of
+                // moments rather than one accidentally sliced photograph.
+                // Keep the raised preview underneath so the gutter inherits
+                // the system surface rather than a hard-coded colour.
+                let mosaic_gap = 3.0;
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &RoundedRect::from_rect(preview, 8.0),
+                );
                 for (cover_index, cover_id) in covers.iter().enumerate() {
                     let col = cover_index % mosaic_columns;
                     let row = cover_index / mosaic_columns;
-                    let tile = Rect::new(
+                    let cell = Rect::new(
                         preview.x0 + preview.width() * col as f64 / mosaic_columns as f64,
                         preview.y0 + preview.height() * row as f64 / mosaic_rows as f64,
                         preview.x0 + preview.width() * (col + 1) as f64 / mosaic_columns as f64,
                         preview.y0 + preview.height() * (row + 1) as f64 / mosaic_rows as f64,
+                    );
+                    let tile = Rect::new(
+                        cell.x0 + if col == 0 { 0.0 } else { mosaic_gap * 0.5 },
+                        cell.y0 + if row == 0 { 0.0 } else { mosaic_gap * 0.5 },
+                        cell.x1
+                            - if col + 1 == mosaic_columns {
+                                0.0
+                            } else {
+                                mosaic_gap * 0.5
+                            },
+                        cell.y1
+                            - if row + 1 == mosaic_rows {
+                                0.0
+                            } else {
+                                mosaic_gap * 0.5
+                            },
                     );
                     scene.fill(
                         Fill::NonZero,
@@ -8392,13 +8882,21 @@ impl PhotosApp {
                 card.x1 - 10.0,
                 card.y1 - 6.0,
             );
-            draw_icon(
+            // Keep the secondary card operation on the shared button face:
+            // hover and focus feedback must agree with People, Places, and
+            // the metadata inspector even though card activation itself is
+            // handled by this bounded gallery surface.
+            Button::paint(
                 scene,
                 transform,
-                edit.inflate(-13.0, -13.0),
-                Icon::Pencil,
-                theme.text_dim,
-                1.5,
+                text_renderer,
+                theme,
+                &ButtonFace::new(edit, "")
+                    .style(ButtonStyle::Ghost)
+                    .icon(Icon::Pencil)
+                    .radius(10.0)
+                    .hovered(edit.contains(self.pointer))
+                    .accessible_name("Edit album"),
             );
             self.album_edit_cards.push((id.clone(), edit));
             self.album_cards.push((Some(id.clone()), card));
@@ -8417,6 +8915,195 @@ impl PhotosApp {
         self.draw_album_editor(scene, transform, text_renderer, theme, presence);
     }
 
+    /// Paint a small, cropped cover mosaic without decoding or retaining any
+    /// image beyond the bounded thumbnail cache.  A group of photographs is
+    /// much more legible than a generic avatar, particularly when a person
+    /// has not been named yet.
+    fn draw_people_mosaic(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        photo_ids: &[String],
+    ) {
+        use vello::peniko::Fill;
+
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.neutral[2],
+            None,
+            &RoundedRect::from_rect(rect, 10.0),
+        );
+        if photo_ids.is_empty() {
+            draw_icon(
+                scene,
+                transform,
+                rect.inflate(-rect.width() * 0.35, -rect.height() * 0.35),
+                Icon::Users,
+                theme.text_dim,
+                1.5,
+            );
+            return;
+        }
+        let count = photo_ids.len().min(4);
+        let columns = if count == 1 { 1 } else { 2 };
+        let rows = count.div_ceil(columns);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &RoundedRect::from_rect(rect, 10.0),
+        );
+        for (index, photo_id) in photo_ids.iter().take(count).enumerate() {
+            let column = index % columns;
+            let row = index / columns;
+            let tile = Rect::new(
+                rect.x0 + rect.width() * column as f64 / columns as f64,
+                rect.y0 + rect.height() * row as f64 / rows as f64,
+                rect.x0 + rect.width() * (column + 1) as f64 / columns as f64,
+                rect.y0 + rect.height() * (row + 1) as f64 / rows as f64,
+            );
+            if let Some(image) = self.library_thumbnails.get(photo_id) {
+                let scale = (tile.width() / f64::from(image.width))
+                    .max(tile.height() / f64::from(image.height));
+                let drawn_w = f64::from(image.width) * scale;
+                let drawn_h = f64::from(image.height) * scale;
+                scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    &tile,
+                );
+                scene.draw_image(
+                    image,
+                    transform
+                        * Affine::translate((
+                            tile.center().x - drawn_w * 0.5,
+                            tile.center().y - drawn_h * 0.5,
+                        ))
+                        * Affine::scale(scale),
+                );
+                scene.pop_layer();
+            } else {
+                draw_icon(
+                    scene,
+                    transform,
+                    tile.inflate(-tile.width() * 0.36, -tile.height() * 0.30),
+                    Icon::Image,
+                    theme.text_dim,
+                    1.25,
+                );
+            }
+        }
+        scene.pop_layer();
+    }
+
+    fn draw_people_card(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        title: &str,
+        subtitle: &str,
+        photo_ids: &[String],
+        private: bool,
+        compact: bool,
+    ) {
+        use vello::peniko::Fill;
+
+        let hovered = card.contains(self.pointer);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            if hovered {
+                theme.bg_hover
+            } else {
+                theme.tokens.colors.surfaces.window_card
+            },
+            None,
+            &RoundedRect::from_rect(card, 12.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(card, 12.0),
+        );
+        let (mosaic, copy_x, title_y, subtitle_y, copy_w) = if compact {
+            (
+                Rect::new(card.x0 + 8.0, card.y0 + 8.0, card.x0 + 94.0, card.y1 - 8.0),
+                card.x0 + 108.0,
+                card.y0 + 17.0,
+                card.y0 + 42.0,
+                (card.x1 - card.x0 - 130.0).max(72.0),
+            )
+        } else {
+            (
+                Rect::new(
+                    card.x0 + 10.0,
+                    card.y0 + 10.0,
+                    card.x1 - 10.0,
+                    card.y0 + 118.0,
+                ),
+                card.x0 + 14.0,
+                card.y0 + 132.0,
+                card.y0 + 156.0,
+                card.width() - 28.0,
+            )
+        };
+        self.draw_people_mosaic(scene, transform, theme, mosaic, photo_ids);
+        text_renderer.draw_text_weighted(
+            scene,
+            title,
+            if compact { 15.0 } else { 16.0 },
+            theme.text_primary,
+            transform * Affine::translate((copy_x, title_y)),
+            Some(copy_w as f32),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            subtitle,
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((copy_x, subtitle_y)),
+            Some(copy_w as f32),
+            TextWeight::Regular,
+        );
+        if private {
+            let private_x = if compact { copy_x } else { card.x0 + 14.0 };
+            let private_y = if compact {
+                card.y0 + 64.0
+            } else {
+                card.y0 + 180.0
+            };
+            draw_icon(
+                scene,
+                transform,
+                Rect::new(private_x, private_y, private_x + 14.0, private_y + 14.0),
+                Icon::Shield,
+                theme.text_dim,
+                1.2,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                "Private on this device",
+                11.0,
+                theme.text_dim,
+                transform * Affine::translate((private_x + 19.0, private_y - 1.0)),
+                Some((card.x1 - private_x - 28.0) as f32),
+                TextWeight::Medium,
+            );
+        }
+    }
+
     fn draw_people(
         &mut self,
         scene: &mut Scene,
@@ -8425,80 +9112,56 @@ impl PhotosApp {
         theme: &Theme,
     ) {
         use vello::peniko::Fill;
+
         self.library_cards.clear();
         self.library_details_cards.clear();
         self.metadata_filter_cards.clear();
         let bounds = self.canvas_rect;
-        let pad = if bounds.width() < 520.0 { 16.0 } else { 28.0 };
+        let inset = if bounds.width() < 520.0 { 16.0 } else { 28.0 };
         let content = Rect::new(
-            bounds.x0 + pad,
+            bounds.x0 + inset,
             bounds.y0 + 18.0,
-            bounds.x1 - pad,
+            bounds.x1 - inset,
             bounds.y1 - 18.0,
         );
+        let wide = content.width() >= 760.0;
+        let nav = Rect::new(
+            content.x0,
+            content.y0 + 62.0,
+            content.x1.min(content.x0 + 520.0),
+            content.y0 + 102.0,
+        );
+        let recognition_top = content.y0 + 118.0;
+        let recognition = Rect::new(
+            content.x0,
+            recognition_top,
+            content.x1,
+            recognition_top + if wide { 86.0 } else { 122.0 },
+        );
+
         text_renderer.draw_text_weighted(
             scene,
             "People",
-            28.0,
+            if wide { 30.0 } else { 26.0 },
             theme.text_primary,
             transform * Affine::translate((content.x0, content.y0)),
-            Some(content.width() as f32),
+            Some((content.width() - 164.0).max(160.0) as f32),
             TextWeight::Semibold,
         );
         text_renderer.draw_text_weighted(
             scene,
-            "Find photographs by person and review private, on-device suggestions.",
-            14.0,
+            "Your people, with private suggestions kept on this device until you choose to share a name.",
+            13.0,
             theme.text_dim,
-            transform * Affine::translate((content.x0, content.y0 + 36.0)),
-            Some(content.width() as f32),
+            transform * Affine::translate((content.x0, content.y0 + 37.0)),
+            Some((content.width() - 164.0).max(180.0) as f32),
             TextWeight::Regular,
         );
-
-        self.draw_library_navigation(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            Rect::new(
-                content.x0,
-                content.y0 + 66.0,
-                content.x1.min(content.x0 + 450.0),
-                content.y0 + 106.0,
-            ),
-        );
-
-        let wide = content.width() >= 760.0;
-        let body_y = content.y0
-            + if self.people_selection.is_some() {
-                if wide { 112.0 } else { 90.0 }
-            } else if wide {
-                132.0
-            } else {
-                168.0
-            };
-        let list_w = if wide {
-            ((content.width() - 28.0) * 0.42).clamp(280.0, 390.0)
-        } else {
-            content.width()
-        };
-        let detail_x = if self.people_selection.is_some() {
-            content.x0
-        } else if wide {
-            content.x0 + list_w + 28.0
-        } else {
-            content.x0
-        };
-        let detail_w = if self.people_selection.is_some() {
-            content.width()
-        } else if wide {
-            content.x1 - detail_x
-        } else {
-            content.width()
-        };
+        self.draw_library_navigation(scene, transform, text_renderer, theme, nav);
 
         if let Some(selection) = self.people_selection.clone() {
-            let (title, subtitle, photo_ids, hidden) = match &selection {
+            let body_y = content.y0 + 124.0;
+            let (title, subtitle, photo_ids, private, hidden) = match &selection {
                 PeopleSelection::Approved(name) => {
                     let ids = self
                         .people_approved
@@ -8514,14 +9177,16 @@ impl PhotosApp {
                         ),
                         ids,
                         false,
+                        false,
                     )
                 }
                 PeopleSelection::Suggestion(id) => self.people_controller.cluster(id).map_or_else(
                     || {
                         (
                             "Suggestion unavailable".to_owned(),
-                            "It may have been reviewed or removed on this device.".to_owned(),
+                            "This local suggestion is no longer available.".to_owned(),
                             Vec::new(),
+                            true,
                             true,
                         )
                     },
@@ -8532,30 +9197,100 @@ impl PhotosApp {
                                 .clone()
                                 .unwrap_or_else(|| "Who is this?".to_owned()),
                             format!(
-                                "{} · {} photograph{} · private to this device",
+                                "{} · {} photograph{}",
                                 cluster.origin.label(),
                                 cluster.photos.len(),
                                 if cluster.photos.len() == 1 { "" } else { "s" }
                             ),
                             cluster.visible_photo_ids(),
+                            true,
                             cluster.hidden || cluster.rejected,
                         )
                     },
                 ),
             };
-            let panel = Rect::new(detail_x, body_y, detail_x + detail_w, content.y1);
+            let panel = Rect::new(content.x0, body_y, content.x1, content.y1);
+            let reveal = if theme.reduce_motion {
+                1.0_f32
+            } else {
+                self.people_detail_transition.value(Instant::now())
+            };
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                reveal as f32,
+                transform,
+                &RoundedRect::from_rect(panel, 14.0),
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
                 theme.tokens.colors.surfaces.window_card,
                 None,
-                &RoundedRect::from_rect(panel, theme.radius_standard),
+                &RoundedRect::from_rect(panel, 14.0),
             );
-            let copy_x = if wide {
-                panel.x0 + panel.width() * 0.48
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &RoundedRect::from_rect(panel, 14.0),
+            );
+            let (mosaic, copy_x) = if wide {
+                (
+                    Rect::new(
+                        panel.x0 + 18.0,
+                        panel.y0 + 18.0,
+                        panel.x0 + panel.width() * 0.47,
+                        panel.y0 + 254.0,
+                    ),
+                    panel.x0 + panel.width() * 0.52,
+                )
             } else {
-                panel.x0 + 20.0
+                (
+                    Rect::new(
+                        panel.x0 + 14.0,
+                        panel.y0 + 14.0,
+                        panel.x1 - 14.0,
+                        panel.y0 + 180.0,
+                    ),
+                    panel.x0 + 16.0,
+                )
             };
+            self.draw_people_mosaic(scene, transform, theme, mosaic, &photo_ids);
+            let copy_y = if wide {
+                panel.y0 + 24.0
+            } else {
+                panel.y0 + 202.0
+            };
+            if private {
+                let badge = Rect::new(copy_x, copy_y, copy_x + 22.0, copy_y + 22.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &RoundedRect::from_rect(badge, 6.0),
+                );
+                draw_icon(
+                    scene,
+                    transform,
+                    badge.inflate(-5.0, -5.0),
+                    Icon::Shield,
+                    theme.text_dim,
+                    1.2,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    "PRIVATE SUGGESTION",
+                    11.0,
+                    theme.text_dim,
+                    transform * Affine::translate((copy_x + 30.0, copy_y + 3.0)),
+                    Some((panel.x1 - copy_x - 44.0) as f32),
+                    TextWeight::Semibold,
+                );
+            }
+            let title_y = copy_y + if private { 40.0 } else { 0.0 };
             text_renderer.draw_text_weighted(
                 scene,
                 if self.people_merge_mode {
@@ -8563,321 +9298,118 @@ impl PhotosApp {
                 } else {
                     &title
                 },
-                22.0,
+                24.0,
                 theme.text_primary,
-                transform * Affine::translate((copy_x, panel.y0 + 18.0)),
+                transform * Affine::translate((copy_x, title_y)),
                 Some((panel.x1 - copy_x - 20.0) as f32),
                 TextWeight::Semibold,
             );
             text_renderer.draw_text_weighted(
                 scene,
                 if self.people_merge_mode {
-                    "Choose the person whose photographs belong with this one."
+                    "Choose another person or suggestion to combine with this one. Nothing is shared until you approve a named suggestion."
                 } else if hidden {
-                    "This suggestion is hidden. Restore it to review it again."
+                    "This suggestion is hidden on this device. You can return it to the review queue."
                 } else {
                     &subtitle
                 },
                 13.0,
                 theme.text_dim,
-                transform * Affine::translate((copy_x, panel.y0 + 48.0)),
+                transform * Affine::translate((copy_x, title_y + 36.0)),
                 Some((panel.x1 - copy_x - 20.0) as f32),
                 TextWeight::Regular,
             );
-            if !self.people_merge_mode {
-                let preview_y = panel.y0 + if wide { 20.0 } else { 92.0 };
-                let preview_gap = 6.0;
-                let slots = photo_ids.len().clamp(1, 4);
-                let preview_area_w = if wide {
-                    panel.width() * 0.43
-                } else {
-                    panel.width() - 40.0
-                };
-                let preview_w = ((preview_area_w - preview_gap * slots.saturating_sub(1) as f64)
-                    / slots as f64)
-                    .max(54.0);
-                for (index, id) in photo_ids.iter().take(4).enumerate() {
-                    let preview = Rect::new(
-                        panel.x0 + 20.0 + index as f64 * (preview_w + preview_gap),
-                        preview_y,
-                        panel.x0 + 20.0 + index as f64 * (preview_w + preview_gap) + preview_w,
-                        preview_y + if wide { 220.0 } else { 32.0 },
-                    );
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        theme.tokens.colors.surfaces.raised,
-                        None,
-                        &RoundedRect::from_rect(preview, theme.radius_standard),
-                    );
-                    if let Some(image) = self.library_thumbnails.get(id) {
-                        let scale = (preview.width() / f64::from(image.width))
-                            .min(preview.height() / f64::from(image.height));
-                        scene.draw_image(
-                            image,
-                            transform
-                                * Affine::translate((
-                                    preview.x0
-                                        + (preview.width() - f64::from(image.width) * scale) * 0.5,
-                                    preview.y0
-                                        + (preview.height() - f64::from(image.height) * scale)
-                                            * 0.5,
-                                ))
-                                * Affine::scale(scale),
-                        );
-                    } else {
-                        draw_icon(
-                            scene,
-                            transform,
-                            preview.inflate(-24.0, -24.0),
-                            Icon::Image,
-                            theme.text_dim,
-                            1.5,
-                        );
-                    }
-                }
+            if !self.people_merge_mode && !hidden {
                 text_renderer.draw_text_weighted(
                     scene,
-                    match selection {
-                        PeopleSelection::Approved(_) => "Name",
-                        PeopleSelection::Suggestion(_) => "Name this person",
+                    if private {
+                        "Name this person"
+                    } else {
+                        "Display name"
                     },
                     12.0,
                     theme.text_dim,
-                    transform
-                        * Affine::translate((copy_x, panel.y0 + if wide { 68.0 } else { 128.0 })),
+                    transform * Affine::translate((copy_x, title_y + 82.0)),
                     Some((panel.x1 - copy_x - 20.0) as f32),
                     TextWeight::Medium,
                 );
+                if wide {
+                    text_renderer.draw_text_weighted(
+                        scene,
+                        if private {
+                            "Approving adds only this name and these photo memberships to the shared library."
+                        } else {
+                            "This name and its photo memberships are shared with your collaborators."
+                        },
+                        12.0,
+                        theme.text_dim,
+                        transform * Affine::translate((copy_x, panel.y1 - 42.0)),
+                        Some((panel.x1 - copy_x - 20.0) as f32),
+                        TextWeight::Regular,
+                    );
+                }
             }
+            scene.pop_layer();
             return;
         }
 
-        let recognition_card = Rect::new(
-            content.x0,
-            content.y0 + if wide { 58.0 } else { 68.0 },
-            content.x1,
-            content.y0 + if wide { 122.0 } else { 150.0 },
-        );
         scene.fill(
             Fill::NonZero,
             transform,
             theme.tokens.colors.surfaces.window_card,
             None,
-            &RoundedRect::from_rect(recognition_card, theme.radius_standard),
+            &RoundedRect::from_rect(recognition, 12.0),
         );
-        if wide {
-            text_renderer.draw_text_weighted(
-                scene,
-                "On-device recognition",
-                14.0,
-                theme.text_primary,
-                transform
-                    * Affine::translate((recognition_card.x0 + 16.0, recognition_card.y0 + 10.0)),
-                Some(300.0),
-                TextWeight::Semibold,
-            );
-        }
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(recognition, 12.0),
+        );
+        let shield = Rect::new(
+            recognition.x0 + 16.0,
+            recognition.y0 + 18.0,
+            recognition.x0 + 52.0,
+            recognition.y0 + 54.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(shield, 10.0),
+        );
+        draw_icon(
+            scene,
+            transform,
+            shield.inflate(-9.0, -9.0),
+            Icon::Shield,
+            theme.text_primary,
+            1.4,
+        );
+        let recognition_copy_x = recognition.x0 + 64.0;
         text_renderer.draw_text_weighted(
             scene,
-            "People you’ve named",
-            17.0,
+            "On-device recognition",
+            15.0,
             theme.text_primary,
-            transform * Affine::translate((content.x0, body_y)),
-            Some(content.width() as f32),
+            transform * Affine::translate((recognition_copy_x, recognition.y0 + 16.0)),
+            Some(if wide {
+                300.0
+            } else {
+                (recognition.width() - 80.0) as f32
+            }),
             TextWeight::Semibold,
         );
-        if self.people_approved.is_empty() {
-            text_renderer.draw_text_weighted(
-                scene,
-                "Approved names will appear here with all of their photographs.",
-                13.0,
-                theme.text_dim,
-                transform * Affine::translate((content.x0, body_y + 32.0)),
-                Some(content.width() as f32),
-                TextWeight::Regular,
-            );
-        }
-        let approved_count = self
-            .people_controls
-            .iter()
-            .filter(|control| matches!(control.intent, PeopleIntent::OpenApproved(_)))
-            .count();
-        let columns = if content.width() >= 1_100.0 {
-            4
-        } else if wide {
-            3
-        } else {
-            1
-        };
-        let suggestion_y = if wide {
-            body_y + 48.0 + approved_count.div_ceil(columns) as f64 * 150.0
-        } else {
-            body_y + 48.0 + approved_count as f64 * 64.0
-        };
-        text_renderer.draw_text_weighted(
-            scene,
-            "Suggestions to review",
-            17.0,
-            theme.text_primary,
-            transform * Affine::translate((content.x0, suggestion_y)),
-            Some(content.width() as f32),
-            TextWeight::Semibold,
-        );
-
-        let mut cards = Vec::new();
-        for control in &self.people_controls {
-            let (title, subtitle, photo_ids, suggestion) = match &control.intent {
-                PeopleIntent::OpenApproved(name) => {
-                    let person = self
-                        .people_approved
-                        .iter()
-                        .find(|person| &person.label == name);
-                    let count = person.map_or(0, crate::people::SharedPerson::count);
-                    (
-                        name.clone(),
-                        format!("{count} photograph{}", if count == 1 { "" } else { "s" }),
-                        person.map_or_else(Vec::new, |person| person.photo_ids.clone()),
-                        false,
-                    )
-                }
-                PeopleIntent::OpenSuggestion(id) => {
-                    let Some(cluster) = self.people_controller.cluster(id) else {
-                        continue;
-                    };
-                    (
-                        cluster
-                            .display_name
-                            .clone()
-                            .unwrap_or_else(|| "Suggested person".to_owned()),
-                        format!(
-                            "{} photos · {} · private",
-                            cluster.photos.len(),
-                            cluster.origin.label()
-                        ),
-                        cluster.visible_photo_ids(),
-                        true,
-                    )
-                }
-                _ => continue,
-            };
-            let button = control.bounds;
-            let card = if wide {
-                Rect::new(
-                    button.x0 - 10.0,
-                    button.y0 - 94.0,
-                    button.x1 + 10.0,
-                    button.y1 + 4.0,
-                )
-            } else {
-                Rect::new(content.x0, button.y0 - 14.0, content.x1, button.y1 + 14.0)
-            };
-            cards.push((card, title, subtitle, photo_ids, suggestion));
-        }
-        for (card, title, subtitle, photo_ids, _suggestion) in cards {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &RoundedRect::from_rect(card, theme.radius_standard),
-            );
-            let thumb = if wide {
-                Rect::new(
-                    card.x0 + 12.0,
-                    card.y0 + 10.0,
-                    card.x0 + 76.0,
-                    card.y0 + 76.0,
-                )
-            } else {
-                Rect::new(card.x0 + 8.0, card.y0 + 8.0, card.x0 + 64.0, card.y1 - 8.0)
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &RoundedRect::from_rect(thumb, theme.radius_standard),
-            );
-            if let Some(image) = photo_ids
-                .iter()
-                .find_map(|photo_id| self.library_thumbnails.get(photo_id))
-            {
-                let scale = (thumb.width() / f64::from(image.width))
-                    .min(thumb.height() / f64::from(image.height));
-                scene.draw_image(
-                    image,
-                    transform
-                        * Affine::translate((
-                            thumb.x0 + (thumb.width() - f64::from(image.width) * scale) * 0.5,
-                            thumb.y0 + (thumb.height() - f64::from(image.height) * scale) * 0.5,
-                        ))
-                        * Affine::scale(scale),
-                );
-            } else {
-                draw_icon(
-                    scene,
-                    transform,
-                    thumb.inflate(-16.0, -16.0),
-                    Icon::Users,
-                    theme.text_dim,
-                    1.5,
-                );
-            }
-            let copy_x = card.x0 + if wide { 86.0 } else { 74.0 };
-            text_renderer.draw_text_weighted(
-                scene,
-                &title,
-                if wide { 16.0 } else { 14.0 },
-                theme.text_primary,
-                transform * Affine::translate((copy_x, card.y0 + 14.0)),
-                Some((card.x1 - copy_x - if wide { 12.0 } else { 126.0 }) as f32),
-                TextWeight::Semibold,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &subtitle,
-                12.0,
-                theme.text_dim,
-                transform * Affine::translate((copy_x, card.y0 + 39.0)),
-                Some((card.x1 - copy_x - if wide { 12.0 } else { 126.0 }) as f32),
-                TextWeight::Regular,
-            );
-        }
-        let visible_suggestions = self
-            .people_controller
-            .all_clusters()
-            .filter(|cluster| self.people_show_hidden || (!cluster.hidden && !cluster.rejected))
-            .count();
-        if visible_suggestions == 0 {
-            text_renderer.draw_text_weighted(
-                scene,
-                match self.people_controller.capability() {
-                    crate::people::FaceCapability::DisabledByOwner => {
-                        "Turn on recognition when you want private suggestions from this device."
-                    }
-                    crate::people::FaceCapability::NoVerifiedFaceModel => {
-                        "Recognition is enabled, but no verified local face model is ready."
-                    }
-                    crate::people::FaceCapability::Ready { .. } => {
-                        "No suggestions are waiting. Scan another local batch when you’re ready."
-                    }
-                },
-                13.0,
-                theme.text_dim,
-                transform * Affine::translate((content.x0, suggestion_y + 32.0)),
-                Some(content.width() as f32),
-                TextWeight::Regular,
-            );
-        }
         let scan_state = match self.people_scan_progress.status.as_str() {
-            "running" => "Scanning locally… Suggestions appear here when this batch finishes.",
+            "running" => "Scanning locally. Suggestions will appear here for review.",
             "error" => self
                 .people_scan_progress
                 .last_error
                 .as_deref()
                 .unwrap_or("The last local scan could not finish."),
-            "cancelled" => "Scanning is paused. Starting again resumes with the next batch.",
+            "cancelled" => "Scanning is paused. Start again to continue from the next local batch.",
             _ => self.people_controller.capability().summary(),
         };
         text_renderer.draw_text_weighted(
@@ -8885,301 +9417,189 @@ impl PhotosApp {
             scan_state,
             12.0,
             theme.text_dim,
-            transform
-                * Affine::translate(if wide {
-                    (recognition_card.x0 + 16.0, recognition_card.y0 + 34.0)
-                } else {
-                    (content.x0 + 12.0, content.y0 + 128.0)
-                }),
+            transform * Affine::translate((recognition_copy_x, recognition.y0 + 42.0)),
             Some(if wide {
-                (content.width() - 530.0).max(180.0) as f32
+                (recognition.width() - 450.0).max(220.0) as f32
             } else {
-                content.width() as f32
+                (recognition.width() - 80.0) as f32
             }),
             TextWeight::Regular,
         );
-    }
-
-    #[allow(
-        dead_code,
-        reason = "kept temporarily as a geometry reference while the retained People surface settles"
-    )]
-    fn draw_people_legacy(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        use vello::peniko::Fill;
-        // This distinct collection must not leave stale library-card hit
-        // targets alive behind it when a person opens People from a timeline.
-        self.library_cards.clear();
-        self.library_details_cards.clear();
-        self.metadata_filter_cards.clear();
-        let bounds = self.canvas_rect;
-        let inset = f64::from(PAD) + 18.0;
-        let content = Rect::new(
-            bounds.x0 + inset,
-            bounds.y0 + 18.0,
-            bounds.x1 - inset,
-            bounds.y1 - 18.0,
-        );
+        let body_y = recognition.y1 + 30.0;
+        let people_lane_w = if wide {
+            (content.width() * 0.67).max(420.0)
+        } else {
+            content.width()
+        };
+        let review_x = if wide {
+            content.x0 + people_lane_w + 20.0
+        } else {
+            content.x0
+        };
+        let review_w = if wide {
+            content.x1 - review_x
+        } else {
+            content.width()
+        };
         text_renderer.draw_text_weighted(
             scene,
-            "People",
-            28.0,
+            "People you’ve named",
+            18.0,
             theme.text_primary,
-            transform * Affine::translate((content.x0, content.y0)),
-            Some(content.width() as f32),
+            transform * Affine::translate((content.x0, body_y)),
+            Some(people_lane_w as f32),
             TextWeight::Semibold,
         );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Private recognition stays on this device. Only names you approve are shared.",
-            14.0,
-            theme.text_dim,
-            transform * Affine::translate((content.x0, content.y0 + 37.0)),
-            Some(content.width() as f32),
-            TextWeight::Regular,
-        );
-        let capability = self.people_controller.capability().summary();
-        let privacy = if self.people_controller.privacy().recognition_enabled {
-            "On for this device"
-        } else {
-            "Off for this device"
-        };
-        let notice = Rect::new(
-            content.x0,
-            content.y0 + 66.0,
-            content.x1,
-            content.y0 + 126.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &notice,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.border_standard,
-            None,
-            &Rect::new(notice.x0, notice.y0, notice.x1, notice.y0 + 1.0),
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            privacy,
-            14.0,
-            theme.text_primary,
-            transform * Affine::translate((notice.x0 + 16.0, notice.y0 + 13.0)),
-            Some(220.0),
-            TextWeight::Medium,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            capability,
-            13.0,
-            theme.text_dim,
-            transform * Affine::translate((notice.x0 + 16.0, notice.y0 + 34.0)),
-            Some((notice.width() - 32.0) as f32),
-            TextWeight::Regular,
-        );
-        // `library_people` is the bounded projection refreshed from the same
-        // document as the canonical resource tree; draw never materializes a
-        // large CRDT collection merely to paint this overview.
-        let mut y = notice.y1 + 30.0;
-        text_renderer.draw_text_weighted(
-            scene,
-            "Approved people",
-            17.0,
-            theme.text_primary,
-            transform * Affine::translate((content.x0, y)),
-            Some(content.width() as f32),
-            TextWeight::Medium,
-        );
-        y += 28.0;
-        self.draw_collection_pager(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            Rect::new(
-                (content.x1 - 292.0).max(content.x0),
-                y - 42.0,
-                content.x1,
-                y - 2.0,
-            ),
-            self.people_page,
-            self.library_people.len(),
-            CollectionPageHit::PeoplePrevious,
-            CollectionPageHit::PeopleNext,
-        );
-        let people: Vec<_> = self
-            .library_people
-            .iter()
-            .skip(self.people_page * COLLECTION_PAGE_SIZE)
-            .take(COLLECTION_PAGE_SIZE)
-            .collect();
-        if people.is_empty() {
+        if wide {
             text_renderer.draw_text_weighted(
                 scene,
-                "No approved names yet. Review a local suggestion before sharing it.",
-                14.0,
+                "Review queue",
+                18.0,
+                theme.text_primary,
+                transform * Affine::translate((review_x, body_y)),
+                Some(review_w as f32),
+                TextWeight::Semibold,
+            );
+        }
+        let approved_controls: Vec<_> = self
+            .people_controls
+            .iter()
+            .filter(|control| matches!(control.intent, PeopleIntent::OpenApproved(_)))
+            .collect();
+        if approved_controls.is_empty() {
+            text_renderer.draw_text_weighted(
+                scene,
+                "People you approve will be shared here as searchable collections.",
+                13.0,
                 theme.text_dim,
-                transform * Affine::translate((content.x0, y)),
-                Some(content.width() as f32),
+                transform * Affine::translate((content.x0, body_y + 34.0)),
+                Some(people_lane_w as f32),
                 TextWeight::Regular,
             );
-        } else {
-            for (index, (name, count)) in people.into_iter().enumerate() {
-                let columns = if content.width() < 620.0 { 2 } else { 4 };
-                let gap = 12.0;
-                let card_w = (content.width() - gap * (columns - 1) as f64) / columns as f64;
-                let x = content.x0 + (index % columns) as f64 * (card_w + gap);
-                let card_y = y + (index / columns) as f64 * 184.0;
-                let card = Rect::new(x, card_y, x + card_w, card_y + 170.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.window_card,
-                    None,
-                    &card,
-                );
-                let preview = Rect::new(card.x0, card.y0, card.x1, card.y0 + 112.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.neutral[2],
-                    None,
-                    &preview,
-                );
-                if let Some(id) = self.library_person_covers.get(name)
-                    && let Some(image) = self.library_thumbnails.get(id)
-                {
-                    let scale = (preview.width() / f64::from(image.width))
-                        .max(preview.height() / f64::from(image.height));
-                    let image_transform = transform
-                        * Affine::translate((
-                            preview.x0 + (preview.width() - f64::from(image.width) * scale) * 0.5,
-                            preview.y0 + (preview.height() - f64::from(image.height) * scale) * 0.5,
-                        ))
-                        * Affine::scale(scale);
-                    scene.draw_image(image, image_transform);
-                } else {
-                    let avatar = Rect::from_center_size(preview.center(), (38.0, 38.0));
-                    draw_icon(scene, transform, avatar, Icon::Image, theme.text_dim, 1.5);
-                }
-                text_renderer.draw_text_weighted(
-                    scene,
-                    name,
-                    15.0,
-                    theme.text_primary,
-                    transform * Affine::translate((card.x0 + 12.0, card.y0 + 124.0)),
-                    Some((card.width() - 24.0) as f32),
-                    TextWeight::Medium,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &format!("{count} photos · approved"),
-                    12.0,
-                    theme.text_dim,
-                    transform * Affine::translate((card.x0 + 12.0, card.y0 + 146.0)),
-                    Some((card.width() - 24.0) as f32),
-                    TextWeight::Regular,
-                );
-            }
         }
-        let suggestions: Vec<_> = self
-            .people_controller
-            .visible_clusters()
-            .into_iter()
-            .filter(|cluster| cluster.is_proposal())
-            .take(6)
-            .collect();
-        let suggestion_y = if self.library_people.is_empty() {
-            y + 44.0
-        } else {
-            let columns = if content.width() < 620.0 { 2 } else { 4 };
-            y + (people_page_len(self.library_people.len(), self.people_page).div_ceil(columns)
-                as f64)
-                * 184.0
-                + 12.0
-        };
-        text_renderer.draw_text_weighted(
-            scene,
-            "Local suggestions",
-            17.0,
-            theme.text_primary,
-            transform * Affine::translate((content.x0, suggestion_y)),
-            Some(content.width() as f32),
-            TextWeight::Medium,
-        );
-        let suggestion_copy = if suggestions.is_empty() {
-            "No local suggestions yet. Enable recognition, then scan this device's library."
-                .to_owned()
-        } else {
-            format!(
-                "{} suggestion{} waiting for a name and approval; none are shared.",
-                suggestions.len(),
-                if suggestions.len() == 1 { "" } else { "s" }
-            )
-        };
-        text_renderer.draw_text_weighted(
-            scene,
-            &suggestion_copy,
-            14.0,
-            theme.text_dim,
-            transform * Affine::translate((content.x0, suggestion_y + 25.0)),
-            Some(content.width() as f32),
-            TextWeight::Regular,
-        );
-        let progress = &self.people_scan_progress;
-        let progress_copy = match progress.status.as_str() {
-            "running" => format!(
-                "Scanning locally: next batch starts at photo {} of {}. You can cancel; scanning resumes from there.",
-                progress.next_offset.saturating_add(1),
-                progress.last_library_size
-            ),
-            "cancelled" => format!(
-                "Local scan paused after {} batch(es). Start Scan local library for faces to resume.",
-                progress.completed_batches
-            ),
-            "error" => format!(
-                "Last local scan failed: {}. Retry resumes at the next batch.",
-                progress
-                    .last_error
-                    .as_deref()
-                    .unwrap_or("local model unavailable")
-            ),
-            "paused" if progress.completed_batches > 0 => format!(
-                "{} local batch(es) completed. Resume to continue through this device's library.",
-                progress.completed_batches
-            ),
-            _ => String::new(),
-        };
-        if !progress_copy.is_empty() {
+        for control in approved_controls {
+            let PeopleIntent::OpenApproved(name) = &control.intent else {
+                continue;
+            };
+            let person = self
+                .people_approved
+                .iter()
+                .find(|person| &person.label == name);
+            let count = person.map_or(0, crate::people::SharedPerson::count);
+            let photo_ids = person.map_or_else(Vec::new, |person| person.photo_ids.clone());
+            let card = if wide {
+                Rect::new(
+                    control.bounds.x0 - 12.0,
+                    control.bounds.y0 - 176.0,
+                    control.bounds.x1 + 12.0,
+                    control.bounds.y1 + 8.0,
+                )
+            } else {
+                Rect::new(
+                    content.x0,
+                    control.bounds.y0 - 20.0,
+                    content.x1,
+                    control.bounds.y1 + 20.0,
+                )
+            };
+            self.draw_people_card(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                card,
+                name,
+                &format!(
+                    "{count} photograph{} · shared",
+                    if count == 1 { "" } else { "s" }
+                ),
+                &photo_ids,
+                false,
+                !wide,
+            );
+        }
+        if !wide {
+            let approved_count = self
+                .people_controls
+                .iter()
+                .filter(|control| matches!(control.intent, PeopleIntent::OpenApproved(_)))
+                .count();
             text_renderer.draw_text_weighted(
                 scene,
-                &progress_copy,
-                12.0,
-                theme.text_dim,
-                transform * Affine::translate((content.x0, suggestion_y + 48.0)),
+                "Suggestions to review",
+                18.0,
+                theme.text_primary,
+                transform
+                    * Affine::translate((content.x0, body_y + 42.0 + approved_count as f64 * 92.0)),
                 Some(content.width() as f32),
+                TextWeight::Semibold,
+            );
+        }
+        let suggestion_controls: Vec<_> = self
+            .people_controls
+            .iter()
+            .filter(|control| matches!(control.intent, PeopleIntent::OpenSuggestion(_)))
+            .collect();
+        if suggestion_controls.is_empty() {
+            text_renderer.draw_text_weighted(
+                scene,
+                match self.people_controller.capability() {
+                    crate::people::FaceCapability::DisabledByOwner => "Turn on recognition when you want private suggestions from this device.",
+                    crate::people::FaceCapability::NoVerifiedFaceModel => "Recognition is on, but this device does not have a verified local face model yet.",
+                    crate::people::FaceCapability::Ready { .. } => "No suggestions are waiting for review.",
+                },
+                13.0,
+                theme.text_dim,
+                transform * Affine::translate((review_x, body_y + 34.0)),
+                Some(review_w as f32),
                 TextWeight::Regular,
+            );
+        }
+        for control in suggestion_controls {
+            let PeopleIntent::OpenSuggestion(id) = &control.intent else {
+                continue;
+            };
+            let Some(cluster) = self.people_controller.cluster(id) else {
+                continue;
+            };
+            let card = if wide {
+                Rect::new(
+                    review_x,
+                    control.bounds.y0 - 92.0,
+                    content.x1,
+                    control.bounds.y1 + 16.0,
+                )
+            } else {
+                Rect::new(
+                    content.x0,
+                    control.bounds.y0 - 20.0,
+                    content.x1,
+                    control.bounds.y1 + 20.0,
+                )
+            };
+            self.draw_people_card(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                card,
+                cluster
+                    .display_name
+                    .as_deref()
+                    .unwrap_or("Suggested person"),
+                &format!(
+                    "{} photograph{} · {}",
+                    cluster.photos.len(),
+                    if cluster.photos.len() == 1 { "" } else { "s" },
+                    cluster.origin.label()
+                ),
+                &cluster.visible_photo_ids(),
+                true,
+                true,
             );
         }
     }
 
-    /// Whole-library intelligence is an explicit, inspectable job rather than
-    /// a magic search switch. The screen says what runs, where pixels go, what
-    /// becomes collaborative, and which exact photographs need attention.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the dashboard keeps its responsive geometry, retained controls, and failure rows in one auditable paint pass"
-    )]
     fn draw_library_analysis(
         &mut self,
         scene: &mut Scene,
@@ -9222,7 +9642,6 @@ impl PhotosApp {
             Some(content.width() as f32),
             TextWeight::Regular,
         );
-
         self.draw_library_navigation(
             scene,
             transform,
@@ -9230,13 +9649,17 @@ impl PhotosApp {
             theme,
             Rect::new(
                 content.x0,
-                content.y0 + 66.0,
-                content.x1.min(content.x0 + 450.0),
-                content.y0 + 106.0,
+                content.y0 + 58.0,
+                if compact {
+                    content.x1
+                } else {
+                    (content.x0 + 450.0).min(content.x1)
+                },
+                content.y0 + 98.0,
             ),
         );
 
-        let card_y = content.y0 + 122.0;
+        let card_y = content.y0 + 116.0;
         let card_h = if compact { 174.0 } else { 142.0 };
         let status_card = RoundedRect::from_rect(
             Rect::new(content.x0, card_y, content.x1, card_y + card_h),
@@ -9255,6 +9678,21 @@ impl PhotosApp {
             theme.border_standard,
             None,
             &status_card,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.accent[6],
+            None,
+            &RoundedRect::from_rect(
+                Rect::new(
+                    content.x0,
+                    card_y + 10.0,
+                    content.x0 + 3.0,
+                    card_y + card_h - 10.0,
+                ),
+                2.0,
+            ),
         );
 
         let (model_title, model_detail) = self.library_analysis_capability.as_ref().map_or_else(
@@ -9278,7 +9716,11 @@ impl PhotosApp {
             17.0,
             theme.text_primary,
             transform * Affine::translate((content.x0 + 18.0, card_y + 16.0)),
-            Some((content.width() - 36.0) as f32),
+            Some(if compact {
+                (content.width() - 36.0) as f32
+            } else {
+                (content.width() * 0.42) as f32
+            }),
             TextWeight::Medium,
         );
         text_renderer.draw_text_weighted(
@@ -9287,7 +9729,11 @@ impl PhotosApp {
             12.0,
             theme.text_dim,
             transform * Affine::translate((content.x0 + 18.0, card_y + 42.0)),
-            Some((content.width() - 36.0) as f32),
+            Some(if compact {
+                (content.width() - 36.0) as f32
+            } else {
+                (content.width() * 0.42) as f32
+            }),
             TextWeight::Regular,
         );
 
@@ -9330,6 +9776,36 @@ impl PhotosApp {
             Some((content.width() - 36.0) as f32),
             TextWeight::Regular,
         );
+        if !compact {
+            for (index, (value, label)) in [
+                (analyzed, "Searchable"),
+                (available, "Ready"),
+                (awaiting, "Waiting"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let x = content.x0 + content.width() * (0.49 + index as f64 * 0.17);
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &value.to_string(),
+                    24.0,
+                    theme.text_primary,
+                    transform * Affine::translate((x, card_y + 34.0)),
+                    Some((content.width() * 0.13) as f32),
+                    TextWeight::Semibold,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    label,
+                    11.0,
+                    theme.text_dim,
+                    transform * Affine::translate((x, card_y + 68.0)),
+                    Some((content.width() * 0.13) as f32),
+                    TextWeight::Medium,
+                );
+            }
+        }
         self.library_analysis_progress
             .set_progress(self.library_analysis.progress() as f32);
         let progress_y = card_y + if compact { 124.0 } else { 116.0 };
@@ -9426,11 +9902,11 @@ impl PhotosApp {
         let capability_gap = 10.0;
         let capability_w = (content.width() - capability_gap * (capability_columns - 1) as f64)
             / capability_columns as f64;
-        for (index, (title, detail)) in [
-            ("Visible text", "Full-text OCR"),
-            ("Scenes", "Descriptions + objects"),
-            ("Pets", "Separate pet facets"),
-            ("People", "Private review in People"),
+        for (index, (title, detail, icon)) in [
+            ("Visible text", "Full-text OCR", Icon::Search),
+            ("Scenes", "Descriptions + objects", Icon::Sparkles),
+            ("Pets", "Separate pet facets", Icon::Star),
+            ("People", "Private review in People", Icon::Users),
         ]
         .into_iter()
         .enumerate()
@@ -9447,13 +9923,28 @@ impl PhotosApp {
                 None,
                 &card,
             );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &card,
+            );
+            draw_icon(
+                scene,
+                transform,
+                Rect::new(x + 14.0, y + 20.0, x + 32.0, y + 38.0),
+                icon,
+                theme.tokens.colors.accent[6],
+                1.5,
+            );
             text_renderer.draw_text_weighted(
                 scene,
                 title,
                 13.0,
                 theme.text_primary,
-                transform * Affine::translate((x + 12.0, y + 10.0)),
-                Some((capability_w - 24.0) as f32),
+                transform * Affine::translate((x + 48.0, y + 10.0)),
+                Some((capability_w - 60.0) as f32),
                 TextWeight::Medium,
             );
             text_renderer.draw_text_weighted(
@@ -9461,8 +9952,8 @@ impl PhotosApp {
                 detail,
                 11.0,
                 theme.text_dim,
-                transform * Affine::translate((x + 12.0, y + 33.0)),
-                Some((capability_w - 24.0) as f32),
+                transform * Affine::translate((x + 48.0, y + 33.0)),
+                Some((capability_w - 60.0) as f32),
                 TextWeight::Regular,
             );
         }
@@ -9650,17 +10141,14 @@ impl PhotosApp {
         } else if large_text {
             format!("{} photos", self.library_total)
         } else {
-            // Compact layouts state selection progress in the contextual bar
-            // and keep the masthead free for density controls. A duplicate
-            // right-aligned range would sit directly behind the expand button.
-            String::new()
+            format!("{} photos", self.library_total)
         };
         let count_width = if desktop_library {
             260.0
         } else if large_text {
             180.0
         } else {
-            100.0
+            180.0
         };
         text_renderer.draw_text_weighted(
             scene,
@@ -9671,17 +10159,13 @@ impl PhotosApp {
                 * Affine::translate((
                     if desktop_library {
                         masthead.x0 + 16.0
-                    } else if large_text {
-                        bounds.x0 + f64::from(PAD)
                     } else {
-                        bounds.x1 - f64::from(PAD) - count_width
+                        bounds.x0 + f64::from(PAD)
                     },
                     if desktop_library {
                         heading_y + 32.0
-                    } else if large_text {
-                        compact_header.count_y
                     } else {
-                        heading_y + 3.0
+                        compact_header.count_y
                     },
                 )),
             Some(count_width as f32),
@@ -10171,11 +10655,24 @@ impl PhotosApp {
         // photographs need to collapse to a single column. Keeping those
         // breakpoints independent gives tablets and narrow desktop strips a
         // useful, expressive chronology instead of two enormous image rows.
-        let single_column_timeline = timeline_width < 520.0 || large_text;
+        let single_column_timeline = timeline_width < 520.0;
+        // At 200% text, retain two genuinely readable photographs rather
+        // than either stretching one tile across the whole desktop or
+        // squeezing a justified row into three narrow targets.
+        let timeline_layout_width = if large_text && !single_column_timeline {
+            timeline_width.min(1_216.0)
+        } else {
+            timeline_width
+        };
+        let timeline_target_height = if large_text && !single_column_timeline {
+            410.0
+        } else {
+            default_preview_h
+        };
         let anchor = self.timeline_projection.anchor_at(self.timeline_scroll_y);
         let geometry_changed = self.timeline_projection.set_geometry(TimelineGeometry {
-            width: timeline_width.max(44.0),
-            target_height: default_preview_h,
+            width: timeline_layout_width.max(44.0),
+            target_height: timeline_target_height,
             gap,
             compact: single_column_timeline,
         });
@@ -10300,6 +10797,7 @@ impl PhotosApp {
             let y = *projected_y;
             let card = Rect::new(x, y, x + card_w, y + item_card_h);
             let preview = Rect::new(x, y, x + card_w, y + item_preview_h);
+            let card_fully_visible = card.y0 >= top && card.y1 <= bounds.y1;
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -10413,7 +10911,7 @@ impl PhotosApp {
                     .floor()
                     .max(8.0) as usize,
             );
-            if desktop_library && !self.album_editor && !self.selection_mode {
+            if card_fully_visible && desktop_library && !self.album_editor && !self.selection_mode {
                 if card.contains(self.pointer) {
                     // Desktop controls are deliberately transient: the
                     // photograph remains the dominant surface until someone
@@ -10499,6 +10997,56 @@ impl PhotosApp {
                     );
                 }
                 self.library_details_cards.push((id.clone(), details));
+            } else if card_fully_visible
+                && !self.album_editor
+                && !self.selection_mode
+                && card.width() >= 148.0
+            {
+                // Touch and enlarged-text layouts cannot depend on hover.
+                // Keep the image dominant while providing an honest 44px
+                // action shelf on tiles wide enough to contain all controls.
+                let overlay = Rect::new(card.x0, action_y, card.x1, card.y1);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.neutral[0].with_alpha(0.82),
+                    None,
+                    &overlay,
+                );
+                draw_icon(
+                    scene,
+                    transform,
+                    Rect::from_center_size(details.center(), (16.0, 16.0)),
+                    Icon::Pencil,
+                    theme.tokens.colors.accent[6],
+                    1.5,
+                );
+                let confirmed = self.library_remove_confirm.as_deref() == Some(id);
+                draw_icon(
+                    scene,
+                    transform,
+                    Rect::from_center_size(remove.center(), (16.0, 16.0)),
+                    if confirmed { Icon::Check } else { Icon::Trash2 },
+                    if confirmed {
+                        theme.tokens.colors.semantic.danger
+                    } else {
+                        theme.text_dim
+                    },
+                    1.5,
+                );
+                draw_icon(
+                    scene,
+                    transform,
+                    Rect::from_center_size(star.center(), (17.0, 17.0)),
+                    Icon::Star,
+                    if favorite {
+                        theme.tokens.colors.accent[6]
+                    } else {
+                        theme.text_dim
+                    },
+                    1.5,
+                );
+                self.library_details_cards.push((id.clone(), details));
             }
             if self.album_editor && self.album_editor_members.contains(id) {
                 scene.fill(
@@ -10534,7 +11082,9 @@ impl PhotosApp {
                     2.0,
                 );
             }
-            self.library_cards.push((id.clone(), card, favorite));
+            if card_fully_visible {
+                self.library_cards.push((id.clone(), card, favorite));
+            }
         }
         scene.pop_layer();
         if !self.album_editor && !self.metadata_editor && !self.selection_album_chooser {
@@ -10572,7 +11122,14 @@ impl PhotosApp {
             self.canvas_rect.x1 - 10.0,
             self.canvas_rect.y1 - 10.0,
         );
-        let heading = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + 58.0);
+        let compact = bounds.width() < 760.0 || theme.text_scale > 1.25;
+        // Build the location projection once per frame. The heading, marker
+        // layer, and desktop rail all describe the same canonical collections
+        // without cloning or regrouping library photographs during paint.
+        let place_clusters =
+            crate::places::clusters(self.places_items.iter().map(|item| &item.photo));
+        let heading_h = if compact { 86.0 } else { 68.0 };
+        let heading = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + heading_h);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -10609,17 +11166,19 @@ impl PhotosApp {
         text_renderer.draw_text_weighted(
             scene,
             open_place.as_deref().unwrap_or("Places"),
-            22.0,
+            if compact { 23.0 } else { 25.0 },
             theme.text_primary,
-            transform * Affine::translate((heading.x0 + 14.0, heading.y0 + 12.0)),
-            Some(180.0),
+            transform * Affine::translate((heading.x0 + 16.0, heading.y0 + 14.0)),
+            Some(if compact { 210.0 } else { 290.0 }),
             TextWeight::Medium,
         );
         text_renderer.draw_text_weighted(
             scene,
             &format!(
-                "{} photos with an explicitly shared location{}",
+                "{} photographs · {} named place{}{}",
                 visible_place_count,
+                place_clusters.len(),
+                if place_clusters.len() == 1 { "" } else { "s" },
                 if open_place.is_some() {
                     " at this place"
                 } else {
@@ -10628,29 +11187,57 @@ impl PhotosApp {
             ),
             12.0,
             theme.text_dim,
-            transform * Affine::translate((heading.x0 + 14.0, heading.y0 + 36.0)),
-            Some((heading.width() - 310.0).max(80.0) as f32),
+            transform * Affine::translate((heading.x0 + 16.0, heading.y0 + 42.0)),
+            Some(if compact {
+                (heading.width() - 32.0).max(80.0) as f32
+            } else {
+                (heading.width() - 510.0).max(80.0) as f32
+            }),
             TextWeight::Regular,
         );
-        self.draw_library_navigation(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            Rect::new(
-                (heading.x1 - 450.0).max(heading.x0 + 240.0),
-                heading.y0 + 9.0,
-                heading.x1 - 8.0,
-                heading.y0 + 49.0,
-            ),
-        );
+        if !compact {
+            self.draw_library_navigation(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                Rect::new(
+                    (heading.x1 - 450.0).max(heading.x0 + 360.0),
+                    heading.y0 + 14.0,
+                    heading.x1 - 10.0,
+                    heading.y0 + 54.0,
+                ),
+            );
+        } else {
+            self.draw_library_navigation(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                Rect::new(
+                    heading.x0 + 12.0,
+                    heading.y0 + 56.0,
+                    heading.x1 - 12.0,
+                    heading.y1 - 10.0,
+                ),
+            );
+        }
         if self.places_items.is_empty() {
             self.draw_empty_state(scene, transform, text_renderer, theme, "No places yet", "Import photos with GPS metadata or add an explicit shared location in photo details. Photos does not guess or upload locations.");
             return;
         }
-        let map = Rect::new(bounds.x0, heading.y1 + 10.0, bounds.x1, bounds.y1);
+        let content = Rect::new(bounds.x0, heading.y1 + 12.0, bounds.x1, bounds.y1);
+        let show_overview = !self.places_list_mode && self.places_open_key.is_none();
+        let rail_w = if show_overview && content.width() >= 960.0 {
+            300.0
+        } else {
+            0.0
+        };
+        let map = Rect::new(content.x0, content.y0, content.x1 - rail_w, content.y1);
         self.places_map_bounds = map;
-        let toggle = Rect::new(map.x1 - 112.0, map.y0 + 12.0, map.x1 - 12.0, map.y0 + 48.0);
+        let rail =
+            (rail_w > 0.0).then(|| Rect::new(map.x1 + 12.0, content.y0, content.x1, content.y1));
+        let toggle = Rect::new(map.x1 - 132.0, map.y0 + 12.0, map.x1 - 12.0, map.y0 + 50.0);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -10667,11 +11254,15 @@ impl PhotosApp {
         );
         text_renderer.draw_text_weighted(
             scene,
-            if self.places_list_mode { "Map" } else { "List" },
+            if self.places_list_mode {
+                "Map"
+            } else {
+                "Photo list"
+            },
             12.0,
             theme.text_primary,
-            transform * Affine::translate((toggle.x0 + 28.0, toggle.y0 + 11.0)),
-            Some(60.0),
+            transform * Affine::translate((toggle.x0 + 14.0, toggle.y0 + 11.0)),
+            Some((toggle.width() - 28.0) as f32),
             TextWeight::Medium,
         );
         self.places_hits.push((PlacesHit::ToggleList, toggle));
@@ -10682,7 +11273,7 @@ impl PhotosApp {
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.neutral[2],
+            theme.tokens.colors.neutral[1],
             None,
             &map,
         );
@@ -10748,9 +11339,9 @@ impl PhotosApp {
         }
         // Calm offline geographic grid: it retains spatial orientation while
         // clearly avoiding a claim that live roads/tiles were downloaded.
-        for step in 1..10 {
-            let fx = map.x0 + map.width() * f64::from(step) / 10.0;
-            let fy = map.y0 + map.height() * f64::from(step) / 10.0;
+        for step in 1..6 {
+            let fx = map.x0 + map.width() * f64::from(step) / 6.0;
+            let fy = map.y0 + map.height() * f64::from(step) / 6.0;
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -10766,17 +11357,50 @@ impl PhotosApp {
                 &Rect::new(map.x0, fy, map.x1, fy + 1.0),
             );
         }
+        let map_summary = Rect::new(map.x0 + 14.0, map.y0 + 14.0, map.x0 + 226.0, map.y0 + 84.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised.with_alpha(0.94),
+            None,
+            &RoundedRect::from_rect(map_summary, 12.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(map_summary, 12.0),
+        );
         text_renderer.draw_text_weighted(
             scene,
-            "Offline map · no map provider is contacted",
+            "Your places",
+            13.0,
+            theme.text_primary,
+            transform * Affine::translate((map_summary.x0 + 12.0, map_summary.y0 + 12.0)),
+            Some(150.0),
+            TextWeight::Medium,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Drag to explore · scroll to zoom",
             11.0,
             theme.text_dim,
-            transform * Affine::translate((map.x0 + 12.0, map.y1 - 22.0)),
-            Some(260.0),
+            transform * Affine::translate((map_summary.x0 + 12.0, map_summary.y0 + 34.0)),
+            Some((map_summary.width() - 24.0) as f32),
             TextWeight::Regular,
         );
-        let zoom_out = Rect::new(map.x0 + 12.0, map.y0 + 12.0, map.x0 + 52.0, map.y0 + 52.0);
-        let zoom_in = Rect::new(map.x0 + 12.0, map.y0 + 58.0, map.x0 + 52.0, map.y0 + 98.0);
+        text_renderer.draw_text_weighted(
+            scene,
+            "Offline and private",
+            11.0,
+            theme.tokens.colors.accent[8],
+            transform * Affine::translate((map_summary.x0 + 12.0, map_summary.y0 + 51.0)),
+            Some((map_summary.width() - 24.0) as f32),
+            TextWeight::Medium,
+        );
+        let zoom_out = Rect::new(map.x0 + 14.0, map.y1 - 98.0, map.x0 + 54.0, map.y1 - 58.0);
+        let zoom_in = Rect::new(map.x0 + 14.0, map.y1 - 52.0, map.x0 + 54.0, map.y1 - 12.0);
         for (hit, rect, label) in [
             (PlacesHit::ZoomOut, zoom_out, "−"),
             (PlacesHit::ZoomIn, zoom_in, "+"),
@@ -10784,7 +11408,7 @@ impl PhotosApp {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.surfaces.raised,
+                theme.tokens.colors.surfaces.raised.with_alpha(0.94),
                 None,
                 &rect,
             );
@@ -10806,12 +11430,8 @@ impl PhotosApp {
             );
             self.places_hits.push((hit, rect));
         }
-        let photos: Vec<_> = self
-            .places_items
-            .iter()
-            .map(|item| item.photo.clone())
-            .collect();
-        for cluster in crate::places::clusters(&photos) {
+        let camera_feedback = self.places_camera_feedback();
+        for cluster in &place_clusters {
             let location = crate::model::PhotoLocation {
                 latitude: cluster.latitude,
                 longitude: cluster.longitude,
@@ -10828,7 +11448,8 @@ impl PhotosApp {
             if !map.contains(point) {
                 continue;
             }
-            let radius = (14.0 + (cluster.count() as f64).sqrt() * 3.0).min(28.0);
+            let radius = (16.0 + (cluster.count() as f64).sqrt() * 2.5).min(25.0)
+                * (1.0 + camera_feedback * 0.10);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -10864,13 +11485,24 @@ impl PhotosApp {
                 scene.draw_image(image, image_transform);
                 scene.pop_layer();
             }
+            let count_badge = Rect::from_center_size(
+                Point::new(point.x + radius - 3.0, point.y - radius + 3.0),
+                (18.0, 18.0),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[8],
+                None,
+                &RoundedRect::from_rect(count_badge, 9.0),
+            );
             text_renderer.draw_text_weighted(
                 scene,
                 &cluster.count().to_string(),
-                12.0,
-                theme.text_primary,
-                transform * Affine::translate((point.x - 4.0, point.y - 7.0)),
-                Some(16.0),
+                10.0,
+                theme.tokens.colors.surfaces.base,
+                transform * Affine::translate((count_badge.x0 + 6.0, count_badge.y0 + 4.0)),
+                Some(10.0),
                 TextWeight::Medium,
             );
             let hit = Rect::new(
@@ -10881,26 +11513,26 @@ impl PhotosApp {
             );
             self.places_hits
                 .push((PlacesHit::Place(cluster.key.clone()), hit));
-            if map.width() >= 560.0 {
+            if map.width() >= 520.0 {
                 let label_width =
                     (cluster.label.chars().count() as f64 * 6.5 + 24.0).clamp(72.0, 180.0);
                 let label_x =
                     (point.x - label_width * 0.5).clamp(map.x0 + 6.0, map.x1 - label_width - 6.0);
-                let label_y = (point.y + radius + 6.0).min(map.y1 - 34.0);
-                let label = Rect::new(label_x, label_y, label_x + label_width, label_y + 26.0);
+                let label_y = (point.y + radius + 8.0).min(map.y1 - 38.0);
+                let label = Rect::new(label_x, label_y, label_x + label_width, label_y + 30.0);
                 scene.fill(
                     Fill::NonZero,
                     transform,
                     theme.tokens.colors.surfaces.raised,
                     None,
-                    &RoundedRect::from_rect(label, 8.0),
+                    &RoundedRect::from_rect(label, 10.0),
                 );
                 text_renderer.draw_text_weighted(
                     scene,
                     &cluster.label,
                     10.0,
                     theme.text_primary,
-                    transform * Affine::translate((label.x0 + 10.0, label.y0 + 7.0)),
+                    transform * Affine::translate((label.x0 + 10.0, label.y0 + 8.0)),
                     Some((label.width() - 20.0) as f32),
                     TextWeight::Medium,
                 );
@@ -10925,12 +11557,127 @@ impl PhotosApp {
         );
         text_renderer.draw_text_weighted(
             scene,
-            "List",
+            "Photo list",
             12.0,
             theme.text_primary,
-            transform * Affine::translate((toggle.x0 + 28.0, toggle.y0 + 11.0)),
-            Some(60.0),
+            transform * Affine::translate((toggle.x0 + 14.0, toggle.y0 + 11.0)),
+            Some((toggle.width() - 28.0) as f32),
             TextWeight::Medium,
+        );
+        if let Some(rail) = rail {
+            self.draw_places_overview_rail(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rail,
+                &place_clusters,
+            );
+        }
+    }
+
+    /// A compact, keyboard-addressable summary of the canonical collections
+    /// shown on the map.  It keeps the map spatial while making the next
+    /// useful decision obvious on a desktop: choose the city, not a random
+    /// representative photograph.
+    fn draw_places_overview_rail(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+        clusters: &[crate::places::PlaceCluster],
+    ) {
+        use vello::peniko::Fill;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(rail, 14.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(rail, 14.0),
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Places",
+            18.0,
+            theme.text_primary,
+            transform * Affine::translate((rail.x0 + 16.0, rail.y0 + 18.0)),
+            Some((rail.width() - 32.0) as f32),
+            TextWeight::Medium,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &format!("{} collections in this library", clusters.len()),
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((rail.x0 + 16.0, rail.y0 + 44.0)),
+            Some((rail.width() - 32.0) as f32),
+            TextWeight::Regular,
+        );
+        let row_h = 82.0;
+        let mut y = rail.y0 + 76.0;
+        for cluster in clusters.iter().take(5) {
+            if y + row_h > rail.y1 - 12.0 {
+                break;
+            }
+            let row = Rect::new(rail.x0 + 10.0, y, rail.x1 - 10.0, y + row_h - 6.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.neutral[2],
+                None,
+                &RoundedRect::from_rect(row, 10.0),
+            );
+            let marker = Point::new(row.x0 + 26.0, row.y0 + row.height() * 0.5);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[6],
+                None,
+                &Circle::new(marker, 14.0),
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &cluster.label,
+                14.0,
+                theme.text_primary,
+                transform * Affine::translate((row.x0 + 52.0, row.y0 + 13.0)),
+                Some((row.width() - 68.0) as f32),
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &format!(
+                    "{} photo{} · open collection",
+                    cluster.count(),
+                    if cluster.count() == 1 { "" } else { "s" }
+                ),
+                11.0,
+                theme.text_dim,
+                transform * Affine::translate((row.x0 + 52.0, row.y0 + 37.0)),
+                Some((row.width() - 68.0) as f32),
+                TextWeight::Regular,
+            );
+            self.places_hits
+                .push((PlacesHit::Place(cluster.key.clone()), row));
+            y += row_h;
+        }
+        text_renderer.draw_text_weighted(
+            scene,
+            "Locations stay on your device until you choose to share them.",
+            11.0,
+            theme.text_dim,
+            transform * Affine::translate((rail.x0 + 16.0, rail.y1 - 30.0)),
+            Some((rail.width() - 32.0) as f32),
+            TextWeight::Regular,
         );
     }
 
@@ -11275,8 +12022,6 @@ impl PhotosApp {
         theme: &Theme,
         bounds: Rect,
     ) {
-        use vello::peniko::Fill;
-
         self.selection_destination_hits.clear();
         if !self.library_mode || !self.selection_album_chooser {
             return;
@@ -11292,50 +12037,54 @@ impl PhotosApp {
         self.selection_album_page = self.selection_album_page.min(page_count.saturating_sub(1));
         let start = self.selection_album_page * SELECTION_ALBUMS_PER_PAGE;
         let end = (start + SELECTION_ALBUMS_PER_PAGE).min(self.library_albums.len());
-        let narrow = theme.text_scale > 1.25 || bounds.width() < 700.0;
-        let sheet = if narrow {
-            Rect::new(
-                bounds.x0 + f64::from(PAD),
-                bounds.y0 + 54.0,
-                bounds.x1 - f64::from(PAD),
-                bounds.y1 - 54.0,
-            )
-        } else {
-            Rect::from_center_size(bounds.center(), (600.0, 540.0))
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.neutral[0].with_alpha(0.78),
-            None,
-            &bounds,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(sheet, 14.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &RoundedRect::from_rect(sheet, 14.0),
-        );
-        let content_left = sheet.x0 + if narrow { 20.0 } else { 18.0 };
-        text_renderer.draw_text_weighted(
-            scene,
-            "Choose destination album",
-            17.0,
-            theme.text_primary,
-            transform * Affine::translate((content_left, sheet.y0 + 20.0)),
-            Some((sheet.x1 - content_left - 18.0) as f32),
-            TextWeight::Medium,
-        );
+        let previous_enabled = self.selection_album_page > 0;
+        let next_enabled = end < self.library_albums.len();
+        let apply_enabled = self.selection_destination_album.is_some();
+
+        // This used to be a hand-painted panel with four local button
+        // imitations.  ModalFrame gives the chooser the same elevation,
+        // close target, focus treatment, and platform action order as the
+        // People and metadata surfaces while retaining its canonical album
+        // resource ids and existing accessibility tree.
+        let base_actions = [
+            ModalAction::secondary("Previous").enabled(previous_enabled),
+            ModalAction::secondary("Next").enabled(next_enabled),
+            ModalAction::secondary("Cancel"),
+            ModalAction::primary("Use album").enabled(apply_enabled),
+        ];
+        let base_spec = ModalSpec::new("Choose destination album")
+            .actions(&base_actions)
+            .body_height(310.0)
+            .max_width(620.0)
+            .dismiss_on_scrim(false);
+        let layout = ModalFrame::layout(bounds, &base_spec, text_renderer, theme);
+        let actions = [
+            ModalAction::secondary("Previous")
+                .enabled(previous_enabled)
+                .hovered(layout.actions[0].contains(self.pointer)),
+            ModalAction::secondary("Next")
+                .enabled(next_enabled)
+                .hovered(layout.actions[1].contains(self.pointer)),
+            ModalAction::secondary("Cancel").hovered(layout.actions[2].contains(self.pointer)),
+            ModalAction::primary("Use album")
+                .enabled(apply_enabled)
+                .hovered(layout.actions[3].contains(self.pointer)),
+        ];
+        let spec = ModalSpec::new("Choose destination album")
+            .actions(&actions)
+            .body_height(310.0)
+            .max_width(620.0)
+            .dismiss_on_scrim(false)
+            .close_hovered(layout.close.is_some_and(|rect| rect.contains(self.pointer)));
+        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
+
+        let (ink, dim) = ModalFrame::ink(theme);
+        // Primary-button rows use the theme's contrast-checked accent ink;
+        // album choices stay readable in every system theme without baking
+        // a foreground colour into this app-owned presentation.
+        let selected_ink = theme.tokens.colors.on_accent(4.5);
         let summary = format!(
-            "Albums {}–{} of {}",
+            "Albums {}–{} of {} · choose one destination",
             start + 1,
             end,
             self.library_albums.len()
@@ -11344,176 +12093,77 @@ impl PhotosApp {
             scene,
             &summary,
             12.0,
-            theme.text_dim,
-            transform
-                * Affine::translate((content_left, sheet.y0 + if narrow { 61.0 } else { 49.0 })),
-            Some((sheet.x1 - content_left - 18.0) as f32),
+            dim,
+            transform * Affine::translate((layout.body.x0, layout.body.y0 + 2.0)),
+            Some(layout.body.width() as f32),
             TextWeight::Regular,
         );
-        let footer_y = sheet.y1 - if narrow { 118.0 } else { 58.0 };
-        let list_top = sheet.y0 + if narrow { 102.0 } else { 76.0 };
-        let list_bottom = footer_y - 12.0;
-        let row_h = ((list_bottom - list_top) / SELECTION_ALBUMS_PER_PAGE as f64).clamp(
-            if narrow { 58.0 } else { 42.0 },
-            if narrow { 66.0 } else { 54.0 },
-        );
+        let list_top = layout.body.y0 + 30.0;
+        let list_bottom = layout.body.y1 - 2.0;
+        let visible_count = end.saturating_sub(start).max(1);
+        let row_h = ((list_bottom - list_top) / visible_count as f64).clamp(54.0, 68.0);
         let visible_albums = self.library_albums.get(start..end).unwrap_or_default();
         for (index, (id, name, count)) in visible_albums.iter().enumerate() {
             let y = list_top + index as f64 * row_h;
-            let row = Rect::new(sheet.x0 + 12.0, y, sheet.x1 - 12.0, y + row_h - 6.0);
+            let row = Rect::new(layout.body.x0, y, layout.body.x1, y + row_h - 6.0);
             let chosen = self.selection_destination_album.as_deref() == Some(id);
-            scene.fill(
-                Fill::NonZero,
+            Button::paint(
+                scene,
                 transform,
-                if chosen {
-                    theme.tokens.colors.accent[6]
-                } else {
-                    theme.tokens.colors.neutral[3]
-                },
-                None,
-                &RoundedRect::from_rect(row, 9.0),
-            );
-            scene.stroke(
-                &Stroke::new(if chosen { 2.0 } else { 1.0 }),
-                transform,
-                if chosen {
-                    theme.tokens.colors.accent[8]
-                } else {
-                    theme.border_standard
-                },
-                None,
-                &RoundedRect::from_rect(row, 9.0),
+                text_renderer,
+                theme,
+                &ButtonFace::new(row, "")
+                    .style(if chosen {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Neutral
+                    })
+                    .radius(10.0)
+                    .hovered(row.contains(self.pointer))
+                    .accessible_name(&format!("Use {name} as destination album")),
             );
             text_renderer.draw_text_weighted(
                 scene,
                 name,
                 13.0,
-                theme.text_primary,
+                if chosen { selected_ink } else { ink },
                 transform * Affine::translate((row.x0 + 14.0, row.y0 + 12.0)),
-                Some((row.width() - if narrow { 166.0 } else { 126.0 }) as f32),
+                Some((row.width() - 128.0) as f32),
                 TextWeight::Medium,
             );
             text_renderer.draw_text_weighted(
                 scene,
-                &format!("{count} photos"),
+                &format!("{count} photo{}", if *count == 1 { "" } else { "s" }),
                 11.0,
                 if chosen {
-                    theme.text_primary
+                    selected_ink.with_alpha(0.78)
                 } else {
-                    theme.text_dim
+                    dim
                 },
-                transform
-                    * Affine::translate((
-                        row.x1 - if narrow { 142.0 } else { 98.0 },
-                        row.y0 + 14.0,
-                    )),
-                Some(if narrow { 126.0 } else { 84.0 }),
+                transform * Affine::translate((row.x1 - 100.0, row.y0 + 14.0)),
+                Some(86.0),
                 TextWeight::Regular,
             );
             self.selection_destination_hits.push((id.clone(), row));
         }
-        let button = |scene: &mut Scene,
-                      text_renderer: &mut TextRenderer,
-                      rect: Rect,
-                      label: &str,
-                      enabled: bool| {
-            let shape = RoundedRect::from_rect(rect, 9.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if enabled {
-                    theme.tokens.colors.surfaces.window_card
-                } else {
-                    theme.tokens.colors.neutral[2]
-                },
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &shape,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                12.0,
-                if enabled {
-                    theme.text_primary
-                } else {
-                    theme.text_dim
-                },
-                transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 12.0)),
-                Some((rect.width() - 22.0) as f32),
-                TextWeight::Medium,
-            );
-        };
-        let (previous, next, cancel, apply) = if narrow {
-            let gap = 8.0;
-            let half = (sheet.width() - 24.0 - gap) / 2.0;
-            let left = sheet.x0 + 12.0;
-            let right = sheet.x1 - 12.0;
-            (
-                Rect::new(left, footer_y, left + half, footer_y + 46.0),
-                Rect::new(left + half + gap, footer_y, right, footer_y + 46.0),
-                Rect::new(left, footer_y + 54.0, left + half, footer_y + 100.0),
-                Rect::new(left + half + gap, footer_y + 54.0, right, footer_y + 100.0),
-            )
-        } else {
-            (
-                Rect::new(sheet.x0 + 12.0, footer_y, sheet.x0 + 112.0, footer_y + 42.0),
-                Rect::new(
-                    sheet.x0 + 120.0,
-                    footer_y,
-                    sheet.x0 + 202.0,
-                    footer_y + 42.0,
-                ),
-                Rect::new(
-                    sheet.x1 - 222.0,
-                    footer_y,
-                    sheet.x1 - 126.0,
-                    footer_y + 42.0,
-                ),
-                Rect::new(sheet.x1 - 118.0, footer_y, sheet.x1 - 12.0, footer_y + 42.0),
-            )
-        };
-        button(
-            scene,
-            text_renderer,
-            previous,
-            "Previous",
-            self.selection_album_page > 0,
-        );
-        button(
-            scene,
-            text_renderer,
-            next,
-            "Next",
-            end < self.library_albums.len(),
-        );
-        button(scene, text_renderer, cancel, "Cancel", true);
-        button(
-            scene,
-            text_renderer,
-            apply,
-            "Use album",
-            self.selection_destination_album.is_some(),
-        );
-        if self.selection_album_page > 0 {
+        ModalFrame::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
+        if previous_enabled {
             self.selection_hits
-                .push((SelectionHit::PreviousDestinationPage, previous));
+                .push((SelectionHit::PreviousDestinationPage, layout.actions[0]));
         }
-        if end < self.library_albums.len() {
+        if next_enabled {
             self.selection_hits
-                .push((SelectionHit::NextDestinationPage, next));
+                .push((SelectionHit::NextDestinationPage, layout.actions[1]));
         }
         self.selection_hits
-            .push((SelectionHit::CancelDestinationChooser, cancel));
-        if self.selection_destination_album.is_some() {
+            .push((SelectionHit::CancelDestinationChooser, layout.actions[2]));
+        if let Some(close) = layout.close {
             self.selection_hits
-                .push((SelectionHit::ApplyDestination, apply));
+                .push((SelectionHit::CloseDestinationChooser, close));
+        }
+        if apply_enabled {
+            self.selection_hits
+                .push((SelectionHit::ApplyDestination, layout.actions[3]));
         }
     }
 
@@ -11644,19 +12294,27 @@ impl PhotosApp {
             }
             return;
         }
+        let panel_radius = f64::from(theme.tokens.radii.lg);
+        ui::surface::shadow(
+            scene,
+            transform,
+            panel,
+            panel_radius,
+            &theme.tokens.elevation.e3,
+        );
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
             theme.tokens.colors.surfaces.raised,
             None,
-            &panel,
+            &RoundedRect::from_rect(panel, panel_radius),
         );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        scene.stroke(
+            &Stroke::new(1.0),
             transform,
             theme.border_standard,
             None,
-            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
+            &RoundedRect::from_rect(panel, panel_radius),
         );
         text_renderer.draw_text_weighted(
             scene,
@@ -11742,38 +12400,33 @@ impl PhotosApp {
         let cancel = Rect::new(panel.x0 + 16.0, y, panel.x0 + 88.0, y + 44.0);
         let save = Rect::new(panel.x1 - 92.0, y, panel.x1 - 16.0, y + 44.0);
         let delete = Rect::new(save.x0 - 88.0, y, save.x0 - 8.0, y + 44.0);
-        for (hit, rect, label) in [
-            (AlbumEditorHit::Cancel, cancel, "Cancel"),
-            (AlbumEditorHit::Save, save, "Save"),
+        for (hit, rect, label, style, focused) in [
+            (
+                AlbumEditorHit::Cancel,
+                cancel,
+                "Cancel",
+                ButtonStyle::Neutral,
+                self.album_editor_focus == 1,
+            ),
+            (
+                AlbumEditorHit::Save,
+                save,
+                "Save",
+                ButtonStyle::Primary,
+                self.album_editor_focus == if self.album_editor_creating { 2 } else { 3 },
+            ),
         ] {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.neutral[3],
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
+            Button::paint(
                 scene,
-                label,
-                13.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 14.0)),
-                Some((rect.width() - 16.0) as f32),
-                TextWeight::Medium,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(rect, label)
+                    .style(style)
+                    .radius(10.0)
+                    .hovered(rect.contains(self.pointer))
+                    .focused(focused),
             );
-            let focused = matches!(hit, AlbumEditorHit::Cancel) && self.album_editor_focus == 1
-                || matches!(hit, AlbumEditorHit::Save)
-                    && self.album_editor_focus == if self.album_editor_creating { 2 } else { 3 };
-            if focused {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.accent[6],
-                    None,
-                    &Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + 2.0),
-                );
-            }
             self.album_editor_hits.push((hit, rect));
         }
         if !self.album_editor_creating {
@@ -11782,31 +12435,17 @@ impl PhotosApp {
             } else {
                 (AlbumEditorHit::Delete, "Delete")
             };
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.semantic.danger,
-                None,
-                &delete,
-            );
-            text_renderer.draw_text_weighted(
+            Button::paint(
                 scene,
-                label,
-                12.0,
-                theme.text_primary,
-                transform * Affine::translate((delete.x0 + 7.0, delete.y0 + 14.0)),
-                Some((delete.width() - 10.0) as f32),
-                TextWeight::Medium,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(delete, label)
+                    .style(ButtonStyle::Danger)
+                    .radius(10.0)
+                    .hovered(delete.contains(self.pointer))
+                    .focused(self.album_editor_focus == 2),
             );
-            if self.album_editor_focus == 2 {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.accent[6],
-                    None,
-                    &Rect::new(delete.x0, delete.y0, delete.x1, delete.y0 + 2.0),
-                );
-            }
             self.album_editor_hits.push((hit, delete));
         }
     }
@@ -11856,19 +12495,27 @@ impl PhotosApp {
             },
         );
         self.album_editor_rect = panel;
+        let panel_radius = f64::from(theme.tokens.radii.lg);
+        ui::surface::shadow(
+            scene,
+            transform,
+            panel,
+            panel_radius,
+            &theme.tokens.elevation.e3,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
             theme.tokens.colors.surfaces.raised,
             None,
-            &panel,
+            &RoundedRect::from_rect(panel, panel_radius),
         );
-        scene.fill(
-            Fill::NonZero,
+        scene.stroke(
+            &Stroke::new(1.0),
             transform,
             theme.border_standard,
             None,
-            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
+            &RoundedRect::from_rect(panel, panel_radius),
         );
         text_renderer.draw_text_weighted(
             scene,
@@ -11930,29 +12577,16 @@ impl PhotosApp {
                 AlbumEditorHit::NextPage => self.can_page_library(true),
                 _ => false,
             };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if enabled {
-                    theme.tokens.colors.neutral[3]
-                } else {
-                    theme.tokens.colors.neutral[2]
-                },
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
+            Button::paint(
                 scene,
-                label,
-                12.0,
-                if enabled {
-                    theme.text_primary
-                } else {
-                    theme.text_dim
-                },
-                transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 12.0)),
-                Some((rect.width() - 24.0) as f32),
-                TextWeight::Medium,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(rect, label)
+                    .style(ButtonStyle::Neutral)
+                    .radius(10.0)
+                    .hovered(enabled && rect.contains(self.pointer))
+                    .disabled(!enabled),
             );
             if enabled {
                 self.album_editor_hits.push((hit, rect));
@@ -12036,29 +12670,32 @@ impl PhotosApp {
             panel.x1 - 16.0,
             action_y - 10.0,
         );
-        for (hit, rect, label, color) in [
+        for (hit, rect, label, style, focused) in [
             (
                 AlbumEditorHit::Cancel,
                 cancel,
                 "Cancel",
-                theme.tokens.colors.neutral[3],
+                ButtonStyle::Neutral,
+                self.album_editor_focus == 1,
             ),
             (
                 AlbumEditorHit::Save,
                 save,
                 "Save",
-                theme.tokens.colors.accent[6],
+                ButtonStyle::Primary,
+                self.album_editor_focus == if self.album_editor_creating { 2 } else { 3 },
             ),
         ] {
-            scene.fill(Fill::NonZero, transform, color, None, &rect);
-            text_renderer.draw_text_weighted(
+            Button::paint(
                 scene,
-                label,
-                12.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 17.0)),
-                Some((rect.width() - 24.0) as f32),
-                TextWeight::Medium,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(rect, label)
+                    .style(style)
+                    .radius(12.0)
+                    .hovered(rect.contains(self.pointer))
+                    .focused(focused),
             );
             self.album_editor_hits.push((hit, rect));
         }
@@ -12068,25 +12705,23 @@ impl PhotosApp {
             } else {
                 AlbumEditorHit::Delete
             };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.semantic.danger,
-                None,
-                &delete,
-            );
-            text_renderer.draw_text_weighted(
+            Button::paint(
                 scene,
-                if self.album_delete_confirm {
-                    "Delete album?"
-                } else {
-                    "Delete album"
-                },
-                12.0,
-                theme.text_primary,
-                transform * Affine::translate((delete.x0 + 12.0, delete.y0 + 17.0)),
-                Some((delete.width() - 24.0) as f32),
-                TextWeight::Medium,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(
+                    delete,
+                    if self.album_delete_confirm {
+                        "Delete album?"
+                    } else {
+                        "Delete album"
+                    },
+                )
+                .style(ButtonStyle::Danger)
+                .radius(12.0)
+                .hovered(delete.contains(self.pointer))
+                .focused(self.album_editor_focus == 2),
             );
             self.album_editor_hits.push((hit, delete));
         }
@@ -12113,36 +12748,47 @@ impl PhotosApp {
             self.metadata_editor_hits.clear();
             return;
         }
+        for (_, button) in &mut self.metadata_editor_buttons {
+            button.apply_layout_external(Rect::ZERO);
+        }
         let bounds = self.canvas_rect;
-        let narrow = bounds.width() < 680.0;
+        let narrow = bounds.width() < 720.0;
         let panel_w = if narrow {
             (bounds.width() - 16.0).max(0.0)
         } else {
-            500.0_f64.min(bounds.width() - 24.0)
+            536.0_f64.min(bounds.width() - 28.0)
         };
+        // On a narrow strip this is a true detail sheet, not an awkwardly
+        // translucent sidebar over an interactive photo grid. The shared
+        // scrim keeps the context visible while presenting one focus scope.
+        if narrow {
+            fill_scrim(scene, transform, bounds, 0.42, theme);
+        }
+        let panel_bottom = (bounds.y0 + 700.0).min(bounds.y1 - 8.0);
         let panel = Rect::new(
             if narrow {
                 bounds.x0 + 8.0
             } else {
-                bounds.x1 - panel_w - 12.0
+                bounds.x1 - panel_w - 14.0
             },
             bounds.y0 + 8.0,
-            bounds.x1 - if narrow { 8.0 } else { 12.0 },
-            bounds.y1 - 8.0,
+            bounds.x1 - if narrow { 8.0 } else { 14.0 },
+            panel_bottom,
         );
+        let panel_shape = RoundedRect::from_rect(panel, 12.0);
         scene.fill(
             Fill::NonZero,
             transform,
             theme.tokens.colors.surfaces.raised,
             None,
-            &panel,
+            &panel_shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
             theme.border_standard,
             None,
-            &panel,
+            &panel_shape,
         );
 
         let count = self.metadata_editor_ids.len();
@@ -12159,9 +12805,9 @@ impl PhotosApp {
         text_renderer.draw_text_weighted(
             scene,
             &title,
-            18.0,
+            20.0,
             theme.text_primary,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0)),
+            transform * Affine::translate((panel.x0 + 20.0, panel.y0 + 18.0)),
             Some((panel.width() - 32.0) as f32),
             TextWeight::Medium,
         );
@@ -12170,62 +12816,47 @@ impl PhotosApp {
             subtitle,
             11.0,
             theme.text_dim,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 48.0)),
+            transform * Affine::translate((panel.x0 + 20.0, panel.y0 + 50.0)),
             Some((panel.width() - 32.0) as f32),
             TextWeight::Regular,
         );
 
-        let tab_y = panel.y0 + if theme.text_scale > 1.25 { 86.0 } else { 76.0 };
+        let tab_y = panel.y0 + if theme.text_scale > 1.25 { 92.0 } else { 82.0 };
         let tab_gap = 8.0;
-        let tab_w = (panel.width() - 32.0 - tab_gap) * 0.5;
+        let tab_w = (panel.width() - 40.0 - tab_gap) * 0.5;
         let mut hits = Vec::new();
-        for (section, hit, label, x) in [
+        for (section, hit, _label, x) in [
             (
                 MetadataEditorSection::Organize,
                 MetadataEditorHit::Organize,
                 "Organize",
-                panel.x0 + 16.0,
+                panel.x0 + 20.0,
             ),
             (
                 MetadataEditorSection::TimeAndPlace,
                 MetadataEditorHit::TimeAndPlace,
                 "Time & place",
-                panel.x0 + 16.0 + tab_w + tab_gap,
+                panel.x0 + 20.0 + tab_w + tab_gap,
             ),
         ] {
             let rect = Rect::new(x, tab_y, x + tab_w, tab_y + 40.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if self.metadata_editor_section == section {
-                    theme.tokens.colors.accent[6]
+            if let Some((_, button)) = self
+                .metadata_editor_buttons
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == hit)
+            {
+                button.set_style(if self.metadata_editor_section == section {
+                    ButtonStyle::Primary
                 } else {
-                    theme.tokens.colors.neutral[3]
-                },
-                None,
-                &rect,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                12.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 12.0)),
-                Some((rect.width() - 24.0) as f32),
-                TextWeight::Medium,
-            );
-            hits.push((hit, rect));
+                    ButtonStyle::Neutral
+                });
+                button.apply_layout_external(rect);
+                button.draw(scene, transform, text_renderer, theme, presence);
+            }
         }
 
-        let fields_y = tab_y + 54.0;
-        let footer_y = panel.y1 - 60.0;
+        let fields_y = tab_y + 58.0;
+        let footer_y = panel.y1 - 68.0;
         let label_and_input =
             |scene: &mut Scene,
              text_renderer: &mut TextRenderer,
@@ -12235,7 +12866,7 @@ impl PhotosApp {
              clear_hit: MetadataEditorHit,
              force_clear: bool,
              rect: Rect,
-             hits: &mut Vec<(MetadataEditorHit, Rect)>| {
+             buttons: &mut Vec<(MetadataEditorHit, Button)>| {
                 let visible_label = if mixed {
                     format!("{label} · Mixed — unchanged")
                 } else {
@@ -12250,28 +12881,19 @@ impl PhotosApp {
                     Some((rect.width() - 64.0) as f32),
                     TextWeight::Medium,
                 );
-                let clear = Rect::new(rect.x1 - 58.0, rect.y0 - 6.0, rect.x1, rect.y0 + 26.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if force_clear {
-                        theme.tokens.colors.semantic.danger
+                let clear = Rect::new(rect.x1 - 92.0, rect.y0 - 8.0, rect.x1, rect.y0 + 28.0);
+                if let Some((_, button)) = buttons
+                    .iter_mut()
+                    .find(|(candidate, _)| *candidate == clear_hit)
+                {
+                    button.set_style(if force_clear {
+                        ButtonStyle::Danger
                     } else {
-                        theme.tokens.colors.neutral[3]
-                    },
-                    None,
-                    &clear,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    if force_clear { "Cleared" } else { "Clear" },
-                    10.0,
-                    theme.text_primary,
-                    transform * Affine::translate((clear.x0 + 7.0, clear.y0 + 8.0)),
-                    Some((clear.width() - 12.0) as f32),
-                    TextWeight::Medium,
-                );
-                hits.push((clear_hit, clear));
+                        ButtonStyle::Ghost
+                    });
+                    button.apply_layout_external(clear);
+                    button.draw(scene, transform, text_renderer, theme, presence);
+                }
                 input.apply_layout_external(Rect::new(rect.x0, rect.y0 + 24.0, rect.x1, rect.y1));
                 input.draw(scene, transform, text_renderer, theme, presence);
             };
@@ -12308,18 +12930,18 @@ impl PhotosApp {
                         self.metadata_mixed[index],
                         hit,
                         self.metadata_force_clear[index],
-                        Rect::new(panel.x0 + 16.0, y, panel.x1 - 16.0, y + row_h - 8.0),
-                        &mut hits,
+                        Rect::new(panel.x0 + 20.0, y, panel.x1 - 20.0, y + row_h - 8.0),
+                        &mut self.metadata_editor_buttons,
                     );
                 }
             }
             MetadataEditorSection::TimeAndPlace => {
-                // Keep the placement surface in the edit flow: it is a
-                // bundled reference grid, not an embedded map service. The
-                // compact height leaves the shared text inputs reachable at
-                // large text sizes and works for a batch as well as one photo.
-                let map_h = 58.0;
-                let row_h = ((footer_y - fields_y - map_h - 26.0) / 3.0).clamp(48.0, 82.0);
+                // Location deserves a real pick surface, not the old 58px
+                // strip that made every coordinate edit feel accidental.
+                // Keep enough fixed room for the date, place and coordinate
+                // fields first; the map absorbs the responsive remainder.
+                let row_h = 68.0;
+                let map_h = (footer_y - fields_y - row_h * 3.0 - 42.0).clamp(94.0, 154.0);
                 label_and_input(
                     scene,
                     text_renderer,
@@ -12329,12 +12951,12 @@ impl PhotosApp {
                     MetadataEditorHit::ClearCapturedAt,
                     self.metadata_force_clear[3],
                     Rect::new(
-                        panel.x0 + 16.0,
+                        panel.x0 + 20.0,
                         fields_y,
-                        panel.x1 - 16.0,
+                        panel.x1 - 20.0,
                         fields_y + row_h - 8.0,
                     ),
-                    &mut hits,
+                    &mut self.metadata_editor_buttons,
                 );
                 label_and_input(
                     scene,
@@ -12345,17 +12967,17 @@ impl PhotosApp {
                     MetadataEditorHit::ClearLocation,
                     self.metadata_force_clear[4],
                     Rect::new(
-                        panel.x0 + 16.0,
+                        panel.x0 + 20.0,
                         fields_y + row_h,
-                        panel.x1 - 16.0,
+                        panel.x1 - 20.0,
                         fields_y + row_h * 2.0 - 8.0,
                     ),
-                    &mut hits,
+                    &mut self.metadata_editor_buttons,
                 );
                 let map = Rect::new(
-                    panel.x0 + 16.0,
+                    panel.x0 + 20.0,
                     fields_y + row_h * 2.0,
-                    panel.x1 - 16.0,
+                    panel.x1 - 20.0,
                     fields_y + row_h * 2.0 + map_h,
                 );
                 self.metadata_location_map_bounds = map;
@@ -12383,6 +13005,16 @@ impl PhotosApp {
                         &Rect::new(x, map.y0, x + 1.0, map.y1),
                     );
                 }
+                for step in 1..3 {
+                    let y = map.y0 + map.height() * f64::from(step) / 3.0;
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        theme.border_standard,
+                        None,
+                        &Rect::new(map.x0, y, map.x1, y + 1.0),
+                    );
+                }
                 let center = map.center();
                 scene.stroke(
                     &Stroke::new(1.5),
@@ -12393,27 +13025,27 @@ impl PhotosApp {
                 );
                 text_renderer.draw_text_weighted(
                     scene,
-                    "Offline reference map — click a point to set shared coordinates",
+                    "Click to pin a location · saved only when you save changes",
                     10.0,
                     theme.text_primary,
-                    transform * Affine::translate((map.x0 + 10.0, map.y0 + 8.0)),
+                    transform * Affine::translate((map.x0 + 12.0, map.y0 + 10.0)),
                     Some((map.width() - 20.0) as f32),
                     TextWeight::Medium,
                 );
                 hits.push((MetadataEditorHit::PlaceOnMap, map));
-                let y = map.y1 + 8.0;
-                let gap = 8.0;
-                let field_w = (panel.width() - 32.0 - gap) * 0.5;
+                let y = map.y1 + 12.0;
+                let gap = 10.0;
+                let field_w = (panel.width() - 40.0 - gap) * 0.5;
                 for (label, input, x) in [
                     (
                         "Latitude",
                         &mut self.metadata_latitude_input,
-                        panel.x0 + 16.0,
+                        panel.x0 + 20.0,
                     ),
                     (
                         "Longitude",
                         &mut self.metadata_longitude_input,
-                        panel.x0 + 16.0 + field_w + gap,
+                        panel.x0 + 20.0 + field_w + gap,
                     ),
                 ] {
                     let visible_label = if self.metadata_mixed[4] {
@@ -12441,53 +13073,49 @@ impl PhotosApp {
             }
         }
 
-        let cancel = Rect::new(panel.x0 + 16.0, footer_y, panel.x0 + 124.0, panel.y1 - 12.0);
-        let save = Rect::new(panel.x1 - 124.0, footer_y, panel.x1 - 16.0, panel.y1 - 12.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.border_standard,
+            None,
+            &Rect::new(
+                panel.x0 + 20.0,
+                footer_y - 12.0,
+                panel.x1 - 20.0,
+                footer_y - 11.0,
+            ),
+        );
+        let cancel = Rect::new(panel.x0 + 20.0, footer_y, panel.x0 + 142.0, panel.y1 - 16.0);
+        let save = Rect::new(panel.x1 - 156.0, footer_y, panel.x1 - 20.0, panel.y1 - 16.0);
         let footer_focus = if self.metadata_editor_section == MetadataEditorSection::Organize {
             (3, 4)
         } else {
             (4, 5)
         };
-        for (hit, rect, label, focused, color) in [
+        for (hit, rect, focused, style) in [
             (
                 MetadataEditorHit::Cancel,
                 cancel,
-                "Cancel",
                 self.metadata_editor_focus == footer_focus.0,
-                theme.tokens.colors.neutral[3],
+                ButtonStyle::Neutral,
             ),
             (
                 MetadataEditorHit::Save,
                 save,
-                "Save changes",
                 self.metadata_editor_focus == footer_focus.1,
-                theme.tokens.colors.accent[6],
+                ButtonStyle::Primary,
             ),
         ] {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if focused { theme.bg_hover } else { color },
-                None,
-                &rect,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                12.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 13.0)),
-                Some((rect.width() - 20.0) as f32),
-                TextWeight::Medium,
-            );
-            hits.push((hit, rect));
+            if let Some((_, button)) = self
+                .metadata_editor_buttons
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == hit)
+            {
+                button.set_style(style);
+                button.set_focus(focused);
+                button.apply_layout_external(rect);
+                button.draw(scene, transform, text_renderer, theme, presence);
+            }
         }
         self.metadata_editor_hits = hits;
     }
@@ -12679,6 +13307,64 @@ fn build_album_page_buttons(
     ]
     .into_iter()
     .map(|(hit, id, label)| (hit, build_album_page_button(hit, id, label, pending)))
+    .collect()
+}
+
+/// Native controls layered over the custom metadata inspector. The inspector
+/// owns responsive geometry; `Button` owns interaction states, focus, action
+/// publication, tooltips, and the accessible name. This keeps the sheet from
+/// becoming a painted collection of fake controls merely because it is docked
+/// over the photo canvas.
+fn build_metadata_editor_buttons(
+    pending: &Rc<Cell<Option<MetadataEditorHit>>>,
+) -> Vec<(MetadataEditorHit, Button)> {
+    [
+        (MetadataEditorHit::Organize, "organize", "Organize"),
+        (
+            MetadataEditorHit::TimeAndPlace,
+            "time-place",
+            "Time & place",
+        ),
+        (
+            MetadataEditorHit::ClearFolder,
+            "clear-folder",
+            "Clear folder",
+        ),
+        (
+            MetadataEditorHit::ClearPeople,
+            "clear-people",
+            "Clear people",
+        ),
+        (MetadataEditorHit::ClearTags, "clear-tags", "Clear tags"),
+        (
+            MetadataEditorHit::ClearCapturedAt,
+            "clear-captured-at",
+            "Clear capture time",
+        ),
+        (
+            MetadataEditorHit::ClearLocation,
+            "clear-location",
+            "Clear location",
+        ),
+        (
+            MetadataEditorHit::PlaceOnMap,
+            "place-on-map",
+            "Set location from offline map",
+        ),
+        (MetadataEditorHit::Cancel, "cancel", "Cancel"),
+        (MetadataEditorHit::Save, "save", "Save changes"),
+    ]
+    .into_iter()
+    .map(|(hit, id, label)| {
+        let slot = Rc::clone(pending);
+        (
+            hit,
+            Button::new(&format!("photos-metadata-{id}"), label, None)
+                .tooltip(label)
+                .with_accessible_name(label)
+                .on_effect(move || slot.set(Some(hit))),
+        )
+    })
     .collect()
 }
 
@@ -12919,12 +13605,6 @@ fn timeline_date_label(captured_at: &str) -> String {
     }
 }
 
-fn people_page_len(total: usize, page: usize) -> usize {
-    total
-        .saturating_sub(page.saturating_mul(COLLECTION_PAGE_SIZE))
-        .min(COLLECTION_PAGE_SIZE)
-}
-
 fn collection_page_access_node(hit: CollectionPageHit, bounds: Rect, enabled: bool) -> AccessNode {
     let (name, target) = match hit {
         CollectionPageHit::AlbumsPrevious => ("Previous albums", "albums-previous"),
@@ -13023,6 +13703,11 @@ impl PhotosApp {
         buttons.push(&self.library_select_button);
         buttons.extend(self.library_album_buttons.iter().map(|(_, button)| button));
         buttons.extend(self.album_page_buttons.iter().map(|(_, button)| button));
+        buttons.extend(
+            self.metadata_editor_buttons
+                .iter()
+                .map(|(_, button)| button),
+        );
         buttons.extend(self.people_controls.iter().map(|control| &control.button));
         buttons
     }
@@ -13058,6 +13743,11 @@ impl PhotosApp {
         );
         buttons.extend(self.album_page_buttons.iter_mut().map(|(_, button)| button));
         buttons.extend(
+            self.metadata_editor_buttons
+                .iter_mut()
+                .map(|(_, button)| button),
+        );
+        buttons.extend(
             self.people_controls
                 .iter_mut()
                 .map(|control| &mut control.button),
@@ -13089,6 +13779,9 @@ impl PhotosApp {
                 AlbumEditorHit::NextPage => self.page_library(true),
                 _ => {}
             }
+        }
+        if let Some(hit) = self.metadata_editor_pending.take() {
+            self.activate_metadata_editor_hit(hit, doc);
         }
         let people = self.people_pending.borrow_mut().take();
         if let Some(intent) = people {
@@ -13158,6 +13851,24 @@ impl PhotosApp {
 }
 
 impl Widget for PhotosApp {
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.places_motion_reduced = reduced;
+        if reduced {
+            // Reduced motion keeps the camera operation immediate and every
+            // marker fully present; only the decorative settle cue disappears.
+            self.places_camera_feedback = None;
+        }
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        (!self.places_motion_reduced
+            && self
+                .places_camera_feedback
+                .is_some_and(|feedback| !feedback.done(Instant::now())))
+            || (!self.places_motion_reduced
+                && self.people_detail_transition.is_animating(Instant::now()))
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             crate::actions::PHOTOS_OPERATION_TYPE,
@@ -14157,6 +14868,7 @@ impl Widget for PhotosApp {
             }
         } else if let Some(v) = self.viewer.as_mut() {
             v.draw(scene, transform, text_renderer, theme, presence);
+            self.draw_viewer_details(scene, transform, text_renderer, theme);
         } else {
             let (title, body) = self.empty_state_text();
             self.draw_empty_state(scene, transform, text_renderer, theme, &title, &body);
@@ -14204,12 +14916,12 @@ impl Widget for PhotosApp {
                 && self.library_destination == LibraryDestination::Places
                 && let Some(previous) = self.places_drag_origin.replace(next)
             {
-                self.places_viewport = self.places_viewport.panned(
+                self.set_places_viewport(self.places_viewport.panned(
                     next.x - previous.x,
                     next.y - previous.y,
                     self.places_map_bounds.width(),
                     self.places_map_bounds.height(),
-                );
+                ));
             }
             self.pointer = next;
         }
@@ -14458,8 +15170,7 @@ impl Widget for PhotosApp {
                 winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                 winit::event::MouseScrollDelta::PixelDelta(point) => point.y / 80.0,
             };
-            self.places_viewport.zoom = (self.places_viewport.zoom + amount * 0.25)
-                .clamp(crate::places::MIN_ZOOM, crate::places::MAX_ZOOM);
+            self.zoom_places_by(amount * 0.25);
             *handled = true;
             return;
         }
@@ -14505,14 +15216,8 @@ impl Widget for PhotosApp {
                     self.show_library_analysis();
                 }
                 PlacesHit::ToggleList => self.places_list_mode = !self.places_list_mode,
-                PlacesHit::ZoomIn => {
-                    self.places_viewport.zoom =
-                        (self.places_viewport.zoom + 1.0).min(crate::places::MAX_ZOOM)
-                }
-                PlacesHit::ZoomOut => {
-                    self.places_viewport.zoom =
-                        (self.places_viewport.zoom - 1.0).max(crate::places::MIN_ZOOM)
-                }
+                PlacesHit::ZoomIn => self.zoom_places_by(1.0),
+                PlacesHit::ZoomOut => self.zoom_places_by(-1.0),
                 PlacesHit::Place(key) => {
                     let _ = self.open_place_collection(doc, &key);
                 }
@@ -14534,45 +15239,39 @@ impl Widget for PhotosApp {
         {
             match &key.logical_key {
                 Key::Named(NamedKey::ArrowLeft) => {
-                    self.places_viewport = self.places_viewport.panned(
+                    self.set_places_viewport(self.places_viewport.panned(
                         44.0,
                         0.0,
-                        self.canvas_rect.width(),
-                        self.canvas_rect.height(),
-                    )
+                        self.places_map_bounds.width(),
+                        self.places_map_bounds.height(),
+                    ))
                 }
                 Key::Named(NamedKey::ArrowRight) => {
-                    self.places_viewport = self.places_viewport.panned(
+                    self.set_places_viewport(self.places_viewport.panned(
                         -44.0,
                         0.0,
-                        self.canvas_rect.width(),
-                        self.canvas_rect.height(),
-                    )
+                        self.places_map_bounds.width(),
+                        self.places_map_bounds.height(),
+                    ))
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    self.places_viewport = self.places_viewport.panned(
+                    self.set_places_viewport(self.places_viewport.panned(
                         0.0,
                         44.0,
-                        self.canvas_rect.width(),
-                        self.canvas_rect.height(),
-                    )
+                        self.places_map_bounds.width(),
+                        self.places_map_bounds.height(),
+                    ))
                 }
                 Key::Named(NamedKey::ArrowDown) => {
-                    self.places_viewport = self.places_viewport.panned(
+                    self.set_places_viewport(self.places_viewport.panned(
                         0.0,
                         -44.0,
-                        self.canvas_rect.width(),
-                        self.canvas_rect.height(),
-                    )
+                        self.places_map_bounds.width(),
+                        self.places_map_bounds.height(),
+                    ))
                 }
-                Key::Character(key) if key == "+" || key == "=" => {
-                    self.places_viewport.zoom =
-                        (self.places_viewport.zoom + 1.0).min(crate::places::MAX_ZOOM)
-                }
-                Key::Character(key) if key == "-" => {
-                    self.places_viewport.zoom =
-                        (self.places_viewport.zoom - 1.0).max(crate::places::MIN_ZOOM)
-                }
+                Key::Character(key) if key == "+" || key == "=" => self.zoom_places_by(1.0),
+                Key::Character(key) if key == "-" => self.zoom_places_by(-1.0),
                 Key::Character(key) if key.eq_ignore_ascii_case("l") => {
                     self.places_list_mode = !self.places_list_mode
                 }
@@ -15269,13 +15968,14 @@ impl Widget for PhotosApp {
     }
 
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        bindings.extend(
-            self.retained_buttons()
-                .into_iter()
-                .flat_map(Widget::control_action_bindings),
-        );
-        bindings
+        // Photos projects its custom media surfaces and retained buttons into
+        // one complete semantic tree above. Inventory that visible tree once:
+        // appending every retained widget here also advertises controls that
+        // are currently hidden (other routes, closed sheets, disabled jobs),
+        // producing orphan automation bindings with no matching UI target.
+        // The buttons' canonical resources remain published by `resources`
+        // and are dispatched through the same retained widgets.
+        ui::widget::semantic_action_bindings(self.accessibility())
     }
 
     fn refresh_control_action_availability(

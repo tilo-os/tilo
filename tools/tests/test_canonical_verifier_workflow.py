@@ -44,7 +44,8 @@ class VerifierWorkflowTests(unittest.TestCase):
     def run_fixture(self, root, *, head_ok=True, arch_ok=True, compile_ok=True):
         (root / 'tools').mkdir()
         (root / 'tools/ci').mkdir()
-        for name in ('ci/python.py', 'canonical_verifier_bundle.py', 'canonical_app_verifier.py', 'app_channel_manifest.py'):
+        (root / 'tools/apps').mkdir()
+        for name in ('ci/python.py', 'canonical_verifier_bundle.py', 'apps/canonical_app_verifier.py', 'apps/app_channel_manifest.py'):
             shutil.copyfile(ROOT / 'tools' / name, root / 'tools' / name)
         def git(*args):
             return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()

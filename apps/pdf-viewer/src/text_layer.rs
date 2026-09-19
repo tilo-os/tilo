@@ -44,22 +44,6 @@ pub struct TextMatch {
     pub char_len: usize,
 }
 
-/// Case-fold a single character to one representative code point, preserving a
-/// 1:1 glyph alignment (so a match's char range always maps back to the same
-/// number of glyphs). Simple-folds only — good enough for find-in-document.
-fn fold(c: char, case_sensitive: bool) -> char {
-    if case_sensitive {
-        c
-    } else {
-        c.to_lowercase().next().unwrap_or(c)
-    }
-}
-
-/// Whether `c` is part of a "word" for whole-word matching.
-fn is_word(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
 impl PageText {
     /// Build a page's text layer from glyphs already extracted (character +
     /// page-point box), in reading order. Byte offsets and the concatenated
@@ -83,45 +67,25 @@ impl PageText {
         self.chars.is_empty()
     }
 
-    /// Every occurrence of `needle` on this page, honouring the find-bar
-    /// options, returned as glyph runs. Matching is done on folded characters
-    /// with a 1:1 glyph alignment, so each hit's `char_len` equals the query's
-    /// character count and maps directly onto [`Self::chars`].
+    /// Find original glyph runs using the same Unicode search as the text
+    /// backend. Expanded lowercase spellings map back to their source glyphs.
     pub fn search(&self, page: usize, needle: &str, opts: SearchOptions) -> Vec<TextMatch> {
-        let q: Vec<char> = needle
-            .trim()
-            .chars()
-            .map(|c| fold(c, opts.case_sensitive))
-            .collect();
-        let mut out = Vec::new();
-        if q.is_empty() || q.len() > self.chars.len() {
-            return out;
-        }
-        let hay: Vec<char> = self
-            .chars
-            .iter()
-            .map(|c| fold(c.ch, opts.case_sensitive))
-            .collect();
-        let n = hay.len();
-        let m = q.len();
-        let mut i = 0;
-        while i + m <= n {
-            if hay.get(i..i + m).is_some_and(|w| w == q.as_slice()) {
-                let before_ok = i == 0 || hay.get(i - 1).is_some_and(|c| !is_word(*c));
-                let after_ok = i + m >= n || hay.get(i + m).is_some_and(|c| !is_word(*c));
-                if !opts.whole_word || (before_ok && after_ok) {
-                    out.push(TextMatch {
-                        page,
-                        char_start: i,
-                        char_len: m,
-                    });
-                    i += m; // non-overlapping, mirroring model::search
-                    continue;
+        crate::model::search_text(&self.text, needle, opts, crate::model::MAX_SEARCH_RESULTS)
+            .into_iter()
+            .map(|range| {
+                let first = self
+                    .chars
+                    .partition_point(|glyph| glyph.byte_start < range.start);
+                let last = self
+                    .chars
+                    .partition_point(|glyph| glyph.byte_start < range.end);
+                TextMatch {
+                    page,
+                    char_start: first,
+                    char_len: last - first,
                 }
-            }
-            i += 1;
-        }
-        out
+            })
+            .collect()
     }
 
     /// The glyph index whose box contains `(x, y)`, else the nearest glyph on
@@ -284,7 +248,11 @@ pub fn search_pages(pages: &[PageText], query: &str, opts: SearchOptions) -> Vec
         return out;
     }
     for (i, pt) in pages.iter().enumerate() {
-        out.extend(pt.search(i + 1, query, opts));
+        let remaining = crate::model::MAX_SEARCH_RESULTS.saturating_sub(out.len());
+        out.extend(pt.search(i + 1, query, opts).into_iter().take(remaining));
+        if out.len() >= crate::model::MAX_SEARCH_RESULTS {
+            break;
+        }
     }
     out
 }
@@ -362,6 +330,78 @@ mod tests {
             "case-sensitive misses lowercase"
         );
         assert_eq!(pt.search(1, "PDF", cs).len(), 1);
+    }
+
+    #[test]
+    fn unicode_search_maps_expanded_spelling_to_original_glyphs() {
+        let text = "İ test K TEST";
+        let page = PageText::from_glyphs(
+            text.chars()
+                .enumerate()
+                .map(|(index, ch)| (ch, PtRect::new(index as f64 * 8.0, 0.0, 8.0, 12.0))),
+        );
+        let hits = page.search(2, "test", SearchOptions::default());
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits[0],
+            TextMatch {
+                page: 2,
+                char_start: 2,
+                char_len: 4
+            }
+        );
+        assert_eq!(
+            hits[1],
+            TextMatch {
+                page: 2,
+                char_start: 9,
+                char_len: 4
+            }
+        );
+        for (query, expected, start) in [("i\u{307}", "İ", 0), ("k", "K", 7)] {
+            let hits = page.search(2, query, SearchOptions::default());
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].char_start, start);
+            assert_eq!(hits[0].char_len, 1);
+            assert_eq!(page.text_for_range(start, start + 1), expected);
+            let bands = page.bands_for_range(start, start + 1);
+            assert_eq!(bands.len(), 1);
+            assert_eq!(bands[0].w, 8.0, "highlight covers exactly the source glyph");
+        }
+    }
+
+    #[test]
+    fn unicode_whole_word_search_rejects_accented_word_fragments() {
+        let page = PageText::from_glyphs(
+            "étest testé e\u{301}test test\u{301} test"
+                .chars()
+                .map(|ch| (ch, PtRect::new(0.0, 0.0, 8.0, 12.0))),
+        );
+        let hits = page.search(
+            1,
+            "test",
+            SearchOptions {
+                whole_word: true,
+                case_sensitive: false,
+            },
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].char_start, page.chars.len() - 4);
+        assert_eq!(hits[0].char_len, 4);
+    }
+
+    #[test]
+    fn search_materialization_is_bounded() {
+        let text = "a".repeat(crate::model::MAX_SEARCH_RESULTS * 4);
+        let page =
+            PageText::from_glyphs(text.chars().map(|ch| (ch, PtRect::new(0.0, 0.0, 1.0, 1.0))));
+        let hits = page.search(1, "a", SearchOptions::default());
+        assert_eq!(hits.len(), crate::model::MAX_SEARCH_RESULTS);
+        assert_eq!(hits.last().unwrap().char_start, hits.len() - 1);
+        let pages = vec![page.clone(), page];
+        let hits = search_pages(&pages, "a", SearchOptions::default());
+        assert_eq!(hits.len(), crate::model::MAX_SEARCH_RESULTS);
+        assert!(hits.iter().all(|hit| hit.page == 1));
     }
 
     #[test]

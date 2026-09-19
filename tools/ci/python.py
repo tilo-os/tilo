@@ -32,8 +32,8 @@ def main():
         raise SystemExit('usage: python3 -I tools/ci/python.py tools/<helper>.py [args]')
     tools = Path(__file__).resolve().parents[1]
     script = Path(sys.argv[1]).resolve()
-    if script.parent not in (tools, tools / 'ci') or script.suffix != '.py' or not script.is_file():
-        raise SystemExit('CI helper must be a Python source file in tools or tools/ci')
+    if script.parent not in (tools, tools / 'ci', tools / 'apps') or script.suffix != '.py' or not script.is_file():
+        raise SystemExit('CI helper must be a Python source file in tools, tools/ci or tools/apps')
     # -B alone does not prevent reading candidate-supplied __pycache__ files.
     # Use an empty private cache namespace and prohibit writes for this process.
     with tempfile.TemporaryDirectory(prefix='ci-python-') as cache:
@@ -42,7 +42,7 @@ def main():
         # Builtin/Frozen importers keep precedence. In particular, subprocess
         # probes msvcrt on Linux: absence must stay ImportError, not tools/msvcrt.
         sys.meta_path.insert(sys.meta_path.index(PathFinder), StandardLibraryOnly(sys.path))
-        sys.path.append(str(tools))
+        sys.path.extend((str(tools), str(tools / 'apps')))
         sys.argv = [str(script), *sys.argv[2:]]
         runpy.run_path(str(script), run_name='__main__')
 

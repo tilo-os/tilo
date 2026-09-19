@@ -47,7 +47,7 @@ def produce(pkg, runtime, output, builder, source, architecture):
     manifest = {'schema': 'tilo.canonical-verifier-bundle/v1', 'architecture': architecture,
                 'compatible_builder': builder, 'source_sha': source, 'canonical_binaries': hashes,
                 'package_identity': 'blake3-ed25519-signed-root-v1', 'runtime_identity': 'blake3-ed25519-runtime-bundle-v1'}
-    adapter = Path(__file__).with_name('canonical_app_verifier.py').read_bytes()
+    adapter = (Path(__file__).parent / 'apps/canonical_app_verifier.py').read_bytes()
     manifest['verifier_sha256'] = hashlib.sha256(adapter).hexdigest()
     raw = (json.dumps(manifest, sort_keys=True, separators=(',', ':')) + '\n').encode()
     with output.open('xb') as destination, gzip.GzipFile(filename='', mode='wb', fileobj=destination, mtime=0) as compressed:

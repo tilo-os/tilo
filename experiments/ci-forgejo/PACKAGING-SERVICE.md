@@ -68,10 +68,10 @@ app_packaging_coordinator.py
 ci/resolve_builder.py
 accept_app_artifacts.py
 assemble_verified_apps.py
-app_channel_manifest.py
-final_app_receipt.py
+apps/app_channel_manifest.py
+apps/final_app_receipt.py
 canonical_verifier_bundle.py
-canonical_app_verifier.py
+apps/canonical_app_verifier.py
 ```
 
 The platform must pin that complete source bundle, protect token/policy/state

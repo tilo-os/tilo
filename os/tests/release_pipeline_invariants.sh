@@ -209,7 +209,7 @@ grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && grep -Fq '$GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main' "$apps" \
   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
-  && grep -Fq 'tools/app_release.py --architecture-matrix' "$apps" \
+  && grep -Fq 'tools/apps/app_release.py --architecture-matrix' "$apps" \
   && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '      builder_image: ${{ steps.builder.outputs.image }}' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        id: builder' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py' >/dev/null \
@@ -263,8 +263,8 @@ grep -Fq "PKGEXT='.pkg.tar.zst'" "$repo/dist/arch/build-arch.sh" \
   && ok 'Arch packages use the release artifact compression on every architecture' \
   || bad 'an Arch base image can silently change the release package extension'
 
-python3 "$repo/tools/app_release.py" --collection default > /dev/null \
-  && python3 "$repo/tools/app_release.py" --collection recovery > /dev/null \
+python3 "$repo/tools/apps/app_release.py" --collection default > /dev/null \
+  && python3 "$repo/tools/apps/app_release.py" --collection recovery > /dev/null \
   && ok 'named app collections resolve against the live manifest catalogue' \
   || bad 'an app collection is stale or invalid'
 

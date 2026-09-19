@@ -387,9 +387,9 @@ class ProductTests(unittest.TestCase):
         import hashlib
         content = b'[toolchain]\nchannel="1.97.1"\n'
         files = {path: hashlib.sha256(content).hexdigest() for path in product.REQUIRED_PATHS}
-        for helper in ('tools/assemble_verified_apps.py', 'tools/final_app_receipt.py',
-                       'tools/app_channel_manifest.py', 'dist/apps/assemble-collection.sh',
-                       'tools/assemble_app_collection.py', 'tools/ci/affected_packages.py',
+        for helper in ('tools/assemble_verified_apps.py', 'tools/apps/final_app_receipt.py',
+                       'tools/apps/app_channel_manifest.py', 'dist/apps/assemble-collection.sh',
+                       'tools/apps/assemble_app_collection.py', 'tools/ci/affected_packages.py',
                        'tools/ci/__init__.py', 'tools/ci/resolve_builder.py', 'tools/ci/python.py'):
             with self.subTest(helper=helper):
                 self.assertIn(helper, files)
