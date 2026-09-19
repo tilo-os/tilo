@@ -374,7 +374,8 @@ def prepared_launch_registry_wired(text: str) -> bool:
         r"\bactions\s*::\s*register\s*\(\s*&mut\s+(?P<registry>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*;"
         r"\s*Ok\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*LegacyLaunchInputs\s*::\s*new"
         r"\s*\([^();{}]*\)\s*(?:\.with_records\s*\([^();{}]*\)\s*)?"
-        r"\.with_registry\s*\(\s*(?P=registry)\s*\)\s*,?\s*\)\s*}*\s*$"
+        r"\.with_registry\s*\(\s*(?P=registry)\s*\)\s*"
+        r"(?:\.with_widget_owned_persistence\s*\(\s*\)\s*)?,?\s*\)\s*}*\s*$"
     )
     while pending:
         name = pending.pop()

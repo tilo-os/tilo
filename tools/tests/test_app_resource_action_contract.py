@@ -443,6 +443,23 @@ class AppResourceActionContractTests(unittest.TestCase):
         cases = {
             "forwarded": (launch + wrapper + inputs, True),
             "direct": (launch + inputs.replace("fn inputs(", "fn prepare("), True),
+            "widget_owned_persistence": (
+                launch + wrapper + inputs.replace(
+                    ".with_records(records, room.doc).with_registry(registry)",
+                    ".with_registry(registry).with_widget_owned_persistence()",
+                ), True,
+            ),
+            "widget_owned_overwritten_registry": (
+                launch + wrapper + inputs.replace(
+                    ".with_registry(registry)",
+                    ".with_registry(registry).with_widget_owned_persistence().with_registry(other)",
+                ), False,
+            ),
+            "widget_owned_missing_registry": (
+                launch + wrapper + inputs.replace(
+                    ".with_registry(registry)", ".with_widget_owned_persistence()",
+                ), False,
+            ),
             "disconnected": (
                 launch + wrapper + inputs.replace("with_registry(registry)", "with_registry(other)"),
                 False,
