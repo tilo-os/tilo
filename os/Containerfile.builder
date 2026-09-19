@@ -102,3 +102,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 # compiling against the wrong libraries.
 COPY tools/ci/check-build-env.sh /usr/local/bin/tilo-check-build-env
 RUN chmod +x /usr/local/bin/tilo-check-build-env && tilo-check-build-env
+
+# Keep the optional CI linker in the final layer so it does not invalidate the
+# expensive native dependencies or Rust tools above. Workflows must select the
+# wrapper explicitly; release and production links continue using their current
+# linker until the native CI canary is qualified on both architectures.
+RUN dnf install -y --setopt=install_weak_deps=False mold \
+    && mkdir -p /usr/local/share/tilo-builder \
+    && rpm -q --qf '%{NEVRA}\n' mold \
+        | tee /usr/local/share/tilo-builder/mold-nevra.txt \
+    && mold --version \
+    && dnf clean all
+COPY tools/ci/native-mold-linker.sh /usr/local/bin/tilo-ci-mold
+RUN --mount=type=bind,source=tools/ci/verify-native-mold.sh,target=/tmp/verify-native-mold.sh,ro \
+    chmod 0755 /usr/local/bin/tilo-ci-mold \
+    && bash /tmp/verify-native-mold.sh
