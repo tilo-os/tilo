@@ -599,6 +599,19 @@ mod native {
     }
 
     pub(super) fn validate_session(entry: &str, wrapper: &str, runner: &str) -> Result<(), String> {
+        let runner_lines: Vec<_> = runner.lines().map(str::trim).collect();
+        // Keep the previously reviewed one-line launch and recognize the
+        // shipped flight-recorder form as one exact, bounded two-line shape.
+        // This is deliberately not shell parsing or substring acceptance.
+        let reviewed_launch = runner_lines.iter().any(|line| {
+            *line == r#""$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" &"#
+        }) || runner_lines.windows(2).any(|lines| {
+            lines
+                == [
+                    r#""$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" \"#,
+                    r#">"$flight_pipe" 2>&1 &"#,
+                ]
+        });
         let mut desktop = false;
         let mut exec = None;
         let mut kind = None;
@@ -635,10 +648,7 @@ mod native {
             || !wrapper
                 .lines()
                 .any(|line| line.trim() == r#"exec "$SESSION_RUNNER" "$TILO_SHELL" "$@""#)
-            || !runner.lines().any(|line| {
-                line.trim()
-                    == r#""$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" &"#
-            })
+            || !reviewed_launch
         {
             return Err(
                 "Installed session does not use the reviewed Tilo host-session wrapper contract."
@@ -1191,40 +1201,93 @@ mod tests {
 
     #[test]
     fn installed_contract_rejects_wrong_exec_or_missing_wrapper_flags() {
+        const CURRENT_LAUNCH: &str = r#""$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" \
+    >"$flight_pipe" 2>&1 &"#;
+        const OLD_LAUNCH: &str =
+            r#""$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" &"#;
+        const ENTRY: &str = "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n";
+        let wrapper = include_str!("../../../../dist/session/tilo-session");
+        let runner = include_str!("../../../../dist/session/tilo-session-runner");
+        assert_eq!(runner.matches(CURRENT_LAUNCH).count(), 1);
+
         assert!(
             native::validate_session(
                 include_str!("../../../../dist/session/tilo.desktop"),
-                include_str!("../../../../dist/session/tilo-session"),
+                wrapper,
                 "#!/bin/sh\nexec tilo-shell --host-desktop-session"
             )
             .is_err()
         );
 
-        assert!(
-            native::validate_session(
-                "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
-                include_str!("../../../../dist/session/tilo-session"),
-                include_str!("../../../../dist/session/tilo-session-runner")
-            )
-            .is_ok()
-        );
+        assert_eq!(native::validate_session(ENTRY, wrapper, runner), Ok(()));
+        assert!(native::validate_session(ENTRY, wrapper, OLD_LAUNCH).is_ok());
         assert!(
             native::validate_session(
                 "[Desktop Entry]\nExec=/tmp/tilo-session\nType=Application\n",
-                include_str!("../../../../dist/session/tilo-session"),
-                include_str!("../../../../dist/session/tilo-session-runner")
+                wrapper,
+                runner
             )
             .is_err()
         );
-        assert!(native::validate_session("[Desktop Entry]\nExec=/usr/libexec/tilo-session\nExec=/tmp/evil\nType=Application\n", "--host-desktop-session --firstboot", "--host-desktop-session --firstboot").is_err());
+        assert_eq!(
+            native::validate_session(
+                "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nExec=/tmp/evil\nType=Application\n",
+                wrapper,
+                runner
+            ),
+            Err("Ambiguous session Exec.".into())
+        );
+        assert_eq!(
+            native::validate_session(
+                "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\nType=Link\n",
+                wrapper,
+                runner
+            ),
+            Err("Ambiguous session Type.".into())
+        );
         assert!(
             native::validate_session(
-                "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
+                ENTRY,
                 "#!/bin/sh\nexec tilo-shell --host-desktop-session",
-                include_str!("../../../../dist/session/tilo-session-runner")
+                runner
             )
             .is_err()
         );
+
+        for (case, launch) in [
+            (
+                "missing firstboot",
+                r#""$TILO_SHELL" --host-desktop-session --backend drm "$@" \
+    >"$flight_pipe" 2>&1 &"#,
+            ),
+            (
+                "changed backend",
+                r#""$TILO_SHELL" --host-desktop-session --firstboot --backend winit "$@" \
+    >"$flight_pipe" 2>&1 &"#,
+            ),
+            (
+                "commented launch",
+                r#"# "$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" \
+#     >"$flight_pipe" 2>&1 &"#,
+            ),
+            (
+                "changed executable",
+                r#""$OTHER_SHELL" --host-desktop-session --firstboot --backend drm "$@" \
+    >"$flight_pipe" 2>&1 &"#,
+            ),
+            (
+                "extra command",
+                r#"env SESSION_SOURCE=unreviewed "$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" \
+    >"$flight_pipe" 2>&1 &"#,
+            ),
+        ] {
+            let changed = runner.replacen(CURRENT_LAUNCH, launch, 1);
+            assert_ne!(changed, runner, "fixture did not exercise {case}");
+            assert!(
+                native::validate_session(ENTRY, wrapper, &changed).is_err(),
+                "accepted {case}"
+            );
+        }
     }
 
     #[test]
