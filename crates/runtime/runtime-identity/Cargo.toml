@@ -23,11 +23,13 @@ path = "src/lib.rs"
 
 [dependencies]
 runtime-portal = { path = "../runtime-portal" }
-bounded-command = { path = "../../system/bounded-command" }
 serde.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+
+[target.'cfg(unix)'.dependencies]
+bounded-command = { path = "../../system/bounded-command" }
 serde_bytes.workspace = true
 serde_json.workspace = true
-postcard = { workspace = true, features = ["alloc"] }
 ed25519-dalek = { workspace = true, features = ["serde"] }
 threshold-identity = { path = "../../collab/threshold-identity" }
 hex.workspace = true
@@ -38,7 +40,7 @@ argon2.workspace = true
 getrandom.workspace = true
 rand_core.workspace = true
 
-[dev-dependencies]
+[target.'cfg(unix)'.dev-dependencies]
 tempfile.workspace = true
 # Reproduces malformed `secret_bytes` records written by an earlier identity
 # ceremony, so the loader rejects those records.
