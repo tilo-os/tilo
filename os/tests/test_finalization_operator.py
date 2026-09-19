@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dev'))
 from test_finalization_driver import request
+import checkpoint_export as checkpoint
 SPEC = importlib.util.spec_from_file_location('operator_cli', Path(__file__).resolve().parents[1] / 'dev/finalization-operator.py')
 o = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(o)
@@ -96,6 +97,53 @@ class OperatorTests(unittest.TestCase):
         self.put(self.args.operation / 'new-public/efi-signing.crt', b'changed')
         with self.assertRaisesRegex(ValueError, 'snapshot changed'):
             o.load(self.args.operation)
+
+    def test_initialized_generic_operation_checkpoint_handoff_and_materialization(self):
+        config, _ = self.init()
+        directory = o.run_path(self.args.operation, 23, 2)
+        directory.mkdir(mode=0o700)
+        for name in ('received', 'responses', 'checkpoints'):
+            (directory / name).mkdir(mode=0o700)
+        ctx = context('qos/qos/23/2/42')
+        binding = dict(schema=1, namespace='agent-sandboxes', pod='fixture', container='dind',
+            pod_uid=ctx['pod_uid'], container_id='containerd://fixture', image='fixture:image',
+            image_id='sha256:' + '3' * 64, restart_count=0, pod_spec_sha256='4' * 64,
+            context_sha256=s.context(ctx), endpoint=str(o.stage.BRIDGE / 'signing-spool-endpoint.py'),
+            docker=dict(id=ctx['container_id'], image_id=ctx['image_id'],
+                        started_at='fixture', restart_count=0))
+        self.put(directory / 'binding.json', s.canonical(binding))
+        self.put(directory / 'signing-context.json', s.canonical(ctx))
+
+        handoff = o.handoff(self.args.operation, directory, config)
+        self.assertEqual(handoff['checkpoints'], str(directory / 'checkpoints'))
+        self.assertTrue(Path(handoff['checkpoints']).is_dir())
+        with self.assertRaisesRegex(ValueError, 'no authenticated checkpoint exporter'):
+            checkpoint.export_metadata(
+                self.args.operation, directory, 'target-uki', s)
+        self.assertEqual(list((directory / 'checkpoints').iterdir()), [])
+
+        payload = b'generic operation unsigned UKI fixture'
+        checkpoint_metadata = {'schema': 1, 'purpose': 'target-uki',
+                               'input_sha256': s.digest(payload), 'input_bytes': len(payload),
+                               'signing_authorized': False, 'private_keys_used': False}
+        inspected = ({'validated': True, 'local_metadata_validated': True},
+                     checkpoint_metadata, s, binding)
+        with patch.object(checkpoint, '_inspect', return_value=inspected):
+            exported = checkpoint.export_metadata(
+                self.args.operation, directory, 'target-uki', s)
+        self.assertEqual(exported['directory'], str(directory / 'checkpoints/target-uki'))
+
+        nonce = 'b' * 32
+        received = directory / 'received' / nonce
+        received.mkdir(mode=0o700)
+        request_metadata = metadata(ctx, nonce, payload)
+        self.put(received / 'request.json', s.canonical(request_metadata))
+        self.put(received / 'input', payload)
+        result = checkpoint.materialize(
+            self.args.operation, directory, 'target-uki', received, s)
+        self.assertTrue(result['materialized'])
+        self.assertEqual(
+            (directory / 'checkpoints/target-uki/input.efi').read_bytes(), payload)
 
     def test_initialize_binds_operation_profile_to_retained_receipt(self):
         self.args.hardware_profile = 'lenovo-83ed'

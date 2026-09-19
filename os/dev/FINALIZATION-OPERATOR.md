@@ -88,26 +88,33 @@ python3 "$operator" --operation "$operation" handoff \
   --run-id "$run_id" --attempt "$attempt"
 ```
 
-`handoff` emits stable paths, hardware/architecture, and the exact context hash for
-checkpoint validation and signing. For a legacy operation that contains the pinned
-checkpoint exporter, validate and publish the small checkpoint receipt without
-streaming the EFI payload through a second transport:
+`handoff` emits existing stable `received`, `responses`, and `checkpoints` paths,
+hardware/architecture, and the exact context hash for checkpoint validation and
+signing. Generic checkpoint commands derive the same run directory from the admitted
+run ID and attempt. A generic operation created by this version intentionally rejects
+checkpoint export with `no authenticated checkpoint exporter`: its immutable config
+does not yet pin one. A follow-up format must make the exporter a first-class pinned
+operation input; copying the legacy validator into the generic operator would weaken
+that boundary.
+
+For the currently active legacy operation, select compatibility explicitly and
+publish the small checkpoint receipt without streaming the EFI payload through a
+second transport:
 
 ```sh
 python3 "$operator" --operation "$operation" export-checkpoint \
-  --run-directory "$run_directory" --purpose live-uki
-python3 "$operator" --operation "$operation" fetch \
-  --run-id "$run_id" --attempt "$attempt" --request-id "$request_id"
+  --legacy-layout --run-directory "$run_directory" --purpose live-uki
+# Fetch with the operation-specific legacy spool procedure.
 python3 "$operator" --operation "$operation" materialize-checkpoint \
-  --run-directory "$run_directory" --purpose live-uki \
+  --legacy-layout --run-directory "$run_directory" --purpose live-uki \
   --request-directory "$run_directory/received/$request_id"
 ```
 
 Repeat this for `target-uki`. Materialization requires the fetched signing request,
 context, size, and hash to match the independently validated receipt exactly. It
-writes the EFI input beside the receipt only after that comparison, and it never
-grants signing authorization. The read-only `diagnose-checkpoint` command reports
-sanitized validation phases when a legacy exporter cannot produce metadata.
+writes the EFI input under `checkpoints/<purpose>` only after that comparison, and
+it never grants signing authorization. The read-only `diagnose-checkpoint` command
+reports sanitized validation phases when a legacy exporter cannot produce metadata.
 
 Use `authorize-signing-input.py` with the materialized checkpoint bytes as the
 independently expected input, then
