@@ -80,7 +80,7 @@ def report(evidence):
         for job in run.get("jobs", []):
             events = extract_events(job.get("log", ""))
             item["jobs"].append({
-                "id": job["id"], "events": events,
+                "id": job["id"], "name": job.get("name"), "events": events,
                 "queue_seconds": elapsed(job.get("created_at"), job.get("started_at")),
                 "run_created_to_runner_received_seconds": elapsed(created, events.get("runner_received")),
                 "runner_to_create_seconds": elapsed(events.get("runner_received"), events.get("container_create")),
@@ -90,6 +90,44 @@ def report(evidence):
             })
         output["runs"].append(item)
     return output
+
+
+def comparison(result):
+    """Compare two explicit runs without inventing values for missing evidence."""
+    if len(result["runs"]) != 2:
+        raise ValueError("comparison requires exactly two runs")
+    before, after = result["runs"]
+
+    def delta(field, left=before, right=after):
+        old, new = left.get(field), right.get(field)
+        return None if old is None or new is None else round(new - old, 3)
+
+    compared = {
+        "before_run": before["id"],
+        "after_run": after["id"],
+        "queue_seconds_delta": delta("queue_seconds"),
+        "wall_seconds_delta": delta("wall_seconds"),
+        "jobs": [],
+    }
+
+    def unique_named(jobs):
+        grouped = {}
+        for job in jobs:
+            if job.get("name"):
+                grouped.setdefault(job["name"], []).append(job)
+        return {name: matches[0] for name, matches in grouped.items() if len(matches) == 1}
+
+    old_jobs = unique_named(before["jobs"])
+    new_jobs = unique_named(after["jobs"])
+    for name in sorted(old_jobs.keys() & new_jobs.keys()):
+        old, new = old_jobs[name], new_jobs[name]
+        compared["jobs"].append({
+            "name": name,
+            "queue_seconds_delta": delta("queue_seconds", old, new),
+            "runner_to_create_seconds_delta": delta("runner_to_create_seconds", old, new),
+            "runner_to_finish_seconds_delta": delta("runner_to_finish_seconds", old, new),
+        })
+    return compared
 
 
 def api(args, endpoint, raw=False):
@@ -129,7 +167,20 @@ def human_summary(result):
     for run in result["runs"]:
         lines.append(f"Run {run['id']}: queue {fmt(run['queue_seconds'])}; wall {fmt(run['wall_seconds'])}")
         for job in run["jobs"]:
-            lines.append(f"  Job {job['id']}: job queue {fmt(job['queue_seconds'])}; received→create {fmt(job['runner_to_create_seconds'])}; pull→create {fmt(job['pull_to_create_seconds'])}")
+            label = f"{job['name']} ({job['id']})" if job.get("name") else str(job["id"])
+            lines.append(f"  Job {label}: job queue {fmt(job['queue_seconds'])}; received→create {fmt(job['runner_to_create_seconds'])}; pull→create {fmt(job['pull_to_create_seconds'])}")
+    if "comparison" in result:
+        item = result["comparison"]
+        lines.append(
+            f"Change {item['before_run']}→{item['after_run']}: "
+            f"queue {fmt(item['queue_seconds_delta'])}; wall {fmt(item['wall_seconds_delta'])}"
+        )
+        for job in item["jobs"]:
+            lines.append(
+                f"  {job['name']}: job queue {fmt(job['queue_seconds_delta'])}; "
+                f"received→create {fmt(job['runner_to_create_seconds_delta'])}; "
+                f"received→finish {fmt(job['runner_to_finish_seconds_delta'])}"
+            )
     return "\n".join(lines)
 
 
@@ -141,6 +192,7 @@ def main():
     parser.add_argument("--run", type=int, action="append", default=[])
     parser.add_argument("--hostname", default="code.sandbox.example")
     parser.add_argument("--fgj", default="fgj")
+    parser.add_argument("--compare", action="store_true", help="compare exactly two runs in the order supplied")
     args = parser.parse_args()
     if args.input and (args.run or args.repo):
         parser.error("use either local input or explicit live runs")
@@ -148,6 +200,8 @@ def main():
         parser.error("live mode requires --repo and at least one --run")
     try:
         result = report(json.loads(args.input.read_text(encoding="utf-8-sig")) if args.input else collect(args))
+        if args.compare:
+            result["comparison"] = comparison(result)
         serialized = json.dumps(result, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
