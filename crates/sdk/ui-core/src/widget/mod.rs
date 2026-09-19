@@ -2269,6 +2269,7 @@ pub(crate) mod control_result_probe {
         pub(crate) commits: Rc<Cell<usize>>,
         pub(crate) flushes: Rc<Cell<usize>>,
         pub(crate) pending: Rc<RefCell<VecDeque<tilo_actions::ControlInvocation>>>,
+        pub(crate) payloads: Rc<RefCell<Vec<String>>>,
     }
     impl Observed {
         pub(crate) fn enqueue(&self, action: &str) {
@@ -2279,6 +2280,17 @@ pub(crate) mod control_result_probe {
                     arguments: serde_json::Map::new(),
                 });
         }
+        pub(crate) fn enqueue_text(&self, action: &str, text: &str) {
+            self.pending
+                .borrow_mut()
+                .push_back(tilo_actions::ControlInvocation {
+                    address: tilo_actions::ActionAddress::new("test.control-result", action),
+                    arguments: serde_json::Map::from_iter([(
+                        "text".to_string(),
+                        serde_json::Value::String(text.to_string()),
+                    )]),
+                });
+        }
     }
     pub(crate) struct Probe {
         observed: Observed,
@@ -2287,6 +2299,7 @@ pub(crate) mod control_result_probe {
         pub(crate) terminal_after: Option<(usize, bool)>,
         pub(crate) owned_flush: Option<Result<(), String>>,
         pub(crate) dirty_typing: bool,
+        pub(crate) typed_text: bool,
     }
     impl Probe {
         pub(crate) fn new(accepted: bool) -> (Self, Observed) {
@@ -2299,6 +2312,7 @@ pub(crate) mod control_result_probe {
                     terminal_after: None,
                     owned_flush: None,
                     dirty_typing: false,
+                    typed_text: false,
                 },
                 observed,
             )
@@ -2403,18 +2417,39 @@ pub(crate) mod control_result_probe {
             if self.confirmation {
                 contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
             }
+            let action = if self.typed_text {
+                tilo_actions::ActionSpec::typed_operation(
+                    "run",
+                    "Run",
+                    "text",
+                    tilo_actions::OperationKind::Effect,
+                    "test.control-result.run",
+                    vec![tilo_actions::ActionParam::required(
+                        "text",
+                        tilo_actions::ParamType::Text,
+                        "Captured text",
+                    )],
+                    |args| {
+                        tilo_actions::EncodedAction::encode_operation(
+                            "test.control-result.run",
+                            &args.text("text").unwrap_or_default(),
+                        )
+                        .expect("a borrowed string always serializes")
+                    },
+                )
+            } else {
+                tilo_actions::ActionSpec::operation(
+                    "run",
+                    "Run",
+                    tilo_actions::OperationKind::Effect,
+                    "test.control-result.run",
+                    &(),
+                )
+                .unwrap()
+            };
             vec![
-                tilo_actions::Resource::new("test.control-result", "test", "Probe").with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "run",
-                        "Run",
-                        tilo_actions::OperationKind::Effect,
-                        "test.control-result.run",
-                        &(),
-                    )
-                    .unwrap()
-                    .with_contract(contract),
-                ),
+                tilo_actions::Resource::new("test.control-result", "test", "Probe")
+                    .with_action(action.with_contract(contract)),
             ]
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2435,10 +2470,13 @@ pub(crate) mod control_result_probe {
             _: tilo_actions::InvocationId,
             _: tilo_actions::OperationKind,
             _: &str,
-            _: &[u8],
+            payload: &[u8],
             _: &AutoCommit,
             _: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
+            if let Ok(text) = serde_json::from_slice::<String>(payload) {
+                self.observed.payloads.borrow_mut().push(text);
+            }
             self.observed
                 .calls
                 .set(self.observed.calls.get().saturating_add(1));
