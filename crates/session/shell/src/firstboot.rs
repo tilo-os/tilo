@@ -860,7 +860,13 @@ pub fn verify_collaboration_identity(
     paths: &IdentityPaths,
     now_ns: u64,
 ) -> Result<(), io::Error> {
-    let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
+    // Imports are stored under a fingerprinted filename and selected through
+    // `active`; legacy identities remain at `primary.json`. Verification must
+    // follow the same resolver as provisioning/runtime startup or a freshly
+    // imported host identity is created successfully and then immediately
+    // reported missing.
+    let primary_path = runtime_identity::resolve_active_identity(identity_dir)
+        .unwrap_or_else(|| identity_dir.join(PRIMARY_IDENTITY_FILE));
     #[cfg(unix)]
     {
         let dir_metadata = fs::metadata(identity_dir)?;
