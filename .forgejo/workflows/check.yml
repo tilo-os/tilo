@@ -335,7 +335,7 @@ jobs:
 
   checks:
     if: always()
-    needs: [select, security, affected]
+    needs: [builder, select, security, affected]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
@@ -347,6 +347,7 @@ jobs:
       - name: Require applicable checks and explain intentional non-applicability
         id: aggregate
         env:
+          BUILDER_RESULT: ${{ needs.builder.result }}
           SELECT_RESULT: ${{ needs.select.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           AFFECTED_RESULT: ${{ needs.affected.result }}
@@ -357,6 +358,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$BUILDER_RESULT" = success
           test "$SELECT_RESULT" = success
           case "$EVENT_NAME:$SECURITY_REQUIRED:$SECURITY_RESULT" in
             *:true:success)

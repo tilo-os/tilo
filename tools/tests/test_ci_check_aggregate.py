@@ -47,14 +47,15 @@ class CheckAggregateTests(unittest.TestCase):
         self.bash = ("C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash"))
         self.assertTrue(self.bash, "bash is required to observe the production aggregate")
 
-    def aggregate(self, select="success", security="success", affected="success",
+    def aggregate(self, builder="success", select="success", security="success", affected="success",
                   required="true", security_required="true", count="4",
                   event="pull_request"):
         with tempfile.TemporaryDirectory() as directory:
             summary = Path(directory) / "summary"
             result = subprocess.run(
                 [self.bash, "-c", step_script(self.workflow, "aggregate")],
-                env={**os.environ, "SELECT_RESULT": select, "SECURITY_RESULT": security,
+                env={**os.environ, "BUILDER_RESULT": builder,
+                     "SELECT_RESULT": select, "SECURITY_RESULT": security,
                      "AFFECTED_RESULT": affected, "RUST_REQUIRED": required,
                      "SECURITY_REQUIRED": security_required, "EVENT_NAME": event,
                      "SELECTED_COUNT": count, "GITHUB_STEP_SUMMARY": summary.as_posix()},
@@ -77,8 +78,21 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Security checks not applicable", summary)
 
+    def test_builder_failure_rejects_audited_double_skip(self):
+        code, _ = self.aggregate(
+            builder="failure",
+            security="skipped",
+            affected="skipped",
+            security_required="false",
+            required="false",
+            count="0",
+        )
+        self.assertNotEqual(code, 0)
+
     def test_failed_or_unexpectedly_skipped_checks_fail(self):
         for overrides in [
+            {"builder": "failure"}, {"builder": "cancelled"},
+            {"builder": "skipped"}, {"builder": ""},
             {"select": "failure"}, {"select": "skipped"},
             {"security": "failure"}, {"security": "cancelled"},
             # Builder failure skips its security consumer even when the
@@ -124,7 +138,9 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertIn('{"include":[{"runner":"runner"}]}', affected)
         checks = section(self.workflow, "checks", 2)
         self.assertIn("if: always()", checks)
-        self.assertIn("needs: [select, security, affected]", checks)
+        self.assertIn("needs: [builder, select, security, affected]", checks)
+        self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
+        self.assertIn('test "$BUILDER_RESULT" = success', checks)
         security = section(self.workflow, "security", 2)
         self.assertIn("if: needs.select.outputs.security_required == 'true'", security)
         self.assertIn("needs: [builder, select]", security)
