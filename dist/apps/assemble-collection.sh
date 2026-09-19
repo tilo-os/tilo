@@ -30,7 +30,7 @@ find "$out" -mindepth 1 -depth -delete
 mkdir -p "$out/qpkg" "$out/runtime"
 cp "$qpkg_dir"/*.qpkg "$out/qpkg/"
 cp -a "$runtime_dir"/. "$out/runtime/"
-python3 "$repo_root/tools/assemble_app_collection.py" \
+python3 "$repo_root/tools/apps/assemble_app_collection.py" \
   --plan "$plan" --architecture "$architecture" --qpkg-dir "$out/qpkg" \
   --runtime-dir "$out/runtime" --source "$source" --output "$out/index.json"
 (cd "$out" && find qpkg runtime -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS \

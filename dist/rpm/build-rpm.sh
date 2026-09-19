@@ -76,7 +76,7 @@ mkdir -p "$out"/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
 say "building the default Tilo app collection"
 app_release=$out/app-release
 if (( run_cargo )); then
-    app_names=$(python3 "$repo_root/tools/app_release.py" --collection desktop \
+    app_names=$(python3 "$repo_root/tools/apps/app_release.py" --collection desktop \
         | jq -r '.catalog[].name' | paste -sd' ' -)
     [[ -n $app_names ]] || { echo "desktop app collection is empty" >&2; exit 1; }
     TILO_RELEASE_APPS="$app_names" TILO_APP_RELEASE_OUT="$app_release" \
