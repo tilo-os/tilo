@@ -391,7 +391,17 @@ mod tests {
             .iter()
             .map(|action| action.id.as_str())
             .collect();
-        assert_eq!(ids, vec!["send", "run", "interrupt", "clear", "paste"]);
+        assert_eq!(
+            ids,
+            vec![
+                "send",
+                "run",
+                "interrupt",
+                "clear",
+                "paste",
+                "paste-primary"
+            ]
+        );
         assert!(
             terminal
                 .actions
