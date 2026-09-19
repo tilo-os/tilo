@@ -42,9 +42,11 @@ class CheckpointPersistenceTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.operation = self.directory(self.root / 'operation')
-        self.run = self.directory(self.operation / 'run')
+        self.run = self.directory(self.operation / 'run-1-attempt-1')
+        self.checkpoints = self.directory(self.run / 'checkpoints')
         self.spool = types.SimpleNamespace(
-            MAX_INPUT=spool.MAX_INPUT, canonical=spool.canonical,
+            MAX_INPUT=spool.MAX_INPUT, MAX_JSON=spool.MAX_JSON,
+            canonical=spool.canonical,
             digest=spool.digest, context=spool.context,
             private_directory=lambda path: Path(path),
             document=lambda path: json.loads(Path(path).read_bytes()),
@@ -53,6 +55,11 @@ class CheckpointPersistenceTests(unittest.TestCase):
             sync_directory=lambda path: None,
             request_metadata=spool.request_metadata,
         )
+        request = b'{}'
+        self.write(self.operation / 'request.json', request)
+        self.write(self.operation / 'operation.json', {
+            'request_sha256': spool.digest(request),
+        })
 
     @staticmethod
     def directory(path):
@@ -94,7 +101,7 @@ class CheckpointPersistenceTests(unittest.TestCase):
             result = diagnostics.export_metadata(
                 self.operation, self.run, 'live-uki', self.spool)
 
-        destination = self.run / 'checkpoint-live-uki'
+        destination = self.checkpoints / 'live-uki'
         self.assertEqual(set(path.name for path in destination.iterdir()), {'receipt.json'})
         self.assertEqual(self.spool.document(destination / 'receipt.json'), {
             'input_sha256': '4' * 64, 'input_bytes': 257,
@@ -103,7 +110,7 @@ class CheckpointPersistenceTests(unittest.TestCase):
         self.assertEqual(result['directory'], str(destination))
         self.assertTrue(result['metadata_only'])
         self.assertFalse(result['signing_authorized'])
-        self.assertFalse((self.run / '.checkpoint-live-uki.ready').exists())
+        self.assertFalse((self.checkpoints / '.live-uki.ready').exists())
 
         with mock.patch.object(diagnostics, '_inspect', return_value=inspected):
             with self.assertRaisesRegex(ValueError, 'fresh checkpoint output required'):
@@ -112,7 +119,7 @@ class CheckpointPersistenceTests(unittest.TestCase):
     def prepare_materialization(self, payload=b'exact unsigned UKI'):
         context = self.context()
         context_sha256 = spool.context(context)
-        checkpoint = self.directory(self.run / 'checkpoint-target-uki')
+        checkpoint = self.directory(self.checkpoints / 'target-uki')
         self.write(checkpoint / 'receipt.json', {
             'input_sha256': spool.digest(payload), 'input_bytes': len(payload),
             'transport_context_sha256': context_sha256,
