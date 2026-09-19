@@ -232,7 +232,7 @@ fi
 builder_workflow="$workflows/build-builder-image.yml"
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$builder_workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$builder_workflow" \
-   && grep -Fq 'needs: signing-preflight' "$builder_workflow"; then
+   && grep -Fq 'needs: [plan, signing-preflight]' "$builder_workflow"; then
   printf 'ok    native builder work starts only after KMS authority matches the pinned public key\n'
 else
   printf 'native builder can start before its signing authority is identity-bound\n' >&2
