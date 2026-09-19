@@ -4,7 +4,8 @@
 The selector works from Cargo metadata rather than a hand-maintained package
 list.  A package is selected when its own files change, or when it transitively
 depends on a changed workspace package.  Repository-wide build inputs fall back
-to the complete workspace. Each balanced shard runs on both native architectures.
+to the complete workspace. Ordinary feedback checks the closure on x86 and tests
+changed packages plus contract suites; --full qualifies both native architectures.
 The emitted matrix is consumed directly by Forgejo Actions.
 """
 
@@ -19,6 +20,9 @@ import sys
 from typing import Iterable
 
 
+# Preserve the existing wire/document/package contract suites, including
+# pkg/tests/{app_manifests,verify_attest} and qdoc/tests/{convergence,office_roundtrip}.
+# These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc"}
 # Audited developer/CI prose, not compiled documentation or runtime contracts.
 # Keep this explicit: crates/sdk/ui-core/CHARTS.md is included by Rust, docs/app-development.md
@@ -200,6 +204,7 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
 
 def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, *, force_full: bool = False) -> dict:
     packages, by_dir = package_maps(metadata, root)
+    seeds = {owner for path in changes if (owner := owner_for(path, by_dir))}
     global_change = any(path in GLOBAL_FILES or path.startswith(GLOBAL_PREFIXES) for path in changes)
     workspace_source_roots = ("apps/", "crates/")
     unmapped_workspace_change = any(
@@ -232,12 +237,23 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, 
                   "repository-wide build input changed" if global_change else "workspace path has no package owner")
         full = True
     else:
-        seeds = {owner for path in changes if (owner := owner_for(path, by_dir))}
         selected = closure(seeds, reverse_dependencies(packages, root))
         selected.update(ALWAYS_PACKAGES & packages.keys())
         reason = f"{len(seeds)} changed packages, their reverse dependencies, and contract packages"
         full = False
-    effective_shards = useful_shard_count(selected, packages, shard_count)
+    # Ordinary feedback type-checks the entire reverse-dependency closure once
+    # on x86, but links tests only for changed crates and the existing contract
+    # suites. Global/unowned workspace inputs retain complete test coverage.
+    tested = (selected if full else (seeds | ALWAYS_PACKAGES) & selected)
+    effective_shards = useful_shard_count(selected, packages, shard_count if force_full else 1)
+    runners = NATIVE_RUNNERS if force_full else {"x86_64": NATIVE_RUNNERS["x86_64"]}
+    matrix = []
+    for arch, runner in runners.items():
+        for shard in balance(selected, packages, effective_shards):
+            shard_names = set(shard["packages"].split()[1::2])
+            test_names = sorted(tested & shard_names)
+            matrix.append({**shard, "arch": arch, "runner": runner,
+                           "test_packages": " ".join(f"-p {name}" for name in test_names)})
     return {
         "full": full,
         "rust_required": bool(selected),
@@ -246,14 +262,12 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, 
         "selected_count": len(selected),
         "workspace_count": len(packages),
         "selected": sorted(selected),
+        "tested": sorted(tested),
+        "qualification": "full-native" if force_full else "developer-feedback",
         "estimated_cost": sum(package_cost(packages[name]) for name in selected),
         "requested_shards": shard_count,
         "shard_count": effective_shards,
-        "matrix": {"include": [
-            {**shard, "arch": arch, "runner": runner}
-            for arch, runner in NATIVE_RUNNERS.items()
-            for shard in balance(selected, packages, effective_shards)
-        ]},
+        "matrix": {"include": matrix},
     }
 
 
