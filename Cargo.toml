@@ -12,6 +12,7 @@ exclude = [
     "vendor/genawaiter-proc-macro",
     "vendor/winit",
     "vendor/wgpu-hal",
+    "vendor/libspa-sys",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
