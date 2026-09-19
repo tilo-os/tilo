@@ -6,6 +6,7 @@ cp and rm. It never pulls, exports a registry cache, or builds OS components.
 """
 import argparse
 import hashlib
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -30,24 +31,35 @@ def command(*args):
 
 def manifest(root):
     result = {}
+    inodes = {}
     for name in ('run', 'etc', *DESTINATIONS):
         path = root / name
         paths = [path, *path.rglob('*')] if name in DESTINATIONS else [path]
         for entry in paths:
             info = entry.lstat()
-            result[str(entry.relative_to(root))] = (
+            relative = str(entry.relative_to(root))
+            if entry.is_file():
+                inodes.setdefault((info.st_dev, info.st_ino), set()).add(relative)
+            result[relative] = (
                 stat.S_IFMT(info.st_mode), stat.S_IMODE(info.st_mode),
-                info.st_uid, info.st_gid,
+                info.st_uid, info.st_gid, info.st_mtime_ns,
+                {key: os.getxattr(entry, key, follow_symlinks=False).hex()
+                 for key in os.listxattr(entry, follow_symlinks=False)},
                 entry.readlink().as_posix() if entry.is_symlink() else
                 hashlib.sha256(entry.read_bytes()).hexdigest() if entry.is_file() else None,
             )
-    return result
+    return {'entries': result, 'hardlinks': sorted(sorted(paths) for paths in inodes.values()
+                                                   if len(paths) > 1)}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tools-image', required=True, help='an already-present image ID')
     args = parser.parse_args()
+    enforcement = Path('/sys/fs/selinux/enforce')
+    if not enforcement.exists() or enforcement.read_text().strip() != '1':
+        print('LIMITATION: SELinux enforcement is not enabled; this fixture can '
+              'compare exposed label bytes but cannot prove enforcement behavior', flush=True)
     # Resolve before writing recipes: no mutable registry lookup or shell expansion.
     image = command('podman', 'image', 'inspect', '--format', '{{.Id}}', args.tools_image)
     repo = Path(__file__).resolve().parents[2]
@@ -70,15 +82,25 @@ def main():
                 # Exercise executable as well as data-file modes independently of
                 # the checkout filesystem (Windows mounts need not preserve them).
                 target.chmod(0o755 if name.endswith('.py') else 0o644)
+                os.setxattr(target, 'user.tilo-source', name.encode())
         base = context / 'base'
         for name in ('run', 'etc', *DESTINATIONS, 'etc/containers/registries.d'):
             (base / name).mkdir(parents=True, exist_ok=True)
             (base / name).chmod(0o711)
+            os.setxattr(base / name, 'user.tilo-existing-directory', name.encode())
         for name in DESTINATIONS:
             (base / name / 'unrelated-sentinel').write_bytes(b'preserve existing content\n')
         # Both replacing a file and creating absent files must retain the same result.
         (base / 'etc/containers/policy.json').write_text('old policy\n')
         (base / 'etc/containers/policy.json').chmod(0o600)
+        os.setxattr(base / 'etc/containers/policy.json', 'user.tilo-existing-policy', b'preserve-or-replace')
+        os.link(base / 'etc/containers/policy.json', base / 'etc/containers/policy-hardlink-sentinel')
+        try:
+            os.setxattr(base / 'etc/containers/policy.json', 'security.selinux',
+                        b'system_u:object_r:etc_t:s0')
+        except OSError as error:
+            print(f'LIMITATION: security.selinux fixture unsupported (errno={error.errno}); '
+                  'user xattrs and hardlinks are still required', flush=True)
         results = {}
         for name, recipe in recipes.items():
             (context / 'Containerfile').write_text(
@@ -102,7 +124,8 @@ def main():
                        if results['legacy'].get(key) != results['grouped'].get(key)}
         assert not differences, differences
         print('PASS: production grouped copy preserves file bytes, modes, owners, '
-              'existing directories and unrelated content; temporary inputs removed')
+              'timestamps, xattrs, hardlinks, existing directories and unrelated '
+              'content; temporary inputs removed')
 
 
 if __name__ == '__main__':
