@@ -184,7 +184,10 @@ mod unix {
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(3)
-            .filter(|root| root.join("crates/session/shell/src/bin/qos-runtime-mcp.rs").is_file())
+            .filter(|root| {
+                root.join("crates/session/shell/src/bin/qos-runtime-mcp.rs")
+                    .is_file()
+            })
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,

@@ -154,12 +154,31 @@ fn library(lib: &PhotoLibrary) -> Result<(), String> {
 }
 fn list(doc: &AutoCommit, obj: &ObjId, key: &str) -> Result<(), String> {
     for (v, id) in values(doc, obj, key)? {
-        if !matches!(v, Value::Object(ObjType::List)) || doc.length(&id) > MAX_RECORDS {
-            return Err("Invalid recorded string list".into());
+        string_list(doc, &v, &id)?;
+    }
+    Ok(())
+}
+fn string_list(doc: &AutoCommit, value: &Value<'_>, id: &ObjId) -> Result<(), String> {
+    if !matches!(value, Value::Object(ObjType::List)) || doc.length(id) > MAX_RECORDS {
+        return Err("Invalid recorded string list".into());
+    }
+    for i in 0..doc.length(id) {
+        for (v, _) in values(doc, id, i)? {
+            text(&v)?;
         }
-        for i in 0..doc.length(&id) {
-            for (v, _) in values(doc, &id, i)? {
-                text(&v)?;
+    }
+    Ok(())
+}
+/// Absolute album memberships now use JSON arrays; older documents use lists.
+/// Validate every representation conflict, not only the reader's chosen set.
+fn album_membership(doc: &AutoCommit, row: &ObjId) -> Result<(), String> {
+    for (value, id) in values(doc, row, "photo_ids")? {
+        if matches!(value, Value::Object(ObjType::List)) {
+            string_list(doc, &value, &id)?;
+        } else {
+            let members = json::<Vec<String>>(&value)?;
+            if members.len() > MAX_RECORDS || members.iter().any(|id| id.len() > 65_536) {
+                return Err("Invalid recorded album membership".into());
             }
         }
     }
@@ -308,9 +327,10 @@ pub(crate) fn validate(doc: &AutoCommit) -> Result<(), String> {
                                         return Err("Invalid favorite".into());
                                     }
                                 }
-                                for field in ["people", "tags", "photo_ids"] {
+                                for field in ["people", "tags"] {
                                     list(doc, &row, field)?;
                                 }
+                                album_membership(doc, &row)?;
                             }
                         }
                     }

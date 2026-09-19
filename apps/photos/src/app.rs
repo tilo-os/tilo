@@ -16829,6 +16829,73 @@ mod history_reconcile_tests {
     }
 
     #[test]
+    fn history_accepts_album_membership_formats_and_rejects_malformed_conflicts() {
+        use automerge::{ObjType, ReadDoc, transaction::Transactable};
+        let (_, mut doc, ids) = album_membership_fixture();
+        seed_membership_album(&mut doc, &ids);
+        // The production writer emits the current absolute JSON membership.
+        crate::framework_history::validate(&doc).unwrap();
+        let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
+        let albums = doc.get(&root, "albums").unwrap().unwrap().1;
+        let row = doc
+            .get(&albums, "photos.album:membership")
+            .unwrap()
+            .unwrap()
+            .1;
+        let mut legacy = doc.clone();
+        let members = legacy.put_object(&row, "photo_ids", ObjType::List).unwrap();
+        legacy.insert(&members, 0, ids[0].as_str()).unwrap();
+        crate::framework_history::validate(&legacy).unwrap();
+        assert_eq!(
+            PhotosDoc::library(&legacy).albums[0].photo_ids,
+            vec![ids[0].clone()]
+        );
+
+        // Concurrent migration can retain both legacy and current values.
+        // Neither malformed representation may hide behind a valid sibling.
+        for (invalid_json, invalid_list) in [(false, false), (true, false), (false, true)] {
+            let mut left = legacy.fork();
+            let mut right = legacy.fork();
+            left.set_actor(automerge::ActorId::from([2; 16].as_slice()));
+            right.set_actor(automerge::ActorId::from([3; 16].as_slice()));
+            left.put(&row, "photo_ids", if invalid_json { "[7]" } else { "[]" })
+                .unwrap();
+            let conflicting = right.put_object(&row, "photo_ids", ObjType::List).unwrap();
+            if invalid_list {
+                right.insert(&conflicting, 0, 7).unwrap();
+            } else {
+                right.insert(&conflicting, 0, ids[0].as_str()).unwrap();
+            }
+            left.merge(&mut right).unwrap();
+            assert_eq!(left.get_all(&row, "photo_ids").unwrap().len(), 2);
+            assert_eq!(
+                crate::framework_history::validate(&left).is_err(),
+                invalid_json || invalid_list
+            );
+        }
+
+        let mut left = legacy.fork();
+        let mut right = legacy.fork();
+        left.put(&members, 0, ids[3].as_str()).unwrap();
+        right.put(&members, 0, false).unwrap();
+        left.merge(&mut right).unwrap();
+        assert_eq!(left.get_all(&members, 0).unwrap().len(), 2);
+        assert!(crate::framework_history::validate(&left).is_err());
+
+        for invalid_members in [vec!["x".repeat(65_537)], vec![ids[0].clone(); 10_001]] {
+            let mut invalid = doc.clone();
+            invalid
+                .put(
+                    &row,
+                    "photo_ids",
+                    serde_json::to_string(&invalid_members).unwrap(),
+                )
+                .unwrap();
+            assert!(crate::framework_history::validate(&invalid).is_err());
+        }
+    }
+
+    #[test]
     fn newly_visible_timeline_photo_uses_immutable_thumbnail_outside_queued_window() {
         let mut doc = AutoCommit::new();
         let mut library = crate::model::PhotoLibrary::default();
@@ -17060,13 +17127,13 @@ mod history_reconcile_tests {
         let selected = doc.get_heads();
         let mut lib = PhotosDoc::library(&doc);
         lib.albums.push(crate::model::Album {
-            id: "album".into(),
+            id: "photos.album:membership".into(),
             name: "Original".into(),
             photo_ids: vec![id],
         });
         PhotosDoc::set_library(&mut doc, &lib);
         app.sync(&mut doc, &ROOT);
-        app.active_album = Some("album".into());
+        app.active_album = Some("photos.album:membership".into());
         app.begin_edit_album(&doc);
         app.album_name_input.set_text("stale draft");
         restore(&mut doc, &selected);
@@ -17114,7 +17181,7 @@ mod history_reconcile_tests {
     fn seed_membership_album(doc: &mut AutoCommit, ids: &[String; 4]) {
         let mut library = PhotosDoc::library(doc);
         library.albums.push(crate::model::Album {
-            id: "album".into(),
+            id: "photos.album:membership".into(),
             name: "Original".into(),
             photo_ids: vec![ids[0].clone(), ids[3].clone()],
         });
@@ -17150,13 +17217,17 @@ mod history_reconcile_tests {
         let (mut app, mut doc, ids) = album_membership_fixture();
         seed_membership_album(&mut doc, &ids);
         app.sync(&mut doc, &ROOT);
-        activate_album_control(&mut app, &mut doc, "photos:library-album:album");
+        activate_album_control(
+            &mut app,
+            &mut doc,
+            "photos:library-album:photos.album:membership",
+        );
         activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
         app.album_name_input.set_text("Renamed album");
         activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
         let library = PhotosDoc::library(&doc);
         assert_eq!(library.albums.len(), 1);
-        let album = library.album("album").unwrap();
+        let album = library.album("photos.album:membership").unwrap();
         assert_eq!(album.name, "Renamed album");
         assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[3].clone()]);
         assert!(!app.album_editor);
@@ -17172,14 +17243,18 @@ mod history_reconcile_tests {
         library.albums[0].photo_ids = vec![ids[1].clone(), ids[2].clone()];
         PhotosDoc::set_library(&mut doc, &library);
         app.sync(&mut doc, &ROOT);
-        activate_album_control(&mut app, &mut doc, "photos:library-album:album");
+        activate_album_control(
+            &mut app,
+            &mut doc,
+            "photos:library-album:photos.album:membership",
+        );
         activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
         app.album_name_input.set_text("Unsaved later draft");
         restore(&mut doc, &selected);
         app.sync(&mut doc, &ROOT);
         assert!(!app.album_editor, "restore must detach the obsolete draft");
         let restored = PhotosDoc::library(&doc);
-        let album = restored.album("album").unwrap();
+        let album = restored.album("photos.album:membership").unwrap();
         assert_eq!(album.name, "Original");
         assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[3].clone()]);
 
@@ -17195,7 +17270,7 @@ mod history_reconcile_tests {
         }
         activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
         let library = PhotosDoc::library(&doc);
-        let album = library.album("album").unwrap();
+        let album = library.album("photos.album:membership").unwrap();
         assert_eq!(album.name, "Edited after restore");
         assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[2].clone()]);
         assert_eq!(library.photos.len(), 4);
