@@ -21,6 +21,25 @@ spec.loader.exec_module(audit)
 SECRET = b'private-sentinel-that-must-never-be-logged'
 # A complete PKCS#8 Ed25519 test key, with a public, deterministic test seed.
 PRIVATE_DER = bytes.fromhex('302e020100300506032b657004220420') + bytes(range(32))
+# Exact public Ed25519 vector from the signed GnuTLS RPM pinned by the scanner.
+PUBLIC_VECTOR_DER = bytes.fromhex(
+    '302e020100300506032b6570042204207e167aa999199425498ffc1fce59662995776ea1e88ebc80537206fca1dd5732')
+
+# Exact public encrypted example from the signed perl-Net-SSLeay RPM.
+ENCRYPTED_PUBLIC_HEADERS = b'Proc-Type: 4,ENCRYPTED\nDEK-Info: DES-EDE3-CBC,932256E9ACCDC996\n\n'
+ENCRYPTED_PUBLIC_CIPHERTEXT = base64.b64decode(
+    'wav+t55gSrsCnvgeikRqcQKXuUeXEqEcL6zwNsTMIis6rpGuXkBYH5Ezntm6h/5h2vZDu2vTOeq7'
+    'QbNmTbKWbU6Rw0e7hlnWcPFhg3ssLNrh0XW3ynZ56gLCj/TRHj9V4c7UnozeDTb+XYEAp+1Yj21B'
+    'pepectak6j4dZfhhJteEGWMDj9faNTbA08LX87WnJiNhlhIWl7ncS/13riwLqsemHcTFlNCaoANa'
+    'VCUKEGoIFZmz1OoYJvBWLj7HnxDU+Z/lvf3o1glE1EP3XcCACGhapfZcALlYhz1qGTA6ProZ/sIJ'
+    'GLAYAi8uobJlA1E0SwGXNm4rtMocR7utO649/g92SFvGZmG715t2P8jBa4MqgV5H3oIIVJK1YiL6'
+    'Zmk5jZMPmTDctXD61dLnTFXa+m0vLJMZAMD8UkhtbuCMYzTy0dIHBaxTYNxggSbfbbKJ6QijHZHn'
+    '+iygyudCxYWXtZQ1uyBFzU4wpEGqugngf3T0W2TWpiM3PQjh+vymxKRZUVY5LGejMuz3HpgFcJ+H'
+    's6DCJYAECUWWjSPhTXvTifNIZq5XdaeCveyLkMnCHQ7yLW64XcZ9jWzI+FOqRmLMYcUoHh8eZyB6'
+    'X6ITC3wy2g1ovc5KrD+OuC+HOyLvvb+8avnSoc1+maBC7su7htE/EPP6X/zvNzLM4Ky4JvmNtFR5'
+    '+CzD7xnwoS3jY97u6gMzMHjb7t2pA7rFnVImwivvi/y3sEAL9P5N+mL+q82q9qsmcb58tlkAteUp'
+    'crOvlmRk3kzlM0tz9/Rm4bYttEDBt67Fg4/hZbZ+m+5BMzVWWdtZIdHUIGJjew=='
+)
 
 
 def pem(label=b'PRIVATE KEY', payload=PRIVATE_DER, headers=b'', newline=b'\n'):
@@ -40,11 +59,11 @@ def tar(entries, format=tarfile.PAX_FORMAT):
     return output.getvalue()
 
 
-def docker(layers, extra=None, config_change=None):
+def docker(layers, extra=None, config_change=None, config_encoder=json.dumps):
     config = {'architecture': 'amd64', 'os': 'linux',
               'rootfs': {'type': 'layers', 'diff_ids': ['sha256:' + hashlib.sha256(layer).hexdigest() for layer in layers]}}
     config.update(config_change or {})
-    raw = json.dumps(config).encode()
+    raw = config_encoder(config).encode()
     digest = hashlib.sha256(raw).hexdigest()
     names = [f'{index:064x}/layer.tar' for index in range(len(layers))]
     manifest = [{'Config': digest + '.json', 'RepoTags': [], 'Layers': names}]
@@ -194,7 +213,7 @@ class LayerAuditTests(unittest.TestCase):
         self.assertEqual(audit.audit_stream(io.BytesIO(stream), image)['status'], 'rejected-private-material')
 
     def test_complete_pem_survives_every_single_byte_read_boundary(self):
-        values = (pem(), pem(b'RSA PRIVATE KEY', headers=(
+        values = (pem(), pem().replace(b'\n', b''), pem(b'RSA PRIVATE KEY', headers=(
             b'Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0123456789ABCDEF\n\n')),
             pem().replace(b'\n', b'\\r\\n'))
         for value in values:
@@ -233,6 +252,117 @@ class LayerAuditTests(unittest.TestCase):
         result = audit.audit_stream(io.BytesIO(stream), image, [value])
         self.assertEqual(result['layers'][0]['findings'], ['provided-private-material'])
 
+    def test_exact_public_vector_is_allowed_with_normalized_wrapping(self):
+        self.assertIn(hashlib.sha256(PUBLIC_VECTOR_DER).hexdigest(), audit.PUBLIC_PEM_DER_SHA256)
+        for value in (pem(payload=PUBLIC_VECTOR_DER),
+                      pem(payload=PUBLIC_VECTOR_DER).replace(b'\n', b''),
+                      pem(payload=PUBLIC_VECTOR_DER, newline=b'\r\n'),
+                      pem(payload=PUBLIC_VECTOR_DER).replace(b'\n', b'\\n')):
+            for cut in range(1, len(value)):
+                reader = audit.Reader(io.BytesIO(value), len(value), hashing=True)
+                reader.read(cut)
+                reader.read(len(value) - cut)
+                self.assertEqual(reader.findings, set())
+            stream, image = docker([tar([('any-path', value)])])
+            self.assertEqual(audit.audit_stream(io.BytesIO(stream), image)['status'], 'passed-scoped-scan')
+
+    def test_public_vector_does_not_exempt_mutated_or_later_unknown_key(self):
+        public = pem(payload=PUBLIC_VECTOR_DER)
+        mutated = pem(payload=PUBLIC_VECTOR_DER[:-1] + bytes([PUBLIC_VECTOR_DER[-1] ^ 1]))
+        for value in (mutated, public + b'\0' + pem(), public + b'\n' + mutated,
+                      public * 3 + pem(b'RSA PRIVATE KEY')):
+            # Exercise both whole-window and every split through Reader. This
+            # must continue scanning after each allowed block in the same read.
+            for cut in range(len(value)):
+                reader = audit.Reader(io.BytesIO(value), len(value), hashing=True)
+                reader.read(cut)
+                reader.read(len(value) - cut)
+                self.assertEqual(reader.findings, {'private-pem-envelope'})
+            stream, image = docker([tar([('usr/lib64/libgnutls.so', b'\x7fELF' + value)])])
+            with patch.object(audit, 'CHUNK', 512):
+                self.assertEqual(audit.audit_stream(io.BytesIO(stream), image)['status'], 'rejected-private-material')
+
+    def test_public_der_exception_does_not_apply_to_encrypted_envelopes(self):
+        value = pem(b'RSA PRIVATE KEY', payload=PUBLIC_VECTOR_DER, headers=(
+            b'Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0123456789ABCDEF\n\n'))
+        stream, image = docker([tar([('encrypted', value)])])
+        self.assertEqual(audit.audit_stream(io.BytesIO(stream), image)['status'], 'rejected-private-material')
+
+    def test_encrypted_public_fixture_binds_label_headers_and_ciphertext(self):
+        public = pem(b'RSA PRIVATE KEY', payload=ENCRYPTED_PUBLIC_CIPHERTEXT,
+                     headers=ENCRYPTED_PUBLIC_HEADERS)
+        for value in (public, public.replace(b'\n', b'\r\n'), public.replace(b'\n', b'\\n')):
+            for cut in range(1, len(value)):
+                reader = audit.Reader(io.BytesIO(value), len(value), hashing=True)
+                reader.read(cut)
+                reader.read(len(value) - cut)
+                self.assertEqual(reader.findings, set())
+        prefix, iv = ENCRYPTED_PUBLIC_HEADERS.rsplit(b',', 1)
+        changed_iv = prefix + b',' + (b'1' if iv[:1] == b'0' else b'0') + iv[1:]
+        changed_cipher = ENCRYPTED_PUBLIC_HEADERS.replace(b'DEK-Info: ', b'DEK-Info: WRONG-')
+        for label, headers, payload in (
+                (b'EC PRIVATE KEY', ENCRYPTED_PUBLIC_HEADERS, ENCRYPTED_PUBLIC_CIPHERTEXT),
+                (b'RSA PRIVATE KEY', changed_iv, ENCRYPTED_PUBLIC_CIPHERTEXT),
+                (b'RSA PRIVATE KEY', changed_cipher, ENCRYPTED_PUBLIC_CIPHERTEXT),
+                (b'RSA PRIVATE KEY', ENCRYPTED_PUBLIC_HEADERS,
+                 ENCRYPTED_PUBLIC_CIPHERTEXT[:-1] + bytes([ENCRYPTED_PUBLIC_CIPHERTEXT[-1] ^ 1]))):
+            value = pem(label, payload=payload, headers=headers)
+            stream, image = docker([tar([('example.pem', value)])])
+            self.assertEqual(audit.audit_stream(io.BytesIO(stream), image)['status'], 'rejected-private-material')
+        stream, image = docker([tar([('example.pem', public)])])
+        self.assertEqual(audit.audit_stream(io.BytesIO(stream), image, [public])['layers'][0]['findings'],
+                         ['provided-private-material'])
+        stream, image = docker([tar([('example.pem', public + b'\n' + pem())])])
+        self.assertEqual(audit.audit_stream(io.BytesIO(stream), image)['status'], 'rejected-private-material')
+
+    def test_exact_private_input_always_overrides_public_vector_exception(self):
+        public = pem(payload=PUBLIC_VECTOR_DER)
+        for value in (public, PUBLIC_VECTOR_DER):
+            for cut in range(1, len(value)):
+                reader = audit.Reader(io.BytesIO(value), len(value), patterns=(value,), hashing=True)
+                reader.read(cut)
+                reader.read(len(value) - cut)
+                self.assertEqual(reader.findings, {'provided-private-material'})
+            stream, image = docker([tar([('private', b'x' * 499 + value)])])
+            with patch.object(audit, 'CHUNK', 512):
+                result = audit.audit_stream(io.BytesIO(stream), image, [value + b'\n'])
+            self.assertEqual(result['layers'][0]['findings'], ['provided-private-material'])
+            self.assertEqual(result['status'], 'rejected-private-material')
+
+    def test_public_vectors_in_metadata_do_not_hide_unknown_keys_or_exact_matches(self):
+        public = pem(payload=PUBLIC_VECTOR_DER)
+        for value, private, findings in (
+                (public, [], []),
+                (public + b'\n' + pem(), [], ['private-pem-envelope']),
+                (public, [public.replace(b'\n', b'\\n')], ['provided-private-material'])):
+            stream, image = docker([tar([('public', b'ok')])],
+                                   config_change={'config': {'Env': ['KEY=' + value.decode()]}})
+            result = audit.audit_stream(io.BytesIO(stream), image, private)
+            self.assertEqual(result['metadata_findings'], findings)
+
+    def test_decoded_json_metadata_keys_cannot_hide_behind_valid_escapes(self):
+        private = pem(payload=PRIVATE_DER + b'\xff' * 3)
+        public = pem(payload=PUBLIC_VECTOR_DER)
+        self.assertIn(b'/', private)
+        def escaped_json(value):
+            return json.dumps(value).replace('\\n', '\\u000a').replace('/', '\\/')
+        for value, supplied, findings in (
+                (private, [], ['private-pem-envelope']),
+                (public, [public], ['provided-private-material']),
+                (public, [], [])):
+            stream, image = docker([tar([('public', b'ok')])],
+                config_change={'config': {'Env': ['KEY=' + value.decode()]}}, config_encoder=escaped_json)
+            result = audit.audit_stream(io.BytesIO(stream), image, supplied)
+            self.assertEqual(result['metadata_findings'], findings)
+        # Every distinct string, including duplicate JSON object values, gets
+        # its own scanner. Neither decoding nor duplicates may conceal a key.
+        duplicate = ('{"x":' + escaped_json(private.decode()) + ',"x":"public"}').encode()
+        separate = escaped_json(['-----BEGIN PRIVATE KEY-----',
+            base64.b64encode(PRIVATE_DER).decode(), '-----END PRIVATE KEY-----']).encode()
+        for raw, findings in ((duplicate, ['private-pem-envelope']), (separate, [])):
+            stream, image = docker([tar([('public', b'ok')])], extra=[('legacy.json', raw)])
+            self.assertEqual(audit.audit_stream(io.BytesIO(stream), image)['metadata_findings'], findings)
+
     def test_secrets_in_configuration_are_not_missed(self):
         stream, image = docker([tar([('public', b'ok')])], config_change={'config': {'Env': ['VALUE=' + SECRET.decode()]}})
         result = audit.audit_stream(io.BytesIO(stream), image, [SECRET])
@@ -244,7 +374,7 @@ class LayerAuditTests(unittest.TestCase):
         result = audit.audit_stream(io.BytesIO(stream), image, [SECRET])
         self.assertEqual(result['status'], 'passed-scoped-scan')
         self.assertEqual(result['scope'], 'all uncompressed layer bytes and archive metadata file contents: '
-                         'provided exact private bytes and private PEM envelopes only')
+                         'provided exact private bytes and complete private PEM envelopes excluding pinned public fixtures')
         self.assertFalse(result['universal_secret_absence_proven'])
 
     def test_credential_file_newlines_do_not_hide_shell_exported_value(self):
