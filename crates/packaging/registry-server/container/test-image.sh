@@ -8,15 +8,14 @@ source_revision=${2:?usage: test-image.sh IMAGE SOURCE_REVISION}
 [[ $(docker image inspect --format '{{.Config.User}}' "$image") == 65532:65532 ]]
 [[ $(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image") == "$source_revision" ]]
 
-state=$(mktemp -d)
 container="tilo-registry-smoke-${source_revision:0:12}-$$"
+volume="${container}-state"
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
-  rm -rf -- "$state"
+  docker volume rm -f "$volume" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
-chown 65532:65532 "$state"
-chmod 0750 "$state"
+docker volume create "$volume" >/dev/null
 
 # RFC 8032 test-vector public key. Only public identity material enters the
 # image; the owner signing seed remains outside the long-running service.
@@ -26,7 +25,7 @@ docker run --rm \
   --cap-drop ALL \
   --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
-  --mount "type=bind,source=$state,target=/var/lib/tilo-registry" \
+  --mount "type=volume,source=$volume,target=/var/lib/tilo-registry" \
   "$image" \
   init \
   --owner-pubkey "$owner_pubkey" \
@@ -39,7 +38,7 @@ docker run --detach --name "$container" \
   --cap-drop ALL \
   --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
-  --mount "type=bind,source=$state,target=/var/lib/tilo-registry" \
+  --mount "type=volume,source=$volume,target=/var/lib/tilo-registry" \
   --publish 127.0.0.1::8443 \
   "$image" >/dev/null
 
