@@ -1,0 +1,479 @@
+//! Async identity-broker client for host-owned app transports.
+
+use std::io;
+use std::pin::Pin;
+use std::time::Duration;
+
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+use crate::{NotAvailable, wire};
+
+trait BrokerAsyncIo: AsyncRead + AsyncWrite {}
+impl<T: AsyncRead + AsyncWrite> BrokerAsyncIo for T {}
+
+type BrokerStream = Pin<Box<dyn BrokerAsyncIo>>;
+
+/// Public identity metadata plus a serialized async signing connection.
+///
+/// The host supplies an already authenticated and route-bound transport. This
+/// client owns no private key and never falls back to local identity state.
+/// Every request/response exchange has one absolute deadline covering the
+/// complete write, flush, frame read, and decode. A transport or protocol
+/// failure drops the stream so a late reply can never satisfy another request.
+pub struct AsyncBrokerSigningIdentity {
+    display_name: String,
+    avatar_color: [u8; 3],
+    group_public_key: [u8; 32],
+    signing_public_key: [u8; 32],
+    device_certificate: Option<Vec<u8>>,
+    threshold: u16,
+    total_shares: u16,
+    share_index: u16,
+    stream: Option<BrokerStream>,
+    exchange_timeout: Duration,
+}
+
+impl std::fmt::Debug for AsyncBrokerSigningIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsyncBrokerSigningIdentity")
+            .finish_non_exhaustive()
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "host transports and their identity client are confined to the SDK worker LocalSet"
+)]
+impl AsyncBrokerSigningIdentity {
+    /// Request metadata over a caller-owned connected async transport.
+    ///
+    /// `exchange_timeout` applies independently to metadata and each later
+    /// signing request. The caller remains responsible for authenticating the
+    /// endpoint and binding it to the app and workspace before construction.
+    ///
+    /// # Errors
+    /// Returns a bounded transport, framing, protocol, or broker refusal error.
+    pub async fn from_connected_io<S>(
+        stream: S,
+        exchange_timeout: Duration,
+    ) -> Result<Self, NotAvailable>
+    where
+        S: AsyncRead + AsyncWrite + 'static,
+    {
+        let mut identity = Self {
+            display_name: String::new(),
+            avatar_color: [0; 3],
+            group_public_key: [0; 32],
+            signing_public_key: [0; 32],
+            device_certificate: None,
+            threshold: 0,
+            total_shares: 0,
+            share_index: 0,
+            stream: Some(Box::pin(stream)),
+            exchange_timeout,
+        };
+        match identity.exchange(&wire::Request::Metadata).await? {
+            wire::Response::Metadata {
+                display_name,
+                avatar_color,
+                group_public_key,
+                signing_public_key,
+                device_certificate,
+                threshold,
+                total_shares,
+                share_index,
+            } => {
+                identity.display_name = display_name;
+                identity.avatar_color = avatar_color;
+                identity.group_public_key = group_public_key;
+                identity.signing_public_key = signing_public_key;
+                identity.device_certificate = device_certificate;
+                identity.threshold = threshold;
+                identity.total_shares = total_shares;
+                identity.share_index = share_index;
+                Ok(identity)
+            }
+            wire::Response::Denied(reason) | wire::Response::Error(reason) => {
+                Err(permission_denied(reason))
+            }
+            wire::Response::Signature(_) => {
+                identity.poison();
+                Err(invalid_data(
+                    "identity broker returned an invalid metadata response",
+                ))
+            }
+        }
+    }
+
+    /// Human-picked name supplied by the host.
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+    /// Avatar RGB supplied by the host.
+    pub fn avatar_color(&self) -> [u8; 3] {
+        self.avatar_color
+    }
+    /// Root/group public key supplied by the host.
+    pub fn group_public_key(&self) -> [u8; 32] {
+        self.group_public_key
+    }
+    /// Enrolled device signing key supplied by the host.
+    pub fn signing_public_key(&self) -> [u8; 32] {
+        self.signing_public_key
+    }
+    /// Opaque device certificate bytes; this client does not validate them.
+    pub fn device_certificate(&self) -> Option<&[u8]> {
+        self.device_certificate.as_deref()
+    }
+    /// Threshold in the host's t-of-n metadata.
+    pub fn threshold(&self) -> u16 {
+        self.threshold
+    }
+    /// Total shares in the host's t-of-n metadata.
+    pub fn total_shares(&self) -> u16 {
+        self.total_shares
+    }
+    /// This device's share index.
+    pub fn share_index(&self) -> u16 {
+        self.share_index
+    }
+    /// Whether the host reports a 1-of-1 identity.
+    pub fn is_single_device(&self) -> bool {
+        self.threshold == 1 && self.total_shares == 1
+    }
+
+    /// Ask the host for a certified collaboration-join proof.
+    ///
+    /// # Errors
+    /// Returns a broker refusal or a bounded fail-closed transport error.
+    pub async fn sign_collaboration_join(
+        &mut self,
+        workspace_id: &str,
+    ) -> Result<[u8; 64], NotAvailable> {
+        self.signature(&wire::Request::CollaborationJoin {
+            workspace_id: workspace_id.to_owned(),
+        })
+        .await
+    }
+
+    /// Ask the host to sign one typed collaboration operation.
+    ///
+    /// # Errors
+    /// Returns a broker refusal or a bounded fail-closed transport error.
+    pub async fn sign_collaboration_op(
+        &mut self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        unsigned_op: &[u8],
+    ) -> Result<[u8; 64], NotAvailable> {
+        self.signature(&wire::Request::CollaborationOp {
+            workspace_id: workspace_id.to_owned(),
+            app_id: app_id.to_owned(),
+            record_id: record_id.to_owned(),
+            unsigned_op: unsigned_op.to_vec(),
+        })
+        .await
+    }
+
+    async fn signature(&mut self, request: &wire::Request) -> Result<[u8; 64], NotAvailable> {
+        match self.exchange(request).await? {
+            wire::Response::Signature(bytes) if bytes.len() == 64 => {
+                let mut signature = [0; 64];
+                signature.copy_from_slice(&bytes);
+                Ok(signature)
+            }
+            wire::Response::Denied(reason) => Err(permission_denied(reason)),
+            wire::Response::Error(reason) => {
+                Err(NotAvailable::ConnectionFailed(io::Error::other(reason)))
+            }
+            _ => {
+                self.poison();
+                Err(invalid_data(
+                    "identity broker returned an invalid signature response",
+                ))
+            }
+        }
+    }
+
+    async fn exchange(&mut self, request: &wire::Request) -> Result<wire::Response, NotAvailable> {
+        let mut stream = self.stream.take().ok_or_else(poisoned)?;
+        let deadline = tokio::time::Instant::now() + self.exchange_timeout;
+        let result = tokio::time::timeout_at(deadline, async {
+            write_frame(&mut stream, request).await?;
+            read_frame(&mut stream).await
+        })
+        .await;
+        match result {
+            Ok(Ok(response)) => {
+                self.stream = Some(stream);
+                Ok(response)
+            }
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "identity broker exchange timed out",
+            ))),
+        }
+    }
+
+    fn poison(&mut self) {
+        self.stream = None;
+    }
+}
+
+async fn write_frame<T: serde::Serialize>(
+    stream: &mut BrokerStream,
+    value: &T,
+) -> Result<(), NotAvailable> {
+    let bytes = postcard::to_allocvec(value).map_err(|error| {
+        NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
+    })?;
+    if bytes.len() > super::client::MAX_IDENTITY_FRAME_BYTES {
+        return Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity frame exceeds 64 MiB",
+        )));
+    }
+    let len = u32::try_from(bytes.len()).map_err(|_| {
+        NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "frame too large",
+        ))
+    })?;
+    stream.write_all(&len.to_le_bytes()).await?;
+    stream.write_all(&bytes).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+async fn read_frame(stream: &mut BrokerStream) -> Result<wire::Response, NotAvailable> {
+    let mut len = [0; 4];
+    stream.read_exact(&mut len).await?;
+    let len = u32::from_le_bytes(len) as usize;
+    if len > super::client::MAX_IDENTITY_FRAME_BYTES {
+        return Err(invalid_data("identity frame exceeds 64 MiB"));
+    }
+    let mut bytes = vec![0; len];
+    stream.read_exact(&mut bytes).await?;
+    postcard::from_bytes(&bytes).map_err(|error| {
+        NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
+    })
+}
+
+fn permission_denied(reason: String) -> NotAvailable {
+    NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::PermissionDenied, reason))
+}
+
+fn invalid_data(message: &'static str) -> NotAvailable {
+    NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, message))
+}
+
+fn poisoned() -> NotAvailable {
+    NotAvailable::ConnectionFailed(io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "identity broker connection is no longer usable",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    fn metadata() -> wire::Response {
+        wire::Response::Metadata {
+            display_name: "Async fixture".into(),
+            avatar_color: [1, 2, 3],
+            group_public_key: [4; 32],
+            signing_public_key: [5; 32],
+            device_certificate: Some(b"fixture certificate".to_vec()),
+            threshold: 1,
+            total_shares: 1,
+            share_index: 1,
+        }
+    }
+
+    async fn read_request(stream: &mut tokio::io::DuplexStream) -> wire::Request {
+        let mut len = [0; 4];
+        stream.read_exact(&mut len).await.unwrap();
+        let mut body = vec![0; u32::from_le_bytes(len) as usize];
+        stream.read_exact(&mut body).await.unwrap();
+        postcard::from_bytes(&body).unwrap()
+    }
+
+    async fn write_response(stream: &mut tokio::io::DuplexStream, response: wire::Response) {
+        let body = postcard::to_allocvec(&response).unwrap();
+        stream
+            .write_all(&u32::try_from(body.len()).unwrap().to_le_bytes())
+            .await
+            .unwrap();
+        stream.write_all(&body).await.unwrap();
+    }
+
+    fn error_kind<T>(result: Result<T, NotAvailable>) -> io::ErrorKind {
+        match result {
+            Err(NotAvailable::ConnectionFailed(error)) => error.kind(),
+            _ => panic!("expected connection failure"),
+        }
+    }
+
+    async fn connected(timeout: Duration) -> (AsyncBrokerSigningIdentity, tokio::io::DuplexStream) {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let server_task = tokio::spawn(async move {
+            assert!(matches!(
+                read_request(&mut server).await,
+                wire::Request::Metadata
+            ));
+            write_response(&mut server, metadata()).await;
+            server
+        });
+        let identity = AsyncBrokerSigningIdentity::from_connected_io(client, timeout)
+            .await
+            .unwrap();
+        (identity, server_task.await.unwrap())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_metadata_obeys_one_absolute_deadline() {
+        let (client, mut server) = tokio::io::duplex(64);
+        tokio::spawn(async move {
+            assert!(matches!(
+                read_request(&mut server).await,
+                wire::Request::Metadata
+            ));
+            std::future::pending::<()>().await;
+        });
+        assert_eq!(
+            error_kind(
+                AsyncBrokerSigningIdentity::from_connected_io(client, Duration::from_millis(20))
+                    .await
+            ),
+            io::ErrorKind::TimedOut
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_join_poison_drops_late_reply_before_next_exchange() {
+        let (mut identity, mut server) = connected(Duration::from_millis(20)).await;
+        let late = tokio::spawn(async move {
+            assert!(matches!(
+                read_request(&mut server).await,
+                wire::Request::CollaborationJoin { .. }
+            ));
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let body = postcard::to_allocvec(&wire::Response::Signature(vec![7; 64])).unwrap();
+            server
+                .write_all(&u32::try_from(body.len()).unwrap().to_le_bytes())
+                .await?;
+            server.write_all(&body).await
+        });
+        assert_eq!(
+            error_kind(identity.sign_collaboration_join("workspace").await),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            error_kind(
+                identity
+                    .sign_collaboration_op("workspace", "app", "record", b"op")
+                    .await
+            ),
+            io::ErrorKind::BrokenPipe
+        );
+        assert!(
+            late.await.unwrap().is_err(),
+            "timed-out stream must be closed"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_operation_keeps_localset_work_responsive() {
+        let (mut identity, mut server) = connected(Duration::from_millis(20)).await;
+        let (request_seen, seen) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            assert!(matches!(
+                read_request(&mut server).await,
+                wire::Request::CollaborationOp { .. }
+            ));
+            let _ = request_seen.send(());
+            std::future::pending::<()>().await;
+        });
+        let (responsive, response) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            seen.await.unwrap();
+            tokio::task::yield_now().await;
+            let _ = responsive.send(());
+        });
+        let operation = identity.sign_collaboration_op("workspace", "app", "record", b"op");
+        tokio::pin!(operation);
+        tokio::select! {
+            result = &mut operation => {
+                assert_eq!(error_kind(result), io::ErrorKind::TimedOut);
+            }
+            result = response => {
+                result.unwrap();
+                assert_eq!(
+                    error_kind(operation.await),
+                    io::ErrorKind::TimedOut
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_denial_preserves_alignment_for_next_request() {
+        let (mut identity, mut server) = connected(Duration::from_secs(1)).await;
+        let broker = tokio::spawn(async move {
+            assert!(matches!(
+                read_request(&mut server).await,
+                wire::Request::CollaborationJoin { .. }
+            ));
+            write_response(&mut server, wire::Response::Denied("revoked".into())).await;
+            assert!(matches!(
+                read_request(&mut server).await,
+                wire::Request::CollaborationOp { .. }
+            ));
+            write_response(&mut server, wire::Response::Signature(vec![9; 64])).await;
+        });
+        assert_eq!(
+            error_kind(identity.sign_collaboration_join("workspace").await),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            identity
+                .sign_collaboration_op("workspace", "app", "record", b"op")
+                .await
+                .unwrap(),
+            [9; 64]
+        );
+        broker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn oversized_response_poison_prevents_reuse() {
+        let (mut identity, mut server) = connected(Duration::from_secs(1)).await;
+        let broker = tokio::spawn(async move {
+            assert!(matches!(
+                read_request(&mut server).await,
+                wire::Request::CollaborationJoin { .. }
+            ));
+            let oversized = u32::try_from(super::super::client::MAX_IDENTITY_FRAME_BYTES + 1)
+                .unwrap()
+                .to_le_bytes();
+            server.write_all(&oversized).await.unwrap();
+        });
+        assert_eq!(
+            error_kind(identity.sign_collaboration_join("workspace").await),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            error_kind(
+                identity
+                    .sign_collaboration_op("workspace", "app", "record", b"op")
+                    .await
+            ),
+            io::ErrorKind::BrokenPipe
+        );
+        broker.await.unwrap();
+    }
+}
