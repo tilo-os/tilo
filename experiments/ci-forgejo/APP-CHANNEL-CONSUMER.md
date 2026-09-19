@@ -275,8 +275,25 @@ trust on its source/build metadata. Its invoking trusted build must bind those
 inputs to the actual compilation. Repeat for native ARM64. Only verifier changes
 or builder compatibility changes require a new platform bundle, not app changes.
 
-The consumer fetches using the repository task token, rejects redirects and mutable
-URLs, checks archive size/digest before bounded decompression, validates the exact
+Both qualification and final publication consumers fetch with the dedicated
+`TILO_VERIFIER_BUNDLE_READ_TOKEN` Actions secret: existing service identity
+`qos-packaging-controller`, token 153, scoped only to `read:package`. Its encrypted
+source is the controller registry SOPS secret; provisioning matches the decrypted
+credential against the live token ID/name/scope metadata in memory. No registry
+write credential or fallback is exposed to these steps. Historical Actions artifact
+reads retain `github.token`; the package secret is not used for artifact APIs.
+
+Forgejo `16.0.3+gitea-1.22.0` rejects this private organization's generic package
+fetch with the built-in job token (qos/qos run 23176, UI run 9680: HTTP 401).
+This is not a Bearer-versus-Basic mismatch: [package routes accept both](https://codeberg.org/forgejo/forgejo/src/tag/v16.0.3/routers/api/packages/api.go),
+but [package permissions](https://codeberg.org/forgejo/forgejo/src/tag/v16.0.3/services/packages/perm.go)
+do not yet implement ActionUser access from the task's repository. All supported
+job-token schemes resolve the same synthetic identity, which is not a private org
+member. Re-qualify built-in package read before removing the dedicated secret after
+a Forgejo upgrade; do not widen token scope to work around an authentication error.
+
+The consumer rejects redirects and mutable URLs, checks archive size/digest before
+bounded decompression, validates the exact
 four-member regular-file inventory, manifest, ELF architecture and binary hashes.
 It executes only after the existing adapter pin and binary preflight succeed.
 Qualification requires an exact compatible builder digest; a changed builder fails
@@ -290,9 +307,10 @@ but the workflow's final qualification now requires a bundle descriptor; it does
 fall back to app-built tools. Selected-app build receipts still use the tools already
 built during packaging and remain build-observed evidence only.
 
-Qualification remains disabled. No bundle has been published, no trust policy was
-changed, and no native runtime or task-token package-read qualification was performed
-in this change. Production activation still needs one centrally released bundle per
+Qualification remains disabled. The x86-64 bundle's durable package readback is
+recorded in `results/native-verifier-23012/registry-readback.json`; this credential
+change does not change trust policy or qualify full app/runtime acceptance.
+Production activation still needs one centrally released bundle per
 native architecture and independent verification of its actual package/runtime CLI
 compatibility. The coordinator's trusted helper closure must include
 `tools/canonical_verifier_bundle.py` before accepting this workflow revision.
