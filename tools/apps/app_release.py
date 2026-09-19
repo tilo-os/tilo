@@ -34,12 +34,17 @@ BINARY_INPUTS = {
     "os/dev/cache-github-assets.sh",
     "tools/ci/check-build-env.sh",
     "tools/ci/resolve_builder.py",
+    "tools/ci/python.py",
+    "tools/ci/sccache.sh",
+    ".forgejo/actions/restore-cargo-downloads/action.yml",
 }
 PACKAGING_INPUTS = {
     "dist/apps/package-apps.sh",
     "dist/apps/assemble-collection.sh",
     "tools/apps/assemble_app_collection.py",
     "os/scripts/bake-runtime-bundle.sh",
+    "tools/assemble_verified_apps.py",
+    "tools/app_packaging_plan.py",
 }
 VERIFICATION_INPUTS = {
     "tools/apps/app_release.py",
@@ -50,10 +55,17 @@ VERIFICATION_INPUTS = {
     "tools/apps/create_app_receipt.py",
     "tools/apps/final_app_receipt.py",
     "os/scripts/verify-elf-hardening.sh",
+    "tools/canonical_verifier_bundle.py",
+    "tools/app_packaging_qualification.py",
     ".forgejo/workflows/release-apps.yml",
 }
 GLOBAL_INPUTS = BINARY_INPUTS | PACKAGING_INPUTS | VERIFICATION_INPUTS
 GLOBAL_PREFIXES = (".cargo/", "vendor/")
+FULL_REBUILD_PREFIXES = (
+    ".forgejo/actions/restore-cargo-downloads/",
+    "dist/apps/",
+    "tools/apps/",
+)
 # These are explicitly built by package-apps.sh, not ordinary app dependencies.
 # A change reaching their graph affects the shared runtime or every emitted qpkg.
 FLEET_BUILD_PACKAGES = {"runtime-dylib", "pkg-cli", "runtime-bundle"}
@@ -185,7 +197,11 @@ def apps_from_changes(
     metadata: dict | None = None,
     root: Path = ROOT,
 ) -> list[str]:
-    if any(path in GLOBAL_INPUTS or path.startswith(GLOBAL_PREFIXES) for path in paths):
+    if any(
+        path in GLOBAL_INPUTS
+        or path.startswith(GLOBAL_PREFIXES + FULL_REBUILD_PREFIXES)
+        for path in paths
+    ):
         return sorted(set(catalog).difference(OS_INTEGRATED_APPS))
     selected = {
         parts[1]
