@@ -545,3 +545,74 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         "unsubscribed old source published a sync response after replacement"
     );
 }
+
+#[tokio::test]
+async fn subscribe_queued_before_delta_receives_commit_after_its_replay_cut() {
+    for kind in [0, 1] {
+        let fixture = Fixture::new();
+        fixture
+            .workspace
+            .lock()
+            .await
+            .remove_subscriber(&fixture.recipient.device_public_key);
+        let (release, reached) =
+            crate::store::test_barrier::install(fixture.store.root(), "replay-prepare");
+        let registry = fixture.registry.clone();
+        let source = fixture.source.clone();
+        let recipient = fixture.recipient.clone();
+        let outbound = fixture.recipient_tx.clone();
+        let private = fixture.private.clone();
+        let metrics = fixture.metrics.clone();
+        let (state_tx, mut deliveries) = mpsc::channel(32);
+        let subscribing = tokio::spawn(async move {
+            let session = SessionCtx {
+                workspaces: &registry,
+                autobind: None,
+                outbound: &outbound,
+                state_outbound: Some(&state_tx),
+                connection_live: None,
+                own_user_public_key: &source.own_user,
+                metrics: &metrics,
+                trust_policy: &source.policy,
+                disconnect: &source.disconnect,
+                v2: true,
+                private_tx: &private,
+                revocations: &source.revocations,
+            };
+            let mut frames = Vec::new();
+            let reply = handle_subscribe(
+                &recipient,
+                &session,
+                &mut Vec::new(),
+                &mut frames,
+                &mut Vec::new(),
+                7,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                reply,
+                Some(Envelope::Ready {
+                    workspace_id: 7,
+                    pending_deltas: 0
+                })
+            );
+            assert!(
+                frames.is_empty(),
+                "later delta leaked into the earlier replay cut"
+            );
+        });
+        reached.await.unwrap();
+        fixture.enqueue(kind).await;
+        drop(release);
+        subscribing.await.unwrap();
+        fixture.drained().await;
+        let delivery = deliveries
+            .try_recv()
+            .expect("subscriber missed the first commit after its replay cut");
+        assert_eq!(*delivery.envelope, fixture.envelope(kind));
+        if kind == 0 {
+            assert!(delivery.cleanup.as_ref().unwrap().exists());
+        }
+    }
+}

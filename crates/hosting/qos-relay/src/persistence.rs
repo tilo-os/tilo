@@ -133,6 +133,31 @@ impl Persistence {
         C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
         CF: Future<Output = Result<T, StoreError>> + Send + 'static,
     {
+        self.submit_prepared(
+            bytes,
+            async { Ok(()) },
+            move |state, ()| operation(state),
+            completion,
+        )
+    }
+
+    /// Preparation runs in owner order, after the preceding publication and
+    /// before blocking persistence. Its result must not retain routing guards.
+    pub(crate) fn submit_prepared<P, PF, T, F, C, CF>(
+        &self,
+        bytes: usize,
+        preparation: PF,
+        operation: F,
+        completion: C,
+    ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError>
+    where
+        P: Send + 'static,
+        PF: Future<Output = Result<P, StoreError>> + Send + 'static,
+        T: Send + 'static,
+        F: FnOnce(&mut State, P) -> Result<T, StoreError> + Send + 'static,
+        C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
+        CF: Future<Output = Result<T, StoreError>> + Send + 'static,
+    {
         static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
         static BYTES: OnceLock<Arc<Semaphore>> = OnceLock::new();
         static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -154,36 +179,40 @@ impl Persistence {
             .try_send(Box::new(move |state| {
                 Box::pin(async move {
                     let (_slot, _bytes) = (slot, bytes);
-                    let result = match WORKERS
-                        .get_or_init(|| Arc::new(Semaphore::new(BLOCKING_WORKERS)))
-                        .clone()
-                        .acquire_owned()
-                        .await
-                    {
-                        Ok(permit) => tokio::task::spawn_blocking(move || {
-                            let _permit = permit;
-                            let start = std::time::Instant::now();
-                            let result = operation(
-                                &mut state
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-                            );
-                            if diagnostics() {
-                                tracing::info!(
-                                    phase = "state_persist",
-                                    charged_bytes = byte_count,
-                                    queue_us =
-                                        u64::try_from(start.duration_since(queued).as_micros())
-                                            .unwrap_or(u64::MAX),
-                                    persist_us = u64::try_from(start.elapsed().as_micros())
-                                        .unwrap_or(u64::MAX)
+                    let result = match preparation.await {
+                        Err(error) => Err(error),
+                        Ok(prepared) => match WORKERS
+                            .get_or_init(|| Arc::new(Semaphore::new(BLOCKING_WORKERS)))
+                            .clone()
+                            .acquire_owned()
+                            .await
+                        {
+                            Ok(permit) => tokio::task::spawn_blocking(move || {
+                                let _permit = permit;
+                                let start = std::time::Instant::now();
+                                let result = operation(
+                                    &mut state
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                                    prepared,
                                 );
-                            }
-                            result
-                        })
-                        .await
-                        .unwrap_or_else(|e| Err(error(e.to_string()))),
-                        Err(e) => Err(error(e.to_string())),
+                                if diagnostics() {
+                                    tracing::info!(
+                                        phase = "state_persist",
+                                        charged_bytes = byte_count,
+                                        queue_us =
+                                            u64::try_from(start.duration_since(queued).as_micros())
+                                                .unwrap_or(u64::MAX),
+                                        persist_us = u64::try_from(start.elapsed().as_micros())
+                                            .unwrap_or(u64::MAX)
+                                    );
+                                }
+                                result
+                            })
+                            .await
+                            .unwrap_or_else(|e| Err(error(e.to_string()))),
+                            Err(e) => Err(error(e.to_string())),
+                        },
                     };
                     // The owner serializes this asynchronous authorization/publication
                     // step as well as the blocking transaction, even if tx is closed.

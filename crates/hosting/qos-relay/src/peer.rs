@@ -260,13 +260,7 @@ where
                                 result = &mut operation => break result?,
                                 frame = reader.read_next(), if backlog.len() < 32 => {
                                     let Some(frame) = frame? else { return Ok(()); };
-                                    let can_route = match &frame {
-                                        EnvelopeV2::Directed(action) => {
-                                            let id = crate::room_workspace_id(&action.room.to_string()).ok();
-                                            id != blocked_room && !backlog.iter().any(|(queued, _)| control_room(queued).is_some_and(|queued| Some(queued) == id))
-                                        }
-                                        _ => false,
-                                    };
+                                    let can_route = private_may_overtake(&frame, blocked_room, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         if let Some(reply) = handle_private(frame, &peer, &session).await? {
                                             private_tx.try_send(PrivateOutbound::Reply(reply)).map_err(|_| PeerError::Protocol("private reply backpressure".into()))?;
@@ -296,13 +290,7 @@ where
                                 }
                                 frame = reader.read_next(), if backlog.len() < 32 => {
                                     let Some(frame) = frame? else { return Ok(()); };
-                                    let can_route = match &frame {
-                                        EnvelopeV2::Directed(action) => {
-                                            let id = crate::room_workspace_id(&action.room.to_string()).ok();
-                                            !backlog.iter().any(|(queued, _)| control_room(queued).is_some_and(|queued| Some(queued) == id))
-                                        }
-                                        _ => false,
-                                    };
+                                    let can_route = private_may_overtake(&frame, None, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         if let Some(reply) = handle_private(frame, &peer, &session).await? {
                                             private_tx.try_send(PrivateOutbound::Reply(reply)).map_err(|_| PeerError::Protocol("private reply backpressure".into()))?;
@@ -451,9 +439,29 @@ fn control_room(frame: &EnvelopeV2) -> Option<u64> {
         EnvelopeV2::State(
             Envelope::Subscribe { workspace_id } | Envelope::Unsubscribe { workspace_id },
         ) => Some(*workspace_id),
+        EnvelopeV2::EnableActions { room }
+        | EnvelopeV2::EnableBrokerClient { room }
+        | EnvelopeV2::RegisterBroker { room, .. } => {
+            crate::room_workspace_id(&room.to_string()).ok()
+        }
         _ => None,
     }
 }
+
+fn private_may_overtake<'a>(
+    frame: &EnvelopeV2,
+    active_control: Option<u64>,
+    mut queued: impl Iterator<Item = &'a EnvelopeV2>,
+) -> bool {
+    let EnvelopeV2::Directed(action) = frame else {
+        return false;
+    };
+    let Ok(room) = crate::room_workspace_id(&action.room.to_string()) else {
+        return false;
+    };
+    active_control != Some(room) && queued.all(|frame| control_room(frame) != Some(room))
+}
+
 fn inbound_bytes(frame: &EnvelopeV2) -> usize {
     match frame {
         EnvelopeV2::State(Envelope::Delta { delta, .. }) => delta.len().saturating_add(256),
@@ -821,6 +829,8 @@ async fn handle_subscribe(
     let rx = owner.submit(
         1,
         move |state| {
+            #[cfg(test)]
+            crate::store::test_barrier::pause(state.store.root(), "replay-prepare");
             let mut replay = Vec::new();
             let mut cleanup = Vec::new();
             let (retained_count, retained) =
@@ -1127,6 +1137,8 @@ struct StateCommit {
     envelope: Arc<Envelope>,
     pending: HashMap<[u8; 32], std::path::PathBuf>,
     persisted_bytes: u64,
+    sessions: Vec<([u8; 32], mpsc::Sender<Envelope>)>,
+    logical_offline_bytes: u64,
     publish: bool,
 }
 
@@ -1183,52 +1195,60 @@ async fn enqueue_state_inner(
             "state source authorization changed".into(),
         ));
     }
-    let mut recipients = runtime
-        .membership
-        .devices
-        .iter()
-        .copied()
-        .filter(|key| key != &author)
-        .collect::<std::collections::HashSet<_>>();
-    if role == crate::auth::PeerRole::Device {
-        recipients.extend(
-            runtime
-                .known_peer_relays
-                .iter()
-                .copied()
-                .filter(|key| key != &author),
-        );
-    }
-    // Include admitted cross-user live members; explicit device membership is
-    // not the only signed-room authority supported by subscriptions.
-    let sessions = runtime
-        .subscribers
-        .iter()
-        .filter(|(key, sub)| {
-            **key != author
-                && !(role == crate::auth::PeerRole::PeerRelay
-                    && sub.role == crate::auth::PeerRole::PeerRelay)
-        })
-        .map(|(key, sub)| (*key, sub.tx.clone()))
-        .collect::<Vec<_>>();
-    recipients.extend(sessions.iter().map(|(key, _)| *key));
-    if role == crate::auth::PeerRole::PeerRelay {
-        recipients.retain(|key| !runtime.known_peer_relays.contains(key));
-    }
-    let logical_offline_bytes = (delta.len() as u64).saturating_mul(
-        recipients
-            .iter()
-            .filter(|key| !runtime.subscribers.contains_key(*key))
-            .count() as u64,
-    );
     drop(runtime);
     let owner = crate::persistence::handle(workspace).await;
     let workspace = workspace.clone();
     let failure = source.clone();
     let persist_metrics = metrics.clone();
-    owner.submit(
+    let prepare_workspace = workspace.clone();
+    let delta_len = delta.len();
+    owner.submit_prepared(
         charge,
-        move |state| {
+        async move {
+            let runtime = crate::workspace_io::fresh_membership(&prepare_workspace).await?;
+            let mut recipients = runtime
+                .membership
+                .devices
+                .iter()
+                .copied()
+                .filter(|key| key != &author)
+                .collect::<std::collections::HashSet<_>>();
+            if role == crate::auth::PeerRole::Device {
+                recipients.extend(
+                    runtime
+                        .known_peer_relays
+                        .iter()
+                        .copied()
+                        .filter(|key| key != &author),
+                );
+            }
+            // Include admitted cross-user live members; explicit device membership is
+            // not the only signed-room authority supported by subscriptions.
+            let sessions = runtime
+                .subscribers
+                .iter()
+                .filter(|(key, sub)| {
+                    **key != author
+                        && !(role == crate::auth::PeerRole::PeerRelay
+                            && sub.role == crate::auth::PeerRole::PeerRelay)
+                })
+                .map(|(key, sub)| (*key, sub.tx.clone()))
+                .collect::<Vec<_>>();
+            recipients.extend(sessions.iter().map(|(key, _)| *key));
+            if role == crate::auth::PeerRole::PeerRelay {
+                recipients.retain(|key| !runtime.known_peer_relays.contains(key));
+            }
+            let logical_offline_bytes = (delta_len as u64).saturating_mul(
+                recipients
+                    .iter()
+                    .filter(|key| !runtime.subscribers.contains_key(*key))
+                    .count() as u64,
+            );
+
+            drop(runtime);
+            Ok((recipients, sessions, logical_offline_bytes))
+        },
+        move |state, (recipients, sessions, logical_offline_bytes)| {
             if sync {
                 let Envelope::Delta { delta, .. } = &envelope else {
                     return Err(crate::persistence::error("expected admitted delta"));
@@ -1238,6 +1258,8 @@ async fn enqueue_state_inner(
                         envelope: Arc::new(envelope),
                         pending: HashMap::new(),
                         persisted_bytes: 0,
+                        sessions,
+                        logical_offline_bytes,
                         publish: false,
                     });
                 }
@@ -1283,6 +1305,8 @@ async fn enqueue_state_inner(
                 envelope: Arc::new(envelope),
                 pending,
                 persisted_bytes,
+                sessions,
+                logical_offline_bytes,
                 publish: true,
             })
         },
@@ -1298,7 +1322,7 @@ async fn enqueue_state_inner(
                     tracing::info!(
                         phase = "state_commit",
                         persisted_envelope_bytes = commit.persisted_bytes,
-                        logical_offline_bytes
+                        logical_offline_bytes = commit.logical_offline_bytes
                     );
                 }
                 if source
@@ -1313,7 +1337,7 @@ async fn enqueue_state_inner(
                 };
                 let budget = crate::persistence::delivery_budget(live_bytes);
                 let mut delivered = 0u64;
-                for (recipient, original) in sessions {
+                for (recipient, original) in std::mem::take(&mut commit.sessions) {
                     let Some(sub) = runtime.subscribers.get(&recipient) else {
                         continue;
                     };
@@ -2400,6 +2424,243 @@ mod private_transport_tests {
             progress.is_ok(),
             "held state persistence blocked private request/response (routing-lock check: {check_lock})"
         );
+    }
+
+    #[tokio::test]
+    async fn capability_controls_fence_dependent_private_during_held_operation() {
+        for control in 0..3 {
+            capability_control_lookahead(false, control).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn capability_controls_fence_dependent_private_during_reply_wait() {
+        for control in 0..3 {
+            capability_control_lookahead(true, control).await;
+        }
+    }
+
+    async fn capability_control_lookahead(reply_wait: bool, control: u8) {
+        let (root, user) = UserIdentity::generate("owner", 1);
+        let (a, _) = certified_device(&root, user.public_key, "a");
+        let (b, _) = certified_device(&root, user.public_key, "b");
+        let rooms = [
+            uuid::Uuid::from_u128(71),
+            uuid::Uuid::from_u128(72),
+            uuid::Uuid::from_u128(73),
+        ];
+        let ids = rooms.map(|room| crate::room_workspace_id(&room.to_string()).unwrap());
+        let tmp = tempfile::tempdir().unwrap();
+        let mut map = HashMap::new();
+        for id in ids {
+            let mut runtime = crate::workspace::WorkspaceRuntime::open(
+                tmp.path(),
+                id,
+                true,
+                crate::workspace::Membership::default(),
+            )
+            .unwrap();
+            for peer in [&a, &b] {
+                runtime.admit_device(peer.device_public_key).unwrap();
+            }
+            map.insert(id, Arc::new(AsyncMutex::new(runtime)));
+        }
+        let held_workspace = map.get(&ids[2]).unwrap().clone();
+        let store = held_workspace.lock().await.store.clone();
+        let registry = Arc::new(AsyncMutex::new(map));
+        let trust = Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        ));
+        let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+        let host = uuid::Uuid::from_u128(74);
+        let mut tasks = Vec::new();
+        let mut wires = Vec::new();
+        for (index, peer) in [&a, &b].into_iter().enumerate() {
+            let (client, server) = tokio::io::duplex(65536);
+            let (read, write) = tokio::io::split(server);
+            tasks.push(tokio::spawn(run_peer_stream(
+                peer.clone(),
+                read,
+                write,
+                PeerContext {
+                    workspaces: registry.clone(),
+                    autobind: None,
+                    revocations: revocations.clone(),
+                    trust_policy: trust.clone(),
+                    own_user_public_key: user.public_key,
+                    metrics: Arc::new(crate::metrics::Metrics::default()),
+                },
+                true,
+                std::future::pending::<()>(),
+            )));
+            let (read, mut write) = tokio::io::split(client);
+            let mut reader = SessionReader::new(read, true);
+            for (position, room) in rooms.iter().enumerate() {
+                write
+                    .write_all(
+                        &crate::transport_v2::encode_state(
+                            &Envelope::Subscribe {
+                                workspace_id: ids[position],
+                            },
+                            true,
+                        )
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(matches!(
+                    reader.read_next().await.unwrap(),
+                    Some(EnvelopeV2::State(Envelope::Ready { .. }))
+                ));
+                if position < 2 && !(index == 0 && position == 0 && control == 0) {
+                    write
+                        .write_all(
+                            &crate::transport_v2::encode(&EnvelopeV2::EnableActions {
+                                room: *room,
+                            })
+                            .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    assert!(matches!(
+                        reader.read_next().await.unwrap(),
+                        Some(EnvelopeV2::ActionsReady { .. })
+                    ));
+                }
+            }
+            if index == 1 && control > 0 {
+                write
+                    .write_all(
+                        &crate::transport_v2::encode(&EnvelopeV2::RegisterBroker {
+                            room: rooms[0],
+                            host,
+                        })
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(matches!(
+                    reader.read_next().await.unwrap(),
+                    Some(EnvelopeV2::ActionsReady { .. })
+                ));
+            }
+            wires.push((reader, write));
+        }
+        let (mut ar, mut aw) = wires.remove(0);
+        let (mut br, _bw) = wires.remove(0);
+        let (release, reached) = crate::store::test_barrier::install(
+            store.root(),
+            if reply_wait {
+                "replay-cleanup"
+            } else {
+                "replay-prepare"
+            },
+        );
+        if reply_wait {
+            let pending = Envelope::Delta {
+                workspace_id: ids[2],
+                author_device_public_key: b.device_public_key,
+                authored_at_ns: 1,
+                delta: vec![255; 8],
+                signature: [0; 64],
+            };
+            store
+                .enqueue_pending(
+                    &a.device_public_key,
+                    1,
+                    &crate::transport::encode(&pending).unwrap(),
+                )
+                .unwrap();
+        }
+        aw.write_all(
+            &crate::transport_v2::encode_state(
+                &Envelope::Subscribe {
+                    workspace_id: ids[2],
+                },
+                true,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        if reply_wait {
+            assert!(matches!(
+                ar.read_next().await.unwrap(),
+                Some(EnvelopeV2::State(Envelope::Delta { .. }))
+            ));
+        }
+        reached.await.unwrap();
+        if reply_wait {
+            for _ in 0..12 {
+                aw.write_all(&crate::transport_v2::encode_state(&Envelope::Ping, true).unwrap())
+                    .await
+                    .unwrap();
+            }
+        }
+        let capability = match control {
+            0 => EnvelopeV2::EnableActions { room: rooms[0] },
+            1 => EnvelopeV2::EnableBrokerClient { room: rooms[0] },
+            _ => EnvelopeV2::RegisterBroker {
+                room: rooms[0],
+                host,
+            },
+        };
+        let dependent = DirectedAction {
+            room: rooms[0],
+            request_id: uuid::Uuid::from_u128(75),
+            source: a.device_public_key,
+            target: b.device_public_key,
+            message: ActionMessage::CatalogueRefresh,
+        };
+        let unrelated = DirectedAction {
+            room: rooms[1],
+            request_id: uuid::Uuid::from_u128(76),
+            ..dependent.clone()
+        };
+        for frame in [
+            capability,
+            EnvelopeV2::Directed(dependent.clone()),
+            EnvelopeV2::Directed(unrelated.clone()),
+        ] {
+            aw.write_all(&crate::transport_v2::encode(&frame).unwrap())
+                .await
+                .unwrap();
+        }
+        let progress =
+            tokio::time::timeout(std::time::Duration::from_secs(2), br.read_next()).await;
+        // Receiving this later unrelated frame proves the reader classified the
+        // earlier capability and dependent frame while the real owner was held.
+        let premature =
+            tokio::time::timeout(std::time::Duration::from_millis(50), ar.read_next()).await;
+        drop(release);
+        let owner = crate::persistence::handle(&held_workspace).await;
+        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            matches!(progress, Ok(Ok(Some(EnvelopeV2::Delivered { action, .. }))) if action == unrelated),
+            "unrelated-room private traffic stalled"
+        );
+        assert!(
+            premature.is_err(),
+            "dependent private frame overtook capability {control} (reply wait={reply_wait}): {premature:?}"
+        );
+        let delivered = tokio::time::timeout(std::time::Duration::from_secs(2), br.read_next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if control > 0 {
+            assert!(matches!(&delivered, EnvelopeV2::CertifiedDelivered { .. }));
+        }
+        match delivered {
+            EnvelopeV2::Delivered { action, .. }
+            | EnvelopeV2::CertifiedDelivered { action, .. } => assert_eq!(action, dependent),
+            other => panic!("dependent request did not observe capability transition: {other:?}"),
+        }
+        for task in tasks {
+            task.abort();
+        }
     }
 
     #[tokio::test]
