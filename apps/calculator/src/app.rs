@@ -93,6 +93,14 @@ pub struct CalculatorApp {
 
     seeded: bool,
     model_dirty: bool,
+    /// Something visible changed since the last paint. Cleared by
+    /// `mark_drawn`; without it the default (dirty every frame) repainted the
+    /// whole desktop on every pointer move while the Calculator was active.
+    dirty: bool,
+    /// Document heads and pending-operation count at the last model reload,
+    /// so `sync` reloads history, functions and surfaces only when the
+    /// document actually moved rather than on every frame.
+    synced: Option<(Vec<automerge::ChangeHash>, usize)>,
     /// When `Some`, an edit landed at this time and has not yet been sealed into
     /// an undo checkpoint. Drives [`Widget::needs_commit`] so a burst of typing
     /// coalesces into a single Ctrl+Z step once editing pauses.
@@ -170,6 +178,8 @@ impl CalculatorApp {
             last_click_pos: Point::ZERO,
             seeded: false,
             model_dirty: false,
+            dirty: true,
+            synced: None,
             last_edit_time: None,
             node: None,
             actions: ui::ActionHost::new(),
@@ -1118,6 +1128,7 @@ impl Widget for CalculatorApp {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.dirty |= self.host_focused != focused;
         self.host_focused = focused;
     }
 
@@ -1184,7 +1195,22 @@ impl Widget for CalculatorApp {
         // store→load, so this reloads *only* on a genuine external change.
         // `after_equals` is ephemeral (never persisted), so carry it across the
         // comparison to avoid a spurious reload after an `=`.
-        let _ = crate::doc::load_into(state, &mut self.model);
+        //
+        // Reload only when the document moved: committed heads differ, or a
+        // transaction is or was open. Reloading every frame re-read every
+        // history row, function and surface on each pointer move.
+        use automerge::transaction::Transactable as _;
+        let heads = state.base_heads();
+        let pending = state.pending_ops();
+        let unchanged = self
+            .synced
+            .as_ref()
+            .is_some_and(|(synced_heads, synced_pending)| *synced_heads == heads && *synced_pending == 0 && pending == 0);
+        if !unchanged {
+            let _ = crate::doc::load_into(state, &mut self.model);
+            self.synced = Some((heads, pending));
+            self.dirty = true;
+        }
     }
 
     fn build_layout(
@@ -1213,12 +1239,14 @@ impl Widget for CalculatorApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
-        self.area = Rect::new(
+        let area = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        self.dirty |= area != self.area;
+        self.area = area;
         self.relayout();
     }
 
@@ -1299,6 +1327,7 @@ impl Widget for CalculatorApp {
     ) {
         self.relayout();
         self.layout_active();
+        let hover_before = (self.calc.hovered_key, self.calc.hovered_mem, self.g2.hovered_row, self.g3.hovered_row);
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1323,7 +1352,10 @@ impl Widget for CalculatorApp {
                     self.on_drag(d);
                     self.drag_last = p;
                 }
-                *handled = true;
+                // Motion that changed no hover state and drags nothing is
+                // inert: leave it unconsumed so the host can skip the frame.
+                let hover_now = (self.calc.hovered_key, self.calc.hovered_mem, self.g2.hovered_row, self.g3.hovered_row);
+                *handled = self.dragging || self.field_dragging || hover_now != hover_before;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1362,6 +1394,10 @@ impl Widget for CalculatorApp {
             _ => {}
         }
 
+        // Everything but inert pointer motion may have changed what is drawn.
+        if !matches!(event, WindowEvent::CursorMoved { .. }) || *handled || self.model_dirty {
+            self.dirty = true;
+        }
         if self.model_dirty {
             // `model_dirty` is presentation-only. Durable changes have already
             // travelled through `perform_action`; never mirror this window's
@@ -1376,6 +1412,16 @@ impl Widget for CalculatorApp {
 
     fn name(&self) -> &'static str {
         "CalculatorApp"
+    }
+
+    fn needs_redraw(&self) -> bool {
+        // `model_dirty` covers mutations that arrive outside `handle_event`
+        // (resource operations, assistive actions) before the next event.
+        self.dirty || self.model_dirty || self.needs_animation_frame()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
     }
 
     /// The calculator is custom-painted, so publish the complete retained
@@ -1566,6 +1612,8 @@ impl Widget for CalculatorApp {
         _path: &ObjId,
     ) -> bool {
         use ui::a11y::Action;
+        // Assistive actions bypass `handle_event`; they may change anything.
+        self.dirty = true;
         match target {
             "calculator.mode:0" if matches!(action, Action::Activate) => {
                 self.set_mode_in_document(Mode::Calc, state);
@@ -1721,6 +1769,12 @@ impl Widget for CalculatorApp {
 
     fn get_rect(&self) -> Rect {
         self.area
+    }
+    /// One self-drawn taffy leaf filling its tile; controls are positioned
+    /// inside `self.area` by `relayout`, so only the first layout is a size
+    /// change.
+    fn is_layout_dirty(&self) -> bool {
+        self.area == Rect::ZERO
     }
 }
 

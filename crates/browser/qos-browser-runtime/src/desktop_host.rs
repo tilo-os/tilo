@@ -3313,6 +3313,60 @@ mod tests {
     }
 
     #[test]
+    fn writer_typing_re_measures_no_desktop_leaf() {
+        // The Writer fills its tile and draws itself, the tab bar has a fixed
+        // height and every other host is inactive: a typed key changes no
+        // size anywhere, so taffy has nothing to re-measure.
+        let (mut frame, _handle) = settled_writer_frame();
+        frame.type_text("b");
+        let stats = frame.last_relayout();
+        assert!(!stats.rebuilt, "{stats:?}");
+        assert_eq!(stats.marked_leaves, 0, "a typed key re-measures no leaf: {stats:?}");
+        assert!(!stats.measured, "a typed key needs no taffy re-solve: {stats:?}");
+    }
+
+    #[test]
+    fn pointer_motion_over_each_app_body_is_inert_once_settled() {
+        // Stage 3 follow-up: a pointer resting over any app must not keep
+        // the desktop repainting. The first move may change hover; a second
+        // move inside the same spot must be skipped, and when it is not the
+        // dirty paths name the widget that still marks itself.
+        let (mut frame, handle) = settled_writer_frame();
+        frame.set_pointer_redraw_diagnostics(true);
+        let device_id = winit::event::DeviceId::dummy();
+        let move_to = |x: f64, y: f64| winit::event::WindowEvent::CursorMoved {
+            device_id,
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        };
+        for (label, tab) in [
+            ("word_processor", (5u64 << 48) | 10),
+            ("chat", (5u64 << 48) | 11),
+            ("notes", (5u64 << 48) | 12),
+            ("calculator", (5u64 << 48) | 13),
+        ] {
+            *handle.navigation_command.borrow_mut() = Some(crate::desktop_navigation::Command::Select {
+                generation: handle.generation.clone(),
+                route: crate::desktop_navigation::Route {workspace:"1".into(),strip:"2".into(),group:"3".into(),tab:tab.to_string()},
+            });
+            frame.relayout();
+            assert!(handle.navigation_result.borrow_mut().take().unwrap().is_ok(), "{label}: selection accepted");
+            // Selection animations (group framing, the Notes status bubble)
+            // are finite; let them run out before judging idleness.
+            std::thread::sleep(ui::status_bubble::DEFAULT_LINGER + ui::clock::Duration::from_millis(10));
+            for _ in 0..4 { frame.relayout(); }
+            // Well inside the tile body, below the tab bar.
+            frame.send_host_event(&move_to(640.0, 420.0));
+            frame.take_pointer_redraw_sources();
+            frame.send_host_event(&move_to(643.0, 422.0));
+            let sources = frame.take_pointer_redraw_sources();
+            assert!(
+                frame.last_send_skipped_relayout(),
+                "{label}: settled pointer motion over the app body still produced a frame; dirty paths: {sources:?}"
+            );
+        }
+    }
+
+    #[test]
     fn desktop_resize_rebuilds_and_matches_a_fresh_composition() {
         let (mut frame, _handle) = settled_writer_frame();
         let ids = frame.layout_node_ids();
