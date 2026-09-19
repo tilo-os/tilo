@@ -19,10 +19,10 @@ use ui::ActionPalette;
 use ui::icons::Icon;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
-use ui::tilo_actions::{ActionSpec, EncodedAction, ExecutionLocus, Resource};
 use ui::search::{SearchProvider, SearchResult, fuzzy_score};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_actions::{ActionSpec, EncodedAction, ExecutionLocus, Resource};
 
 const WIDTH: u32 = 560;
 const MARGIN: f64 = 20.0;
