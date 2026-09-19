@@ -148,6 +148,38 @@ tests on the latest main revision passed. Rust skipping applies narrowly to
 `tools/ci/affected_packages.py`; security and selection remain mandatory, mixed changes
 retain Rust coverage, and explicit full checks override the skip.
 
+## Everyday workflow and remaining activation gates
+
+Submit a coherent change on a task branch and update its PR. Forgejo and the
+existing sandbox broker own runner admission and capacity accounting. Agents do
+not reserve build slots by chatting, negotiate turns, poll other sessions for
+capacity, or dispatch duplicate builds to get ahead of the queue. A waiting job
+is a scheduler state; if it appears stuck, investigate that exact run's jobs and
+runner events using the read-only commands below. Coordinate changes to shared
+infrastructure when needed, without making normal development depend on that
+coordination.
+
+Every main commit retains check/lint results. The ordinary affected-package
+workflow checks the affected reverse-dependency closure on native x86-64 and
+tests changed packages plus contract suites; explicit full requests and nightly
+coverage retain both native architectures. An ordinary app PR runs a packaging
+plan, rather than publishing a collection or building the whole OS. Use the
+current head's applicable results and independent review before integration;
+automatic product merging is not enabled by this runbook.
+
+Continuous packaging remains the next rollout, with these separate gates:
+
+| Product or capability | Required behavior before activation |
+| --- | --- |
+| App packaging | Keep the active build and only the latest pending automatic request; recover durable dispatch state without duplicate publication. Qualify an actual native baseline, one-app update, no-op and toolkit/runtime invalidation, including signed artifact verification and compatible reuse. Continuous main packaging remains paused meanwhile. |
+| Toolkit changes | Rebuild every genuinely affected app/runtime cohort while development is active. Coalesce obsolete pending cohorts; do not claim an app is reusable just because its own source did not change. |
+| OS releases | Continue explicit tag/manual promotion of pinned inputs. Scheduled integration builds must not publish OS versions, and completed app/desktop packaging must not automatically publish an OS release. Preserve manual board bring-up and running publication jobs. |
+| Target expansion | Qualify Linux/qOS apps, desktop/distribution packages, Linux/Windows setup, and OS architectures/devices separately. Evaluate Windows app coverage against the merged toolkit's actual support. Keep macOS workflow definitions disabled and retained until explicitly re-enabled and natively qualified. |
+| Production readiness | Qualify restart/recovery, bounded credentials, independent review and trusted CI evidence, signed immutable artifacts and guarded channel promotion, then native install/update/rollback and VM/device acceptance per supported target. Alpha CI success alone does not qualify production hardware. |
+
+These gates extend the emergency improvements; queue relief and a successful
+fixture do not complete the packaging or production-readiness roadmap.
+
 ## Current validation limits and next work
 
 The earlier deployed product checkpoint `0975d89a87367b8625e8bb3b6d898cf997a684af`
