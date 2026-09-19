@@ -1,4 +1,4 @@
-include!("../../../ui/tests/support/history_adapter_conformance.rs");
+include!("../../../crates/sdk/ui-core/tests/support/history_adapter_conformance.rs");
 fn test_root() -> Box<dyn ui::widget::Widget> {
     crate::app_root()
 }

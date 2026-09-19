@@ -56,7 +56,11 @@ const BASELINE_HEADER: &[&str] = &[
 /// The production trees the ratchet covers, relative to the repository root.
 /// `apps/*/src` is expanded at run time so a new app is covered the day it
 /// lands.
-const ROOTS: &[&str] = &["ui/src/widget", "ui/src/chrome", "shell/src"];
+const ROOTS: &[&str] = &[
+    "crates/sdk/ui-core/src/widget",
+    "crates/sdk/ui-core/src/chrome",
+    "crates/session/shell/src",
+];
 
 /// Test fixtures are allowed to state pixel values: integration test
 /// directories, in-tree test modules split into their own file, and
@@ -172,10 +176,15 @@ fn ratchet_message(pattern: &str) -> String {
 }
 
 fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("ui crate lives in the repository")
-        .to_path_buf()
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .expect("UI crate lives under crates/sdk in the repository");
+    assert!(
+        root.join("Cargo.toml").is_file() && root.join("apps").is_dir(),
+        "spacing audit repository anchor must contain Cargo.toml and apps"
+    );
+    root.to_path_buf()
 }
 
 /// The scanner must be able to see what it polices. Each rule is exercised

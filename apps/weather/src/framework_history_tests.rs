@@ -1,4 +1,4 @@
-include!("../../../ui/tests/support/history_adapter_conformance.rs");
+include!("../../../crates/sdk/ui-core/tests/support/history_adapter_conformance.rs");
 use crate::{doc::WeatherDoc, model::SavedLocation};
 use ui::widget::Widget;
 fn test_root() -> Box<dyn Widget> {
