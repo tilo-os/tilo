@@ -604,7 +604,10 @@ fn new_window(
         }
         if attrs.platform_specific.titlebar_buttons_hidden {
             for titlebar_button in &[
-                #[allow(deprecated)]
+                #[allow(
+                    deprecated,
+                    reason = "the legacy full-screen titlebar button remains required on supported macOS releases"
+                )]
                 NSWindowFullScreenButton,
                 NSWindowButton::NSWindowMiniaturizeButton,
                 NSWindowButton::NSWindowCloseButton,
@@ -642,7 +645,10 @@ fn new_window(
         // The default value of `setWantsBestResolutionOpenGLSurface:` was `false` until
         // macos 10.14 and `true` after 10.15, we should set it to `YES` or `NO` to avoid
         // always the default system value in favour of the user's code
-        #[allow(deprecated)]
+        #[allow(
+            deprecated,
+            reason = "the OpenGL surface scale compatibility call remains required on older macOS releases"
+        )]
         view.setWantsBestResolutionOpenGLSurface(!attrs.platform_specific.disallow_hidpi);
 
         // On Mojave, views automatically become layer-backed shortly after being added to
@@ -1614,7 +1620,10 @@ impl WindowDelegate {
         let is_visible = self.window().isVisible();
 
         if !is_minimized && is_visible {
-            #[allow(deprecated)]
+            #[allow(
+                deprecated,
+                reason = "winit retains this AppKit activation fallback for supported older macOS releases"
+            )]
             NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
             self.window().makeKeyAndOrderFront(None);
         }
