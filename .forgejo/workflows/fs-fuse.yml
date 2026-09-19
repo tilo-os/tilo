@@ -76,6 +76,7 @@ on:
       - "os/containers/tilo-relay/**"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/workflows/fs-fuse.yml"
+      - "tools/ci/workflow_applicability.py"
   schedule:
     - cron: "30 4 * * *"
   workflow_dispatch:
@@ -96,7 +97,36 @@ env:
   TILO_FS_FUSE_REQUIRED: "1"
 
 jobs:
+  applicability:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      applicable: ${{ steps.compare.outputs.applicable }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Require an exact relevant PR diff before FUSE work
+        id: compare
+        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/fs-fuse.yml
+
   real-fuse:
+    needs: applicability
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        true
+      }}
     runs-on: runner
     timeout-minutes: 60
     container:
@@ -191,6 +221,14 @@ jobs:
   # ENOSPC at test 213/213. Give this non-FUSE suite a fresh container instead
   # of deleting an incomplete subset of Cargo artifacts in the live mount job.
   files-ux:
+    needs: applicability
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        true
+      }}
     runs-on: runner
     timeout-minutes: 30
     env:
