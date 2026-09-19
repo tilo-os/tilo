@@ -148,6 +148,7 @@ enum Phase {
     Historical,
     SortExtrasInput,
     SortExtras,
+    ValidateExtras,
     StageRoom,
     StageApps,
     StageExtras,
@@ -176,6 +177,7 @@ pub(crate) struct Selection {
     sorted_extras: Option<PathBuf>,
     extras_ordinal: u64,
     last_tail: Option<Meta>,
+    tail_readiness: Option<(String, OrderedTailReadiness)>,
     room_list: File,
     extras: File,
     retire: File,
@@ -229,6 +231,7 @@ impl Selection {
             sorted_extras: None,
             extras_ordinal: 0,
             last_tail: None,
+            tail_readiness: None,
             room_list: File::create(scratch.join("room.manifest"))?,
             extras: File::create(scratch.join("extras.manifest"))?,
             retire: File::create(scratch.join("retire.manifest"))?,
@@ -329,12 +332,8 @@ impl Selection {
         let mut extra = meta.clone();
         extra.key = vec![
             "1".into(),
-            format!(
-                "{}-{}",
-                hex::encode(value.source),
-                hex::encode(value.channel)
-            )
-            .into(),
+            hex::encode(value.channel).into(),
+            hex::encode(value.source).into(),
             format!("{seq:016x}").into(),
         ];
         write_meta(&mut self.extras, &extra)
@@ -613,10 +612,9 @@ impl Selection {
                         self.covered(&meta)?;
                         return Ok(Step::More);
                     }
-                    // Individually ready tails still need exact author sequence
-                    // ordering; the bounded extras sorter establishes it below.
-                    if snapshot.tail_ready_after_snapshot(value.source, value.channel, &value.body)
-                    {
+                    // Floor-safe tails are validated cumulatively only after the
+                    // bounded sorter establishes exact route/author sequence order.
+                    if decision.floor == FloorSafety::Safe {
                         self.tail(&meta, &value, seq)?;
                         return Ok(Step::More);
                     }
@@ -711,7 +709,17 @@ impl Selection {
                     .peak_open_files
                     .max(sorter.stats.peak_open_files + 5);
                 if let Step::Done(path) = result {
+                    self.input = Some(File::open(&path)?);
                     self.sorted_extras = Some(path);
+                    self.last_tail = None;
+                    self.tail_readiness = None;
+                    self.phase = Phase::ValidateExtras;
+                }
+            }
+            Phase::ValidateExtras => {
+                let Some(meta) = read_meta(self.input.as_mut().unwrap())? else {
+                    self.last_tail = None;
+                    self.tail_readiness = None;
                     self.input = if self.fallback {
                         retained::current(&self.store.root.join(DIRECTORY))?
                             .map(|p| File::open(p.join("basis.manifest")))
@@ -720,6 +728,62 @@ impl Selection {
                         Some(File::open(self.scratch.join("room.manifest"))?)
                     };
                     self.phase = Phase::StageRoom;
+                    return Ok(Step::More);
+                };
+                if !meta.key.first().is_some_and(|value| value == "1") {
+                    return Ok(Step::More);
+                }
+                let value = self
+                    .read(&meta)?
+                    .ok_or_else(|| invalid("missing tail during readiness validation"))?;
+                if let Some(prior) = self.last_tail.clone()
+                    && prior.key == meta.key
+                {
+                    let before = self
+                        .read(&prior)?
+                        .ok_or_else(|| invalid("missing prior tail"))?;
+                    if before.body != value.body {
+                        return Err(invalid(
+                            "conflicting signed tail sequence prevents coherent shell selection",
+                        ));
+                    }
+                }
+                self.last_tail = Some(meta);
+                let (key, _) = value
+                    .route()
+                    .ok_or_else(|| invalid("invalid sorted tail route"))?;
+                if self
+                    .tail_readiness
+                    .as_ref()
+                    .is_none_or(|(route, _)| route != &key)
+                {
+                    let snapshot = self
+                        .candidate_snapshot(&key)?
+                        .ok_or_else(|| invalid("missing sorted tail snapshot"))?;
+                    self.tail_readiness = Some((key, snapshot.ordered_tail_readiness()));
+                }
+                let ready = self
+                    .tail_readiness
+                    .as_mut()
+                    .is_some_and(|(_, cursor)| {
+                        cursor.append(value.source, value.channel, &value.body)
+                    });
+                if !ready {
+                    if self.fallback || self.old.room.is_none() {
+                        return Err(invalid(
+                            "unresolved shell tail floor or dependencies prevent coherent selection",
+                        ));
+                    }
+                    self.basis = self.old.clone();
+                    self.fallback = true;
+                    self.blocked = false;
+                    self.extras.set_len(0)?;
+                    self.extras.rewind()?;
+                    self.retire.set_len(0)?;
+                    self.retire.rewind()?;
+                    self.last_tail = None;
+                    self.tail_readiness = None;
+                    self.restart(Phase::Check)?;
                 }
             }
             Phase::StageRoom => {
@@ -747,23 +811,6 @@ impl Selection {
             Phase::StageExtras => {
                 if let Some(meta) = read_meta(self.input.as_mut().unwrap())? {
                     let tail = meta.key.first().is_some_and(|v| v == "1");
-                    if tail {
-                        if let Some(prior) = self.last_tail.clone() {
-                            if prior.key == meta.key {
-                                let before = self
-                                    .read(&prior)?
-                                    .ok_or_else(|| invalid("missing prior tail"))?;
-                                let after =
-                                    self.read(&meta)?.ok_or_else(|| invalid("missing tail"))?;
-                                if before.body != after.body {
-                                    return Err(invalid(
-                                        "conflicting signed tail sequence prevents coherent shell selection",
-                                    ));
-                                }
-                            }
-                        }
-                        self.last_tail = Some(meta.clone());
-                    }
                     self.add(&meta, if tail { "tail" } else { "extra" })?
                 } else {
                     self.input = if self.fallback {

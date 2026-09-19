@@ -103,6 +103,15 @@ pub struct VerifiedSnapshot {
     receipt: DurableReceipt,
     input_hash: [u8; 32],
 }
+/// Replay-readiness proof for one ordered route tail. The immutable snapshot
+/// remains the sole floor and retirement authority; this cursor only advances
+/// a separate causal document after each fully verified increment is ready.
+pub struct OrderedTailReadiness {
+    authority: RetentionAuthority,
+    coverage: Coverage,
+    snapshot: Automerge,
+    cumulative: Automerge,
+}
 
 fn decode(body: &[u8]) -> Result<NeighbourMsg, ProofError> {
     let (msg, rest) = postcard::take_from_bytes(body).map_err(|_| ProofError::Unknown)?;
@@ -585,20 +594,16 @@ impl VerifiedSnapshot {
         channel: [u8; 32],
         body: &[u8],
     ) -> bool {
-        if self.classify_tail(source, channel, body).floor != FloorSafety::Safe {
-            return false;
+        self.ordered_tail_readiness()
+            .append(source, channel, body)
+    }
+    pub fn ordered_tail_readiness(&self) -> OrderedTailReadiness {
+        OrderedTailReadiness {
+            authority: self.authority.clone(),
+            coverage: self.receipt.coverage.clone(),
+            snapshot: self.doc.fork(),
+            cumulative: self.doc.fork(),
         }
-        let Ok((_, _, _, DocumentMutation::Incremental(bytes))) =
-            signed_document(source, channel, body, &self.authority.room)
-        else {
-            return false;
-        };
-        if !strict_chunks(&bytes) {
-            return false;
-        }
-        let mut combined = self.doc.save();
-        combined.extend_from_slice(&bytes);
-        Automerge::load(&combined).is_ok_and(|doc| doc.get_missing_deps(&[]).is_empty())
     }
     pub fn coverage(&self) -> &Coverage {
         &self.receipt.coverage
@@ -634,44 +639,93 @@ impl VerifiedSnapshot {
     /// basis. Safe means this floor cannot suppress an uncovered increment; it
     /// does not establish dependency ordering or authorize live admission.
     pub fn classify_tail(&self, source: [u8; 32], channel: [u8; 32], body: &[u8]) -> TailDecision {
-        let unknown = TailDecision {
-            coverage: CoverageDecision::Unknown,
-            floor: FloorSafety::Unknown,
-        };
-        let Ok((app, record, envelope, DocumentMutation::Incremental(bytes))) =
+        classify_tail(
+            &self.authority,
+            &self.receipt.coverage,
+            &self.doc,
+            source,
+            channel,
+            body,
+        )
+    }
+}
+
+impl OrderedTailReadiness {
+    /// Append one signed route increment only when it is floor-safe against the
+    /// original snapshot and dependency-complete against the accepted prefix.
+    pub fn append(&mut self, source: [u8; 32], channel: [u8; 32], body: &[u8]) -> bool {
+        let decision = classify_tail(
+            &self.authority,
+            &self.coverage,
+            &self.snapshot,
+            source,
+            channel,
+            body,
+        );
+        if decision.floor != FloorSafety::Safe {
+            return false;
+        }
+        let Ok((app, record, _, DocumentMutation::Incremental(bytes))) =
             signed_document(source, channel, body, &self.authority.room)
         else {
-            return unknown;
+            return false;
         };
-        if app != self.coverage().app || record != self.coverage().record || !strict_chunks(&bytes)
-        {
-            return unknown;
+        if app != self.coverage.app || record != self.coverage.record || !strict_chunks(&bytes) {
+            return false;
         }
-        let floor = self
-            .coverage()
-            .watermarks
-            .get(&hex::encode(source))
-            .copied()
-            .unwrap_or(0);
-        let mut combined = self.doc.save();
-        combined.extend_from_slice(&bytes);
-        let contained = Automerge::load(&combined).is_ok_and(|doc| {
-            doc.get_missing_deps(&[]).is_empty() && doc.get_heads() == self.doc.get_heads()
-        });
-        TailDecision {
-            coverage: if source != self.authority.governor.device_public_key {
-                CoverageDecision::Unknown
-            } else if contained && floor >= envelope.seq {
-                CoverageDecision::Covered
-            } else {
-                CoverageDecision::NotCovered
-            },
-            floor: if contained || envelope.seq > floor {
-                FloorSafety::Safe
-            } else {
-                FloorSafety::Blocked
-            },
+        let mut next = self.cumulative.fork();
+        if next.load_incremental(&bytes).is_err() || !next.get_missing_deps(&[]).is_empty() {
+            return false;
         }
+        self.cumulative = next;
+        true
+    }
+}
+
+fn classify_tail(
+    authority: &RetentionAuthority,
+    coverage: &Coverage,
+    doc: &Automerge,
+    source: [u8; 32],
+    channel: [u8; 32],
+    body: &[u8],
+) -> TailDecision {
+    let unknown = TailDecision {
+        coverage: CoverageDecision::Unknown,
+        floor: FloorSafety::Unknown,
+    };
+    let Ok((app, record, envelope, DocumentMutation::Incremental(bytes))) =
+        signed_document(source, channel, body, &authority.room)
+    else {
+        return unknown;
+    };
+    if app != coverage.app || record != coverage.record || !strict_chunks(&bytes) {
+        return unknown;
+    }
+    let floor = coverage
+        .watermarks
+        .get(&hex::encode(source))
+        .copied()
+        .unwrap_or(0);
+    let original_heads = doc.get_heads();
+    let mut combined = doc.save();
+    combined.extend_from_slice(&bytes);
+    let contained = Automerge::load(&combined).is_ok_and(|combined| {
+        combined.get_missing_deps(&[]).is_empty() && combined.get_heads() == original_heads
+    });
+    TailDecision {
+        coverage: if source != authority.governor.device_public_key {
+            CoverageDecision::Unknown
+        } else if contained && floor >= envelope.seq {
+            CoverageDecision::Covered
+        } else {
+            CoverageDecision::NotCovered
+        },
+        floor: if contained || envelope.seq > floor {
+            FloorSafety::Safe
+        } else {
+            FloorSafety::Blocked
+        },
     }
 }
 

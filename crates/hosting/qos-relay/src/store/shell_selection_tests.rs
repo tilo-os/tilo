@@ -846,8 +846,103 @@ fn initial_shell_basis_replays_independent_reversed_author_tails_in_exact_sequen
 }
 
 #[test]
-fn initial_shell_conflicting_sequences_or_missing_tail_dependencies_preserve_inputs_without_selecting()
- {
+fn reopened_shell_basis_replays_dependent_tails_cumulatively_in_signed_sequence_order() {
+    use automerge::{ReadDoc, transaction::Transactable};
+    let (key, authority, owner, now) = synthetic_owner();
+    let cp = owner
+        .clone()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
+    let NeighbourMsg::AppDocument { envelope, .. } = &cp[1] else {
+        panic!()
+    };
+    let first_seq = envelope.seq + 1;
+    let mut branch =
+        automerge::AutoCommit::load(&owner.document("selector.app", "one").unwrap()).unwrap();
+    let mut tails = Vec::new();
+    for (offset, (field, value)) in [("first", "T1"), ("second", "T2")].into_iter().enumerate() {
+        let heads = branch.get_heads();
+        branch.put(automerge::ROOT, field, value).unwrap();
+        branch.commit();
+        let bytes = branch
+            .get_changes(&heads)
+            .iter()
+            .flat_map(|change| change.raw_bytes().to_vec())
+            .collect();
+        tails.push(synthetic_signed(
+            &key,
+            authority.room(),
+            collab_types::DocumentMutation::Incremental(bytes),
+            first_seq + u64::try_from(offset).unwrap(),
+            now,
+        ));
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace_id = crate::room_workspace_id(authority.room()).unwrap();
+    let store = WorkspaceStore::open(tmp.path(), workspace_id, true).unwrap();
+    for msg in &cp {
+        retain_frame(&store, &synthetic_frame(&authority, msg, true));
+    }
+    for msg in tails.iter().rev() {
+        retain_frame(&store, &synthetic_frame(&authority, msg, false));
+    }
+    drop(store);
+
+    let mut reopened = WorkspaceStore::open(tmp.path(), workspace_id, true).unwrap();
+    reopened.bind_shell_authority(authority).unwrap();
+    let frames = replay_frames(&reopened);
+    assert_eq!(frames.len(), 4);
+    let mut receiver = owner;
+    for frame in frames {
+        let Envelope::Delta {
+            delta,
+            author_device_public_key,
+            ..
+        } = frame
+        else {
+            panic!()
+        };
+        let (_, body, _) = parts(CoeditPayload::decode(&delta).unwrap());
+        let outcome = receiver
+            .receive_from(
+                qos_peer_state::TransportOrigin::RelayDelta(author_device_public_key),
+                postcard::from_bytes(&body).unwrap(),
+                now,
+            )
+            .unwrap();
+        assert_eq!(outcome.rejected, 0);
+        assert!(!outcome.deferred);
+        assert!(outcome.incomplete.is_none());
+    }
+    assert_eq!(
+        receiver.document_heads("selector.app", "one").unwrap(),
+        branch.get_heads()
+    );
+    let replayed =
+        automerge::Automerge::load(&receiver.document("selector.app", "one").unwrap()).unwrap();
+    assert_eq!(
+        replayed
+            .get(automerge::ROOT, "first")
+            .unwrap()
+            .unwrap()
+            .0
+            .to_str(),
+        Some("T1")
+    );
+    assert_eq!(
+        replayed
+            .get(automerge::ROOT, "second")
+            .unwrap()
+            .unwrap()
+            .0
+            .to_str(),
+        Some("T2")
+    );
+}
+
+#[test]
+fn initial_shell_conflict_or_t2_without_t1_remains_unselected() {
     use super::replay::*;
     use automerge::transaction::Transactable;
     for conflicting in [false, true] {
@@ -890,15 +985,23 @@ fn initial_shell_conflicting_sequences_or_missing_tail_dependencies_preserve_inp
             true,
         )
         .unwrap();
+        let retained_tails = if conflicting {
+            tails.as_slice()
+        } else {
+            &tails[1..]
+        };
         let originals = cp
             .iter()
             .map(|msg| synthetic_frame(&authority, msg, true))
             .chain(
-                tails
+                retained_tails
                     .iter()
                     .map(|msg| synthetic_frame(&authority, msg, false)),
             )
             .collect::<Vec<_>>();
+        if !conflicting {
+            assert_eq!(originals.len(), cp.len() + 1, "only T2 is retained");
+        }
         for bytes in &originals {
             retain_frame(&store, bytes);
         }
