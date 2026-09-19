@@ -165,7 +165,6 @@ members = [
     # Session
     "crates/session/greeter",
     "crates/session/installer",
-    "crates/session/tilo-power",
     "crates/session/tilo-unlock-helper",
 
     # System

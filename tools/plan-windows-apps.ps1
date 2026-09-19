@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 $tokens = $null
 $errors = $null
-$installer = Join-Path $PSScriptRoot 'install-windows-apps.ps1'
+$installer = Join-Path $PSScriptRoot 'windows/install-apps.ps1'
 $ast = [Management.Automation.Language.Parser]::ParseFile($installer, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw 'Native Windows installer has syntax errors.' }
 $parameter = @($ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Apps' })
@@ -31,9 +31,9 @@ foreach ($app in $selected) {
 }
 $cargo = @('build', '--locked', '--profile', 'release', '--jobs', '2', '--message-format=json-render-diagnostics')
 foreach ($app in $selected) { $cargo += @('-p', $app) }
-$inputs = @('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'rust-toolchain.toml', 'tools/install-windows-apps.ps1',
-    'tools/install-windows-dxc.ps1', 'tools/install-windows-pdfium.ps1',
-    'tools/install-windows-gstreamer.ps1', 'tools/windows-gstreamer-crypto.ps1')
+$inputs = @('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'rust-toolchain.toml', 'tools/windows/install-apps.ps1',
+    'tools/windows/install-dxc.ps1', 'tools/windows/install-pdfium.ps1',
+    'tools/windows/install-gstreamer.ps1', 'tools/windows/gstreamer-crypto.ps1')
 $inputs += @($selected | ForEach-Object { "apps/$_/Cargo.toml" })
 [ordered]@{
     schema = 1
