@@ -22,6 +22,7 @@ on:
       - "tools/app_channel_manifest.py"
       - "tools/canonical_app_verifier.py"
       - "tools/create_app_receipt.py"
+      - "tools/final_app_receipt.py"
       - "tools/resolve_ci_builder.py"
       - "tools/assemble_app_collection.py"
       - "dist/apps/assemble-collection.sh"
@@ -47,6 +48,7 @@ on:
       - "tools/app_channel_manifest.py"
       - "tools/canonical_app_verifier.py"
       - "tools/create_app_receipt.py"
+      - "tools/final_app_receipt.py"
       - "tools/resolve_ci_builder.py"
       - "tools/assemble_app_collection.py"
       - "dist/apps/assemble-collection.sh"
@@ -66,6 +68,11 @@ on:
         description: "Native architectures to publish (x86_64, aarch64, or both); empty selects both."
         required: false
         default: ""
+      verify_final_receipt:
+        description: "Qualify final merged receipt using independently pinned publication trust policy."
+        type: boolean
+        required: false
+        default: false
       publish:
         description: "Publish immutable bundles to the Forgejo package registry."
         type: boolean
@@ -269,6 +276,17 @@ jobs:
             --runtime-binary target/release/tilo-runtime-bundle \
             --signers dist/app-release/work/receipt-signers.json \
             --source-sha "$GITHUB_SHA" --architecture "$RECEIPT_ARCH"
+      - name: Stage native canonical tools for final receipt qualification
+        if: github.event.inputs.verify_final_receipt == 'true'
+        run: |
+          mkdir -p dist/canonical-verifiers
+          cp target/release/tilo-pkg target/release/tilo-runtime-bundle dist/canonical-verifiers/
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: github.event.inputs.verify_final_receipt == 'true'
+        with:
+          name: canonical-verifiers-${{ matrix.arch }}
+          path: dist/canonical-verifiers/*
+          if-no-files-found: error
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: tilo-apps-${{ matrix.arch }}
@@ -287,7 +305,14 @@ jobs:
   publish:
     if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
     needs: [plan, build]
-    runs-on: runner
+    # Execute tools from the first selected native architecture. Those tools can
+    # verify either target archive without executing its application payloads.
+    runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
+    container:
+      image: ${{ needs.plan.outputs.builder_image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
     timeout-minutes: 60
     enable-openid-connect: true
     steps:
@@ -299,6 +324,10 @@ jobs:
           path: release
       - name: Publish reusable qpkgs and assemble immutable collections
         env:
+          VERIFY_FINAL_RECEIPT: ${{ github.event.inputs.verify_final_receipt }}
+          # Independently provisioned policy; never use uploaded verification-policy.json.
+          FINAL_RECEIPT_POLICY: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY }}
+          FINAL_RECEIPT_POLICY_SHA256: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256 }}
           MAIN_AUDIENCE: ${{ vars.TILO_APP_RELEASE_MAIN_AUDIENCE }}
           TAG_AUDIENCE: ${{ vars.TILO_APP_RELEASE_TAG_AUDIENCE }}
           VERSION: ${{ needs.plan.outputs.version }}
@@ -319,6 +348,25 @@ jobs:
             --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" | jq -er .value)
           echo "::add-mask::$jwt"
+          if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
+            policy_file="$RUNNER_TEMP/final-receipt-policy.json"
+            printf '%s' "$FINAL_RECEIPT_POLICY" > "$policy_file"
+            native_arch=$(uname -m)
+            case "$native_arch" in x86_64|aarch64) ;; *) exit 1 ;; esac
+            verifier_tools="release/canonical-verifiers-$native_arch"
+            test -f "$verifier_tools/tilo-pkg"
+            test -f "$verifier_tools/tilo-runtime-bundle"
+            chmod +x "$verifier_tools/tilo-pkg" "$verifier_tools/tilo-runtime-bundle"
+            # Check the independent policy/binary pins before any execution or upload.
+            python3 - "$policy_file" "$FINAL_RECEIPT_POLICY_SHA256" "$verifier_tools" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'tools')
+          from final_app_receipt import preflight
+          root = Path(sys.argv[3])
+          preflight(root / 'tilo-pkg', root / 'tilo-runtime-bundle', Path(sys.argv[1]), sys.argv[2])
+          PY
+          fi
           owner=${GITHUB_REPOSITORY%%/*}
           package_api="$GITHUB_SERVER_URL/api/packages/$owner/generic"
 
@@ -439,7 +487,30 @@ jobs:
             bundle="$out/tilo-apps-$arch.tar.gz"
             digest_file="$bundle.sha256"
             bundle_url="$package_api/tilo-app-collections/$VERSION/${bundle##*/}"
+            if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
+              python3 tools/final_app_receipt.py \
+                --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" verify \
+                --collection "$out" --pkg-binary "$verifier_tools/tilo-pkg" \
+                --runtime-binary "$verifier_tools/tilo-runtime-bundle" \
+                --source-sha "$GITHUB_SHA" --architecture "$arch"
+            fi
             put_immutable "$bundle" "$bundle_url"
+            if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
+              # A successful PUT alone is not evidence that consumers can read the bytes.
+              readback="$RUNNER_TEMP/tilo-upload-readback-$arch.tar.gz"
+              curl --fail --silent --show-error --header "Authorization: Bearer $jwt" \
+                "$bundle_url" --output "$readback"
+              final_receipt="$out/final-publication-receipt.json"
+              python3 tools/final_app_receipt.py \
+                --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" bind-readback \
+                --receipt "$final_receipt" --receipt-sha256 "$(sha256sum "$final_receipt" | cut -d' ' -f1)" \
+                --downloaded "$readback" --url "$bundle_url" --output "$out/published-receipt.json"
+              rm -f "$readback"
+              put_immutable "$out/published-receipt.json" \
+                "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.receipt.json"
+              put_immutable "$out/published-receipt.upload.json" \
+                "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.upload.json"
+            fi
             put_immutable "$digest_file" \
               "$package_api/tilo-app-collections/$VERSION/${digest_file##*/}"
             if [[ $arch == x86_64 ]]; then
