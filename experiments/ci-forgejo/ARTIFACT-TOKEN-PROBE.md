@@ -20,8 +20,11 @@ Evidence on 2026-09-19:
   its run and job metadata. Upload failed because the Python image lacked Node.
 - Corrected run 22982 succeeded and uploaded the 31-byte payload using the
   existing Node-capable runner image.
-- Historical-read run 22984 was dispatched against baseline 22982. Its result
-  must be inspected before historical artifact access is considered qualified.
+- Historical-read run 22984 succeeded. Job 84356 (task 75560, attempt 1) emitted
+  `HISTORICAL_TASK_TOKEN_READ_PASS 22982 38732` after downloading baseline
+  artifact 38732 with its own built-in token, without redirects, and checking
+  the exact ZIP inventory and payload. Final run status was independently read
+  as `success`.
 
 This fixture uses the existing runner image tag for an infrastructure API probe;
 it is not a production artifact or verifier trust root. Even a passing result
