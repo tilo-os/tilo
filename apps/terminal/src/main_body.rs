@@ -4833,6 +4833,7 @@ impl TerminalWidget {
     fn open_context_menu_at_cursor(&mut self) {
         let has_selection = self.selected_text().is_some_and(|t| !t.is_empty());
         let mut menu = ContextMenu::new();
+        menu.set_platform_conventions(self.conventions);
         self.menu_effects.clear();
         let session = self.session_resource();
         let transcript = self.transcript_resource();
