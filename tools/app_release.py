@@ -17,20 +17,41 @@ import ci_select
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "dist/apps/app-collections.toml"
-GLOBAL_INPUTS = {
+BINARY_INPUTS = {
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
     "dist/apps/app-collections.toml",
-    "tools/app_release.py",
     "tools/app_package_isa.py",
+    "tools/rustc-thin-app-wrapper.sh",
+    "os/scripts/build-thin-apps.sh",
+    "os/Containerfile.builder",
+    "os/external-assets/github-assets.tsv",
+    "os/dev/cache-github-assets.sh",
+    "tools/check-build-env.sh",
+    "tools/resolve_ci_builder.py",
+}
+PACKAGING_INPUTS = {
     "dist/apps/package-apps.sh",
     "dist/apps/assemble-collection.sh",
     "tools/assemble_app_collection.py",
-    "os/scripts/build-thin-apps.sh",
+    "os/scripts/bake-runtime-bundle.sh",
+}
+VERIFICATION_INPUTS = {
+    "tools/app_release.py",
+    "tools/ci_select.py",
+    "tools/app_channel_manifest.py",
+    "tools/canonical_app_verifier.py",
+    "tools/create_app_receipt.py",
+    "tools/final_app_receipt.py",
+    "os/scripts/verify-elf-hardening.sh",
     ".forgejo/workflows/release-apps.yml",
 }
-GLOBAL_PREFIXES = (".cargo/",)
+GLOBAL_INPUTS = BINARY_INPUTS | PACKAGING_INPUTS | VERIFICATION_INPUTS
+GLOBAL_PREFIXES = (".cargo/", "vendor/")
+# These are explicitly built by package-apps.sh, not ordinary app dependencies.
+# A change reaching their graph affects the shared runtime or every emitted qpkg.
+FLEET_BUILD_PACKAGES = {"runtime-dylib", "pkg-cli", "runtime-bundle"}
 OS_INTEGRATED_APPS = {"browser"}
 
 
@@ -118,15 +139,39 @@ def resolve_collection(name: str, catalog: dict[str, dict], cfg: dict) -> list[s
 
 
 def changed_paths(base: str, root: Path = ROOT) -> list[str]:
-    merge_base = subprocess.check_output(
-        ["git", "merge-base", base, "HEAD"], cwd=root, text=True
-    ).strip()
-    output = subprocess.check_output(
-        ["git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", f"{merge_base}...HEAD"],
-        cwd=root,
-        text=True,
-    )
-    return output.splitlines()
+    # Share the NUL-delimited, rename-as-delete/add reader used by check CI.
+    return ci_select.changed_files(root, base, "HEAD")
+
+
+def input_classification(paths: list[str], metadata: dict | None = None,
+                         root: Path = ROOT) -> dict[str, list[str]]:
+    """Artifact invalidation versus metadata revalidation, not compile commands.
+
+    The current executor rebuilds for all three classes. Keeping them distinct
+    allows a later trusted replay worker to reuse binaries for receipt-only work.
+    """
+    classified = {
+        "binary": sorted({p for p in paths if p in BINARY_INPUTS or p.startswith(GLOBAL_PREFIXES)}),
+        "packaging": sorted(set(paths) & PACKAGING_INPUTS),
+        "verification": sorted(set(paths) & VERIFICATION_INPUTS),
+    }
+    if metadata is not None:
+        packages, by_dir = ci_select.package_maps(metadata, root)
+        reverse = ci_select.reverse_dependencies(packages, root)
+        app_packages = {name for directory, name in by_dir.items()
+                        if directory.parts and directory.parts[0] == "apps"}
+        for path in paths:
+            owner = ci_select.owner_for(path, by_dir)
+            if owner is not None:
+                affected = ci_select.closure({owner}, reverse)
+                packaging = bool(affected & {"pkg-cli", "runtime-bundle"})
+                if packaging:
+                    classified["packaging"].append(path)
+                if not packaging or affected & (app_packages | {"runtime-dylib"}):
+                    classified["binary"].append(path)
+            elif path.startswith(("apps/", "crates/", "fs/", "shell/")):
+                classified["binary"].append(path)
+    return {kind: sorted(set(inputs)) for kind, inputs in classified.items()}
 
 
 def apps_from_changes(
@@ -146,12 +191,17 @@ def apps_from_changes(
     }
     if metadata is not None:
         packages, by_dir = ci_select.package_maps(metadata, root)
+        if any(path.startswith(("apps/", "crates/", "fs/", "shell/"))
+               and ci_select.owner_for(path, by_dir) is None for path in paths):
+            return sorted(set(catalog).difference(OS_INTEGRATED_APPS))
         seeds = {
             owner
             for path in paths
             if (owner := ci_select.owner_for(path, by_dir)) is not None
         }
         affected = ci_select.closure(seeds, ci_select.reverse_dependencies(packages, root))
+        if affected & FLEET_BUILD_PACKAGES:
+            return sorted(set(catalog).difference(OS_INTEGRATED_APPS))
         selected.update(
             name for name, app in catalog.items() if app["package"] in affected
         )
@@ -172,6 +222,7 @@ def plan(args: argparse.Namespace) -> dict:
     catalog = app_catalog(args.root)
     cfg = config(args.config)
     tag_app = app_from_tag(args.tag, catalog) if args.tag else None
+    classification = {"binary": [], "packaging": [], "verification": []}
     if tag_app:
         if tag_app in OS_INTEGRATED_APPS:
             raise ValueError(f"{tag_app} is released by the OS-native integration pipeline")
@@ -187,13 +238,19 @@ def plan(args: argparse.Namespace) -> dict:
         selected = sorted(set(filter(None, re.split(r"[ ,]+", args.apps))))
         reason = "explicit app selection"
     elif args.base:
+        changes = changed_paths(args.base, args.root)
+        metadata = ci_select.cargo_metadata(args.root)
+        classification = input_classification(changes, metadata, args.root)
         selected = apps_from_changes(
-            changed_paths(args.base, args.root),
+            changes,
             catalog,
-            ci_select.cargo_metadata(args.root),
+            metadata,
             args.root,
         )
         reason = "apps affected by the commit range"
+        kinds = [kind for kind, inputs in classification.items() if inputs]
+        if kinds:
+            reason = "release inputs changed: " + ", ".join(kinds)
     else:
         selected = resolve_collection(args.collection, catalog, cfg)
         reason = f"{args.collection} collection"
@@ -214,6 +271,7 @@ def plan(args: argparse.Namespace) -> dict:
     ]
     return {
         "reason": reason,
+        "input_classification": classification,
         "count": len(selected),
         "apps": selected,
         "packages": [catalog[name]["package"] for name in selected],

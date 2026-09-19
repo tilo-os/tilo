@@ -6,28 +6,7 @@ name: Release / apps
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "apps/**"
-      - "crates/**"
-      - "crates/sdk/ui-core/**"
-      - ".cargo/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "dist/apps/app-collections.toml"
-      - "dist/apps/**"
-      - "os/scripts/build-thin-apps.sh"
-      - "tools/app_release.py"
-      - "tools/app_package_isa.py"
-      - "tools/app_channel_manifest.py"
-      - "tools/canonical_app_verifier.py"
-      - "tools/create_app_receipt.py"
-      - "tools/final_app_receipt.py"
-      - "tools/resolve_ci_builder.py"
-      - "tools/assemble_app_collection.py"
-      - "dist/apps/assemble-collection.sh"
-      - ".forgejo/actions/restore-cargo-downloads/**"
-      - ".forgejo/workflows/release-apps.yml"
+    # Always run the cheap plan; app_release.py owns dependency applicability.
   push:
     # Paused during capacity relief; preserve for continuous packaging rollout.
     # branches: [main]
