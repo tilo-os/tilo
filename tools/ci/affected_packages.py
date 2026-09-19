@@ -44,11 +44,29 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
     "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
+    "tools/policy/run.sh": "tools/tests/test_ci_select.py",
     "tools/policy/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
     "tools/policy/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",
     "tools/policy/check_workflow_actions.py": "tools/tests/test_workflow_actions.py",
     "tools/policy/check_workflow_package_paths.py": "tools/tests/test_workflow_package_paths.py",
     "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
+}
+# Control-plane files are validated by tests that read or execute the production
+# file in the mandatory repository-policy suite. A file missing from this exact
+# map retains native Rust checks.
+QUALITY_ONLY_CONTROL_INPUTS = {
+    ".forgejo/workflows/check.yml": (
+        "tools/tests/test_ci_check_aggregate.py",
+        "tools/tests/test_ci_queue_relief.py",
+        "tools/tests/test_ci_receipt.sh",
+    ),
+    ".forgejo/workflows/legacy-app-e2e.yml": (
+        "tools/tests/test_ci_queue_relief.py",
+        "os/tests/test_builder_candidate_workflow.py",
+    ),
+    ".forgejo/workflows/tilo-relay.yaml": (
+        "tools/tests/test_workflow_package_paths.py",
+    ),
 }
 NATIVE_RUNNERS = {"x86_64": "runner", "aarch64": "runner-arm64"}
 GLOBAL_FILES = {
@@ -226,10 +244,29 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, 
         if (root / source).is_file() and (root / test).is_file()
         for path in (source, test)
     }
-    quality_only = bool(changes) and all(prose(path) or path in quality_paths for path in changes)
+    quality_paths.update(
+        path for source, observers in QUALITY_ONLY_CONTROL_INPUTS.items()
+        if (root / source).is_file()
+        and all((root / observer).is_file() for observer in observers)
+        for path in (source, *observers)
+    )
+    # Ordinary checks use the already-published builder, so compiling Rust
+    # cannot validate an edited recipe. Its dedicated workflow builds and
+    # qualifies the candidate. Deletion and mixed build inputs remain full.
+    recipe_present = (
+        "os/Containerfile.builder" in changes
+        and (root / "os/Containerfile.builder").is_file()
+    )
+    quality_only = bool(changes) and all(
+        prose(path) or path in quality_paths
+        or (recipe_present and path == "os/Containerfile.builder")
+        for path in changes
+    )
     if quality_only and not force_full:
         selected = set()
-        reason = ("audited developer/CI or design prose only; Rust checks not applicable"
+        reason = ("builder recipe covered by mandatory policy checks; candidate image qualification is separate"
+                  if recipe_present else
+                  "audited developer/CI or design prose only; Rust checks not applicable"
                   if all(prose(path) for path in changes) else
                   "audited CI helpers covered by mandatory repository-policy tests; Rust checks not applicable")
         full = False
