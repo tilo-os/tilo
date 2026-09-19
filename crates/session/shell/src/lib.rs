@@ -21,6 +21,8 @@ pub mod device_fleet;
 pub mod diagnostics;
 pub mod firstboot;
 pub mod identity_broker;
+pub mod runtime_host;
+
 pub mod identity_registry;
 pub mod network;
 pub mod notifications;
@@ -28,6 +30,9 @@ pub mod onboarding;
 pub mod onboarding_view;
 pub mod portal;
 pub mod priority_contacts;
+#[cfg(test)]
+#[path = "../tests/runtime_host.rs"]
+mod runtime_host_tests;
 pub mod sandbox;
 pub mod security;
 pub mod shell;

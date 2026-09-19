@@ -640,6 +640,7 @@ impl ApplicationsProvider {
             let subtitle = format!("App Store · {trust} · {detail}");
             out.push(SearchResult {
                 kind: ResourceKind::Application,
+                operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: self.id().to_string(),
                 id: format!("app:{}", app.package_id),
                 title: format!("View {} in App Store", app.display_name),

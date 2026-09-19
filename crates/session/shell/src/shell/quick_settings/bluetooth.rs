@@ -12,7 +12,9 @@ use ui::theme::Theme;
 
 use crate::shell::quick_settings::BtDevice;
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
-use crate::shell::quick_settings::drill_in::DrillInList;
+use crate::shell::quick_settings::drill_in::{
+    CONTROL_INSET, DrillInList, GLYPH, STATUS_DOT, trailing_dot_center, trailing_status_glyph,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BluetoothOutcome {
@@ -110,12 +112,9 @@ impl QuickSettingsBluetoothPane {
                 colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
-            let battery = Rect::new(
-                row.x1 - 64.0,
-                row.y0 + (row.height() - 18.0) / 2.0,
-                row.x1 - 42.0,
-                row.y0 + f64::midpoint(row.height(), 18.0),
-            );
+            // The battery glyph takes the trailing status slot, centred on
+            // the row's centre line, one related step before the dot.
+            let battery = trailing_status_glyph(*row, CONTROL_INSET, GLYPH);
             let battery_color = if device.battery > 50 {
                 colors.semantic.success
             } else if device.battery > 20 {
@@ -137,7 +136,7 @@ impl QuickSettingsBluetoothPane {
                     transform,
                     colors.accent[5],
                     None,
-                    &Circle::new(Point::new(row.x1 - 14.0, row.center().y), 5.0),
+                    &Circle::new(trailing_dot_center(*row, CONTROL_INSET), STATUS_DOT / 2.0),
                 );
             }
         }
@@ -199,14 +198,15 @@ mod tests {
         let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
         let mut devices = vec![device()];
         let actions = Actions::default();
+        let validated = crate::shell::search::providers::actions::ValidatedQsActions::new(&actions);
         pane.list.layout(panel, devices.len());
         assert_eq!(
-            pane.handle_click(pane.list.back_center(), panel, &mut devices, &actions),
+            pane.handle_click(pane.list.back_center(), panel, &mut devices, &validated),
             BluetoothOutcome::Back
         );
         let row = pane.list.rows()[0].center();
         assert_eq!(
-            pane.handle_click(row, panel, &mut devices, &actions),
+            pane.handle_click(row, panel, &mut devices, &validated),
             BluetoothOutcome::OpenDetails {
                 address: "02:00:00:00:00:01".into()
             }
@@ -215,10 +215,12 @@ mod tests {
         assert!(actions.0.borrow().is_empty());
         devices[0].connected = false;
         assert_eq!(
-            pane.handle_click(row, panel, &mut devices, &actions),
+            pane.handle_click(row, panel, &mut devices, &validated),
             BluetoothOutcome::Changed
         );
         assert!(devices[0].connected);
         assert_eq!(actions.0.borrow()[0], "connect:02:00:00:00:00:01");
+        validated.disconnect_bluetooth(&devices[0].address).unwrap();
+        assert_eq!(actions.0.borrow()[1], "disconnect:02:00:00:00:00:01");
     }
 }

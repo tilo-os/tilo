@@ -87,7 +87,9 @@ pub struct PriorityContactRegistry {
 
 impl PriorityContactRegistry {
     pub fn open_default() -> Self {
-        Self::open(settings_store::config_root().map(|root| root.join("priority-contacts.json")))
+        Self::open(settings_store::config_path(std::path::Path::new(
+            "priority-contacts.json",
+        )))
     }
 
     pub fn in_memory() -> Self {

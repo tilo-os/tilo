@@ -968,17 +968,20 @@ impl PortalDialogController {
             bounds.center().x + width / 2.0,
             bounds.center().y + height / 2.0,
         );
+        // Choice rows are Control rows (HIG §9.6: 44) on the 48 px pitch —
+        // the 38 they were left the row under the density scale.
+        let row_h = f64::from(ui::tokens::Metrics::BASE.panel_row_height);
         let choices = (0..row_count)
             .map(|i| {
                 let y = sheet.y0 + 118.0 + small_count_as_f64(i) * 48.0;
-                Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + 38.0)
+                Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
             })
             .collect();
         let launcher_name = launcher_editor
             .filter(|editor| editor.editable_name)
             .map(|_| {
                 let y = sheet.y0 + 118.0 + small_count_as_f64(row_count) * 48.0;
-                Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + 38.0)
+                Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
             });
         let launcher_icons = launcher_editor
             .filter(|editor| editor.editable_icon)
@@ -994,21 +997,24 @@ impl PortalDialogController {
                 (0..count)
                     .map(|index| {
                         let x = sheet.x0 + 24.0 + small_count_as_f64(index) * (width + gap);
-                        Rect::new(x, y, x + width, y + 38.0)
+                        Rect::new(x, y, x + width, y + row_h)
                     })
                     .collect()
             })
             .unwrap_or_default();
+        // The action row shares the choice rows' 24 px gutter, so Confirm's
+        // right edge lines up with the rows above it instead of overhanging
+        // them by 4 px. 92 / 84 wide, 34 tall, 12 apart — unchanged.
         let cancel = Rect::new(
-            sheet.x1 - 208.0,
+            sheet.x1 - 212.0,
             sheet.y1 - 54.0,
-            sheet.x1 - 116.0,
+            sheet.x1 - 120.0,
             sheet.y1 - 20.0,
         );
         let confirm = Rect::new(
-            sheet.x1 - 104.0,
+            sheet.x1 - 108.0,
             sheet.y1 - 54.0,
-            sheet.x1 - 20.0,
+            sheet.x1 - 24.0,
             sheet.y1 - 20.0,
         );
         Some(DialogLayout {
@@ -1185,6 +1191,48 @@ fn friendly_app_name(app_id: &str) -> String {
 mod tests {
     use super::*;
     use winit::keyboard::{KeyCode, ModifiersState};
+    #[test]
+    fn action_buttons_share_the_choice_rows_gutter() {
+        let q = PortalDialogQueue::default();
+        let service = ShellAppChooserService::with_queue(q.clone());
+        let (tx, _rx) = oneshot::channel();
+        assert!(matches!(
+            service.enqueue(
+                ApplicationChoiceRequest {
+                    handle: "/r/layout".into(),
+                    app_id: "org.example.Reader".into(),
+                    choices: vec!["one".into(), "two".into()],
+                    last_choice: None,
+                    content_type: None,
+                    uri: None,
+                    filename: None,
+                    activation_token: None
+                },
+                tx
+            ),
+            PortalResult::Success(())
+        ));
+        let mut c = PortalDialogController::new(q);
+        assert!(c.pump());
+        let layout = c
+            .layout(Rect::new(0.0, 0.0, 1280.0, 800.0))
+            .expect("an active sheet");
+        let row = layout.choices[0];
+        // Confirm's right edge is the rows' right edge; the row above used
+        // to end 4 px short of the buttons below it.
+        assert_eq!(layout.confirm.x1, row.x1);
+        assert_eq!(layout.confirm.x1, layout.sheet.x1 - 24.0);
+        assert_eq!(
+            layout.cancel.x1 + 12.0,
+            layout.confirm.x0,
+            "buttons keep their 12 px gap"
+        );
+        assert_eq!(layout.cancel.width(), 92.0);
+        assert_eq!(layout.confirm.width(), 84.0);
+        assert!(layout.cancel.height() >= 32.0 && layout.confirm.height() >= 32.0);
+        assert_eq!(layout.cancel.y0, layout.confirm.y0);
+        assert_eq!(layout.cancel.y1, layout.confirm.y1);
+    }
     #[test]
     fn choice_updates_reach_the_live_controller() {
         let q = PortalDialogQueue::default();

@@ -3,6 +3,9 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+#[cfg(target_os = "macos")]
+mod ux_bench_support;
+
 fn main() -> ExitCode {
     match execute() {
         Ok(true) => ExitCode::SUCCESS,
@@ -32,8 +35,10 @@ fn execute() -> Result<bool, String> {
     let mut args = std::env::args().skip(1);
     let mut scenario_path = None;
     let mut output = None;
+    let mut interactive = false;
     while let Some(flag) = args.next() {
         match flag.as_str() {
+            "--interactive" => interactive = true,
             "--scenario" => {
                 scenario_path = Some(PathBuf::from(
                     args.next().ok_or("--scenario requires a JSON file")?,
@@ -46,7 +51,7 @@ fn execute() -> Result<bool, String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "ux-bench --scenario FILE.json --out NEW_DIRECTORY\nExit: 0 pass, 1 UX failure, 2 invalid scenario or execution error.\nEach run creates an isolated shell profile and fixture files."
+                    "ux-bench [--interactive] --scenario FILE.json --out NEW_DIRECTORY\nExit: 0 pass, 1 UX failure, 2 invalid scenario or execution error.\nEach run creates an isolated shell profile and fixture files."
                 );
                 return Ok(true);
             }
@@ -139,7 +144,7 @@ fn execute() -> Result<bool, String> {
         (scenario.viewport[0], scenario.viewport[1]),
         theme,
     );
-    let report = ui::ux_bench::run_with_state(&mut driver, &scenario, &out, || {
+    let state_snapshot = || {
         let tree = session.tree.read();
         let active = tree.active_workspace();
         let snapshot = serde_json::json!({"workspace_count":tree.workspaces.len(),
@@ -148,7 +153,19 @@ fn execute() -> Result<bool, String> {
             "active_tabs":active.map(|w|w.strips.iter().flat_map(|s|s.window_groups.iter()).flat_map(|g|g.tabs.iter()).map(|t|serde_json::json!({"title":t.title,"content":t.tile})).collect::<Vec<_>>())});
         drop(tree);
         snapshot
-    })?;
+    };
+    if interactive {
+        return ux_bench_support::run(&mut driver, &scenario, &out, state_snapshot, || {
+            session.records.try_flush()?;
+            let state_path = options.state_dir.join("state.json");
+            shell::shell::persist::save_tree_to(&session.tree.read(), &state_path)
+                .map_err(|e| e.to_string())?;
+            let reopened =
+                shell::shell::persist::load_tree_from(&state_path).map_err(|e| e.to_string())?;
+            Ok(reopened.workspaces.iter().map(|w| w.name.clone()).collect())
+        });
+    }
+    let report = ui::ux_bench::run_with_state(&mut driver, &scenario, &out, state_snapshot)?;
     session.records.try_flush()?;
     // Match the native runner's normal shutdown persistence boundary.
     let state_path = options.state_dir.join("state.json");

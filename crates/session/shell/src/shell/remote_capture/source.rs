@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Seek as _, SeekFrom, Write as _};
+#[cfg(target_os = "linux")]
 use std::os::fd::FromRawFd as _;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -422,6 +423,7 @@ fn physical_camera() -> Option<std::path::PathBuf> {
         })
 }
 
+#[cfg(target_os = "linux")]
 fn unnamed_spool() -> std::io::Result<File> {
     // SAFETY: `geteuid` has no pointer arguments or preconditions.
     let runtime = format!("/run/user/{}\0", unsafe { libc::geteuid() });
@@ -532,4 +534,10 @@ mod tests {
         );
         assert_eq!(failure_rx.try_recv(), Ok([4; 16]));
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn unnamed_spool() -> std::io::Result<File> {
+    // tempfile returns an unlinked, owner-only descriptor and sets close-on-exec.
+    tempfile::tempfile()
 }

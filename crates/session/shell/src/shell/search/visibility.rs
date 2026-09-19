@@ -86,37 +86,23 @@ pub fn required_capability(
     }
 }
 
-/// The verb a chrome action requires, or `None` when it only opens a view.
-/// Overlay-opening entries are deliberately ungated: `settings.open`
-/// reveals a panel; the setting that changes something is gated where it lives.
+/// The verb a chrome action requires, derived from the same canonical
+/// contract exported to discovery. Dynamic ownership actions retain the
+/// contract attached to their workspace resource and always require Admin.
 fn chrome_action_verb(id: &str) -> Option<Verb> {
-    match id {
-        // Showing: reveals a view, mutates nothing.
-        "shortcut-help.toggle"
-        | "overview.toggle"
-        | "settings.open"
-        | "quick-settings.open"
-        | "quick-settings.clipboard"
-        | "quick-settings.devices"
-        | "projection.open"
-        | "capture.open"
-        | "collaborators.open"
-        | "room.activity.open" => None,
-
-        // Membership: admitting a peer or agent, or joining a room — all
-        // decide who is in this room, so all gate on the same verb.
-        "peer.invite" | "peer.invite.named" | "peer.connect" | "agent.invite" => Some(Verb::Invite),
-
-        // Everything else is `Write`, same as spawning a tab:
-        // - "record.bring" changes what the room holds — seeing which
-        //   records a room holds stays ungated; adding one is an act.
-        // - "text.insert" — reading a note is showing and free; changing
-        //   what it says is an act.
-        // - "notifications.dnd.toggle" changes a session-wide setting.
-        // - everything else ("tab.new.terminal.here", "window.new.terminal",
-        //   "tab.duplicate") and any unknown chrome action fails closed to
-        //   this same gate.
-        _ => Some(Verb::Write),
+    let permission = if id.contains("#ownership.") {
+        tilo_actions::PermissionRequirement::Admin
+    } else {
+        super::providers::actions::shell_action_contract(id).permission
+    };
+    match permission {
+        tilo_actions::PermissionRequirement::None | tilo_actions::PermissionRequirement::Read => {
+            None
+        }
+        tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+        tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+        tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+        tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
     }
 }
 
