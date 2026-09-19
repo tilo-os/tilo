@@ -859,18 +859,8 @@ impl Widget for MusicApp {
                 if self.resource_stream_invocation.is_some() {
                     return Err("another Music stream-start operation is still resolving".into());
                 }
-                match self.apply_resource_play_track(&id)? {
-                    Some(request_id) => {
-                        self.begin_resource_stream_invocation(invocation, request_id);
-                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-                    }
-                    None => Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput {
-                            value: Some(serde_json::json!({ "state": "playing" })),
-                            resources: Vec::new(),
-                        },
-                    ))),
-                }
+                let request = self.apply_resource_play_track(&id)?;
+                self.register_playback_start(invocation, request, 0, false)
             }
             (
                 tilo_actions::OperationKind::Effect,
@@ -879,18 +869,8 @@ impl Widget for MusicApp {
                 if self.resource_stream_invocation.is_some() {
                     return Err("another Music stream-start operation is still resolving".into());
                 }
-                match self.apply_resource_play_queue_item(index, &track)? {
-                    Some(request_id) => {
-                        self.begin_resource_stream_invocation(invocation, request_id);
-                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-                    }
-                    None => Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput {
-                            value: Some(serde_json::json!({ "state": "playing" })),
-                            resources: Vec::new(),
-                        },
-                    ))),
-                }
+                let request = self.apply_resource_play_queue_item(index, &track)?;
+                self.register_playback_start(invocation, request, 0, false)
             }
             (
                 tilo_actions::OperationKind::Effect,

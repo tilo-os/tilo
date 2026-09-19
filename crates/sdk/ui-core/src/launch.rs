@@ -23,6 +23,91 @@ pub type ComponentHostPreparer =
 
 type RootFactory = fn() -> Box<dyn Widget>;
 type ArgsRootFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
+type LegacyPreparer = fn(&LaunchArgs) -> Result<LegacyLaunchInputs, LaunchError>;
+
+/// Transitional inputs for existing state/widget apps. Canonical applications
+/// should use ApplicationDefinition + PreparedComponentInputs instead. This
+/// bridge preserves the SAME state, writer, record policy and registry in native
+/// and headless execution; it is not a second application framework.
+pub struct LegacyLaunchInputs {
+    pub(crate) state: State,
+    pub(crate) root: Box<dyn Widget>,
+    pub(crate) autosave: crate::persist::Autosave,
+    pub(crate) records: LegacyRecordPolicy,
+    pub(crate) registry: tilo_actions::ActionRegistry,
+    pub(crate) persistence: LegacyPersistencePolicy,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LegacyPersistencePolicy {
+    Host,
+    WidgetOwned,
+}
+
+pub(crate) enum LegacyRecordPolicy {
+    None,
+    Explicit {
+        records: crate::record::RecordSet,
+        index: automerge::AutoCommit,
+    },
+    /// Compatibility for legacy specs without an explicit preparer. Captured
+    /// BEFORE the opener runs; never re-resolve a custom opener's namespace.
+    AutomaticHeadless {
+        records: crate::record::RecordSet,
+        index: automerge::AutoCommit,
+        expected_index: std::path::PathBuf,
+    },
+}
+
+impl LegacyLaunchInputs {
+    pub fn new(state: State, root: Box<dyn Widget>, autosave: crate::persist::Autosave) -> Self {
+        Self {
+            state,
+            root,
+            autosave,
+            records: LegacyRecordPolicy::None,
+            registry: tilo_actions::ActionRegistry::new(),
+            persistence: LegacyPersistencePolicy::Host,
+        }
+    }
+
+    /// Supply the exact record owner and index used by the native app. An
+    /// in-memory set remains in-memory in headless mode as well.
+    #[must_use]
+    pub fn with_records(
+        mut self,
+        records: crate::record::RecordSet,
+        index: automerge::AutoCommit,
+    ) -> Self {
+        self.records = LegacyRecordPolicy::Explicit { records, index };
+        self
+    }
+
+    #[must_use]
+    pub fn with_registry(mut self, registry: tilo_actions::ActionRegistry) -> Self {
+        self.registry = registry;
+        self
+    }
+
+    /// Transitional ownership for a root with its own durable writer. Requires
+    /// a disabled host writer, no record set, and an implemented checked
+    /// `Widget::try_flush_owned_persistence` hook. Ordinary disabled writers
+    /// remain failures; this never opens a substitute store.
+    #[must_use]
+    pub fn with_widget_owned_persistence(mut self) -> Self {
+        self.persistence = LegacyPersistencePolicy::WidgetOwned;
+        self
+    }
+
+    pub(crate) fn validate_persistence_ownership(&self) -> Result<(), String> {
+        if self.persistence == LegacyPersistencePolicy::WidgetOwned
+            && (self.autosave.is_enabled() || !matches!(self.records, LegacyRecordPolicy::None))
+        {
+            return Err("widget-owned persistence cannot also use a host or record writer".into());
+        }
+        Ok(())
+    }
+}
 type ShotFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
 type ShotHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
 type ViewportFactory = fn(&LaunchArgs) -> (u32, u32);
@@ -78,6 +163,7 @@ pub struct LaunchSpec {
     app_id: &'static str,
     live_root: Option<RootFactory>,
     live_root_with_args: Option<ArgsRootFactory>,
+    legacy_preparer: Option<LegacyPreparer>,
     /// `None` reuses the live root, so ordinary apps do not register the same
     /// factory twice just to render a screenshot.
     shot_root: Option<ShotFactory>,
@@ -142,6 +228,7 @@ impl LaunchSpec {
             app_id,
             live_root: Some(live_root),
             live_root_with_args: None,
+            legacy_preparer: None,
             shot_root: None,
             shot_handler: None,
             shot_viewport: |_| DEFAULT_VIEWPORT,
@@ -170,6 +257,7 @@ impl LaunchSpec {
             app_id,
             live_root: None,
             live_root_with_args: Some(live_root),
+            legacy_preparer: None,
             shot_root: None,
             shot_handler: None,
             shot_viewport: |_| DEFAULT_VIEWPORT,
@@ -195,6 +283,18 @@ impl LaunchSpec {
     pub fn live_root_with_args(mut self, factory: ArgsRootFactory) -> Self {
         self.legacy_setup_override = true;
         self.live_root_with_args = Some(factory);
+        self
+    }
+
+    /// Fallible shared preparation for legacy apps needing a coordinated
+    /// state/root, explicit record policy, or action registry. Runs under the
+    /// host's wake scope before either runner is constructed. Prepared component
+    /// definitions reject this legacy override. It replaces open_state/root
+    /// callbacks, which are not invoked a second time.
+    #[must_use]
+    pub fn prepare_legacy_with_args(mut self, prepare: LegacyPreparer) -> Self {
+        self.legacy_setup_override = true;
+        self.legacy_preparer = Some(prepare);
         self
     }
 
@@ -667,7 +767,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     }
 
     if let Some(headless) = &args.headless {
-        let status = headless::run(headless, spec.live_root(&args)?, spec.app_id);
+        let status = dispatch_legacy_headless(spec, &args, headless)?;
         // process::exit skips the ScopedDumper in run().
         tilo_startup_metrics::mark("headless-exit");
         tilo_startup_metrics::dump();
@@ -676,12 +776,12 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
 
     if args.native_audit {
         let viewport = args.viewport.unwrap_or(DEFAULT_VIEWPORT);
-        let harness = FrameHarness::new_with_theme(
-            State::new(),
-            spec.live_root(&args)?,
-            viewport,
-            shot_theme(&args),
-        );
+        let prepared = prepare_legacy_launch(spec, &args)?;
+        let _entry = prepared.scope.enter();
+        // Install explicit record identity exactly as the native runner does,
+        // but auditing is not a durability run or a request to flush a writer.
+        let (harness, _autosave) =
+            headless::build_audit_driver(prepared.inputs, viewport, shot_theme(&args));
         let audit = harness.native_app_audit();
         let report = serde_json::to_string_pretty(&audit).map_err(|error| {
             LaunchError::Operation(format!("could not serialize native audit: {error}"))
@@ -794,6 +894,61 @@ fn dispatch_definition(
     Ok(DefinitionDispatch::Native(Box::new(app)))
 }
 
+struct PreparedLegacyLaunch {
+    scope: crate::wake::WakeScope,
+    inputs: LegacyLaunchInputs,
+}
+
+fn prepare_legacy_launch(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+) -> Result<PreparedLegacyLaunch, LaunchError> {
+    let scope = crate::wake::WakeScope::new();
+    let _entry = scope.enter();
+    let inputs = if let Some(prepare) = spec.legacy_preparer {
+        prepare(args)?
+    } else {
+        // Capture legacy routing before custom state/root callbacks. Unsupported
+        // custom namespaces are refused by headless, never silently redirected.
+        let records = crate::record::RecordSet::open(spec.app_id);
+        let expected_index =
+            app_state::DocStore::legacy_package_document_path(records.package_id())
+                .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        let (state, autosave) = spec.open_state_with_args.map_or_else(
+            || (spec.open_state)(spec.app_id),
+            |open| open(spec.app_id, args),
+        );
+        let index = state.doc.clone();
+        let root = spec.live_root(args)?;
+        let mut inputs = LegacyLaunchInputs::new(state, root, autosave);
+        inputs.records = LegacyRecordPolicy::AutomaticHeadless {
+            records,
+            index,
+            expected_index,
+        };
+        inputs
+    };
+    inputs
+        .validate_persistence_ownership()
+        .map_err(LaunchError::Operation)?;
+    Ok(PreparedLegacyLaunch { scope, inputs })
+}
+
+/// Exact production branch, testable without process::exit or a native window.
+fn dispatch_legacy_headless(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    headless: &headless::Spec,
+) -> Result<i32, LaunchError> {
+    validate_spec_args(args, spec)?;
+    tilo_startup_metrics::mark("headless-setup-start");
+    let prepared = prepare_legacy_launch(spec, args).inspect_err(|_| {
+        tilo_startup_metrics::mark("headless-setup-failed");
+    })?;
+    let _entry = prepared.scope.enter();
+    Ok(headless::run_initialized(headless, prepared.inputs))
+}
+
 fn build_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<App, LaunchError> {
     build_native_app_with_constructor(spec, args, App::from_scoped_parts)
 }
@@ -803,14 +958,22 @@ fn build_native_app_with_constructor(
     args: &LaunchArgs,
     construct: impl FnOnce(crate::wake::WakeScope, State, Box<dyn Widget>) -> App,
 ) -> Result<App, LaunchError> {
-    let scope = crate::wake::WakeScope::new();
-    let _entry = scope.enter();
-    let (state, autosave) = spec.open_state_with_args.map_or_else(
-        || (spec.open_state)(spec.app_id),
-        |open| open(spec.app_id, args),
-    );
-    let root = spec.live_root(args)?;
-    let mut app = construct(scope, state, root).with_autosave(autosave);
+    let prepared = prepare_legacy_launch(spec, args)?;
+    let LegacyLaunchInputs {
+        state,
+        root,
+        autosave,
+        records,
+        registry,
+        persistence,
+    } = prepared.inputs;
+    let mut app = construct(prepared.scope, state, root)
+        .with_autosave(autosave)
+        .with_legacy_persistence(persistence);
+    if let LegacyRecordPolicy::Explicit { records, index } = records {
+        app = app.with_records(records, index);
+    }
+    *app.action_registry_mut() = registry;
     if let Some(text_scale) = args.text_scale {
         app.set_text_scale(text_scale);
     }
@@ -832,6 +995,11 @@ fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchErro
 }
 
 fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
+    if spec.legacy_preparer.is_some() && spec.live_handler.is_some() {
+        return Err(LaunchError::Operation(
+            "prepare_legacy_with_args and live_handler cannot be combined".into(),
+        ));
+    }
     if args.headless.is_some() && !spec.headless_enabled {
         return Err(LaunchError::HeadlessUnsupported);
     }
@@ -1084,6 +1252,279 @@ fn parse_text_scale(value: &str) -> Result<f32, LaunchError> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn legacy_preparer_and_live_handler_are_rejected_before_either_runs() {
+        let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root)
+            .prepare_legacy_with_args(|_| panic!("preparer must not run"))
+            .live_handler(|_| panic!("live handler must not run"));
+        for raw in [
+            strings(&["app"]),
+            strings(&["app", "--headless-drive", "{}"]),
+        ] {
+            assert!(
+                matches!(run_with_args(&spec, &raw), Err(LaunchError::Operation(message))
+                if message == "prepare_legacy_with_args and live_handler cannot be combined")
+            );
+        }
+    }
+
+    struct LaunchFixtureEnv {
+        _directory: tempfile::TempDir,
+        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+    impl LaunchFixtureEnv {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let mut previous = Vec::new();
+            for (key, value) in [
+                ("XDG_DATA_HOME", directory.path().as_os_str().to_os_string()),
+                ("TILO_PACKAGE_ID", "dev.tilo.launch-fixture".into()),
+                (
+                    "TILO_WORKSPACE_ID",
+                    "00000000-0000-0000-0000-000000000000".into(),
+                ),
+            ] {
+                previous.push((key, std::env::var_os(key)));
+                unsafe {
+                    std::env::set_var(key, value);
+                }
+            }
+            Self {
+                _directory: directory,
+                previous,
+            }
+        }
+    }
+    impl Drop for LaunchFixtureEnv {
+        fn drop(&mut self) {
+            for (key, value) in &self.previous {
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+    fn migrated_fixture_open(app_id: &'static str) -> (State, crate::persist::Autosave) {
+        use automerge::transaction::Transactable;
+        let (mut state, autosave) = crate::persist::open_for(app_id).unwrap();
+        state
+            .doc
+            .put(automerge::ROOT, "migration_marker", "configured-loader")
+            .unwrap();
+        (state, autosave)
+    }
+    fn fixture_preparer(args: &LaunchArgs) -> Result<LegacyLaunchInputs, LaunchError> {
+        use automerge::transaction::Transactable;
+        let path = args
+            .positionals()
+            .first()
+            .ok_or_else(|| LaunchError::Operation("missing fixture".into()))?;
+        let contents =
+            std::fs::read_to_string(path).map_err(|e| LaunchError::Operation(e.to_string()))?;
+        let (mut index, autosave) = crate::persist::open_for("dev.tilo.launch-fixture")
+            .map_err(|e| LaunchError::Operation(e.to_string()))?;
+        index
+            .doc
+            .put(automerge::ROOT, "index_marker", "original-index")
+            .unwrap();
+        let mut state = State::new();
+        state
+            .doc
+            .put(automerge::ROOT, "file_marker", contents)
+            .unwrap();
+        Ok(LegacyLaunchInputs::new(state, dummy_root(), autosave)
+            .with_records(crate::record::RecordSet::in_memory(), index.doc))
+    }
+    fn headless_fixture_args(
+        source: Option<&std::path::Path>,
+        dump: &std::path::Path,
+    ) -> LaunchArgs {
+        let mut raw = vec![
+            "app".into(),
+            "--headless-drive".into(),
+            serde_json::json!({"dump": dump}).to_string(),
+        ];
+        if let Some(source) = source {
+            raw.push(source.to_string_lossy().into_owned());
+        }
+        parse_args_extended(&raw, &[], &[], &[], &[], 1).unwrap()
+    }
+    #[test]
+    #[serial_test::serial]
+    fn headless_dispatch_uses_configured_migration_loader() {
+        let fixture = LaunchFixtureEnv::new();
+        let dump = fixture._directory.path().join("dump.json");
+        let args = headless_fixture_args(None, &dump);
+        let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root)
+            .open_state(migrated_fixture_open);
+        assert_eq!(
+            dispatch_legacy_headless(&spec, &args, args.headless.as_ref().unwrap()).unwrap(),
+            0
+        );
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dump).unwrap()).unwrap();
+        assert_eq!(state["migration_marker"], "configured-loader");
+    }
+    #[test]
+    #[serial_test::serial]
+    fn prepared_file_state_and_original_room_index_reach_real_headless_dispatch() {
+        use automerge::ReadDoc;
+        let fixture = LaunchFixtureEnv::new();
+        let source = fixture._directory.path().join("document.md");
+        let dump = fixture._directory.path().join("dump.json");
+        std::fs::write(&source, "fresh-file-content").unwrap();
+        let args = headless_fixture_args(Some(&source), &dump);
+        let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root)
+            .max_positionals(1)
+            .prepare_legacy_with_args(fixture_preparer);
+        assert_eq!(
+            dispatch_legacy_headless(&spec, &args, args.headless.as_ref().unwrap()).unwrap(),
+            0
+        );
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dump).unwrap()).unwrap();
+        assert_eq!(state["file_marker"], "fresh-file-content");
+        let (reopened, _) = crate::persist::open_for("dev.tilo.launch-fixture").unwrap();
+        assert_eq!(
+            reopened
+                .doc
+                .get(automerge::ROOT, "index_marker")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_str(),
+            Some("original-index")
+        );
+        assert!(
+            reopened
+                .doc
+                .get(automerge::ROOT, "file_marker")
+                .unwrap()
+                .is_none(),
+            "headless must not replace the native room index with the imported body"
+        );
+        // Reopen a changed file against the SAME profile: the explicitly
+        // in-memory native policy must not merge a stale headless body cache.
+        std::fs::write(&source, "replacement-file-content").unwrap();
+        assert_eq!(
+            dispatch_legacy_headless(&spec, &args, args.headless.as_ref().unwrap()).unwrap(),
+            0
+        );
+        let state: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(fixture._directory.path().join("dump.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(state["file_marker"], "replacement-file-content");
+    }
+    #[test]
+    #[serial_test::serial]
+    fn native_constructor_consumes_the_same_fallible_preparer() {
+        use automerge::ReadDoc;
+        let fixture = LaunchFixtureEnv::new();
+        let source = fixture._directory.path().join("document.md");
+        std::fs::write(&source, "native-file-content").unwrap();
+        let args = headless_fixture_args(
+            Some(&source),
+            &fixture._directory.path().join("unused.json"),
+        );
+        let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root)
+            .max_positionals(1)
+            .prepare_legacy_with_args(fixture_preparer);
+        let app = build_native_app_with_constructor(&spec, &args, |scope, state, root| {
+            assert_eq!(
+                state
+                    .doc
+                    .get(automerge::ROOT, "file_marker")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .to_str(),
+                Some("native-file-content")
+            );
+            App::from_scoped_parts_with_controlled_inputs(scope, state, root)
+        })
+        .unwrap();
+        drop(app);
+    }
+    fn wrong_namespace_open(_: &'static str) -> (State, crate::persist::Autosave) {
+        crate::persist::open_for("dev.tilo.other-fixture").unwrap()
+    }
+
+    #[test]
+    fn widget_owned_persistence_rejects_mixed_record_owner_before_either_runner() {
+        let spec =
+            LaunchSpec::new("dev.tilo.launch-fixture", dummy_root).prepare_legacy_with_args(|_| {
+                Ok(LegacyLaunchInputs::new(
+                    State::new(),
+                    dummy_root(),
+                    crate::persist::Autosave::disabled("owned fixture"),
+                )
+                .with_records(
+                    crate::record::RecordSet::in_memory(),
+                    automerge::AutoCommit::new(),
+                )
+                .with_widget_owned_persistence())
+            });
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        assert!(
+            matches!(build_native_app_with_constructor(&spec, &args, |_, _, _| panic!("invalid ownership must fail before native construction")), Err(LaunchError::Operation(message)) if message.contains("cannot also use"))
+        );
+        assert!(
+            matches!(dispatch_legacy_headless(&spec, &args, &headless::Spec::default()), Err(LaunchError::Operation(message)) if message.contains("cannot also use"))
+        );
+    }
+    #[test]
+    #[serial_test::serial]
+    fn headless_custom_namespace_and_disabled_writer_fail_without_default_fallback() {
+        let fixture = LaunchFixtureEnv::new();
+        for open in [
+            wrong_namespace_open as OpenState,
+            scoped_open_state as OpenState,
+        ] {
+            let dump = fixture._directory.path().join("must-not-exist.json");
+            let args = headless_fixture_args(None, &dump);
+            let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root).open_state(open);
+            assert_eq!(
+                dispatch_legacy_headless(&spec, &args, args.headless.as_ref().unwrap()).unwrap(),
+                3
+            );
+            assert!(!dump.exists());
+        }
+        assert!(
+            !fixture
+                ._directory
+                .path()
+                .join("dev.tilo.launch-fixture/state.automerge")
+                .exists()
+        );
+    }
+    #[test]
+    #[serial_test::serial]
+    fn failed_file_preparer_stops_real_dispatch_before_output_or_fallback() {
+        let fixture = LaunchFixtureEnv::new();
+        let dump = fixture._directory.path().join("must-not-exist.json");
+        let missing = fixture._directory.path().join("missing.md");
+        let args = headless_fixture_args(Some(&missing), &dump);
+        let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root)
+            .max_positionals(1)
+            .prepare_legacy_with_args(fixture_preparer);
+        assert!(matches!(
+            dispatch_legacy_headless(&spec, &args, args.headless.as_ref().unwrap()),
+            Err(LaunchError::Operation(_))
+        ));
+        assert!(!dump.exists());
+        assert!(
+            !fixture
+                ._directory
+                .path()
+                .join("dev.tilo.launch-fixture")
+                .exists()
+        );
+    }
 
     static CUSTOM_SHOT_RAN: AtomicBool = AtomicBool::new(false);
     static CUSTOM_LIVE_RAN: AtomicBool = AtomicBool::new(false);
@@ -1940,6 +2381,8 @@ mod prepared_launch_tests {
                 .open_state(|_| panic!("legacy state")),
             LaunchSpec::from_definition(runner_probe_definition())
                 .live_root_with_args(|_| panic!("legacy root")),
+            LaunchSpec::from_definition(runner_probe_definition())
+                .prepare_legacy_with_args(|_| panic!("legacy preparer")),
         ] {
             let before = calls();
             let args = parse_args(&["app".into()], &[], &[]).unwrap();
