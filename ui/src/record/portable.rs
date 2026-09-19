@@ -92,7 +92,7 @@ impl RecordSet {
             let key = key(&self.package_id, &self.home, id);
             let actor = doc.get_actor().to_bytes().to_vec();
             if let Err(e) = cache
-                .put(key.clone(), doc.save(), Some(actor))
+                .put_document(key.clone(), doc, Some(actor))
                 .and_then(|()| cache.flush(&key))
             {
                 errors.push(format!("{id}: {e}"));

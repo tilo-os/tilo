@@ -6,6 +6,43 @@ thread_local! { static DOCUMENT_DECODES: std::cell::Cell<usize> = const { std::c
 mod tests {
     use super::*;
     #[test]
+    fn serialized_document_seeds_heads_without_reloading_its_own_bytes() {
+        use automerge::transaction::Transactable;
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let key = StorageKey::Primary { package:"test".into(), workspace:"room".into() };
+        let mut doc = automerge::AutoCommit::new();
+        DOCUMENT_DECODES.with(|count| count.set(0));
+        for value in 0..3 {
+            doc.put(automerge::ROOT,"value",value).unwrap();
+            cache.put_document(key.clone(), &mut doc, None).unwrap();
+            assert_eq!(cache.document_heads(&key),Some(Ok(doc.base_heads())));
+            assert_eq!(DOCUMENT_DECODES.with(|count| count.get()),0);
+            assert!(cache.flush(&key).is_err(),"queuing known heads does not acknowledge persistence");
+            let mut loaded = automerge::AutoCommit::load(&cache.get(&key).unwrap().bytes).unwrap();
+            assert_eq!(loaded.get_heads(),doc.base_heads());
+        }
+        cache.put(key.clone(),vec![1,2,3],None).unwrap();
+        assert_eq!(cache.document_heads(&key),Some(Err(())));
+        assert_eq!(DOCUMENT_DECODES.with(|count| count.get()),1);
+    }
+    #[test]
+    fn serialized_document_heads_follow_full_graph_when_owner_is_isolated() {
+        use automerge::transaction::Transactable;
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let key = StorageKey::Primary { package: "test".into(), workspace: "room".into() };
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "value", 1).unwrap();
+        let historical = doc.get_heads();
+        doc.put(automerge::ROOT, "value", 2).unwrap();
+        let current = doc.get_heads();
+        doc.isolate(&historical);
+        cache.put_document(key.clone(), &mut doc, None).unwrap();
+        assert_eq!(cache.document_heads(&key), Some(Ok(current)));
+        assert_eq!(doc.base_heads(), historical, "saving must preserve isolation");
+        let mut loaded = automerge::AutoCommit::load(&cache.get(&key).unwrap().bytes).unwrap();
+        assert_eq!(cache.document_heads(&key), Some(Ok(loaded.get_heads())));
+    }
+    #[test]
     fn document_heads_decode_once_per_value_and_preserve_ack_state() {
         use automerge::transaction::Transactable;
         let cache = PortableStorage::new("profile", "device").unwrap();
@@ -299,6 +336,23 @@ impl PortableStorage {
                 error: None,
             },
         );
+        Ok(())
+    }
+    /// Serialize a canonical document and queue its bytes through the ordinary
+    /// persistence path. Callers cannot supply detached or unverified heads.
+    pub(crate) fn put_document(
+        &self, key: StorageKey, doc: &mut automerge::AutoCommit, actor: Option<Vec<u8>>,
+    ) -> Result<(), String> {
+        let bytes = doc.save();
+        // Save serializes the full graph, including when the owner is viewing
+        // historical heads through AutoCommit isolation.
+        let heads = doc.document().get_heads();
+        self.put(key.clone(), bytes, actor)?;
+        // `put` synchronously installs these exact bytes. Retain the heads from
+        // their canonical owner instead of decoding our own serialization.
+        self.cache.borrow_mut().entries.get_mut(&key)
+            .expect("successful put installs the document")
+            .document_heads = Some(Ok(heads));
         Ok(())
     }
     pub fn pending_writes(&self) -> Vec<PendingWrite> {

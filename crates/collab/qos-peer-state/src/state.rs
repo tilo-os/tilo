@@ -1,5 +1,6 @@
 //! Certified room and document replica. Transport identity is always an input.
 use crate::{NeighbourMsg, document, room};
+use crate::cached_document::CachedDocument;
 use automerge::{AutoCommit, ObjType, ReadDoc, ROOT, transaction::Transactable};
 use collab_types::caps::{Actor, CapDecision, Principal, ResourceRef, decide_capability};
 use collab_types::{
@@ -134,7 +135,7 @@ pub struct StatePeer {
     certificates: BTreeMap<[u8; 32], DeviceCert>,
     revocations: RevocationList,
     receipts: BTreeMap<String, Vec<u8>>,
-    room_doc: Option<AutoCommit>,
+    room_doc: Option<CachedDocument>,
     documents: BTreeMap<Route, Document>,
     pending: VecDeque<([u8; 32], NeighbourMsg)>,
     pending_bytes: usize,
@@ -344,12 +345,12 @@ impl StatePeer {
         let role = self.role(&source, now)?;
         let cert = self.certificate(&source, now)?;
         let (_, _, caps) =
-            room::extract_governed_fields(self.room_doc.as_ref().ok_or("room missing")?);
+            room::extract_governed_fields(self.room_doc.as_deref().ok_or("room missing")?);
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
         Ok((role, caps, person.id().to_owned()))
     }
     /// Committed, admitted room only. Callers cannot mutate the admission owner.
-    pub fn admitted_room(&self) -> Option<&AutoCommit> { self.room_doc.as_ref() }
+    pub fn admitted_room(&self) -> Option<&AutoCommit> { self.room_doc.as_deref() }
 
     /// Read permission for an exact canonical record using the same governed
     /// actor/resource vocabulary as document mutation admission.
@@ -480,7 +481,7 @@ impl StatePeer {
     }
     fn role(&self, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
         let cert = self.certificate(source, now)?;
-        let doc = self.room_doc.as_ref().ok_or("room governance missing")?;
+        let doc = self.room_doc.as_deref().ok_or("room governance missing")?;
         // A root-signed certificate must also be the certificate admitted by room governance.
         let (_, _, _, identities, _) = room::governance_of(Some(doc));
         let identity: GovernedIdentity = serde_json::from_slice(
@@ -544,7 +545,7 @@ impl StatePeer {
                 if self.certificates.get(&source) != Some(cert.as_ref()) {
                     let admitted = self
                         .room_doc
-                        .as_ref()
+                        .as_deref()
                         .and_then(|doc| {
                             room::governance_of(Some(doc))
                                 .3
@@ -598,7 +599,7 @@ impl StatePeer {
                         certificate.user_public_key,
                     ));
                     let (_, _, caps) = room::extract_governed_fields(
-                        self.room_doc.as_ref().ok_or("room governance missing")?,
+                        self.room_doc.as_deref().ok_or("room governance missing")?,
                     );
                     let actor = Actor::person(Some(role), person.id()).in_room(self.room.clone());
                     if decide_capability(
@@ -612,7 +613,7 @@ impl StatePeer {
                         return Err("room write forbidden".into());
                     }
                 }
-                let candidate = room::candidate(self.room_doc.as_ref(), &changes).map_err(err)?;
+                let candidate = room::candidate(self.room_doc.as_deref(), &changes).map_err(err)?;
                 if room::declared_room_mismatches(
                     &candidate,
                     uuid::Uuid::parse_str(&self.room).map_err(err)?,
@@ -622,7 +623,7 @@ impl StatePeer {
                 let pinned = hex::encode(self.authority.device_public_key);
                 let from = hex::encode(source);
                 if !room::governance_change_allowed(
-                    self.room_doc.as_ref(),
+                    self.room_doc.as_deref(),
                     &candidate,
                     false,
                     Some(&pinned),
@@ -630,8 +631,8 @@ impl StatePeer {
                 ) {
                     return Err("governance writer is not pinned authority".into());
                 }
-                crate::topology::validate(self.room_doc.as_ref(), &candidate, &from, &pinned)?;
-                if !room::immutable_receipts(self.room_doc.as_ref(), &candidate) {
+                crate::topology::validate(self.room_doc.as_deref(), &candidate, &from, &pinned)?;
+                if !room::immutable_receipts(self.room_doc.as_deref(), &candidate) {
                     return Err("effect receipt is immutable".into());
                 }
                 let mut receipts = self.receipts.clone();
@@ -642,15 +643,15 @@ impl StatePeer {
                     }
                     receipts.insert(key, bytes);
                 }
-                crate::coverage::monotonic(self.room_doc.as_ref(), &candidate)?;
-                crate::durability::monotonic(self.room_doc.as_ref(), &candidate)?;
+                crate::coverage::monotonic(self.room_doc.as_deref(), &candidate)?;
+                crate::durability::monotonic(self.room_doc.as_deref(), &candidate)?;
                 let changed = self
                     .room_doc
-                    .as_ref()
+                    .as_deref()
                     .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
                 let mut metadata_changed = self.import_governed_certificates(&candidate, now)?;
                 self.receipts = receipts;
-                self.room_doc = Some(candidate);
+                self.room_doc = Some(candidate.into());
                 let pending = std::mem::take(&mut self.pending);
                 self.pending_bytes = 0;
                 let mut applied = changed;
@@ -765,7 +766,7 @@ impl StatePeer {
         let role = self.role(&source, now)?;
         let cert = self.certificate(&source, now)?;
         let (_, _, caps) =
-            room::extract_governed_fields(self.room_doc.as_ref().ok_or("missing governance")?);
+            room::extract_governed_fields(self.room_doc.as_deref().ok_or("missing governance")?);
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
         let actor = Actor::person(Some(role), person.id())
             .with_principal(Principal::App(app_id.clone()))
@@ -846,7 +847,7 @@ impl StatePeer {
         };
         candidate.channel = validated_channel;
         if let DocumentMutation::Snapshot(bytes) = &mutation && !local_app {
-            let entries = crate::coverage::entries(self.room_doc.as_ref().ok_or("missing room")?)?;
+            let entries = crate::coverage::entries(self.room_doc.as_deref().ok_or("missing room")?)?;
             let coverage = entries.get(&crate::coverage::route_key(&route.app, &route.record));
             let Some(coverage) = coverage else {
                 return self.defer(
@@ -1071,7 +1072,7 @@ impl StatePeer {
                 watermarks,
             };
             crate::coverage::put(
-                self.room_doc.as_mut().ok_or("missing room governance")?,
+                self.room_doc.as_deref_mut().ok_or("missing room governance")?,
                 coverage,
             )?;
         }
@@ -1111,10 +1112,10 @@ impl StatePeer {
     pub fn durable_bootstrap_messages(&mut self,key:&SigningKey,now:SystemTime,generation:u64)->Result<Vec<NeighbourMsg>,String>{
         let mut candidate=self.clone();
         let snapshots=candidate.signed_snapshots(key,now)?;
-        let room=candidate.room_doc.as_mut().ok_or("missing room governance")?;
+        let room=candidate.room_doc.as_deref_mut().ok_or("missing room governance")?;
         let receipts=crate::coverage::entries(room)?.into_iter().map(|(route,coverage)|Ok((route,crate::durability::DurableReceipt::new(coverage,generation)?))).collect::<Result<BTreeMap<_,_>,String>>()?;
         crate::durability::put(room,receipts)?;
-        crate::durability::monotonic(self.room_doc.as_ref(),room)?;
+        crate::durability::monotonic(self.room_doc.as_deref(),room)?;
         let mut messages=vec![candidate.room_message()];messages.extend(snapshots);*self=candidate;Ok(messages)
     }
     /// A governed assertion alone is insufficient: bind it to the accepted exact checkpoint.
@@ -1122,7 +1123,7 @@ impl StatePeer {
         Ok(self.durable_receipt_checkpoint(app,record)?.map(|(receipt,_)|receipt))
     }
     fn durable_receipt_checkpoint(&self,app:&str,record:&str)->Result<Option<(crate::durability::DurableReceipt,std::sync::Arc<DecodedCheckpoint>)>,String>{
-        let Some(room)=self.room_doc.as_ref()else{return Ok(None)};
+        let Some(room)=self.room_doc.as_deref()else{return Ok(None)};
         let receipts=crate::durability::entries(room)?;
         let Some(receipt)=receipts.get(&crate::coverage::route_key(app,record))else{return Ok(None)};
         let coverage=&receipt.coverage;
@@ -1168,7 +1169,7 @@ impl StatePeer {
             version: 2,
             room: self.room.clone(),
             authority: self.authority.clone(),
-            room_bytes: self.room_doc.clone().map(|mut doc| doc.save()),
+            room_bytes: self.room_doc.as_ref().map(CachedDocument::saved),
             documents,
             receipts: self.receipts.clone(),
             certificates: self.certificates.values().cloned().collect(),
@@ -1223,7 +1224,7 @@ impl StatePeer {
         peer.receipts = durable.receipts;
         peer.room_doc = durable
             .room_bytes
-            .map(|bytes| AutoCommit::load(&bytes).map_err(err))
+            .map(|bytes| AutoCommit::load(&bytes).map(CachedDocument::from).map_err(err))
             .transpose()?;
         for document in durable.documents {
             let mut channel = ChannelState::default();
