@@ -8,7 +8,7 @@ param(
     [switch]$KeepRegistry
 )
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'windows-gstreamer-crypto.ps1')
+. (Join-Path $PSScriptRoot 'gstreamer-crypto.ps1')
 $RuntimeDirectory = (Resolve-Path -LiteralPath $RuntimeDirectory).Path
 Assert-TiloMediaNoOptionalOpenSsl $RuntimeDirectory
 $manifest = Get-Content -LiteralPath (Join-Path $RuntimeDirectory 'gstreamer-runtime.json') -Raw | ConvertFrom-Json
