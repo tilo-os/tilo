@@ -1,0 +1,66 @@
+name: Qualification / built-in verifier package read
+on:
+  workflow_dispatch:
+
+jobs:
+  package-read:
+    runs-on: runner-quality
+    timeout-minutes: 3
+    container:
+      image: docker.io/library/python@sha256:1a63a53928ce53d2b0baf08092a703f4840ac5dfbd61fd48802dbf48e08c801e
+    steps:
+      - name: Read the exact verifier bundle using only this job token
+        env:
+          TASK_TOKEN: ${{ github.token }}
+        run: |
+          python3 -I - <<'PY'
+          import hashlib, json, os, time, urllib.error, urllib.request
+          digest = '10ad658a452b21545cf2521fa875536da5d951ee8dd509533251a0a3a0517bde'
+          expected_size = 6113401
+          source = os.environ.get('GITHUB_SHA', '')
+          url = ('https://code.podesta.ai/api/packages/qos/generic/'
+                 'tilo-canonical-verifiers/' + digest + '/x86_64.tar.gz')
+          result, size = 'not_started', 0
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  return None
+          try:
+              if (os.environ.get('GITHUB_REPOSITORY') != 'qos/qos'
+                      or os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
+                      or len(source) != 40 or any(c not in '0123456789abcdef' for c in source)
+                      or not os.environ.get('TASK_TOKEN')):
+                  raise ValueError('wrong_context')
+              # Same fixed URL and Bearer authentication used by the production
+              # bundle downloader. Discard bytes after hashing: no extraction,
+              # native execution, fallback credential, or registry mutation.
+              request = urllib.request.Request(url, headers={
+                  'Authorization': 'Bearer ' + os.environ['TASK_TOKEN']})
+              opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+              actual = hashlib.sha256()
+              deadline = time.monotonic() + 90
+              with opener.open(request, timeout=30) as response:
+                  if response.status != 200 or response.geturl() != url:
+                      raise ValueError('unexpected_response')
+                  while True:
+                      if time.monotonic() > deadline:
+                          raise ValueError('deadline_exceeded')
+                      chunk = response.read1(min(65536, expected_size + 1 - size))
+                      if not chunk:
+                          break
+                      size += len(chunk)
+                      if size > expected_size:
+                          raise ValueError('size_exceeded')
+                      actual.update(chunk)
+              if size != expected_size or actual.hexdigest() != digest:
+                  raise ValueError('content_mismatch')
+              result = 'passed'
+          except urllib.error.HTTPError as error:
+              result = 'http_error_' + str(error.code)
+          except (urllib.error.URLError, OSError):
+              result = 'transport_failed'
+          except ValueError as error:
+              result = str(error)
+          print('TILO_VERIFIER_PACKAGE_TOKEN ' + json.dumps({
+              'source_sha': source, 'bytes': size, 'sha256': digest, 'result': result}, sort_keys=True))
+          raise SystemExit(0 if result == 'passed' else 1)
+          PY
