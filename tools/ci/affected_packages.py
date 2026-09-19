@@ -143,27 +143,23 @@ def package_maps(metadata: dict, root: Path) -> tuple[dict[str, dict], dict[Path
     return packages, by_dir
 
 
-def comparison_merge_base(root: Path, base: str | None, head: str) -> str | None:
+def comparison_merge_base(root: Path, base: str | None, head: str) -> str:
     if not base:
         base = run("git", "rev-parse", f"{head}^", cwd=root)
     try:
         return run("git", "merge-base", base, head, cwd=root)
-    except subprocess.CalledProcessError:
-        return None
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            f"cannot determine merge base for {base!r} and {head!r}; "
+            "refusing to select packages from a two-tree diff"
+        ) from error
 
 
 def changed_files(root: Path, base: str | None, head: str) -> list[str]:
-    if not base:
-        base = run("git", "rev-parse", f"{head}^", cwd=root)
     merge_base = comparison_merge_base(root, base, head)
-    if merge_base is None:
-        # A depth-limited checkout may have the event's exact base tree without
-        # enough ancestry to compute a merge base. Comparing those two trees can
-        # over-select files for a pull request whose base moved, but it cannot
-        # omit a file that differs between the advertised base and head.
-        diff_range = f"{base}..{head}"
-    else:
-        diff_range = f"{merge_base}...{head}"
+    # Compare the PR side with the common ancestor. A direct base..head diff
+    # would also report files changed only on an advanced base branch.
+    diff_range = f"{merge_base}..{head}"
     # A move affects both the old owner and the new owner. Rename detection's
     # name-only output reports only the destination, losing the old package's
     # reverse dependants. NUL delimiters also avoid Git quoting Unicode paths
@@ -215,8 +211,6 @@ def builder_mold_asset(name: str, entry: tuple[str, str]) -> bool:
 
 def builder_only_asset_manifest_change(root: Path, base: str | None, head: str) -> bool:
     merge_base = comparison_merge_base(root, base, head)
-    if merge_base is None:
-        return False
     before = manifest_at(root, merge_base)
     after = manifest_at(root, head)
     if before is None or after is None:
