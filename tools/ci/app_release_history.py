@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 
-DEPTHS = (32, 128, 512, 2048)
+DEPTHS = (2, 32, 128, 512, 2048)
 FULL_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 BASE_REF = "refs/ci/app-release-base"
 HEAD_REF = "refs/ci/app-release-head"
@@ -102,6 +102,14 @@ def prepare_comparison(
             f"checked out revision {checked_out} does not match release source {head}"
         )
 
+    # A qualification guard may already have prepared this exact graph before
+    # app selection. Reuse it without another network round trip.
+    base_exists = git(repo, "cat-file", "-e", f"{base}^{{commit}}", check=False)
+    if base_exists.returncode == 0:
+        ancestor = merge_base(repo, base, head)
+        if ancestor is not None:
+            return ancestor
+
     # Both tips must be deepened together. Fetching only the comparison commit
     # leaves a depth-one event commit marked as a shallow root, so merge-base
     # cannot connect even a direct parent and child.
@@ -167,29 +175,48 @@ def require_main_ancestor(
     # Observe main once, then deepen that immutable tip. A moving branch cannot
     # change the ancestry decision halfway through the release plan.
     main_sha = remote_main(repo)
-    fetch_exact(repo, main_sha, MAIN_REF)
-    for depth in depths:
+    if candidate == main_sha:
+        return main_sha
+    attempts = tuple(dict.fromkeys(depths))
+    if not attempts or any(depth < 1 for depth in attempts):
+        raise ValueError("remote main ancestry requires positive bounded fetch depths")
+    existing = git(repo, "rev-parse", MAIN_REF, check=False)
+    if existing.returncode == 0 and existing.stdout.strip() == main_sha:
+        if is_ancestor(repo, candidate, main_sha):
+            return main_sha
+    for depth in attempts:
+        fetch_exact(repo, main_sha, MAIN_REF, depth)
         if is_ancestor(repo, candidate, main_sha):
             return main_sha
         if not main_has_shallow_boundary(repo, main_sha):
             raise RuntimeError(
                 f"release source {candidate} is not an ancestor of main {main_sha}"
             )
-        fetch_exact(repo, main_sha, MAIN_REF, depth)
 
     if is_ancestor(repo, candidate, main_sha):
         return main_sha
     if main_has_shallow_boundary(repo, main_sha):
-        # Use an effectively unbounded depth, then verify that the selected
-        # main graph has no shallow boundary before making a negative decision.
-        fetch_exact(repo, main_sha, MAIN_REF, 2_147_483_647)
-    if is_ancestor(repo, candidate, main_sha):
-        return main_sha
-    if main_has_shallow_boundary(repo, main_sha):
-        raise RuntimeError("cannot establish complete remote main ancestry")
+        raise RuntimeError(
+            f"cannot establish remote main ancestry within bounded depth {attempts[-1]}"
+        )
     raise RuntimeError(
         f"release source {candidate} is not an ancestor of main {main_sha}"
     )
+
+
+def require_main_tip(repo: Path, candidate: str) -> str:
+    candidate = full_sha(candidate, "release source")
+    checked_out = git(repo, "rev-parse", "HEAD").stdout.strip()
+    if checked_out != candidate:
+        raise ValueError(
+            f"checked out revision {checked_out} does not match release source {candidate}"
+        )
+    main_sha = remote_main(repo)
+    if candidate != main_sha:
+        raise RuntimeError(
+            f"release source {candidate} is not the current main tip {main_sha}"
+        )
+    return main_sha
 
 
 def parser() -> argparse.ArgumentParser:
@@ -200,6 +227,8 @@ def parser() -> argparse.ArgumentParser:
     fetch.add_argument("head")
     ancestor = subcommands.add_parser("require-main-ancestor")
     ancestor.add_argument("sha")
+    tip = subcommands.add_parser("require-main-tip")
+    tip.add_argument("sha")
     return result
 
 
@@ -209,9 +238,12 @@ def main() -> int:
         if args.command == "fetch-base":
             ancestor = prepare_comparison(Path.cwd(), args.sha, args.head)
             print(f"release comparison ready: {ancestor}")
-        else:
+        elif args.command == "require-main-ancestor":
             observed = require_main_ancestor(Path.cwd(), args.sha)
             print(f"release source is on observed main: {observed}")
+        else:
+            observed = require_main_tip(Path.cwd(), args.sha)
+            print(f"release source is current observed main: {observed}")
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         print(
             f"Cannot prepare app release history: {type(error).__name__}: {error}",
