@@ -81,6 +81,16 @@ def valid_fixture():
 
 
 class GptTests(unittest.TestCase):
+    def test_reads_current_tilo_root_type_without_accepting_unknown_attributes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'fixture.raw'
+            kind = '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab'
+            gpt_fixture(path, root_type=kind)
+            self.assertEqual(bundle.read_gpt(path)[1]['partition_type_guid'], kind)
+            gpt_fixture(path, root_type=kind, root_attributes=1 << 59)
+            with self.assertRaises(ValueError):
+                bundle.read_gpt(path)
+
     def test_reads_exact_partition_extents(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'fixture.raw'
@@ -142,6 +152,39 @@ class ExportTests(unittest.TestCase):
 
 
 class ManifestTests(unittest.TestCase):
+    def test_rejects_tilo_partition_with_qos_boot_namespace(self):
+        manifest = valid_fixture()
+        manifest['components'][1]['partition_type_guid'] = bundle.TILO_ROOT_GUID
+        with self.assertRaises(ValueError):
+            bundle.validate_manifest(manifest)
+
+    def test_rejects_qos_partition_types_with_tilo_boot_namespace(self):
+        manifest = valid_fixture()
+        manifest['boot_binding']['uki_cmdline'] = (
+            manifest['boot_binding']['uki_cmdline'].replace('qos.install', 'tilo.install')
+        )
+        for partition_type in (bundle.ROOT_GUID, bundle.ROOT_GUIDS['x86_64']):
+            changed = copy.deepcopy(manifest)
+            changed['components'][1]['partition_type_guid'] = partition_type
+            with self.subTest(partition_type=partition_type), self.assertRaises(ValueError):
+                bundle.validate_manifest(changed)
+
+    def test_current_tilo_boot_profile_and_partition_type(self):
+        manifest = valid_fixture()
+        manifest['components'][1]['partition_type_guid'] = '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab'
+        manifest['boot_binding']['uki_cmdline'] = (
+            manifest['boot_binding']['uki_cmdline'].replace('qos.install', 'tilo.install')
+            + ' tilo.mode=normal tilo.generation=12 preempt=full'
+            + ' rd.luks.options=tpm2-device=auto,fido2-device=auto'
+        )
+        bundle.validate_manifest(manifest)
+        for tail in (' qos.install', ' qos.mode=normal', ' tilo.mode=repair',
+                     ' preempt=none', ' rd.luks.options=discard'):
+            changed = copy.deepcopy(manifest)
+            changed['boot_binding']['uki_cmdline'] += tail
+            with self.subTest(tail=tail), self.assertRaises(ValueError):
+                bundle.validate_manifest(changed)
+
     def test_invalid_single_fields(self):
         baseline = valid_fixture()
         mutations = [
@@ -294,6 +337,70 @@ class OwnershipTests(unittest.TestCase):
 
 
 class SpecializationTests(unittest.TestCase):
+    def test_exact_key_edit_preserves_following_token_for_every_whitespace_boundary(self):
+        import contextlib
+        import io
+        spec = importlib.util.spec_from_file_location(
+            'uki_whitespace_boundary', Path(__file__).parents[1] / 'dev/uki-cmdline.py')
+        uki = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(uki)
+        for separator in (' ', '\n', '\t'):
+            with self.subTest(separator=repr(separator)), tempfile.TemporaryDirectory() as tmp:
+                cmdline = separator.join(('tilo.mode=normal', 'root=tilo-auto', 'tilo.install'))
+                original = bytes(pe_fixture(cmdline))
+                expected = original.replace(b'root=tilo-auto', b' '*len('root=tilo-auto'))
+                path = Path(tmp) / 'fixture.efi'
+                path.write_bytes(original)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    uki.main(['uki-cmdline.py', 'blank', 'root', str(path)])
+                self.assertEqual(path.read_bytes(), expected)
+
+    def test_exact_key_edit_refuses_duplicate_roots_without_changing_the_file(self):
+        import contextlib
+        import io
+        spec = importlib.util.spec_from_file_location(
+            'uki_exact_key', Path(__file__).parents[1] / 'dev/uki-cmdline.py')
+        uki = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(uki)
+        original = bytes(pe_fixture('root=tilo-auto root=UUID=' + ROOT_UUID))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'fixture.efi'
+            path.write_bytes(original)
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+                uki.main(['uki-cmdline.py', 'blank', 'root', str(path)])
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_current_tilo_root_discovery_is_replaced_only_in_cmdline(self):
+        original_cmdline = (
+            'root=tilo-auto rw tilo.mode=normal tilo.root=' + '0'*37
+            + ' tilo.luks=' + '0'*43 + ' tilo.unlock=' + '0'*74
+            + ' composefs=' + 'b'*128 + ' tilo.install preempt=full'
+            + ' rd.luks.options=tpm2-device=auto,fido2-device=auto'
+        )
+        original = bytes(pe_fixture(original_cmdline))
+        changed = bundle.specialize_uki(original, ROOT_UUID)
+        expected = original.replace(b'root=tilo-auto', b' '*len('root=tilo-auto'))
+        expected = expected.replace(
+            ('tilo.root='+'0'*37).encode(), ('root=UUID='+ROOT_UUID+' ').encode())
+        self.assertEqual(changed, expected)
+        self.assertEqual(len(changed), len(original))
+        info = bundle.inspect_uki(changed)
+        bundle.validate_cmdline(info['uki_cmdline'], 'UUID='+ROOT_UUID, 'b'*128)
+        # Kernel arguments need not arrive in file order. The generic root key
+        # must never match the suffix of the reserved tilo.root key.
+        reordered = original_cmdline.removeprefix('root=tilo-auto ') + ' root=tilo-auto'
+        reordered_bytes = bytes(pe_fixture(reordered))
+        expected_reordered = reordered_bytes.replace(b'root=tilo-auto', b' '*len('root=tilo-auto'))
+        expected_reordered = expected_reordered.replace(
+            ('tilo.root='+'0'*37).encode(), ('root=UUID='+ROOT_UUID+' ').encode())
+        self.assertEqual(bundle.specialize_uki(reordered_bytes, ROOT_UUID), expected_reordered)
+        for old, new in [('root=tilo-auto', 'root=LABEL=old'),
+                         ('tilo.install', 'qos.install'),
+                         ('tilo.mode=normal', 'tilo.mode=repair'),
+                         ('tilo.root='+'0'*37, 'tilo.root='+'0'*36)]:
+            with self.subTest(new=new), self.assertRaises(ValueError):
+                bundle.specialize_uki(bytes(pe_fixture(original_cmdline.replace(old, new))), ROOT_UUID)
+
     def test_specializes_only_root_slot_and_preserves_composefs(self):
         original_cmdline = ('rw qos.mode=normal qos.root=' + '0'*37 +
                             ' qos.luks=' + '0'*43 + ' qos.unlock=' + '0'*74 +

@@ -27,6 +27,7 @@ MAX_IMAGE = 1 << 40
 SECTOR = 512
 ESP_GUID = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
 ROOT_GUID = '0fc63daf-8483-4772-8e79-3d69d8477de4'
+TILO_ROOT_GUID = '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab'
 ROOT_GUIDS = {'x86_64': '4f68bce3-e8cd-4db1-96e7-fbcaf984b709',
               'aarch64': 'b921b045-1df0-41c3-af44-4c6f280d3fae'}
 GUID_PATTERN = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
@@ -106,7 +107,7 @@ def validate_manifest(manifest):
             text(component['filesystem_uuid'], r'[0-9A-F]{4}-[0-9A-F]{4}', 9)
             require(component['filesystem_uuid'] != '0000-0000', 'zero FAT identity')
         else:
-            require(part_type in (ROOT_GUID, ROOT_GUIDS[arch]) and component['filesystem_type'] == 'btrfs',
+            require(part_type in (ROOT_GUID, TILO_ROOT_GUID, ROOT_GUIDS[arch]) and component['filesystem_type'] == 'btrfs',
                     'unsupported root partition')
             guid(component['filesystem_uuid'])
     disjoint([(c['source_offset'], c['byte_size']) for c in components], image_size)
@@ -118,7 +119,20 @@ def validate_manifest(manifest):
     text(boot['composefs_digest'], r'[0-9a-f]{128}', 128)
     expected = 'UUID=' + by_role['staging-root']['filesystem_uuid']
     require(boot['root_locator'] == expected, 'root UUID binding mismatch')
-    validate_cmdline(boot['uki_cmdline'], expected, boot['composefs_digest'])
+    namespace = validate_cmdline(boot['uki_cmdline'], expected, boot['composefs_digest'])
+    root_type = by_role['staging-root']['partition_type_guid']
+    require((root_type == TILO_ROOT_GUID) == (namespace == 'tilo'),
+            'root partition type and boot namespace mismatch')
+
+
+def boot_namespace(tokens):
+    namespaces = [name for name in ('qos', 'tilo') if name + '.install' in tokens]
+    require(len(namespaces) == 1, 'one installer boot namespace required')
+    namespace = namespaces[0]
+    other = 'qos' if namespace == 'tilo' else 'tilo'
+    require(not any(token.startswith(other + '.') for token in tokens),
+            'mixed installer boot namespaces')
+    return namespace
 
 
 def validate_cmdline(cmdline, root_locator, digest):
@@ -126,30 +140,35 @@ def validate_cmdline(cmdline, root_locator, digest):
     require(not any(c in cmdline for c in '\\"\''), 'quoted or escaped command line unsupported')
     tokens = cmdline.split()
     require(len(tokens) <= 64, 'too many kernel arguments')
+    namespace = boot_namespace(tokens)
     names = [token.split('=', 1)[0] for token in tokens]
     require(all(names.count(name) == 1 for name in names if name != 'console'), 'duplicate kernel argument')
     consoles = [token for token in tokens if token.startswith('console=')]
     require(len(set(consoles)) == len(consoles) and len(consoles) <= 2, 'duplicate console argument')
     require('root=' + root_locator in tokens and 'composefs=' + digest in tokens
-            and 'qos.install' in tokens, 'missing or mismatched measured boot binding')
+            and namespace + '.install' in tokens, 'missing or mismatched measured boot binding')
     # Narrow schema profile. Expansion requires consumer evidence, not ignored arguments.
-    allowed_flags = {'ro', 'rw', 'quiet', 'splash', 'qos.install', 'slab_nomerge',
+    allowed_flags = {'ro', 'rw', 'quiet', 'splash', namespace + '.install', 'slab_nomerge',
                      'plymouth.ignore-serial-consoles'}
-    allowed_values = {'root': root_locator, 'composefs': digest, 'qos.mode': 'normal',
-                      'qos.luks': '0'*43, 'qos.unlock': '0'*74,
+    allowed_values = {'root': root_locator, 'composefs': digest, namespace + '.mode': 'normal',
+                      namespace + '.luks': '0'*43, namespace + '.unlock': '0'*74,
                       'init_on_alloc': '1', 'init_on_free': '1', 'lockdown': 'integrity',
                       'randomize_kstack_offset': 'on', 'page_alloc.shuffle': '1', 'vsyscall': 'none'}
+    if namespace == 'tilo':
+        allowed_values.update({'preempt': 'full',
+                               'rd.luks.options': 'tpm2-device=auto,fido2-device=auto'})
     for token in tokens:
         if token in allowed_flags:
             continue
         name, separator, value = token.partition('=')
-        if name == 'qos.generation' and re.fullmatch(r'[1-9][0-9]{0,9}', value):
+        if name == namespace + '.generation' and re.fullmatch(r'[1-9][0-9]{0,9}', value):
             continue
         if name == 'console' and value in ('tty0', 'ttyS0,115200'):
             continue
         require(separator and name in allowed_values and value == allowed_values[name],
                 'unrecognized command-line binding')
     require('rw' in tokens and 'ro' not in tokens, 'composefs physical root requires rw')
+    return namespace
 
 
 def parse_manifest(raw):
@@ -244,7 +263,7 @@ def _read_gpt(stream):
         allowed_attributes = (0, 1 << 59) if kind in ROOT_GUIDS.values() else (0,)
         require(attrs in allowed_attributes, 'unsupported partition attributes for type')
         role = 'staging-esp' if kind == ESP_GUID else 'staging-root'
-        require(kind in (ESP_GUID, ROOT_GUID, *ROOT_GUIDS.values()), 'unsupported partition type')
+        require(kind in (ESP_GUID, ROOT_GUID, TILO_ROOT_GUID, *ROOT_GUIDS.values()), 'unsupported partition type')
         partitions.append({'number': number+1, 'role': role, 'partition_type_guid': kind,
                            'partition_uuid': identity, 'attributes': attrs, 'offset': start*SECTOR, 'size': (end-start+1)*SECTOR})
     require(len(partitions) == 2 and {p['role'] for p in partitions} == {'staging-root', 'staging-esp'},
@@ -443,25 +462,36 @@ def specialize_uki(data, filesystem_uuid):
         require(struct.unpack_from('<H', data, pe+20)[0] >= 152, 'truncated PE security directory')
         require(struct.unpack_from('<II', data, pe+24+112+4*8) == (0, 0),
                 'signed UKI specialization unsupported')
-    placeholder = 'qos.root=' + '0'*37
     tokens = info['uki_cmdline'].split()
-    require(tokens.count(placeholder) == 1 and not any(t.startswith('root=') for t in tokens),
+    namespace = boot_namespace(tokens)
+    placeholder = namespace + '.root=' + '0'*37
+    roots = [token for token in tokens if token.startswith('root=')]
+    expected_roots = ['root=tilo-auto'] if namespace == 'tilo' else []
+    require(tokens.count(placeholder) == 1 and roots == expected_roots,
             'one exact unbound root slot required')
     digests = [t.partition('=')[2] for t in tokens if t.startswith('composefs=')]
     require(len(digests) == 1, 'one composefs identity required')
     text(digests[0], r'[0-9a-f]{128}', 128)
     locator = 'UUID=' + filesystem_uuid
-    replacement = 'root=' + locator
-    wanted_cmdline = info['uki_cmdline'].replace(placeholder, replacement)
+    replacement = ('root=' + locator).ljust(len(placeholder))
+    original_cmdline = info['uki_cmdline']
+    wanted_cmdline = original_cmdline.replace(placeholder, replacement)
+    if namespace == 'tilo':
+        # The current producer discovers a root by GPT type. Staging and target
+        # can share a disk, so the prepared copy must select its exact FS UUID.
+        # Preserve all PE offsets and every other command-line byte.
+        wanted_cmdline = wanted_cmdline.replace('root=tilo-auto', ' '*len('root=tilo-auto'))
     validate_cmdline(wanted_cmdline, locator, digests[0])
     with tempfile.TemporaryDirectory(prefix='qos-uki-copy-') as temporary:
         path = Path(temporary) / 'prepared.efi'
         path.write_bytes(data)
         with redirect_stdout(io.StringIO()):
+            if namespace == 'tilo':
+                uki.main(['uki-cmdline.py', 'blank', 'root', str(path)])
             uki.main(['uki-cmdline.py', 'replace', placeholder, replacement, str(path)])
         prepared = path.read_bytes()
     offset, size = uki.find_cmdline(data)
-    expected = data[:offset] + data[offset:offset+size].replace(placeholder.encode(), replacement.encode()) + data[offset+size:]
+    expected = data[:offset] + wanted_cmdline.encode().ljust(size, b'\0') + data[offset+size:]
     require(prepared == expected, 'specialization changed bytes outside root slot')
     require(inspect_uki(prepared)['uki_cmdline'] == wanted_cmdline, 'specialization readback mismatch')
     return prepared

@@ -8,6 +8,7 @@ pub const MAX_MANIFEST_BYTES: usize = 65_536;
 const MAX_IMAGE_BYTES: u64 = 1 << 40;
 const ESP_GUID: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
 const ROOT_GUID: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";
+const TILO_ROOT_GUID: &str = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -151,7 +152,7 @@ fn efi_path(value: &str) -> bool {
     false
 }
 
-fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
+fn validate_cmdline(boot: &BootBinding) -> Result<&'static str, String> {
     let text = &boot.uki_cmdline;
     require(
         !text.is_empty()
@@ -163,6 +164,20 @@ fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
     )?;
     let tokens: Vec<_> = text.split_ascii_whitespace().collect();
     require(tokens.len() <= 64, "too many kernel arguments")?;
+    let (installer_marker, other_namespace, namespace) = match (
+        tokens.contains(&"qos.install"),
+        tokens.contains(&"tilo.install"),
+    ) {
+        (true, false) => ("qos.install", "tilo.", "qos"),
+        (false, true) => ("tilo.install", "qos.", "tilo"),
+        _ => return Err("one installer boot namespace required".into()),
+    };
+    require(
+        !tokens
+            .iter()
+            .any(|token| token.starts_with(other_namespace)),
+        "mixed installer boot namespaces",
+    )?;
     let mut names = std::collections::HashSet::new();
     let mut consoles = std::collections::HashSet::new();
     for token in &tokens {
@@ -182,18 +197,23 @@ fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
             | "quiet"
             | "splash"
             | "qos.install"
+            | "tilo.install"
             | "slab_nomerge"
             | "plymouth.ignore-serial-consoles" => *token == name,
             "root" => value == boot.root_locator,
             "composefs" => value == boot.composefs_digest,
-            "qos.mode" => value == "normal",
-            "qos.luks" => value == "0".repeat(43),
-            "qos.unlock" => value == "0".repeat(74),
+            "qos.mode" | "tilo.mode" => value == "normal",
+            "qos.luks" | "tilo.luks" => value == "0".repeat(43),
+            "qos.unlock" | "tilo.unlock" => value == "0".repeat(74),
+            "preempt" => installer_marker == "tilo.install" && value == "full",
+            "rd.luks.options" => {
+                installer_marker == "tilo.install" && value == "tpm2-device=auto,fido2-device=auto"
+            }
             "init_on_alloc" | "init_on_free" | "page_alloc.shuffle" => value == "1",
             "lockdown" => value == "integrity",
             "randomize_kstack_offset" => value == "on",
             "vsyscall" => value == "none",
-            "qos.generation" => {
+            "qos.generation" | "tilo.generation" => {
                 !value.is_empty()
                     && value.len() <= 10
                     && value.as_bytes()[0] != b'0'
@@ -204,11 +224,12 @@ fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
         require(allowed, "unrecognized command-line binding")?;
     }
     require(
-        ["root", "composefs", "qos.install", "rw"]
+        ["root", "composefs", installer_marker, "rw"]
             .iter()
             .all(|name| names.contains(name)),
         "missing boot binding",
-    )
+    )?;
+    Ok(namespace)
 }
 
 /// Parse the exact schema-1 exporter contract, without authenticating its origin.
@@ -313,7 +334,9 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
                 "b921b045-1df0-41c3-af44-4c6f280d3fae"
             };
             require(
-                (c.partition_type_guid == ROOT_GUID || c.partition_type_guid == arch_guid)
+                (c.partition_type_guid == ROOT_GUID
+                    || c.partition_type_guid == TILO_ROOT_GUID
+                    || c.partition_type_guid == arch_guid)
                     && c.filesystem_type == "btrfs"
                     && guid(&c.filesystem_uuid),
                 "unsupported root",
@@ -348,7 +371,11 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
             && boot.root_locator == format!("UUID={}", root.filesystem_uuid),
         "invalid boot binding",
     )?;
-    validate_cmdline(boot)?;
+    let namespace = validate_cmdline(boot)?;
+    require(
+        (root.partition_type_guid == TILO_ROOT_GUID) == (namespace == "tilo"),
+        "root partition type and boot namespace mismatch",
+    )?;
     Ok(InternalBundle { manifest: data })
 }
 
@@ -925,7 +952,7 @@ pub(crate) mod tests {
         (dir, bundle)
     }
 
-    pub(crate) use crate::test_support::{manifest_value as fixture, manifest_bytes as bytes};
+    pub(crate) use crate::test_support::{manifest_bytes as bytes, manifest_value as fixture};
     #[test]
     fn python_compatible_positive() {
         assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
@@ -996,6 +1023,60 @@ pub(crate) mod tests {
         raw.resize(MAX_MANIFEST_BYTES + 1, b' ');
         assert!(validate_internal_bundle(&raw).is_err());
     }
+    #[test]
+    fn rejects_tilo_partition_with_qos_boot_namespace() {
+        let mut data = fixture();
+        data["components"][1]["partition_type_guid"] = json!(TILO_ROOT_GUID);
+        assert!(validate_internal_bundle(&bytes(&data)).is_err());
+    }
+
+    #[test]
+    fn rejects_qos_partition_types_with_tilo_boot_namespace() {
+        let mut data = fixture();
+        data["boot_binding"]["uki_cmdline"] = json!(
+            data["boot_binding"]["uki_cmdline"]
+                .as_str()
+                .unwrap()
+                .replace("qos.install", "tilo.install")
+        );
+        for partition_type in [ROOT_GUID, "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"] {
+            data["components"][1]["partition_type_guid"] = json!(partition_type);
+            assert!(
+                validate_internal_bundle(&bytes(&data)).is_err(),
+                "accepted {partition_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn current_tilo_cmdline_profile_and_partition_type_are_explicit() {
+        let mut data = fixture();
+        data["components"][1]["partition_type_guid"] =
+            json!("7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab");
+        let base = data["boot_binding"]["uki_cmdline"]
+            .as_str()
+            .unwrap()
+            .replace("qos.install", "tilo.install");
+        let cmdline = format!(
+            "{base} tilo.mode=normal tilo.generation=12 preempt=full rd.luks.options=tpm2-device=auto,fido2-device=auto"
+        );
+        data["boot_binding"]["uki_cmdline"] = json!(cmdline);
+        assert!(validate_internal_bundle(&bytes(&data)).is_ok());
+        for tail in [
+            " qos.install",
+            " qos.mode=normal",
+            " tilo.mode=repair",
+            " preempt=none",
+            " rd.luks.options=discard",
+        ] {
+            data["boot_binding"]["uki_cmdline"] = json!(format!("{cmdline}{tail}"));
+            assert!(
+                validate_internal_bundle(&bytes(&data)).is_err(),
+                "accepted {tail}"
+            );
+        }
+    }
+
     #[test]
     fn cmdline_profile_is_closed() {
         let base = fixture()["boot_binding"]["uki_cmdline"]
