@@ -204,6 +204,87 @@ class CheckpointPersistenceTests(unittest.TestCase):
 
         self.assertEqual(set(path.name for path in checkpoint.iterdir()), {'receipt.json'})
 
+    def prepare_recompute(self):
+        context = self.context()
+        context_sha256 = spool.context(context)
+        self.write(self.run / 'binding.json', {'context_sha256': context_sha256})
+        self.write(self.run / 'signing-context.json', context)
+        chain = [{'name': 'checkpoint', 'sha256': '6' * 64, 'receipt': {'stage': 'reseal'}}]
+        values = {}
+        for purpose, payload in (('live-uki', b'live unsigned UKI'),
+                                 ('target-uki', b'target unsigned UKI')):
+            checkpoint = self.directory(self.checkpoints / purpose)
+            value = {
+                'purpose': purpose, 'input_sha256': spool.digest(payload),
+                'input_bytes': len(payload), 'checkpoint_chain': chain,
+                'transport_context_sha256': context_sha256,
+            }
+            self.write(checkpoint / 'receipt.json', value)
+            values[purpose] = (checkpoint, payload, value)
+        live, payload, value = values['live-uki']
+        request_id = 'a' * 32
+        self.write(live / 'input.efi', payload)
+        self.write(live / 'materialization.json', {
+            'schema': 1, 'purpose': 'live-uki', 'request_id': request_id,
+            'context_sha256': context_sha256,
+            'input_sha256': value['input_sha256'], 'input_bytes': value['input_bytes'],
+            'signing_authorized': False,
+        })
+        received = self.directory(self.run / 'received')
+        fetched = self.directory(received / request_id)
+        self.write(fetched / 'request.json', {
+            'schema': 1, 'request_id': request_id, 'operation': 'sign-efi',
+            'context_sha256': context_sha256,
+            'input_sha256': value['input_sha256'], 'input_bytes': value['input_bytes'],
+        })
+        exporter = types.SimpleNamespace(
+            validate_metadata=lambda value, request, binding, purpose, request_sha, local_spool:
+                value if value['purpose'] == purpose else (_ for _ in ()).throw(ValueError()))
+        return values, exporter, {'context_sha256': context_sha256}
+
+    def test_recompute_admits_materialized_live_and_metadata_only_target(self):
+        values, exporter, binding = self.prepare_recompute()
+        live, target = diagnostics.admit_composefs_recompute(
+            self.run, {}, binding, '7' * 64, exporter, self.spool)
+        self.assertEqual(live, values['live-uki'][2])
+        self.assertEqual(target, values['target-uki'][2])
+
+    def test_recompute_rejects_unmaterialized_live(self):
+        values, exporter, binding = self.prepare_recompute()
+        (values['live-uki'][0] / 'input.efi').unlink()
+        with self.assertRaises((OSError, ValueError)):
+            diagnostics.admit_composefs_recompute(
+                self.run, {}, binding, '7' * 64, exporter, self.spool)
+
+    def test_recompute_rejects_materialized_target_before_sequential_request(self):
+        values, exporter, binding = self.prepare_recompute()
+        self.write(values['target-uki'][0] / 'input.efi', values['target-uki'][1])
+        with self.assertRaisesRegex(ValueError, 'metadata-only'):
+            diagnostics.admit_composefs_recompute(
+                self.run, {}, binding, '7' * 64, exporter, self.spool)
+
+    def test_recompute_rejects_receive_context_mismatch(self):
+        values, exporter, binding = self.prepare_recompute()
+        request = self.run / 'received' / ('a' * 32) / 'request.json'
+        value = self.spool.document(request)
+        value['context_sha256'] = '8' * 64
+        request.unlink()
+        self.write(request, value)
+        with self.assertRaisesRegex(ValueError, 'receive metadata differs'):
+            diagnostics.admit_composefs_recompute(
+                self.run, {}, binding, '7' * 64, exporter, self.spool)
+
+    def test_recompute_admits_explicit_legacy_checkpoint_layout(self):
+        values, exporter, binding = self.prepare_recompute()
+        for purpose in ('live-uki', 'target-uki'):
+            source = self.checkpoints / purpose
+            source.rename(self.run / ('checkpoint-' + purpose))
+        self.checkpoints.rmdir()
+        live, target = diagnostics.admit_composefs_recompute(
+            self.run, {}, binding, '7' * 64, exporter, self.spool, legacy=True)
+        self.assertEqual(live, values['live-uki'][2])
+        self.assertEqual(target, values['target-uki'][2])
+
 
 if __name__ == '__main__':
     unittest.main()
