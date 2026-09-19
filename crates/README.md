@@ -2,7 +2,7 @@
 
 The root `Cargo.toml` lists every workspace member, grouped by domain. Package
 names and binaries stay stable when directories move. `apps/README.md` describes
-the desktop applications; `shell/` contains the desktop surface, while
+the desktop applications; `session/shell/` contains the desktop surface, while
 `sdk/ui-core/` implements the application toolkit behind `sdk/tilo-app`,
 while `system/fs/` owns the collaborative filesystem service.
 
@@ -17,7 +17,7 @@ while `system/fs/` owns the collaborative filesystem service.
 | `packaging/` | Package format, registry, installation, sandboxed launch, and app hosting |
 | `runtime/` | App-facing service clients, CLI helpers, and optional dynamic SDK |
 | `sdk/` | Public application SDK (`tilo-app`) and its private UI implementation (`ui-core`) |
-| `session/` | Greeter, installer, unlock helper, and power entrypoints |
+| `session/` | Desktop shell, greeter, installer, unlock helper, and power entrypoints |
 | `system/` | OS integration, policy, settings, device services, and system tools |
 | `text/` | Shared text services such as spellchecking |
 | `windows/` | Windows compatibility catalogue, services, and managed VM integration |

@@ -20,14 +20,14 @@ exclude = [
 default-members = [
     "crates/doc/qdoc",
     "crates/system/fs",
-    "shell",
+    "crates/session/shell",
     "crates/sdk/ui-core",
     "crates/packaging/pkg",
     "crates/runtime/runtime",
 ]
 members = [
     # Core product surfaces
-    "shell",
+    "crates/session/shell",
     "crates/sdk/ui-core",
 
     # Applications

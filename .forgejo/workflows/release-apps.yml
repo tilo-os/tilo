@@ -14,13 +14,18 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "release/app-collections.toml"
+      - "dist/apps/app-collections.toml"
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
       - "tools/app_release.py"
+      - "tools/app_package_isa.py"
+      - "tools/app_channel_manifest.py"
+      - "tools/canonical_app_verifier.py"
+      - "tools/create_app_receipt.py"
       - "tools/resolve_ci_builder.py"
       - "tools/assemble_app_collection.py"
       - "dist/apps/assemble-collection.sh"
+      - ".forgejo/actions/restore-cargo-downloads/**"
       - ".forgejo/workflows/release-apps.yml"
   push:
     # Paused during capacity relief; preserve for continuous packaging rollout.
@@ -34,13 +39,18 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "release/app-collections.toml"
+      - "dist/apps/app-collections.toml"
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
       - "tools/app_release.py"
+      - "tools/app_package_isa.py"
+      - "tools/app_channel_manifest.py"
+      - "tools/canonical_app_verifier.py"
+      - "tools/create_app_receipt.py"
       - "tools/resolve_ci_builder.py"
       - "tools/assemble_app_collection.py"
       - "dist/apps/assemble-collection.sh"
+      - ".forgejo/actions/restore-cargo-downloads/**"
       - ".forgejo/workflows/release-apps.yml"
   workflow_dispatch:
     inputs:
@@ -49,7 +59,7 @@ on:
         required: false
         default: ""
       collection:
-        description: "Named set from release/app-collections.toml."
+        description: "Named set from dist/apps/app-collections.toml."
         required: false
         default: "default"
       architectures:
@@ -208,15 +218,7 @@ jobs:
       - name: Validate native architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
       - name: Restore Cargo downloads
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        continue-on-error: true
-        with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-deps-
+        uses: ./.forgejo/actions/restore-cargo-downloads
       - name: Prepare compiler cache
         run: bash tools/ci-sccache.sh prepare
       - name: Build and verify selected qpkgs once for this architecture
@@ -255,6 +257,18 @@ jobs:
             find target/thin-app target/release -mindepth 1 -depth -delete 2>/dev/null || true
             SCCACHE_RECACHE=1 dist/apps/package-apps.sh
           fi
+      - name: Generate unpublished receipt with canonical verifiers
+        # Runs for publish=false too. Uses tools compiled by package-apps.sh;
+        # adds no build, credentials, registry write or channel promotion.
+        env:
+          RECEIPT_ARCH: ${{ matrix.arch }}
+        run: |
+          python3 tools/create_app_receipt.py \
+            --collection dist/app-release \
+            --pkg-binary target/release/tilo-pkg \
+            --runtime-binary target/release/tilo-runtime-bundle \
+            --signers dist/app-release/work/receipt-signers.json \
+            --source-sha "$GITHUB_SHA" --architecture "$RECEIPT_ARCH"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: tilo-apps-${{ matrix.arch }}
@@ -263,6 +277,8 @@ jobs:
             dist/app-release/runtime/**
             dist/app-release/SHA256SUMS
             dist/app-release/index.json
+            dist/app-release/publication-receipt.json
+            dist/app-release/verification-policy.json
           if-no-files-found: error
       - name: Report compiler-cache effectiveness
         if: always()

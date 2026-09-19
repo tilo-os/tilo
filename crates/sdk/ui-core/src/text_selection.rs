@@ -297,7 +297,7 @@ pub fn extend_span_drag<T: Ord + Copy>(
 /// platforms.
 ///
 /// On Wayland `arboard` talks `zwlr_data_control_manager_v1`, which Tilo does
-/// not offer to sandboxed apps (see `shell/src/compositor/selection.rs`); a
+/// not offer to sandboxed apps (see `crates/session/shell/src/compositor/selection.rs`); a
 /// `ui` app there goes through [`crate::clipboard::WaylandClipboard`] and
 /// `wl_data_device` instead. Construction is skipped rather than attempted
 /// on Wayland because arboard's probe there is slow, and a handle that

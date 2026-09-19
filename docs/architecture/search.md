@@ -99,7 +99,7 @@ content.
 - **App providers** implement `ui::search::SearchProvider` and are exposed by
   the app widget. Providers return bounded, paged results with stable resource
   addresses and activation data.
-- **Shell aggregation** lives in `shell/src/shell/search/`. Built-in providers
+- **Shell aggregation** lives in `crates/session/shell/src/shell/search/`. Built-in providers
   cover applications, files, editor state, notes, actions, and records; the
   live-app provider obtains registered resources and actions through the
   collaboration broker.

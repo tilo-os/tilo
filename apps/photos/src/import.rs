@@ -265,7 +265,10 @@ pub fn index_file(
         .portable();
     let mut photo = LibraryPhoto::from_image(open);
     photo.image.name = name.to_owned();
-    photo.captured_at.clone_from(&exif.captured_at);
+    photo.captured_at = exif
+        .captured_at
+        .as_deref()
+        .and_then(crate::actions::canonical_capture_at_value);
     if options.retain_exif_location {
         photo.location.clone_from(&exif.location);
     }

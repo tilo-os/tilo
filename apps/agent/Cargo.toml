@@ -53,7 +53,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 [dev-dependencies]
 tempfile.workspace = true
 hex.workspace = true
-shell = { path = "../../shell", default-features = false }
+shell = { path = "../../crates/session/shell", default-features = false }
 collab-types = { path = "../../crates/collab/collab-types" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
