@@ -1,5 +1,6 @@
 """Execute the actual release invariant, including disconnected-builder negatives."""
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -8,6 +9,29 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class AppReleaseWorkflowContract(unittest.TestCase):
+    def test_every_main_pr_plans_but_never_packages(self):
+        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+        pr = source.split('  pull_request:\n', 1)[1].split('\n  push:', 1)[0]
+        self.assertRegex(pr, r'(?m)^    branches: \[main\]$')
+        self.assertNotRegex(pr, r'(?m)^    (?:paths|paths-ignore):')
+        plan = source.split('\n  plan:\n', 1)[1].split('\n  build:\n', 1)[0]
+        self.assertNotRegex(plan, r'(?m)^    if:')
+        self.assertIn('python3 tools/app_release.py "${args[@]}"', plan)
+        build = source.split('\n  build:\n', 1)[1].split('\n  publish:\n', 1)[0]
+        condition = re.search(r'(?m)^    if: (.+)$', build).group(1)
+        # Execute the production predicate, including both nonzero/zero plans.
+        predicate = condition.replace('github.event_name', '"$1"').replace(
+            'needs.plan.outputs.count', '"$2"')
+        for event, count, allowed in [('pull_request', '51', False), ('pull_request', '0', False),
+                                      ('workflow_dispatch', '51', True), ('push', '51', True),
+                                      ('workflow_dispatch', '0', False)]:
+            with self.subTest(event=event, count=count):
+                result = subprocess.run(['bash', '-c', '[[ ' + predicate + ' ]]', 'predicate', event, count])
+                self.assertEqual(0 if allowed else 1, result.returncode)
+        push = source.split('\n  push:\n', 1)[1].split('\n  workflow_dispatch:', 1)[0]
+        self.assertNotRegex(push, r'(?m)^    branches:')
+        self.assertIn('tags: ["apps-v*", "app-*-v*"]', push)
+
     def check(self, workflow):
         script = (ROOT / 'os/tests/release_pipeline_invariants.sh').read_text()
         start = script.index("grep -Fq 'dist/apps/app-collections.toml' \"$apps\"")
