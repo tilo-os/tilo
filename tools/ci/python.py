@@ -25,6 +25,25 @@ class StandardLibraryOnly:
         return spec
 
 
+
+class RelocatedAppModules:
+    """Resolve app helpers only from their pinned subsystem paths."""
+    names = frozenset(('app_release', 'app_package_isa', 'app_channel_manifest',
+                       'canonical_app_verifier', 'create_app_receipt',
+                       'final_app_receipt', 'assemble_app_collection'))
+
+    def __init__(self, directory):
+        self.directory = str(directory)
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname not in self.names:
+            return None
+        spec = PathFinder.find_spec(fullname, [self.directory], target)
+        if spec is None:
+            raise ModuleNotFoundError('pinned app helper unavailable: ' + fullname, name=fullname)
+        return spec
+
+
 def main():
     if not sys.flags.isolated:
         raise SystemExit('ci/python.py requires python3 -I')
@@ -42,7 +61,8 @@ def main():
         # Builtin/Frozen importers keep precedence. In particular, subprocess
         # probes msvcrt on Linux: absence must stay ImportError, not tools/msvcrt.
         sys.meta_path.insert(sys.meta_path.index(PathFinder), StandardLibraryOnly(sys.path))
-        sys.path.extend((str(tools), str(tools / 'apps')))
+        sys.meta_path.insert(sys.meta_path.index(PathFinder), RelocatedAppModules(tools / 'apps'))
+        sys.path.append(str(tools))
         sys.argv = [str(script), *sys.argv[2:]]
         runpy.run_path(str(script), run_name='__main__')
 
