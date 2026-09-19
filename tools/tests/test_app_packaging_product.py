@@ -15,7 +15,8 @@ import app_packaging_product as product
 import app_packaging_qualification as guard
 
 
-POLICY = {'enabled': True, 'qualification_only': True, 'trusted_files': {}}
+POLICY = {'enabled': True, 'qualification_only': True, 'trusted_files': {},
+          'final_receipt_policy_sha256': 'f' * 64}
 
 
 def cargo_listing(path):
@@ -35,7 +36,8 @@ def desired(char='a'):
 def proof(intent, run):
     return {'schema': 'tilo.coordinator-verification/v1', 'run_id': run['id'],
             'desired': intent['desired'], 'backend': 'canonical-final-artifact-v1',
-            'receipts': {arch: 'e' * 64 for arch in intent['desired']['architectures']}}
+            'receipts': {arch: 'e' * 64 for arch in intent['desired']['architectures']},
+            'final_policy_sha256': POLICY['final_receipt_policy_sha256']}
 
 
 class API(product.ProductForgejo):
@@ -101,6 +103,26 @@ class ProductTests(unittest.TestCase):
     def start(self):
         self.store.observe(1, desired())
         core.tick(self.store, self.api)
+
+    def test_same_policy_baseline_with_other_final_policy_is_rejected_before_dispatch(self):
+        baseline = desired()
+        evidence = proof({'desired': baseline}, {'id': 7})
+        evidence['final_policy_sha256'] = '0' * 64
+        intent = {'id': 'test', 'desired': desired('b'), 'baseline': baseline,
+                  'baseline_evidence': evidence}
+        with self.assertRaisesRegex(ValueError, 'final verification policy mismatch'):
+            self.api.dispatch(intent)
+        self.assertEqual(self.api.calls, [])
+
+    def test_rotated_final_policy_forces_full_build_without_reusing_old_proof(self):
+        baseline = desired()
+        evidence = proof({'desired': baseline}, {'id': 7})
+        self.api.policy = dict(POLICY, final_receipt_policy_sha256='0' * 64)
+        current = dict(desired('b'), policy_sha256=self.api.policy_sha)
+        self.api.dispatch({'id': 'test', 'desired': current, 'baseline': baseline,
+                           'baseline_evidence': evidence})
+        self.assertEqual(self.api.calls[0]['inputs']['baseline_sha'], '')
+        self.assertEqual(self.api.calls[0]['inputs']['baseline_evidence'], '')
 
     def test_zero_bootstrap_is_handled_without_manufacturing_baseline(self):
         self.api.zero = True

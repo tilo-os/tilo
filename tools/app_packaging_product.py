@@ -166,7 +166,7 @@ def dispatch_inputs(intent):
             'baseline_receipt_sha256': core.receipt_key(evidence) if compatible else ''}
 
 
-def validate_evidence(proof, desired, run_id):
+def validate_evidence(proof, desired, run_id, final_policy_sha=None):
     require(isinstance(proof, dict) and proof.get('schema') == 'tilo.coordinator-verification/v1', 'invalid verification proof')
     require(type(run_id) is int and run_id > 0 and proof.get('run_id') == run_id, 'verification run mismatch')
     require(proof.get('desired') == desired, 'verification source/builder/scope mismatch')
@@ -175,6 +175,9 @@ def validate_evidence(proof, desired, run_id):
     require(isinstance(receipts, dict) and set(receipts) == set(desired['architectures']), 'incomplete architecture verification')
     for value in receipts.values():
         digest(value)
+    if final_policy_sha is not None:
+        require(proof.get('final_policy_sha256') == digest(final_policy_sha),
+                'final verification policy mismatch')
     return proof
 
 
@@ -194,6 +197,7 @@ class ProductForgejo(core.Forgejo):
         require(self.policy.get('enabled') is True and self.policy.get('qualification_only') is True,
                 'production qualification is disabled')
         require(receipt['policy_sha256'] == self.policy_sha, 'trusted policy identity changed')
+        digest(self.policy.get('final_receipt_policy_sha256'))
         paths = self.policy.get('trusted_files', {})
         require(isinstance(paths, dict) and REQUIRED_PATHS <= set(paths), 'incomplete trusted workflow policy')
         repository = self.call('repos/' + REPO)
@@ -224,7 +228,20 @@ class ProductForgejo(core.Forgejo):
                 cargo_inputs[path] = raw
         validate_cargo_inputs(cargo_inputs['rust-toolchain.toml'], cargo_inputs['.cargo/config.toml'])
 
+    def validate_baseline_policy(self, intent):
+        final_sha = digest(self.policy.get('final_receipt_policy_sha256'))
+        baseline = intent.get('baseline')
+        # An older policy forces full packaging; its proof is not reused under
+        # the new policy. Compatible baseline proofs must bind the same final
+        # verifier policy as the platform-owned coordinator configuration.
+        if baseline and baseline.get('policy_sha256') == self.policy_sha:
+            evidence = intent.get('baseline_evidence')
+            require(isinstance(evidence, dict), 'baseline lacks independent verification')
+            validate_evidence(evidence, baseline, evidence.get('run_id'), final_sha)
+        return final_sha
+
     def dispatch(self, intent):
+        self.validate_baseline_policy(intent)
         return self.call(f'repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches', {
             'ref': intent['desired']['source_sha'], 'return_run_info': True,
             'inputs': dispatch_inputs(intent)})
@@ -307,6 +324,7 @@ class ProductForgejo(core.Forgejo):
             'artifact_id': artifact['id'], 'plan_sha256': hashlib.sha256(content).hexdigest()})
 
     def validate_run(self, intent, run):
+        final_sha = self.validate_baseline_policy(intent)
         require(self.policy.get('enabled') is True and self.policy.get('qualification_only') is True and
                 intent['desired']['policy_sha256'] == self.policy_sha, 'active trusted policy changed or disabled')
         payload = json.loads(run.get('event_payload') or '{}')
@@ -325,7 +343,7 @@ class ProductForgejo(core.Forgejo):
                 return no_build
             if self.verifier is None:
                 raise core.VerificationRequired('independent final artifact verification is not installed')
-            return validate_evidence(self.verifier(intent, run), intent['desired'], run['id'])
+            return validate_evidence(self.verifier(intent, run), intent['desired'], run['id'], final_sha)
 
 
 def reconcile(store, api, run_id):
