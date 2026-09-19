@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod controller;
 pub mod desktop_catalog;
 mod desktop_continuation;
