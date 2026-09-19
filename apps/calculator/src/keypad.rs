@@ -319,7 +319,7 @@ impl CalcScreen {
         model: &CalcModel,
         area: Rect,
     ) {
-        draw::set_text_scale(theme.text_scale);
+        draw::set_text_scale(draw::paint_scale(tr, theme));
         // Advance the drawer's eased reveal once per frame (draw path only) so
         // the docked column / overlay flap slides instead of snapping.
         self.drawer.tick(theme.reduce_motion);
@@ -375,15 +375,7 @@ impl CalcScreen {
         display: Rect,
     ) {
         let c = &theme.tokens.colors;
-        draw::fill_rrect(scene, t, display, theme.radius_standard, c.neutral[0]);
-        draw::stroke_rrect(
-            scene,
-            t,
-            display,
-            theme.radius_standard,
-            c.border_standard,
-            1.0,
-        );
+        ui::surface::card(scene, t, display, theme.radius_standard, c.neutral[0]);
 
         // status line: angle mode + Ans
         let status = Rect::new(
@@ -517,7 +509,7 @@ impl CalcScreen {
             let hovered = self.hovered_mem == Some(i);
             let active = matches!(key, Key::MemRecall | Key::MemClear) && model.memory != 0.0;
             let fill = if hovered { c.neutral[3] } else { c.neutral[2] };
-            draw::fill_rrect(scene, t, r, 8.0, fill);
+            ui::surface::card(scene, t, r, 8.0, fill);
             let txt_col = if active { c.accent[6] } else { c.text_dim };
             draw::text_in(
                 scene,
@@ -563,7 +555,7 @@ impl CalcScreen {
             let hovered = self.hovered_key == Some(i);
             let pressed = self.pressed_key == Some(i);
             let (fill, text_col) = key_colors(theme, key.role(), hovered, pressed);
-            draw::fill_rrect(scene, t, r, 10.0, fill);
+            ui::surface::card(scene, t, r, 10.0, fill);
             if key.role() == KeyRole::Accent {
                 draw::stroke_rrect(scene, t, r, 10.0, c.accent[6], 1.0);
             }
@@ -616,8 +608,8 @@ impl CalcScreen {
             t,
             Point::new(right.x0, right.y0),
             Point::new(right.x0, right.y1),
-            c.border_standard,
-            if overlay { 1.5 } else { 1.0 },
+            ui::surface::edge_on(panel_bg),
+            1.0,
         );
 
         let header = Rect::new(right.x0 + 16.0, right.y0, right.x1 - 16.0, right.y0 + 48.0);
@@ -632,7 +624,7 @@ impl CalcScreen {
             Align::Left,
             TextWeight::Semibold,
         );
-        draw::fill_rrect(scene, t, self.clear_hist_rect, 6.0, c.neutral[2]);
+        ui::surface::card(scene, t, self.clear_hist_rect, 6.0, c.neutral[2]);
         draw::text_in(
             scene,
             tr,
@@ -669,31 +661,13 @@ impl CalcScreen {
             let Some(entry) = model.history.get(*i) else {
                 continue;
             };
-            let row = Rect::new(r.x0, r.y0 + 4.0, r.x1, r.y1 - 4.0);
-            draw::fill_rrect(scene, t, row, 8.0, c.neutral[1]);
-            let expr_r = Rect::new(row.x0 + 12.0, row.y0 + 6.0, row.x1 - 12.0, row.y0 + 26.0);
-            draw::text_in(
+            draw_recorded_row(
                 scene,
-                tr,
                 t,
-                expr_r,
-                &engine::prettify(&entry.expr),
-                13.0,
-                c.text_dim,
-                Align::Left,
-                TextWeight::Regular,
-            );
-            let res_r = Rect::new(row.x0 + 12.0, row.y0 + 24.0, row.x1 - 12.0, row.y1 - 4.0);
-            draw::text_in(
-                scene,
                 tr,
-                t,
-                res_r,
-                &format!("= {}", entry.result),
-                18.0,
-                c.text_primary,
-                Align::Right,
-                TextWeight::Semibold,
+                theme,
+                Rect::new(r.x0, r.y0 + 4.0, r.x1, r.y1 - 4.0),
+                entry,
             );
         }
         scene.pop_layer();
@@ -771,20 +745,60 @@ fn key_colors(theme: &Theme, role: KeyRole, hovered: bool, pressed: bool) -> (Co
         // keys, so the scientific column reads as buttons (not bare text)
         // while staying a clear visual tier below the number pad.
         KeyRole::Function => (draw::mix(c.surfaces.base, c.neutral[2], 0.55), c.neutral[7]),
-        KeyRole::Accent => (c.accent[5], Color::WHITE),
+        KeyRole::Accent => (
+            c.accent[5],
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
+        ),
         KeyRole::Warm => (
             draw::mix(c.neutral[2], c.semantic.danger, 0.28),
             c.text_primary,
         ),
     };
     let fill = if pressed {
-        draw::mix(base, Color::BLACK, 0.18)
+        draw::wash(base, 0.18)
     } else if hovered {
-        draw::mix(base, Color::WHITE, 0.10)
+        draw::wash(base, 0.10)
     } else {
         base
     };
     (fill, text)
+}
+
+/// Shared presentation of a recorded calculation, without keypad/actions.
+pub(crate) fn draw_recorded_row(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    row: Rect,
+    entry: &crate::model::HistoryEntry,
+) {
+    let c = &theme.tokens.colors;
+    ui::surface::card(scene, t, row, 8.0, c.neutral[1]);
+    let expr_r = Rect::new(row.x0 + 12.0, row.y0 + 6.0, row.x1 - 12.0, row.y0 + 26.0);
+    draw::text_in(
+        scene,
+        tr,
+        t,
+        expr_r,
+        &engine::prettify(&entry.expr),
+        13.0,
+        c.text_dim,
+        Align::Left,
+        TextWeight::Regular,
+    );
+    let res_r = Rect::new(row.x0 + 12.0, row.y0 + 24.0, row.x1 - 12.0, row.y1 - 4.0);
+    draw::text_in(
+        scene,
+        tr,
+        t,
+        res_r,
+        &format!("= {}", entry.result),
+        18.0,
+        c.text_primary,
+        Align::Right,
+        TextWeight::Semibold,
+    );
 }
 
 #[cfg(test)]
