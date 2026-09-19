@@ -219,3 +219,200 @@ async fn owner_commit_local_sdk_snapshot_does_not_weaken_network_checkpoint_rule
         "only the committed governor-covered checkpoint admits remote state"
     );
 }
+
+#[tokio::test]
+async fn small_commit_retains_baseline_and_publishes_only_touched_route() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&directory.path().join("owner")).unwrap();
+    let baseline = owner.outgoing().to_vec();
+    let untouched = owner
+        .peer()
+        .rows()
+        .into_iter()
+        .find(|row| row.app_id != "dev.qos.word-processor")
+        .unwrap();
+    let prior_receipt = owner
+        .peer()
+        .durable_coverage(&untouched.app_id, &untouched.record_id)
+        .unwrap()
+        .unwrap();
+    let prior_floors = owner
+        .peer()
+        .replay_floors()
+        .into_iter()
+        .filter(|(app, record, _, _)| app == &untouched.app_id && record == &untouched.record_id)
+        .collect::<Vec<_>>();
+    let (service, mut mailbox) = OwnerCommitMailbox::bounded(1);
+    let acknowledgement = tokio::spawn(service.commit(document(&owner, 1005)));
+    mailbox.recv().await.unwrap().apply(&mut owner).unwrap();
+    acknowledgement.await.unwrap().unwrap();
+    assert!(
+        owner.outgoing().starts_with(&baseline),
+        "ordinary commit must persist its recovery baseline"
+    );
+    let tail = &owner.outgoing()[baseline.len()..];
+    assert_eq!(
+        tail.len(),
+        2,
+        "one room delta plus exactly the touched snapshot"
+    );
+    assert_eq!(
+        &owner.outgoing_kinds()[baseline.len()..],
+        &[
+            qos_peer_state::transport::Retention::Delta,
+            qos_peer_state::transport::Retention::Checkpoint
+        ]
+    );
+    assert!(matches!(
+        postcard::from_bytes::<qos_peer_state::NeighbourMsg>(&tail[0]).unwrap(),
+        qos_peer_state::NeighbourMsg::SyncResp { .. }
+    ));
+    assert!(
+        matches!(postcard::from_bytes::<qos_peer_state::NeighbourMsg>(&tail[1]).unwrap(), qos_peer_state::NeighbourMsg::AppDocument { app_id, record_id, .. } if app_id == "dev.qos.word-processor" && record_id == "tab:0000000000000001")
+    );
+    assert_eq!(
+        owner
+            .peer()
+            .durable_coverage(&untouched.app_id, &untouched.record_id)
+            .unwrap()
+            .unwrap(),
+        prior_receipt
+    );
+    assert_eq!(owner.peer().replay_floors().into_iter().filter(|(app, record, _, _)| app == &untouched.app_id && record == &untouched.record_id).collect::<Vec<_>>(), prior_floors);
+}
+
+#[tokio::test]
+async fn room_effect_receipt_publishes_no_application_snapshot() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&directory.path().join("owner")).unwrap();
+    let baseline = owner.outgoing().to_vec();
+    let floors = owner.peer().replay_floors();
+    let receipts =
+        qos_peer_state::durability::entries(owner.peer().admitted_room().unwrap()).unwrap();
+    let invocation = uuid::Uuid::new_v4();
+    let receipt = qos_desktop::WorkspaceEffectReceipt {
+        invocation: serde_json::from_value(serde_json::json!(invocation)).unwrap(),
+        actor: hex::encode(owner.peer().authority().user_public_key),
+        context: Default::default(),
+        status: serde_json::from_value(serde_json::json!({"status":"succeeded"})).unwrap(),
+        completed_at: 42,
+    };
+    let request = OwnerCommitRequest {
+        room: owner.peer().room().into(),
+        operation: CommitOperation::EffectReceipt {
+            invocation,
+            redacted: serde_json::to_vec(&receipt).unwrap(),
+        },
+    };
+    let (service, mut mailbox) = OwnerCommitMailbox::bounded(1);
+    let acknowledgement = tokio::spawn(service.commit(request));
+    mailbox.recv().await.unwrap().apply(&mut owner).unwrap();
+    acknowledgement.await.unwrap().unwrap();
+    assert!(
+        owner.outgoing().starts_with(&baseline),
+        "room-only commit must retain baseline"
+    );
+    let tail = &owner.outgoing()[baseline.len()..];
+    assert_eq!(
+        tail.len(),
+        1,
+        "room-only effects have no application publication"
+    );
+    assert!(matches!(
+        postcard::from_bytes::<qos_peer_state::NeighbourMsg>(&tail[0]).unwrap(),
+        qos_peer_state::NeighbourMsg::SyncResp { .. }
+    ));
+    assert_eq!(owner.peer().replay_floors(), floors);
+    assert_eq!(
+        qos_peer_state::durability::entries(owner.peer().admitted_room().unwrap()).unwrap(),
+        receipts
+    );
+}
+
+#[tokio::test]
+async fn committed_publication_compacts_to_bounded_recoverable_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("owner");
+    let mut owner = SessionOwner::initialize(&root).unwrap();
+    let baseline_len = owner.outgoing().len();
+    let (service, mut mailbox) = OwnerCommitMailbox::bounded(1);
+    for sequence in 1100..1140 {
+        let acknowledgement = tokio::spawn(service.commit(document(&owner, sequence * 2)));
+        mailbox.recv().await.unwrap().apply(&mut owner).unwrap();
+        acknowledgement.await.unwrap().unwrap();
+        assert!(
+            owner.outgoing().len() <= baseline_len + 64,
+            "obsolete publication tail must be bounded"
+        );
+    }
+    let bytes = owner.outgoing().to_vec();
+    let rows = owner.peer().rows();
+    drop(owner);
+    let owner = SessionOwner::open(&root).unwrap();
+    assert_eq!(owner.outgoing(), bytes);
+    let mut fresh = qos_peer_state::StatePeer::new(
+        owner.peer().room(),
+        owner.peer().authority().clone(),
+        owner.peer().certificates(),
+        qos_user_identity::RevocationList::new(),
+        web_time::SystemTime::now(),
+    )
+    .unwrap();
+    for bytes in owner.outgoing() {
+        fresh
+            .receive_from(
+                qos_peer_state::TransportOrigin::RelayDelta(
+                    owner.peer().authority().device_public_key,
+                ),
+                postcard::from_bytes(bytes).unwrap(),
+                web_time::SystemTime::now(),
+            )
+            .unwrap();
+    }
+    assert_eq!(fresh.rows(), rows);
+    for row in rows {
+        assert!(
+            fresh
+                .durable_covers_current(&row.app_id, &row.record_id)
+                .unwrap()
+        );
+    }
+}
+
+#[tokio::test]
+async fn failed_compaction_barrier_keeps_exact_recovery_tail_and_receipts() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("owner");
+    let mut owner = SessionOwner::initialize(&root).unwrap();
+    let (service, mut mailbox) = OwnerCommitMailbox::bounded(1);
+    for sequence in 1200..1232 {
+        let acknowledgement = tokio::spawn(service.commit(document(&owner, sequence * 2)));
+        mailbox.recv().await.unwrap().apply(&mut owner).unwrap();
+        acknowledgement.await.unwrap().unwrap();
+    }
+    assert_eq!(owner.outgoing().len() - owner.publication_baseline().1, 64);
+    let before = owner.status();
+    let bytes = owner.outgoing().to_vec();
+    let kinds = owner.outgoing_kinds().to_vec();
+    let receipt = owner.peer().durable_coverage("dev.qos.chat", "").unwrap();
+    let acknowledgement = tokio::spawn(service.commit(document(&owner, 3000)));
+    let pending = mailbox.recv().await.unwrap();
+    std::fs::rename(root.join("session.bin"), root.join("saved.bin")).unwrap();
+    std::fs::create_dir(root.join("session.bin")).unwrap();
+    assert!(pending.apply(&mut owner).is_err());
+    assert!(acknowledgement.await.unwrap().is_err());
+    assert!(!owner.permits_publication());
+    assert_eq!(owner.status(), before);
+    assert_eq!(owner.outgoing(), bytes);
+    assert_eq!(owner.outgoing_kinds(), kinds);
+    assert_eq!(
+        owner.peer().durable_coverage("dev.qos.chat", "").unwrap(),
+        receipt
+    );
+    drop(owner);
+    std::fs::remove_dir(root.join("session.bin")).unwrap();
+    std::fs::rename(root.join("saved.bin"), root.join("session.bin")).unwrap();
+    let restored = SessionOwner::open(&root).unwrap();
+    assert_eq!(restored.status(), before);
+    assert_eq!(restored.outgoing(), bytes);
+}

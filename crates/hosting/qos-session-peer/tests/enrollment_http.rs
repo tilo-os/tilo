@@ -72,6 +72,14 @@ async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) 
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
     let origin = metadata["fixture_origin"].as_str().unwrap();
+    wait_subscribed(origin, deadline).await;
+    let capability = fs::read_to_string(state.join("enrollment-capability")).unwrap();
+    assert_eq!(metadata["version"], 2);
+    assert_eq!(metadata["enrollment_version"], 2);
+    assert!(!metadata.to_string().contains(&capability));
+    (host, metadata, capability)
+}
+async fn wait_subscribed(origin: &str, deadline: Instant) {
     loop {
         assert!(Instant::now() < deadline, "native peer never subscribed");
         let (code, status) = request(origin, "/status", None, None).await;
@@ -80,11 +88,6 @@ async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) 
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let capability = fs::read_to_string(state.join("enrollment-capability")).unwrap();
-    assert_eq!(metadata["version"], 2);
-    assert_eq!(metadata["enrollment_version"], 2);
-    assert!(!metadata.to_string().contains(&capability));
-    (host, metadata, capability)
 }
 async fn proof(origin: &str, cap: &str, key: &SigningKey, id: u8) -> enrollment::CompleteRequest {
     let request_body = serde_json::to_string(&ChallengeRequest {
@@ -173,6 +176,9 @@ async fn real_http_enrollment_is_authorized_serialized_recoverable_and_public_on
     assert!(body.get("certificate").is_none());
     fs::remove_dir(&membership).unwrap();
     fs::rename(saved, &membership).unwrap();
+    // Invalid membership can correctly disconnect the native subscription. File
+    // repair is not Ready: wait for the same observed readiness as initial start.
+    wait_subscribed(&origin, Instant::now() + Duration::from_secs(30)).await;
     let fresh = proof(&origin, &cap, &key, 91).await;
     let (code, recovered) = request(
         &origin,

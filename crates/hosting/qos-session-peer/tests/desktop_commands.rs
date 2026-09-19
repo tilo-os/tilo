@@ -50,8 +50,32 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );
+    let baseline = owner.outgoing().to_vec();
+    let receipts =
+        qos_peer_state::durability::entries(owner.peer().admitted_room().unwrap()).unwrap();
     let receipt = owner.commit_desktop_command(&opening).unwrap();
     receipt.validate_for(&opening).unwrap();
+    assert!(owner.outgoing().starts_with(&baseline));
+    assert_eq!(
+        owner.outgoing().len() - baseline.len(),
+        2,
+        "launch publishes room prerequisites and new record only"
+    );
+    assert_eq!(
+        &owner.outgoing_kinds()[baseline.len()..],
+        &[
+            qos_peer_state::transport::Retention::Delta,
+            qos_peer_state::transport::Retention::Checkpoint
+        ]
+    );
+    for (route, receipt) in receipts {
+        assert_eq!(
+            qos_peer_state::durability::entries(owner.peer().admitted_room().unwrap())
+                .unwrap()
+                .get(&route),
+            Some(&receipt)
+        );
+    }
     let tree = tree(&owner);
     let group = tree.workspaces[0].strips[0].window_groups.last().unwrap();
     let tab = group.tabs[0].id;
@@ -67,7 +91,17 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
             },
         },
     );
+    let before_close = owner.outgoing().len();
     owner.commit_desktop_command(&close).unwrap();
+    assert_eq!(
+        owner.outgoing().len() - before_close,
+        1,
+        "closing topology publishes no unchanged applications"
+    );
+    assert_eq!(
+        owner.outgoing_kinds().last(),
+        Some(&qos_peer_state::transport::Retention::Delta)
+    );
     assert_eq!(
         owner.peer().document("dev.qos.notes", &record).unwrap(),
         data

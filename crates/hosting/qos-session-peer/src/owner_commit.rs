@@ -300,7 +300,7 @@ impl SessionOwner {
             }
         }
         let committed = self
-            .commit_admission(candidate, self.directory().to_vec())
+            .commit_mutation_candidate(candidate, self.directory().to_vec())
             .map_err(|e| e.to_string())?;
         let aggregate_hash = hex::decode(committed.aggregate_hash)
             .map_err(|e| e.to_string())?

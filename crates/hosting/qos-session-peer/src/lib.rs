@@ -16,3 +16,5 @@ mod action_host;
 mod action_timing;
 mod host_signing;
 mod desktop_commands;
+
+mod publication;

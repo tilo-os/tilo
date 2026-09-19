@@ -1,7 +1,7 @@
 //! Existing native shell retained-channel policy shared with browser peers.
 use crate::NeighbourMsg;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Retention {
     Checkpoint,
     Delta,

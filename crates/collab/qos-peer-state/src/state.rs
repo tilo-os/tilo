@@ -1080,6 +1080,135 @@ impl StatePeer {
         crate::durability::monotonic(self.room_doc.as_ref(),room)?;
         let mut messages=vec![candidate.room_message()];messages.extend(snapshots);*self=candidate;Ok(messages)
     }
+    /// Prepare route-selective publication against the last committed peer.
+    /// SyncResp here contains only room changes since `before` and MUST be retained
+    /// as a delta. Application messages remain exact covered snapshots. The caller
+    /// must durably commit the candidate and its baseline plus this tail before send.
+    pub fn durable_mutation_messages(
+        &mut self,
+        before: &StatePeer,
+        key: &SigningKey,
+        now: SystemTime,
+        generation: u64,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        if self.room != before.room || self.authority != before.authority {
+            return Err("publication cannot replace the session namespace".into());
+        }
+        if key.verifying_key().to_bytes() != self.authority.device_public_key {
+            return Err("publication requires pinned authority".into());
+        }
+        self.permissions(key.verifying_key().to_bytes(), now)?;
+        if self.incomplete_reason().is_some() {
+            return Err("cannot publish incomplete encryption state".into());
+        }
+        let before_room = before.room_doc.as_ref().ok_or("missing prior governance")?;
+        let mut candidate = self.clone();
+        for (route, prior) in &before.documents {
+            let document = candidate
+                .documents
+                .get_mut(route)
+                .ok_or("publication discards a record")?;
+            if prior
+                .doc
+                .base_heads()
+                .iter()
+                .any(|head| document.doc.get_change_by_hash(head).is_none())
+                || prior
+                    .channel
+                    .last_seq_per_author
+                    .iter()
+                    .any(|(author, seq)| {
+                        document
+                            .channel
+                            .last_seq_per_author
+                            .get(author)
+                            .copied()
+                            .unwrap_or(0)
+                            < *seq
+                    })
+            {
+                return Err("publication discards document history or replay floors".into());
+            }
+        }
+        let room = candidate
+            .room_doc
+            .as_mut()
+            .ok_or("missing room governance")?;
+        let before_heads = before_room.base_heads();
+        if before_heads
+            .iter()
+            .any(|head| room.get_change_by_hash(head).is_none())
+        {
+            return Err("publication discards room history".into());
+        }
+        crate::coverage::monotonic(Some(before_room), room)?;
+        crate::durability::monotonic(Some(before_room), room)?;
+        let old_coverage = crate::coverage::entries(before_room)?;
+        let coverage = crate::coverage::entries(room)?;
+        let old_receipts = crate::durability::entries(before_room)?;
+        let mut receipts = crate::durability::entries(room)?;
+        let mut dirty = Vec::new();
+        for (route, document) in &candidate.documents {
+            let route_key = crate::coverage::route_key(&route.app, &route.record);
+            let changed = before.documents.get(route).is_none_or(|prior| {
+                prior.doc.base_heads() != document.doc.base_heads()
+                    || prior.channel.last_seq_per_author != document.channel.last_seq_per_author
+                    || prior.encryption_required != document.encryption_required
+                    || prior.covered != document.covered
+                    || prior.covered_snapshot != document.covered_snapshot
+                    || old_coverage.get(&route_key) != coverage.get(&route_key)
+                    || old_receipts.get(&route_key) != receipts.get(&route_key)
+            });
+            if changed {
+                dirty.push((route.clone(), document.doc.clone().save()));
+            }
+        }
+        let mut snapshots = Vec::new();
+        for (route, bytes) in &dirty {
+            snapshots.push(candidate.publish_document(
+                &route.app,
+                &route.record,
+                bytes.clone(),
+                key,
+                now,
+            )?);
+        }
+        let room = candidate
+            .room_doc
+            .as_mut()
+            .ok_or("missing room governance")?;
+        let coverage = crate::coverage::entries(room)?;
+        for (route, _) in &dirty {
+            let route_key = crate::coverage::route_key(&route.app, &route.record);
+            let covered = coverage
+                .get(&route_key)
+                .ok_or("missing published coverage")?;
+            receipts.insert(
+                route_key,
+                crate::durability::DurableReceipt::new(covered.clone(), generation)?,
+            );
+        }
+        if !dirty.is_empty() {
+            crate::durability::put(room, receipts)?;
+        }
+        crate::coverage::monotonic(Some(before_room), room)?;
+        crate::durability::monotonic(Some(before_room), room)?;
+        let changes = room
+            .get_changes(&before_heads)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect::<Vec<_>>();
+        let mut messages = Vec::new();
+        if !changes.is_empty() {
+            messages.push(NeighbourMsg::SyncResp {
+                changes,
+                room: self.room.clone(),
+            });
+        }
+        messages.extend(snapshots);
+        *self = candidate;
+        Ok(messages)
+    }
     /// A governed assertion alone is insufficient: bind it to the accepted exact checkpoint.
     pub fn durable_coverage(&self,app:&str,record:&str)->Result<Option<crate::durability::DurableReceipt>,String>{
         let Some(room)=self.room_doc.as_ref()else{return Ok(None)};

@@ -59,6 +59,7 @@ pub struct NativeSubscription {
     session: Arc<RelayCoeditSession>,
     actions: Option<AttachedActions>,
     ready: bool,
+    publication: std::sync::Mutex<crate::publication::PublicationCursor>,
 }
 struct AttachedActions(Option<tokio::task::JoinHandle<Result<(), ()>>>);
 impl Drop for AttachedActions {
@@ -276,6 +277,7 @@ impl LocalHost {
                     session: Arc::new(session),
                     actions: None,
                     ready: false,
+                    publication: Default::default(),
                 })
             };
             let result = tokio::select! {
@@ -313,19 +315,23 @@ pub fn publish(owner: &SessionOwner, session: &NativeSubscription) -> Result<()>
     if !owner.permits_publication() {
         bail!("durable barrier failed; publication is suspended until restore");
     }
-    for bytes in owner.outgoing() {
-        let message: qos_peer_state::NeighbourMsg = postcard::from_bytes(bytes)?;
-        match retention(&message, true) {
-            Some((channel, Retention::Checkpoint)) => {
-                session.publish_checkpoint(channel, bytes.clone())?
+    session
+        .publication
+        .lock()
+        .map_err(|_| anyhow::anyhow!("publication cursor unavailable"))?
+        .send(owner, |bytes, kind| {
+            let message: qos_peer_state::NeighbourMsg = postcard::from_bytes(bytes)?;
+            match retention(&message, kind == Retention::Checkpoint) {
+                Some((channel, Retention::Checkpoint)) => {
+                    session.publish_checkpoint(channel, bytes.to_vec())?
+                }
+                Some((channel, Retention::Delta)) => {
+                    session.publish_retained_delta(channel, bytes.to_vec())?
+                }
+                None => session.publish_presence(bytes.to_vec())?,
             }
-            Some((channel, Retention::Delta)) => {
-                session.publish_retained_delta(channel, bytes.clone())?
-            }
-            None => session.publish_presence(bytes.clone())?,
-        }
-    }
-    Ok(())
+            Ok(())
+        })
 }
 fn public_status(
     owner: &SessionOwner,

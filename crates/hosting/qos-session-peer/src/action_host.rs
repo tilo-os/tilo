@@ -122,6 +122,7 @@ pub(crate) struct ActionHost {
     cache: PortableStorage,
     owners: RecordOwners,
     views: Rc<ui::application_view::InstanceViewStore>,
+    publication: RefCell<crate::publication::PublicationCursor>,
 }
 impl ActionHost {
     pub fn start(
@@ -186,6 +187,7 @@ impl ActionHost {
             cache,
             owners,
             views,
+            publication: Default::default(),
         };
         let result = this.reconcile(owner);
         this.finish_start(owner, result)
@@ -479,27 +481,30 @@ impl ActionHost {
     }
     pub fn committed(&self, owner: &SessionOwner) -> Result<(), String> {
         self.acknowledge_committed(owner)?;
-        for bytes in owner.outgoing() {
-            if let NeighbourMsg::AppDocument {
-                app_id,
-                cluster_id,
-                record_id,
-                envelope,
-                ..
-            } = postcard::from_bytes(bytes).map_err(|e| e.to_string())?
-            {
-                self.broker.fanout_event(
-                    &ui::collaboration::CollabEvent::Document {
-                        envelope,
-                        from_user_id: self.principal.clone(),
-                        decrypted_payload: None,
-                    },
-                    None,
-                    &CrdtRoute::record(app_id, cluster_id, record_id),
-                );
-            }
-        }
-        Ok(())
+        self.publication
+            .borrow_mut()
+            .send(owner, |bytes, _| {
+                if let NeighbourMsg::AppDocument {
+                    app_id,
+                    cluster_id,
+                    record_id,
+                    envelope,
+                    ..
+                } = postcard::from_bytes(bytes)?
+                {
+                    self.broker.fanout_event(
+                        &ui::collaboration::CollabEvent::Document {
+                            envelope,
+                            from_user_id: self.principal.clone(),
+                            decrypted_payload: None,
+                        },
+                        None,
+                        &CrdtRoute::record(app_id, cluster_id, record_id),
+                    );
+                }
+                Ok(())
+            })
+            .map_err(|error| error.to_string())
     }
     pub fn close(&mut self, owner: &SessionOwner) -> Result<(), String> {
         for worker in &mut self.workers {
@@ -600,6 +605,96 @@ mod tests {
         let runtime = ActionHost::start(&owner, authority, signing, sender).unwrap();
         drop((commits, signatures, network));
         (root, owner, runtime)
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn committed_fanout_only_delivers_new_publication_and_resets_with_runtime() {
+        let (root, mut owner, runtime) = runtime();
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let sink = delivered.clone();
+        let _subscription = runtime.broker.subscribe_rooms(
+            vec![owner.peer().room().into()],
+            Box::new(move |event, route| {
+                if let ui::collaboration::CollabEvent::Document { envelope, .. } = event {
+                    sink.lock()
+                        .unwrap()
+                        .push((route.app_id.clone(), envelope.seq));
+                }
+            }),
+        );
+        runtime.committed(&owner).unwrap();
+        let baseline = delivered.lock().unwrap().clone();
+        assert_eq!(baseline.len(), owner.peer().rows().len());
+        runtime.committed(&owner).unwrap();
+        assert_eq!(
+            *delivered.lock().unwrap(),
+            baseline,
+            "a repeated committed notification must not fan out history again"
+        );
+        let mut candidate = owner.peer().clone();
+        let app = "dev.qos.word-processor";
+        let record = "tab:0000000000000001";
+        let mut doc =
+            ui::automerge::AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
+        use ui::automerge::transaction::Transactable;
+        let before = doc.get_heads();
+        doc.put(ui::automerge::ROOT, "selective_fanout", 1).unwrap();
+        doc.commit();
+        candidate
+            .publish_incremental(
+                app,
+                record,
+                doc.save_after(&before),
+                &owner.identity.native,
+                web_time::SystemTime::now(),
+            )
+            .unwrap();
+        owner
+            .commit_mutation_candidate(candidate, owner.directory().to_vec())
+            .unwrap();
+        runtime.committed(&owner).unwrap();
+        let sent = delivered.lock().unwrap().clone();
+        assert_eq!(sent.len(), baseline.len() + 1);
+        assert_eq!(sent.last().unwrap().0, app);
+        owner.refresh_checkpoint().unwrap();
+        runtime.committed(&owner).unwrap();
+        assert_eq!(
+            delivered.lock().unwrap().len(),
+            sent.len() + owner.peer().rows().len(),
+            "compaction must deliver its complete replacement basis"
+        );
+        drop(runtime);
+        // Broker shutdown is asynchronous. Restore the same canonical aggregate
+        // into fresh custody to exercise a new runtime deterministically, without
+        // racing the previous invocation-journal writer's teardown.
+        let export = root.path().join("export.bin");
+        owner.export(&export).unwrap();
+        let identity = owner.root().join("identity");
+        let host_identity = owner.root().join("host-identity");
+        drop(owner);
+        let owner = SessionOwner::import(
+            &root.path().join("restored"),
+            &export,
+            &identity,
+            &host_identity,
+        )
+        .unwrap();
+        let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+        let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
+        let (signing, _signatures) = HostSigning::new(handle);
+        let (sender, _network) = tokio::sync::mpsc::channel(64);
+        let restarted = ActionHost::start(&owner, authority, signing, sender).unwrap();
+        let fresh = Arc::new(Mutex::new(Vec::new()));
+        let sink = fresh.clone();
+        let _subscription = restarted.broker.subscribe_rooms(
+            vec![owner.peer().room().into()],
+            Box::new(move |event, _| {
+                if let ui::collaboration::CollabEvent::Document { envelope, .. } = event {
+                    sink.lock().unwrap().push(envelope.seq);
+                }
+            }),
+        );
+        restarted.committed(&owner).unwrap();
+        assert_eq!(fresh.lock().unwrap().len(), owner.peer().rows().len());
     }
     fn saved_report(runtime: &mut ActionHost) -> ui::application::ComponentCloseReport {
         runtime.workers[0].app.close_components();

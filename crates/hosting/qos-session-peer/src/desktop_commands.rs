@@ -331,7 +331,7 @@ impl SessionOwner {
             )
             .map_err(rejected)?;
         let committed = self
-            .commit_admission(candidate, self.directory().to_vec())
+            .commit_mutation_candidate(candidate, self.directory().to_vec())
             .map_err(|e| DesktopCommandError::Uncertain(e.to_string()))?;
         let receipt = OwnerCommitReceipt {
             binding,

@@ -251,7 +251,7 @@ impl PendingSignature {
             };
             timing.mark("admission_start");
             let committed = owner
-                .commit_admission(candidate, owner.directory().to_vec())
+                .commit_mutation_candidate(candidate, owner.directory().to_vec())
                 .map_err(|e| e.to_string())?;
             timing.mark("admission_end");
             let receipt = OwnerCommitReceipt {
@@ -340,6 +340,8 @@ mod tests {
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
+        let baseline = owner.outgoing().to_vec();
+        let chat_receipt = owner.peer().durable_coverage("dev.qos.chat", "").unwrap();
         let writer = precommit(
             &service,
             &mut receiver,
@@ -348,6 +350,23 @@ mod tests {
             "tab:0000000000000001",
         )
         .await;
+        assert!(owner.outgoing().starts_with(&baseline));
+        assert_eq!(
+            owner.outgoing().len() - baseline.len(),
+            2,
+            "signer path publishes only its touched route"
+        );
+        assert_eq!(
+            owner.peer().durable_coverage("dev.qos.chat", "").unwrap(),
+            chat_receipt
+        );
+        assert_eq!(
+            &owner.outgoing_kinds()[baseline.len()..],
+            &[
+                qos_peer_state::transport::Retention::Delta,
+                qos_peer_state::transport::Retention::Checkpoint
+            ]
+        );
         let request_writer = request(
             &owner,
             "dev.qos.word-processor",

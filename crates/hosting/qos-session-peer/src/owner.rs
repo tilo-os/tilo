@@ -5,6 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use ed25519_dalek::{Signature, Signer, Verifier};
+use qos_peer_state::transport::{Retention, retention};
 use qos_peer_state::{DocumentRow, NeighbourMsg, StatePeer, TransportOrigin};
 use qos_user_identity::{DeviceCert, RevocationList, WorkspaceDirectory};
 use serde::{Deserialize, Serialize};
@@ -33,7 +34,7 @@ struct LegacyAggregate {
     generation: u64,
 }
 #[derive(Clone, Serialize, Deserialize)]
-struct Aggregate {
+struct AggregateV2 {
     version: u32,
     identity_root: PathBuf,
     host_identity_root: PathBuf,
@@ -47,7 +48,23 @@ struct Aggregate {
     generation: u64,
     issuances: Vec<crate::enrollment::Issuance>,
 }
-impl From<LegacyAggregate> for Aggregate {
+#[derive(Clone, Serialize, Deserialize)]
+struct Aggregate {
+    version: u32,
+    identity_root: PathBuf,
+    host_identity_root: PathBuf,
+    room: String,
+    authority: DeviceCert,
+    directory: Vec<u8>,
+    /// Versioned canonical StatePeer export owns roster, revocations and replay floors.
+    peer: Vec<u8>,
+    outgoing: Vec<Vec<u8>>,
+    pending: Vec<PendingOperation>,
+    generation: u64,
+    issuances: Vec<crate::enrollment::Issuance>,
+    publication: PublicationState,
+}
+impl From<LegacyAggregate> for AggregateV2 {
     fn from(old: LegacyAggregate) -> Self {
         Self {
             version: 2,
@@ -61,6 +78,43 @@ impl From<LegacyAggregate> for Aggregate {
             pending: old.pending,
             generation: old.generation,
             issuances: vec![],
+        }
+    }
+}
+/// Bounds redundant publication tail, not canonical Automerge history or baseline size.
+const MAX_PUBLICATION_TAIL_ENTRIES: usize = 64;
+const MAX_PUBLICATION_TAIL_BYTES: usize = 4 * 1024 * 1024;
+#[derive(Clone, Serialize, Deserialize)]
+struct PublicationState {
+    kinds: Vec<Retention>,
+    baseline_len: usize,
+    baseline_generation: u64,
+}
+impl PublicationState {
+    fn checkpoint(len: usize, generation: u64) -> Self {
+        Self {
+            kinds: vec![Retention::Checkpoint; len],
+            baseline_len: len,
+            baseline_generation: generation,
+        }
+    }
+}
+impl From<AggregateV2> for Aggregate {
+    fn from(old: AggregateV2) -> Self {
+        let publication = PublicationState::checkpoint(old.outgoing.len(), old.generation);
+        Self {
+            version: 3,
+            identity_root: old.identity_root,
+            host_identity_root: old.host_identity_root,
+            room: old.room,
+            authority: old.authority,
+            directory: old.directory,
+            peer: old.peer,
+            outgoing: old.outgoing,
+            pending: old.pending,
+            generation: old.generation,
+            issuances: old.issuances,
+            publication,
         }
     }
 }
@@ -112,8 +166,11 @@ fn decode(bytes: &[u8]) -> Result<(Aggregate, SignedAggregate)> {
         .context("corrupt session aggregate; preserve it for recovery")?;
     let (version, _) = postcard::take_from_bytes::<u32>(&signed.payload)?;
     let aggregate = match version {
-        1 => Aggregate::from(postcard::from_bytes::<LegacyAggregate>(&signed.payload)?),
-        2 => postcard::from_bytes::<Aggregate>(&signed.payload)?,
+        1 => Aggregate::from(AggregateV2::from(postcard::from_bytes::<LegacyAggregate>(
+            &signed.payload,
+        )?)),
+        2 => Aggregate::from(postcard::from_bytes::<AggregateV2>(&signed.payload)?),
+        3 => postcard::from_bytes::<Aggregate>(&signed.payload)?,
         _ => bail!("unsupported aggregate version; explicit migration required"),
     };
     Ok((aggregate, signed))
@@ -152,8 +209,21 @@ fn restore(
     if !peer.has_governance() || peer.rows().is_empty() {
         bail!("restored canonical session is incomplete");
     }
-    for bytes in &aggregate.outgoing {
-        let _: NeighbourMsg = postcard::from_bytes(bytes)?;
+    if aggregate.publication.kinds.len() != aggregate.outgoing.len()
+        || aggregate.publication.baseline_len > aggregate.outgoing.len()
+        || aggregate.publication.baseline_generation == 0
+        || aggregate.publication.baseline_generation > aggregate.generation
+        || (!aggregate.outgoing.is_empty() && aggregate.publication.baseline_len == 0)
+    {
+        bail!("invalid durable publication baseline");
+    }
+    for (bytes, kind) in aggregate.outgoing.iter().zip(&aggregate.publication.kinds) {
+        let message: NeighbourMsg = postcard::from_bytes(bytes)?;
+        if retention(&message, *kind == Retention::Checkpoint).map(|(_, actual)| actual)
+            != Some(*kind)
+        {
+            bail!("invalid durable publication retention kind");
+        }
     }
     Ok(peer)
 }
@@ -198,7 +268,8 @@ impl SessionOwner {
         directory.set_member_devices(workspace, &[identity.native_cert.device_public_key])?;
         directory.set_host_devices(workspace, &[identity.host_cert.device_public_key])?;
         let aggregate = Aggregate {
-            version: 2,
+            version: 3,
+            publication: PublicationState::checkpoint(outgoing.len(), 1),
             identity_root,
             host_identity_root,
             room,
@@ -254,6 +325,14 @@ impl SessionOwner {
                     .map(postcard::to_stdvec)
                     .collect::<Result<Vec<_>, _>>()?,
             );
+            next.publication = PublicationState::checkpoint(
+                next.outgoing.len(),
+                owner
+                    .aggregate
+                    .generation
+                    .checked_add(1)
+                    .context("session generation exhausted")?,
+            );
             owner.commit(next, candidate)?;
         }
         Ok(owner)
@@ -304,8 +383,81 @@ impl SessionOwner {
     pub fn pending(&self) -> &[PendingOperation] {
         &self.aggregate.pending
     }
+    /// Complete committed recovery baseline plus tail, not a disposable live queue.
+    /// Consumers must use the paired retention kinds and a transient send cursor.
     pub fn outgoing(&self) -> &[Vec<u8>] {
         &self.aggregate.outgoing
+    }
+    /// Exact retention metadata paired with `outgoing()`. The complete prefix is
+    /// followed by ordinary room deltas and touched-record snapshots.
+    pub fn outgoing_kinds(&self) -> &[Retention] {
+        &self.aggregate.publication.kinds
+    }
+    /// (replacement generation, complete-prefix length). Replacement resets a
+    /// consumer cursor; neither this value nor enqueue is a durable acknowledgement.
+    pub fn publication_baseline(&self) -> (u64, usize) {
+        (
+            self.aggregate.publication.baseline_generation,
+            self.aggregate.publication.baseline_len,
+        )
+    }
+    fn replace_publication(&self, next: &mut Aggregate, messages: &[NeighbourMsg]) -> Result<()> {
+        next.outgoing = messages
+            .iter()
+            .map(postcard::to_stdvec)
+            .collect::<Result<Vec<_>, _>>()?;
+        next.publication = PublicationState::checkpoint(
+            next.outgoing.len(),
+            self.aggregate
+                .generation
+                .checked_add(1)
+                .context("session generation exhausted")?,
+        );
+        Ok(())
+    }
+    fn append_mutation_publication(
+        &self,
+        next: &mut Aggregate,
+        candidate: &mut StatePeer,
+    ) -> Result<()> {
+        let generation = self
+            .aggregate
+            .generation
+            .checked_add(1)
+            .context("session generation exhausted")?;
+        // Keep the unprepared candidate for compaction: a second receipt at this
+        // same generation must never replace one prepared by the selective path.
+        let mut selective = candidate.clone();
+        let messages = selective
+            .durable_mutation_messages(
+                &self.peer,
+                &self.identity.native,
+                SystemTime::now(),
+                generation,
+            )
+            .map_err(anyhow::Error::msg)?;
+        let encoded = messages
+            .iter()
+            .map(postcard::to_stdvec)
+            .collect::<Result<Vec<_>, _>>()?;
+        let tail = &next.outgoing[next.publication.baseline_len..];
+        if tail.len().saturating_add(encoded.len()) > MAX_PUBLICATION_TAIL_ENTRIES
+            || tail.iter().chain(&encoded).map(Vec::len).sum::<usize>() > MAX_PUBLICATION_TAIL_BYTES
+        {
+            let checkpoint = candidate
+                .durable_bootstrap_messages(&self.identity.native, SystemTime::now(), generation)
+                .map_err(anyhow::Error::msg)?;
+            self.replace_publication(next, &checkpoint)?;
+        } else {
+            for message in &messages {
+                let (_, kind) =
+                    retention(message, false).context("unsupported ordinary publication")?;
+                next.publication.kinds.push(kind);
+            }
+            next.outgoing.extend(encoded);
+            *candidate = selective;
+        }
+        Ok(())
     }
     fn commit(&mut self, mut aggregate: Aggregate, candidate: StatePeer) -> Result<CommitReceipt> {
         aggregate.peer = candidate.durable().map_err(anyhow::Error::msg)?;
@@ -376,10 +528,7 @@ impl SessionOwner {
             )
             .map_err(anyhow::Error::msg)?;
         let mut next = self.aggregate.clone();
-        next.outgoing = messages
-            .iter()
-            .map(postcard::to_stdvec)
-            .collect::<Result<Vec<_>, _>>()?;
+        self.replace_publication(&mut next, &messages)?;
         self.commit(next, candidate)
     }
     pub fn receive(
@@ -408,26 +557,34 @@ impl SessionOwner {
             // Authenticated policy metadata is durable even when decryption prerequisites
             // are unavailable. Never sign a plaintext checkpoint over blocked state.
             next.outgoing.clear();
-            return self.commit(next, candidate).map(Some);
-        }
-        let messages = candidate
-            .durable_bootstrap_messages(
-                &self.identity.native,
-                SystemTime::now(),
+            next.publication = PublicationState::checkpoint(
+                0,
                 self.aggregate
                     .generation
                     .checked_add(1)
                     .context("session generation exhausted")?,
-            )
-            .map_err(anyhow::Error::msg)?;
-        // All entries here are authoritative complete checkpoints; newer committed checkpoints supersede older ones.
-        next.outgoing = messages
-            .iter()
-            .map(postcard::to_stdvec)
-            .collect::<Result<Vec<_>, _>>()?;
+            );
+            return self.commit(next, candidate).map(Some);
+        }
+        if request {
+            let messages = candidate
+                .durable_bootstrap_messages(
+                    &self.identity.native,
+                    SystemTime::now(),
+                    self.aggregate
+                        .generation
+                        .checked_add(1)
+                        .context("session generation exhausted")?,
+                )
+                .map_err(anyhow::Error::msg)?;
+            self.replace_publication(&mut next, &messages)?;
+        } else {
+            self.append_mutation_publication(&mut next, &mut candidate)?;
+        }
         self.commit(next, candidate).map(Some)
     }
-    /// Local in-process admission integration: caller supplies a canonically validated candidate.
+    /// Explicit recovery/admission checkpoint: caller supplies a validated candidate.
+    /// Ordinary local changes use `commit_mutation_candidate` instead.
     /// The owner still checks namespace, directory decoding and canonical restore before committing.
     pub fn commit_admission(
         &mut self,
@@ -450,10 +607,22 @@ impl SessionOwner {
             .map_err(anyhow::Error::msg)?;
         let mut next = self.aggregate.clone();
         next.directory = directory;
-        next.outgoing = messages
-            .iter()
-            .map(postcard::to_stdvec)
-            .collect::<Result<Vec<_>, _>>()?;
+        self.replace_publication(&mut next, &messages)?;
+        self.commit(next, candidate)
+    }
+    /// Ordinary local commit: retain the recovery baseline and append only changed routes.
+    pub fn commit_mutation_candidate(
+        &mut self,
+        mut candidate: StatePeer,
+        directory: Vec<u8>,
+    ) -> Result<CommitReceipt> {
+        if candidate.room() != self.peer.room() || candidate.authority() != self.peer.authority() {
+            bail!("admission cannot replace the session namespace");
+        }
+        self.validate_admission(&candidate, &directory)?;
+        let mut next = self.aggregate.clone();
+        next.directory = directory;
+        self.append_mutation_publication(&mut next, &mut candidate)?;
         self.commit(next, candidate)
     }
     pub(crate) fn commit_enrollment(
@@ -478,10 +647,7 @@ impl SessionOwner {
             .map_err(anyhow::Error::msg)?;
         let mut next = self.aggregate.clone();
         next.directory = directory;
-        next.outgoing = messages
-            .iter()
-            .map(postcard::to_stdvec)
-            .collect::<Result<Vec<_>, _>>()?;
+        self.replace_publication(&mut next, &messages)?;
         next.issuances.push(issuance);
         self.commit(next, candidate)
     }
@@ -612,6 +778,76 @@ impl SessionOwner {
 mod enrollment_migration_tests {
     use super::*;
     #[test]
+    fn signed_v2_migration_preserves_exact_legacy_bytes_and_rejects_invalid_signature() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("owner");
+        let mut owner = SessionOwner::initialize(&path).unwrap();
+        owner
+            .queue_pending("original-id", &[1, 2, 3], true)
+            .unwrap();
+        let before = owner.status();
+        let old = &owner.aggregate;
+        let legacy = AggregateV2 {
+            version: 2,
+            identity_root: old.identity_root.clone(),
+            host_identity_root: old.host_identity_root.clone(),
+            room: old.room.clone(),
+            authority: old.authority.clone(),
+            directory: old.directory.clone(),
+            peer: old.peer.clone(),
+            outgoing: old.outgoing.clone(),
+            pending: old.pending.clone(),
+            generation: old.generation,
+            issuances: old.issuances.clone(),
+        };
+        let payload = postcard::to_stdvec(&legacy).unwrap();
+        let signature = owner
+            .identity
+            .native
+            .sign(
+                blake3::Hasher::new_derive_key("qOS native session aggregate v1")
+                    .update(&payload)
+                    .finalize()
+                    .as_bytes(),
+            )
+            .to_bytes()
+            .to_vec();
+        let signed = SignedAggregate { payload, signature };
+        let bytes = postcard::to_stdvec(&signed).unwrap();
+        owner.store.commit(&bytes).unwrap();
+        drop(owner);
+        let owner = SessionOwner::open(&path).unwrap();
+        assert_eq!(owner.status(), before);
+        assert_eq!(owner.outgoing(), legacy.outgoing);
+        assert_eq!(owner.peer().durable().unwrap(), legacy.peer);
+        assert_eq!(owner.pending(), legacy.pending);
+        assert!(
+            owner
+                .outgoing_kinds()
+                .iter()
+                .all(|kind| *kind == Retention::Checkpoint)
+        );
+        let migrated: SignedAggregate =
+            postcard::from_bytes(&std::fs::read(path.join("session.bin")).unwrap()).unwrap();
+        assert_eq!(
+            postcard::take_from_bytes::<u32>(&migrated.payload)
+                .unwrap()
+                .0,
+            3
+        );
+        drop(owner);
+        let mut invalid = signed;
+        invalid.signature[0] ^= 1;
+        let invalid_bytes = postcard::to_stdvec(&invalid).unwrap();
+        std::fs::write(path.join("session.bin"), &invalid_bytes).unwrap();
+        assert!(SessionOwner::open(&path).is_err());
+        assert_eq!(
+            std::fs::read(path.join("session.bin")).unwrap(),
+            invalid_bytes,
+            "migration must verify the original signed payload before writing"
+        );
+    }
+    #[test]
     fn signed_v1_state_migrates_without_replacing_identity_or_canonical_history() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("owner");
@@ -651,7 +887,7 @@ mod enrollment_migration_tests {
         let signed: SignedAggregate =
             postcard::from_bytes(&std::fs::read(path.join("session.bin")).unwrap()).unwrap();
         let (version, _) = postcard::take_from_bytes::<u32>(&signed.payload).unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 }
 
@@ -770,6 +1006,10 @@ mod desktop_migration_tests {
             .iter()
             .map(|m| postcard::to_stdvec(m).unwrap())
             .collect();
+        owner.aggregate.publication = PublicationState::checkpoint(
+            owner.aggregate.outgoing.len(),
+            owner.aggregate.generation,
+        );
         owner.aggregate.peer = legacy.durable().unwrap();
         let pending = owner.aggregate.pending.clone();
         let outgoing = owner.aggregate.outgoing.clone();
