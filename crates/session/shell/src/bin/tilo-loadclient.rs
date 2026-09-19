@@ -6,9 +6,10 @@
 //! tilo-loadclient [--fullscreen] [--size WxH] [--app-id ID] [--seconds N]
 //! ```
 //!
-//! Attaches a fresh SHM buffer on every `wl_surface.frame` callback with a
-//! moving gradient, so a compositor that hashes buffers can't elide the
-//! work. Prints frame count and wall time on exit for the harness.
+//! Reuses released SHM buffers and changes one visible scanline on every
+//! `wl_surface.frame` callback. This keeps every commit observably different
+//! without spending the compositor's synchronous client-dispatch phase filling
+//! an entire 1600x900 CPU image. Prints frame count and wall time on exit.
 
 #![cfg_attr(
     test,
@@ -34,7 +35,10 @@ use smithay_client_toolkit::{
             window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
         },
     },
-    shm::{Shm, ShmHandler, slot::SlotPool},
+    shm::{
+        Shm, ShmHandler,
+        slot::{Buffer, SlotPool},
+    },
 };
 use wayland_client::{
     Connection, QueueHandle,
@@ -115,10 +119,12 @@ struct LoadApp {
     xdg_shell_state: XdgShell,
     window: Option<Window>,
     pool: SlotPool,
+    buffer: Option<Buffer>,
     width: u32,
     height: u32,
     frames: u64,
     configured: bool,
+    draw_pending: bool,
     started: Instant,
     deadline: Instant,
     done: bool,
@@ -135,44 +141,49 @@ impl LoadApp {
         let Some((w_px, h_px, stride)) = Self::buffer_geometry(width, height) else {
             return;
         };
-        let Ok((buffer, canvas)) =
+        let buffer = self.buffer.get_or_insert_with(|| {
             self.pool
                 .create_buffer(w_px, h_px, stride, wl_shm::Format::Argb8888)
-        else {
-            return;
+                .expect("create load buffer")
+                .0
+        });
+        let canvas = match self.pool.canvas(buffer) {
+            Some(canvas) => canvas,
+            None => {
+                let Ok((second, canvas)) =
+                    self.pool
+                        .create_buffer(w_px, h_px, stride, wl_shm::Format::Argb8888)
+                else {
+                    return;
+                };
+                *buffer = second;
+                canvas
+            }
         };
-        // Moving diagonal gradient: cheap, different every frame, and
-        // visually obvious in a snapshot when the import path is wrong.
+        // One moving scanline makes every frame observably different while
+        // bounding client callback work to O(width), not O(width*height).
         let phase = (self.frames % 256) as u32;
         // `stride` is `w_px.checked_mul(4)`, so it is always > 0 here; the
         // conversion cannot fail.
         let Ok(row_len) = usize::try_from(stride) else {
             return;
         };
-        for (row_idx, row) in canvas.chunks_exact_mut(row_len).enumerate() {
-            let row_idx = u32::try_from(row_idx).unwrap_or(0);
-            for (col_idx, pixel) in row.chunks_exact_mut(4).enumerate() {
-                let col_idx = u32::try_from(col_idx).unwrap_or(0);
-                let [blue, green, red, alpha] = pixel else {
-                    continue; // chunks_exact_mut(4) guarantees len == 4
-                };
-                // Gradient colour, not a measured quantity — wrapping on overflow
-                // is fine, it just shifts where the pattern rolls over.
-                let value = u8::try_from(
-                    col_idx
-                        .wrapping_add(row_idx)
-                        .wrapping_add(phase)
-                        .wrapping_rem(256),
-                )
-                .unwrap_or(0);
-                *blue = value; // B
-                *green = 0x40; // G
-                *red = 0xFFu8.wrapping_sub(value); // R
-                *alpha = 0xFF; // A
-            }
+        let row_idx = usize::try_from(self.frames % u64::from(height)).unwrap_or(0);
+        let Some(row) = canvas.chunks_exact_mut(row_len).nth(row_idx) else {
+            return;
+        };
+        for (col_idx, pixel) in row.chunks_exact_mut(4).enumerate() {
+            let value = u8::try_from(
+                u32::try_from(col_idx)
+                    .unwrap_or(0)
+                    .wrapping_add(phase)
+                    .wrapping_rem(256),
+            )
+            .unwrap_or(0);
+            pixel.copy_from_slice(&[value, 0x40, 0xFFu8.wrapping_sub(value), 0xFF]);
         }
         let surface = window.wl_surface();
-        surface.damage_buffer(0, 0, w_px, h_px);
+        surface.damage_buffer(0, i32::try_from(row_idx).unwrap_or(0), w_px, 1);
         // Request the frame callback *before* committing so the compositor
         // sees it with this commit; otherwise the client free-runs and
         // swamps the socket instead of pacing to presentation.
@@ -211,7 +222,8 @@ impl CompositorHandler for LoadApp {
             self.done = true;
             return;
         }
-        self.draw(qh);
+        let _ = qh;
+        self.draw_pending = true;
     }
     fn surface_enter(
         &mut self,
@@ -274,7 +286,8 @@ impl WindowHandler for LoadApp {
             self.configured = true;
             self.started = Instant::now();
         }
-        self.draw(qh);
+        let _ = qh;
+        self.draw_pending = true;
     }
 }
 
@@ -329,10 +342,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         xdg_shell_state,
         window: None,
         pool,
+        buffer: None,
         width: opts.width,
         height: opts.height,
         frames: 0,
         configured: false,
+        draw_pending: false,
         started: now,
         deadline,
         done: false,
@@ -354,6 +369,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while !app.done {
         if event_queue.blocking_dispatch(&mut app).is_err() {
             break;
+        }
+        // Wayland callback handlers run inside the compositor's synchronous
+        // `dispatch_clients` stack in this in-process benchmark setup. Keep
+        // drawing outside those callbacks so the load generator cannot make
+        // compositor client dispatch look slow merely by filling SHM.
+        if app.draw_pending {
+            app.draw_pending = false;
+            app.draw(&qh);
         }
     }
     let elapsed = app.started.elapsed().as_secs_f64();

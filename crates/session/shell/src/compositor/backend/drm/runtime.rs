@@ -8,7 +8,7 @@
 //! runs under `cargo test`. `DrmRuntime::new` fails cleanly with `Err` rather than panicking when there is no seat.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -2453,6 +2453,25 @@ fn register_event_sources(
 }
 
 impl DrmRuntime {
+    /// Duplicate the internal calloop poll fd so a parent loop can wait on
+    /// libinput/libseat/udev readiness directly. The duplicate owns only the
+    /// descriptor reference; `event_loop` remains the sole event dispatcher.
+    pub fn duplicate_event_fd(&self) -> std::io::Result<OwnedFd> {
+        let raw = unsafe {
+            libc::fcntl(
+                self.event_loop.as_fd().as_raw_fd(),
+                libc::F_DUPFD_CLOEXEC,
+                3,
+            )
+        };
+        if raw < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            // SAFETY: F_DUPFD_CLOEXEC returned a new descriptor owned by us.
+            Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+        }
+    }
+
     /// Acquire the session, enumerate DRM devices, attach libinput, and wire everything onto an internal calloop — returns `Err`, not a panic, matching the binary entry point's `eprintln!` + `exit(1)` contract.
     ///
     /// # Errors

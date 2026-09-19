@@ -217,6 +217,84 @@ pub fn buffer_to_rgba(buffer: &WlBuffer, out: &mut Vec<u8>) -> Result<(u32, u32)
     result
 }
 
+/// An owned snapshot of one valid SHM buffer. Copying bytes from the client
+/// mapping must happen while Smithay holds the pool access guard; the more
+/// expensive format conversion can then safely run on a worker thread.
+#[derive(Debug)]
+pub struct OwnedShmFrame {
+    bytes: Vec<u8>,
+    width: usize,
+    height: usize,
+    stride: usize,
+    format: wl_shm::Format,
+}
+
+pub fn copy_shm_frame(buffer: &WlBuffer) -> Result<OwnedShmFrame, ReadbackError> {
+    let result = with_buffer_contents(buffer, |ptr, len, data| {
+        let (width, height, stride) = (data.width, data.height, data.stride);
+        if width <= 0 || height <= 0 || stride < width.saturating_mul(4) {
+            return Err(ReadbackError::InvalidDimensions {
+                width,
+                height,
+                stride,
+            });
+        }
+        let offset = usize::try_from(data.offset).unwrap_or(usize::MAX);
+        let stride_u = usize::try_from(stride).unwrap_or(usize::MAX);
+        let height_u = usize::try_from(height).unwrap_or(usize::MAX);
+        let needed = offset
+            .checked_add(stride_u.saturating_mul(height_u))
+            .ok_or(ReadbackError::InvalidDimensions {
+                width,
+                height,
+                stride,
+            })?;
+        if needed > len {
+            return Err(ReadbackError::InvalidDimensions {
+                width,
+                height,
+                stride,
+            });
+        }
+        // SAFETY: Smithay guarantees this mapping for the callback duration;
+        // bounds above restrict the copied range to the declared buffer.
+        let pool = unsafe { std::slice::from_raw_parts(ptr, len) };
+        Ok(OwnedShmFrame {
+            bytes: pool[offset..needed].to_vec(),
+            width: usize::try_from(width).unwrap_or(usize::MAX),
+            height: height_u,
+            stride: stride_u,
+            format: data.format,
+        })
+    })?;
+    result
+}
+
+pub fn owned_shm_to_rgba(
+    frame: &OwnedShmFrame,
+    out: &mut Vec<u8>,
+) -> Result<(u32, u32), ReadbackError> {
+    out.clear();
+    out.reserve(frame.width.saturating_mul(frame.height).saturating_mul(4));
+    let row_bytes = frame.width.saturating_mul(4);
+    for row in 0..frame.height {
+        let start = row.saturating_mul(frame.stride);
+        let src = frame
+            .bytes
+            .get(start..start.saturating_add(row_bytes))
+            .ok_or(ReadbackError::InvalidDimensions {
+                width: i32::try_from(frame.width).unwrap_or(i32::MAX),
+                height: i32::try_from(frame.height).unwrap_or(i32::MAX),
+                stride: i32::try_from(frame.stride).unwrap_or(i32::MAX),
+            })?;
+        swizzle_row_to_rgba(frame.format, src, frame.width, out)?;
+    }
+    Ok((
+        u32::try_from(frame.width).unwrap_or(u32::MAX),
+        u32::try_from(frame.height).unwrap_or(u32::MAX),
+    ))
+}
+
 pub use crate::network::surface_tracker::{CapturePath, SurfaceTracker, TakenFrame};
 
 #[cfg(test)]
