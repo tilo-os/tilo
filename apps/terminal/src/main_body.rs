@@ -4273,7 +4273,10 @@ impl TerminalWidget {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one terminal run draw needs each independent scene, text, style, and clip input"
+    )]
     fn draw_run(
         &self,
         scene: &mut Scene,
