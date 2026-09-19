@@ -4,7 +4,17 @@ use super::App;
 use crate::close_admission::{Choice, Command, OPERATION};
 use crate::widget::Widget;
 
+// Compile the actual native Quit routing state in portable host tests. The
+// AppKit delegate itself still requires macOS qualification.
+#[cfg(test)]
+#[path = "../../../../../vendor/winit/src/platform_impl/quit_request.rs"]
+mod native_quit_request;
+
 impl App {
+    pub(super) fn admit_native_close_request(&mut self) -> bool {
+        self.request_close() && self.finish_close_if_ready()
+    }
+
     fn invalidate_close_presentation(&mut self) {
         self.action_palette = None;
         self.bindings.clear();
@@ -428,6 +438,8 @@ mod tests {
         text: crate::widget::Text,
         fail: std::rc::Rc<std::cell::Cell<bool>>,
         flushes: std::rc::Rc<std::cell::Cell<usize>>,
+        document: Option<std::rc::Rc<std::cell::Cell<bool>>>,
+        save_allowed: bool,
     }
     impl Widget for OwnedRoot {
         fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
@@ -489,6 +501,59 @@ mod tests {
                 Ok(())
             })
         }
+        fn unsaved_documents(
+            &self,
+            doc: &automerge::AutoCommit,
+        ) -> Vec<crate::close_admission::UnsavedDocument> {
+            use automerge::ReadDoc;
+            if self.document.as_ref().is_some_and(|dirty| dirty.get()) {
+                vec![crate::close_admission::UnsavedDocument {
+                    save: tilo_actions::ActionAddress::new("test.quit", "save"),
+                    identity: "draft.md".into(),
+                    revision: doc
+                        .get(automerge::ROOT, "draft")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .to_string()
+                        .into_bytes(),
+                }]
+            } else {
+                Vec::new()
+            }
+        }
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+            vec![crate::widget::resource_actions::resource(
+                "test.quit",
+                "Draft",
+                "save",
+                "Save",
+                false,
+            )]
+        }
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            &[crate::widget::resource_actions::OPERATION_TYPE]
+        }
+        fn start_resource_operation(
+            &mut self,
+            _: tilo_actions::InvocationId,
+            _: tilo_actions::OperationKind,
+            type_id: &str,
+            _: &[u8],
+            _: &automerge::AutoCommit,
+            _: &automerge::ObjId,
+        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+            if type_id != crate::widget::resource_actions::OPERATION_TYPE {
+                return Ok(None);
+            }
+            if !self.save_allowed {
+                return Err("Save dialog cancelled".into());
+            }
+            self.document.as_ref().unwrap().set(false);
+            Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        }
     }
     #[test]
     fn owned_root_close_refusal_keeps_editing_and_retries_exact_owner() {
@@ -499,6 +564,8 @@ mod tests {
             text: crate::widget::Text::new("body"),
             fail: fail.clone(),
             flushes: flushes.clone(),
+            document: None,
+            save_allowed: false,
         };
         let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root))
             .with_autosave(crate::persist::Autosave::disabled(
@@ -602,6 +669,131 @@ mod tests {
             "the replacement exposes a real Save action, but was not the reviewed document"
         );
     }
+
+    fn quit_fixture(save_allowed: bool) -> (App, std::rc::Rc<std::cell::Cell<bool>>) {
+        use automerge::transaction::Transactable;
+        let dirty = std::rc::Rc::new(std::cell::Cell::new(true));
+        let root = OwnedRoot {
+            text: crate::widget::Text::new("draft"),
+            fail: std::rc::Rc::new(std::cell::Cell::new(false)),
+            flushes: std::rc::Rc::new(std::cell::Cell::new(0)),
+            document: Some(dirty.clone()),
+            save_allowed,
+        };
+        let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root))
+            .with_autosave(crate::persist::Autosave::disabled(
+                "fixture owns persistence",
+            ))
+            .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);
+        app.state
+            .doc
+            .put(automerge::ROOT, "draft", "pending edit")
+            .unwrap();
+        (app, dirty)
+    }
+
+    fn close_choice(app: &mut App, choice: Choice) {
+        let resources = app.close_admission.resources();
+        let action = resources[0]
+            .actions
+            .iter()
+            .find(|action| action.id == choice.id())
+            .unwrap();
+        let tilo_actions::ActionInput::Immediate(encoded) = &action.input else {
+            panic!("unit close action")
+        };
+        app.invoke_close_encoded(encoded).unwrap();
+    }
+
+    // This is the production portable Quit router and the very same admission
+    // method called by AppHandler for its resulting CloseRequested event.
+    fn deliver_quit(quit: &mut native_quit_request::QuitRequest<u8>, app: &mut App) -> bool {
+        let native_quit_request::QuitDecision::Forward(request) = quit.request(true) else {
+            panic!("Quit must reach the registered primary window")
+        };
+        assert!(matches!(
+            quit.request(true),
+            native_quit_request::QuitDecision::Cancel
+        ));
+        assert_eq!(quit.take(request), Some(1));
+        app.admit_native_close_request()
+    }
+
+    #[test]
+    fn native_quit_keep_editing_and_cancelled_save_retain_pending_document() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let (mut app, dirty) = quit_fixture(false);
+        let pending = app.state.doc.pending_ops();
+        assert!(pending > 0);
+        let mut quit = native_quit_request::QuitRequest::new();
+        quit.set_target(Some(1));
+        assert!(!deliver_quit(&mut quit, &mut app));
+        close_choice(&mut app, Choice::KeepEditing);
+        assert!(!app.finish_close_if_ready());
+        assert_eq!(
+            app.state.doc.pending_ops(),
+            pending,
+            "cancel must not checkpoint pending edits"
+        );
+        assert!(dirty.get());
+        app.state
+            .doc
+            .put(automerge::ROOT, "draft", "edited after cancelled Quit")
+            .unwrap();
+        assert!(
+            !deliver_quit(&mut quit, &mut app),
+            "later Quit must ask again"
+        );
+        close_choice(&mut app, Choice::Save);
+        assert!(
+            !app.finish_close_if_ready(),
+            "cancelled save cannot admit Quit"
+        );
+        assert!(dirty.get());
+        close_choice(&mut app, Choice::KeepEditing);
+        assert_eq!(
+            app.state
+                .doc
+                .get(automerge::ROOT, "draft")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_str(),
+            Some("edited after cancelled Quit")
+        );
+        assert!(!app.close_admission.admitted);
+    }
+
+    #[test]
+    fn native_quit_save_and_discard_share_final_revision_check() {
+        use automerge::transaction::Transactable;
+        let (mut app, dirty) = quit_fixture(true);
+        let mut quit = native_quit_request::QuitRequest::new();
+        quit.set_target(Some(1));
+        assert!(!deliver_quit(&mut quit, &mut app));
+        close_choice(&mut app, Choice::Save);
+        assert!(!dirty.get(), "Save uses the document's declared action");
+        assert!(app.finish_close_if_ready());
+        assert!(app.close_admission.admitted);
+
+        let (mut app, dirty) = quit_fixture(false);
+        assert!(!deliver_quit(&mut quit, &mut app));
+        close_choice(&mut app, Choice::Discard);
+        app.state
+            .doc
+            .put(automerge::ROOT, "draft", "arrived before exit")
+            .unwrap();
+        assert!(
+            !app.finish_close_if_ready(),
+            "discard never covers a newer revision"
+        );
+        assert!(dirty.get());
+        assert!(!app.close_admission.admitted);
+        close_choice(&mut app, Choice::Discard);
+        assert!(app.finish_close_if_ready());
+        assert!(app.close_admission.admitted);
+    }
+
     #[test]
     fn modal_control_addresses_survive_moving_the_initialized_app() {
         let mut app = App::new_with_controlled_inputs(
