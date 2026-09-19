@@ -20,8 +20,8 @@ def require(value, message):
         raise ValueError(message)
 
 
-def command(argv):
-    return subprocess.check_output(argv, timeout=300).decode("utf-8", "strict")
+def command(argv, timeout=300):
+    return subprocess.check_output(argv, timeout=timeout).decode("utf-8", "strict")
 
 
 def validate_expected(e):
@@ -67,6 +67,37 @@ def check_runtime(e, cmdline, generation, mount, table):
     return disks[0]
 
 
+
+def selected_entry(esp, raw, digest):
+    require(4 < len(raw) <= 4096 and (len(raw) - 4) % 2 == 0, "invalid loader entry EFI variable")
+    name = raw[4:].decode("utf-16-le", "strict").rstrip("\0")
+    require(re.fullmatch(r"[A-Za-z0-9_.+-]+\.conf", name) is not None, "unsupported selected loader entry")
+    lines = {}
+    for line in (esp / "loader/entries" / name).read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"): continue
+        fields = line.split(None, 1)
+        require(len(fields) == 2 and fields[0] not in lines, "ambiguous selected entry")
+        lines[fields[0]] = fields[1]
+    require(not set(lines) - {"title", "version", "sort-key", "efi"}, "selected entry overrides signed UKI")
+    require(lines.get("efi") == "/EFI/Linux/bootc/bootc_composefs-" + digest + ".efi", "bootloader selected a different UKI")
+    return {"entry": name, "efi": lines["efi"], "source": "LoaderEntrySelected EFI variable"}
+
+
+def check_bootc_status(doc, e):
+    # Retained bootc 1.16.4 composefs status leaves status.type unset.
+    booted = doc["status"].get("booted")
+    require(isinstance(booted, dict), "no booted deployment")
+    require(booted.get("incompatible") is False and booted.get("ostree") is None, "wrong backend")
+    cfs = booted.get("composefs") or {}
+    require(cfs.get("verity") == e["composefs_digest"] and cfs.get("missingVerityAllowed") is False, "bootc verity differs")
+    require(cfs.get("bootType") == "Uki" and cfs.get("bootloader") == "systemd", "bootc boot method differs")
+    image = booted.get("image") or {}
+    require(image.get("imageDigest") == e["source_manifest_digest"] and image.get("architecture") == "arm64", "bootc booted image differs")
+    reference = image.get("image") or {}
+    require(reference.get("image") == e["installed_target"] and reference.get("transport") == "registry", "bootc update reference differs")
+
+
 def measure_verity(path):
     import fcntl
     # Linux UAPI FS_IOC_MEASURE_VERITY; struct fsverity_digest is two u16s.
@@ -97,6 +128,7 @@ def main():
     parts = [x for x in disk["children"] if x["type"] == "part"]
     esp_part = parts[0 if e["mode"] == "prepared-alongside" else 3]
     require(len(esp_mount) == 1 and esp_mount[0]["source"] == esp_part["path"] and esp_mount[0]["fstype"] == "vfat", "ESP is not on the installed target")
+    selected = selected_entry(a.esp, Path("/sys/firmware/efi/efivars/LoaderEntrySelected-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f").read_bytes(), e["composefs_digest"])
     uki = a.esp / ("EFI/Linux/bootc/bootc_composefs-" + e["composefs_digest"] + ".efi")
     with uki.open("rb") as f:
         uki_sha = hashlib.file_digest(f, "sha256").hexdigest()
@@ -112,13 +144,17 @@ def main():
     require(origin.get("origin", "container-image-reference") == "ostree-unverified-image:docker://" + e["installed_target"], "installed update origin differs")
     require(origin.get("image", "manifest_digest") == e["source_manifest_digest"], "installed manifest differs")
     cfs = ["bootc", "internals", "cfs", "--", "--repo", str(repo), "--hash", "sha512", "--require-verity", "--no-upgrade"]
+    command(cfs + ["oci", "fsck", "@" + e["source_manifest_digest"]], timeout=1800)
     manifest = json.loads(command(cfs + ["oci", "inspect", "--manifest", "@" + e["source_manifest_digest"]]))
     require(manifest["config"]["digest"] == e["source_config_digest"], "installed OCI config differs")
     status = json.loads(command(["bootc", "status", "--json"]))
+    check_bootc_status(status, e)
     result = {"purpose": "tilo-installed-guest-runtime-verification", "checks_passed": True,
               "expected": e, "cmdline": cmdline.strip(), "root_mount": mount,
               "blockdevices": table, "esp_mount": esp_mount[0], "target_uki_sha256": uki_sha,
               "kernel_measured_composefs_digest": seal, "bootc_status": status,
+              "bootloader_selected_entry": selected, "installed_oci_fsck_passed": True,
+              "secure_boot_or_tpm_attestation": False,
               "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
               "physical_installation": False,
               "scope": "runtime identity, encrypted target and verity root; combine with host sentinel and GUI evidence"}
