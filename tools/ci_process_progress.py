@@ -24,10 +24,13 @@ def snapshot(root_pid, proc=Path('/proc')):
                 'pid': int(path.name), 'ppid': int(fields[1]),
                 'kind': kind,
                 'state': fields[0], 'cpu_ticks': int(fields[11]) + int(fields[12]),
+                'start_ticks': int(fields[19]),
                 'rss_pages': int(fields[21]),
             }
         except (OSError, ValueError, IndexError):
             continue  # A process may exit while procfs is being read.
+    if root_pid not in rows:
+        raise RuntimeError('root process is unavailable')
     descendants = {root_pid}
     while True:
         found = {pid for pid, row in rows.items() if row['ppid'] in descendants}
@@ -46,7 +49,9 @@ def snapshot(root_pid, proc=Path('/proc')):
         except (OSError, KeyError, ValueError):
             pass  # Missing counters remain unknown, never reported as zero.
     selected.sort(key=lambda row: (-row['cpu_ticks'], row['pid']))
-    return {'descendant_count': len(selected), 'processes': selected[:16],
+    return {'clock_ticks_per_second': os.sysconf('SC_CLK_TCK'),
+            'page_size_bytes': os.sysconf('SC_PAGE_SIZE'),
+            'descendant_count': len(selected), 'processes': selected[:16],
             'truncated': len(selected) > 16}
 
 
