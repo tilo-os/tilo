@@ -4759,6 +4759,25 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Whether the requested fullscreen/maximized group is represented by a
+    /// live retained row. Chrome stays visible until this becomes true.
+    fn fullscreen_group_is_owned(&self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let group = {
+            let state = chrome.borrow();
+            state.fullscreen_group().or_else(|| state.maximized_group())
+        };
+        group.is_some_and(|group| {
+            self.group_row_ptrs.values().any(|&row| {
+                // SAFETY: same retained-row ownership contract as
+                // `sync_fullscreen_from_chrome`; this is read-only.
+                unsafe { (*row).group_ids().contains(&group) }
+            })
+        })
+    }
+
     fn reconcile_active_group_off_closing(&self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -13793,11 +13812,12 @@ impl Widget for ShellOverlayHost {
         // fullscreen collapse and per-display width resolution are in
         // effect — the latter is what makes a single-frame offscreen
         // render match the live shell's geometry.
+        // A client can request fullscreen before its group is adopted into
+        // the rendered tree. Keep that request in chrome for the later
+        // reconcile, but suppress desktop chrome only once a live row owns
+        // the group. Otherwise a stale or racing id blanks the entire shell.
         self.sync_fullscreen_from_chrome();
-        let fullscreen = self
-            .chrome
-            .as_ref()
-            .is_some_and(|c| c.borrow().is_fullscreen());
+        let fullscreen = self.fullscreen_group_is_owned();
         let spans = self.strip_output_spans();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: same contract as every other `group_row_ptrs`
