@@ -242,6 +242,20 @@ class RecoveryTests(ServiceFixture):
         self.assertTrue(all(data is None for _, data in self.requests))
         self.assertNotIn((service.PREFIX + '/branches/main', None), self.requests)
 
+    def test_recovery_accepts_forgejo_normalized_inputs_without_redispatch(self):
+        before = self.uncertain_intent()
+        payload = json.loads(self.responses[17]['event_payload'])
+        payload['inputs'] = {key: value for key, value in payload['inputs'].items() if value != ''}
+        payload['inputs']['verify_final_receipt'] = 'false'
+        self.responses[17]['event_payload'] = json.dumps(payload)
+        result = self.invoke(reconcile_run_id=17)
+        self.assertEqual(result['state']['active']['id'], before['active']['id'])
+        self.assertEqual(result['state']['active']['desired'], before['active']['desired'])
+        self.assertEqual(result['state']['active']['run_id'], 17)
+        self.assertEqual(result['next_action'], 'poll')
+        self.assertEqual(len(self.dispatches), 1)
+        self.assertTrue(all(data is None for _, data in self.requests))
+
     def test_wrong_run_actor_and_immutable_intent_leave_state_unchanged(self):
         before = self.uncertain_intent()
         good = copy.deepcopy(self.responses[17])
