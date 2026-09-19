@@ -122,7 +122,7 @@ struct HistoryState {
 
 /// A bounded copy suitable for metadata/UI projection without exposing the
 /// mutable store lock.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RecordHistorySnapshot {
     pub record_id: FileRecordId,
     pub versions: Vec<FileVersionV1>,
@@ -136,7 +136,170 @@ pub struct FileHistoryStore {
     state: Mutex<HistoryState>,
 }
 
+/// Existing history writer lock borrowed by a compound admission/projection.
+pub(crate) struct HistoryLease<'a> {
+    path: &'a Path,
+    state: std::sync::MutexGuard<'a, HistoryState>,
+}
+
+pub(crate) struct HistoryCandidate {
+    state: HistoryState,
+    appended: Vec<bool>,
+}
+
+impl HistoryLease<'_> {
+    pub fn resolve(
+        &mut self,
+        record_id: FileRecordId,
+        conflict_id: Uuid,
+        resolution: ConflictResolution,
+    ) -> Result<bool, HistoryError> {
+        let current = &mut *self.state;
+        let record = current
+            .records
+            .get(&record_id)
+            .ok_or(HistoryError::UnknownRecord(record_id))?;
+        let conflict = record
+            .conflicts
+            .get(&conflict_id)
+            .ok_or(HistoryError::UnknownConflict(conflict_id))?;
+        if let Some(existing) = &conflict.resolution
+            && (existing == &resolution
+                || !collab_types::prefer_conflict_resolution(&resolution, existing))
+        {
+            return Ok(false);
+        }
+        let result = record
+            .versions
+            .get(&resolution.result)
+            .ok_or(HistoryError::UnknownResolutionVersion(resolution.result))?;
+        if result.provenance != FileProvenance::ConflictResolution {
+            return Err(HistoryError::ResolutionProvenance);
+        }
+        if result.actor != resolution.actor {
+            return Err(HistoryError::ResolutionActorMismatch);
+        }
+        if result.timestamp_ms != resolution.timestamp_ms {
+            return Err(HistoryError::ResolutionTimestampMismatch);
+        }
+
+        let mut next = current.clone();
+        let record = next
+            .records
+            .get_mut(&record_id)
+            .ok_or(HistoryError::UnknownRecord(record_id))?;
+        let conflict = record
+            .conflicts
+            .get_mut(&conflict_id)
+            .ok_or(HistoryError::UnknownConflict(conflict_id))?;
+        conflict.status = ConflictStatus::Resolved;
+        conflict.resolution = Some(resolution);
+        conflict.validate()?;
+        persist(self.path, &next)?;
+        *current = next;
+        Ok(true)
+    }
+    pub fn record_conflict(&mut self, conflict: FileConflictV1) -> Result<bool, HistoryError> {
+        conflict.validate()?;
+        let current = &mut *self.state;
+        let record = current
+            .records
+            .get(&conflict.record_id)
+            .ok_or(HistoryError::UnknownRecord(conflict.record_id))?;
+        validate_conflict(record, &conflict)?;
+        if let Some(existing) = record.conflicts.get(&conflict.id) {
+            return if existing == &conflict {
+                Ok(false)
+            } else {
+                Err(HistoryError::ConflictIdCollision(conflict.id))
+            };
+        }
+        let mut next = current.clone();
+        next.records
+            .get_mut(&conflict.record_id)
+            .ok_or(HistoryError::UnknownRecord(conflict.record_id))?
+            .conflicts
+            .insert(conflict.id, conflict);
+        persist(self.path, &next)?;
+        *current = next;
+        Ok(true)
+    }
+    pub fn prepare_versions(
+        &self,
+        versions: &[FileVersionV1],
+    ) -> Result<HistoryCandidate, HistoryError> {
+        for version in versions {
+            version.validate()?;
+        }
+        let current = &*self.state;
+        let mut next = current.clone();
+        let mut appended = Vec::with_capacity(versions.len());
+        for version in versions {
+            if let Some(existing) = find_version(&next, version.id) {
+                if existing == version {
+                    appended.push(false);
+                    continue;
+                }
+                return Err(HistoryError::VersionIdCollision(version.id));
+            }
+
+            let record = next.records.entry(version.record_id).or_default();
+            if record.versions.is_empty() {
+                if let Some(parent) = version.parents.first() {
+                    return Err(HistoryError::MissingParent(*parent));
+                }
+            } else {
+                if version.parents.is_empty() {
+                    return Err(HistoryError::DisconnectedVersion(version.id));
+                }
+                for parent in &version.parents {
+                    if !record.versions.contains_key(parent) {
+                        return Err(HistoryError::MissingParent(*parent));
+                    }
+                }
+            }
+            for parent in &version.parents {
+                record.heads.remove(parent);
+            }
+            record.heads.insert(version.id);
+            record.versions.insert(version.id, version.clone());
+            appended.push(true);
+        }
+        Ok(HistoryCandidate {
+            state: next,
+            appended,
+        })
+    }
+
+    pub fn install(&mut self, candidate: HistoryCandidate) -> Result<Vec<bool>, HistoryError> {
+        if candidate.appended.iter().any(|value| *value) {
+            persist(self.path, &candidate.state)?;
+            *self.state = candidate.state;
+        }
+        Ok(candidate.appended)
+    }
+
+    pub fn append_batch(&mut self, versions: &[FileVersionV1]) -> Result<Vec<bool>, HistoryError> {
+        let candidate = self.prepare_versions(versions)?;
+        self.install(candidate)
+    }
+
+    pub fn snapshot(&self, record_id: FileRecordId) -> Option<RecordHistorySnapshot> {
+        self.state
+            .records
+            .get(&record_id)
+            .map(|record| snapshot(record_id, record))
+    }
+}
+
 impl FileHistoryStore {
+    pub(crate) fn lease(&self) -> Result<HistoryLease<'_>, HistoryError> {
+        Ok(HistoryLease {
+            path: &self.path,
+            state: self.state.lock().map_err(|_| HistoryError::StatePoisoned)?,
+        })
+    }
+
     /// Open and fully validate a durable history store, recovering only from a
     /// retained generation that passes the same validation.
     ///
@@ -212,51 +375,7 @@ impl FileHistoryStore {
         reason = "the writer lock intentionally spans candidate validation, durable replacement, and in-memory publication"
     )]
     pub fn append_batch(&self, versions: &[FileVersionV1]) -> Result<Vec<bool>, HistoryError> {
-        if versions.is_empty() {
-            return Ok(Vec::new());
-        }
-        for version in versions {
-            version.validate()?;
-        }
-        let mut current = self.state.lock().map_err(|_| HistoryError::StatePoisoned)?;
-        let mut next = current.clone();
-        let mut appended = Vec::with_capacity(versions.len());
-        for version in versions {
-            if let Some(existing) = find_version(&next, version.id) {
-                if existing == version {
-                    appended.push(false);
-                    continue;
-                }
-                return Err(HistoryError::VersionIdCollision(version.id));
-            }
-
-            let record = next.records.entry(version.record_id).or_default();
-            if record.versions.is_empty() {
-                if let Some(parent) = version.parents.first() {
-                    return Err(HistoryError::MissingParent(*parent));
-                }
-            } else {
-                if version.parents.is_empty() {
-                    return Err(HistoryError::DisconnectedVersion(version.id));
-                }
-                for parent in &version.parents {
-                    if !record.versions.contains_key(parent) {
-                        return Err(HistoryError::MissingParent(*parent));
-                    }
-                }
-            }
-            for parent in &version.parents {
-                record.heads.remove(parent);
-            }
-            record.heads.insert(version.id);
-            record.versions.insert(version.id, version.clone());
-            appended.push(true);
-        }
-        if appended.iter().any(|was_appended| *was_appended) {
-            persist(&self.path, &next)?;
-            *current = next;
-        }
-        Ok(appended)
+        self.lease()?.append_batch(versions)
     }
 
     /// Persist an open or already-resolved conflict. Conflict records are
@@ -271,29 +390,7 @@ impl FileHistoryStore {
         reason = "the writer lock intentionally spans conflict validation, durable replacement, and in-memory publication"
     )]
     pub fn record_conflict(&self, conflict: FileConflictV1) -> Result<bool, HistoryError> {
-        conflict.validate()?;
-        let mut current = self.state.lock().map_err(|_| HistoryError::StatePoisoned)?;
-        let record = current
-            .records
-            .get(&conflict.record_id)
-            .ok_or(HistoryError::UnknownRecord(conflict.record_id))?;
-        validate_conflict(record, &conflict)?;
-        if let Some(existing) = record.conflicts.get(&conflict.id) {
-            return if existing == &conflict {
-                Ok(false)
-            } else {
-                Err(HistoryError::ConflictIdCollision(conflict.id))
-            };
-        }
-        let mut next = current.clone();
-        next.records
-            .get_mut(&conflict.record_id)
-            .ok_or(HistoryError::UnknownRecord(conflict.record_id))?
-            .conflicts
-            .insert(conflict.id, conflict);
-        persist(&self.path, &next)?;
-        *current = next;
-        Ok(true)
+        self.lease()?.record_conflict(conflict)
     }
 
     /// Resolve an open conflict. The result must already be a durable
@@ -314,50 +411,7 @@ impl FileHistoryStore {
         conflict_id: Uuid,
         resolution: ConflictResolution,
     ) -> Result<bool, HistoryError> {
-        let mut current = self.state.lock().map_err(|_| HistoryError::StatePoisoned)?;
-        let record = current
-            .records
-            .get(&record_id)
-            .ok_or(HistoryError::UnknownRecord(record_id))?;
-        let conflict = record
-            .conflicts
-            .get(&conflict_id)
-            .ok_or(HistoryError::UnknownConflict(conflict_id))?;
-        if let Some(existing) = &conflict.resolution
-            && (existing == &resolution
-                || !collab_types::prefer_conflict_resolution(&resolution, existing))
-        {
-            return Ok(false);
-        }
-        let result = record
-            .versions
-            .get(&resolution.result)
-            .ok_or(HistoryError::UnknownResolutionVersion(resolution.result))?;
-        if result.provenance != FileProvenance::ConflictResolution {
-            return Err(HistoryError::ResolutionProvenance);
-        }
-        if result.actor != resolution.actor {
-            return Err(HistoryError::ResolutionActorMismatch);
-        }
-        if result.timestamp_ms != resolution.timestamp_ms {
-            return Err(HistoryError::ResolutionTimestampMismatch);
-        }
-
-        let mut next = current.clone();
-        let record = next
-            .records
-            .get_mut(&record_id)
-            .ok_or(HistoryError::UnknownRecord(record_id))?;
-        let conflict = record
-            .conflicts
-            .get_mut(&conflict_id)
-            .ok_or(HistoryError::UnknownConflict(conflict_id))?;
-        conflict.status = ConflictStatus::Resolved;
-        conflict.resolution = Some(resolution);
-        conflict.validate()?;
-        persist(&self.path, &next)?;
-        *current = next;
-        Ok(true)
+        self.lease()?.resolve(record_id, conflict_id, resolution)
     }
 
     pub fn snapshot(&self, record_id: FileRecordId) -> Option<RecordHistorySnapshot> {
