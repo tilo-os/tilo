@@ -130,6 +130,7 @@ pub mod screen_reader;
 pub mod search;
 pub mod selection;
 mod standalone_history;
+mod standalone_history_host;
 pub mod state;
 pub mod status_bubble;
 pub mod surface;
