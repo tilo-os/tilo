@@ -1495,17 +1495,88 @@ impl InboundBridge {
     }
 }
 
+/// A one-shot host handoff factory, evaluated on the SDK worker's LocalSet.
+///
+/// The platform host supplies this to shared toolkit bootstrap. It must verify
+/// host/app/workspace handoff authority before returning its two connections.
+/// This type neither authenticates a transport nor certifies a supplied grant.
+/// The actual brokers still enforce certified joins and live signing policy.
+/// No inherited service or app-local identity is used if the factory fails.
+///
+/// Consumed on both success and failure. There is no automatic reconnect. A
+/// host retry must create a fresh connector and repeat admission for the same
+/// durable identity and requested route; an old handoff must not be replayed.
+pub struct HostSessionConnector {
+    connect: Box<dyn FnOnce(RouteSpec) -> HostSessionFuture + Send>,
+}
+
+type HostSessionFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    (runtime_collab::CollabClient, SdkJoinIdentity),
+                    runtime_portal::NotAvailable,
+                >,
+            >,
+    >,
+>;
+
+impl HostSessionConnector {
+    /// Supply a factory for an owned collaboration stream and broker signer.
+    ///
+    /// The factory runs only inside the SDK worker's Tokio runtime/LocalSet,
+    /// so it may register an owned Windows pipe handle or Unix socket there.
+    /// Only the factory and its captures cross threads; its future, stream and
+    /// Cap'n Proto client may be !Send. It must authenticate both endpoints and
+    /// enforce the requested route, and bound synchronous signer I/O itself.
+    /// Async setup is bounded by the existing shovel initialization timeout.
+    ///
+    /// Merely returning metadata does not establish authentication. Do not use
+    /// this constructor as a replacement for host transport/grant validation.
+    pub fn new<F, Fut, S>(connect: F) -> Self
+    where
+        F: FnOnce(RouteSpec) -> Fut + Send + 'static,
+        Fut: std::future::Future<
+                Output = Result<
+                    (S, runtime_identity::BrokerSigningIdentity),
+                    runtime_portal::NotAvailable,
+                >,
+            > + 'static,
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+    {
+        Self {
+            connect: Box::new(move |route| {
+                Box::pin(async move {
+                    let cluster_id = route.cluster_id;
+                    let (stream, identity) = connect(route).await?;
+                    let identity = sdk_join_identity_from(identity, cluster_id)?;
+                    let rpc = runtime_portal::CapnpClient::from_connected_io(
+                        stream,
+                        capnp_rpc::rpc_twoparty_capnp::Side::Client,
+                    );
+                    let raw: runtime_collab::CollabServiceClient = rpc.bootstrap();
+                    Ok((runtime_collab::CollabClient::from_raw(raw), identity))
+                })
+            }),
+        }
+    }
+}
+
 /// How the shovel thread reaches the broker. `Env` is production: the
 /// launcher passed `TILO_SVC_COLLAB_FD`. `Fd` is an already-connected typed
 /// endpoint, used by tests and headless diagnostics without environment races.
 enum SdkConnectSource {
     Env,
     Fd(RawFd),
+    Host(HostSessionConnector, RouteSpec),
 }
 
 impl SdkConnectSource {
     fn build_client(self) -> Result<runtime_collab::CollabClient, runtime_portal::NotAvailable> {
         match self {
+            SdkConnectSource::Host(_, _) => Err(runtime_portal::NotAvailable::ConnectionFailed(
+                std::io::Error::other("host session requires worker-side identity admission"),
+            )),
             SdkConnectSource::Env => runtime_collab::try_connect(),
             SdkConnectSource::Fd(fd) => {
                 use capnp_rpc::rpc_twoparty_capnp;
@@ -1565,9 +1636,88 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
     }
 }
 
+// One signing boundary for inherited Unix services and supplied host services.
+// This trait is private: platform bootstrap supplies the concrete broker client,
+// never a caller-defined signer that could bypass that client's service policy.
+trait SdkCertifiedIdentity: Send {
+    fn device_certificate(&self) -> Option<&[u8]>;
+    fn signing_public_key(&self) -> [u8; 32];
+    fn sign_collaboration_join(
+        &self,
+        workspace_id: &str,
+    ) -> Result<[u8; 64], runtime_portal::NotAvailable>;
+    fn sign_collaboration_op(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        unsigned_op: &[u8],
+    ) -> Result<[u8; 64], runtime_portal::NotAvailable>;
+}
+
+impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
+    fn device_certificate(&self) -> Option<&[u8]> {
+        runtime_identity::BrokerSigningIdentity::device_certificate(self)
+    }
+    fn signing_public_key(&self) -> [u8; 32] {
+        runtime_identity::BrokerSigningIdentity::signing_public_key(self)
+    }
+    fn sign_collaboration_join(
+        &self,
+        workspace_id: &str,
+    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+        runtime_identity::BrokerSigningIdentity::sign_collaboration_join(self, workspace_id)
+    }
+    fn sign_collaboration_op(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        unsigned_op: &[u8],
+    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+        runtime_identity::BrokerSigningIdentity::sign_collaboration_op(
+            self,
+            workspace_id,
+            app_id,
+            record_id,
+            unsigned_op,
+        )
+    }
+}
+
+#[cfg(unix)]
+impl SdkCertifiedIdentity for runtime_identity::SigningIdentity {
+    fn device_certificate(&self) -> Option<&[u8]> {
+        runtime_identity::SigningIdentity::device_certificate(self)
+    }
+    fn signing_public_key(&self) -> [u8; 32] {
+        runtime_identity::SigningIdentity::signing_public_key(self)
+    }
+    fn sign_collaboration_join(
+        &self,
+        workspace_id: &str,
+    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+        runtime_identity::SigningIdentity::sign_collaboration_join(self, workspace_id)
+    }
+    fn sign_collaboration_op(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        unsigned_op: &[u8],
+    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+        runtime_identity::SigningIdentity::sign_collaboration_op(
+            self,
+            workspace_id,
+            app_id,
+            record_id,
+            unsigned_op,
+        )
+    }
+}
+
 enum SdkDocumentSigner {
-    #[cfg(unix)]
-    Certified(Box<runtime_identity::SigningIdentity>),
+    Certified(Box<dyn SdkCertifiedIdentity>),
     /// Explicit-FD harnesses have no launcher identity service. Their
     /// in-process broker accepts this ephemeral signer; a production broker
     /// still rejects the uncertified join before any op reaches policy.
@@ -1582,7 +1732,13 @@ fn harness_document_signer() -> SdkDocumentSigner {
 
 #[cfg(unix)]
 fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
-    let identity = runtime_identity::load()?;
+    sdk_join_identity_from(runtime_identity::load()?, cluster_id)
+}
+
+fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(
+    identity: I,
+    cluster_id: Uuid,
+) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
     let device_certificate = identity.device_certificate().ok_or_else(|| {
         runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
@@ -1743,6 +1899,40 @@ impl CollaborationManager {
         )
     }
 
+    /// Connect using a one-shot handoff supplied by the platform host.
+    ///
+    /// This shared SDK seam is for host bootstrap, not app identity selection.
+    /// It reuses certified joining and waits for the existing primary-route
+    /// acknowledgement. The route given to the factory is the exact Hello
+    /// route. Failure consumes the connector and never falls back to Env/Fd,
+    /// local keys or a harness signer. Reconnecting needs a fresh host handoff.
+    ///
+    /// # Errors
+    /// Returns the host/identity/transport error or primary-route refusal.
+    pub fn for_route_host(
+        connector: HostSessionConnector,
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        handle: Option<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        let app_id = app_id.into();
+        let route = RouteSpec {
+            app_id: app_id.clone(),
+            cluster_id,
+            record: record.clone(),
+        };
+        Self::for_route_from(
+            SdkConnectSource::Host(connector, route),
+            app_id,
+            cluster_id,
+            record,
+            handle,
+            None,
+            "person",
+        )
+    }
+
     fn for_route_from(
         source: SdkConnectSource,
         app_id: String,
@@ -1753,15 +1943,20 @@ impl CollaborationManager {
         participant_kind: &'static str,
     ) -> Result<Self, runtime_portal::NotAvailable> {
         let mut identity = match endpoint_identity {
-            Some(identity) => identity,
-            None if matches!(&source, SdkConnectSource::Env) => sdk_join_identity(cluster_id)?,
-            None => SdkJoinIdentity {
+            Some(identity) => Some(identity),
+            None if matches!(&source, SdkConnectSource::Host(_, _)) => None,
+            None if matches!(&source, SdkConnectSource::Env) => {
+                Some(sdk_join_identity(cluster_id)?)
+            }
+            None => Some(SdkJoinIdentity {
                 presentation: Vec::new(),
                 participant_kind: "person",
                 signer: harness_document_signer(),
-            },
+            }),
         };
-        identity.participant_kind = participant_kind;
+        if let Some(identity) = &mut identity {
+            identity.participant_kind = participant_kind;
+        }
         let sdk = Self::spawn_sdk(source, identity)?;
         let mut manager = Self {
             primary_route: PrimaryRouteState::default(),
@@ -1965,7 +2160,7 @@ impl CollaborationManager {
             }
         };
 
-        match Self::spawn_sdk(SdkConnectSource::Env, identity) {
+        match Self::spawn_sdk(SdkConnectSource::Env, Some(identity)) {
             Ok(sdk) => {
                 let mut manager = Self {
                     primary_route: PrimaryRouteState::default(),
@@ -2010,11 +2205,11 @@ impl CollaborationManager {
     ) -> Self {
         let sdk = Self::spawn_sdk(
             SdkConnectSource::Fd(fd),
-            SdkJoinIdentity {
+            Some(SdkJoinIdentity {
                 presentation: identity_bytes,
                 participant_kind: "person",
                 signer: harness_document_signer(),
-            },
+            }),
         )
         .expect("spawn_sdk from Fd source must succeed in tests");
         let mut manager = Self {
@@ -2042,7 +2237,7 @@ impl CollaborationManager {
     /// that only ever `poll`s silently running against a dead broker.
     fn spawn_sdk(
         source: SdkConnectSource,
-        identity: SdkJoinIdentity,
+        identity: Option<SdkJoinIdentity>,
     ) -> Result<SdkChannel, runtime_portal::NotAvailable> {
         let (outbound_tx, outbound_rx) = tokio_mpsc::channel::<QueuedSdkCommand>(SDK_COMMAND_QUEUE);
         let (inbound_tx, inbound_rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
@@ -2595,7 +2790,7 @@ enum InitStatus {
 /// `outbound_rx.recv()` returns `None` (manager dropped).
 fn run_shovel(
     source: SdkConnectSource,
-    identity: SdkJoinIdentity,
+    identity: Option<SdkJoinIdentity>,
     outbound_rx: tokio_mpsc::Receiver<QueuedSdkCommand>,
     inbound_tx: InboundBridge,
     init_tx: mpsc::SyncSender<InitStatus>,
@@ -2617,8 +2812,29 @@ fn run_shovel(
 
     let local = LocalSet::new();
     local.block_on(&rt, async move {
-        let client = match source.build_client() {
-            Ok(c) => c,
+        let session = match source {
+            SdkConnectSource::Host(connector, route) => {
+                match tokio::time::timeout(SHOVEL_INIT_TIMEOUT, (connector.connect)(route)).await {
+                    Ok(result) => result,
+                    Err(_) => Err(runtime_portal::NotAvailable::ConnectionFailed(
+                        std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "host session handoff timed out",
+                        ),
+                    )),
+                }
+            }
+            source => source.build_client().and_then(|client| {
+                identity.map(|identity| (client, identity)).ok_or_else(|| {
+                    runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "missing collaboration signing identity",
+                    ))
+                })
+            }),
+        };
+        let (client, identity) = match session {
+            Ok(session) => session,
             Err(e) => {
                 let _ = init_tx.send(InitStatus::Failed(e));
                 return;
@@ -3274,7 +3490,6 @@ async fn send_document_mutation(
     };
     let now = std::time::SystemTime::now();
     let author = match signer {
-        #[cfg(unix)]
         SdkDocumentSigner::Certified(identity) => identity.signing_public_key(),
         SdkDocumentSigner::Harness(key) => key.verifying_key().to_bytes(),
     };
@@ -3312,7 +3527,6 @@ async fn send_document_mutation(
         }
     };
     let signature = match signer {
-        #[cfg(unix)]
         SdkDocumentSigner::Certified(identity) => match identity.sign_collaboration_op(
             &workspace_id,
             &route.spec.app_id,
@@ -4705,6 +4919,530 @@ mod tests {
             results.get().set_handle(client);
             Promise::ok(())
         }
+    }
+
+    struct HostIdentityFixture {
+        input: std::io::Cursor<Vec<u8>>,
+        output: Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    impl std::io::Read for HostIdentityFixture {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            std::io::Read::read(&mut self.input, bytes)
+        }
+    }
+
+    impl std::io::Write for HostIdentityFixture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.output.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn host_identity_fixture(
+        certificate: Option<Vec<u8>>,
+        replies: Vec<runtime_identity::wire::Response>,
+    ) -> (
+        runtime_identity::BrokerSigningIdentity,
+        Arc<std::sync::Mutex<Vec<u8>>>,
+    ) {
+        use runtime_identity::wire::Response;
+        let mut responses = vec![Response::Metadata {
+            display_name: "Host fixture".into(),
+            avatar_color: [1, 2, 3],
+            group_public_key: [4; 32],
+            signing_public_key: [5; 32],
+            device_certificate: certificate,
+            threshold: 1,
+            total_shares: 1,
+            share_index: 1,
+        }];
+        responses.extend(replies);
+        let mut bytes = Vec::new();
+        for response in responses {
+            let frame = postcard::to_allocvec(&response).unwrap();
+            bytes.extend_from_slice(&u32::try_from(frame.len()).unwrap().to_le_bytes());
+            bytes.extend(frame);
+        }
+        let output = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let identity =
+            runtime_identity::BrokerSigningIdentity::from_connected_io(HostIdentityFixture {
+                input: std::io::Cursor::new(bytes),
+                output: output.clone(),
+            })
+            .unwrap();
+        (identity, output)
+    }
+
+    fn host_identity_requests(bytes: &[u8]) -> Vec<runtime_identity::wire::Request> {
+        let mut remaining = bytes;
+        let mut requests = Vec::new();
+        while !remaining.is_empty() {
+            if remaining.len() < 4 {
+                break;
+            }
+            let len = u32::from_le_bytes(remaining[..4].try_into().unwrap()) as usize;
+            if remaining.len() < 4 + len {
+                break;
+            }
+            requests.push(postcard::from_bytes(&remaining[4..4 + len]).unwrap());
+            remaining = &remaining[4 + len..];
+        }
+        requests
+    }
+
+    #[test]
+    fn host_connector_failure_is_consumed_once_without_inherited_fallback() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let cluster_id = Uuid::new_v4();
+        let expected = RouteSpec {
+            app_id: "dev.tilo.notes".into(),
+            cluster_id,
+            record: Some("note".into()),
+        };
+        let connector = HostSessionConnector::new(move |route| async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(route, expected);
+            assert_eq!(thread::current().name(), Some("ui-collab-shovel"));
+            assert!(tokio::runtime::Handle::try_current().is_ok());
+            // A !Send value across await proves this future stays on LocalSet.
+            let local = Rc::new(());
+            tokio::task::yield_now().await;
+            drop(local);
+            Err::<
+                (
+                    tokio::io::DuplexStream,
+                    runtime_identity::BrokerSigningIdentity,
+                ),
+                _,
+            >(runtime_portal::NotAvailable::ConnectionFailed(
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "fixture host refused its grant",
+                ),
+            ))
+        });
+        let result = CollaborationManager::for_route_host(
+            connector,
+            "dev.tilo.notes",
+            cluster_id,
+            Some("note".into()),
+            None,
+        );
+        match result {
+            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert_eq!(error.to_string(), "fixture host refused its grant");
+            }
+            _ => panic!("host refusal must reach caller"),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn host_connector_pending_handoff_times_out_and_drops_its_future() {
+        struct PendingHandoff(mpsc::Sender<()>);
+        impl Drop for PendingHandoff {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        let connector = HostSessionConnector::new(move |_| async move {
+            let _handoff = PendingHandoff(dropped_tx);
+            started_tx.send(()).unwrap();
+            std::future::pending::<
+                Result<
+                    (
+                        tokio::io::DuplexStream,
+                        runtime_identity::BrokerSigningIdentity,
+                    ),
+                    runtime_portal::NotAvailable,
+                >,
+            >()
+            .await
+        });
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let caller = thread::spawn(move || {
+            let result = CollaborationManager::for_route_host(
+                connector,
+                "dev.tilo.notes",
+                Uuid::new_v4(),
+                None,
+                None,
+            );
+            let _ = result_tx.send(result.map(drop));
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let result = result_rx
+            .recv_timeout(SHOVEL_INIT_TIMEOUT * 2)
+            .expect("a pending host handoff must not hang its caller");
+        caller.join().unwrap();
+        match result {
+            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+            }
+            _ => panic!("a pending handoff cannot produce a connected session"),
+        }
+        dropped_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("timed-out async handoff must release its owned resources");
+    }
+
+    #[test]
+    fn host_connector_without_certificate_cannot_use_harness_identity() {
+        let connector = HostSessionConnector::new(move |_| async move {
+            let (identity, _) = host_identity_fixture(None, vec![]);
+            let (stream, _peer) = tokio::io::duplex(4096);
+            Ok((stream, identity))
+        });
+        let result = CollaborationManager::for_route_host(
+            connector,
+            "dev.tilo.notes",
+            Uuid::new_v4(),
+            None,
+            None,
+        );
+        match result {
+            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert_eq!(
+                    error.to_string(),
+                    "workspace identity has no certified device"
+                );
+            }
+            _ => panic!("missing certificate must refuse before joining"),
+        }
+    }
+
+    #[test]
+    fn host_connector_join_proof_refusal_reaches_caller() {
+        let connector = HostSessionConnector::new(move |_| async move {
+            let (identity, _) = host_identity_fixture(
+                Some(b"fixture".to_vec()),
+                vec![runtime_identity::wire::Response::Denied(
+                    "fixture device revoked".into(),
+                )],
+            );
+            let (stream, _peer) = tokio::io::duplex(4096);
+            Ok((stream, identity))
+        });
+        let result = CollaborationManager::for_route_host(
+            connector,
+            "dev.tilo.notes",
+            Uuid::new_v4(),
+            None,
+            None,
+        );
+        match result {
+            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert_eq!(error.to_string(), "fixture device revoked");
+            }
+            _ => panic!("proof refusal must not become an unsigned join"),
+        }
+    }
+
+    #[test]
+    fn host_connector_uses_certified_presentation_and_broker_document_policy() {
+        let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
+        let broker_captures = captures.clone();
+        let (requests_tx, requests_rx) = mpsc::sync_channel(1);
+        let cluster_id = Uuid::new_v4();
+        let connector = HostSessionConnector::new(move |_| async move {
+            let (identity, requests) = host_identity_fixture(
+                Some(b"fixture certificate".to_vec()),
+                vec![
+                    runtime_identity::wire::Response::Signature(vec![7; 64]),
+                    runtime_identity::wire::Response::Denied("fixture role revoked".into()),
+                ],
+            );
+            requests_tx.send(requests).unwrap();
+            let broker = FakeBroker {
+                captures: broker_captures,
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: None,
+            };
+            let (client, server) = tokio::io::duplex(64 * 1024);
+            let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
+            let (r, w) = tokio::io::split(server);
+            let network = Box::new(twoparty::VatNetwork::new(
+                r.compat(),
+                w.compat_write(),
+                rpc_twoparty_capnp::Side::Server,
+                capnp::message::ReaderOptions::default(),
+            ));
+            let rpc = RpcSystem::new(network, Some(broker_client.client));
+            tokio::task::spawn_local(async move {
+                let _ = rpc.await;
+            });
+            Ok((client, identity))
+        });
+        let mut manager = CollaborationManager::for_route_host(
+            connector,
+            "dev.tilo.notes",
+            cluster_id,
+            Some("note".into()),
+            None,
+        )
+        .unwrap();
+        // Returning a manager must include the existing Hello/primary barrier.
+        assert!(manager.is_connected());
+        assert!(manager.primary_route.current(true).is_some());
+        let joined = captures.lock().unwrap().joined.clone();
+        assert_eq!(joined.len(), 1);
+        assert_eq!(
+            joined[0].0,
+            channel_key::format("dev.tilo.notes", &cluster_id.to_string(), "note")
+        );
+        let presentation = runtime_collab::CertifiedJoinIdentity::decode(&joined[0].1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(presentation.workspace_id, cluster_id.to_string());
+        assert_eq!(presentation.device_certificate, b"fixture certificate");
+        assert_eq!(presentation.proof, vec![7; 64]);
+        let requests = requests_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        manager.send(CollabRequest::document_incremental(
+            b"fixture document change".to_vec(),
+        ));
+        assert!(wait_until(
+            || host_identity_requests(&requests.lock().unwrap()).len() == 3,
+            Duration::from_secs(2)
+        ));
+        let requests = host_identity_requests(&requests.lock().unwrap());
+        assert!(
+            matches!(&requests[1], runtime_identity::wire::Request::CollaborationJoin { workspace_id } if workspace_id == &cluster_id.to_string())
+        );
+        match &requests[2] {
+            runtime_identity::wire::Request::CollaborationOp {
+                workspace_id,
+                app_id,
+                record_id,
+                unsigned_op,
+            } => {
+                assert_eq!(workspace_id, &cluster_id.to_string());
+                assert_eq!(app_id, "dev.tilo.notes");
+                assert_eq!(record_id, "note");
+                let op: SignedOp = postcard::from_bytes(unsigned_op).unwrap();
+                assert_eq!(
+                    op.author,
+                    collab_types::Ed25519PublicKey::from_bytes([5; 32])
+                );
+            }
+            _ => panic!("document must use the broker policy path"),
+        }
+        // Synchronize behind the mutation: a denied signature cannot be sent
+        // through the harness or unsigned path after this readiness barrier.
+        manager.await_primary_route().unwrap();
+        assert!(captures.lock().unwrap().signed_ops.is_empty());
+    }
+
+    // Wrap the existing successful broker, changing only its join response.
+    // The delayed case delegates to that same implementation after release.
+    struct HostJoinGate {
+        broker: Rc<FakeBroker>,
+        release: RefCell<Option<tokio::sync::oneshot::Receiver<()>>>,
+        attempted: mpsc::Sender<String>,
+        stopped: mpsc::Sender<()>,
+    }
+
+    impl Drop for HostJoinGate {
+        fn drop(&mut self) {
+            let _ = self.stopped.send(());
+        }
+    }
+
+    impl collab_service::Server for HostJoinGate {
+        fn join_channel(
+            self: Rc<Self>,
+            params: collab_service::JoinChannelParams,
+            results: collab_service::JoinChannelResults,
+        ) -> Promise<(), capnp::Error> {
+            let route = params
+                .get()
+                .unwrap()
+                .get_channel_id()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            self.attempted.send(route).unwrap();
+            let Some(release) = self.release.borrow_mut().take() else {
+                return Promise::err(capnp::Error::failed("fixture primary join refused".into()));
+            };
+            let broker = self.broker.clone();
+            Promise::from_future(async move {
+                release
+                    .await
+                    .map_err(|_| capnp::Error::failed("fixture gate dropped".into()))?;
+                collab_service::Server::join_channel(broker, params, results).await
+            })
+        }
+    }
+
+    // Releasing on unwind also lets the worker finish if an assertion fails.
+    struct HostJoinRelease(Option<tokio::sync::oneshot::Sender<()>>);
+    impl Drop for HostJoinRelease {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    fn host_join_gate_connector(
+        delayed: bool,
+        calls: Arc<AtomicUsize>,
+        attempted: mpsc::Sender<String>,
+        stopped: mpsc::Sender<()>,
+    ) -> (HostSessionConnector, HostJoinRelease) {
+        let (release, wait) = tokio::sync::oneshot::channel();
+        let connector = HostSessionConnector::new(move |_| async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let (identity, _) = host_identity_fixture(
+                Some(b"fixture certificate".to_vec()),
+                vec![runtime_identity::wire::Response::Signature(vec![7; 64])],
+            );
+            let broker = Rc::new(FakeBroker {
+                captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: None,
+            });
+            let gate = HostJoinGate {
+                broker,
+                release: RefCell::new(delayed.then_some(wait)),
+                attempted,
+                stopped,
+            };
+            let (client, server) = tokio::io::duplex(64 * 1024);
+            let broker_client: collab_service::Client = capnp_rpc::new_client(gate);
+            let (r, w) = tokio::io::split(server);
+            let network = Box::new(twoparty::VatNetwork::new(
+                r.compat(),
+                w.compat_write(),
+                rpc_twoparty_capnp::Side::Server,
+                capnp::message::ReaderOptions::default(),
+            ));
+            let rpc = RpcSystem::new(network, Some(broker_client.client));
+            tokio::task::spawn_local(async move {
+                let _ = rpc.await;
+            });
+            Ok((client, identity))
+        });
+        (connector, HostJoinRelease(Some(release)))
+    }
+
+    #[test]
+    fn host_connector_refused_primary_join_is_not_connected_success() {
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (connector, release) =
+            host_join_gate_connector(false, calls.clone(), attempt_tx, stop_tx);
+        let cluster_id = Uuid::new_v4();
+        let result = CollaborationManager::for_route_host(
+            connector,
+            "dev.tilo.notes",
+            cluster_id,
+            Some("note".into()),
+            None,
+        );
+        drop(release);
+        match result {
+            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+                assert!(error.to_string().contains("fixture primary join refused"));
+            }
+            _ => panic!("stream and identity bootstrap must not bypass refused Hello"),
+        }
+        assert_eq!(
+            attempt_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            channel_key::format("dev.tilo.notes", &cluster_id.to_string(), "note")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            attempt_rx.try_recv().is_err(),
+            "must not retry another route"
+        );
+        stop_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("fixture broker stops after failed manager");
+    }
+
+    #[test]
+    fn host_connector_unacknowledged_primary_join_obeys_timeout_without_fallback() {
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (connector, release) =
+            host_join_gate_connector(true, calls.clone(), attempt_tx, stop_tx);
+        let cluster_id = Uuid::new_v4();
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let started = Instant::now();
+        let caller = thread::spawn(move || {
+            let result = CollaborationManager::for_route_host(
+                connector,
+                "dev.tilo.notes",
+                cluster_id,
+                Some("note".into()),
+                None,
+            );
+            // Drop any erroneously successful manager on its own caller thread.
+            let result = result.map(|manager| {
+                drop(manager);
+            });
+            let _ = result_tx.send(result);
+        });
+        let result = result_rx.recv_timeout(SHOVEL_INIT_TIMEOUT * 2 + Duration::from_secs(1));
+        let elapsed = started.elapsed();
+        // Always unblock the fixture before asserting or joining the caller.
+        // The server cannot acknowledge before this caller observation.
+        drop(release);
+        if result.is_err() {
+            // Do not turn an observed timeout regression into an unbounded
+            // join. Give the released fixture a bounded chance to shut down.
+            if result_rx.recv_timeout(Duration::from_secs(2)).is_ok() || caller.is_finished() {
+                caller.join().expect("fixture caller after gate release");
+            }
+            panic!("manager failed to return within the bounded startup window");
+        }
+        caller.join().expect("bounded fixture caller");
+        match result.expect("manager must return within the bounded startup window") {
+            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+                assert_eq!(
+                    error.to_string(),
+                    "collaboration primary route did not become ready in time"
+                );
+            }
+            _ => panic!("unacknowledged Hello must never return a connected manager"),
+        }
+        assert!(
+            elapsed >= SHOVEL_INIT_TIMEOUT,
+            "must wait for the existing readiness deadline"
+        );
+        assert_eq!(
+            attempt_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            channel_key::format("dev.tilo.notes", &cluster_id.to_string(), "note")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            attempt_rx.try_recv().is_err(),
+            "must not retry another route"
+        );
+        stop_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("fixture broker stops after releasing delayed join");
     }
 
     /// Stand up a fake `CollabService` on one end of a Unix socket pair;
