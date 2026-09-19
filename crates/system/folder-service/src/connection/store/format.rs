@@ -326,6 +326,12 @@ pub(super) struct Connection {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present"
     )]
+    pub initial_empty: Option<InitialEmptyBaselineV1>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
     pub directory_chain: Option<DirectoryChainCursorV1>,
     #[serde(
         default,
@@ -354,6 +360,7 @@ impl Connection {
         policy: ConnectionPolicy,
     ) -> Result<Self, StoreError> {
         let value = Self {
+            initial_empty: None,
             directory_chain: None,
             directory_chain_schedule: None,
             id: id.0,
@@ -373,6 +380,7 @@ impl Connection {
         Ok(value)
     }
     pub fn decode(&self) -> Result<ConnectionRecord, StoreError> {
+        super::initial_baseline::validate_history(self)?;
         let source = self.source.decode()?;
         let destination = self.destination.decode()?;
         if self.baseline_count > 4096
@@ -1465,9 +1473,24 @@ fn existing_ancestor_receipt<'de, D: serde::Deserializer<'de>>(
     }
     Ok(Some(receipt))
 }
+/// Historical evidence of explicit empty review and a native verified commit.
+/// This bounded fact is never a live endpoint or transaction capability.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::connection) struct InitialEmptyBaselineV1 {
+    pub(super) version: u8,
+    pub(super) connection: [u8; 16],
+    pub(super) revision: u64,
+    pub(super) source: storage::Identity,
+    pub(super) destination: storage::Identity,
+    pub(super) preview: [u8; 32],
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
 pub(super) enum Change {
+    InitialEmptyBaseline {
+        fact: InitialEmptyBaselineV1,
+    },
     DirectoryChainStopBoundary {
         connection: [u8; 16],
         serial: u64,

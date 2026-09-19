@@ -216,6 +216,7 @@ use format::{
 /// Exhaustive routing prevents a future event from silently becoming chain progress.
 pub(super) fn change_connection(change: &Change) -> Result<[u8; 16], StoreError> {
     Ok(match change {
+        Change::InitialEmptyBaseline { fact } => fact.connection,
         Change::Create { record } => record.id,
         Change::Intent { operation } => operation.connection,
         Change::NativeReserve { registration, .. }

@@ -7,7 +7,7 @@
 //! upload, workspace sharing, or authority outside the selected endpoints.
 //!
 //! Only native Linux configurations that qualify on every session can run.
-//! Windows remains unavailable. Empty initial trees and unsupported structural
+//! Windows remains unavailable. Unsupported structural
 //! operations remain pending; this facade does not enable general folder sync.
 
 pub use crate::connection::model::{Conflict, ConnectionId, EntryState, RelativePath, Side};
@@ -83,8 +83,6 @@ pub enum Pending {
     IncompleteObservation,
     NativeRefused,
     Structural,
-    /// No real initial-empty baseline commit boundary exists yet.
-    EmptyBaselineUnavailable,
     /// A bounded run exhausted its step allowance; Sync now can continue.
     RunLimit,
 }

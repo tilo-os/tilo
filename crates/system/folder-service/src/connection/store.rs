@@ -4,6 +4,10 @@ mod chain;
 mod chain_tests;
 mod directory;
 mod format;
+mod initial_baseline;
+pub(super) use format::InitialEmptyBaselineV1;
+#[cfg(test)]
+mod initial_baseline_tests;
 pub(super) use format::NativeOperationKind;
 mod recovery;
 mod storage;
@@ -3493,6 +3497,7 @@ impl ConnectionStore {
         }
         self.chain_event_guard(&event.change)?;
         let mut rows = match &event.change {
+            Change::InitialEmptyBaseline { fact } => self.reduce_initial_empty(fact),
             Change::DirectoryChainControl { .. } => self.reduce_chain_control(&event.change),
             Change::DirectoryChainStopBoundary { .. } => self.reduce_chain_stop(&event.change),
             Change::NativeConflictComplete {
@@ -4395,6 +4400,9 @@ impl ConnectionStore {
             _ => None,
         };
         let live_append = baseline.live_append();
+        if matches!(change, Change::InitialEmptyBaseline { .. }) && !baseline.initial_empty() {
+            return Err(StoreError::RecoveryRequired);
+        }
         let mut touched = false;
         let result = (|| {
             self.validate()?;
@@ -4676,6 +4684,8 @@ enum VerificationMode<'a> {
 enum BaselineAppendCheck<'a, 'proof> {
     None(std::marker::PhantomData<&'a &'proof ()>),
     #[cfg(target_os = "linux")]
+    InitialEmpty(&'a mut super::transaction::InitialEmptyProof<'proof>),
+    #[cfg(target_os = "linux")]
     Native {
         live: &'a LiveOperation,
         comparison: &'a mut super::transaction::native::VerifiedComparison<'proof>,
@@ -4693,6 +4703,13 @@ enum BaselineAppendCheck<'a, 'proof> {
     Historical(&'a chain_tests::HistoricalAppendProbe),
 }
 impl BaselineAppendCheck<'_, '_> {
+    fn initial_empty(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if matches!(self, Self::InitialEmpty(_)) {
+            return true;
+        }
+        false
+    }
     fn live_append(&self) -> bool {
         #[cfg(test)]
         if matches!(self, Self::Historical(_)) {
@@ -4705,6 +4722,16 @@ impl BaselineAppendCheck<'_, '_> {
     }
     #[cfg(all(test, target_os = "linux"))]
     fn before_write_for_test(&mut self) {
+        if let Self::InitialEmpty(proof) = self {
+            BEFORE_NATIVE_BASELINE_WRITE.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    (hook.action)();
+                    if hook.revoke {
+                        proof.revoke_for_test();
+                    }
+                }
+            });
+        }
         if let Self::Directory { comparison, .. } = self {
             BEFORE_NATIVE_BASELINE_WRITE.with(|slot| {
                 if let Some(hook) = slot.borrow_mut().take() {
@@ -4739,6 +4766,16 @@ impl BaselineAppendCheck<'_, '_> {
         let _ = (store, change);
         match self {
             Self::None(_) => Ok(()),
+            #[cfg(target_os = "linux")]
+            Self::InitialEmpty(proof) => {
+                let Change::InitialEmptyBaseline { fact } = change else {
+                    return Err(StoreError::StaleRevision);
+                };
+                if proof.fact(store)? != *fact {
+                    return Err(StoreError::StaleRevision);
+                }
+                Ok(())
+            }
             #[cfg(test)]
             Self::Historical(probe) => probe.validate(store),
             #[cfg(target_os = "linux")]
@@ -6253,4 +6290,14 @@ impl ConnectionStore {
             .ok_or(StoreError::RecoveryRequired)?;
         Ok((budget.version, budget.reserved, budget.sequence))
     }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn clear_native_baseline_write_for_test() {
+    BEFORE_NATIVE_BASELINE_WRITE.with(|slot| *slot.borrow_mut() = None);
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn storage_fault_for_test(point: Option<usize>) {
+    tests::FAULT.with(|slot| slot.set(point.map(|point| (point, false))));
 }

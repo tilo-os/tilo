@@ -381,17 +381,24 @@ fn native_facade_propagates_both_ways_preserves_conflict_and_reopens() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn native_facade_rejects_stale_preview_and_keeps_empty_baseline_absent() {
+fn native_facade_rejects_stale_preview_including_empty_comparison() {
     let fixture = NativeFixture::new();
     let service = fixture.service();
     let info = fixture.create(&service);
     let observer = service.start(info.id).unwrap().wait().unwrap();
-    assert_eq!(
-        terminal(&observer).phase,
-        Phase::Pending(Pending::EmptyBaselineUnavailable)
-    );
+    let Phase::AwaitingReview {
+        review: empty_review,
+        entries: 0,
+    } = terminal(&observer).phase
+    else {
+        panic!("empty folders still require explicit review");
+    };
     assert!(!observer.snapshot().connection.has_baseline);
     std::fs::write(fixture.source.join("document"), b"preview").unwrap();
+    assert_eq!(
+        service.accept_initial(empty_review).unwrap().wait(),
+        Err(ConnectionError::StaleReview)
+    );
     let observer = service.start(info.id).unwrap().wait().unwrap();
     let Phase::AwaitingReview { review, entries } = terminal(&observer).phase else {
         panic!("missing preview");
@@ -953,4 +960,85 @@ fn native_diagnostic_assertion_failure_is_isolated_and_poison_is_tolerated() {
     NATIVE_POSITION.clear_poison();
     let message = failed_assertion.downcast_ref::<String>().unwrap();
     assert!(message.contains("native worker snapshot:"), "{message}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_empty_baseline_review_restart_and_later_real_operations() {
+    let fixture = NativeFixture::new();
+    let service = fixture.service();
+    let info = fixture.create(&service);
+    let observer = service.start(info.id).unwrap().wait().unwrap();
+    let Phase::AwaitingReview { review, entries: 0 } = terminal(&observer).phase else {
+        panic!(
+            "empty comparison requires review: {:?}",
+            observer.snapshot()
+        );
+    };
+    assert!(!observer.snapshot().connection.has_baseline);
+    assert!(
+        service
+            .preview(review.clone(), 0)
+            .unwrap()
+            .wait()
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    service.accept_initial(review).unwrap().wait().unwrap();
+    assert_eq!(terminal(&observer).phase, Phase::UpToDate);
+    assert!(observer.snapshot().connection.has_baseline);
+    drop(observer);
+    drop(service);
+    let service = reopen_service(&fixture);
+    let observer = service.start(info.id).unwrap().wait().unwrap();
+    assert_eq!(terminal(&observer).phase, Phase::UpToDate);
+    for (source, destination, name, text) in [
+        (
+            &fixture.source,
+            &fixture.destination,
+            "left-created",
+            b"left".as_slice(),
+        ),
+        (
+            &fixture.destination,
+            &fixture.source,
+            "right-created",
+            b"right".as_slice(),
+        ),
+        (
+            &fixture.destination,
+            &fixture.source,
+            "left-created",
+            b"edited from right".as_slice(),
+        ),
+    ] {
+        std::fs::write(source.join(name), text).unwrap();
+        let observer = service.start(info.id).unwrap().wait().unwrap();
+        assert_eq!(terminal(&observer).phase, Phase::UpToDate);
+        assert_eq!(std::fs::read(destination.join(name)).unwrap(), text);
+        assert!(observer.snapshot().verified_steps > 0);
+    }
+    drop(observer);
+    drop(service);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let store = loop {
+        match ConnectionStore::open_at(&fixture.store) {
+            Ok(store) => break store,
+            Err(StoreError::Busy) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            Err(error) => panic!("reopen: {error:?}"),
+        }
+    };
+    let (pending, latest) = store.executor_position(info.id).unwrap();
+    assert!(pending.is_none());
+    assert!(
+        latest.is_some(),
+        "later edits must produce genuine transaction receipts"
+    );
+    assert_eq!(
+        store.executor_receipt(latest.unwrap()).unwrap().stage,
+        super::super::store::ReceiptStage::BaselineCommitted
+    );
 }

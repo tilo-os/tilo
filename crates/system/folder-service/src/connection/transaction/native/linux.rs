@@ -1,6 +1,7 @@
 //! Handle-relative native primitives. No store receipts, cleanup or public
 //! activation lives here. Relocation evidence is never sealed byte recovery.
 pub(super) mod directory;
+pub(in crate::connection::transaction) mod initial_baseline;
 mod lease_process;
 mod witness;
 use super::descriptor as d;
@@ -8329,7 +8330,7 @@ pub(in crate::connection::transaction) struct NativeEpoch<'a> {
     source_root: NativeDirectory,
     target_root: NativeDirectory,
     identities: [EndpointIdentity; 2],
-    binding: OperationBinding,
+    binding: Option<OperationBinding>,
     nonce: [u8; 16],
     leases: Receiver,
     deadline: Instant,
@@ -8442,6 +8443,14 @@ impl<'a> NativeEpoch<'a> {
         source: &'a PinnedEndpoint,
         target: &'a PinnedEndpoint,
         binding: OperationBinding,
+        reads: Arc<super::OperationReads>,
+    ) -> Result<Self> {
+        Self::begin_bound(source, target, Some(binding), reads)
+    }
+    fn begin_bound(
+        source: &'a PinnedEndpoint,
+        target: &'a PinnedEndpoint,
+        binding: Option<OperationBinding>,
         reads: Arc<super::OperationReads>,
     ) -> Result<Self> {
         let fail = |cause| Failure {
@@ -8803,7 +8812,7 @@ impl<'a> NativeEpoch<'a> {
     fn create_namespace(&mut self, target: &ParentGuard) -> Result<PrivateNamespace> {
         self.check()?;
         self.parent_check(target)?;
-        if target.side != Side::Target || self.namespace_created {
+        if self.binding.is_none() || target.side != Side::Target || self.namespace_created {
             return Err(self.failure(EndpointError::Unsupported));
         }
         let random = self.io(random_id())?;
@@ -8840,15 +8849,20 @@ impl<'a> NativeEpoch<'a> {
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
         ))?;
         let parent_identity = self.ep(object(target.directory.file()))?;
+        let binding = self.binding.as_ref().ok_or(Failure {
+            cause: EndpointError::Unverified,
+            boundary: self.boundary,
+            os_error: None,
+        })?;
         let mut descriptor_bytes = Vec::new();
         for bytes in [
             b"QNI1".as_slice(),
             &self.nonce,
-            &self.binding.connection.0,
-            &self.binding.operation,
-            &self.binding.store_session,
-            &self.binding.revision.to_le_bytes(),
-            &self.binding.fence.to_le_bytes(),
+            &binding.connection.0,
+            &binding.operation,
+            &binding.store_session,
+            &binding.revision.to_le_bytes(),
+            &binding.fence.to_le_bytes(),
             &self.identities[0].volume,
             &self.identities[0].root,
             &self.identities[1].volume,
@@ -17373,13 +17387,17 @@ fn execute_next_inner_mode(
         (source, destination, baseline)
     } else {
         if record.baseline_revision.is_some() {
-            return Err(StoreError::RecoveryRequired);
+            store.operationless_baseline(id)?;
+            let (source, destination) =
+                initial_baseline::observe_current(store, id, session, left, right, cancel)?;
+            (source, destination, store.load_baseline(id)?)
+        } else {
+            (
+                endpoint::observe(left, cancel),
+                endpoint::observe(right, cancel),
+                absent(),
+            )
         }
-        (
-            endpoint::observe(left, cancel),
-            endpoint::observe(right, cancel),
-            absent(),
-        )
     };
     if record.baseline_revision.is_some() {
         use crate::connection::transaction::directory::{DirectoryPlan, plan_directory};
@@ -17407,13 +17425,12 @@ fn execute_next_inner_mode(
                 return Ok(TransactionOutcome::StructuralPending(reason));
             }
             DirectoryPlan::Settled if directory_only => {
-                return executor_verified(
-                    store,
-                    latest.ok_or(StoreError::RecoveryRequired)?,
-                    left,
-                    right,
-                    cancel,
-                );
+                return match latest {
+                    Some(operation) => executor_verified(store, operation, left, right, cancel),
+                    None => {
+                        initial_baseline::verified_current(store, id, session, left, right, cancel)
+                    }
+                };
             }
             _ => (),
         }
@@ -17447,13 +17464,10 @@ fn execute_next_inner_mode(
         RegularPlan::Pending => Ok(TransactionOutcome::AccountedPending {
             operation: latest.map(|id| store.executor_receipt(id)).transpose()?,
         }),
-        RegularPlan::Settled => executor_verified(
-            store,
-            latest.ok_or(StoreError::RecoveryRequired)?,
-            left,
-            right,
-            cancel,
-        ),
+        RegularPlan::Settled => match latest {
+            Some(operation) => executor_verified(store, operation, left, right, cancel),
+            None => initial_baseline::verified_current(store, id, session, left, right, cancel),
+        },
     }
 }
 impl<'e> NativeEpoch<'e> {
