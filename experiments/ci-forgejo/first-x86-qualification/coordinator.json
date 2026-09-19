@@ -12,7 +12,7 @@
   "trusted_files": {
     ".cargo/config.toml": "612dd92e18db71aaae79d2b4a7cf57514db17c92615530ef8252e1c36babf818",
     ".forgejo/actions/restore-cargo-downloads/action.yml": "5dc336516527b559035f3c45960f6fdce9e4d8467c314c4988c421561373298f",
-    ".forgejo/workflows/release-apps.yml": "2316a921cb8b228b10b4174e9cf43bf141d84e74e751c50a24d47298653b5a3e",
+    ".forgejo/workflows/release-apps.yml": "e7f2b862dec26b82654713e9d1c8034a7d87dd1ff6143956e7ef270469ff273c",
     "dist/apps/app-collections.toml": "2c1028aac0b87b222e5f1c826ee73c54fd1aca0224253549abf3548cc37c22e5",
     "dist/apps/assemble-collection.sh": "6d6aa7c24fae58e92dfe29eab86b1034e6a4bebee0e16998c9c9633aaca68ef8",
     "dist/apps/package-apps.sh": "7015e480049936c6b100f9a5bc8a9ece30d7f1348908232cec0bb2e5f0f769b6",
@@ -36,7 +36,7 @@
     "tools/ci/__init__.py": "d4ca8c8ec9228fafe30fae7d4532c4ac4455661dc92f75d2428f9d7779dba462",
     "tools/ci/affected_packages.py": "8c0d2caef0562aafa664182d2909f3276a512f71d876cda67d3e258327e9c2d1",
     "tools/ci/python.py": "59a74f072538262d40cc3eaa6bb92c94289fb3cd29739b7aadf42953237c52d7",
-    "tools/ci/resolve_builder.py": "9b7e28744279fb68f7626e21d5ff2ad7f98d2cf0a82332e0aef00da0045afa99",
+    "tools/ci/resolve_builder.py": "4ba30c8d5f0171a91babca24a2bc526149c6f943a599f144257fc050978126d0",
     "tools/ci/rustc-thin-app-wrapper.sh": "2ad85416ea565fed602628f50717186a310136257cd1fe0d847ffc9c5c3be7bc",
     "tools/ci/sccache.sh": "010cf0d13b1729defc4d34e2a8295b2d25d2a604ef050031ed72ff436d65ca50"
   }
